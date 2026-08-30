@@ -2304,3 +2304,78 @@ def test_gpu_qualification_component_stop_is_a_successful_control_action(
 
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out) == {"success": True}
+
+
+def _verified_provenance_receipt(commit: str) -> dict:
+    return {
+        "schema_version": "blueprint.deploy_release_provenance.v1",
+        "status": "verified",
+        "git_sha": commit,
+        "workflow_name": "Full Test Lane",
+        "workflow_path": ".github/workflows/full-test-lane.yml",
+        "job_name": "Full pytest lane on CPU runner",
+        "run_id": 33338010049,
+        "collection": {"test_count": 4211},
+        "claim_boundary": {"canonical_full_lane_verified": True},
+    }
+
+
+def test_release_promotion_accepts_either_deploy_surface_root(
+    tmp_path, monkeypatch
+) -> None:
+    """Two deploy surfaces install the receipt under different roots.
+
+    The 2026-08-30 chain installed every release's verified receipt one
+    directory above the release-state root this module reads, so a freshly
+    promoted release was admitted as ``development_only`` until an operator
+    hand-linked the receipt across.  The identical content proof is accepted
+    at either exact location, and nothing weaker passes at either."""
+
+    releases = (
+        tmp_path / "pipeline-control-plane" / "task-evaluation-control-plane-releases"
+    )
+    monkeypatch.setattr(allocator, "CONTROL_PLANE_RELEASE_STATE_ROOT", releases)
+    commit = "b" * 40
+
+    assert allocator.release_promotion_eligible(commit) is False
+
+    parent_root_receipt = releases.parent / commit / "deploy-release-provenance.json"
+    parent_root_receipt.parent.mkdir(parents=True)
+    parent_root_receipt.write_text(
+        json.dumps(_verified_provenance_receipt(commit)), encoding="utf-8"
+    )
+    parent_root_receipt.chmod(0o440)
+    assert allocator.release_promotion_eligible(commit) is True
+
+    canonical_commit = "c" * 40
+    canonical_receipt = (
+        releases / canonical_commit / "deploy-release-provenance.json"
+    )
+    canonical_receipt.parent.mkdir(parents=True)
+    canonical_receipt.write_text(
+        json.dumps(_verified_provenance_receipt(canonical_commit)), encoding="utf-8"
+    )
+    canonical_receipt.chmod(0o440)
+    assert allocator.release_promotion_eligible(canonical_commit) is True
+
+    iteration_commit = "d" * 40
+    iteration = dict(_verified_provenance_receipt(iteration_commit))
+    iteration["status"] = "iteration"
+    iteration_receipt = (
+        releases.parent / iteration_commit / "deploy-release-provenance.json"
+    )
+    iteration_receipt.parent.mkdir(parents=True)
+    iteration_receipt.write_text(json.dumps(iteration), encoding="utf-8")
+    iteration_receipt.chmod(0o440)
+    assert allocator.release_promotion_eligible(iteration_commit) is False
+
+    writable_commit = "e" * 40
+    writable_receipt = (
+        releases.parent / writable_commit / "deploy-release-provenance.json"
+    )
+    writable_receipt.parent.mkdir(parents=True)
+    writable_receipt.write_text(
+        json.dumps(_verified_provenance_receipt(writable_commit)), encoding="utf-8"
+    )
+    writable_receipt.chmod(0o666)
+    assert allocator.release_promotion_eligible(writable_commit) is False

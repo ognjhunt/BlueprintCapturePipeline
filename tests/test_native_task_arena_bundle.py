@@ -3757,3 +3757,18 @@ def test_bundle_accepts_a_packet_restating_the_deployed_servo_limits(
     )
 
     assert receipt["status"] == "ready"
+
+
+def test_camera_framing_expectation_ships_beside_observability() -> None:
+    """The observability gate imports the framing-expectation module lazily,
+    inside the measurement call, so the closure import probes above cannot
+    see the edge: they import shipped modules at top level only.  Without
+    this pin the pod discovers the missing module at snapshot time, after
+    environment build, in the middle of a paid run."""
+
+    for names in (
+        CONSTRUCTION_RUNTIME_MODULE_NAMES,
+        CONTROLS_RUNTIME_MODULE_NAMES,
+    ):
+        assert "native_task_camera_observability.py" in names
+        assert "native_task_camera_framing_expectation.py" in names

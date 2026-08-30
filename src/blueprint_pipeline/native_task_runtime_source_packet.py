@@ -767,15 +767,53 @@ def verify_native_task_runtime_source_packet(
         receipt, digest_field="receipt_digest"
     ):
         errors.append("native_task_runtime_source_receipt_digest_invalid")
+    recorded_packet_path = Path(
+        str(receipt.get("packet_path") or "")
+    ).expanduser()
     packet_path = Path(
         packet_path_override
         if packet_path_override is not None
-        else str(receipt.get("packet_path") or "")
+        else recorded_packet_path
     ).expanduser().resolve()
     if packet_path_override is None and not packet_path.is_file():
         packaged_sibling = path.parent / "native_task_runtime_sources.zip"
         if packaged_sibling.is_file() and not packaged_sibling.is_symlink():
             packet_path = packaged_sibling.resolve()
+    if packet_path_override is None and not packet_path.is_file():
+        # The receipt travels as evidence without its multi-gigabyte archive
+        # (compiled-episode adapters retain the receipt beside a log, not the
+        # 4.3 GB zip), and the recorded absolute path names the build
+        # directory of birth, which has its own retention lifecycle.  When
+        # both are gone, the archive usually still exists under a sibling
+        # build of the same root -- the 2026-08-30 scene-839873 construction
+        # launch blocked exactly here and was unblocked by hand-linking
+        # byte-identical bytes back to the recorded name.  Resolve by
+        # identity instead: any regular file named like the recorded archive
+        # under a sibling build directory, prefiltered by the sealed exact
+        # size; the digest check below remains the sole identity authority,
+        # so a wrong-bytes candidate still refuses.
+        expected_size = receipt.get("packet_size_bytes")
+        builds_root = recorded_packet_path.parent.parent
+        if (
+            isinstance(expected_size, int)
+            and not isinstance(expected_size, bool)
+            and expected_size > 0
+            and recorded_packet_path.is_absolute()
+            and recorded_packet_path.name
+            and builds_root.is_dir()
+        ):
+            for candidate in sorted(
+                builds_root.glob(f"*/{recorded_packet_path.name}")
+            ):
+                if (
+                    candidate.is_symlink()
+                    or not candidate.is_file()
+                    or candidate.stat().st_size != expected_size
+                ):
+                    continue
+                if _sha256_file(candidate) == receipt.get("packet_sha256"):
+                    packet_path = candidate.resolve()
+                    break
     if not packet_path.is_file():
         errors.append("native_task_runtime_source_packet_missing")
     elif (

@@ -560,11 +560,28 @@ def _commit_has_verified_production_promotion(commit: str) -> bool:
 
     if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
         return False
-    path = (
-        CONTROL_PLANE_RELEASE_STATE_ROOT
+    # Two deploy surfaces install the same receipt under different roots: the
+    # task-evaluation release-state root this module has always read, and the
+    # control-plane root one directory above it, where the 2026-08-30 deploy
+    # chain installed every release's receipt (8f5b2313 admitted as
+    # development_only until an operator hard-linked the verified receipt
+    # across).  Accept the identical fail-closed content proof at either exact
+    # location; nothing about what the receipt must say is weakened.
+    candidates = (
+        CONTROL_PLANE_RELEASE_STATE_ROOT / commit / DEPLOY_RELEASE_PROVENANCE_NAME,
+        CONTROL_PLANE_RELEASE_STATE_ROOT.parent
         / commit
-        / DEPLOY_RELEASE_PROVENANCE_NAME
+        / DEPLOY_RELEASE_PROVENANCE_NAME,
     )
+    return any(
+        _verified_release_provenance_at(path, commit=commit)
+        for path in candidates
+    )
+
+
+def _verified_release_provenance_at(path: Path, *, commit: str) -> bool:
+    """One exact location's receipt proves the canonical Full Test Lane."""
+
     try:
         if path.is_symlink() or not path.is_file():
             return False
