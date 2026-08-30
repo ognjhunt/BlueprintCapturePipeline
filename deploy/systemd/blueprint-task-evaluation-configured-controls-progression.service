@@ -46,5 +46,15 @@ Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT=/var/lib/blue
 Environment=BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE=/etc/blueprint/provider-secrets/blueprint_task_evaluation_launch_submit_secret
 Environment=BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_URL=https://tryblueprint.io/api/internal/task-evaluation-launch-submissions
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+# Placement review deliberately reuses the already-provisioned scene visual-
+# review key.  These assignments follow EnvironmentFile so a generic key path
+# cannot silently replace the admitted credential role.  The intent still
+# supplies the exact project/key identity and finite cost authority.
+Environment=OPENAI_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key_artifixer_visual_review
+Environment=OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key_artifixer_visual_review
+Environment=OPENAI_ADMIN_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_admin_api_key
+Environment=BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE=/etc/blueprint/provider-secrets/openai_cost_scope_attestation_artifixer_visual_review.json
+Environment=BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true
+Environment=VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock
 WorkingDirectory=/
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_configured_controls_progression_worker --plan-root "$${BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_PLAN_ROOT}" --autostart-intent-root "$${BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT}" --launch-state-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT}" --progression-root "$${BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_STATE_ROOT}" --preparation-queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT}" --activation-queue-root "$${BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT}" --repo-root "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" --webapp-secret-file "$${BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE}" --webapp-endpoint "$${BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_URL}"'

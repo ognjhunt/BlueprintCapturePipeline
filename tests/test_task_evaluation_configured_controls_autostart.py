@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,8 @@ def _intent(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         phases=phases,
         profile_dir=profile_dir,
         output_path=destination,
+        openai_project_id="proj_test",
+        openai_api_key_id="key_visual_review",
     )
     return destination, value
 
@@ -96,7 +99,9 @@ def test_intent_binds_every_fixed_cpu_and_paid_boundary_input(tmp_path: Path) ->
     path, value = _intent(tmp_path)
 
     assert path.stat().st_mode & 0o777 == 0o440
-    assert value["paid_execution_requested"] is False
+    assert value["paid_execution_requested"] is True
+    assert value["placement"]["agent_model"] == "gpt-5.6-sol"
+    assert value["placement"]["reasoning_effort"] == "high"
     assert value["provider_mutation_performed"] is False
     assert set(value["artifact_inventory"]) == {
         "robot_asset_usd_path",
@@ -156,6 +161,8 @@ def test_explicit_prior_configuration_adoption_is_separate_and_exact(
         phases=automatic["phases"],
         profile_dir=str(automatic["profile_dir"]),
         output_path=tmp_path / "adoption-intent.json",
+        openai_project_id="proj_test",
+        openai_api_key_id="key_visual_review",
     )
 
     assert automatic["configuration_adoption"] == {
@@ -226,7 +233,7 @@ def test_worker_materializes_cpu_autostart_before_advancing_plan(
         plan_root.mkdir()
         (plan_root / "scene-839873-launch.json").write_text("{}", encoding="utf-8")
         return {
-            "status": "cpu_binding_accepted_plan_materialized",
+            "status": "agent_binding_accepted_plan_materialized",
             "selected_candidate_id": "candidate-0042",
             "plan_digest": "sha256:" + "1" * 64,
         }
@@ -250,7 +257,7 @@ def test_worker_materializes_cpu_autostart_before_advancing_plan(
 
     assert report["status"] == "completed"
     assert [row["status"] for row in report["rows"]] == [
-        "cpu_binding_accepted_plan_materialized",
+        "agent_binding_accepted_plan_materialized",
         "episode_preparation_queued",
     ]
     assert report["rows"][0]["selected_candidate_id"] == "candidate-0042"
@@ -595,10 +602,30 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
         "position_world_m": [3.5442285, -6.7605156, 0.752958],
         "orientation_xyzw": [0.0, 0.0, 1.0, 0.0],
     }
-    placement_receipt = {
+    candidate_inventory_digest = "sha256:" + "6" * 64
+    cpu_placement_receipt = {
+        "candidate_inventory_digest": candidate_inventory_digest,
+        "receipt_digest": "sha256:" + "8" * 64,
+    }
+    agent_placement_receipt = {
         "accepted_candidate_id": "candidate-42",
         "accepted_pose": accepted_pose,
-        "candidate_inventory_digest": "sha256:" + "6" * 64,
+        "candidate_inventory_digest": candidate_inventory_digest,
+        "receipt_digest": "sha256:" + "9" * 64,
+    }
+    inventory = {
+        "candidate_inventory_digest": candidate_inventory_digest,
+        "checkpoint_digest": "sha256:" + "a" * 64,
+    }
+    openai_evidence = {
+        name: autostart._artifact(_write(tmp_path / "evidence" / f"{name}.json"))
+        for name in (
+            "reservation",
+            "completion",
+            "exclusive_lock",
+            "exclusive_lock_release",
+            "inference_reservations",
+        )
     }
     captured: dict[str, object] = {}
 
@@ -627,10 +654,49 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
         "placement_trajectory_from_native_plan",
         lambda _value: _trajectory(),
     )
+    placement_checkpoint_calls = 0
+    events: list[object] = []
+
+    class FakeOfficialCostGate:
+        def reserve(self):
+            events.append("official-cost-reserved")
+
+        def complete(self, **kwargs):
+            events.append(("official-cost-completed", kwargs))
+
+    def agent_placement_runner(**kwargs):
+        assert kwargs["record_inference_reservations"] is True
+        events.append("agent-called")
+        return agent_placement_receipt
+
+    def placement_checkpoint(**kwargs):
+        nonlocal placement_checkpoint_calls
+        placement_checkpoint_calls += 1
+        runner_kwargs = kwargs["runner_kwargs"]
+        if placement_checkpoint_calls == 1:
+            assert runner_kwargs["deterministic_selection"] is True
+            assert runner_kwargs["allow_live_invocation"] is False
+            assert "candidate_inventory_checkpoint" not in runner_kwargs
+            return cpu_placement_receipt, inventory, tmp_path / "cpu-placement"
+        assert placement_checkpoint_calls == 2
+        assert runner_kwargs["deterministic_selection"] is False
+        assert runner_kwargs["allow_live_invocation"] is True
+        assert runner_kwargs["candidate_inventory_checkpoint"] == inventory
+        receipt = kwargs["placement_runner"](
+            output_dir=tmp_path / "agent-placement",
+            **runner_kwargs,
+        )
+        return receipt, inventory, tmp_path / "agent-placement"
+
     monkeypatch.setattr(
         autostart,
         "_placement_checkpoint",
-        lambda **_kwargs: (placement_receipt, {}, tmp_path / "placement"),
+        placement_checkpoint,
+    )
+    monkeypatch.setattr(
+        autostart,
+        "_validated_agent_openai_evidence",
+        lambda **_kwargs: openai_evidence,
     )
 
     def readiness_materializer(**kwargs):
@@ -650,8 +716,12 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
         progression_root=tmp_path / "progression",
         plan_root=tmp_path / "plans",
         placement_runner=lambda **_kwargs: {},
+        agent_placement_runner=agent_placement_runner,
         readiness_materializer=readiness_materializer,
         plan_materializer=plan_materializer,
+        environment={},
+        openai_gate_builder=lambda **_kwargs: FakeOfficialCostGate(),
+        openai_scope_lock=lambda **_kwargs: nullcontext({}),
     )
 
     selected_path = Path(captured["bindings"]["cameras_path"])
@@ -661,3 +731,17 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
     assert selected["accepted_pose"] == accepted_pose
     assert selected["world_camera_positions_depend_on_selected_base"] is True
     assert result["selected_candidate_id"] == "candidate-42"
+    assert events == [
+        "official-cost-reserved",
+        "agent-called",
+        (
+            "official-cost-completed",
+            {
+                "provider_call_performed": True,
+                "runtime_result_digest": agent_placement_receipt[
+                    "receipt_digest"
+                ],
+                "runtime_exception_type": None,
+            },
+        ),
+    ]

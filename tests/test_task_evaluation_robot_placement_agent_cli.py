@@ -394,3 +394,121 @@ def test_deterministic_selection_never_invokes_paid_model(tmp_path, monkeypatch)
     )
     with pytest.raises(ValueError, match="robot_placement_receipt_invalid"):
         validate_robot_placement_receipt(forged)
+
+
+def test_live_selection_persists_interruption_safe_inference_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import blueprint_pipeline.task_evaluation_robot_placement_agent_cli as module
+
+    candidate = {
+        "candidate_id": "candidate-0001",
+        "support_surface_id": "surface",
+        "pose": {
+            "position_world_m": [3.0, -6.3, 0.75],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "geometry_gate_digest": "sha256:geometry",
+        "shoulder_to_target_distance_m": 0.5,
+        "trajectory_position_ik_gate_digest": "sha256:trajectory",
+        "trajectory_minimum_manipulability": 0.2,
+        "trajectory_position_ik_gate": {"status": "passed"},
+    }
+    gate = {
+        "schema_version": "task_evaluation_robot_placement_geometry_gate.v1",
+        "candidate_id": candidate["candidate_id"],
+        "declared_support_surface_id": "surface",
+        "status": "passed",
+        "blockers": [],
+        "orientation_slew_feasibility": {"feasible": True, "blockers": []},
+        "geometry_gate_digest": "sha256:geometry",
+    }
+    monkeypatch.setattr(
+        module, "build_robot_placement_geometry_index", lambda **_: object()
+    )
+    monkeypatch.setattr(
+        module, "summarize_robot_placement_geometry", lambda *_a, **_k: {}
+    )
+    monkeypatch.setattr(
+        module,
+        "enumerate_robot_placement_geometry_candidates",
+        lambda **_: [candidate],
+    )
+    monkeypatch.setattr(
+        module, "validate_robot_placement_geometry_candidate", lambda **_: gate
+    )
+    digest = "sha256:" + hashlib.sha256(_ONE_PIXEL_PNG).hexdigest()
+    monkeypatch.setattr(
+        module,
+        "render_robot_placement_geometry_previews",
+        lambda **_: [
+            {
+                "label": "top_down",
+                "digest": digest,
+                "image_url": "data:image/png;base64,"
+                + base64.b64encode(_ONE_PIXEL_PNG).decode("ascii"),
+                "detail": "high",
+            }
+        ],
+    )
+
+    audits = []
+
+    class FakeAudit:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.manifest_writes = 0
+            audits.append(self)
+
+        def record_reservation(self, _value):
+            return None
+
+        def record_completion(self, _value):
+            return None
+
+        def write_manifest(self):
+            self.manifest_writes += 1
+
+    invokers = []
+
+    class FakeInvoker:
+        def __init__(self, _config):
+            self.reservation_audit_configured = False
+            invokers.append(self)
+
+        def configure_reservation_audit(self, **kwargs):
+            assert kwargs["restored_reserved_cost_usd"] == 0.0
+            assert callable(kwargs["record_reservation"])
+            assert callable(kwargs["record_completion"])
+            self.reservation_audit_configured = True
+
+    def run_agent(**kwargs):
+        assert kwargs["invoker"].reservation_audit_configured is True
+        return {"receipt_digest": "sha256:" + "b" * 64}
+
+    monkeypatch.setattr(module, "InferenceReservationAudit", FakeAudit)
+    monkeypatch.setattr(module, "OpenAIAgentsSDKInvoker", FakeInvoker)
+    monkeypatch.setattr(module, "run_task_evaluation_robot_placement_agent", run_agent)
+
+    run_robot_placement_cli(
+        run_id="live-audited-selection",
+        scene_collision_usd=Path("scene.usda"),
+        robot_asset_usd=Path("robot.usda"),
+        target_position_world_m=[3.0, -6.7, 0.8],
+        scene_binding={"scene": "839873"},
+        task_binding={"task": "push"},
+        overview_image_paths=[],
+        output_dir=tmp_path / "output",
+        max_rounds=1,
+        candidate_inventory_cap=12,
+        max_input_tokens=1_000,
+        max_inference_cost_usd=1.0,
+        allow_live_invocation=True,
+        tracing_disabled=True,
+        record_inference_reservations=True,
+    )
+
+    assert len(invokers) == 1
+    assert len(audits) == 1
+    assert audits[0].kwargs["run_id"] == "live-audited-selection"
+    assert audits[0].manifest_writes == 1

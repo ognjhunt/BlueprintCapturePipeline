@@ -142,6 +142,8 @@ def _configured_controls_intent_root(
         phases=phases,
         profile_dir=profile_dir,
         output_path=destination,
+        openai_project_id="proj_test",
+        openai_api_key_id="key_visual_review",
     )
     return root
 
