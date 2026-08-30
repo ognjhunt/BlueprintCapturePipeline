@@ -46,6 +46,9 @@
         "warning_label": {"const": "Visual review paused - appearance ungraded"}
       }
     },
+    "policy_run_setup": {"type": "object"},
+    "policy_run_selection": {"type": "object"},
+    "policy_run_configuration": {"type": "object"},
     "scene": {
       "oneOf": [
         {
@@ -485,6 +488,19 @@
                 "required": ["mode"]
               }
             }
+          }
+        }
+      }
+    },
+    {
+      "if": {"required": ["policy_run_setup"]},
+      "then": {
+        "required": ["policy_run_setup", "policy_run_selection", "policy_run_configuration"],
+        "properties": {
+          "run_mode": {"const": "episode_evaluation"},
+          "controller": {
+            "properties": {"kind": {"const": "policy_container"}},
+            "required": ["kind"]
           }
         }
       }

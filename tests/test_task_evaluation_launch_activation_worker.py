@@ -55,6 +55,14 @@ from tests.test_task_evaluation_configured_scene_revision import revision
 from tests.test_task_evaluation_scene_configuration_bundle import (
     _toolchain as scene_configuration_toolchain,
 )
+from tests.test_task_evaluation_policy_run_contract import (
+    configuration as policy_configuration,
+    controls_qualification as policy_controls_qualification,
+    setup as policy_setup,
+)
+from blueprint_pipeline.task_evaluation_policy_run_contract import (
+    build_policy_run_plan,
+)
 
 
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
@@ -161,6 +169,45 @@ def test_release_window_must_use_coordinator_owned_prefix() -> None:
             "s3://blueprint-production-inputs/team-a/forged-window.json",
             prefix=prefix,
         )
+
+
+def test_policy_activation_seals_paired_campaign_queue_without_preparer(
+    tmp_path: Path,
+) -> None:
+    setup_value = policy_setup()
+    configuration = policy_configuration(setup_value)
+    plan = build_policy_run_plan(configuration, setup=setup_value)
+    qualification = policy_controls_qualification(configuration, plan)
+    qualification_path = tmp_path / "controls-qualification.json"
+    qualification_path.write_text(json.dumps(qualification), encoding="utf-8")
+    request = activation_request(lane="native_task_arena_policy_evaluation")
+    request["preparation"] = {
+        "preparation_id": "policy-preparation-1",
+        "request_digest": "sha256:" + "1" * 64,
+        "result_digest": "sha256:" + "2" * 64,
+    }
+    preparation_result = {
+        "result_digest": request["preparation"]["result_digest"],
+        "policy_run_plan": plan,
+    }
+
+    result = worker._policy_campaign_activation_result(
+        request=request,
+        preparation_request={"policy_run_configuration": configuration},
+        preparation_result=preparation_result,
+        window={"window_digest": "sha256:" + "3" * 64},
+        activation_materialized={
+            "lineage.controls_qualification_manifest": qualification_path
+        },
+        activation_root=tmp_path,
+    )
+
+    assert result["status"] == "policy_campaign_queue_materialized_no_execution"
+    assert result["campaign_unit_count"] == 10
+    assert result["profile_publication_performed"] is False
+    assert result["standing_authorization_published"] is False
+    assert result["provider_mutation_performed"] is False
+    assert result["paid_execution_requested"] is False
 
 
 def test_configured_revision_rights_substitution_blocks_before_activation(

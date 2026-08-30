@@ -27,6 +27,11 @@ from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_launch_preparation_contract import (
     validate_launch_preparation_request,
 )
+from .task_evaluation_policy_run_contract import (
+    TaskEvaluationPolicyRunContractError,
+    build_policy_run_plan,
+    validate_policy_run_setup,
+)
 from .task_evaluation_configured_scene_revision import (
     TaskEvaluationConfiguredSceneRevisionError,
     validate_configured_scene_revision,
@@ -791,6 +796,24 @@ def process_launch_preparation_queue(
             references_by_path = {
                 row["contract_path"]: row for row in result["references"]
             }
+            policy_run_configuration = envelope["request"].get(
+                "policy_run_configuration"
+            )
+            if policy_run_configuration is not None:
+                try:
+                    setup = validate_policy_run_setup(
+                        envelope["request"]["policy_run_setup"]
+                    )
+                    policy_run_plan = build_policy_run_plan(
+                        policy_run_configuration, setup=setup
+                    )
+                except (
+                    TaskEvaluationPolicyRunContractError,
+                ) as exc:
+                    raise TaskEvaluationLaunchPreparationWorkerError(
+                        f"launch_preparation_policy_run_setup_invalid:{exc}"
+                    ) from exc
+                result["policy_run_plan"] = policy_run_plan
             construction_mode = envelope["request"]["construction"]["mode"]
             runtime_source = references_by_path.get(
                 "execution_adapter.runtime_source_bundle"

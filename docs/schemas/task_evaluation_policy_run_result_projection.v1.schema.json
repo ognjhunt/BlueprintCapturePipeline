@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_policy_run_result_projection.v1.schema.json",
+  "title": "Task Evaluation policy-run terminal result projection v1",
+  "type": "object",
+  "required": ["schema_version", "run_id", "source_launch_id", "offering_digest", "configuration_digest", "plan_digest", "embodiment_id", "candidate_ids", "state", "matrix", "candidate_results", "paired_comparison", "result_delivery_digest", "blockers", "proof_boundary", "projection_digest"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_policy_run_result_projection.v1"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "source_launch_id": {"$ref": "#/$defs/identifier"},
+    "offering_digest": {"$ref": "#/$defs/digest"},
+    "configuration_digest": {"$ref": "#/$defs/digest"},
+    "plan_digest": {"$ref": "#/$defs/digest"},
+    "embodiment_id": {"const": "franka_panda_robotiq_2f85_v1"},
+    "candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{"const": "pi05_droid"}, {"const": "groot_n17_droid"}], "items": false},
+    "state": {"enum": ["decided", "partially_decided", "abstained"]},
+    "matrix": {
+      "type": "object",
+      "required": ["scored_cell_count", "candidate_episode_count", "control_episode_count", "expected_episode_count", "completed_episode_count", "identical_candidate_cells_and_seeds", "controls_complete"],
+      "additionalProperties": false,
+      "properties": {
+        "scored_cell_count": {"type": "integer", "enum": [10, 100, 500]},
+        "candidate_episode_count": {"type": "integer", "minimum": 20, "maximum": 1000, "multipleOf": 2},
+        "control_episode_count": {"type": "integer", "minimum": 20, "maximum": 1000, "multipleOf": 2},
+        "expected_episode_count": {"type": "integer", "minimum": 40, "maximum": 2000},
+        "completed_episode_count": {"type": "integer", "minimum": 0, "maximum": 2000},
+        "identical_candidate_cells_and_seeds": {"const": true},
+        "controls_complete": {"type": "boolean"}
+      }
+    },
+    "candidate_results": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "episodes_completed", "family_metrics", "failures", "contacts", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {"enum": ["pi05_droid", "groot_n17_droid"]},
+          "episodes_completed": {"type": "integer", "minimum": 0, "maximum": 500},
+          "family_metrics": {
+            "type": "object",
+            "minProperties": 7,
+            "maxProperties": 7,
+            "additionalProperties": {"$ref": "#/$defs/familyMetric"}
+          },
+          "failures": {"type": "array", "maxItems": 500, "items": {"type": "object", "required": ["code", "count"], "additionalProperties": false, "properties": {"code": {"$ref": "#/$defs/identifier"}, "count": {"type": "integer", "minimum": 1}}}},
+          "contacts": {"type": "object", "required": ["contact_count", "violation_count"], "additionalProperties": false, "properties": {"contact_count": {"type": "integer", "minimum": 0}, "violation_count": {"type": "integer", "minimum": 0}}},
+          "evidence": {"type": "object", "required": ["lossless_frame_manifest_count", "review_video_count", "typed_media_gap_count"], "additionalProperties": false, "properties": {"lossless_frame_manifest_count": {"type": "integer", "minimum": 0}, "review_video_count": {"type": "integer", "minimum": 0}, "typed_media_gap_count": {"type": "integer", "minimum": 0}}}
+        }
+      }
+    },
+    "paired_comparison": {
+      "type": "object",
+      "required": ["matched_episode_pairs", "decision", "deterministic_non_policy_scoring"],
+      "additionalProperties": false,
+      "properties": {
+        "matched_episode_pairs": {"type": "integer", "minimum": 0, "maximum": 500},
+        "decision": {"enum": ["pi05_droid", "groot_n17_droid", "tie", "abstain"]},
+        "deterministic_non_policy_scoring": {"const": true}
+      }
+    },
+    "result_delivery_digest": {"$ref": "#/$defs/digest"},
+    "blockers": {"type": "array", "maxItems": 128, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512}},
+    "proof_boundary": {
+      "type": "object",
+      "required": ["simulation_is_physical_success", "review_video_is_authoritative_evidence", "policy_can_grade_itself", "cross_team_leaderboard_authorized"],
+      "additionalProperties": false,
+      "properties": {
+        "simulation_is_physical_success": {"const": false},
+        "review_video_is_authoritative_evidence": {"const": false},
+        "policy_can_grade_itself": {"const": false},
+        "cross_team_leaderboard_authorized": {"const": false}
+      }
+    },
+    "projection_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "familyMetric": {
+      "type": "object",
+      "required": ["attempted", "succeeded", "success_rate", "degradation_from_canonical"],
+      "additionalProperties": false,
+      "properties": {
+        "attempted": {"type": "integer", "minimum": 0},
+        "succeeded": {"type": "integer", "minimum": 0},
+        "success_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "degradation_from_canonical": {"type": "number", "minimum": -1, "maximum": 1}
+      }
+    }
+  }
+}

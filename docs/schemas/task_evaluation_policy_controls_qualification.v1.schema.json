@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_policy_controls_qualification.v1.schema.json",
+  "title": "Task Evaluation policy controls qualification v1",
+  "type": "object",
+  "required": ["schema_version", "configuration_digest", "plan_digest", "cells", "candidate_policy_queried", "blockers", "qualification_digest"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_policy_controls_qualification.v1"},
+    "configuration_digest": {"$ref": "#/$defs/digest"},
+    "plan_digest": {"$ref": "#/$defs/digest"},
+    "cells": {"type": "array", "minItems": 10, "maxItems": 500, "items": {"type": "object", "required": ["cell_id", "seed", "controls_result"], "additionalProperties": false, "properties": {"cell_id": {"$ref": "#/$defs/identifier"}, "seed": {"type": "integer", "minimum": 0, "maximum": 2147483647}, "controls_result": {"type": "object"}}}},
+    "candidate_policy_queried": {"const": false},
+    "blockers": {"type": "array", "maxItems": 0},
+    "qualification_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

@@ -45,6 +45,10 @@ def request(*, lane: str = "native_task_arena_construction") -> dict[str, object
         }
         if lane == "native_task_arena_scripted_positive":
             lineage["zero_action_result"] = ref(11)
+        if lane == "native_task_arena_policy_evaluation":
+            lineage.update(
+                controls_qualification_manifest=ref(13),
+            )
     return {
         "schema_version": SCHEMA_VERSION,
         "expected_production_commit": "a" * 40,
@@ -65,11 +69,20 @@ def request(*, lane: str = "native_task_arena_construction") -> dict[str, object
             "standing_authorization_expires_at": "2026-08-25T19:30:00+00:00",
             "profile_revision": "r1",
         },
-        "requested_mutations": {
-            "profile_publication": True,
-            "catalog_synchronization": True,
-            "standing_authorization": True,
-        },
+        "requested_mutations": (
+            {
+                "profile_publication": False,
+                "catalog_synchronization": False,
+                "standing_authorization": False,
+                "policy_campaign_queue": True,
+            }
+            if lane == "native_task_arena_policy_evaluation"
+            else {
+                "profile_publication": True,
+                "catalog_synchronization": True,
+                "standing_authorization": True,
+            }
+        ),
     }
 
 
@@ -81,6 +94,7 @@ def request(*, lane: str = "native_task_arena_construction") -> dict[str, object
         "native_task_arena_controls",
         "native_task_arena_zero_action",
         "native_task_arena_scripted_positive",
+        "native_task_arena_policy_evaluation",
     ],
 )
 def test_accepts_each_explicit_native_arena_stage(lane: str) -> None:
@@ -94,6 +108,14 @@ def test_accepts_each_explicit_native_arena_stage(lane: str) -> None:
 def test_rejects_wrong_lineage_or_missing_zero_action_predecessor() -> None:
     value = request()
     value["lineage"] = request(lane="native_task_arena_zero_action")["lineage"]
+    with pytest.raises(
+        TaskEvaluationLaunchActivationContractError,
+        match="launch_activation_request_invalid:lineage",
+    ):
+        validate_launch_activation_request(value)
+
+    value = request(lane="native_task_arena_policy_evaluation")
+    del value["lineage"]["controls_qualification_manifest"]
     with pytest.raises(
         TaskEvaluationLaunchActivationContractError,
         match="launch_activation_request_invalid:lineage",

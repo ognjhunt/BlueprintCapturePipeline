@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_policy_run_setup.v1.schema.json",
+  "title": "Task Evaluation policy-run setup v1",
+  "type": "object",
+  "required": ["schema_version", "source_launch_id", "offering_digest", "embodiment_id", "candidate_ids", "matrix_profile_id", "preregistration", "scenario_compiler", "presets", "preparation_template", "setup_digest"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_policy_run_setup.v1"},
+    "source_launch_id": {"$ref": "#/$defs/identifier"},
+    "offering_digest": {"$ref": "#/$defs/digest"},
+    "embodiment_id": {"const": "franka_panda_robotiq_2f85_v1"},
+    "candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{"const": "pi05_droid"}, {"const": "groot_n17_droid"}], "items": false},
+    "matrix_profile_id": {"const": "franka_rigid_relocation_nested_v1"},
+    "preregistration": {"$ref": "#/$defs/reference"},
+    "scenario_compiler": {
+      "type": "object",
+      "required": ["compiler_id", "compiler_version", "selection_rule", "outcome_independent", "agent_may_select_cells"],
+      "additionalProperties": false,
+      "properties": {
+        "compiler_id": {"const": "franka_rigid_relocation_nested_prefix"},
+        "compiler_version": {"const": "v1"},
+        "selection_rule": {"const": "published_ordered_prefix"},
+        "outcome_independent": {"const": true},
+        "agent_may_select_cells": {"const": false}
+      }
+    },
+    "presets": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/preset"}},
+    "preparation_template": {
+      "type": "object",
+      "required": ["schema_version", "scene", "construction", "robot", "controller", "task", "sensors", "runtime", "execution_adapter", "publication", "spend", "template_digest"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"const": "task_evaluation_policy_run_preparation_template.v1"},
+        "scene": {"type": "object"},
+        "construction": {"type": "object"},
+        "robot": {"type": "object"},
+        "controller": {"type": "object"},
+        "task": {"type": "object"},
+        "sensors": {"type": "object"},
+        "runtime": {"type": "object"},
+        "execution_adapter": {"type": "object"},
+        "spend": {"type": "object"},
+        "publication": {"type": "object", "required": ["service_account_readback_required"], "additionalProperties": false, "properties": {"service_account_readback_required": {"const": true}}},
+        "template_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "setup_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "reference": {"type": "object", "required": ["uri", "digest", "size_bytes"], "additionalProperties": false, "properties": {"uri": {"type": "string", "pattern": "^(gs|s3|https)://[^\\s]+$"}, "digest": {"$ref": "#/$defs/digest"}, "size_bytes": {"type": "integer", "minimum": 1}}},
+    "familyCounts": {"type": "object", "required": ["canonical_anchor", "placement_approach", "illumination", "camera_sensor", "bounded_physics", "pairwise", "held_out"], "additionalProperties": false, "properties": {"canonical_anchor": {"type": "integer", "minimum": 1}, "placement_approach": {"type": "integer", "minimum": 1}, "illumination": {"type": "integer", "minimum": 1}, "camera_sensor": {"type": "integer", "minimum": 1}, "bounded_physics": {"type": "integer", "minimum": 1}, "pairwise": {"type": "integer", "minimum": 1}, "held_out": {"type": "integer", "minimum": 1}}},
+    "range": {"type": "object", "required": ["minimum", "maximum"], "additionalProperties": false, "properties": {"minimum": {"type": "number", "minimum": 0}, "maximum": {"type": "number", "minimum": 0}}},
+    "estimate": {"oneOf": [{"type": "object", "required": ["status"], "additionalProperties": false, "properties": {"status": {"const": "unavailable"}}}, {"type": "object", "required": ["status", "duration_minutes", "cost_usd", "basis_digest", "as_of"], "additionalProperties": false, "properties": {"status": {"const": "estimated"}, "duration_minutes": {"$ref": "#/$defs/range"}, "cost_usd": {"$ref": "#/$defs/range"}, "basis_digest": {"$ref": "#/$defs/digest"}, "as_of": {"type": "string", "format": "date-time"}}}]},
+    "cell": {"type": "object", "required": ["cell_id", "family", "partition", "scored", "cell_spec_digest"], "additionalProperties": false, "properties": {"cell_id": {"$ref": "#/$defs/identifier"}, "family": {"enum": ["canonical_anchor", "placement_approach", "illumination", "camera_sensor", "bounded_physics", "pairwise", "held_out"]}, "partition": {"enum": ["qualification", "held_out"]}, "scored": {"const": true}, "cell_spec_digest": {"$ref": "#/$defs/digest"}}},
+    "preset": {
+      "type": "object",
+      "required": ["preset_id", "label", "scenario_count_per_policy", "availability", "default", "family_counts", "scenario_set_digest", "parent_preset_id", "parent_prefix_count", "nesting_proof_digest", "estimate"],
+      "additionalProperties": false,
+      "properties": {
+        "preset_id": {"enum": ["quick_10", "standard_100", "deep_500"]},
+        "label": {"enum": ["Quick", "Standard", "Deep"]},
+        "scenario_count_per_policy": {"enum": [10, 100, 500]},
+        "availability": {"enum": ["enabled", "coming_later"]},
+        "default": {"type": "boolean"},
+        "family_counts": {"$ref": "#/$defs/familyCounts"},
+        "scenario_set_digest": {"$ref": "#/$defs/digest"},
+        "parent_preset_id": {"type": ["string", "null"]},
+        "parent_prefix_count": {"type": "integer", "minimum": 0, "maximum": 100},
+        "nesting_proof_digest": {"$ref": "#/$defs/digest"},
+        "estimate": {"$ref": "#/$defs/estimate"},
+        "cells": {"type": "array", "minItems": 10, "maxItems": 500, "items": {"$ref": "#/$defs/cell"}}
+      }
+    }
+  }
+}

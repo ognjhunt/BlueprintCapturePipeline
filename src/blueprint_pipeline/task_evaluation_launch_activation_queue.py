@@ -241,6 +241,10 @@ def launch_activation_status(
                 "standing_authorization_digest": result.get(
                     "standing_authorization_digest"
                 ),
+                "policy_campaign_activation_digest": result.get(
+                    "policy_campaign_activation_digest"
+                ),
+                "campaign_unit_count": result.get("campaign_unit_count"),
                 "blockers": list(result.get("blockers") or []),
                 "provider_mutation_performed_by_worker": result.get(
                     "provider_mutation_performed"

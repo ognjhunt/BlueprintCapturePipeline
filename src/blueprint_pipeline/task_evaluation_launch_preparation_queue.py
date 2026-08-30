@@ -370,6 +370,23 @@ def launch_preparation_status(
         ):
             if result.get(field) is not None:
                 status[field] = result[field]
+        policy_plan = result.get("policy_run_plan")
+        if isinstance(policy_plan, Mapping):
+            status["policy_run"] = {
+                "status": policy_plan.get("status"),
+                "preset_id": policy_plan.get("preset_id"),
+                "counts": dict(policy_plan.get("counts") or {}),
+                "configuration_digest": policy_plan.get(
+                    "configuration_digest"
+                ),
+                "plan_digest": policy_plan.get("plan_digest"),
+                "provider_mutation_performed": policy_plan.get(
+                    "provider_mutation_performed"
+                ),
+                "paid_execution_requested": policy_plan.get(
+                    "paid_execution_requested"
+                ),
+            }
     return status
 
 
