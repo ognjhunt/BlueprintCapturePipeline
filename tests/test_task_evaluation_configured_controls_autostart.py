@@ -326,3 +326,338 @@ def test_cpu_placement_retry_uses_fresh_attempt_then_reopens_checkpoint(
         expected_task_binding_digest="sha256:" + "2" * 64,
     )
     assert reopened[0] == receipt
+
+
+def _camera_template() -> dict[str, object]:
+    intrinsics = {
+        "cx": 159.5,
+        "cy": 89.5,
+        "fx": 172.88839142740494,
+        "fy": 172.88839142740494,
+        "height": 180,
+        "width": 320,
+    }
+    world = {
+        "policy_input": True,
+        "scoring_input": False,
+        "pose_frame": "world",
+        "parent_prim_path": "{ENV_REGEX_NS}",
+        "optical_convention": "opencv",
+        "frame_from_camera_matrix": [
+            1.0, 0.0, 0.0, 100.0,
+            0.0, 1.0, 0.0, 100.0,
+            0.0, 0.0, 1.0, 100.0,
+            0.0, 0.0, 0.0, 1.0,
+        ],
+        "intrinsics": intrinsics,
+    }
+    return {
+        "schema_version": "native_task_arena_packet_request.v1",
+        "cameras": [
+            {"role": "external", **world},
+            {
+                "role": "wrist",
+                "policy_input": True,
+                "scoring_input": False,
+                "pose_frame": "robot_body",
+                "parent_prim_path": (
+                    "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/base_link"
+                ),
+                "optical_convention": "opencv",
+                "frame_from_camera_matrix": [
+                    1.0, 0.0, 0.0, 0.011,
+                    0.0, 1.0, 0.0, -0.031,
+                    0.0, 0.0, 1.0, -0.074,
+                    0.0, 0.0, 0.0, 1.0,
+                ],
+                "intrinsics": intrinsics,
+            },
+            {"role": "overview", **{**world, "policy_input": False}},
+        ],
+    }
+
+
+def _trajectory() -> dict[str, object]:
+    value: dict[str, object] = {
+        "schema_version": "task_evaluation_robot_placement_trajectory.v1",
+        "source_plan_schema_version": "native_rigid_construction_phase_plan.v1",
+        "source_plan_digest": "sha256:" + "3" * 64,
+        "task_kind": "rigid_pick_place",
+        "manipulation_strategy": "planar_push",
+        "arrival_tolerance_m": 0.02,
+        "arrival_orientation_tolerance_rad": 0.08,
+        "maximum_steps_per_phase": 64,
+        "phases": [
+            {
+                "phase_id": "precontact",
+                "position_world_m": [2.79, -6.76, 0.82],
+                "orientation_world_xyzw": [0.0, 0.70710678, 0.0, 0.70710678],
+                "gripper_state": "open",
+                "gate_ids": ["precontact_reachability"],
+            },
+            {
+                "phase_id": "push",
+                "position_world_m": [3.03, -6.76, 0.82],
+                "orientation_world_xyzw": [0.0, 0.70710678, 0.0, 0.70710678],
+                "gripper_state": "closed",
+                "gate_ids": ["push_path"],
+            },
+        ],
+        "model_may_modify_trajectory": False,
+        "native_ik_and_collision_readback_required_for_every_phase": True,
+        "trajectory_digest": "",
+    }
+    value["trajectory_digest"] = autostart.canonical_digest(
+        value, digest_field="trajectory_digest"
+    )
+    return value
+
+
+def test_world_cameras_are_derived_after_exact_inventory_member_selection() -> None:
+    template = _camera_template()
+    wrist = template["cameras"][1]
+    pose = {
+        "position_world_m": [3.5442285, -6.7605156, 0.752958],
+        "orientation_xyzw": [0.0, 0.0, 1.0, 0.0],
+    }
+    result = autostart._placement_aware_camera_candidates(
+        camera_template=template,
+        accepted_pose=pose,
+        selected_candidate_id="geometry_0003_0.753_0.450_36",
+        trajectory=_trajectory(),
+        source_commit=COMMIT,
+    )
+
+    by_role = {row["role"]: row for row in result["cameras"]}
+    assert by_role["wrist"] == wrist
+    assert by_role["external"]["frame_from_camera_matrix"][3] == pose[
+        "position_world_m"
+    ][0]
+    assert by_role["external"]["frame_from_camera_matrix"][7] == pose[
+        "position_world_m"
+    ][1]
+    assert by_role["external"]["frame_from_camera_matrix"][11] == pytest.approx(
+        pose["position_world_m"][2] + 1.35
+    )
+    assert by_role["external"]["frame_from_camera_matrix"][3] != 100.0
+    assert result["camera_configuration_qualified"] is False
+    assert result["native_observability_readback_required"] is True
+    assert result["document_digest"] == autostart.canonical_digest(
+        result, digest_field="document_digest"
+    )
+
+
+def test_different_selected_pose_cannot_reuse_world_camera_bytes() -> None:
+    common = {
+        "camera_template": _camera_template(),
+        "selected_candidate_id": "candidate-1",
+        "trajectory": _trajectory(),
+        "source_commit": COMMIT,
+    }
+    first = autostart._placement_aware_camera_candidates(
+        accepted_pose={
+            "position_world_m": [3.5, -6.7, 0.75],
+            "orientation_xyzw": [0.0, 0.0, 1.0, 0.0],
+        },
+        **common,
+    )
+    second = autostart._placement_aware_camera_candidates(
+        accepted_pose={
+            "position_world_m": [3.1, -6.4, 0.75],
+            "orientation_xyzw": [0.0, 0.0, 1.0, 0.0],
+        },
+        **common,
+    )
+
+    assert first["document_digest"] != second["document_digest"]
+    assert first["cameras"][0] != second["cameras"][0]
+
+
+def test_vertical_task_trajectory_still_gets_world_cameras_from_base_relation() -> None:
+    trajectory = _trajectory()
+    trajectory["phases"][0]["position_world_m"] = [3.0, -6.7, 0.8]
+    trajectory["phases"][1]["position_world_m"] = [3.0, -6.7, 1.2]
+    trajectory["trajectory_digest"] = autostart.canonical_digest(
+        trajectory, digest_field="trajectory_digest"
+    )
+
+    result = autostart._placement_aware_camera_candidates(
+        camera_template=_camera_template(),
+        accepted_pose={
+            "position_world_m": [3.5, -6.7, 0.75],
+            "orientation_xyzw": [0.0, 0.0, 1.0, 0.0],
+        },
+        selected_candidate_id="vertical-task-candidate",
+        trajectory=trajectory,
+        source_commit=COMMIT,
+    )
+
+    assert {row["role"] for row in result["cameras"]} == {
+        "external",
+        "wrist",
+        "overview",
+    }
+
+
+def test_camera_candidate_materialization_is_immutable(tmp_path: Path) -> None:
+    template_path = _write(
+        tmp_path / "camera-template.json",
+        (json.dumps(_camera_template()) + "\n").encode(),
+    )
+    kwargs = {
+        "root": tmp_path,
+        "camera_template_path": template_path,
+        "accepted_pose": {
+            "position_world_m": [3.5, -6.7, 0.75],
+            "orientation_xyzw": [0.0, 0.0, 1.0, 0.0],
+        },
+        "selected_candidate_id": "candidate-1",
+        "trajectory": _trajectory(),
+        "source_commit": COMMIT,
+    }
+    path = autostart._materialize_placement_aware_cameras(**kwargs)
+    assert path.stat().st_mode & 0o777 == 0o440
+    assert autostart._materialize_placement_aware_cameras(**kwargs) == path
+
+    with pytest.raises(
+        autostart.TaskEvaluationConfiguredControlsAutostartError,
+        match="configured_controls_autostart_camera_candidate_conflict",
+    ):
+        autostart._materialize_placement_aware_cameras(
+            **{
+                **kwargs,
+                "accepted_pose": {
+                    "position_world_m": [3.2, -6.7, 0.75],
+                    "orientation_xyzw": [0.0, 0.0, 1.0, 0.0],
+                },
+            }
+        )
+
+
+def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    intent_path, intent = _intent(tmp_path)
+    camera_template_path = Path(intent["paths"]["cameras_path"])
+    camera_template_path.write_text(
+        json.dumps(_camera_template()) + "\n", encoding="utf-8"
+    )
+    intent["artifact_inventory"]["cameras_path"] = autostart._artifact(
+        camera_template_path
+    )
+    intent["intent_digest"] = autostart.canonical_digest(
+        intent, digest_field="intent_digest"
+    )
+    intent_path.chmod(0o640)
+    intent_path.write_text(json.dumps(intent) + "\n", encoding="utf-8")
+    intent_path.chmod(0o440)
+
+    launch_root = tmp_path / "launch-runs"
+    source_launch_id = "scene-839873-launch"
+    run_root = launch_root / source_launch_id
+    run_root.mkdir(parents=True)
+    revision_path = run_root / "configured-scene-revision.json"
+    revision_path.write_text("{}\n", encoding="utf-8")
+    revision = {
+        "source_commit": COMMIT,
+        "team_namespace": intent["team_namespace"],
+        "scene_identity": {"id": intent["scene_id"]},
+        "task_template": {
+            "identity": {"id": intent["task_id"]},
+            "definition": {"digest": "sha256:" + "1" * 64},
+        },
+        "registration": {
+            "robot_mount_interface": {"digest": "sha256:" + "2" * 64},
+            "workspace_clearance": {"digest": "sha256:" + "3" * 64},
+        },
+        "geometry": {
+            "configured_collision": {
+                "digest": "sha256:" + "4" * 64,
+            }
+        },
+        "revision_digest": "sha256:" + "5" * 64,
+    }
+    terminal = {
+        "run_id": "scene-839873-configured",
+        "configured_scene_revision_path": str(revision_path),
+    }
+    receipt = {"source_commit": COMMIT}
+    profile = {
+        "task_evaluation_run": {
+            "run_mode": "scene_configuration",
+            "team_namespace": intent["team_namespace"],
+            "scene_id": intent["scene_id"],
+            "task_id": intent["task_id"],
+        }
+    }
+    collision_path = _write(tmp_path / "collision.usda", b"#usda 1.0\n")
+    accepted_pose = {
+        "position_world_m": [3.5442285, -6.7605156, 0.752958],
+        "orientation_xyzw": [0.0, 0.0, 1.0, 0.0],
+    }
+    placement_receipt = {
+        "accepted_candidate_id": "candidate-42",
+        "accepted_pose": accepted_pose,
+        "candidate_inventory_digest": "sha256:" + "6" * 64,
+    }
+    captured: dict[str, object] = {}
+
+    from blueprint_pipeline import (
+        task_evaluation_configured_controls_progression_worker as progression_worker,
+    )
+
+    monkeypatch.setattr(
+        progression_worker,
+        "_validate_source",
+        lambda _root: (terminal, receipt, object()),
+    )
+    monkeypatch.setattr(
+        autostart,
+        "_profile_intent",
+        lambda _root, **_kwargs: (profile, intent_path),
+    )
+    monkeypatch.setattr(
+        autostart,
+        "validate_configured_scene_revision",
+        lambda _value: revision,
+    )
+    monkeypatch.setattr(autostart, "_configured_collision", lambda **_kwargs: collision_path)
+    monkeypatch.setattr(
+        autostart,
+        "placement_trajectory_from_native_plan",
+        lambda _value: _trajectory(),
+    )
+    monkeypatch.setattr(
+        autostart,
+        "_placement_checkpoint",
+        lambda **_kwargs: (placement_receipt, {}, tmp_path / "placement"),
+    )
+
+    def readiness_materializer(**kwargs):
+        Path(kwargs["output_path"]).write_text("{}\n", encoding="utf-8")
+        return {"status": "materialized"}
+
+    def plan_materializer(**kwargs):
+        captured.update(kwargs)
+        return {
+            "plan_path": str(tmp_path / "plan.json"),
+            "plan_digest": "sha256:" + "7" * 64,
+        }
+
+    result = autostart.materialize_configured_controls_autostart(
+        source_launch_id=source_launch_id,
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progression",
+        plan_root=tmp_path / "plans",
+        placement_runner=lambda **_kwargs: {},
+        readiness_materializer=readiness_materializer,
+        plan_materializer=plan_materializer,
+    )
+
+    selected_path = Path(captured["bindings"]["cameras_path"])
+    assert selected_path != camera_template_path
+    selected = json.loads(selected_path.read_text(encoding="utf-8"))
+    assert selected["selected_candidate_id"] == "candidate-42"
+    assert selected["accepted_pose"] == accepted_pose
+    assert selected["world_camera_positions_depend_on_selected_base"] is True
+    assert result["selected_candidate_id"] == "candidate-42"
