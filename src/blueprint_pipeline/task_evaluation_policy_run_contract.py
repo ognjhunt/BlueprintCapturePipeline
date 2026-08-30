@@ -16,7 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_json
 
 
 SETUP_SCHEMA_VERSION = "task_evaluation_policy_run_setup.v1"
@@ -145,8 +145,18 @@ def _cell_projection(cell: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _cross_runtime_digest(
+    value: Mapping[str, Any], *, digest_field: str | None = None
+) -> str:
+    normalized = dict(value)
+    if digest_field:
+        normalized.pop(digest_field, None)
+    payload = cross_runtime_canonical_json(normalized).encode("utf-8")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
 def _nesting_proof(preset: Mapping[str, Any]) -> str:
-    return canonical_digest(
+    return _cross_runtime_digest(
         {
             "preset_id": preset["preset_id"],
             "scenario_set_digest": preset["scenario_set_digest"],
@@ -228,7 +238,7 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
             len(cell_ids) != len(set(cell_ids))
             or family_counts != preset["family_counts"]
             or preset["scenario_set_digest"]
-            != canonical_digest({"ordered_cells": cells})
+            != _cross_runtime_digest({"ordered_cells": cells})
         ):
             raise TaskEvaluationPolicyRunContractError(
                 "policy_run_setup_preset_cells_invalid"
@@ -242,7 +252,7 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
                     "policy_run_setup_family_partition_invalid"
                 )
     template = setup["preparation_template"]
-    if template["template_digest"] != canonical_digest(
+    if template["template_digest"] != _cross_runtime_digest(
         template, digest_field="template_digest"
     ):
         raise TaskEvaluationPolicyRunContractError(
@@ -285,7 +295,7 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
         raise TaskEvaluationPolicyRunContractError(
             f"policy_run_preparation_template_invalid:{exc}"
         ) from exc
-    if setup["setup_digest"] != canonical_digest(
+    if setup["setup_digest"] != _cross_runtime_digest(
         setup, digest_field="setup_digest"
     ):
         raise TaskEvaluationPolicyRunContractError("policy_run_setup_digest_mismatch")
@@ -295,7 +305,9 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
 def policy_run_setup_digest(value: Mapping[str, Any]) -> str:
     setup = dict(value)
     setup["setup_digest"] = ""
-    setup["setup_digest"] = canonical_digest(setup, digest_field="setup_digest")
+    setup["setup_digest"] = _cross_runtime_digest(
+        setup, digest_field="setup_digest"
+    )
     return validate_policy_run_setup(setup)["setup_digest"]
 
 
@@ -395,7 +407,7 @@ def compile_policy_run_configuration(
         },
         "configuration_digest": "",
     }
-    configuration["configuration_digest"] = canonical_digest(
+    configuration["configuration_digest"] = _cross_runtime_digest(
         configuration, digest_field="configuration_digest"
     )
     return validate_policy_run_configuration(configuration)
@@ -411,7 +423,7 @@ def validate_policy_run_configuration(
         schema=policy_run_configuration_schema(),
         code="policy_run_configuration_invalid",
     )
-    if configuration["configuration_digest"] != canonical_digest(
+    if configuration["configuration_digest"] != _cross_runtime_digest(
         configuration, digest_field="configuration_digest"
     ):
         raise TaskEvaluationPolicyRunContractError(
@@ -458,7 +470,7 @@ def validate_policy_run_configuration(
 def policy_run_configuration_digest(value: Mapping[str, Any]) -> str:
     configuration = dict(value)
     configuration["configuration_digest"] = ""
-    configuration["configuration_digest"] = canonical_digest(
+    configuration["configuration_digest"] = _cross_runtime_digest(
         configuration, digest_field="configuration_digest"
     )
     return validate_policy_run_configuration(configuration)["configuration_digest"]
@@ -731,9 +743,7 @@ def validate_policy_run_result_projection(
         schema=policy_run_result_projection_schema(),
         code="policy_run_result_projection_invalid",
     )
-    if result["projection_digest"] != canonical_digest(
-        result, digest_field="projection_digest"
-    ):
+    if result["projection_digest"] != policy_run_result_projection_digest(result):
         raise TaskEvaluationPolicyRunContractError(
             "policy_run_result_projection_digest_mismatch"
         )
@@ -820,6 +830,12 @@ def validate_policy_run_result_projection(
     return result
 
 
+def policy_run_result_projection_digest(value: Mapping[str, Any]) -> str:
+    """Digest a Pipeline-to-WebApp projection with shared JSON number semantics."""
+
+    return _cross_runtime_digest(value, digest_field="projection_digest")
+
+
 __all__ = [
     "CONFIGURATION_SCHEMA_PATH",
     "CONFIGURATION_SCHEMA_VERSION",
@@ -849,6 +865,7 @@ __all__ = [
     "policy_controls_qualification_schema",
     "policy_run_configuration_schema",
     "policy_run_result_projection_schema",
+    "policy_run_result_projection_digest",
     "policy_run_selection_schema",
     "policy_run_setup_digest",
     "policy_run_setup_schema",

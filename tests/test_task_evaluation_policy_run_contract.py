@@ -31,6 +31,7 @@ from blueprint_pipeline.task_evaluation_policy_run_contract import (
     build_policy_run_plan,
     compile_policy_run_configuration,
     expand_policy_run_preparation_request,
+    policy_run_result_projection_digest,
     validate_policy_run_configuration,
     validate_policy_run_result_projection,
     validate_policy_run_setup,
@@ -354,9 +355,7 @@ def result_projection(*, state: str = "decided") -> dict[str, object]:
         },
         "projection_digest": "",
     }
-    value["projection_digest"] = canonical_digest(
-        value, digest_field="projection_digest"
-    )
+    value["projection_digest"] = policy_run_result_projection_digest(value)
     return value
 
 
@@ -592,14 +591,29 @@ def test_terminal_projection_requires_complete_lossless_evidence_for_decision() 
     missing_media["candidate_results"][0]["evidence"][
         "lossless_frame_manifest_count"
     ] -= 1
-    missing_media["projection_digest"] = canonical_digest(
-        missing_media, digest_field="projection_digest"
+    missing_media["projection_digest"] = policy_run_result_projection_digest(
+        missing_media
     )
     with pytest.raises(
         TaskEvaluationPolicyRunContractError,
         match="policy_run_result_projection_decision_evidence_incomplete",
     ):
         validate_policy_run_result_projection(missing_media)
+
+
+def test_terminal_projection_digest_uses_cross_runtime_number_semantics() -> None:
+    value = {
+        "projection_digest": "",
+        "success_rate": 0.0,
+        "degradation_from_canonical": 1.0,
+    }
+
+    assert policy_run_result_projection_digest(value) == (
+        "sha256:9502c7aa38b880a7850d548a11ada1a53fc7bc8215e5439542731ca10c35f6c5"
+    )
+    assert policy_run_result_projection_digest(value) != canonical_digest(
+        value, digest_field="projection_digest"
+    )
 
 
 def test_terminal_abstention_retains_typed_blocker() -> None:
@@ -675,8 +689,8 @@ def test_terminal_sync_binds_policy_projection_to_existing_delivery() -> None:
     )
     policy_result = result_projection()
     policy_result["result_delivery_digest"] = delivery["delivery_digest"]
-    policy_result["projection_digest"] = canonical_digest(
-        policy_result, digest_field="projection_digest"
+    policy_result["projection_digest"] = policy_run_result_projection_digest(
+        policy_result
     )
 
     publication = build_task_evaluation_run_webapp_publication(

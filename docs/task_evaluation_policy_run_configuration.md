@@ -55,6 +55,11 @@ cell-spec digests, seeds, counts, no-retry guards, and evidence requirements.
 An agent may propose or classify future variations, but cannot select compiled
 cells or inspect outcomes during compilation.
 
+All setup, configuration, and terminal-projection digests that cross the
+Pipeline/WebApp boundary use RFC 8785 JSON number semantics. This keeps values
+such as `0.0` and `1.0` byte-identical after Node parses the JSON and verifies
+the digest.
+
 ## Controls-gated activation
 
 Preparation seals a `task_evaluation_policy_run_plan.v1` and performs no
