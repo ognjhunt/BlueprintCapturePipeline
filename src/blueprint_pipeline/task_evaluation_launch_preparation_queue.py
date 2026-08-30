@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -75,8 +76,9 @@ def _write_launch_preparation_record_exclusive_locked(
     path: Path, value: Mapping[str, Any]
 ) -> None:
     payload = _canonical_bytes(value)
+    path_token = hashlib.sha256(path.name.encode("utf-8")).hexdigest()[:16]
     temporary_path = path.with_name(
-        f".{path.name}.{os.getpid()}.{secrets.token_hex(12)}.tmp"
+        f".queue-{path_token}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
     )
     descriptor = -1
     try:

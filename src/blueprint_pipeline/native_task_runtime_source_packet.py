@@ -772,6 +772,10 @@ def verify_native_task_runtime_source_packet(
         if packet_path_override is not None
         else str(receipt.get("packet_path") or "")
     ).expanduser().resolve()
+    if packet_path_override is None and not packet_path.is_file():
+        packaged_sibling = path.parent / "native_task_runtime_sources.zip"
+        if packaged_sibling.is_file() and not packaged_sibling.is_symlink():
+            packet_path = packaged_sibling.resolve()
     if not packet_path.is_file():
         errors.append("native_task_runtime_source_packet_missing")
     elif (

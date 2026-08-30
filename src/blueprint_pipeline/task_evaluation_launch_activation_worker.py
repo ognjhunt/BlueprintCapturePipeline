@@ -53,6 +53,7 @@ from .task_evaluation_launch_preparation_queue import (
 )
 from .task_evaluation_launch_preparation_worker import (
     RESULT_SCHEMA_VERSION as PREPARATION_RESULT_SCHEMA_VERSION,
+    TaskEvaluationLaunchPreparationWorkerError,
     default_reference_fetcher,
     running_worker_source_commit,
     validate_allowed_uri_prefixes,
@@ -376,7 +377,6 @@ def _load_verified_preparation(
         path = Path(str(row.get("materialized_path") or "")).resolve()
         if (
             not contract_path
-            or contract_path in materialized_rows
             or row.get("full_byte_service_account_readback_passed") is not True
             or not _under(path, preparation_root)
             or path.is_symlink()
@@ -387,6 +387,16 @@ def _load_verified_preparation(
             raise TaskEvaluationLaunchActivationWorkerError(
                 "launch_activation_preparation_reference_invalid"
             )
+        if contract_path in materialized_rows:
+            existing = materialized_rows[contract_path]
+            if (row.get("digest"), row.get("size_bytes")) != (
+                existing.get("digest"),
+                existing.get("size_bytes"),
+            ):
+                raise TaskEvaluationLaunchActivationWorkerError(
+                    "launch_activation_preparation_reference_invalid"
+                )
+            continue
         materialized_rows[contract_path] = row
         materialized_references[contract_path] = path
     construction_envelope: dict[str, Any] | None = None
@@ -495,6 +505,24 @@ def _load_verified_preparation(
                 "task_template"
             ]["execution"],
         }
+        optional_replacement_references = {
+            "scene.configured_revision.replacement.source_object": revision[
+                "replacement"
+            ]["source_object"],
+            "scene.configured_revision.replacement.static_qualification": revision[
+                "replacement"
+            ]["static_qualification"],
+            "scene.configured_revision.replacement.native_import_qualification": revision[
+                "replacement"
+            ]["native_import_qualification"],
+        }
+        transitive.update(
+            {
+                contract_path: reference
+                for contract_path, reference in optional_replacement_references.items()
+                if contract_path in materialized_references
+            }
+        )
         transitive.update(
             {
                 "scene.configured_revision.source.rights_evidence."
@@ -645,8 +673,12 @@ def _build_native_context(
         source_manifest_path = preparation_materialized[
             "scene.configured_revision.source.manifest"
         ]
+        source_manifest_digest = configured_revision["source"]["manifest"]["digest"]
         rights_admission_path = preparation_materialized[
             "scene.configured_revision.source.rights_admission"
+        ]
+        rights_admission_digest = configured_revision["source"]["rights_admission"][
+            "digest"
         ]
         rights_evidence_contracts = configured_revision["source"][
             "rights_evidence"
@@ -658,9 +690,15 @@ def _build_native_context(
         source_manifest_path = preparation_materialized[
             "scene.source_manifest"
         ]
+        source_manifest_digest = preparation_request["scene"]["source_manifest"][
+            "digest"
+        ]
         rights_admission_path = preparation_materialized[
             "scene.rights.admission"
         ]
+        rights_admission_digest = preparation_request["scene"]["rights"][
+            "admission"
+        ]["digest"]
         rights_evidence_contracts = preparation_request["scene"]["rights"][
             "evidence"
         ]
@@ -762,9 +800,9 @@ def _build_native_context(
                 "packet_dir": str(packet_root),
                 "packet_receipt_digest": adapter["packet_receipt_digest"],
                 "source_manifest": str(source_manifest_path),
-                "source_manifest_digest": source_manifest["source_manifest_digest"],
+                "source_manifest_digest": source_manifest_digest,
                 "rights_admission": str(rights_admission_path),
-                "rights_admission_digest": rights_admission["rights_admission_digest"],
+                "rights_admission_digest": rights_admission_digest,
                 "rights_evidence": rights_evidence,
                 **(
                     {
@@ -786,7 +824,7 @@ def _build_native_context(
                 "task_spec_digest": runtime_contract["task_spec_digest"],
             },
             "robot": {
-                "robot_id": preparation_request["robot"]["identity"]["id"],
+                "robot_id": robot_configuration["robot_id"],
                 "configuration_digest": canonical_digest(robot_configuration),
             },
             "runtime": {
@@ -1455,10 +1493,18 @@ def process_launch_activation_queue(
                         exc,
                         (
                             TaskEvaluationLaunchActivationWorkerError,
+                            TaskEvaluationLaunchPreparationWorkerError,
                             TaskEvaluationSharedMutationWindowError,
                         ),
                     )
-                    else f"launch_activation_worker_failed:{type(exc).__name__}"
+                    else (
+                        "launch_activation_worker_failed:KeyError:"
+                        + str(exc.args[0])
+                        if isinstance(exc, KeyError)
+                        and exc.args
+                        and re.fullmatch(r"[A-Za-z0-9_.-]+", str(exc.args[0]))
+                        else f"launch_activation_worker_failed:{type(exc).__name__}"
+                    )
                 ],
                 "catalog_mutation_state": "unknown_if_preparation_started",
                 "provider_mutation_performed": False,
