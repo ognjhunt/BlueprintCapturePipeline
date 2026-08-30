@@ -617,3 +617,53 @@ def test_materialization_batches_each_repository_into_one_exact_git_archive(
 
     assert sum("archive" in command for command in commands) == 3
     assert not any("show" in command for command in commands)
+
+
+def test_stranded_receipt_resolves_archive_by_identity_under_sibling_builds(
+    tmp_path: Path,
+) -> None:
+    """A receipt travels as evidence without its multi-gigabyte archive.
+
+    The compiled-episode adapter retains the receipt beside a log while the
+    archive stays in its build directory, and the recorded absolute path names
+    the build of birth, which has its own retention lifecycle.  The 2026-08-30
+    scene-839873 construction launch blocked exactly here: recorded path gone,
+    no staged sibling, byte-identical archive alive under a sibling build.
+    Resolution is by identity -- exact sealed size prefilter, then the sha256
+    check that remains the sole authority -- so the same bytes under a renamed
+    build resolve while wrong bytes of the right name and size still refuse.
+    """
+
+    receipt = _packet(tmp_path, output_name="builds/build-a")
+    build_a = tmp_path / "builds" / "build-a"
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    stranded = evidence / "native_task_runtime_source_packet.v1.json"
+    stranded.write_bytes(
+        (build_a / "native_task_runtime_source_packet.v1.json").read_bytes()
+    )
+
+    # The build of birth disappears wholesale; the archive survives under a
+    # sibling build directory of the same root.
+    build_a.rename(tmp_path / "builds" / "build-b")
+
+    verified = verify_native_task_runtime_source_packet(stranded)
+    assert verified["verified_packet_path"] == str(
+        tmp_path / "builds" / "build-b" / "native_task_runtime_sources.zip"
+    )
+    assert verified["receipt_digest"] == receipt["receipt_digest"]
+
+    # Same name and exact sealed size with different bytes must not resolve.
+    archive = tmp_path / "builds" / "build-b" / "native_task_runtime_sources.zip"
+    payload = bytearray(archive.read_bytes())
+    payload[len(payload) // 2] ^= 0xFF
+    archive.write_bytes(bytes(payload))
+    with pytest.raises(NativeTaskRuntimeSourcePacketError) as excinfo:
+        verify_native_task_runtime_source_packet(stranded)
+    assert "native_task_runtime_source_packet_missing" in excinfo.value.errors
+
+    # And with the archive gone everywhere the refusal is unchanged.
+    archive.unlink()
+    with pytest.raises(NativeTaskRuntimeSourcePacketError) as missing:
+        verify_native_task_runtime_source_packet(stranded)
+    assert "native_task_runtime_source_packet_missing" in missing.value.errors
