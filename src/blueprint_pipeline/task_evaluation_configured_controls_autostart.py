@@ -1147,6 +1147,23 @@ def _cpu_placement_checkpoint_root(
     )
 
 
+def _autostart_result_path(*, root: Path, intent_digest: str) -> Path:
+    """Bind the autostart result to the intent that produced it.
+
+    The result is validated against the intent digest on reopen, so a shared
+    filename does not silently reuse a stale result -- it raises, and keeps
+    raising for every successor intent. Give each intent its own destination so
+    a redeploy derives fresh while its predecessor survives as evidence.
+    """
+
+    if _DIGEST.fullmatch(intent_digest) is None:
+        raise TaskEvaluationConfiguredControlsAutostartError(
+            "configured_controls_autostart_result_binding_invalid"
+        )
+    token = intent_digest.removeprefix("sha256:")[:16]
+    return root / f"{RESULT_SCHEMA_VERSION}-{token}.json"
+
+
 def _validated_agent_openai_evidence(
     *,
     cost_root: Path,
@@ -1356,7 +1373,9 @@ def materialize_configured_controls_autostart(
         scene_binding_digest=scene_binding_digest,
         task_binding_digest=task_binding_digest,
     )
-    result_path = root / f"{RESULT_SCHEMA_VERSION}.json"
+    result_path = _autostart_result_path(
+        root=root, intent_digest=str(intent["intent_digest"])
+    )
     result_validation_kwargs = {
         "expected_intent_digest": str(intent["intent_digest"]),
         "expected_scene_binding_digest": scene_binding_digest,

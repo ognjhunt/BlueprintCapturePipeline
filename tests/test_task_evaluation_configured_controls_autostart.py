@@ -656,6 +656,28 @@ def test_camera_candidate_materialization_is_immutable(tmp_path: Path) -> None:
         )
 
 
+def test_autostart_result_is_bound_to_its_intent(tmp_path: Path) -> None:
+    """The result is validated against the intent digest on reopen, so sharing one
+    filename across intents fails closed forever instead of deriving fresh."""
+
+    first = autostart._autostart_result_path(
+        root=tmp_path, intent_digest="sha256:" + "a" * 64
+    )
+    second = autostart._autostart_result_path(
+        root=tmp_path, intent_digest="sha256:" + "b" * 64
+    )
+    assert first != second
+    assert first.parent == tmp_path == second.parent
+    assert first.name.startswith(autostart.RESULT_SCHEMA_VERSION)
+    assert first.name.endswith(".json")
+
+    with pytest.raises(
+        autostart.TaskEvaluationConfiguredControlsAutostartError,
+        match="configured_controls_autostart_result_binding_invalid",
+    ):
+        autostart._autostart_result_path(root=tmp_path, intent_digest="not-a-digest")
+
+
 def test_camera_candidates_are_scoped_to_the_source_commit(tmp_path: Path) -> None:
     """The camera document embeds source_commit, so a shared filename makes every
     redeploy collide with its predecessor and block the lane permanently."""
@@ -901,10 +923,16 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
         captured["cpu_checkpoint_binding_digest"]
     )
     assert legacy_result_path.read_bytes() == legacy_result_bytes
-    assert (
+    # The result is bound to the intent that produced it, so a successor intent
+    # derives its own destination instead of failing closed on this one forever.
+    assert autostart._autostart_result_path(
+        root=legacy_result_path.parent,
+        intent_digest=str(intent["intent_digest"]),
+    ).is_file()
+    assert not (
         legacy_result_path.parent
         / "task_evaluation_configured_controls_autostart.v3.json"
-    ).is_file()
+    ).exists()
     with pytest.raises(
         autostart.TaskEvaluationConfiguredControlsAutostartError,
         match="configured_controls_autostart_result_invalid",
