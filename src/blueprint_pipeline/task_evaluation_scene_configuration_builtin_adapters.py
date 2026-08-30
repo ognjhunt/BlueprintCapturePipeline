@@ -22,6 +22,14 @@ from .task_evaluation_scene_configuration_adapters import (
     StageAdapter,
     TaskEvaluationSceneConfigurationAdapterError,
 )
+from .task_evaluation_scene_configuration_appearance_review import (
+    AppearanceReviewContractError,
+    PAUSED_UNGRADED_MODE,
+    PAUSED_UNGRADED_WARNING,
+    REQUIRED_MODE,
+    appearance_review_mode,
+    paused_review_receipt_valid,
+)
 from .task_evaluation_scene_configuration_orchestrator import (
     STAGE_RESULT_SCHEMA_VERSION,
 )
@@ -285,6 +293,75 @@ def execute_artifixer3d_observed_object_removal(
         ) from exc
     source_object = configuration.get("source_object")
     input_render = envelope.get("render_inputs_result") or {}
+    request = envelope.get("request")
+    try:
+        review_mode = (
+            appearance_review_mode(request)
+            if isinstance(request, Mapping)
+            else REQUIRED_MODE
+        )
+    except AppearanceReviewContractError as exc:
+        raise TaskEvaluationSceneConfigurationAdapterError(str(exc)) from exc
+    minimum_views = int(configuration.get("required_views", {}).get("minimum", 1))
+    thumbnail_digest = _sha256_and_size(thumbnail_path)[0]
+    source_publisher_id = (
+        source_object.get("publisher_instance_id")
+        if isinstance(source_object, Mapping)
+        else None
+    )
+    reviewer = review.get("reviewer")
+    strict_review_valid = (
+        review.get("schema_version")
+        == "task_evaluation_artifixer_ai_visual_review.v1"
+        and review.get("status") == "accepted"
+        and review.get("publisher_instance_id")
+        == source_publisher_id
+        and review.get("decision") == "accepted"
+        and review.get("semantic_object_absence_review_passed") is True
+        and review.get("multiview_consistency_review_passed") is True
+        and review.get("review_frame_count", 0) >= minimum_views
+        and review.get("all_review_frames_digest_bound") is True
+        and review.get("ai_visual_review_completed") is True
+        and review.get("human_review_completed") is False
+        and review.get("generated_output_is_capture_or_physical_evidence") is False
+        and isinstance(reviewer, Mapping)
+        and bool(str(reviewer.get("identity") or ""))
+        and bool(str(reviewer.get("runtime") or ""))
+        and bool(str(reviewer.get("model") or ""))
+        and review.get("receipt_digest")
+        == canonical_digest(review, digest_field="receipt_digest")
+        and review.get("task_thumbnail_is_exact_review_frame") is True
+        and isinstance(review.get("task_thumbnail_selection"), Mapping)
+        and review["task_thumbnail_selection"].get("frame_sha256")
+        == thumbnail_digest
+    )
+    paused_review_valid = (
+        isinstance(source_object, Mapping)
+        and paused_review_receipt_valid(
+            review,
+            publisher_instance_id=str(source_object.get("publisher_instance_id") or ""),
+            minimum_frame_count=minimum_views,
+            thumbnail_digest=thumbnail_digest,
+        )
+    )
+    receipt_mode_valid = (
+        review_mode == REQUIRED_MODE
+        and receipt.get("status") == "qualified_generated_appearance_edit"
+        and receipt.get("semantic_object_free_visual_review_passed") is True
+        and receipt.get("multiview_consistency_review_passed") is True
+        and strict_review_valid
+    ) or (
+        review_mode == PAUSED_UNGRADED_MODE
+        and receipt.get("status")
+        == "completed_ungraded_generated_appearance_edit"
+        and receipt.get("visual_review_mode") == PAUSED_UNGRADED_MODE
+        and receipt.get("semantic_object_free_visual_review_passed") is False
+        and receipt.get("multiview_consistency_review_passed") is False
+        and receipt.get("review_provider_call_performed") is False
+        and receipt.get("ungraded_publication_acknowledged") is True
+        and receipt.get("warning_label") == PAUSED_UNGRADED_WARNING
+        and paused_review_valid
+    )
     if (
         configuration.get("schema_version")
         != "observed_appearance_object_removal_configuration.v1"
@@ -303,7 +380,7 @@ def execute_artifixer3d_observed_object_removal(
         is not True
         or receipt.get("schema_version")
         != "task_evaluation_artifixer_object_removal_result.v1"
-        or receipt.get("status") != "qualified_generated_appearance_edit"
+        or not receipt_mode_valid
         or receipt.get("publisher_instance_id")
         != source_object.get("publisher_instance_id")
         or receipt.get("raw_interiorgs_bytes_sent_to_external_provider")
@@ -312,36 +389,9 @@ def execute_artifixer3d_observed_object_removal(
         != review.get("receipt_digest")
         or receipt.get("visual_review_receipt_sha256")
         != review_record.get("digest")
-        or receipt.get("semantic_object_free_visual_review_passed") is not True
-        or receipt.get("multiview_consistency_review_passed") is not True
         or receipt.get("generated_pixels_labeled") is not True
         or receipt.get("result_digest")
         != canonical_digest(receipt, digest_field="result_digest")
-        or review.get("schema_version")
-        != "task_evaluation_artifixer_ai_visual_review.v1"
-        or review.get("status") != "accepted"
-        or review.get("publisher_instance_id")
-        != source_object.get("publisher_instance_id")
-        or review.get("decision") != "accepted"
-        or review.get("semantic_object_absence_review_passed") is not True
-        or review.get("multiview_consistency_review_passed") is not True
-        or review.get("review_frame_count", 0)
-        < configuration.get("required_views", {}).get("minimum", 1)
-        or review.get("all_review_frames_digest_bound") is not True
-        or review.get("ai_visual_review_completed") is not True
-        or review.get("human_review_completed") is not False
-        or review.get("generated_output_is_capture_or_physical_evidence")
-        is not False
-        or not isinstance(review.get("reviewer"), Mapping)
-        or not str(review["reviewer"].get("identity") or "")
-        or not str(review["reviewer"].get("runtime") or "")
-        or not str(review["reviewer"].get("model") or "")
-        or review.get("receipt_digest")
-        != canonical_digest(review, digest_field="receipt_digest")
-        or review.get("task_thumbnail_is_exact_review_frame") is not True
-        or not isinstance(review.get("task_thumbnail_selection"), Mapping)
-        or review["task_thumbnail_selection"].get("frame_sha256")
-        != _sha256_and_size(thumbnail_path)[0]
         or render_reference.get("control_plane_render_result_digest")
         != (
             input_render.get("control_plane_result_digest")

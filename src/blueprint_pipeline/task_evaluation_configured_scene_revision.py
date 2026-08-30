@@ -104,6 +104,45 @@ def validate_configured_scene_revision(
         raise TaskEvaluationConfiguredSceneRevisionError(
             "configured_scene_revision_thumbnail_binding_invalid"
         )
+    if isinstance(presentation, Mapping):
+        review_status = presentation.get("appearance_review_status", "accepted")
+        selection = presentation.get("selection")
+        appearance = revision.get("appearance")
+        reviewer = (
+            selection.get("reviewer") if isinstance(selection, Mapping) else None
+        )
+        if (
+            not isinstance(appearance, Mapping)
+            or not isinstance(selection, Mapping)
+            or not isinstance(reviewer, Mapping)
+            or selection.get("appearance_review_status", review_status)
+            != review_status
+            or appearance.get("visual_review_status", review_status)
+            != review_status
+        ):
+            raise TaskEvaluationConfiguredSceneRevisionError(
+                "configured_scene_revision_appearance_review_binding_invalid"
+            )
+        if review_status == "paused_ungraded":
+            if (
+                presentation.get("selected_from_exact_reviewed_frame_count") != 0
+                or presentation.get("warning_label")
+                != "Visual review paused - appearance ungraded"
+                or appearance.get("warning_label")
+                != "Visual review paused - appearance ungraded"
+                or reviewer.get("kind") != "system"
+            ):
+                raise TaskEvaluationConfiguredSceneRevisionError(
+                    "configured_scene_revision_ungraded_review_boundary_invalid"
+                )
+        elif (
+            review_status != "accepted"
+            or presentation.get("selected_from_exact_reviewed_frame_count") != 8
+            or reviewer.get("kind") != "ai"
+        ):
+            raise TaskEvaluationConfiguredSceneRevisionError(
+                "configured_scene_revision_accepted_review_boundary_invalid"
+            )
     return revision
 
 

@@ -375,6 +375,98 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
     }
     assert result["provider_mutations_performed"] == 0
 
+    pause_review = {
+        "schema_version": "task_evaluation_artifixer_visual_review_pause_receipt.v1",
+        "status": "visual_review_paused_ungraded",
+        "decision": "not_reviewed",
+        "visual_review_mode": "paused_ungraded",
+        "publisher_instance_id": "104",
+        "review_frame_count": 8,
+        "frames": [
+            {"camera_id": f"camera-{index}", "frame_sha256": sha256(thumbnail_path)}
+            for index in range(8)
+        ],
+        "all_review_frames_digest_bound": True,
+        "ai_visual_review_completed": False,
+        "human_review_completed": False,
+        "semantic_object_absence_review_passed": False,
+        "multiview_consistency_review_passed": False,
+        "task_thumbnail_is_exact_review_frame": False,
+        "task_thumbnail_is_exact_rendered_frame": True,
+        "task_thumbnail_selection": {
+            "camera_id": "camera-0",
+            "frame_sha256": sha256(thumbnail_path),
+            "rationale": "Deterministic ungraded thumbnail.",
+        },
+        "selector": {
+            "kind": "system",
+            "identity": "deterministic_ungraded_thumbnail_selector",
+            "runtime": "blueprint_pipeline",
+            "model": "none",
+        },
+        "review_provider_call_performed": False,
+        "generated_output_is_capture_or_physical_evidence": False,
+        "warning_label": "Visual review paused - appearance ungraded",
+        "receipt_digest": "",
+    }
+    pause_review["receipt_digest"] = canonical_digest(
+        pause_review, digest_field="receipt_digest"
+    )
+    review_path.write_text(json.dumps(pause_review), encoding="utf-8")
+    pause_removal = {
+        "schema_version": "task_evaluation_artifixer_object_removal_result.v1",
+        "status": "completed_ungraded_generated_appearance_edit",
+        "visual_review_mode": "paused_ungraded",
+        "publisher_instance_id": "104",
+        "raw_interiorgs_bytes_sent_to_external_provider": False,
+        "visual_review_receipt_digest": pause_review["receipt_digest"],
+        "visual_review_receipt_sha256": sha256(review_path),
+        "semantic_object_free_visual_review_passed": False,
+        "multiview_consistency_review_passed": False,
+        "review_provider_call_performed": False,
+        "ungraded_publication_acknowledged": True,
+        "warning_label": "Visual review paused - appearance ungraded",
+        "generated_pixels_labeled": True,
+        "result_digest": "",
+    }
+    pause_removal["result_digest"] = canonical_digest(
+        pause_removal, digest_field="result_digest"
+    )
+    receipt_path.write_text(json.dumps(pause_removal), encoding="utf-8")
+    paused_output = tmp_path / "paused-appearance-output"
+    paused_output.mkdir()
+    paused_result = execute_artifixer3d_observed_object_removal(
+        envelope={
+            "render_inputs_result": render_inputs,
+            "request": {
+                "appearance_review_override": {
+                    "mode": "paused_ungraded",
+                    "scope": "artifixer_appearance_only",
+                    "ungraded_publication_acknowledged": True,
+                    "review_provider_call_permitted": False,
+                    "warning_label": "Visual review paused - appearance ungraded",
+                }
+            },
+        },
+        stage={
+            "stage_id": "stage-1",
+            "capability": "observed_appearance_object_removal",
+            "execution_class": "gpu_canary",
+        },
+        configuration=configuration,
+        configuration_path=configuration_path,
+        dependency_results=(),
+        output_root=paused_output,
+        provider_runtime_artifacts=(
+            artifact("configured_appearance_without_source_object", appearance),
+            artifact("appearance_removal_receipt", receipt_path),
+            artifact("appearance_visual_review_receipt", review_path),
+            artifact("configured_task_thumbnail", thumbnail_path),
+            render_handoff,
+        ),
+    )
+    assert paused_result["status"] == "completed"
+
 
 def test_artifixer_handler_rejects_unbound_review_boolean_only_receipt(
     tmp_path: Path,

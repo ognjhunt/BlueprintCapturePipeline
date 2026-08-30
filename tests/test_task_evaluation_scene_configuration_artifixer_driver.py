@@ -20,8 +20,13 @@ from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_driver imp
     _artifixer_tuning,
     _materialize_preflight,
     _materialize_selected_task_thumbnail,
+    _materialize_ungraded_task_thumbnail_and_receipt,
     _semantic_rights_and_request,
     _write_execution_authority,
+)
+from blueprint_pipeline.task_evaluation_scene_configuration_appearance_review import (
+    PAUSED_UNGRADED_WARNING,
+    paused_review_receipt_valid,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import (
     _target_camera_ring,
@@ -572,6 +577,185 @@ def test_diagnostic_driver_repairs_only_rejected_semantic_frame_once(
     assert teacher_calls[1]["prompt_policy"] == (
         driver.STRICT_LOCALITY_PROMPT_POLICY
     )
+
+
+def test_ungraded_thumbnail_is_exact_deterministic_render_with_pause_receipt(
+    tmp_path: Path,
+) -> None:
+    frames = []
+    for camera_id in ("camera-z", "camera-a", "camera-m"):
+        path = tmp_path / f"{camera_id}.png"
+        path.write_bytes(camera_id.encode())
+        frames.append(
+            {
+                "camera_id": camera_id,
+                "final_frame": {"path": str(path), "sha256": _sha256(path)},
+            }
+        )
+    thumbnail = tmp_path / "thumbnail.png"
+    receipt_path = tmp_path / "pause.json"
+
+    selection, receipt = _materialize_ungraded_task_thumbnail_and_receipt(
+        review_frames=frames,
+        publisher_instance_id="104",
+        minimum_frame_count=3,
+        thumbnail_destination=thumbnail,
+        receipt_destination=receipt_path,
+    )
+
+    assert selection["camera_id"] == "camera-a"
+    assert thumbnail.read_bytes() == b"camera-a"
+    assert receipt["decision"] == "not_reviewed"
+    assert receipt["ai_visual_review_completed"] is False
+    assert receipt["review_provider_call_performed"] is False
+    assert receipt["warning_label"] == PAUSED_UNGRADED_WARNING
+    assert paused_review_receipt_valid(
+        receipt,
+        publisher_instance_id="104",
+        minimum_frame_count=3,
+        thumbnail_digest=_sha256(thumbnail),
+    )
+
+
+def test_paused_mode_finishes_stage_without_calling_visual_reviewer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint_root, _checkpoint, fixture = _materialize_diagnostic_checkpoint(
+        tmp_path
+    )
+    stage_input = json.loads(Path(fixture["stage_path"]).read_text(encoding="utf-8"))
+    stage_input["stage"] = {
+        "stage_id": "stage-1",
+        "adapter": {"id": "artifixer3d_observed_object_removal"},
+    }
+    stage_input["construction_envelope"]["render_inputs_result"] = fixture[
+        "render_result"
+    ]
+    stage_input["construction_envelope"]["request"] = {
+        "appearance_review_override": {
+            "mode": "paused_ungraded",
+            "scope": "artifixer_appearance_only",
+            "ungraded_publication_acknowledged": True,
+            "review_provider_call_permitted": False,
+            "warning_label": PAUSED_UNGRADED_WARNING,
+        }
+    }
+    stage_path = tmp_path / "stage-input.json"
+    stage_path.write_text(json.dumps(stage_input), encoding="utf-8")
+    dependencies_path = tmp_path / "dependencies.json"
+    dependencies_path.write_text("[]\n", encoding="utf-8")
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    package_root = tmp_path / "package"
+    package_root.mkdir()
+    semantic_request = json.loads(
+        Path(fixture["request_path"]).read_text(encoding="utf-8")
+    )
+    locality_receipt = tmp_path / "locality.json"
+    locality_receipt.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        driver,
+        "materialize_semantic_locality_seal",
+        lambda **kwargs: {
+            "receipt": {"receipt_digest": "sha256:" + "1" * 64},
+            "receipt_path": str(locality_receipt),
+            "semantic_teacher_frames_root": str(
+                kwargs["semantic_output_root"]
+                / "tasks"
+                / "remove-source-object-104"
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        driver,
+        "_write_execution_authority",
+        lambda **_kwargs: ({}, tmp_path / "rights.json", "839873"),
+    )
+    monkeypatch.setattr(
+        driver, "materialize_provider_render_handoff", lambda **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        driver,
+        "_materialize_preflight",
+        lambda **_kwargs: ({}, "remove-source-object-104"),
+    )
+    monkeypatch.setattr(
+        driver,
+        "materialize_artifixer3d_candidate_inputs",
+        lambda **_kwargs: {"receipt_digest": "sha256:" + "2" * 64},
+    )
+    monkeypatch.setattr(
+        driver, "_semantic_rights_and_request", lambda **_kwargs: tmp_path / "packet"
+    )
+
+    def write_request(**_kwargs):
+        packet = tmp_path / "packet"
+        packet.mkdir(exist_ok=True)
+        path = packet / "semantic_teacher_image_edit_runtime_request.v1.json"
+        path.write_text(json.dumps(semantic_request), encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(driver, "_semantic_runtime_request", write_request)
+    monkeypatch.setattr(
+        driver,
+        "materialize_whole_frame_semantic_teacher_receipt",
+        lambda **kwargs: Path(kwargs["output_path"]).write_text(
+            "{}\n", encoding="utf-8"
+        ),
+    )
+    native = tmp_path / "configured.usdz"
+    native.write_bytes(b"configured")
+    frames = []
+    for index in range(8):
+        path = tmp_path / f"frame-{index}.png"
+        path.write_bytes(f"frame-{index}".encode())
+        frames.append(
+            {
+                "camera_id": f"camera-{index}",
+                "final_frame": {"path": str(path), "sha256": _sha256(path)},
+            }
+        )
+    monkeypatch.setattr(
+        driver,
+        "_run_artifixer_training_round",
+        lambda **_kwargs: {
+            "review_frames": frames,
+            "native_appearance_source": native,
+            "post_training_binding_digest": "sha256:" + "3" * 64,
+            "runtime_result": {},
+        },
+    )
+    monkeypatch.setattr(
+        driver,
+        "_run_artifixer_visual_review_round",
+        lambda **_kwargs: pytest.fail("paused mode called the visual reviewer"),
+    )
+
+    result = driver.execute_artifixer_component(
+        environment={
+            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT": str(stage_path),
+            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES": str(
+                dependencies_path
+            ),
+            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT": str(output_root),
+            "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT": str(
+                output_root / "result.json"
+            ),
+            "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT": str(package_root),
+            "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT": str(
+                checkpoint_root
+            ),
+        }
+    )
+
+    assert result["status"] == "completed"
+    assert result["appearance_review_status"] == "paused_ungraded"
+    assert result["appearance_quality_graded"] is False
+    removal = json.loads(
+        (output_root / "appearance_removal_receipt.v1.json").read_text()
+    )
+    assert removal["status"] == "completed_ungraded_generated_appearance_edit"
+    assert removal["review_provider_call_performed"] is False
 
 
 def test_generic_render_contract_feeds_released_artifixer_inputs(tmp_path: Path) -> None:

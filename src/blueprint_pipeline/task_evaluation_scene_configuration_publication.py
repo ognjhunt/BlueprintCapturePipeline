@@ -23,6 +23,14 @@ from .task_evaluation_scene_configuration_disclosure import (
     render_inputs_disclosure_is_coherent,
     renders_on_provider,
 )
+from .task_evaluation_scene_configuration_appearance_review import (
+    AppearanceReviewContractError,
+    PAUSED_UNGRADED_MODE,
+    PAUSED_UNGRADED_WARNING,
+    REQUIRED_MODE,
+    appearance_review_mode,
+    paused_review_receipt_valid,
+)
 
 
 MAX_TASK_THUMBNAIL_SIZE_BYTES = 16 * 1024 * 1024
@@ -73,23 +81,71 @@ def _artifact(
 
 
 def _thumbnail_selection(
-    *, review_receipt_path: Path, thumbnail_path: Path
+    *,
+    review_receipt_path: Path,
+    thumbnail_path: Path,
+    removal_receipt_path: Path | None = None,
+    review_mode: str = REQUIRED_MODE,
+    minimum_frame_count: int = 8,
 ) -> dict[str, Any]:
     try:
         receipt = json.loads(review_receipt_path.read_text(encoding="utf-8"))
+        removal = (
+            json.loads(removal_receipt_path.read_text(encoding="utf-8"))
+            if (
+                removal_receipt_path is not None
+                and review_mode == PAUSED_UNGRADED_MODE
+            )
+            else {}
+        )
     except (OSError, UnicodeError, ValueError) as exc:
         raise TaskEvaluationSceneConfigurationPublicationError(
             "scene_configuration_publication_thumbnail_selection_invalid"
         ) from exc
-    if not isinstance(receipt, Mapping):
+    if not isinstance(receipt, Mapping) or not isinstance(removal, Mapping):
         raise TaskEvaluationSceneConfigurationPublicationError(
             "scene_configuration_publication_thumbnail_selection_invalid"
         )
     selection = receipt.get("task_thumbnail_selection")
     reviewer = receipt.get("reviewer")
     thumbnail_digest, thumbnail_size = _sha256_and_size(thumbnail_path)
+    if review_mode == PAUSED_UNGRADED_MODE:
+        selector = receipt.get("selector")
+        if (
+            removal.get("status")
+            != "completed_ungraded_generated_appearance_edit"
+            or removal.get("visual_review_mode") != PAUSED_UNGRADED_MODE
+            or removal.get("visual_review_receipt_digest")
+            != receipt.get("receipt_digest")
+            or removal.get("warning_label") != PAUSED_UNGRADED_WARNING
+            or not paused_review_receipt_valid(
+                receipt,
+                publisher_instance_id=str(
+                    removal.get("publisher_instance_id") or ""
+                ),
+                minimum_frame_count=minimum_frame_count,
+                thumbnail_digest=thumbnail_digest,
+            )
+            or not isinstance(selector, Mapping)
+            or thumbnail_size < 1
+            or thumbnail_size > MAX_TASK_THUMBNAIL_SIZE_BYTES
+        ):
+            raise TaskEvaluationSceneConfigurationPublicationError(
+                "scene_configuration_publication_thumbnail_selection_invalid"
+            )
+        return {
+            "camera_id": selection["camera_id"],
+            "frame_digest": selection["frame_sha256"],
+            "rationale": str(selection["rationale"]).strip(),
+            "reviewer": {
+                key: selector[key]
+                for key in ("kind", "identity", "runtime", "model")
+            },
+            "appearance_review_status": PAUSED_UNGRADED_MODE,
+        }
     if (
-        receipt.get("schema_version")
+        review_mode != REQUIRED_MODE
+        or receipt.get("schema_version")
         != "task_evaluation_artifixer_ai_visual_review.v1"
         or receipt.get("status") != "accepted"
         or receipt.get("review_frame_count") != 8
@@ -120,6 +176,7 @@ def _thumbnail_selection(
             key: reviewer[key]
             for key in ("kind", "identity", "runtime", "model")
         },
+        "appearance_review_status": "accepted",
     }
 
 
@@ -234,6 +291,10 @@ def publish_configured_scene_revision(
         raise TaskEvaluationSceneConfigurationPublicationError(
             "scene_configuration_publication_envelope_invalid"
         )
+    try:
+        review_mode = appearance_review_mode(request)
+    except AppearanceReviewContractError as exc:
+        raise TaskEvaluationSceneConfigurationPublicationError(str(exc)) from exc
     root = Path(output_root).resolve()
     if root.is_symlink() or not root.is_dir():
         raise TaskEvaluationSceneConfigurationPublicationError(
@@ -258,7 +319,10 @@ def publish_configured_scene_revision(
         artifacts[role] = _artifact(stage_results, role=role)[1]
     thumbnail_selection = _thumbnail_selection(
         review_receipt_path=artifacts["appearance_visual_review_receipt"],
+        removal_receipt_path=artifacts["appearance_removal_receipt"],
         thumbnail_path=artifacts["configured_task_thumbnail"],
+        review_mode=review_mode,
+        minimum_frame_count=8,
     )
     bundle = root / "configured_scene_bundle.v1.zip"
     _deterministic_bundle(
@@ -363,6 +427,14 @@ def publish_configured_scene_revision(
                 for key in ("uri", "digest", "size_bytes")
             },
             "appearance_truth_source": "interiorgs_observed_plus_labeled_generated_edit",
+            "visual_review_status": thumbnail_selection[
+                "appearance_review_status"
+            ],
+            **(
+                {"warning_label": PAUSED_UNGRADED_WARNING}
+                if review_mode == PAUSED_UNGRADED_MODE
+                else {}
+            ),
         },
         "geometry": {
             "candidate_collision_source": dict(scene["geometry"]["collision"]),
@@ -427,7 +499,17 @@ def publish_configured_scene_revision(
                 for key in ("uri", "digest", "size_bytes")
             },
             "selection": thumbnail_selection,
-            "selected_from_exact_reviewed_frame_count": 8,
+            "appearance_review_status": thumbnail_selection[
+                "appearance_review_status"
+            ],
+            "selected_from_exact_reviewed_frame_count": (
+                0 if review_mode == PAUSED_UNGRADED_MODE else 8
+            ),
+            **(
+                {"warning_label": PAUSED_UNGRADED_WARNING}
+                if review_mode == PAUSED_UNGRADED_MODE
+                else {}
+            ),
             "derived_appearance_evidence": True,
             "capture_or_physical_evidence": False,
             "image_bytes_modified_after_selection": False,
@@ -523,6 +605,16 @@ def publish_configured_scene_revision(
         "proof_boundary": {
             "thumbnail_is_derived_appearance_evidence": True,
             "thumbnail_is_capture_or_physical_evidence": False,
+            "appearance_visual_review_completed": review_mode == REQUIRED_MODE,
+            "appearance_quality_graded": review_mode == REQUIRED_MODE,
+            "appearance_review_status": thumbnail_selection[
+                "appearance_review_status"
+            ],
+            **(
+                {"appearance_warning_label": PAUSED_UNGRADED_WARNING}
+                if review_mode == PAUSED_UNGRADED_MODE
+                else {}
+            ),
             "configuration_is_policy_evaluation": False,
             "configuration_is_deployment_or_safety_approval": False,
         },
