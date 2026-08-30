@@ -81,6 +81,15 @@ def test_production_compiler_joins_configured_scene_and_team_inputs(
     tmp_path: Path,
 ) -> None:
     queue, inputs, envelope = _stage(tmp_path)
+    envelope["materialized_references"].append(
+        dict(envelope["materialized_references"][1])
+    )
+    envelope["envelope_digest"] = canonical_digest(
+        envelope, digest_field="envelope_digest"
+    )
+    pending = queue / "pending" / "episode.json"
+    pending.unlink()
+    write_launch_preparation_record_exclusive(pending, envelope)
     calls = 0
 
     def compile_episode(*, envelope, materialized_references, output_root):
@@ -149,6 +158,39 @@ def test_production_compiler_joins_configured_scene_and_team_inputs(
     assert run["results"][0]["compiled_by_production"] is True
     assert run["results"][0]["customer_supplied_prebuilt_episode_packet"] is False
     assert run["provider_mutation_performed"] is False
+
+
+def test_compilation_rejects_conflicting_duplicate_contract_reference(
+    tmp_path: Path,
+) -> None:
+    queue, inputs, envelope = _stage(tmp_path)
+    replacement = inputs / "other-robot.json"
+    replacement.write_bytes(b'{"robot":"other"}\n')
+    envelope["materialized_references"].append(
+        _record(replacement, "robot.configuration")
+    )
+    envelope["envelope_digest"] = canonical_digest(
+        envelope, digest_field="envelope_digest"
+    )
+    pending = queue / "pending" / "episode.json"
+    pending.unlink()
+    write_launch_preparation_record_exclusive(pending, envelope)
+
+    def forbidden(**_kwargs):
+        raise AssertionError("compiler must not see conflicting inputs")
+
+    run = process_episode_compilation_queue(
+        queue_root=queue,
+        input_root=inputs,
+        output_root=tmp_path / "outputs",
+        source_commit=envelope["expected_production_commit"],
+        episode_compiler=forbidden,
+    )
+
+    assert run["results"][0]["status"] == "blocked"
+    assert run["results"][0]["blockers"] == [
+        "episode_compilation_materialized_reference_invalid"
+    ]
 
 
 def test_compilation_blocks_before_compiler_on_changed_materialized_bytes(

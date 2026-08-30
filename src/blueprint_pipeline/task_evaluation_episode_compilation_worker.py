@@ -126,7 +126,6 @@ def _verified_references(
         path = Path(str(row.get("materialized_path") or "")).resolve()
         if (
             not contract_path
-            or contract_path in verified
             or row.get("full_byte_service_account_readback_passed") is not True
             or not _under(path, input_root)
             or path.is_symlink()
@@ -137,6 +136,16 @@ def _verified_references(
             raise TaskEvaluationEpisodeCompilationWorkerError(
                 "episode_compilation_materialized_reference_invalid"
             )
+        if contract_path in verified:
+            existing = verified[contract_path]
+            if (row.get("digest"), row.get("size_bytes")) != (
+                existing.get("digest"),
+                existing.get("size_bytes"),
+            ):
+                raise TaskEvaluationEpisodeCompilationWorkerError(
+                    "episode_compilation_materialized_reference_invalid"
+                )
+            continue
         verified[contract_path] = dict(row)
     bundle = verified.get(
         "scene.configured_revision.configured_scene_bundle"
