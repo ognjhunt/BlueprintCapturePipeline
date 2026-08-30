@@ -61,7 +61,7 @@ from .task_evaluation_configured_controls_openai_placement import (
 
 
 INTENT_SCHEMA_VERSION = "task_evaluation_configured_controls_autostart_intent.v2"
-RESULT_SCHEMA_VERSION = "task_evaluation_configured_controls_autostart.v2"
+RESULT_SCHEMA_VERSION = "task_evaluation_configured_controls_autostart.v3"
 DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD = 2.56
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
@@ -97,6 +97,12 @@ ReadinessMaterializer = Callable[..., Mapping[str, Any]]
 PlanMaterializer = Callable[..., Mapping[str, Any]]
 _PLACEMENT_CHECKPOINT_SCHEMA_VERSION = (
     "task_evaluation_configured_controls_cpu_placement_checkpoint.v1"
+)
+_BOUND_CPU_PLACEMENT_CHECKPOINT_SCHEMA_VERSION = (
+    "task_evaluation_configured_controls_cpu_placement_checkpoint.v2"
+)
+_CPU_PLACEMENT_BINDING_SCHEMA_VERSION = (
+    "task_evaluation_configured_controls_cpu_placement_binding.v1"
 )
 _AGENT_PLACEMENT_CHECKPOINT_SCHEMA_VERSION = (
     "task_evaluation_configured_controls_agent_placement_checkpoint.v1"
@@ -862,13 +868,26 @@ def _artifact_record_valid(value: Any) -> bool:
         return False
 
 
-def _validate_result(value: Mapping[str, Any]) -> dict[str, Any]:
+def _validate_result(
+    value: Mapping[str, Any],
+    *,
+    expected_intent_digest: str,
+    expected_scene_binding_digest: str,
+    expected_task_binding_digest: str,
+    expected_cpu_checkpoint_binding_digest: str,
+) -> dict[str, Any]:
     result = json.loads(json.dumps(dict(value), allow_nan=False))
     openai_evidence = result.get("official_openai_cost_evidence")
     if (
         result.get("schema_version") != RESULT_SCHEMA_VERSION
         or result.get("status") != "agent_binding_accepted_plan_materialized"
         or not str(result.get("source_launch_id") or "")
+        or result.get("intent_digest") != expected_intent_digest
+        or result.get("scene_binding_digest")
+        != expected_scene_binding_digest
+        or result.get("task_binding_digest") != expected_task_binding_digest
+        or result.get("cpu_placement_checkpoint_binding_digest")
+        != expected_cpu_checkpoint_binding_digest
         or _DIGEST.fullmatch(
             str(result.get("configured_scene_revision_digest") or "")
         )
@@ -928,11 +947,20 @@ def _placement_checkpoint(
     runner_kwargs: Mapping[str, Any],
     expected_scene_binding_digest: str,
     expected_task_binding_digest: str,
+    expected_checkpoint_binding_digest: str | None = None,
     attempts_dir_name: str = "placement-attempts",
     checkpoint_file_name: str = "cpu-placement-checkpoint.v1.json",
     checkpoint_schema_version: str = _PLACEMENT_CHECKPOINT_SCHEMA_VERSION,
 ) -> tuple[dict[str, Any], dict[str, Any], Path]:
     """Run in a fresh attempt and publish one immutable completed checkpoint."""
+
+    if (
+        expected_checkpoint_binding_digest is not None
+        and _DIGEST.fullmatch(expected_checkpoint_binding_digest) is None
+    ):
+        raise TaskEvaluationConfiguredControlsAutostartError(
+            "configured_controls_autostart_placement_checkpoint_invalid"
+        )
 
     attempts_root = root / attempts_dir_name
     attempts_root.mkdir(parents=True, exist_ok=True, mode=0o750)
@@ -946,6 +974,11 @@ def _placement_checkpoint(
         if (
             checkpoint.get("schema_version") != checkpoint_schema_version
             or checkpoint.get("status") != "complete"
+            or (
+                expected_checkpoint_binding_digest is not None
+                and checkpoint.get("checkpoint_binding_digest")
+                != expected_checkpoint_binding_digest
+            )
             or checkpoint.get("checkpoint_digest")
             != canonical_digest(checkpoint, digest_field="checkpoint_digest")
         ):
@@ -1054,6 +1087,10 @@ def _placement_checkpoint(
         "inventory_sha256": _sha256(inventory_path),
         "checkpoint_digest": "",
     }
+    if expected_checkpoint_binding_digest is not None:
+        checkpoint["checkpoint_binding_digest"] = (
+            expected_checkpoint_binding_digest
+        )
     checkpoint["checkpoint_digest"] = canonical_digest(
         checkpoint, digest_field="checkpoint_digest"
     )
@@ -1067,6 +1104,43 @@ def _placement_checkpoint(
     except FileExistsError:
         return reopen()
     return validated_receipt, inventory, attempt_root
+
+
+def _cpu_placement_checkpoint_binding_digest(
+    *,
+    intent_digest: str,
+    scene_binding_digest: str,
+    task_binding_digest: str,
+) -> str:
+    if any(
+        _DIGEST.fullmatch(value) is None
+        for value in (intent_digest, scene_binding_digest, task_binding_digest)
+    ):
+        raise TaskEvaluationConfiguredControlsAutostartError(
+            "configured_controls_autostart_placement_checkpoint_binding_invalid"
+        )
+    return canonical_digest(
+        {
+            "schema_version": _CPU_PLACEMENT_BINDING_SCHEMA_VERSION,
+            "intent_digest": intent_digest,
+            "scene_binding_digest": scene_binding_digest,
+            "task_binding_digest": task_binding_digest,
+        }
+    )
+
+
+def _cpu_placement_checkpoint_root(
+    *, root: Path, checkpoint_binding_digest: str
+) -> Path:
+    if _DIGEST.fullmatch(checkpoint_binding_digest) is None:
+        raise TaskEvaluationConfiguredControlsAutostartError(
+            "configured_controls_autostart_placement_checkpoint_binding_invalid"
+        )
+    return (
+        root
+        / "cpu-placement-checkpoints"
+        / checkpoint_binding_digest.removeprefix("sha256:")
+    )
 
 
 def _validated_agent_openai_evidence(
@@ -1251,14 +1325,6 @@ def materialize_configured_controls_autostart(
         )
     root = Path(progression_root).expanduser() / source_launch_id / "cpu-robot-binding"
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
-    result_path = root / f"{RESULT_SCHEMA_VERSION}.json"
-    if result_path.is_file():
-        return _validate_result(
-            _read(result_path, blocker="configured_controls_autostart_result_invalid")
-        )
-    collision = _configured_collision(
-        revision=revision, revision_path=revision_path, output_root=root
-    )
     paths = intent["paths"]
     trajectory = placement_trajectory_from_native_plan(
         _read(Path(paths["native_trajectory_plan_path"]), blocker="configured_controls_autostart_trajectory_invalid")
@@ -1279,12 +1345,47 @@ def materialize_configured_controls_autostart(
         "target_position_world_m": intent["target_position_world_m"],
         "trajectory_digest": trajectory["trajectory_digest"],
     }
+    scene_binding_digest = canonical_digest(scene_binding)
+    task_binding_digest = canonical_digest(task_binding)
+    cpu_checkpoint_binding_digest = _cpu_placement_checkpoint_binding_digest(
+        intent_digest=str(intent["intent_digest"]),
+        scene_binding_digest=scene_binding_digest,
+        task_binding_digest=task_binding_digest,
+    )
+    result_path = root / f"{RESULT_SCHEMA_VERSION}.json"
+    result_validation_kwargs = {
+        "expected_intent_digest": str(intent["intent_digest"]),
+        "expected_scene_binding_digest": scene_binding_digest,
+        "expected_task_binding_digest": task_binding_digest,
+        "expected_cpu_checkpoint_binding_digest": (
+            cpu_checkpoint_binding_digest
+        ),
+    }
+    if result_path.is_file():
+        return _validate_result(
+            _read(
+                result_path,
+                blocker="configured_controls_autostart_result_invalid",
+            ),
+            **result_validation_kwargs,
+        )
+    collision = _configured_collision(
+        revision=revision, revision_path=revision_path, output_root=root
+    )
     placement = intent["placement"]
     cpu_placement_receipt, inventory, _placement_root = _placement_checkpoint(
-        root=root,
+        root=_cpu_placement_checkpoint_root(
+            root=root,
+            checkpoint_binding_digest=cpu_checkpoint_binding_digest,
+        ),
         placement_runner=placement_runner,
-        expected_scene_binding_digest=canonical_digest(scene_binding),
-        expected_task_binding_digest=canonical_digest(task_binding),
+        expected_scene_binding_digest=scene_binding_digest,
+        expected_task_binding_digest=task_binding_digest,
+        expected_checkpoint_binding_digest=cpu_checkpoint_binding_digest,
+        checkpoint_file_name="cpu-placement-checkpoint.v2.json",
+        checkpoint_schema_version=(
+            _BOUND_CPU_PLACEMENT_CHECKPOINT_SCHEMA_VERSION
+        ),
         runner_kwargs={
             "run_id": f"{terminal['run_id']}-cpu-placement",
             "scene_collision_usd": collision,
@@ -1312,8 +1413,8 @@ def materialize_configured_controls_autostart(
         {
             "intent_digest": intent["intent_digest"],
             "candidate_inventory_checkpoint_digest": inventory["checkpoint_digest"],
-            "scene_binding_digest": canonical_digest(scene_binding),
-            "task_binding_digest": canonical_digest(task_binding),
+            "scene_binding_digest": scene_binding_digest,
+            "task_binding_digest": task_binding_digest,
         }
     )
     intent_token = intent["intent_digest"].removeprefix("sha256:")[:16]
@@ -1359,8 +1460,8 @@ def materialize_configured_controls_autostart(
     placement_receipt, agent_inventory, agent_placement_root = _placement_checkpoint(
         root=root,
         placement_runner=reviewed_placement_runner,
-        expected_scene_binding_digest=canonical_digest(scene_binding),
-        expected_task_binding_digest=canonical_digest(task_binding),
+        expected_scene_binding_digest=scene_binding_digest,
+        expected_task_binding_digest=task_binding_digest,
         attempts_dir_name=f"agent-placement-attempts-{intent_token}",
         checkpoint_file_name=f"agent-placement-checkpoint-{intent_token}.v1.json",
         checkpoint_schema_version=_AGENT_PLACEMENT_CHECKPOINT_SCHEMA_VERSION,
@@ -1440,6 +1541,12 @@ def materialize_configured_controls_autostart(
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "agent_binding_accepted_plan_materialized",
         "source_launch_id": source_launch_id,
+        "intent_digest": intent["intent_digest"],
+        "scene_binding_digest": scene_binding_digest,
+        "task_binding_digest": task_binding_digest,
+        "cpu_placement_checkpoint_binding_digest": (
+            cpu_checkpoint_binding_digest
+        ),
         "configured_scene_revision_digest": revision["revision_digest"],
         "trajectory_digest": trajectory["trajectory_digest"],
         "candidate_inventory_digest": placement_receipt["candidate_inventory_digest"],
@@ -1465,7 +1572,7 @@ def materialize_configured_controls_autostart(
         "result_digest": "",
     }
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
-    _validate_result(result)
+    _validate_result(result, **result_validation_kwargs)
     payload = (json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n").encode()
     with result_path.open("xb") as stream:
         stream.write(payload)

@@ -335,6 +335,121 @@ def test_cpu_placement_retry_uses_fresh_attempt_then_reopens_checkpoint(
     assert reopened[0] == receipt
 
 
+def test_cpu_placement_checkpoint_is_namespaced_by_exact_binding_and_tamper_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "binding"
+    scene_digest = "sha256:" + "1" * 64
+    stale_task_digest = "sha256:" + "2" * 64
+    current_task_digest = "sha256:" + "3" * 64
+    current_checkpoint_binding_digest = (
+        autostart._cpu_placement_checkpoint_binding_digest(
+            intent_digest="sha256:" + "4" * 64,
+            scene_binding_digest=scene_digest,
+            task_binding_digest=current_task_digest,
+        )
+    )
+
+    def validate(value, *, expected_scene_binding_digest, expected_task_binding_digest):
+        receipt = dict(value)
+        if (
+            receipt["scene_binding_digest"] != expected_scene_binding_digest
+            or receipt["task_binding_digest"] != expected_task_binding_digest
+        ):
+            raise autostart.TaskEvaluationConfiguredControlsAutostartError(
+                "robot_placement_task_binding_mismatch"
+            )
+        return receipt
+
+    monkeypatch.setattr(autostart, "validate_robot_placement_receipt", validate)
+
+    def runner_for(task_digest: str):
+        def runner(*, output_dir: Path, **_kwargs):
+            inventory = {
+                "candidate_inventory_digest": "sha256:" + "5" * 64,
+                "checkpoint_digest": "",
+            }
+            inventory["checkpoint_digest"] = autostart.canonical_digest(
+                inventory, digest_field="checkpoint_digest"
+            )
+            receipt = {
+                "scene_binding_digest": scene_digest,
+                "task_binding_digest": task_digest,
+                "candidate_inventory_digest": inventory["candidate_inventory_digest"],
+            }
+            (output_dir / "task_evaluation_robot_placement_receipt.v1.json").write_text(
+                json.dumps(receipt), encoding="utf-8"
+            )
+            (
+                output_dir
+                / "task_evaluation_robot_placement_candidate_inventory.v1.json"
+            ).write_text(json.dumps(inventory), encoding="utf-8")
+            return receipt
+
+        return runner
+
+    autostart._placement_checkpoint(
+        root=root,
+        placement_runner=runner_for(stale_task_digest),
+        runner_kwargs={},
+        expected_scene_binding_digest=scene_digest,
+        expected_task_binding_digest=stale_task_digest,
+    )
+    legacy_checkpoint = root / "cpu-placement-checkpoint.v1.json"
+    legacy_bytes = legacy_checkpoint.read_bytes()
+
+    current_root = autostart._cpu_placement_checkpoint_root(
+        root=root,
+        checkpoint_binding_digest=current_checkpoint_binding_digest,
+    )
+    current_checkpoint_kwargs = {
+        "root": current_root,
+        "runner_kwargs": {},
+        "expected_scene_binding_digest": scene_digest,
+        "expected_task_binding_digest": current_task_digest,
+        "expected_checkpoint_binding_digest": current_checkpoint_binding_digest,
+        "checkpoint_file_name": "cpu-placement-checkpoint.v2.json",
+        "checkpoint_schema_version": (
+            autostart._BOUND_CPU_PLACEMENT_CHECKPOINT_SCHEMA_VERSION
+        ),
+    }
+    accepted, _inventory, attempt = autostart._placement_checkpoint(
+        placement_runner=runner_for(current_task_digest),
+        **current_checkpoint_kwargs,
+    )
+    assert accepted["task_binding_digest"] == current_task_digest
+    assert attempt.name == "attempt_000"
+    assert legacy_checkpoint.read_bytes() == legacy_bytes
+    assert (root / "placement-attempts/attempt_000").is_dir()
+    current_checkpoint = current_root / "cpu-placement-checkpoint.v2.json"
+    assert current_checkpoint.is_file()
+    reopened = autostart._placement_checkpoint(
+        placement_runner=lambda **_kwargs: pytest.fail(
+            "the exact current binding must reopen its completed checkpoint"
+        ),
+        **current_checkpoint_kwargs,
+    )
+    assert reopened[2] == attempt
+
+    checkpoint = json.loads(current_checkpoint.read_text(encoding="utf-8"))
+    checkpoint["checkpoint_binding_digest"] = "sha256:" + "9" * 64
+    checkpoint["checkpoint_digest"] = autostart.canonical_digest(
+        checkpoint, digest_field="checkpoint_digest"
+    )
+    current_checkpoint.chmod(0o640)
+    current_checkpoint.write_text(json.dumps(checkpoint), encoding="utf-8")
+    with pytest.raises(
+        autostart.TaskEvaluationConfiguredControlsAutostartError,
+        match="configured_controls_autostart_placement_checkpoint_invalid",
+    ):
+        autostart._placement_checkpoint(
+            placement_runner=lambda **_kwargs: pytest.fail(
+                "tampered same-key checkpoint must not create another attempt"
+            ),
+            **current_checkpoint_kwargs,
+        )
+
+
 def _camera_template() -> dict[str, object]:
     intrinsics = {
         "cx": 159.5,
@@ -674,6 +789,23 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
         placement_checkpoint_calls += 1
         runner_kwargs = kwargs["runner_kwargs"]
         if placement_checkpoint_calls == 1:
+            checkpoint_binding_digest = kwargs[
+                "expected_checkpoint_binding_digest"
+            ]
+            captured["cpu_checkpoint_binding_digest"] = (
+                checkpoint_binding_digest
+            )
+            assert kwargs["checkpoint_file_name"] == (
+                "cpu-placement-checkpoint.v2.json"
+            )
+            assert kwargs["root"] == (
+                tmp_path
+                / "progression"
+                / source_launch_id
+                / "cpu-robot-binding"
+                / "cpu-placement-checkpoints"
+                / checkpoint_binding_digest.removeprefix("sha256:")
+            )
             assert runner_kwargs["deterministic_selection"] is True
             assert runner_kwargs["allow_live_invocation"] is False
             assert "candidate_inventory_checkpoint" not in runner_kwargs
@@ -710,6 +842,15 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
             "plan_digest": "sha256:" + "7" * 64,
         }
 
+    legacy_result_path = (
+        tmp_path
+        / "progression"
+        / source_launch_id
+        / "cpu-robot-binding"
+        / "task_evaluation_configured_controls_autostart.v2.json"
+    )
+    legacy_result_bytes = b'{"status":"stale-prior-binding"}\n'
+    _write(legacy_result_path, legacy_result_bytes)
     result = autostart.materialize_configured_controls_autostart(
         source_launch_id=source_launch_id,
         launch_state_root=launch_root,
@@ -723,6 +864,29 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
         openai_gate_builder=lambda **_kwargs: FakeOfficialCostGate(),
         openai_scope_lock=lambda **_kwargs: nullcontext({}),
     )
+
+    assert result["intent_digest"] == intent["intent_digest"]
+    assert result["cpu_placement_checkpoint_binding_digest"] == (
+        captured["cpu_checkpoint_binding_digest"]
+    )
+    assert legacy_result_path.read_bytes() == legacy_result_bytes
+    assert (
+        legacy_result_path.parent
+        / "task_evaluation_configured_controls_autostart.v3.json"
+    ).is_file()
+    with pytest.raises(
+        autostart.TaskEvaluationConfiguredControlsAutostartError,
+        match="configured_controls_autostart_result_invalid",
+    ):
+        autostart._validate_result(
+            result,
+            expected_intent_digest=str(intent["intent_digest"]),
+            expected_scene_binding_digest=str(result["scene_binding_digest"]),
+            expected_task_binding_digest="sha256:" + "f" * 64,
+            expected_cpu_checkpoint_binding_digest=str(
+                result["cpu_placement_checkpoint_binding_digest"]
+            ),
+        )
 
     selected_path = Path(captured["bindings"]["cameras_path"])
     assert selected_path != camera_template_path
