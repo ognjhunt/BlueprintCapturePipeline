@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -102,6 +104,102 @@ def test_builds_and_materializes_scene_neutral_native_arena_bundles(
     assert result["paid_execution_requested"] is False
     assert Path(result["packet_root"]).is_dir()
     assert Path(result["runtime_source_receipt"]).is_file()
+
+
+def test_runtime_source_bundle_is_prelaunch_reusable_across_revision_digest(
+    tmp_path: Path,
+) -> None:
+    value, configured, _construction_bundle, runtime_bundle = _bundles(tmp_path)
+    with zipfile.ZipFile(runtime_bundle) as archive:
+        manifest = json.loads(
+            archive.read("task_evaluation_adapter_bundle_manifest.v1.json")
+        )
+    assert manifest["identity_bindings"] == {
+        "expected_production_commit": value["expected_production_commit"],
+        "runtime": value["runtime"]["identity"],
+    }
+
+    future_revision = copy.deepcopy(configured)
+    future_revision["configuration_run_id"] = "future-configured-scene-run"
+    future_revision["revision_digest"] = canonical_digest(
+        future_revision, digest_field="revision_digest"
+    )
+    future_request = copy.deepcopy(value)
+    future_request["task"]["configured_scene_revision_digest"] = future_revision[
+        "revision_digest"
+    ]
+    future_construction = tmp_path / "future-construction-packet.zip"
+    source_packet = _packet(tmp_path / "future-packet", scene_id="public-scene-17")
+    task_object = source_packet / "assets" / "task_object.usd"
+    future_revision["replacement"]["asset"] = _identity(task_object)
+    future_revision["revision_digest"] = canonical_digest(
+        future_revision, digest_field="revision_digest"
+    )
+    future_request["task"]["configured_scene_revision_digest"] = future_revision[
+        "revision_digest"
+    ]
+    build_task_evaluation_adapter_bundle(
+        source_root=source_packet,
+        output_path=future_construction,
+        request=future_request,
+        role="construction_packet",
+    )
+
+    result = materialize_native_arena_adapter(
+        request=future_request,
+        compiled_episode_packet_path=future_construction,
+        compiled_episode_packet_reference=_identity(future_construction),
+        configured_revision=future_revision,
+        runtime_source_bundle_path=runtime_bundle,
+        output_root=tmp_path / "future-adapter-output",
+    )
+
+    assert result["status"] == "native_arena_adapter_materialized"
+
+
+def test_runtime_source_bundle_rejects_different_production_commit(
+    tmp_path: Path,
+) -> None:
+    value, configured, _construction_bundle, runtime_bundle = _bundles(tmp_path)
+    changed = copy.deepcopy(value)
+    changed["expected_production_commit"] = "b" * 40
+    changed_revision = copy.deepcopy(configured)
+    changed_revision["source_commit"] = changed["expected_production_commit"]
+    changed_revision["revision_digest"] = canonical_digest(
+        changed_revision, digest_field="revision_digest"
+    )
+    changed["task"]["configured_scene_revision_digest"] = changed_revision[
+        "revision_digest"
+    ]
+    changed_construction = tmp_path / "changed-construction-packet.zip"
+    source_packet = _packet(tmp_path / "changed-packet", scene_id="public-scene-17")
+    task_object = source_packet / "assets" / "task_object.usd"
+    changed_revision["replacement"]["asset"] = _identity(task_object)
+    changed_revision["revision_digest"] = canonical_digest(
+        changed_revision, digest_field="revision_digest"
+    )
+    changed["task"]["configured_scene_revision_digest"] = changed_revision[
+        "revision_digest"
+    ]
+    build_task_evaluation_adapter_bundle(
+        source_root=source_packet,
+        output_path=changed_construction,
+        request=changed,
+        role="construction_packet",
+    )
+
+    with pytest.raises(
+        TaskEvaluationNativeArenaAdapterError,
+        match="task_evaluation_adapter_bundle_manifest_invalid",
+    ):
+        materialize_native_arena_adapter(
+            request=changed,
+            compiled_episode_packet_path=changed_construction,
+            compiled_episode_packet_reference=_identity(changed_construction),
+            configured_revision=changed_revision,
+            runtime_source_bundle_path=runtime_bundle,
+            output_root=tmp_path / "changed-adapter-output",
+        )
 
 
 def test_adapter_refuses_bundle_bytes_that_do_not_match_website_request(
