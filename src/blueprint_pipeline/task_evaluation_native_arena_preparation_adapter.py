@@ -603,7 +603,7 @@ def _build_task_evaluation_adapter_bundle(
                 info = zipfile.ZipInfo(archive_path, (1980, 1, 1, 0, 0, 0))
                 info.external_attr = 0o100440 << 16
                 info.compress_type = zipfile.ZIP_DEFLATED
-                with archive.open(info, "w") as destination, path.open(
+                with archive.open(info, "w", force_zip64=True) as destination, path.open(
                     "rb"
                 ) as source_stream:
                     shutil.copyfileobj(

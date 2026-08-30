@@ -182,6 +182,50 @@ def test_prelaunch_runtime_source_builder_needs_no_future_request(
     }
 
 
+def test_runtime_source_bundle_forces_zip64_for_every_payload_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "runtime-source"
+    source.mkdir()
+    (source / "runtime.bin").write_bytes(b"runtime")
+    observed: list[bool] = []
+    original_open = zipfile.ZipFile.open
+
+    def tracked_open(
+        archive: zipfile.ZipFile,
+        name: str | zipfile.ZipInfo,
+        mode: str = "r",
+        pwd: bytes | None = None,
+        *,
+        force_zip64: bool = False,
+    ):
+        if (
+            mode == "w"
+            and isinstance(name, zipfile.ZipInfo)
+            and name.filename.startswith("payload/")
+        ):
+            observed.append(force_zip64)
+        return original_open(
+            archive,
+            name,
+            mode=mode,
+            pwd=pwd,
+            force_zip64=force_zip64,
+        )
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", tracked_open)
+
+    receipt = build_task_evaluation_runtime_source_bundle(
+        source_root=source,
+        output_path=tmp_path / "runtime-source.zip",
+        expected_production_commit="a" * 40,
+        runtime_identity={"id": "native-arena", "version": "isaac-2026-1"},
+    )
+
+    assert receipt["status"] == "built"
+    assert observed == [True]
+
+
 @pytest.mark.parametrize(
     ("commit", "runtime_identity"),
     [
