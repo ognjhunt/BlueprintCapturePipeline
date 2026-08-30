@@ -12,6 +12,7 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_scene_configuration_disclosure import (
+    PENDING_PROVIDER_RENDER_STATUS,
     renders_on_provider,
     stage_requests_upload,
 )
@@ -62,6 +63,26 @@ def _sha256_and_size(path: Path) -> tuple[str, int]:
             digest.update(chunk)
             size += len(chunk)
     return "sha256:" + digest.hexdigest(), size
+
+
+def _expected_render_handoff_control_plane_digest(
+    render_inputs: Mapping[str, Any],
+) -> Any:
+    """Return the immutable render record the provider handoff completed.
+
+    A provider render crosses two lineage boundaries.  The control plane first
+    seals a pending-render result, then the provider completes that exact result
+    and records its digest as ``control_plane_result_digest``.  The immutable
+    stage envelope still contains the pending result, so its own ``result_digest``
+    is the immediate parent of the returned handoff.  A materialized input keeps
+    the historical comparison for direct/local adapter calls.
+    """
+
+    if render_inputs.get("status") == PENDING_PROVIDER_RENDER_STATUS:
+        return render_inputs.get("result_digest")
+    if renders_on_provider(render_inputs.get("disclosure_decision") or {}):
+        return render_inputs.get("control_plane_result_digest")
+    return render_inputs.get("result_digest")
 
 
 def _materialized_reference(
@@ -393,11 +414,7 @@ def execute_artifixer3d_observed_object_removal(
         or receipt.get("result_digest")
         != canonical_digest(receipt, digest_field="result_digest")
         or render_reference.get("control_plane_render_result_digest")
-        != (
-            input_render.get("control_plane_result_digest")
-            if renders_on_provider(input_render.get("disclosure_decision") or {})
-            else input_render.get("result_digest")
-        )
+        != _expected_render_handoff_control_plane_digest(input_render)
         or render_reference.get("render_completed_on_provider")
         is not renders_on_provider(input_render.get("disclosure_decision") or {})
     ):
@@ -600,11 +617,7 @@ def execute_artifixer3d_diagnostic_object_removal(
         )
         is None
         or render_reference.get("control_plane_render_result_digest")
-        != (
-            input_render.get("control_plane_result_digest")
-            if renders_on_provider(input_render.get("disclosure_decision") or {})
-            else input_render.get("result_digest")
-        )
+        != _expected_render_handoff_control_plane_digest(input_render)
         or render_reference.get("render_completed_on_provider")
         is not renders_on_provider(input_render.get("disclosure_decision") or {})
     ):

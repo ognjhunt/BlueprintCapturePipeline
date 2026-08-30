@@ -21,6 +21,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_static_qualification
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import (
     MATERIALIZED_STATUS,
+    PENDING_PROVIDER_RENDER_STATUS,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_render_handoff import (
     materialize_provider_render_handoff,
@@ -232,24 +233,6 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
     appearance.write_bytes(b"generated-appearance")
     reference = runtime / "reference.png"
     reference.write_bytes(b"digest-bound-reference")
-    render_inputs = {
-        "status": MATERIALIZED_STATUS,
-        "derived_frames": [
-            {
-                "camera_id": "camera-0",
-                "path": str(reference),
-                "digest": sha256(reference),
-                "size_bytes": reference.stat().st_size,
-            }
-        ],
-        "derived_frame_count": 1,
-        "render_completed_on_provider": False,
-        "result_digest": "",
-    }
-    render_inputs["result_digest"] = canonical_digest(
-        render_inputs, digest_field="result_digest"
-    )
-    control_plane_result_digest = render_inputs["result_digest"]
     disclosure_decision = {
         "schema_version": "task_evaluation_scene_configuration_disclosure_decision.v1",
         "render_execution_site": "provider_gpu",
@@ -265,17 +248,45 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
     disclosure_decision["decision_digest"] = canonical_digest(
         disclosure_decision, digest_field="decision_digest"
     )
-    render_inputs.update(
-        {
-            "control_plane_result_digest": control_plane_result_digest,
-            "disclosure_decision": disclosure_decision,
-            "render_completed_on_provider": True,
-        }
+    pending_render_inputs = {
+        "status": PENDING_PROVIDER_RENDER_STATUS,
+        "derived_frames": [],
+        "derived_frame_count": 0,
+        "render_completed_on_provider": False,
+        "control_plane_result_digest": "sha256:" + "1" * 64,
+        "disclosure_decision": disclosure_decision,
+        "result_digest": "",
+    }
+    pending_render_inputs["result_digest"] = canonical_digest(
+        pending_render_inputs, digest_field="result_digest"
     )
+    render_inputs = {
+        **pending_render_inputs,
+        "status": MATERIALIZED_STATUS,
+        "derived_frames": [
+            {
+                "camera_id": "camera-0",
+                "path": str(reference),
+                "digest": sha256(reference),
+                "size_bytes": reference.stat().st_size,
+            }
+        ],
+        "derived_frame_count": 1,
+        "render_completed_on_provider": True,
+        "control_plane_result_digest": pending_render_inputs["result_digest"],
+        "result_digest": "",
+    }
     render_inputs["result_digest"] = canonical_digest(
         render_inputs, digest_field="result_digest"
     )
-    assert render_inputs["result_digest"] != control_plane_result_digest
+    assert (
+        render_inputs["control_plane_result_digest"]
+        == pending_render_inputs["result_digest"]
+    )
+    assert (
+        pending_render_inputs["control_plane_result_digest"]
+        != pending_render_inputs["result_digest"]
+    )
     render_handoff = materialize_provider_render_handoff(
         render_inputs=render_inputs,
         output_root=runtime,
@@ -347,7 +358,7 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
     output.mkdir()
 
     result = execute_artifixer3d_observed_object_removal(
-        envelope={"render_inputs_result": render_inputs},
+        envelope={"render_inputs_result": pending_render_inputs},
         stage={
             "stage_id": "stage-1",
             "capability": "observed_appearance_object_removal",
@@ -437,7 +448,7 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
     paused_output.mkdir()
     paused_result = execute_artifixer3d_observed_object_removal(
         envelope={
-            "render_inputs_result": render_inputs,
+            "render_inputs_result": pending_render_inputs,
             "request": {
                 "appearance_review_override": {
                     "mode": "paused_ungraded",
