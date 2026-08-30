@@ -148,6 +148,7 @@ def _rigid_scene(
         "scene_id": scene_id,
         "task_kind": "rigid_pick_place",
         "scenario": {"cell_id": f"{scene_id}-canonical", "seed": 19},
+        "cadence": {"maximum_action_steps": task_spec["maximum_action_steps"]},
         "task_spec": task_spec,
         "objects": [
             {

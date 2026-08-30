@@ -291,6 +291,9 @@ def test_scene839873_task_truth_is_preserved_in_native_packet_inputs(
     phase_plan = materialize_rigid_construction_phase_plan(
         {
             "task_kind": "rigid_pick_place",
+            "cadence": {
+                "maximum_action_steps": task_spec["maximum_action_steps"]
+            },
             "task_spec": task_spec,
             "objects": [
                 {

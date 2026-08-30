@@ -129,13 +129,13 @@ def _camera(role: str) -> dict:
             0.0,
             0.0,
             0.0,
-            1.0,
+            -1.0,
             0.0,
             0.0,
             0.0,
             0.0,
-            1.0,
-            0.0,
+            -1.0,
+            2.0,
             0.0,
             0.0,
             0.0,
@@ -229,7 +229,20 @@ def Xform "Root"
         "scene_appearance": ("scene_appearance.usdz", None),
         "task_object": (
             "task_object.usda",
-            articulated_asset if articulated else b"#usda 1.0\n# rigid\n",
+            articulated_asset if articulated else b"""#usda 1.0
+(
+    defaultPrim = "Asset"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "Asset"
+{
+    def Mesh "body"
+    {
+        point3f[] points = [(-0.06, -0.06, 0.0), (0.06, 0.06, 0.12)]
+    }
+}
+""",
         ),
     }
     assets = []
@@ -576,7 +589,20 @@ def test_two_task_packets_preserve_one_shared_repeatable_replacement_set(
     )
     rigid_path = evidence / "rigid_b" / "rigid_b.usda"
     rigid_path.parent.mkdir()
-    rigid_path.write_bytes(b"#usda 1.0\n# rigid-b\n")
+    rigid_path.write_bytes(b"""#usda 1.0
+(
+    defaultPrim = "Asset"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "Asset"
+{
+    def Mesh "body"
+    {
+        point3f[] points = [(-0.06, -0.06, 0.0), (0.06, 0.06, 0.12)]
+    }
+}
+""")
     articulated_request["assets"].append(
         {
             "semantic_role": "replacement",

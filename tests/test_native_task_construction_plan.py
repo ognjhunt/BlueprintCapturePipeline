@@ -71,6 +71,7 @@ def _rigid_fixture(*, asset_id: str, scene_id: str = "840313") -> dict:
         "scene_id": scene_id,
         "task_kind": "rigid_pick_place",
         "plan_digest": "sha256:" + "b" * 64,
+        "cadence": {"maximum_action_steps": 240},
         "task_spec": {
             "schema_version": "adp_task_spec.v2",
             "task_kind": "rigid_pick_place",
@@ -202,6 +203,34 @@ def test_every_construction_phase_plan_publishes_the_command_limits(
     assert execution["max_joint_setpoint_lead_rad"] == pytest.approx(
         MAX_JOINT_SETPOINT_LEAD_RAD
     )
+
+
+def test_rigid_phase_plan_reserves_the_controls_settle_window() -> None:
+    """The qualifying controls episode replays every qualified phase and then
+    appends the settle window inside the same ``maximum_action_steps`` cap, so
+    a construction budget without the reserve can qualify a paid construction
+    that ``native_rigid_control_action_budget_exceeded`` then refuses."""
+
+    scene = _rigid_fixture(asset_id="canned_beverage_replacement")
+    execution = materialize_native_task_construction_phase_plan(scene)[
+        "execution_parameters"
+    ]
+    assert execution["maximum_construction_total_steps"] == (
+        scene["cadence"]["maximum_action_steps"]
+        - scene["task_spec"]["settle_window_samples"]
+    )
+
+
+def test_rigid_phase_plan_refuses_an_unqualifiable_budget() -> None:
+    scene = _rigid_fixture(asset_id="canned_beverage_replacement")
+    scene["cadence"]["maximum_action_steps"] = (
+        scene["task_spec"]["settle_window_samples"] + 1
+    )
+    with pytest.raises(
+        NativeTaskConstructionPlanError,
+        match="native_rigid_construction_total_budget_infeasible",
+    ):
+        materialize_native_task_construction_phase_plan(scene)
 
 
 def test_construction_dispatch_forwards_an_overridden_command_limit_pair() -> None:

@@ -1140,6 +1140,31 @@ def materialize_graph_articulated_construction_phase_plan(
         "recovery": "native_end_effector_pose_readback",
         "reset_readback": "native_robot_and_complete_joint_graph_reset_replay",
     }
+    # The qualifying controls episode replays every qualified phase at its
+    # exact step count and appends the settle window inside the same
+    # ``maximum_action_steps`` cap
+    # (``native_articulated_graph_control_action_budget_exceeded``), so the
+    # construction budget must reserve that window or a paid construction can
+    # qualify and still be unreplayable.
+    _articulated_maximum_action_steps = task_spec.get("maximum_action_steps")
+    _articulated_settle_samples = task_spec.get("settle_window_samples")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        for value in (
+            _articulated_maximum_action_steps,
+            _articulated_settle_samples,
+        )
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_action_budget_invalid"]
+        )
+    maximum_construction_total_steps = (
+        _articulated_maximum_action_steps - _articulated_settle_samples
+    )
+    if maximum_construction_total_steps < len(phases) * stable_samples:
+        raise NativeTaskConstructionPlanError(
+            ["native_articulated_graph_construction_total_budget_infeasible"]
+        )
     result: dict[str, Any] = {
         "schema_version": GRAPH_ARTICULATED_SCHEMA_VERSION,
         "task_kind": "articulated_open_close",
@@ -1173,6 +1198,7 @@ def materialize_graph_articulated_construction_phase_plan(
             ],
             "stable_samples": stable_samples,
             "maximum_steps_per_phase": maximum_steps_per_phase,
+            "maximum_construction_total_steps": maximum_construction_total_steps,
             # The sealed affordance already carries the two bounds the servo
             # executes.  Publish them here so construction executes the pair the
             # task author sealed instead of the servo's own defaults.
@@ -1524,6 +1550,22 @@ def materialize_rigid_construction_phase_plan(
         raise NativeTaskConstructionPlanError(
             ["native_rigid_construction_settle_window_exceeds_phase_budget"]
         )
+    # The qualifying controls episode replays every qualified phase at its
+    # exact step count and then appends this settle window inside the same
+    # ``maximum_action_steps`` cap.  Sealing the reserved construction budget
+    # here guarantees any construction this plan qualifies is replayable, so
+    # ``native_rigid_control_action_budget_exceeded`` cannot fire after a paid
+    # construction succeeded.
+    maximum_action_steps = (plan.get("cadence") or {}).get("maximum_action_steps")
+    if (
+        isinstance(maximum_action_steps, bool)
+        or not isinstance(maximum_action_steps, int)
+        or maximum_action_steps <= 0
+    ):
+        raise NativeTaskConstructionPlanError(
+            ["native_rigid_construction_action_budget_invalid"]
+        )
+    maximum_construction_total_steps = maximum_action_steps - settle_samples
 
     start = start_pose[:3]
     contact_local = affordance["contact_point_scoring_frame_m"]
@@ -1817,6 +1859,17 @@ def materialize_rigid_construction_phase_plan(
         "recovery": "native_end_effector_pose_readback",
         "reset_readback": "native_robot_and_object_reset_replay",
         }
+    # The minimum qualified execution spends ``stable_samples`` on every phase
+    # except settle_observe, which holds for the full settle window.  A
+    # reserved budget below that cannot qualify any construction, so refuse at
+    # plan time instead of paying to discover it.
+    minimum_qualified_total_steps = (
+        (len(phases) - 1) * stable_samples + settle_samples
+    )
+    if maximum_construction_total_steps < minimum_qualified_total_steps:
+        raise NativeTaskConstructionPlanError(
+            ["native_rigid_construction_total_budget_infeasible"]
+        )
     result: dict[str, Any] = {
         "schema_version": RIGID_SCHEMA_VERSION,
         "task_kind": "rigid_pick_place",
@@ -1844,6 +1897,7 @@ def materialize_rigid_construction_phase_plan(
             ],
             "stable_samples": stable_samples,
             "maximum_steps_per_phase": maximum_steps_per_phase,
+            "maximum_construction_total_steps": maximum_construction_total_steps,
             "relocation_waypoint_count": waypoint_count,
             **joint_command_limits(
                 max_joint_delta_rad=max_joint_delta_rad,

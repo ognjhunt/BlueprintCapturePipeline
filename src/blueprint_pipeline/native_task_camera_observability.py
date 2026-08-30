@@ -622,11 +622,20 @@ def measure_native_task_camera_observability(
     minimum_pixels: int,
     minimum_pixel_fraction: float,
     centroid_margin_fraction: float = 0.05,
+    framing_expectation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Gate exact target-class pixels AND the radiance of the pixels they name.
 
     ``rgb`` has no default on purpose.  A caller that cannot supply the frame
     must fail at the call rather than receive a verdict drawn from the mask.
+
+    ``framing_expectation`` optionally carries the sealed geometric projection
+    of the task object through this camera
+    (:mod:`blueprint_pipeline.native_task_camera_framing_expectation`).  When
+    present, the configured pixel minimums are scaled down -- never up -- to a
+    fraction of what the geometry can produce, so a small object at distance
+    is gated against its own physics instead of a constant calibrated on a
+    larger scene.  When absent, the configured constants apply unchanged.
     """
 
     import numpy as np
@@ -678,9 +687,28 @@ def measure_native_task_camera_observability(
         ]
         margin = float(centroid_margin_fraction)
         centroid_framed = all(margin <= value <= 1.0 - margin for value in centroid)
+    framing_thresholds: dict[str, Any] | None = None
+    effective_minimum_pixels = int(minimum_pixels)
+    effective_minimum_fraction = float(minimum_pixel_fraction)
+    if framing_expectation is not None:
+        from blueprint_pipeline.native_task_camera_framing_expectation import (
+            effective_framing_minimums,
+        )
+
+        framing_thresholds = effective_framing_minimums(
+            minimum_pixels=int(minimum_pixels),
+            minimum_pixel_fraction=float(minimum_pixel_fraction),
+            frame_width=width,
+            frame_height=height,
+            expected_bbox_area_px=framing_expectation["expected_bbox_area_px"],
+        )
+        effective_minimum_pixels = framing_thresholds["effective_minimum_pixels"]
+        effective_minimum_fraction = framing_thresholds[
+            "effective_minimum_pixel_fraction"
+        ]
     semantic_passed = (
-        count >= int(minimum_pixels)
-        and fraction >= float(minimum_pixel_fraction)
+        count >= effective_minimum_pixels
+        and fraction >= effective_minimum_fraction
         and centroid_framed
     )
     render = measure_native_task_frame_render_evidence(
@@ -707,7 +735,13 @@ def measure_native_task_camera_observability(
             "minimum_pixels": int(minimum_pixels),
             "minimum_pixel_fraction": float(minimum_pixel_fraction),
             "centroid_margin_fraction": float(centroid_margin_fraction),
+            "effective_minimum_pixels": effective_minimum_pixels,
+            "effective_minimum_pixel_fraction": effective_minimum_fraction,
         },
+        "framing_expectation": (
+            dict(framing_expectation) if framing_expectation is not None else None
+        ),
+        "framing_thresholds": framing_thresholds,
         "semantic_passed": semantic_passed,
         "render_passed": bool(render["passed"]),
         "render_evidence": render,
