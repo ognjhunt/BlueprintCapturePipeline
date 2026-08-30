@@ -428,8 +428,17 @@ def validate_project_spend_reconciliation(
         != canonical_digest(value, digest_field="receipt_digest")
         or not _finite(value.get("total_cost_usd"))
         or (
+            # The receipt stores the raw ``math.fsum`` accumulation (its own
+            # revalidation below recomputes that identical arithmetic, so the
+            # stored representation must stay untouched), while an authority
+            # retains the canonical six-decimal currency total.  Comparing the
+            # two representations as exact binary floats refused a valid
+            # launch (79.26491399999999 vs 79.264914), so cross-document
+            # equality is at currency precision: one whole micro-dollar of
+            # genuine disagreement still refuses.
             expected_total_cost_usd is not None
-            and float(value["total_cost_usd"]) != float(expected_total_cost_usd)
+            and round(float(value["total_cost_usd"]), 6)
+            != round(float(expected_total_cost_usd), 6)
         )
     ):
         raise ValueError("project_spend_reconciliation_invalid")
