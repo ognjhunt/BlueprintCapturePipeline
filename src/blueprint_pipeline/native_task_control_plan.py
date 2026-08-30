@@ -25,6 +25,10 @@ from .native_task_construction_plan import (
     evaluate_graph_articulated_construction_gates,
     materialize_native_task_construction_phase_plan,
 )
+from .native_task_construction_result_validation import (
+    NativeTaskConstructionResultError,
+    validate_qualified_rigid_construction_result,
+)
 
 
 SCHEMA_VERSION = "adp_task_control_plan.v1"
@@ -233,6 +237,14 @@ def materialize_native_rigid_control_plan(
             errors.append(
                 "native_rigid_control_diagnostic_construction_contract_invalid"
             )
+    else:
+        try:
+            validate_qualified_rigid_construction_result(
+                scene_plan=scene,
+                construction_result=construction,
+            )
+        except NativeTaskConstructionResultError as exc:
+            errors.extend(exc.errors)
     if construction.get("scene_plan_digest") != scene.get("plan_digest"):
         errors.append("native_rigid_control_construction_binding_mismatch")
 

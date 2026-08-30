@@ -12,6 +12,10 @@ from .native_task_camera_observability import (
     NativeTaskCameraObservabilityError,
     validate_native_task_policy_start_camera_observability,
 )
+from .native_task_construction_result_validation import (
+    NativeTaskConstructionResultError,
+    validate_qualified_rigid_construction_result,
+)
 
 
 def validate_native_task_controls_admission(
@@ -62,10 +66,19 @@ def validate_native_task_controls_admission(
         != canonical_digest(construction, digest_field="result_digest")
     ):
         errors.append("native_task_policy_construction_not_qualified")
-    try:
-        validate_native_task_policy_start_camera_observability(construction)
-    except NativeTaskCameraObservabilityError as exc:
-        errors.extend(exc.errors)
+    if scene.get("task_kind") == "rigid_pick_place":
+        try:
+            validate_qualified_rigid_construction_result(
+                scene_plan=scene,
+                construction_result=construction,
+            )
+        except NativeTaskConstructionResultError as exc:
+            errors.extend(exc.errors)
+    else:
+        try:
+            validate_native_task_policy_start_camera_observability(construction)
+        except NativeTaskCameraObservabilityError as exc:
+            errors.extend(exc.errors)
 
     pair_valid = isinstance(pair, Mapping)
     if pair_valid:

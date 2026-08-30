@@ -18,6 +18,9 @@ from blueprint_pipeline.native_task_construction_plan import (
     evaluate_rigid_construction_gates,
     materialize_native_task_construction_phase_plan,
 )
+from blueprint_pipeline.native_task_construction_result_validation import (
+    validate_qualified_rigid_construction_result,
+)
 from blueprint_pipeline.native_task_control_plan import (
     NativeTaskControlPlanError,
     materialize_native_task_control_plan,
@@ -175,9 +178,7 @@ def _rigid_scene(
 
 
 def _rigid_construction(scene: dict) -> dict:
-    phase_plan = materialize_native_task_construction_phase_plan(
-        scene, rigid_waypoint_count=3, maximum_steps_per_phase=32
-    )
+    phase_plan = materialize_native_task_construction_phase_plan(scene)
     phase_results = []
     for phase in phase_plan["phases"]:
         position = list(phase["expected_scoring_position_world_m"])
@@ -217,18 +218,61 @@ def _rigid_construction(scene: dict) -> dict:
         reset_replay={"passed": True},
     )
     assert gate_evaluation["passed"] is True
+    def passing_camera(role: str) -> dict:
+        return {
+            "snapshot_id": "reset",
+            "role": role,
+            "scene_name": f"{role}_camera",
+            "rgb_png": {"sha256": "sha256:" + "a" * 64},
+            "observability": {
+                "schema_version": "native_task_camera_observability.v2",
+                "passed": True,
+                "semantic_passed": True,
+                "render_passed": True,
+                "centroid_within_margin": True,
+                "site_appearance_claimed": True,
+                "claim": "camera_observes_task_object_in_rendered_site",
+                "blockers": [],
+                "pixel_count": 1000,
+                "pixel_fraction": 0.02,
+                "bbox_xyxy": [100, 30, 180, 120],
+                "thresholds": {
+                    "minimum_pixels": 200,
+                    "minimum_pixel_fraction": 0.003,
+                },
+                "render_evidence": {
+                    "passed": True,
+                    "frame_rendered": True,
+                    "target_rendered": True,
+                    "site_rendered": True,
+                    "blockers": [],
+                },
+            },
+        }
+
     construction = {
         "schema_version": "native_task_arena_construction_result.v1",
         "status": "completed",
         "construction_gate_qualified": True,
         "blockers": [],
+        "candidate_policy_queried": False,
         "scene_plan_digest": scene["plan_digest"],
         "construction_phase_plan": phase_plan,
         "phase_results": phase_results,
+        "total_action_steps": sum(row["steps"] for row in phase_results),
         "rigid_construction_gates": gate_evaluation,
         "camera_gates": {
             role: {"passed": True} for role in ("external", "wrist", "overview")
         },
+        "camera_snapshots": [
+            {
+                "snapshot_id": "reset",
+                "cameras": [
+                    passing_camera(role)
+                    for role in ("external", "wrist", "overview")
+                ],
+            }
+        ],
         "reset_replay": {"passed": True},
         "result_digest": "",
     }
@@ -236,6 +280,62 @@ def _rigid_construction(scene: dict) -> dict:
         construction, digest_field="result_digest"
     )
     return construction
+
+
+def test_rigid_controls_recompute_raw_construction_measurements() -> None:
+    scene = _rigid_scene(scene_id="raw-replay", asset_id="rigid_subject")
+    construction = _rigid_construction(scene)
+    construction["phase_results"][0]["task_sample"][
+        "robot_scene_contact_peak_force_n"
+    ] = 2.0
+    construction["result_digest"] = canonical_digest(
+        construction, digest_field="result_digest"
+    )
+
+    with pytest.raises(
+        NativeTaskControlPlanError,
+        match="native_rigid_construction_gate_replay_mismatch",
+    ):
+        materialize_native_task_control_plan(
+            scene_plan=scene,
+            construction_result=construction,
+        )
+
+
+def test_rigid_controls_require_exact_policy_start_camera_evidence() -> None:
+    scene = _rigid_scene(scene_id="camera-replay", asset_id="rigid_subject")
+    construction = _rigid_construction(scene)
+    construction["camera_snapshots"] = []
+    construction["result_digest"] = canonical_digest(
+        construction, digest_field="result_digest"
+    )
+
+    with pytest.raises(
+        NativeTaskControlPlanError,
+        match="native_task_policy_start_camera_snapshot_missing:reset",
+    ):
+        materialize_native_task_control_plan(
+            scene_plan=scene,
+            construction_result=construction,
+        )
+
+
+def test_rigid_controls_require_exact_construction_step_accounting() -> None:
+    scene = _rigid_scene(scene_id="step-replay", asset_id="rigid_subject")
+    construction = _rigid_construction(scene)
+    construction["total_action_steps"] += 1
+    construction["result_digest"] = canonical_digest(
+        construction, digest_field="result_digest"
+    )
+
+    with pytest.raises(
+        NativeTaskControlPlanError,
+        match="native_rigid_construction_total_action_steps_invalid",
+    ):
+        materialize_native_task_control_plan(
+            scene_plan=scene,
+            construction_result=construction,
+        )
 
 
 def _blocked_rigid_construction(scene: dict) -> dict:
@@ -289,6 +389,12 @@ def test_articulated_compatibility_adapter_is_byte_semantically_unchanged() -> N
 def test_840313_rigid_fixture_replays_only_qualified_construction_phases() -> None:
     scene = _rigid_scene(scene_id="840313", asset_id="rigid_fixture")
     construction = _rigid_construction(scene)
+
+    validation = validate_qualified_rigid_construction_result(
+        scene_plan=scene,
+        construction_result=construction,
+    )
+    assert validation["total_action_steps"] == construction["total_action_steps"]
 
     plan = materialize_native_task_control_plan(
         scene_plan=scene, construction_result=construction

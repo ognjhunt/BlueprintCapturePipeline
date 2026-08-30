@@ -966,6 +966,12 @@ def run_arena_native_control_vast(
         "protocol_digest": bundle.get("protocol_digest"),
         "bundle_sha256": bundle.get("bundle_sha256"),
         "native_control_result_path": extracted.get("result_path"),
+        # The launch receipt digests this wrapper, so bind the self-sealed
+        # native result into it before a progression worker can follow the
+        # local path.  A self-digest on the target alone is replaceable.
+        "native_control_result_digest": (
+            (extracted.get("execution") or {}).get("result_digest")
+        ),
         "adapter_result_path": str(provider_run / "vast_provider_adapter_result.json"),
         "teardown_manifest_path": str(provider_run / "vast_teardown_manifest.json"),
         "artifact_manifest_path": str(artifact_manifest_path),

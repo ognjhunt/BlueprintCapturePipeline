@@ -769,6 +769,7 @@ def _construction_run(tmp_path: Path) -> tuple[Path, str, Path]:
             "status": "completed",
             "blockers": [],
             "native_control_result_path": str(construction_path),
+            "native_control_result_digest": construction["result_digest"],
         },
     )
     profile: dict[str, object] = {
@@ -908,6 +909,28 @@ def test_construction_predecessor_refuses_changed_qualified_result(
     launch_root, launch_id, construction_path = _construction_run(tmp_path)
     construction = json.loads(construction_path.read_text(encoding="utf-8"))
     construction["construction_gate_qualified"] = False
+    _write(construction_path, construction)
+
+    with pytest.raises(
+        worker.TaskEvaluationConfiguredControlsProgressionWorkerError,
+        match="configured_controls_worker_construction_result_invalid",
+    ):
+        worker._construction_predecessor(
+            launch_state_root=launch_root,
+            construction_launch_id=launch_id,
+            publisher=lambda **_: {},
+        )
+
+
+def test_construction_predecessor_refuses_self_sealed_result_substitution(
+    tmp_path: Path,
+) -> None:
+    launch_root, launch_id, construction_path = _construction_run(tmp_path)
+    construction = json.loads(construction_path.read_text(encoding="utf-8"))
+    construction["scene_plan_digest"] = "sha256:" + "9" * 64
+    construction["result_digest"] = canonical_digest(
+        construction, digest_field="result_digest"
+    )
     _write(construction_path, construction)
 
     with pytest.raises(
