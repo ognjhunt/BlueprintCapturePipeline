@@ -144,6 +144,10 @@ def test_episode_compiler_has_hardened_no_network_service_and_path_unit() -> Non
     assert "ProtectSystem=strict" in service
     assert "RestrictAddressFamilies=AF_UNIX" in service
     assert "task_evaluation_episode_compilation_worker" in service
+    assert "git rev-parse --verify HEAD^{commit}" in service
+    assert "git status --porcelain --untracked-files=no" in service
+    assert '--source-commit "$${source_commit}"' in service
+    assert "BLUEPRINT_SOURCE_COMMIT" not in service
     assert "paid_resource_allocator" not in service
     assert "provider_adapter" not in service
     assert "task-evaluation-episode-compilations/pending" in path
