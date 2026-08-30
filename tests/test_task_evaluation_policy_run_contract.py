@@ -117,6 +117,48 @@ def setup() -> dict[str, object]:
         }
         for index, family in enumerate(families)
     ]
+    inventory_cells = quick_cells + [
+        {
+            "cell_id": f"inventory-cell-{index:03d}-{family}",
+            "family": family,
+            "partition": "held_out" if family == "held_out" else "qualification",
+            "scored": True,
+            "cell_spec_digest": f"sha256:{1000 + index:064x}",
+        }
+        for index in range(10, 500)
+        for family in [families[index % len(families)]]
+    ]
+    scenario_compiler = {
+        "compiler_id": "franka_rigid_relocation_nested_prefix",
+        "compiler_version": "v1",
+        "selection_rule": "published_ordered_prefix",
+        "inventory_seed_digest": "sha256:" + "7" * 64,
+        "coverage_recipe_digest": "sha256:" + "8" * 64,
+        "cell_seed_rule": "sha256_inventory_seed_digest_nul_cell_id",
+        "outcome_independent": True,
+        "agent_may_select_cells": False,
+    }
+    inventory_digest = canonical_digest({"ordered_cells": inventory_cells})
+    compilation_proof_digest = canonical_digest(
+        {
+            "inventory_count": 500,
+            "inventory_digest": inventory_digest,
+            "compiler_id": scenario_compiler["compiler_id"],
+            "compiler_version": scenario_compiler["compiler_version"],
+            "selection_rule": scenario_compiler["selection_rule"],
+            "inventory_seed_digest": scenario_compiler["inventory_seed_digest"],
+            "coverage_recipe_digest": scenario_compiler["coverage_recipe_digest"],
+            "cell_seed_rule": scenario_compiler["cell_seed_rule"],
+        }
+    )
+
+    def family_counts(count: int) -> dict[str, int]:
+        prefix = inventory_cells[:count]
+        return {
+            family: sum(cell["family"] == family for cell in prefix)
+            for family in dict.fromkeys(families)
+        }
+
     presets = [
         {
             "preset_id": "quick_10",
@@ -124,18 +166,11 @@ def setup() -> dict[str, object]:
             "scenario_count_per_policy": 10,
             "availability": "enabled",
             "default": True,
-            "family_counts": {
-                "canonical_anchor": 1,
-                "placement_approach": 2,
-                "illumination": 1,
-                "camera_sensor": 1,
-                "bounded_physics": 1,
-                "pairwise": 2,
-                "held_out": 2,
-            },
+            "family_counts": family_counts(10),
             "scenario_set_digest": canonical_digest({"ordered_cells": quick_cells}),
             "parent_preset_id": None,
             "parent_prefix_count": 0,
+            "parent_scenario_set_digest": None,
             "nesting_proof_digest": "",
             "estimate": {"status": "unavailable"},
             "cells": quick_cells,
@@ -146,18 +181,13 @@ def setup() -> dict[str, object]:
             "scenario_count_per_policy": 100,
             "availability": "coming_later",
             "default": False,
-            "family_counts": {
-                "canonical_anchor": 1,
-                "placement_approach": 20,
-                "illumination": 14,
-                "camera_sensor": 14,
-                "bounded_physics": 14,
-                "pairwise": 19,
-                "held_out": 18,
-            },
-            "scenario_set_digest": "sha256:" + "c" * 64,
+            "family_counts": family_counts(100),
+            "scenario_set_digest": canonical_digest(
+                {"ordered_cells": inventory_cells[:100]}
+            ),
             "parent_preset_id": "quick_10",
             "parent_prefix_count": 10,
+            "parent_scenario_set_digest": "",
             "nesting_proof_digest": "",
             "estimate": {"status": "unavailable"},
         },
@@ -167,29 +197,39 @@ def setup() -> dict[str, object]:
             "scenario_count_per_policy": 500,
             "availability": "coming_later",
             "default": False,
-            "family_counts": {
-                "canonical_anchor": 1,
-                "placement_approach": 100,
-                "illumination": 70,
-                "camera_sensor": 70,
-                "bounded_physics": 70,
-                "pairwise": 100,
-                "held_out": 89,
-            },
-            "scenario_set_digest": "sha256:" + "d" * 64,
+            "family_counts": family_counts(500),
+            "scenario_set_digest": canonical_digest(
+                {"ordered_cells": inventory_cells}
+            ),
             "parent_preset_id": "standard_100",
             "parent_prefix_count": 100,
+            "parent_scenario_set_digest": "",
             "nesting_proof_digest": "",
             "estimate": {"status": "unavailable"},
         },
     ]
-    for preset in presets:
+    for index, preset in enumerate(presets):
+        if index:
+            preset["parent_scenario_set_digest"] = presets[index - 1][
+                "scenario_set_digest"
+            ]
         preset["nesting_proof_digest"] = canonical_digest(
             {
                 "preset_id": preset["preset_id"],
                 "scenario_set_digest": preset["scenario_set_digest"],
                 "parent_preset_id": preset["parent_preset_id"],
                 "parent_prefix_count": preset["parent_prefix_count"],
+                "parent_scenario_set_digest": preset[
+                    "parent_scenario_set_digest"
+                ],
+                "inventory_digest": inventory_digest,
+                "inventory_seed_digest": scenario_compiler[
+                    "inventory_seed_digest"
+                ],
+                "coverage_recipe_digest": scenario_compiler[
+                    "coverage_recipe_digest"
+                ],
+                "cell_seed_rule": scenario_compiler["cell_seed_rule"],
                 "selection_rule": "published_ordered_prefix",
             }
         )
@@ -201,12 +241,12 @@ def setup() -> dict[str, object]:
         "candidate_ids": list(FROZEN_CANDIDATE_IDS),
         "matrix_profile_id": "franka_rigid_relocation_nested_v1",
         "preregistration": _ref(90),
-        "scenario_compiler": {
-            "compiler_id": "franka_rigid_relocation_nested_prefix",
-            "compiler_version": "v1",
-            "selection_rule": "published_ordered_prefix",
-            "outcome_independent": True,
-            "agent_may_select_cells": False,
+        "scenario_compiler": scenario_compiler,
+        "scenario_inventory": {
+            "inventory_count": 500,
+            "inventory_digest": inventory_digest,
+            "compilation_proof_digest": compilation_proof_digest,
+            "cells": inventory_cells,
         },
         "presets": presets,
         "preparation_template": _template(),
@@ -380,6 +420,28 @@ def test_compiles_exact_pair_and_shared_matrix_without_execution() -> None:
     assert plan["spend_usd"] == 0
 
 
+def test_nested_inventory_proves_prefixes_and_retains_cell_seeds_across_runs() -> None:
+    setup_value = setup()
+    validated = validate_policy_run_setup(setup_value)
+    inventory = validated["scenario_inventory"]
+    for preset in validated["presets"]:
+        prefix = inventory["cells"][: preset["scenario_count_per_policy"]]
+        assert preset["scenario_set_digest"] == canonical_digest(
+            {"ordered_cells": prefix}
+        )
+    assert validated["presets"][0]["cells"] == inventory["cells"][:10]
+
+    first = configuration(setup_value)
+    second_selection = selection(setup_value)
+    second_selection["run_id"] = "policy-run-2"
+    second = compile_policy_run_configuration(
+        second_selection, setup=setup_value
+    )
+    assert [cell["seed"] for cell in first["matrix"]["cells"]] == [
+        cell["seed"] for cell in second["matrix"]["cells"]
+    ]
+
+
 def test_activation_materializes_ten_existing_paired_campaign_units() -> None:
     from blueprint_pipeline.native_task_arena_policy_campaign import MEMBER_IDS
 
@@ -473,7 +535,7 @@ def test_fail_without_fix_rejects_candidate_family_and_seed_drift() -> None:
     )
     with pytest.raises(
         TaskEvaluationPolicyRunContractError,
-        match="policy_run_setup_preset_cells_invalid",
+        match="policy_run_setup_inventory_invalid",
     ):
         validate_policy_run_setup(missing_family)
 

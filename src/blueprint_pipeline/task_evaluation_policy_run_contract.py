@@ -155,13 +155,25 @@ def _cross_runtime_digest(
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
-def _nesting_proof(preset: Mapping[str, Any]) -> str:
+def _nesting_proof(
+    preset: Mapping[str, Any],
+    *,
+    inventory_digest: str,
+    compiler: Mapping[str, Any],
+) -> str:
     return _cross_runtime_digest(
         {
             "preset_id": preset["preset_id"],
             "scenario_set_digest": preset["scenario_set_digest"],
             "parent_preset_id": preset["parent_preset_id"],
             "parent_prefix_count": preset["parent_prefix_count"],
+            "parent_scenario_set_digest": preset[
+                "parent_scenario_set_digest"
+            ],
+            "inventory_digest": inventory_digest,
+            "inventory_seed_digest": compiler["inventory_seed_digest"],
+            "coverage_recipe_digest": compiler["coverage_recipe_digest"],
+            "cell_seed_rule": compiler["cell_seed_rule"],
             "selection_rule": "published_ordered_prefix",
         }
     )
@@ -176,6 +188,41 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
         code="policy_run_setup_invalid",
     )
     presets = setup["presets"]
+    inventory = setup["scenario_inventory"]
+    compiler = setup["scenario_compiler"]
+    inventory_cells = inventory["cells"]
+    inventory_ids = [cell["cell_id"] for cell in inventory_cells]
+    if (
+        inventory["inventory_count"] != 500
+        or len(inventory_cells) != 500
+        or len(inventory_ids) != len(set(inventory_ids))
+        or inventory["inventory_digest"]
+        != _cross_runtime_digest({"ordered_cells": inventory_cells})
+        or inventory["compilation_proof_digest"]
+        != _cross_runtime_digest(
+            {
+                "inventory_count": inventory["inventory_count"],
+                "inventory_digest": inventory["inventory_digest"],
+                "compiler_id": compiler["compiler_id"],
+                "compiler_version": compiler["compiler_version"],
+                "selection_rule": compiler["selection_rule"],
+                "inventory_seed_digest": compiler["inventory_seed_digest"],
+                "coverage_recipe_digest": compiler["coverage_recipe_digest"],
+                "cell_seed_rule": compiler["cell_seed_rule"],
+            }
+        )
+    ):
+        raise TaskEvaluationPolicyRunContractError(
+            "policy_run_setup_inventory_invalid"
+        )
+    for cell in inventory_cells:
+        expected_partition = (
+            "held_out" if cell["family"] == "held_out" else "qualification"
+        )
+        if cell["partition"] != expected_partition:
+            raise TaskEvaluationPolicyRunContractError(
+                "policy_run_setup_inventory_partition_invalid"
+            )
     if [row["preset_id"] for row in presets] != list(PRESET_IDS) or [
         row["scenario_count_per_policy"] for row in presets
     ] != list(PRESET_COUNTS):
@@ -185,12 +232,27 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
     for index, preset in enumerate(presets):
         expected_parent = None if index == 0 else PRESET_IDS[index - 1]
         expected_prefix = 0 if index == 0 else PRESET_COUNTS[index - 1]
+        expected_parent_digest = (
+            None if index == 0 else presets[index - 1]["scenario_set_digest"]
+        )
+        prefix_cells = inventory_cells[: preset["scenario_count_per_policy"]]
+        prefix_counts = {
+            family: sum(cell["family"] == family for cell in prefix_cells)
+            for family in REQUIRED_FAMILIES
+        }
         if (
             preset["parent_preset_id"] != expected_parent
             or preset["parent_prefix_count"] != expected_prefix
-            or preset["nesting_proof_digest"] != _nesting_proof(preset)
-            or sum(preset["family_counts"].values())
-            != preset["scenario_count_per_policy"]
+            or preset["parent_scenario_set_digest"] != expected_parent_digest
+            or preset["scenario_set_digest"]
+            != _cross_runtime_digest({"ordered_cells": prefix_cells})
+            or preset["family_counts"] != prefix_counts
+            or preset["nesting_proof_digest"]
+            != _nesting_proof(
+                preset,
+                inventory_digest=inventory["inventory_digest"],
+                compiler=setup["scenario_compiler"],
+            )
         ):
             raise TaskEvaluationPolicyRunContractError(
                 "policy_run_setup_preset_nesting_invalid"
@@ -205,6 +267,7 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
                 or preset["family_counts"] != QUICK_FAMILY_COUNTS
                 or not isinstance(cells, list)
                 or len(cells) != 10
+                or cells != inventory_cells[:10]
             )
         ) or (
             index > 0
@@ -230,13 +293,9 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
         if cells is None:
             continue
         cell_ids = [cell["cell_id"] for cell in cells]
-        family_counts = {
-            family: sum(cell["family"] == family for cell in cells)
-            for family in REQUIRED_FAMILIES
-        }
         if (
             len(cell_ids) != len(set(cell_ids))
-            or family_counts != preset["family_counts"]
+            or prefix_counts != preset["family_counts"]
             or preset["scenario_set_digest"]
             != _cross_runtime_digest({"ordered_cells": cells})
         ):
@@ -320,8 +379,8 @@ def validate_policy_run_selection(value: Mapping[str, Any]) -> dict[str, Any]:
     return selection
 
 
-def _seed_for_cell(*, setup_digest: str, run_id: str, preset_id: str, cell_id: str) -> int:
-    material = "\0".join((setup_digest, run_id, preset_id, cell_id)).encode()
+def _seed_for_cell(*, inventory_seed_digest: str, cell_id: str) -> int:
+    material = "\0".join((inventory_seed_digest, cell_id)).encode()
     return int.from_bytes(hashlib.sha256(material).digest()[:4], "big") & 0x7FFFFFFF
 
 
@@ -354,9 +413,9 @@ def compile_policy_run_configuration(
         {
             **deepcopy(cell),
             "seed": _seed_for_cell(
-                setup_digest=bound_setup["setup_digest"],
-                run_id=selection["run_id"],
-                preset_id=preset["preset_id"],
+                inventory_seed_digest=bound_setup["scenario_compiler"][
+                    "inventory_seed_digest"
+                ],
                 cell_id=cell["cell_id"],
             ),
         }
@@ -382,6 +441,9 @@ def compile_policy_run_configuration(
         "matrix": {
             "profile_id": bound_setup["matrix_profile_id"],
             "preregistration_digest": bound_setup["preregistration"]["digest"],
+            "inventory_digest": bound_setup["scenario_inventory"][
+                "inventory_digest"
+            ],
             "scenario_set_digest": preset["scenario_set_digest"],
             "cells": cells,
         },
@@ -392,6 +454,7 @@ def compile_policy_run_configuration(
         },
         "execution_guards": {
             "candidate_cells_and_seeds_must_match": True,
+            "retained_prefix_cells_and_seeds_must_match": True,
             "policy_specific_scenario_changes_prohibited": True,
             "zero_action_negative_every_scored_cell": True,
             "deterministic_scripted_positive_every_scored_cell": True,

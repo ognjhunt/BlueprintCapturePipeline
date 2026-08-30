@@ -3,7 +3,7 @@
   "$id": "https://tryblueprint.io/schemas/task_evaluation_policy_run_setup.v1.schema.json",
   "title": "Task Evaluation policy-run setup v1",
   "type": "object",
-  "required": ["schema_version", "source_launch_id", "offering_digest", "embodiment_id", "candidate_ids", "matrix_profile_id", "preregistration", "scenario_compiler", "presets", "preparation_template", "setup_digest"],
+  "required": ["schema_version", "source_launch_id", "offering_digest", "embodiment_id", "candidate_ids", "matrix_profile_id", "preregistration", "scenario_compiler", "scenario_inventory", "presets", "preparation_template", "setup_digest"],
   "additionalProperties": false,
   "properties": {
     "schema_version": {"const": "task_evaluation_policy_run_setup.v1"},
@@ -15,16 +15,20 @@
     "preregistration": {"$ref": "#/$defs/reference"},
     "scenario_compiler": {
       "type": "object",
-      "required": ["compiler_id", "compiler_version", "selection_rule", "outcome_independent", "agent_may_select_cells"],
+      "required": ["compiler_id", "compiler_version", "selection_rule", "inventory_seed_digest", "coverage_recipe_digest", "cell_seed_rule", "outcome_independent", "agent_may_select_cells"],
       "additionalProperties": false,
       "properties": {
         "compiler_id": {"const": "franka_rigid_relocation_nested_prefix"},
         "compiler_version": {"const": "v1"},
         "selection_rule": {"const": "published_ordered_prefix"},
+        "inventory_seed_digest": {"$ref": "#/$defs/digest"},
+        "coverage_recipe_digest": {"$ref": "#/$defs/digest"},
+        "cell_seed_rule": {"const": "sha256_inventory_seed_digest_nul_cell_id"},
         "outcome_independent": {"const": true},
         "agent_may_select_cells": {"const": false}
       }
     },
+    "scenario_inventory": {"type": "object", "required": ["inventory_count", "inventory_digest", "compilation_proof_digest", "cells"], "additionalProperties": false, "properties": {"inventory_count": {"const": 500}, "inventory_digest": {"$ref": "#/$defs/digest"}, "compilation_proof_digest": {"$ref": "#/$defs/digest"}, "cells": {"type": "array", "minItems": 500, "maxItems": 500, "items": {"$ref": "#/$defs/cell"}}}},
     "presets": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/preset"}},
     "preparation_template": {
       "type": "object",
@@ -57,7 +61,7 @@
     "cell": {"type": "object", "required": ["cell_id", "family", "partition", "scored", "cell_spec_digest"], "additionalProperties": false, "properties": {"cell_id": {"$ref": "#/$defs/identifier"}, "family": {"enum": ["canonical_anchor", "placement_approach", "illumination", "camera_sensor", "bounded_physics", "pairwise", "held_out"]}, "partition": {"enum": ["qualification", "held_out"]}, "scored": {"const": true}, "cell_spec_digest": {"$ref": "#/$defs/digest"}}},
     "preset": {
       "type": "object",
-      "required": ["preset_id", "label", "scenario_count_per_policy", "availability", "default", "family_counts", "scenario_set_digest", "parent_preset_id", "parent_prefix_count", "nesting_proof_digest", "estimate"],
+      "required": ["preset_id", "label", "scenario_count_per_policy", "availability", "default", "family_counts", "scenario_set_digest", "parent_preset_id", "parent_prefix_count", "parent_scenario_set_digest", "nesting_proof_digest", "estimate"],
       "additionalProperties": false,
       "properties": {
         "preset_id": {"enum": ["quick_10", "standard_100", "deep_500"]},
@@ -69,6 +73,7 @@
         "scenario_set_digest": {"$ref": "#/$defs/digest"},
         "parent_preset_id": {"type": ["string", "null"]},
         "parent_prefix_count": {"type": "integer", "minimum": 0, "maximum": 100},
+        "parent_scenario_set_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
         "nesting_proof_digest": {"$ref": "#/$defs/digest"},
         "estimate": {"$ref": "#/$defs/estimate"},
         "cells": {"type": "array", "minItems": 10, "maxItems": 500, "items": {"$ref": "#/$defs/cell"}}
