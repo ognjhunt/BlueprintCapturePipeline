@@ -939,6 +939,10 @@ def test_systemd_worker_is_separate_from_reconciler_and_never_calls_allocator() 
         "Environment=OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE="
         "/etc/blueprint/provider-secrets/openai_api_key_artifixer_visual_review"
     ) in service
+    assert (
+        'OPENAI_API_KEY_FILE="$${OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE}"'
+        in service
+    )
     assert "Environment=BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true" in service
     assert (
         "Environment=VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/"
