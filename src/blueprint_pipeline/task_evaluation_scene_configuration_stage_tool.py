@@ -23,6 +23,9 @@ from typing import Any
 
 from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .task_evaluation_scene_configuration_runtime_budget import (
+    GPU_STAGE_TIMEOUT_SECONDS,
+)
 from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_ROOT_ENV,
     _secret_values,
@@ -314,6 +317,25 @@ def _emit_component_failure_diagnostics(
     print("\n".join(lines), file=sys.stderr, flush=True)
 
 
+def component_timeout_seconds(adapter_id: str) -> int:
+    """Return the GPU budget this adapter is actually authorized to use.
+
+    The parent TTL is sized from GPU_STAGE_TIMEOUT_SECONDS, so a runner that
+    hard-codes its own limit silently governs the run instead. Scene 839873 hit
+    exactly that: the declared artifixer budget is 7_800 seconds, the runner
+    passed 7_200, and the first bounded repair round was killed 600 seconds
+    before its own authority expired.
+    """
+
+    try:
+        return int(GPU_STAGE_TIMEOUT_SECONDS[adapter_id])
+    except KeyError as exc:
+        raise TaskEvaluationSceneConfigurationStageToolError(
+            "scene_configuration_stage_tool_component_timeout_undeclared:"
+            f"{adapter_id}"
+        ) from exc
+
+
 def execute_stage_tool(
     *,
     adapter_id: str,
@@ -395,7 +417,7 @@ def execute_stage_tool(
         capture_output=True,
         text=True,
         check=False,
-        timeout=7_200,
+        timeout=component_timeout_seconds(adapter_id),
     )
     if completed.returncode != 0 or not component_result_path.is_file():
         _emit_component_failure_diagnostics(
