@@ -1245,6 +1245,7 @@ def test_autostart_registry_atomically_refreshes_on_consecutive_deploys(
     root = tmp_path / "configured-controls-intents"
     first_source = tmp_path / "first.json"
     second_source = tmp_path / "second.json"
+    adoption_source = tmp_path / "adoption.json"
     identity = {
         "team_namespace": "blueprint-adp",
         "scene_id": "interiorgs-839873",
@@ -1253,15 +1254,27 @@ def test_autostart_registry_atomically_refreshes_on_consecutive_deploys(
     first = {
         **identity,
         "expected_production_commit": "a" * 40,
+        "configuration_adoption": {"mode": "same_commit_automatic"},
         "intent_digest": "sha256:" + "1" * 64,
     }
     second = {
         **identity,
         "expected_production_commit": "b" * 40,
+        "configuration_adoption": {"mode": "same_commit_automatic"},
         "intent_digest": "sha256:" + "2" * 64,
+    }
+    adoption = {
+        **identity,
+        "expected_production_commit": "b" * 40,
+        "configuration_adoption": {
+            "mode": "explicit_terminal_adoption",
+            "source_launch_id": "scene-839873-2deff449-r1",
+        },
+        "intent_digest": "sha256:" + "3" * 64,
     }
     first_source.write_text(json.dumps(first), encoding="utf-8")
     second_source.write_text(json.dumps(second), encoding="utf-8")
+    adoption_source.write_text(json.dumps(adoption), encoding="utf-8")
     monkeypatch.setattr(
         deploy, "_service_account_ids", lambda _account: (os.getuid(), os.getgid())
     )
@@ -1280,18 +1293,32 @@ def test_autostart_registry_atomically_refreshes_on_consecutive_deploys(
     )
     second_receipt = deploy._install_configured_controls_autostart_registry(
         intent_root=str(root),
-        intent_sources=(str(second_source.resolve()),),
+        intent_sources=(
+            str(second_source.resolve()),
+            str(adoption_source.resolve()),
+        ),
         source_commit="b" * 40,
         account="test-service",
         root_uid=os.getuid(),
     )
 
-    destination = Path(second_receipt["entries"][0]["path"])
+    automatic_entry = next(
+        row
+        for row in second_receipt["entries"]
+        if row["configuration_adoption_mode"] == "same_commit_automatic"
+    )
+    adoption_entry = next(
+        row
+        for row in second_receipt["entries"]
+        if row["configuration_adoption_mode"] == "explicit_terminal_adoption"
+    )
+    destination = Path(automatic_entry["path"])
     assert first_receipt["entry_count"] == 1
-    assert second_receipt["entry_count"] == 1
-    assert second_receipt["entries"][0]["replaced_previous_sha256"] == (
+    assert second_receipt["entry_count"] == 2
+    assert automatic_entry["replaced_previous_sha256"] == (
         first_receipt["entries"][0]["sha256"]
     )
+    assert automatic_entry["path"] != adoption_entry["path"]
     assert json.loads(destination.read_text(encoding="utf-8")) == second
 
 

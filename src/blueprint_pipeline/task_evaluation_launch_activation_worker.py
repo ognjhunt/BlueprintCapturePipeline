@@ -824,6 +824,9 @@ def _build_scene_configuration_context(
         ) from exc
     if (
         intent["expected_production_commit"] != source_commit
+        or intent["configuration_source_commit"] != source_commit
+        or intent["configuration_adoption"]
+        != {"mode": "same_commit_automatic"}
         or intent["team_namespace"] != activation_request["team_namespace"]
         or intent["scene_id"] != preparation_request["scene"]["identity"]["id"]
         or intent["task_id"] != preparation_request["task"]["identity"]["id"]

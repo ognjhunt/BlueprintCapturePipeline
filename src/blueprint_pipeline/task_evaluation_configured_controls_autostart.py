@@ -37,6 +37,10 @@ from .task_evaluation_robot_placement_readiness_candidate import (
 from .task_evaluation_robot_placement_trajectory import (
     placement_trajectory_from_native_plan,
 )
+from .task_evaluation_shared_mutation_window import (
+    TaskEvaluationSharedMutationWindowError,
+    validate_shared_mutation_window_template,
+)
 
 
 INTENT_SCHEMA_VERSION = "task_evaluation_configured_controls_autostart_intent.v1"
@@ -53,13 +57,13 @@ _FIXED_PATHS = {
 }
 _PHASE_PATHS = {
     "construction": {
-        "release_window_path",
+        "release_window_template_path",
         "lineage_path",
         "authorization_path",
         "launch_authority_path",
     },
     "controls": {
-        "release_window_path",
+        "release_window_template_path",
         "authorization_path",
         "launch_authority_path",
     },
@@ -148,10 +152,12 @@ def validate_configured_controls_autostart_intent(
     intent = json.loads(json.dumps(dict(value), allow_nan=False))
     target = intent.get("target_position_world_m")
     placement = intent.get("placement")
+    adoption = intent.get("configuration_adoption")
     if (
         intent.get("schema_version") != INTENT_SCHEMA_VERSION
         or intent.get("enabled") is not True
         or _COMMIT.fullmatch(str(intent.get("expected_production_commit") or "")) is None
+        or _COMMIT.fullmatch(str(intent.get("configuration_source_commit") or "")) is None
         or not str(intent.get("submitted_by") or "").strip()
         or not str(intent.get("team_namespace") or "").strip()
         or not str(intent.get("scene_id") or "").strip()
@@ -176,11 +182,54 @@ def validate_configured_controls_autostart_intent(
         or not Path(str(intent.get("profile_dir") or "")).is_absolute()
         or intent.get("provider_mutation_performed") is not False
         or intent.get("paid_execution_requested") is not False
+        or not isinstance(adoption, Mapping)
         or intent.get("intent_digest")
         != canonical_digest(intent, digest_field="intent_digest")
     ):
         raise TaskEvaluationConfiguredControlsAutostartError(
             "configured_controls_autostart_intent_invalid"
+        )
+    if adoption.get("mode") == "same_commit_automatic":
+        if (
+            set(adoption) != {"mode"}
+            or intent["configuration_source_commit"]
+            != intent["expected_production_commit"]
+        ):
+            raise TaskEvaluationConfiguredControlsAutostartError(
+                "configured_controls_autostart_adoption_invalid"
+            )
+    elif adoption.get("mode") == "explicit_terminal_adoption":
+        if (
+            set(adoption)
+            != {
+                "mode",
+                "source_launch_id",
+                "source_launch_receipt_digest",
+                "terminal_result_digest",
+                "configured_scene_revision_digest",
+                "publication_result_digest",
+                "webapp_sync_result_digest",
+                "provider_zero_receipt_digest",
+            }
+            or not str(adoption.get("source_launch_id") or "").strip()
+            or any(
+                _DIGEST.fullmatch(str(adoption.get(field) or "")) is None
+                for field in (
+                    "source_launch_receipt_digest",
+                    "terminal_result_digest",
+                    "configured_scene_revision_digest",
+                    "publication_result_digest",
+                    "webapp_sync_result_digest",
+                    "provider_zero_receipt_digest",
+                )
+            )
+        ):
+            raise TaskEvaluationConfiguredControlsAutostartError(
+                "configured_controls_autostart_adoption_invalid"
+            )
+    else:
+        raise TaskEvaluationConfiguredControlsAutostartError(
+            "configured_controls_autostart_adoption_invalid"
         )
     flattened = _intent_paths(intent)
     inventory = intent.get("artifact_inventory")
@@ -194,6 +243,20 @@ def validate_configured_controls_autostart_intent(
             raise TaskEvaluationConfiguredControlsAutostartError(
                 "configured_controls_autostart_inventory_invalid"
             )
+    for phase in ("construction", "controls"):
+        try:
+            validate_shared_mutation_window_template(
+                _read(
+                    flattened[f"phases.{phase}.release_window_template_path"],
+                    blocker="configured_controls_autostart_release_window_template_invalid",
+                ),
+                team_namespace=str(intent["team_namespace"]),
+                expected_production_commit=str(intent["expected_production_commit"]),
+            )
+        except TaskEvaluationSharedMutationWindowError as exc:
+            raise TaskEvaluationConfiguredControlsAutostartError(
+                "configured_controls_autostart_release_window_template_invalid"
+            ) from exc
     return intent
 
 
@@ -213,6 +276,8 @@ def materialize_configured_controls_autostart_intent(
     candidate_inventory_cap: int = 24,
     max_input_tokens: int = 120_000,
     max_inference_cost_usd: float = 0.0,
+    configuration_source_commit: str | None = None,
+    configuration_adoption: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seal all fixed downstream bytes before the configuration launch."""
 
@@ -220,6 +285,16 @@ def materialize_configured_controls_autostart_intent(
         "schema_version": INTENT_SCHEMA_VERSION,
         "enabled": True,
         "expected_production_commit": expected_production_commit,
+        "configuration_source_commit": (
+            configuration_source_commit or expected_production_commit
+        ),
+        "configuration_adoption": json.loads(
+            json.dumps(
+                dict(configuration_adoption)
+                if configuration_adoption is not None
+                else {"mode": "same_commit_automatic"}
+            )
+        ),
         "submitted_by": submitted_by,
         "team_namespace": team_namespace,
         "scene_id": scene_id,
@@ -272,6 +347,20 @@ def configured_controls_autostart_registry_name(
         }
     ).removeprefix("sha256:")
     return f"{identity}.json"
+
+
+def configured_controls_autostart_adoption_registry_name(
+    *, team_namespace: str, scene_id: str, task_id: str, source_launch_id: str
+) -> str:
+    identity = canonical_digest(
+        {
+            "team_namespace": team_namespace,
+            "scene_id": scene_id,
+            "task_id": task_id,
+            "source_launch_id": source_launch_id,
+        }
+    ).removeprefix("sha256:")
+    return f"adoption-{identity}.json"
 
 
 def stage_configured_controls_autostart_intent(
@@ -365,7 +454,9 @@ def _configured_collision(
     return destination
 
 
-def _profile_intent(run_root: Path) -> tuple[dict[str, Any], Path]:
+def _profile_intent(
+    run_root: Path, *, intent_path_override: str | Path | None = None
+) -> tuple[dict[str, Any], Path]:
     profile = _read(
         run_root / "launch_profile.json",
         blocker="configured_controls_autostart_profile_invalid",
@@ -375,6 +466,17 @@ def _profile_intent(run_root: Path) -> tuple[dict[str, Any], Path]:
         if isinstance(row, Mapping)
         and row.get("name") == "configured_controls_autostart_intent"
     ]
+    if intent_path_override is not None:
+        if matches:
+            raise TaskEvaluationConfiguredControlsAutostartError(
+                "configured_controls_autostart_adoption_profile_conflict"
+            )
+        path = Path(intent_path_override).expanduser()
+        if not path.is_absolute() or path.is_symlink() or not path.is_file():
+            raise TaskEvaluationConfiguredControlsAutostartError(
+                "configured_controls_autostart_intent_binding_invalid"
+            )
+        return profile, path
     if len(matches) != 1:
         raise TaskEvaluationConfiguredControlsAutostartError(
             "configured_controls_autostart_intent_missing"
@@ -391,6 +493,33 @@ def _profile_intent(run_root: Path) -> tuple[dict[str, Any], Path]:
             "configured_controls_autostart_intent_binding_invalid"
         )
     return profile, path
+
+
+def _validate_configuration_adoption(
+    *,
+    adoption: Mapping[str, Any],
+    source_launch_id: str,
+    terminal: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    revision: Mapping[str, Any],
+    publication: Mapping[str, Any],
+    sync: Mapping[str, Any],
+    zero: Mapping[str, Any],
+) -> None:
+    if (
+        adoption.get("mode") != "explicit_terminal_adoption"
+        or adoption.get("source_launch_id") != source_launch_id
+        or adoption.get("source_launch_receipt_digest") != receipt.get("receipt_digest")
+        or adoption.get("terminal_result_digest") != terminal.get("result_digest")
+        or adoption.get("configured_scene_revision_digest") != revision.get("revision_digest")
+        or adoption.get("publication_result_digest") != publication.get("result_digest")
+        or adoption.get("webapp_sync_result_digest") != sync.get("sync_result_digest")
+        or adoption.get("provider_zero_receipt_digest")
+        != zero.get("provider_zero_receipt_digest")
+    ):
+        raise TaskEvaluationConfiguredControlsAutostartError(
+            "configured_controls_autostart_adoption_evidence_invalid"
+        )
 
 
 def _validate_result(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -582,6 +711,7 @@ def materialize_configured_controls_autostart(
     placement_runner: PlacementRunner = run_robot_placement_cli,
     readiness_materializer: ReadinessMaterializer = materialize_robot_placement_readiness_candidate,
     plan_materializer: PlanMaterializer = materialize_configured_controls_plan,
+    intent_path_override: str | Path | None = None,
 ) -> dict[str, Any]:
     """Produce an exact plan from one completed, Website-synced configuration."""
 
@@ -590,13 +720,15 @@ def materialize_configured_controls_autostart(
     launch_root = Path(launch_state_root).expanduser()
     run_root = launch_root / source_launch_id
     terminal, receipt, _ = _validate_source(run_root)
-    profile, intent_path = _profile_intent(run_root)
+    profile, intent_path = _profile_intent(
+        run_root, intent_path_override=intent_path_override
+    )
     intent = validate_configured_controls_autostart_intent(
         _read(intent_path, blocker="configured_controls_autostart_intent_invalid")
     )
     task_run = profile.get("task_evaluation_run")
     if (
-        receipt.get("source_commit") != intent["expected_production_commit"]
+        receipt.get("source_commit") != intent["configuration_source_commit"]
         or not isinstance(task_run, Mapping)
         or task_run.get("run_mode") != "scene_configuration"
         or task_run.get("team_namespace") != intent["team_namespace"]
@@ -611,13 +743,41 @@ def materialize_configured_controls_autostart(
         _read(revision_path, blocker="configured_controls_autostart_revision_invalid")
     )
     if (
-        revision["source_commit"] != intent["expected_production_commit"]
+        revision["source_commit"] != intent["configuration_source_commit"]
         or revision["team_namespace"] != intent["team_namespace"]
         or revision["scene_identity"]["id"] != intent["scene_id"]
         or revision["task_template"]["identity"]["id"] != intent["task_id"]
     ):
         raise TaskEvaluationConfiguredControlsAutostartError(
             "configured_controls_autostart_revision_binding_invalid"
+        )
+    adoption = intent["configuration_adoption"]
+    if intent_path_override is not None:
+        sync = _read(
+            run_root / "webapp_sync_succeeded.json",
+            blocker="configured_controls_autostart_adoption_evidence_invalid",
+        )
+        zero = _read(
+            run_root / "post_teardown_provider_zero_receipt.json",
+            blocker="configured_controls_autostart_adoption_evidence_invalid",
+        )
+        publication = _read(
+            Path(str(terminal.get("publication_result_path") or "")),
+            blocker="configured_controls_autostart_adoption_evidence_invalid",
+        )
+        _validate_configuration_adoption(
+            adoption=adoption,
+            source_launch_id=source_launch_id,
+            terminal=terminal,
+            receipt=receipt,
+            revision=revision,
+            publication=publication,
+            sync=sync,
+            zero=zero,
+        )
+    elif adoption.get("mode") != "same_commit_automatic":
+        raise TaskEvaluationConfiguredControlsAutostartError(
+            "configured_controls_autostart_adoption_mode_invalid"
         )
     root = Path(progression_root).expanduser() / source_launch_id / "cpu-robot-binding"
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
@@ -760,6 +920,7 @@ __all__ = [
     "TaskEvaluationConfiguredControlsAutostartError",
     "materialize_configured_controls_autostart",
     "materialize_configured_controls_autostart_intent",
+    "configured_controls_autostart_adoption_registry_name",
     "configured_controls_autostart_registry_name",
     "stage_configured_controls_autostart_intent",
     "validate_configured_controls_autostart_intent",

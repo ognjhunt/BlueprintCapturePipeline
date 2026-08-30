@@ -67,7 +67,7 @@ def _bindings(tmp_path: Path) -> dict[str, object]:
                 )
             )
             for name in (
-                "release_window_path",
+                "release_window_template_path",
                 "authorization_path",
                 "launch_authority_path",
             )
