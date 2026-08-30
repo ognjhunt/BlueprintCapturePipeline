@@ -25,6 +25,7 @@ from blueprint_pipeline.adp_isaac_lab_arena_vast import (
     build_arena_native_control_bundle,
 )
 from blueprint_pipeline.common import write_json
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
@@ -301,16 +302,19 @@ def test_live_transport_emits_allocator_artifact_manifest(
             provider / "vast_teardown_manifest.json",
             {"continuing_spend_from_this_run": False},
         )
+        native_result = {
+            "status": "completed",
+            "candidate_policy_queried": False,
+            "blockers": [],
+            "result_digest": "",
+        }
+        native_result["result_digest"] = canonical_digest(
+            native_result, digest_field="result_digest"
+        )
         with zipfile.ZipFile(provider / "vast_provider_runtime_output.zip", "w") as archive:
             archive.writestr(
                 "adp_arena_native_canary.json",
-                json.dumps(
-                    {
-                        "status": "completed",
-                        "candidate_policy_queried": False,
-                        "blockers": [],
-                    }
-                ),
+                json.dumps(native_result),
             )
             archive.writestr("lossless_frames/frame_000001.png", b"lossless")
         return {
@@ -358,6 +362,13 @@ def test_live_transport_emits_allocator_artifact_manifest(
     )
 
     assert result["status"] == "completed"
+    persisted_native_result = json.loads(
+        Path(result["native_control_result_path"]).read_text(encoding="utf-8")
+    )
+    assert (
+        result["native_control_result_digest"]
+        == persisted_native_result["result_digest"]
+    )
     assert watchdog_events == ["armed", "adapter", "closed"]
     assert observed_adapter["instance_label_prefix"] == watchdog_handle.pod_name_prefix
     assert (

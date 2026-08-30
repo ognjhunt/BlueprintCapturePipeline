@@ -380,6 +380,19 @@ def _native_authority_validation_diagnostic(exc: BaseException) -> dict[str, Any
     }
 
 
+def _write_native_task_arena_adapter_output(
+    path: str | Path, result: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Seal the exact terminal mapping at the allocator's adapter output."""
+
+    sealed = json.loads(json.dumps(dict(result), allow_nan=False))
+    sealed["result_digest"] = canonical_digest(
+        sealed, digest_field="result_digest"
+    )
+    write_json(Path(path), sealed)
+    return sealed
+
+
 ROOT = Path(__file__).resolve().parents[2]
 CONTROL_PLANE_RELEASE_STATE_ROOT = Path(
     os.environ.get(
@@ -5545,7 +5558,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "blockers": exc.blockers,
                         "provider_mutations_performed": 0,
                     }
-                    write_json(Path(args.adapter_output), result)
+                    result = _write_native_task_arena_adapter_output(
+                        args.adapter_output, result
+                    )
                     print(json.dumps({"success": False}, sort_keys=True))
                     return 2
             if prepared_bundle is None:
@@ -5565,7 +5580,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         execute=args.execute,
                         close_on_success=controls_requested,
                     )
-                    write_json(Path(args.adapter_output), result)
+                    result = _write_native_task_arena_adapter_output(
+                        args.adapter_output, result
+                    )
                     success = result.get("status") in {
                         "dry_run_ready",
                         "completed",
@@ -5616,12 +5633,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                             ],
                             "provider_mutations_performed": 0,
                         }
-                        write_json(Path(args.adapter_output), result)
+                        result = _write_native_task_arena_adapter_output(
+                            args.adapter_output, result
+                        )
                         print(json.dumps({"success": False}, sort_keys=True))
                         return 2
                     run_kwargs["retain_warm_instance"] = True
                 result = run_native(**run_kwargs)
-            write_json(Path(args.adapter_output), result)
+            result = _write_native_task_arena_adapter_output(
+                args.adapter_output, result
+            )
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2

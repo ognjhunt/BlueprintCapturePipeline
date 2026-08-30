@@ -533,6 +533,8 @@ def _construction_predecessor(
         result.get("schema_version") != "native_task_arena_vast_run.v1"
         or result.get("status") != "completed"
         or result.get("blockers") not in ([], ())
+        or result.get("native_control_result_digest")
+        != construction_result.get("result_digest")
         or construction_result.get("schema_version")
         != "native_task_arena_construction_result.v1"
         or construction_result.get("status") != "completed"

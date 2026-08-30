@@ -43,6 +43,27 @@ def test_native_authority_validation_diagnostic_is_typed_and_path_free(
     assert "/private" not in json.dumps(diagnostic)
 
 
+def test_native_task_arena_adapter_output_is_sealed_where_terminal_is_written(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "adapter-output.json"
+
+    sealed = allocator._write_native_task_arena_adapter_output(
+        output,
+        {
+            "schema_version": "native_task_arena_vast_run.v1",
+            "status": "completed",
+            "blockers": [],
+        },
+    )
+
+    persisted = json.loads(output.read_text(encoding="utf-8"))
+    assert persisted == sealed
+    assert persisted["result_digest"] == canonical_digest(
+        persisted, digest_field="result_digest"
+    )
+
+
 def test_detached_model_volume_supervisor_ignores_only_sigint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
