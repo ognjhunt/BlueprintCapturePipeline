@@ -16,7 +16,12 @@ from typing import Any
 
 
 GPU_STAGE_TIMEOUT_SECONDS: Mapping[str, int] = {
-    "artifixer3d_observed_object_removal": 7_800,
+    # One first appearance pass plus one bounded selective repair pass. PR #1361
+    # funded the repair round but left this sized for a single pass, so the
+    # first run that actually reached the repair was killed mid-retrain. One
+    # measured execute pass is 3_661s (scene 839873, 16:41:56Z -> 17:42:57Z);
+    # two passes plus the repair edit and two independent reviews need ~8_400s.
+    "artifixer3d_observed_object_removal": 12_000,
     "content_agents_rigid_replacement": 7_800,
     "simready_native_import_qualification": 1_800,
 }
@@ -24,7 +29,11 @@ SERIAL_GPU_STAGE_TIMEOUT_SECONDS = sum(GPU_STAGE_TIMEOUT_SECONDS.values())
 
 # Named conservative product-policy reserves.  These are authority limits, not
 # empirical claims about how long a successful provider normally takes.
-BOOTSTRAP_TRANSFER_AND_NO_SPEND_RESERVE_SECONDS = 6_000
+# Instance creation through container start measured at ~360s on the same
+# lane. Trimmed from 6_000 to fund the repair pass while keeping the parent TTL
+# inside the compute cap that already exists, so no run may spend more than it
+# could before. Still an order of magnitude over what was observed.
+BOOTSTRAP_TRANSFER_AND_NO_SPEND_RESERVE_SECONDS = 3_600
 OUTPUT_AND_CLOSURE_RESERVE_SECONDS = 1_800
 REQUIRED_PARENT_TTL_SECONDS = (
     SERIAL_GPU_STAGE_TIMEOUT_SECONDS
@@ -95,7 +104,9 @@ def diagnostic_required_parent_ttl_seconds(completed_stage_prefix_count: int) ->
     # already sealed and cannot consume its former allowance again.
     remaining_gpu_seconds = sum(
         timeout
-        for index, timeout in ((0, 7_800), (2, 7_800), (4, 1_800))
+        # Derived from the declared table so a stage budget change cannot
+        # leave this duplicate behind.
+        for index, timeout in zip((0, 2, 4), GPU_STAGE_TIMEOUT_SECONDS.values())
         if index >= completed_stage_prefix_count
     )
     return (

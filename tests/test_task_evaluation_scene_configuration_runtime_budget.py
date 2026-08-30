@@ -30,12 +30,12 @@ from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import (
 
 
 def test_parent_runtime_policy_covers_serialized_stages_and_named_reserves() -> None:
-    assert tuple(GPU_STAGE_TIMEOUT_SECONDS.values()) == (7_800, 7_800, 1_800)
-    assert SERIAL_GPU_STAGE_TIMEOUT_SECONDS == 17_400
-    assert BOOTSTRAP_TRANSFER_AND_NO_SPEND_RESERVE_SECONDS == 6_000
+    assert tuple(GPU_STAGE_TIMEOUT_SECONDS.values()) == (12_000, 7_800, 1_800)
+    assert SERIAL_GPU_STAGE_TIMEOUT_SECONDS == 21_600
+    assert BOOTSTRAP_TRANSFER_AND_NO_SPEND_RESERVE_SECONDS == 3_600
     assert OUTPUT_AND_CLOSURE_RESERVE_SECONDS == 1_800
-    assert REQUIRED_PARENT_TTL_SECONDS == 25_200
-    assert ceil_live_minutes(REQUIRED_PARENT_TTL_SECONDS) == 420
+    assert REQUIRED_PARENT_TTL_SECONDS == 27_000
+    assert ceil_live_minutes(REQUIRED_PARENT_TTL_SECONDS) == 450
     assert MAX_PROVIDER_COMPUTE_SPEND_USD >= (
         MAX_HOURLY_RATE_USD * REQUIRED_PARENT_TTL_SECONDS / 3_600
     )
@@ -67,14 +67,14 @@ def test_parent_runtime_authority_refuses_short_ttl_or_compute_budget() -> None:
         maximum_hourly_rate_usd=MAX_HOURLY_RATE_USD,
         provider_compute_spend_cap_usd=MAX_PROVIDER_COMPUTE_SPEND_USD,
     ) == [
-        "scene_configuration_parent_runtime_budget_insufficient:25200:25199"
+        "scene_configuration_parent_runtime_budget_insufficient:27000:26999"
     ]
     assert parent_runtime_budget_blockers(
         ttl_seconds=REQUIRED_PARENT_TTL_SECONDS,
         maximum_hourly_rate_usd=MAX_HOURLY_RATE_USD,
         provider_compute_spend_cap_usd=5.59,
     ) == [
-        "scene_configuration_provider_compute_budget_insufficient:5.600000:5.590000"
+        "scene_configuration_provider_compute_budget_insufficient:6.000000:5.590000"
     ]
 
 
@@ -83,27 +83,27 @@ def test_remaining_stage_budget_is_serial_and_reserves_output_closure() -> None:
         {"adapter": {"id": adapter_id}}
         for adapter_id in GPU_STAGE_TIMEOUT_SECONDS
     ]
-    assert required_remaining_stage_seconds(stages, start_index=0) == 19_200
+    assert required_remaining_stage_seconds(stages, start_index=0) == 23_400
     assert required_remaining_stage_seconds(stages, start_index=1) == 11_400
     assert required_remaining_stage_seconds(stages, start_index=3) == 1_800
 
 
 def test_diagnostic_runtime_budget_drops_only_completed_gpu_allowances() -> None:
-    assert diagnostic_required_parent_ttl_seconds(0) == 25_200
-    assert diagnostic_required_parent_ttl_seconds(1) == 17_400
-    assert diagnostic_required_parent_ttl_seconds(3) == 9_600
-    assert diagnostic_required_parent_ttl_seconds(6) == 7_800
+    assert diagnostic_required_parent_ttl_seconds(0) == 27_000
+    assert diagnostic_required_parent_ttl_seconds(1) == 15_000
+    assert diagnostic_required_parent_ttl_seconds(3) == 7_200
+    assert diagnostic_required_parent_ttl_seconds(6) == 5_400
     assert diagnostic_required_parent_ttl_seconds(0) == REQUIRED_PARENT_TTL_SECONDS
 
 
 def test_diagnostic_runtime_budget_refuses_short_remaining_lease_or_cap() -> None:
     assert diagnostic_parent_runtime_budget_blockers(
         completed_stage_prefix_count=3,
-        ttl_seconds=9_599,
+        ttl_seconds=7_199,
         maximum_hourly_rate_usd=0.8,
         provider_compute_spend_cap_usd=3.0,
     ) == [
-        "scene_configuration_diagnostic_runtime_budget_insufficient:9600:9599"
+        "scene_configuration_diagnostic_runtime_budget_insufficient:7200:7199"
     ]
     assert diagnostic_parent_runtime_budget_blockers(
         completed_stage_prefix_count=3,

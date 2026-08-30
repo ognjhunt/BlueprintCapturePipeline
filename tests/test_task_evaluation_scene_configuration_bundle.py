@@ -1463,7 +1463,7 @@ def test_insufficient_parent_runtime_authority_refuses_before_any_mutation(
     assert result["provider_mutations_performed"] == 0
     assert result["continuing_spend_from_this_run"] is False
     assert result["blockers"] == [
-        "scene_configuration_parent_runtime_budget_insufficient:25200:9000"
+        "scene_configuration_parent_runtime_budget_insufficient:27000:9000"
     ]
 
 
@@ -4140,8 +4140,8 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
     assert provider_all_in_cap + 1.5 == MAX_ATTEMPT_SPEND_USD
     assert captured["hard_cap_usd"] == provider_all_in_cap
     assert captured["target_spend_usd"] == provider_all_in_cap
-    assert captured["max_live_minutes"] == 420
-    assert captured["session_max_live_minutes"] == 420
+    assert captured["max_live_minutes"] == 450
+    assert captured["session_max_live_minutes"] == 450
     assert captured["allowed_machine_ids"] == (21899, 44762)
     assert result["expected_provider_download_bytes"] == expected_download
     assert result["expected_provider_upload_bytes"] == expected_upload

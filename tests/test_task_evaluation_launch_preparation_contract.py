@@ -34,7 +34,7 @@ def ref(index: int) -> dict[str, object]:
 def configuration_spend() -> dict[str, object]:
     return {
         "hard_cap_usd": MAX_ATTEMPT_SPEND_USD,
-        "hard_ttl_seconds": 25_200,
+        "hard_ttl_seconds": 27_000,
         "provider_compute_spend_cap_usd": MAX_PROVIDER_COMPUTE_SPEND_USD,
         "external_service_caps": {
             "openai": {
