@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_policy_run_selection.v1.schema.json",
+  "title": "Task Evaluation policy-run server selection v1",
+  "type": "object",
+  "required": ["schema_version", "run_id", "source_launch_id", "offering_digest", "setup_digest", "preset_id"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_policy_run_selection.v1"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "source_launch_id": {"$ref": "#/$defs/identifier"},
+    "offering_digest": {"$ref": "#/$defs/digest"},
+    "setup_digest": {"$ref": "#/$defs/digest"},
+    "preset_id": {"enum": ["quick_10", "standard_100", "deep_500"]}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

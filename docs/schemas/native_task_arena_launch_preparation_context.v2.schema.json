@@ -13,7 +13,8 @@
         "native_task_arena_construction",
         "native_task_arena_controls",
         "native_task_arena_zero_action",
-        "native_task_arena_scripted_positive"
+        "native_task_arena_scripted_positive",
+        "native_task_arena_policy_evaluation"
       ]
     },
     "team_namespace": {
@@ -122,6 +123,25 @@
               "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
             }
           }
+        },
+        "policy_run": {
+          "type": "object",
+          "required": ["configuration_digest", "plan_digest", "setup_digest", "source_launch_id", "offering_digest", "candidate_ids"],
+          "additionalProperties": false,
+          "properties": {
+            "configuration_digest": {"$ref": "#/$defs/digest"},
+            "plan_digest": {"$ref": "#/$defs/digest"},
+            "setup_digest": {"$ref": "#/$defs/digest"},
+            "source_launch_id": {"type": "string", "minLength": 1},
+            "offering_digest": {"$ref": "#/$defs/digest"},
+            "candidate_ids": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "prefixItems": [{"const": "pi05_droid"}, {"const": "groot_n17_droid"}],
+              "items": false
+            }
+          }
         }
       }
     },
@@ -174,6 +194,7 @@
         "prior_spend_reconciliation": {"type": "string", "minLength": 1},
         "construction_result": {"type": "string", "minLength": 1},
         "zero_action_result": {"type": "string", "minLength": 1},
+        "controls_qualification_manifest": {"type": "string", "minLength": 1},
         "machine_avoidlist": {"type": "string"},
         "python": {"type": "string", "minLength": 1},
         "service_account": {"type": "string", "minLength": 1},
@@ -217,6 +238,21 @@
       "then": {
         "properties": {
           "operations": {"required": ["zero_action_result"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"lane": {"const": "native_task_arena_policy_evaluation"}}
+      },
+      "then": {
+        "properties": {
+          "references": {"required": ["policy_run"]},
+          "operations": {
+            "required": [
+              "controls_qualification_manifest"
+            ]
+          }
         }
       }
     }

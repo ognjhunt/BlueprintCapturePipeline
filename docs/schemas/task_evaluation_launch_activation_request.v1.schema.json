@@ -28,7 +28,8 @@
         "native_task_arena_construction",
         "native_task_arena_controls",
         "native_task_arena_zero_action",
-        "native_task_arena_scripted_positive"
+        "native_task_arena_scripted_positive",
+        "native_task_arena_policy_evaluation"
       ]
     },
     "preparation": {
@@ -76,7 +77,8 @@
             "prior_provider_zero": {"$ref": "#/$defs/reference"},
             "prior_spend_reconciliation": {"$ref": "#/$defs/reference"},
             "construction_result": {"$ref": "#/$defs/reference"},
-            "zero_action_result": {"$ref": "#/$defs/reference"}
+            "zero_action_result": {"$ref": "#/$defs/reference"},
+            "controls_qualification_manifest": {"$ref": "#/$defs/reference"}
           }
         }
       ]
@@ -104,9 +106,10 @@
       "required": ["profile_publication", "catalog_synchronization", "standing_authorization"],
       "additionalProperties": false,
       "properties": {
-        "profile_publication": {"const": true},
-        "catalog_synchronization": {"const": true},
-        "standing_authorization": {"const": true}
+        "profile_publication": {"type": "boolean"},
+        "catalog_synchronization": {"type": "boolean"},
+        "standing_authorization": {"type": "boolean"},
+        "policy_campaign_queue": {"type": "boolean"}
       }
     }
   },
@@ -119,6 +122,38 @@
     {
       "if": {"properties": {"lane": {"const": "native_task_arena_scripted_positive"}}},
       "then": {"properties": {"lineage": {"required": ["zero_action_result"]}}}
+    },
+    {
+      "if": {"properties": {"lane": {"const": "native_task_arena_policy_evaluation"}}},
+      "then": {
+        "properties": {
+          "lineage": {
+            "required": [
+              "controls_qualification_manifest"
+            ]
+          },
+          "requested_mutations": {
+            "required": ["profile_publication", "catalog_synchronization", "standing_authorization", "policy_campaign_queue"],
+            "properties": {
+              "profile_publication": {"const": false},
+              "catalog_synchronization": {"const": false},
+              "standing_authorization": {"const": false},
+              "policy_campaign_queue": {"const": true}
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "requested_mutations": {
+            "properties": {
+              "profile_publication": {"const": true},
+              "catalog_synchronization": {"const": true},
+              "standing_authorization": {"const": true}
+            }
+          }
+        }
+      }
     }
   ],
   "$defs": {

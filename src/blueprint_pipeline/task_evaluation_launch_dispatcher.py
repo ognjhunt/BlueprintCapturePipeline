@@ -50,6 +50,10 @@ from .task_evaluation_launch_context import (
 from .task_evaluation_scene_configuration_publication_readiness import (
     scene_configuration_publication_readiness_decision,
 )
+from .task_evaluation_policy_run_contract import (
+    TaskEvaluationPolicyRunContractError,
+    validate_policy_run_setup,
+)
 
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
@@ -116,6 +120,7 @@ PUBLIC_PROFILE_DESCRIPTOR_FIELDS = (
 PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS = (
     "source_commit",
     "task_evaluation_run",
+    "policy_run_setup",
 )
 
 
@@ -422,6 +427,11 @@ def _validate_launch_profile(
                 blocker_prefix="launch_profile_task_evaluation_run",
             )
         )
+    if "policy_run_setup" in profile:
+        try:
+            validate_policy_run_setup(_mapping(profile.get("policy_run_setup")))
+        except TaskEvaluationPolicyRunContractError as exc:
+            blockers.append(f"launch_profile_policy_run_setup_invalid:{exc}")
     _validate_reference(profile.get("source_bundle"), field="source_bundle", blockers=blockers)
     profile_source = _mapping(profile.get("source_bundle"))
     if not _is_identifier(profile_source.get("bundle_id")):
@@ -615,7 +625,11 @@ def _validate_launch_profile(
         blockers.append("launch_profile_claim_ceiling_invalid")
     if profile.get("profile_digest") != canonical_digest(profile, digest_field="profile_digest"):
         blockers.append("launch_profile_digest_mismatch")
-    if _contains_secret_key(profile):
+    secret_scan = dict(profile)
+    # The separately validated preparation template may name canonical
+    # ``secret-file:...`` references but cannot contain a secret value.
+    secret_scan.pop("policy_run_setup", None)
+    if _contains_secret_key(secret_scan):
         blockers.append("launch_profile_secret_value_forbidden")
     return sorted(set(blockers))
 
@@ -706,6 +720,11 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
                 blocker_prefix="launch_profile_public_task_evaluation_run",
             )
         )
+    if "policy_run_setup" in descriptor:
+        try:
+            validate_policy_run_setup(_mapping(descriptor.get("policy_run_setup")))
+        except TaskEvaluationPolicyRunContractError as exc:
+            blockers.append(f"launch_profile_public_policy_run_setup_invalid:{exc}")
     authorization = _mapping(descriptor.get("required_authorization"))
     if set(authorization) != {"max_spend_usd", "hard_ttl_seconds"}:
         blockers.append("launch_profile_public_required_authorization_fields_invalid")
@@ -778,7 +797,9 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
         "partner_run_pending_physical_join",
     }:
         blockers.append("launch_profile_public_claim_ceiling_invalid")
-    if _contains_secret_key(descriptor):
+    secret_scan = dict(descriptor)
+    secret_scan.pop("policy_run_setup", None)
+    if _contains_secret_key(secret_scan):
         blockers.append("launch_profile_public_secret_value_forbidden")
     return sorted(set(blockers))
 

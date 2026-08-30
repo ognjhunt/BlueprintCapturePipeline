@@ -57,6 +57,10 @@ from .task_evaluation_launch_preparation_worker import (
     running_worker_source_commit,
     validate_allowed_uri_prefixes,
 )
+from .task_evaluation_policy_run_contract import (
+    TaskEvaluationPolicyRunContractError,
+    build_policy_campaign_activation_manifest,
+)
 from .task_evaluation_native_arena_preparation_adapter import (
     RESULT_SCHEMA_VERSION as ADAPTER_RESULT_SCHEMA_VERSION,
 )
@@ -338,6 +342,24 @@ def _load_verified_preparation(
         raise TaskEvaluationLaunchActivationWorkerError(
             "launch_activation_preparation_binding_mismatch"
         )
+    if activation_request.get("lane") == "native_task_arena_policy_evaluation":
+        policy_configuration = request.get("policy_run_configuration")
+        policy_plan = result.get("policy_run_plan")
+        if (
+            not isinstance(policy_configuration, Mapping)
+            or not isinstance(policy_plan, Mapping)
+            or policy_plan.get("schema_version")
+            != "task_evaluation_policy_run_plan.v1"
+            or policy_plan.get("configuration_digest")
+            != policy_configuration.get("configuration_digest")
+            or policy_plan.get("plan_digest")
+            != canonical_digest(policy_plan, digest_field="plan_digest")
+            or policy_plan.get("execution_performed") is not False
+            or policy_plan.get("provider_mutation_performed") is not False
+        ):
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_policy_run_plan_invalid"
+            )
     preparation_root = (preparation_input_root / preparation_id).resolve()
     expected_references: dict[str, tuple[str, int]] = {
         row["contract_path"]: (row["digest"], row["size_bytes"])
@@ -599,6 +621,7 @@ def _build_native_context(
     *,
     activation_request: Mapping[str, Any],
     preparation_request: Mapping[str, Any],
+    policy_run_plan: Mapping[str, Any] | None,
     adapter: Mapping[str, Any],
     preparation_materialized: Mapping[str, Path],
     activation_materialized: Mapping[str, Path],
@@ -724,7 +747,12 @@ def _build_native_context(
             operations["zero_action_result"] = str(
                 activation_materialized["lineage.zero_action_result"]
             )
-    return {
+        for name in ("controls_qualification_manifest",):
+            if name in lineage:
+                operations[name] = str(
+                    activation_materialized[f"lineage.{name}"]
+                )
+    context = {
         "schema_version": "native_task_arena_launch_preparation_context.v2",
         "lane": activation_request["lane"],
         "team_namespace": activation_request["team_namespace"],
@@ -771,6 +799,23 @@ def _build_native_context(
         },
         "operations": operations,
     }
+    policy_configuration = preparation_request.get("policy_run_configuration")
+    if policy_configuration is not None:
+        if not isinstance(policy_run_plan, Mapping):
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_policy_run_plan_missing"
+            )
+        context["references"]["policy_run"] = {
+            "configuration_digest": policy_configuration[
+                "configuration_digest"
+            ],
+            "plan_digest": policy_run_plan["plan_digest"],
+            "setup_digest": policy_configuration["setup_digest"],
+            "source_launch_id": policy_configuration["source_launch_id"],
+            "offering_digest": policy_configuration["offering_digest"],
+            "candidate_ids": policy_configuration["candidate_ids"],
+        }
+    return context
 
 
 def _build_scene_configuration_context(
@@ -1110,6 +1155,64 @@ def _activation_result(
     return result
 
 
+def _policy_campaign_activation_result(
+    *,
+    request: Mapping[str, Any],
+    preparation_request: Mapping[str, Any],
+    preparation_result: Mapping[str, Any],
+    window: Mapping[str, Any],
+    activation_materialized: Mapping[str, Path],
+    activation_root: Path,
+) -> dict[str, Any]:
+    """Seal the N-cell paired-campaign queue without profile or paid mutation."""
+
+    try:
+        qualification = _read_json(
+            activation_materialized["lineage.controls_qualification_manifest"],
+            blocker="launch_activation_controls_qualification_manifest_invalid",
+        )
+        manifest = build_policy_campaign_activation_manifest(
+            configuration=preparation_request["policy_run_configuration"],
+            plan=preparation_result["policy_run_plan"],
+            controls_qualification=qualification,
+        )
+    except (KeyError, TaskEvaluationPolicyRunContractError) as exc:
+        raise TaskEvaluationLaunchActivationWorkerError(
+            f"launch_activation_policy_campaign_invalid:{exc}"
+        ) from exc
+    manifest_path = (
+        activation_root / "task_evaluation_policy_campaign_activation.v1.json"
+    )
+    write_launch_preparation_record_exclusive(manifest_path, manifest)
+    result: dict[str, Any] = {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "status": "policy_campaign_queue_materialized_no_execution",
+        "activation_id": request["activation_id"],
+        "preparation_id": request["preparation"]["preparation_id"],
+        "team_namespace": request["team_namespace"],
+        "lane": request["lane"],
+        "source_commit": request["expected_production_commit"],
+        "preparation_result_digest": preparation_result["result_digest"],
+        "release_window_digest": window["window_digest"],
+        "policy_campaign_activation_digest": manifest["activation_digest"],
+        "policy_campaign_activation_sha256": _sha256_file(manifest_path),
+        "campaign_unit_count": manifest["campaign_unit_count"],
+        "full_byte_activation_reference_readback_passed": True,
+        "profile_publication_performed": False,
+        "catalog_mutation_performed": False,
+        "standing_authorization_published": False,
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "blockers": [],
+        "observed_at_iso": datetime.now(timezone.utc).isoformat(),
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(
+        result, digest_field="result_digest"
+    )
+    return result
+
+
 def process_launch_activation_queue(
     *,
     queue_root: str | Path,
@@ -1297,6 +1400,7 @@ def process_launch_activation_queue(
                 context = _build_native_context(
                     activation_request=request,
                     preparation_request=preparation_request,
+                    policy_run_plan=preparation_result.get("policy_run_plan"),
                     adapter=adapter,
                     preparation_materialized=preparation_materialized,
                     activation_materialized=materialized,
@@ -1316,19 +1420,29 @@ def process_launch_activation_queue(
                     / "native_task_arena_launch_preparation_context.v2.json"
                 )
             write_launch_preparation_record_exclusive(context_path, context)
-            receipt_path = owned_root / "paid_lane_launch_preparation.v1.json"
-            preparation_receipt = preparer(
-                lane=request["lane"],
-                context_path=context_path,
-                receipt_path=receipt_path,
-                repository_root=repository,
-            )
-            result = _activation_result(
-                request=request,
-                preparation_result=preparation_result,
-                window=window,
-                preparation_receipt=preparation_receipt,
-            )
+            if request["lane"] == "native_task_arena_policy_evaluation":
+                result = _policy_campaign_activation_result(
+                    request=request,
+                    preparation_request=preparation_request,
+                    preparation_result=preparation_result,
+                    window=window,
+                    activation_materialized=materialized,
+                    activation_root=owned_root,
+                )
+            else:
+                receipt_path = owned_root / "paid_lane_launch_preparation.v1.json"
+                preparation_receipt = preparer(
+                    lane=request["lane"],
+                    context_path=context_path,
+                    receipt_path=receipt_path,
+                    repository_root=repository,
+                )
+                result = _activation_result(
+                    request=request,
+                    preparation_result=preparation_result,
+                    window=window,
+                    preparation_receipt=preparation_receipt,
+                )
         except Exception as exc:
             terminal_state = "blocked"
             result = {

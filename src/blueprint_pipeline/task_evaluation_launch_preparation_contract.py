@@ -30,6 +30,16 @@ from .task_evaluation_scene_configuration_appearance_review import (
     AppearanceReviewContractError,
     appearance_review_mode,
 )
+from .task_evaluation_policy_run_contract import (
+    TaskEvaluationPolicyRunContractError,
+    compile_policy_run_configuration,
+    policy_run_configuration_schema,
+    policy_run_selection_schema,
+    policy_run_setup_schema,
+    validate_policy_run_configuration,
+    validate_policy_run_selection,
+    validate_policy_run_setup,
+)
 
 
 SCHEMA_VERSION = "task_evaluation_launch_preparation_request.v1"
@@ -70,6 +80,14 @@ def preparation_request_schema() -> dict[str, Any]:
     # 'jsonschema'`` before its first stage, on a GPU that was already rented.
     # Same reason ``rfc8785`` is imported inside ``cross_runtime_canonical_json``.
     import jsonschema
+
+    # Keep the policy-run schema independently consumable by the WebApp while
+    # embedding the same exact resource at this existing intake boundary.
+    value["properties"]["policy_run_configuration"] = (
+        policy_run_configuration_schema()
+    )
+    value["properties"]["policy_run_selection"] = policy_run_selection_schema()
+    value["properties"]["policy_run_setup"] = policy_run_setup_schema()
 
     jsonschema.Draft202012Validator.check_schema(value)
     return dict(value)
@@ -221,6 +239,38 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
         ):
             raise TaskEvaluationLaunchPreparationContractError(
                 "launch_preparation_episode_spend_invalid"
+            )
+    policy_run = request.get("policy_run_configuration")
+    policy_setup = request.get("policy_run_setup")
+    policy_selection = request.get("policy_run_selection")
+    if any(value is not None for value in (policy_run, policy_setup, policy_selection)):
+        if not all(
+            isinstance(value, Mapping)
+            for value in (policy_run, policy_setup, policy_selection)
+        ):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_policy_run_contract_incomplete"
+            )
+        try:
+            setup = validate_policy_run_setup(policy_setup)
+            selection = validate_policy_run_selection(policy_selection)
+            configuration = validate_policy_run_configuration(
+                policy_run, setup=setup
+            )
+            if configuration != compile_policy_run_configuration(
+                selection, setup=setup
+            ):
+                raise TaskEvaluationPolicyRunContractError(
+                    "policy_run_configuration_selection_mismatch"
+                )
+        except TaskEvaluationPolicyRunContractError as exc:
+            raise TaskEvaluationLaunchPreparationContractError(str(exc)) from exc
+        if (
+            request["run_mode"] != "episode_evaluation"
+            or request["controller"]["kind"] != "policy_container"
+        ):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_policy_run_mode_invalid"
             )
     output_mounts = [
         mount for mount in request["runtime"]["mounts"] if mount["mode"] == "output"
