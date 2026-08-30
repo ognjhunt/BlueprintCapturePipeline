@@ -248,6 +248,27 @@ def test_unknown_request_field_fails_before_network(monkeypatch, tmp_path) -> No
     assert not receipt_path.exists()
 
 
+def test_scene_configuration_accepts_explicit_paused_ungraded_review_override(
+    tmp_path,
+) -> None:
+    request = _request()
+    request["appearance_review_override"] = {
+        "mode": "paused_ungraded",
+        "scope": "artifixer_appearance_only",
+        "ungraded_publication_acknowledged": True,
+        "review_provider_call_permitted": False,
+        "warning_label": "Visual review paused - appearance ungraded",
+    }
+    body = (json.dumps(request, indent=2) + "\n").encode()
+    request_path = tmp_path / "paused-ungraded-preparation.json"
+    request_path.write_bytes(body)
+
+    parsed, exact_body = submitter.read_exact_preparation_request(request_path)
+
+    assert parsed == request
+    assert exact_body == body
+
+
 def test_existing_receipt_fails_before_network(monkeypatch, tmp_path) -> None:
     request_path, secret_path, receipt_path, _body, _request = _files(tmp_path)
     receipt_path.write_text("user-owned\n", encoding="utf-8")
