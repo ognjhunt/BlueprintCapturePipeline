@@ -889,6 +889,7 @@ def _camera_snapshot(
     camera_scene_names: Mapping[str, str],
     output_root: Path,
     snapshot_id: str,
+    framing_expectations: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     import numpy as np
     from PIL import Image
@@ -994,6 +995,13 @@ def _camera_snapshot(
             target_label="task_object",
             minimum_pixels=thresholds["minimum_pixels"],
             minimum_pixel_fraction=thresholds["minimum_pixel_fraction"],
+            # Sealed at plan time for static world-frame cameras: scales the
+            # configured minimums down to what this scene's geometry can
+            # project, never up.  Robot-parented cameras have no row here and
+            # keep the configured constants.
+            framing_expectation=(
+                (framing_expectations or {}).get(role) or None
+            ),
         )
         rows.append(
             {
@@ -1521,18 +1529,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                     dtype=torch.float32,
                 )
             )
+        camera_framing_expectations = (
+            plan.get("task_object_observability") or {}
+        ).get("cameras") or {}
         snapshots.append(
             _camera_snapshot(
                 env=env,
                 camera_scene_names=built.camera_scene_names,
                 output_root=output_root,
                 snapshot_id="reset",
+                framing_expectations=camera_framing_expectations,
             )
         )
 
         phase_results = []
         total_steps = 0
-        max_total_steps = int(plan["cadence"]["maximum_action_steps"])
+        # Reserve the settle window out of the episode budget: the qualifying
+        # controls episode replays every qualified phase at its exact step
+        # count and then appends this settle window inside the same
+        # ``maximum_action_steps`` cap, so a construction that consumed the
+        # full cap would qualify here and be refused there
+        # (``native_rigid_control_action_budget_exceeded``) after the paid run.
+        # Phase plans sealed by the current materializers carry the reserved
+        # budget; legacy plans without it keep their historical cap.
+        max_total_steps = min(
+            int(
+                phase_plan["execution_parameters"].get(
+                    "maximum_construction_total_steps"
+                )
+                or plan["cadence"]["maximum_action_steps"]
+            ),
+            int(plan["cadence"]["maximum_action_steps"]),
+        )
         execution_parameters = phase_plan["execution_parameters"]
         arrival_tolerance = float(execution_parameters["arrival_tolerance_m"])
         default_orientation_tolerance = execution_parameters.get(
@@ -1789,6 +1817,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     camera_scene_names=built.camera_scene_names,
                     output_root=output_root,
                     snapshot_id=phase["phase_id"],
+                    framing_expectations=camera_framing_expectations,
                 )
             )
             _announce(

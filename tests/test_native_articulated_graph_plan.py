@@ -309,6 +309,20 @@ def _scene_with_command_limits(delta: float, lead: float) -> dict:
     return scene
 
 
+def test_graph_phase_plan_reserves_the_controls_settle_window() -> None:
+    """The graph controls episode replays qualified phases plus the settle
+    window inside one ``maximum_action_steps`` cap
+    (``native_articulated_graph_control_action_budget_exceeded``), so the
+    construction budget must reserve that window."""
+
+    scene = _scene()
+    plan = materialize_native_task_construction_phase_plan(scene)
+    assert plan["execution_parameters"]["maximum_construction_total_steps"] == (
+        scene["task_spec"]["maximum_action_steps"]
+        - scene["task_spec"]["settle_window_samples"]
+    )
+
+
 def test_sealed_command_limits_reach_construction_execution_parameters() -> None:
     """A raised bound must change what construction executes, not just the seal.
 

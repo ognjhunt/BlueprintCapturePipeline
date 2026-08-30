@@ -71,13 +71,13 @@ def _camera(role: str) -> dict:
             0.0,
             0.0,
             0.0,
-            1.0,
+            -1.0,
             0.0,
             0.0,
             0.0,
             0.0,
-            1.0,
-            0.0,
+            -1.0,
+            2.0,
             0.0,
             0.0,
             0.0,
@@ -200,6 +200,27 @@ def Xform "Asset"
             # and a placeholder cannot answer that question either way.
             write_appearance_usdz(
                 path, _fixture_room_positions(), matrix=appearance_matrix
+            )
+        elif role == "task_object":
+            # Measurable geometry, not a stub: the plan now seals per-camera
+            # framing expectations from the task object's authored extent, and
+            # an extent-free asset is refused fail-closed.
+            path.write_text(
+                '''#usda 1.0
+(
+    defaultPrim = "Asset"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "Asset"
+{
+    def Mesh "body"
+    {
+        point3f[] points = [(-0.06, -0.06, 0.0), (0.06, 0.06, 0.12)]
+    }
+}
+''',
+                encoding="utf-8",
             )
         else:
             path.write_bytes(f"fixture:{role}:{articulated}".encode())

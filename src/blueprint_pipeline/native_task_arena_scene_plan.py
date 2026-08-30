@@ -25,6 +25,12 @@ from .native_articulated_motion_geometry import (
     NativeArticulatedMotionGeometryError,
     derive_native_articulated_motion_geometry,
 )
+from .native_task_camera_framing_expectation import (
+    FRAMING_MINIMUM_EXPECTED_BBOX_AREA_PX,
+    NativeTaskCameraFramingExpectationError,
+    camera_framing_expectation,
+    measure_task_object_extent_m,
+)
 from .native_task_appearance_frame_alignment import (
     NativeTaskAppearanceFrameAlignmentError,
     require_native_task_appearance_frame_alignment,
@@ -1178,6 +1184,90 @@ def _appearance_frame_alignment(
         raise NativeTaskArenaScenePlanError(list(exc.errors)) from exc
 
 
+def _task_object_observability(
+    *,
+    contract: Mapping[str, Any],
+    cameras: Any,
+    task_object_asset_path: Path | None,
+) -> dict[str, Any] | None:
+    """Seal per-camera geometric framing expectations for the task object.
+
+    Static world-frame cameras cannot be repositioned by the robot, so what
+    they can observe of the task object is fixed by sealed geometry: the
+    object's authored extent, the camera matrix and intrinsics, and where the
+    task moves the object.  Sealing that projection here lets the runtime
+    framing gate demand what the geometry supports instead of a constant it
+    may contradict, and lets an infeasible camera refuse at plan time instead
+    of after paid execution (scene 839873's external camera measured 93 task
+    pixels against a fixed 200-pixel minimum its 1.43 m viewing distance can
+    never meet).
+    """
+
+    if task_object_asset_path is None or not cameras:
+        return None
+    try:
+        extent = measure_task_object_extent_m(task_object_asset_path)
+    except NativeTaskCameraFramingExpectationError as exc:
+        raise NativeTaskArenaScenePlanError(list(exc.errors)) from exc
+    task_kind = str(contract.get("task_kind") or "")
+    task_spec = contract.get("task_spec") or {}
+    positions: list[list[float]] = []
+    if task_kind == "rigid_pick_place":
+        start = list(task_spec.get("start_pose_world") or [])[:3]
+        target = list(task_spec.get("target_position_world_m") or [])
+        if len(start) == 3:
+            positions.append([float(value) for value in start])
+        if len(target) == 3:
+            positions.append([float(value) for value in target])
+    if not positions:
+        subject_pose = next(
+            (
+                (row.get("pose_world") or {}).get("position_world_m")
+                for row in contract.get("objects") or []
+                if isinstance(row, Mapping) and row.get("task_subject") is True
+            ),
+            None,
+        )
+        if isinstance(subject_pose, (list, tuple)) and len(subject_pose) == 3:
+            positions.append([float(value) for value in subject_pose])
+    if not positions:
+        raise NativeTaskArenaScenePlanError(
+            ["native_task_arena_task_object_positions_unresolved"]
+        )
+    rows: dict[str, dict[str, Any]] = {}
+    errors: list[str] = []
+    for camera in cameras:
+        if not isinstance(camera, Mapping):
+            continue
+        role = str(camera.get("role") or "")
+        try:
+            expectation = camera_framing_expectation(
+                camera=camera,
+                object_extent_m=extent,
+                object_positions_world=positions,
+            )
+        except NativeTaskCameraFramingExpectationError as exc:
+            errors.extend(f"{value}:{role}" for value in exc.errors)
+            continue
+        if expectation is None:
+            continue
+        rows[role] = expectation
+        if (
+            camera.get("policy_input") is True
+            and expectation["expected_bbox_area_px"]
+            < FRAMING_MINIMUM_EXPECTED_BBOX_AREA_PX
+        ):
+            errors.append(f"native_task_arena_camera_framing_infeasible:{role}")
+    if errors:
+        raise NativeTaskArenaScenePlanError(sorted(set(errors)))
+    return {
+        "schema_version": "native_task_object_observability.v1",
+        "task_object_extent_m": extent,
+        "object_positions_world": positions,
+        "cameras": rows,
+    }
+
+
 def materialize_native_task_arena_scene_plan(
     *,
     runtime_contract: Mapping[str, Any],
@@ -1252,6 +1342,11 @@ def materialize_native_task_arena_scene_plan(
         asset_directory=asset_directory,
         contract_objects=list(contract["objects"]),
     )
+    task_object_observability = _task_object_observability(
+        contract=effective_contract,
+        cameras=cameras,
+        task_object_asset_path=task_object_asset_path,
+    )
     plan: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "runtime_contract_digest": contract["contract_digest"],
@@ -1270,6 +1365,7 @@ def materialize_native_task_arena_scene_plan(
         "asset_directory": published_asset_directory or str(asset_directory),
         "objects": objects,
         "appearance_frame_alignment": appearance_frame_alignment,
+        "task_object_observability": task_object_observability,
         "robot": contract["robot"],
         "cameras": cameras,
         "cadence": _cadence(contract, physics_frequency_hz=physics_frequency_hz),
