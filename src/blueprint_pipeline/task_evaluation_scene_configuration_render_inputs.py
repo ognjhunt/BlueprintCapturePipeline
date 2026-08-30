@@ -54,6 +54,11 @@ SOURCE_OBJECT_FOOTPRINT_MARGIN_FRACTION = 0.12
 # so the smallest admissible margin has to clear it outright.
 MIN_SOURCE_OBJECT_FOOTPRINT_MARGIN_PIXELS = MAX_INNER_FEATHER_RADIUS_PIXELS + 8
 MAX_SOURCE_OBJECT_FOOTPRINT_MARGIN_PIXELS = 64
+# A contact shadow darkens the supporting surface; it does not blacken it.
+# Anything below this fraction of the surface's own tone is a different
+# object standing in the margin, not the object's soft boundary.
+SUPPORTING_SURFACE_SHADOW_LUMINANCE_FLOOR_FRACTION = 0.62
+SUPPORTING_SURFACE_HIGHLIGHT_LUMINANCE_CEILING_FRACTION = 1.25
 Renderer = Callable[..., Mapping[str, Any]]
 RuntimeResolver = Callable[..., Mapping[str, Any]]
 SplatDecoder = Callable[..., Mapping[str, Any]]
@@ -221,6 +226,92 @@ def _target_camera_ring(
     return rows
 
 
+def _constrain_margin_to_supporting_surface(
+    *,
+    mask: "np.ndarray",
+    frame_path: Path,
+    widened_bounds: tuple[int, int, int, int],
+    object_bounds: tuple[int, int, int, int],
+) -> dict[str, Any]:
+    """Keep the contact shadow in the admitted support and other objects out.
+
+    The margin exists to admit the object's soft boundary -- the contact shadow
+    it casts on whatever it sits on.  A plain rectangle cannot tell that apart
+    from a neighbouring object that merely happens to be nearby, so a margin
+    wide enough to cover the shadow also hands the editor a licence to repaint
+    a laptop standing beside the object.
+
+    A contact shadow is a *darkening of the supporting surface*: it keeps the
+    surface's tone within a bounded band and stays attached to the object.  A
+    distinct object does neither.  So a margin pixel is admitted only when its
+    luminance sits inside that band around the surface reference and it remains
+    connected to the object's own box.  ``mask`` is narrowed in place; the
+    result is always a subset of the widened rectangle, so the seal's proof
+    that nothing outside the digest-bound support changed still holds, and
+    binds a smaller region.
+    """
+
+    left, top, right, bottom = widened_bounds
+    object_left, object_top, object_right, object_bottom = object_bounds
+    try:
+        with Image.open(frame_path) as frame:
+            luminance = np.asarray(
+                frame.convert("L").crop((left, top, right, bottom)),
+                dtype=np.float64,
+            )
+    except (OSError, ValueError) as exc:
+        raise TaskEvaluationSceneConfigurationRenderInputsError(
+            "scene_configuration_render_mask_projection_invalid"
+        ) from exc
+
+    window = mask[top:bottom, left:right] > 0
+    interior = np.zeros_like(window)
+    interior[
+        max(0, object_top - top) : max(0, object_bottom - top),
+        max(0, object_left - left) : max(0, object_right - left),
+    ] = True
+    ring = window & ~interior
+    if not ring.any():
+        return {
+            "rule": "supporting_surface_luminance_band_connected_to_object",
+            "surface_reference_luminance": None,
+            "margin_pixels_offered": 0,
+            "margin_pixels_admitted": 0,
+        }
+
+    # Median over the ring: the supporting surface is what the margin mostly
+    # sees, so a neighbouring object has to occupy more than half of it before
+    # it can move the reference it is being measured against.
+    reference = float(np.median(luminance[ring]))
+    floor = reference * SUPPORTING_SURFACE_SHADOW_LUMINANCE_FLOOR_FRACTION
+    ceiling = reference * SUPPORTING_SURFACE_HIGHLIGHT_LUMINANCE_CEILING_FRACTION
+    admitted = ring & (luminance >= floor) & (luminance <= ceiling)
+
+    # A contact shadow touches the thing casting it. Growing outward from the
+    # object's box drops any admitted patch that is merely tone-compatible but
+    # detached -- a bright wall seen past the object, for example.
+    reachable = interior.copy()
+    frontier = interior
+    while frontier.any():
+        grown = np.zeros_like(reachable)
+        grown[1:, :] |= frontier[:-1, :]
+        grown[:-1, :] |= frontier[1:, :]
+        grown[:, 1:] |= frontier[:, :-1]
+        grown[:, :-1] |= frontier[:, 1:]
+        frontier = grown & admitted & ~reachable
+        reachable |= frontier
+
+    mask[top:bottom, left:right] = np.where(reachable, 255, 0).astype(np.uint8)
+    return {
+        "rule": "supporting_surface_luminance_band_connected_to_object",
+        "surface_reference_luminance": round(reference, 3),
+        "luminance_floor": round(floor, 3),
+        "luminance_ceiling": round(ceiling, 3),
+        "margin_pixels_offered": int(ring.sum()),
+        "margin_pixels_admitted": int((reachable & ring).sum()),
+    }
+
+
 def _project_registered_bounds_mask(
     *,
     minimum_xyz: Sequence[float],
@@ -320,6 +411,14 @@ def _project_registered_bounds_mask(
     bottom = min(height, object_bottom + margin)
     mask = np.zeros((height, width), dtype=np.uint8)
     mask[top:bottom, left:right] = 255
+    # The object's own box is always admitted; it is what the edit removes.
+    mask[object_top:object_bottom, object_left:object_right] = 255
+    surface = _constrain_margin_to_supporting_surface(
+        mask=mask,
+        frame_path=frame_path,
+        widened_bounds=(left, top, right, bottom),
+        object_bounds=(object_left, object_top, object_right, object_bottom),
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(mask, mode="L").save(output_path, format="PNG", optimize=False)
     return {
@@ -336,7 +435,8 @@ def _project_registered_bounds_mask(
             object_bottom,
         ],
         "contact_shadow_margin_pixels": margin,
-        "foreground_pixel_count": int((right - left) * (bottom - top)),
+        "foreground_pixel_count": int((mask > 0).sum()),
+        "margin_admission": surface,
     }
 
 
