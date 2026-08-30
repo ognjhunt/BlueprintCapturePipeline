@@ -656,6 +656,37 @@ def test_camera_candidate_materialization_is_immutable(tmp_path: Path) -> None:
         )
 
 
+def test_camera_candidates_are_scoped_to_the_source_commit(tmp_path: Path) -> None:
+    """The camera document embeds source_commit, so a shared filename makes every
+    redeploy collide with its predecessor and block the lane permanently."""
+
+    template_path = _write(
+        tmp_path / "camera-template.json",
+        (json.dumps(_camera_template()) + "\n").encode(),
+    )
+    kwargs = {
+        "root": tmp_path,
+        "camera_template_path": template_path,
+        "accepted_pose": {
+            "position_world_m": [3.5, -6.7, 0.75],
+            "orientation_xyzw": [0.0, 0.0, 1.0, 0.0],
+        },
+        "selected_candidate_id": "candidate-1",
+        "trajectory": _trajectory(),
+        "source_commit": COMMIT,
+    }
+    first = autostart._materialize_placement_aware_cameras(**kwargs)
+    successor = "b" * 40
+    second = autostart._materialize_placement_aware_cameras(
+        **{**kwargs, "source_commit": successor}
+    )
+
+    assert first != second
+    assert first.is_file() and second.is_file()
+    assert COMMIT[:12] in first.name
+    assert successor[:12] in second.name
+
+
 def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -241,7 +241,10 @@ def materialize_configured_controls_plan(
         raise TaskEvaluationConfiguredControlsPlanError(
             "configured_controls_plan_root_invalid"
         )
-    destination = root / f"{source_launch_id}.json"
+    # Scope the plan to its production commit. A redeploy authors a plan
+    # whose bytes differ only by commit, and a launch-id-only filename turns
+    # that into configured_controls_plan_immutable_conflict forever.
+    destination = root / f"{source_launch_id}-{expected_production_commit[:12]}.json"
     payload = _payload(plan)
     status = "materialized"
     try:

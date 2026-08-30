@@ -374,7 +374,11 @@ def _materialize_placement_aware_cameras(
         trajectory=trajectory,
         source_commit=source_commit,
     )
-    destination = root / "placement-aware-camera-candidates.v1.json"
+    # The document embeds source_commit, so the filename must carry it too;
+    # otherwise each redeploy collides with its predecessor bytes.
+    destination = (
+        root / f"placement-aware-camera-candidates-{source_commit[:12]}.v1.json"
+    )
     payload = (
         json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode()
@@ -1510,7 +1514,11 @@ def materialize_configured_controls_autostart(
         trajectory=trajectory,
         source_commit=intent["expected_production_commit"],
     )
-    base_path = root / "task_evaluation_robot_placement_readiness_candidate.v1.json"
+    # Bind the readiness candidate to the intent that produced it. A shared
+    # filename silently reuses a previous intent's accepted pose.
+    base_path = root / (
+        f"task_evaluation_robot_placement_readiness_candidate-{intent_token}.v1.json"
+    )
     if not base_path.is_file():
         readiness_materializer(
             configured_revision=revision,
