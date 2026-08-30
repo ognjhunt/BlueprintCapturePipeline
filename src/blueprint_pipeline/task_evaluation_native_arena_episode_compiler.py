@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import stat
 import zipfile
 from collections.abc import Mapping
@@ -36,6 +37,35 @@ OUTPUT_SCHEMA_VERSION = "task_evaluation_episode_compiler_output.v1"
 
 class TaskEvaluationNativeArenaEpisodeCompilerError(RuntimeError):
     """Verified robot-team inputs could not be compiled fail-closed."""
+
+
+def _runtime_subject_task_spec(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Derive a native-safe asset ID while retaining product identity."""
+
+    task_spec = json.loads(json.dumps(dict(value)))
+    source_subject_id = str(task_spec.get("subject_asset_id") or "")
+    runtime_subject_id = re.sub(r"[^A-Za-z0-9_]", "_", source_subject_id)
+    if not runtime_subject_id or not runtime_subject_id.replace("_", "a").isalnum():
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_subject_runtime_id_invalid"
+        )
+    interaction_affordance = task_spec.get("interaction_affordance")
+    if (
+        not isinstance(interaction_affordance, Mapping)
+        or interaction_affordance.get("subject_asset_id") != source_subject_id
+    ):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_interaction_affordance_invalid"
+        )
+    task_spec["subject_asset_id"] = runtime_subject_id
+    task_spec["source_subject_identity"] = source_subject_id
+    interaction_affordance = dict(interaction_affordance)
+    interaction_affordance["subject_asset_id"] = runtime_subject_id
+    interaction_affordance["affordance_digest"] = canonical_digest(
+        interaction_affordance, digest_field="affordance_digest"
+    )
+    task_spec["interaction_affordance"] = interaction_affordance
+    return task_spec
 
 
 def _sha256_and_size(path: Path) -> tuple[str, int]:
@@ -294,6 +324,9 @@ def compile_native_arena_episode(
     task_spec["subject_asset_id"] = request["task"]["subject"]["identity"]["id"]
     task_spec["manipulation_strategy"] = request["task"]["strategy"]
     task_spec["success_criteria"] = success.get("criteria")
+    task_spec = _runtime_subject_task_spec(task_spec)
+    source_subject_asset_id = task_spec["source_subject_identity"]
+    runtime_subject_asset_id = task_spec["subject_asset_id"]
     configured_assets = _extract_configured_assets(
         _reference_path(
             materialized_references,
@@ -326,7 +359,8 @@ def compile_native_arena_episode(
         }
         if role == "replacement":
             row.update(
-                asset_id=request["task"]["subject"]["identity"]["id"],
+                asset_id=runtime_subject_asset_id,
+                source_asset_id=source_subject_asset_id,
                 object_type="RIGID",
                 reset_state={"root_pose_world": object_pose, "joint_positions": {}},
             )

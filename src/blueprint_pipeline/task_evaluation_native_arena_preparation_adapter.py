@@ -118,6 +118,8 @@ def _verify_task_subject_binding(
     task = request["task"]
     subject = task["subject"]
     subject_identity = subject["identity"]
+    source_subject_id = subject_identity["id"]
+    runtime_subject_id = re.sub(r"[^A-Za-z0-9_]", "_", source_subject_id)
     replacement = configured_revision["replacement"]
     expected_packet_kind = {
         "rigid_relocation": "rigid_pick_place",
@@ -133,6 +135,12 @@ def _verify_task_subject_binding(
             "task_evaluation_adapter_task_subject_binding_invalid"
         )
     binding = task_object_bindings[0]
+    declared_runtime_subject_id = binding.get("runtime_asset_id")
+    expected_runtime_subject_id = (
+        runtime_subject_id
+        if declared_runtime_subject_id is not None
+        else source_subject_id
+    )
     asset = replacement["asset"]
     if (
         subject.get("mode") != "configured_scene_object"
@@ -140,7 +148,11 @@ def _verify_task_subject_binding(
         or task.get("configured_scene_revision_digest")
         != configured_revision.get("revision_digest")
         or replacement.get("identity") != subject_identity
-        or binding.get("asset_id") != subject_identity["id"]
+        or binding.get("asset_id") != source_subject_id
+        or (
+            declared_runtime_subject_id is not None
+            and declared_runtime_subject_id != runtime_subject_id
+        )
         or binding.get("staged_sha256") != asset["digest"]
         or binding.get("staged_size_bytes") != asset["size_bytes"]
     ):
@@ -178,11 +190,16 @@ def _verify_task_subject_binding(
     ]
     if (
         runtime_contract.get("task_kind") != expected_packet_kind
-        or runtime_contract.get("task_subject_asset_id") != subject_identity["id"]
-        or task_spec.get("subject_asset_id") != subject_identity["id"]
+        or runtime_contract.get("task_subject_asset_id")
+        != expected_runtime_subject_id
+        or task_spec.get("subject_asset_id") != expected_runtime_subject_id
+        or (
+            declared_runtime_subject_id is not None
+            and task_spec.get("source_subject_identity") != source_subject_id
+        )
         or packet_strategy != task["strategy"]
         or len(matching_objects) != 1
-        or matching_objects[0].get("asset_id") != subject_identity["id"]
+        or matching_objects[0].get("asset_id") != expected_runtime_subject_id
         or matching_objects[0].get("sha256") != asset["digest"]
     ):
         raise TaskEvaluationNativeArenaAdapterError(

@@ -1443,7 +1443,12 @@ def materialize_configured_controls_autostart(
     intent_token = intent["intent_digest"].removeprefix("sha256:")[:16]
 
     def reviewed_placement_runner(*, output_dir: Path, **runner_kwargs: Any):
-        cost_root = root / "agent-official-openai-cost" / output_dir.name
+        cost_root = (
+            root
+            / "agent-official-openai-cost"
+            / output_dir.parent.name
+            / output_dir.name
+        )
         with openai_scope_lock(
             environment=selected_environment,
             output_root=cost_root,
@@ -1519,7 +1524,12 @@ def materialize_configured_controls_autostart(
             "configured_controls_autostart_agent_inventory_binding_invalid"
         )
     openai_evidence = _validated_agent_openai_evidence(
-        cost_root=root / "agent-official-openai-cost" / agent_placement_root.name,
+        cost_root=(
+            root
+            / "agent-official-openai-cost"
+            / agent_placement_root.parent.name
+            / agent_placement_root.name
+        ),
         agent_attempt_root=agent_placement_root,
         intent=intent,
         receipt=placement_receipt,

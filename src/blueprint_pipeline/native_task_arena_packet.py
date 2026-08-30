@@ -419,7 +419,12 @@ def materialize_native_task_arena_packet(
             source_bindings.append(
                 {
                     "semantic_role": role,
-                    "asset_id": raw.get("asset_id"),
+                    "asset_id": raw.get("source_asset_id", raw.get("asset_id")),
+                    **(
+                        {"runtime_asset_id": raw.get("asset_id")}
+                        if raw.get("source_asset_id") is not None
+                        else {}
+                    ),
                     "source": source,
                     "staged_relative_path": f"assets/{filename}",
                     "staged_size_bytes": staged_size,
