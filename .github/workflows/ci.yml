@@ -108,20 +108,19 @@ jobs:
           # a mirror that is slow rather than broken, so the mirror is no
           # longer on this path at all.
           #
-          # A pinned static build comes from GitHub's own release CDN -- the
-          # same infrastructure the checkout already depends on -- verified by
-          # sha256 before anything is installed.
+          # Use a versioned release archive rather than BtbN's expiring daily
+          # autobuild tags. The bytes are still pinned and verified before use.
           if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
             echo "media toolchain already present: $(ffmpeg -version | head -n1)"
             exit 0
           fi
-          FFMPEG_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-16-13-00/ffmpeg-N-126175-g0056dd32fd-linux64-gpl.tar.xz"
-          FFMPEG_SHA256="d6c3aeff33a323659ddc8c185fb8c5fc2f7fe7386053a40af5e326cae95cd0d4"
+          FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-amd64-static.tar.xz"
+          FFMPEG_SHA256="abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67"
           curl -fsSL --retry 3 --retry-connrefused -o /tmp/ffmpeg-static.tar.xz "${FFMPEG_URL}"
           echo "${FFMPEG_SHA256}  /tmp/ffmpeg-static.tar.xz" | sha256sum -c -
           tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp
-          sudo install -m 0755 /tmp/ffmpeg-N-126175-g0056dd32fd-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg
-          sudo install -m 0755 /tmp/ffmpeg-N-126175-g0056dd32fd-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe
+          sudo install -m 0755 /tmp/ffmpeg-7.0.2-amd64-static/ffmpeg /usr/local/bin/ffmpeg
+          sudo install -m 0755 /tmp/ffmpeg-7.0.2-amd64-static/ffprobe /usr/local/bin/ffprobe
           ffmpeg -version | head -n1
 
       - name: Install dependencies
