@@ -172,6 +172,12 @@ def materialize_robot_placement_readiness_candidate(
         if isinstance(geometry_gate, Mapping)
         else None
     )
+    inventory_geometry_gate = dict(geometry_gate or {})
+    inventory_geometry_gate.pop("orientation_slew_feasibility", None)
+    inventory_geometry_gate_digest = canonical_digest(
+        inventory_geometry_gate,
+        digest_field="geometry_gate_digest",
+    )
     if (
         canonical_digest(selected) != canonical_digest(expected)
         or not isinstance(trajectory_gate, Mapping)
@@ -193,8 +199,10 @@ def materialize_robot_placement_readiness_candidate(
         or not isinstance(geometry_gate, Mapping)
         or geometry_gate.get("status") != "passed"
         or geometry_gate.get("blockers") not in ([], ())
-        or member.get("geometry_gate_digest")
+        or geometry_gate.get("geometry_gate_digest")
         != receipt.get("accepted_geometry_gate_digest")
+        or member.get("geometry_gate_digest")
+        != inventory_geometry_gate_digest
         or not isinstance(orientation_gate, Mapping)
         or orientation_gate.get("feasible") is not True
         or orientation_gate.get("blockers") not in ([], ())

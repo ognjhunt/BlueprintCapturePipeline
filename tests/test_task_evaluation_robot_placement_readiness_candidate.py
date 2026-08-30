@@ -93,19 +93,28 @@ def _placement(value: dict) -> tuple[dict, dict, dict, dict]:
         "native_full_pose_ik_required": True,
         "native_collision_contact_and_reset_readback_required": True,
     }
-    geometry_gate = {
+    inventory_geometry_gate = {
         "schema_version": "task_evaluation_robot_placement_geometry_gate.v1",
         "candidate_id": member["candidate_id"],
         "declared_support_surface_id": support,
         "status": "passed",
         "blockers": [],
+        "geometry_gate_digest": "",
+    }
+    inventory_geometry_gate["geometry_gate_digest"] = canonical_digest(
+        inventory_geometry_gate, digest_field="geometry_gate_digest"
+    )
+    member["geometry_gate_digest"] = inventory_geometry_gate[
+        "geometry_gate_digest"
+    ]
+    geometry_gate = {
+        **inventory_geometry_gate,
         "orientation_slew_feasibility": orientation_gate,
         "geometry_gate_digest": "",
     }
     geometry_gate["geometry_gate_digest"] = canonical_digest(
         geometry_gate, digest_field="geometry_gate_digest"
     )
-    member["geometry_gate_digest"] = geometry_gate["geometry_gate_digest"]
     inventory = build_candidate_inventory_checkpoint(
         robot_id="franka_panda",
         target_position_world_m=[2.97, -6.76, 0.818],
@@ -199,6 +208,10 @@ def test_exact_inventory_selection_materializes_and_enters_readiness(tmp_path) -
     assert candidate[
         "native_orientation_collision_contact_and_camera_gates_required"
     ] is True
+    assert (
+        inventory["candidates"][0]["geometry_gate_digest"]
+        != receipt["accepted_geometry_gate_digest"]
+    )
 
     readiness = materialize_franka_robotiq_readiness_inputs(
         configured_revision=value,

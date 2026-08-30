@@ -178,6 +178,23 @@ def test_core_workflows_bind_runner_temp_only_after_job_start() -> None:
         )
         before_first_step = workflow.split("steps:", 1)[0]
         assert "${{ runner.temp }}" not in before_first_step, workflow_name
+
+
+def test_core_workflows_use_nonexpiring_digest_pinned_ffmpeg_release() -> None:
+    expected_url = (
+        "https://johnvansickle.com/ffmpeg/releases/"
+        "ffmpeg-7.0.2-amd64-static.tar.xz"
+    )
+    expected_digest = (
+        "abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67"
+    )
+    for workflow_name in ("ci.yml", "full-test-lane.yml"):
+        workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(
+            encoding="utf-8"
+        )
+        assert expected_url in workflow
+        assert expected_digest in workflow
+        assert "BtbN/FFmpeg-Builds/releases/download/autobuild-" not in workflow
         assert (
             'BLUEPRINT_ARTIFACT_CACHE_ROOT=${RUNNER_TEMP}/blueprint-artifact-cache'
             in workflow

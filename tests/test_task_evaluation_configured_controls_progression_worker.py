@@ -927,6 +927,10 @@ def test_systemd_worker_is_separate_from_reconciler_and_never_calls_allocator() 
         "deploy/systemd/blueprint-task-evaluation-launch-reconciler.service"
     ).read_text(encoding="utf-8")
     assert "task_evaluation_configured_controls_progression_worker" in service
+    assert "User=blueprint" in service
+    assert "Group=blueprint" in service
+    assert "WorkingDirectory=/root" not in service
+    assert "/root/" not in service
     assert "post_teardown" not in reconciler
     assert "paid_resource_allocator" not in service
     assert "vast_provider_adapter" not in service
