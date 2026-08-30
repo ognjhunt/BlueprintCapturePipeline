@@ -24,7 +24,10 @@ def test_activation_worker_is_hardened_and_watches_only_its_queue() -> None:
     assert "BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=" in service
     assert (
         "Environment='BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON="
-        '["s3://blueprint/task-evaluation/production-inputs/"]\''
+        '["s3://blueprint/task-evaluation/production-inputs/",'
+        '"s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/'
+        'configured-scenes/artifacts/",'
+        '"s3://blueprint/blueprint/arm-decision-proof-v1/configured-scenes/"]\''
     ) in service
     assert "task-evaluation-launch-activations/pending" in path
     assert "blueprint-task-evaluation-launch-activation.service" in path

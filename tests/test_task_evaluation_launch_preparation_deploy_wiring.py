@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import os
 from pathlib import Path
@@ -38,7 +39,8 @@ def test_no_spend_preparation_worker_has_hardened_service_and_path_unit() -> Non
         "Environment='BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON="
         '["s3://blueprint/task-evaluation/production-inputs/",'
         '"s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/'
-        'configured-scenes/artifacts/"]\''
+        'configured-scenes/artifacts/",'
+        '"s3://blueprint/blueprint/arm-decision-proof-v1/configured-scenes/"]\''
     ) in service
     assert service.index(
         "Environment='BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON="
@@ -71,7 +73,8 @@ def test_canonical_environment_documents_bounded_input_prefixes() -> None:
         "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON="
         '["s3://blueprint/task-evaluation/production-inputs/",'
         '"s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/'
-        'configured-scenes/artifacts/"]'
+        'configured-scenes/artifacts/",'
+        '"s3://blueprint/blueprint/arm-decision-proof-v1/configured-scenes/"]'
     ) in environment
     assert "BLUEPRINT_TASK_EVALUATION_SPLAT_RENDER_RUNTIME_ROOT=" in environment
     assert "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE=" in environment
@@ -283,3 +286,31 @@ def test_every_control_plane_unit_can_read_its_own_git_identity() -> None:
         ):
             missing.append(path.name)
     assert not missing, f"control-plane units without git safe.directory: {missing}"
+
+
+def test_preparation_and_activation_share_one_allowed_uri_prefix_list() -> None:
+    """Both gates validate the same request references, so a divergent allowlist
+    silently blocks a launch at the second gate after passing the first."""
+    key = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON="
+
+    def prefixes(path: str) -> list[str]:
+        for line in text(path).splitlines():
+            marker = line.find(key)
+            if marker == -1:
+                continue
+            value = line[marker + len(key) :].rstrip().rstrip("'")
+            return json.loads(value)
+        raise AssertionError(f"{key} missing from {path}")
+
+    preparation = prefixes(
+        "deploy/systemd/blueprint-task-evaluation-launch-preparation.service"
+    )
+    activation = prefixes(
+        "deploy/systemd/blueprint-task-evaluation-launch-activation.service"
+    )
+    canonical = prefixes("deploy/systemd/pipeline-control-plane.env.example")
+    assert preparation == activation == canonical
+    assert "s3://blueprint/blueprint/arm-decision-proof-v1/configured-scenes/" in (
+        preparation
+    )
+    assert all(prefix.endswith("/") for prefix in preparation)
