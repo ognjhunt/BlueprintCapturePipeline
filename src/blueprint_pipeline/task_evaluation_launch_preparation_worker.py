@@ -259,33 +259,71 @@ def _private_file_value(environment_name: str) -> str | None:
     return value
 
 
-def _s3_client() -> Any:
+_LEGACY_OBJECT_STORE_FILE_ENV = {
+    "access_key": "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE",
+    "secret_key": "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE",
+    "bucket": "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE",
+    "endpoint": "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE",
+    "region": "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE",
+}
+_ARTIFACT_STORE_FILE_ENV = {
+    "access_key": "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE",
+    "secret_key": "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE",
+    "bucket": "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE",
+    "endpoint": "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE",
+    "region": "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE",
+}
+_EXPECTED_ARTIFACT_BUCKET_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET"
+)
+
+
+def _s3_client(bucket: str) -> Any:
+    """Use only the credential set explicitly bound to the requested bucket."""
+
     try:
         import boto3  # type: ignore[import-not-found]
     except ImportError as exc:
         raise TaskEvaluationLaunchPreparationWorkerError(
             "launch_preparation_s3_client_unavailable"
         ) from exc
-    access_key = _private_file_value(
-        "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE"
-    )
-    secret_key = _private_file_value(
-        "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE"
-    )
-    if bool(access_key) != bool(secret_key):
+
+    expected_artifact_bucket = str(
+        os.getenv(_EXPECTED_ARTIFACT_BUCKET_ENV) or ""
+    ).strip()
+    if bucket == expected_artifact_bucket:
+        artifact_bucket = _private_file_value(_ARTIFACT_STORE_FILE_ENV["bucket"])
+        if bucket != artifact_bucket:
+            raise TaskEvaluationLaunchPreparationWorkerError(
+                "launch_preparation_artifact_store_bucket_identity_mismatch"
+            )
+        names = _ARTIFACT_STORE_FILE_ENV
+        require_endpoint_and_region = True
+    else:
+        legacy_bucket = _private_file_value(_LEGACY_OBJECT_STORE_FILE_ENV["bucket"])
+        if bucket != legacy_bucket:
+            raise TaskEvaluationLaunchPreparationWorkerError(
+                "launch_preparation_s3_bucket_not_configured"
+            )
+        names = _LEGACY_OBJECT_STORE_FILE_ENV
+        require_endpoint_and_region = False
+
+    access_key = _private_file_value(names["access_key"])
+    secret_key = _private_file_value(names["secret_key"])
+    if not access_key or not secret_key:
         raise TaskEvaluationLaunchPreparationWorkerError(
             "launch_preparation_object_store_secret_pair_incomplete"
         )
-    kwargs: dict[str, Any] = {}
-    if access_key and secret_key:
-        kwargs.update(
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
+    endpoint = _private_file_value(names["endpoint"])
+    region = _private_file_value(names["region"])
+    if require_endpoint_and_region and (not endpoint or not region):
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_artifact_store_endpoint_or_region_missing"
         )
-    endpoint = _private_file_value(
-        "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE"
-    )
-    region = _private_file_value("BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE")
+    kwargs: dict[str, Any] = {
+        "aws_access_key_id": access_key,
+        "aws_secret_access_key": secret_key,
+    }
     if endpoint:
         kwargs["endpoint_url"] = endpoint
     if region:
@@ -331,7 +369,7 @@ def default_reference_fetcher(uri: str, destination: Path, maximum_bytes: int) -
         blob.download_to_filename(str(destination))
         return
     if parsed.scheme == "s3":
-        response = _s3_client().get_object(
+        response = _s3_client(parsed.netloc).get_object(
             Bucket=parsed.netloc, Key=parsed.path.lstrip("/")
         )
         if response.get("ContentLength") != maximum_bytes:

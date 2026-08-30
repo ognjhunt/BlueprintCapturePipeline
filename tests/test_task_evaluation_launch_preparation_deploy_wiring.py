@@ -36,19 +36,55 @@ def test_no_spend_preparation_worker_has_hardened_service_and_path_unit() -> Non
     assert "task-evaluation-episode-compilations" in service
     assert (
         "Environment='BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON="
-        '["s3://blueprint/task-evaluation/production-inputs/"]\''
+        '["s3://blueprint/task-evaluation/production-inputs/",'
+        '"s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/'
+        'configured-scenes/artifacts/"]\''
     ) in service
+    assert service.index(
+        "Environment='BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON="
+    ) > service.index(
+        "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env"
+    )
+    for binding in (
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE="
+        "/etc/blueprint/provider-secrets/backblaze_b2_key_id",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE="
+        "/etc/blueprint/provider-secrets/backblaze_b2_application_key",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE="
+        "/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE="
+        "/etc/blueprint/provider-secrets/backblaze_b2_bucket",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE="
+        "/etc/blueprint/provider-secrets/backblaze_b2_region",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET="
+        "blueprint-task-evaluation-artifacts-prod",
+    ):
+        assert f"Environment={binding}" in service
+        assert service.index(f"Environment={binding}") > service.index(
+            "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env"
+        )
 
 
 def test_canonical_environment_documents_bounded_input_prefixes() -> None:
     environment = text("deploy/systemd/pipeline-control-plane.env.example")
     assert (
         "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON="
-        '["s3://blueprint/task-evaluation/production-inputs/"]'
+        '["s3://blueprint/task-evaluation/production-inputs/",'
+        '"s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/'
+        'configured-scenes/artifacts/"]'
     ) in environment
     assert "BLUEPRINT_TASK_EVALUATION_SPLAT_RENDER_RUNTIME_ROOT=" in environment
     assert "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE=" in environment
     assert "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE=" in environment
+    assert "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=" in environment
+    assert "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=" in environment
+    assert "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=" in environment
+    assert "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=" in environment
+    assert "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=" in environment
+    assert (
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET="
+        "blueprint-task-evaluation-artifacts-prod"
+    ) in environment
     assert "OPENAI_PROJECT_ID=" in environment
     assert "OPENAI_API_KEY_ID=" in environment
     assert "OPENAI_ADMIN_API_KEY_FILE=" in environment
