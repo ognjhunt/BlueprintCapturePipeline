@@ -1091,6 +1091,20 @@ def test_controls_profile_forwards_digest_bound_warm_retention(lane) -> None:
     assert "--native-task-arena-retain-warm-session" in argv
 
 
+def test_construction_profile_forwards_digest_bound_warm_retention(lane) -> None:
+    authority_path = lane["authorities"]["construction"]
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    authority["retain_warm_session"] = True
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(authority_path, authority)
+
+    argv = _build(lane, "construction")["allocator"]["argv"]
+
+    assert "--native-task-arena-retain-warm-session" in argv
+
+
 def test_controls_profile_forwards_authorized_external_active_instances(lane) -> None:
     authority_path = lane["authorities"]["controls"]
     authority = json.loads(authority_path.read_text(encoding="utf-8"))

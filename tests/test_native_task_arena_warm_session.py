@@ -578,11 +578,12 @@ def test_warm_identity_is_validated_before_authority_consumption(
 
 
 @pytest.mark.parametrize(
-    ("execution_mode", "diagnostic_mode"),
+    ("execution_mode", "diagnostic_mode", "runtime_blocked", "expected_status"),
     [
-        ("controls", False),
-        ("controls", True),
-        ("construction_canary", False),
+        ("controls", False, False, "completed"),
+        ("controls", True, False, "completed"),
+        ("controls", False, True, "blocked"),
+        ("construction_canary", False, False, "completed"),
     ],
 )
 def test_warm_execution_reuses_instance_without_allocating(
@@ -590,6 +591,8 @@ def test_warm_execution_reuses_instance_without_allocating(
     monkeypatch: pytest.MonkeyPatch,
     execution_mode: str,
     diagnostic_mode: bool,
+    runtime_blocked: bool,
+    expected_status: str,
 ) -> None:
     prepared, receipt = _prepared(tmp_path, execution_mode=execution_mode)
     session = _session(prepared)
@@ -670,9 +673,13 @@ def test_warm_execution_reuses_instance_without_allocating(
 
     def fake_download(*, destination, **_kwargs):
         execution = {
-            "status": "completed",
+            "status": "blocked" if runtime_blocked else "completed",
             "candidate_policy_queried": False,
-            "blockers": [],
+            "blockers": (
+                ["native_task_phase_ik_unreached:precontact"]
+                if runtime_blocked
+                else []
+            ),
         }
         if diagnostic_mode:
             request = {
@@ -762,7 +769,7 @@ def test_warm_execution_reuses_instance_without_allocating(
         close_on_success=execution_mode == "controls",
     )
 
-    assert result["status"] == "completed"
+    assert result["status"] == expected_status
     assert result["provider_allocations_performed"] == 0
     assert result["provider_instance_id"] == 123
     assert result["execution_mode"] == execution_mode
