@@ -101,6 +101,39 @@ def test_human_authorized_opening_accepts_empty_post_baseline_coverage(
     )
 
 
+def test_expected_total_compares_at_currency_precision(tmp_path: Path) -> None:
+    """A receipt stores the raw ``math.fsum`` accumulation while an authority
+    retains the canonical six-decimal currency total.  Exact binary-float
+    comparison of the two representations refused a valid production launch
+    (stored ``79.26491399999999`` vs authority ``79.264914``), so equality is
+    at currency precision -- and one whole micro-dollar of genuine
+    disagreement still refuses."""
+
+    baseline_path, _ = _human_baseline(tmp_path / "human-baseline.json")
+    output = tmp_path / "project-spend.json"
+    receipt = materialize_project_spend_reconciliation(
+        baseline_authority_path=baseline_path,
+        posted_reconciliation_paths=[],
+        expected_coverage_ids=[],
+        completeness_reference=str(baseline_path),
+        authorized_by="user",
+        authorized_on="2026-08-25T20:41:55Z",
+        output_path=output,
+    )
+    stored = float(receipt["total_cost_usd"])
+    # The representation the authority carries: the same currency amount,
+    # canonically rounded, deliberately perturbed below currency precision.
+    sub_currency = round(stored, 6) + 4.0e-7
+    assert sub_currency != stored
+    validate_project_spend_reconciliation(
+        output, expected_total_cost_usd=sub_currency
+    )
+    with pytest.raises(ValueError, match="project_spend_reconciliation_invalid"):
+        validate_project_spend_reconciliation(
+            output, expected_total_cost_usd=round(stored, 6) + 1.0e-6
+        )
+
+
 def test_human_authorized_opening_rejects_changed_authorization_text(
     tmp_path: Path,
 ) -> None:
