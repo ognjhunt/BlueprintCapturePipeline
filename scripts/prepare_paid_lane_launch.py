@@ -37,6 +37,7 @@ import stat
 import string
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -1080,11 +1081,16 @@ def prepare_paid_lane_launch(
             raise PaidLaneLaunchPreparationError(
                 "paid_lane_service_identity_required"
             )
-        _prepare_set_root_for_service(
+        set_root_path = _prepare_set_root_for_service(
             str(context["set_root"]),
             service_account=account,
             service_group=group,
         )
+        step_log_root = set_root_path / "step-logs"
+        step_log_root.mkdir(mode=0o750, exist_ok=True)
+        step_log_root.chmod(0o750)
+    else:
+        step_log_root = None
     resolved: dict[str, Any] = dict(context)
     completed: list[dict[str, Any]] = []
     step_logs: list[dict[str, Any]] = []
@@ -1111,12 +1117,21 @@ def prepare_paid_lane_launch(
             returncode = int(execution)
             stdout_text = ""
             stderr_text = ""
-        stdout_path = produces.with_name(
-            f"{produces.name}.{step.step_id}.stdout.log"
-        )
-        stderr_path = produces.with_name(
-            f"{produces.name}.{step.step_id}.stderr.log"
-        )
+        if step_log_root is None:
+            stdout_path = produces.with_name(
+                f"{produces.name}.{step.step_id}.stdout.log"
+            )
+            stderr_path = produces.with_name(
+                f"{produces.name}.{step.step_id}.stderr.log"
+            )
+        else:
+            attempt_token = uuid.uuid4().hex
+            stdout_path = (
+                step_log_root / f"{step.step_id}-{attempt_token}.stdout.log"
+            )
+            stderr_path = (
+                step_log_root / f"{step.step_id}-{attempt_token}.stderr.log"
+            )
         try:
             stdout_sha256 = _write_step_log(stdout_path, stdout_text)
             stderr_sha256 = _write_step_log(stderr_path, stderr_text)
@@ -1355,15 +1370,32 @@ def _load_scene_claim_reference(
         raise PaidLaneLaunchPreparationError(
             "native_task_arena_scene_claim_reference_unreadable"
         ) from exc
+    embedded_digest = value.get(digest_field) if isinstance(value, Mapping) else None
+    if embedded_digest is None:
+        observed_digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+        digest_valid = observed_digest == expected_digest
+    else:
+        digest_valid = (
+            embedded_digest == expected_digest
+            and embedded_digest
+            == _canonical_artifact_digest(value, digest_field=digest_field)
+        )
+    status_aliases = {
+        "retained": {"retained", "candidate_source_bytes_retained"},
+        "admitted": {"admitted", "admitted_for_internal_development"},
+    }
+    observed_scene_id = str(value.get("scene_id") or "")
+    scene_id_valid = observed_scene_id == scene_id or scene_id.endswith(
+        "-" + observed_scene_id
+    )
     if (
         not source.is_file()
         or not isinstance(value, Mapping)
         or value.get("schema_version") != expected_schema
-        or value.get("status") != expected_status
-        or value.get("scene_id") != scene_id
-        or value.get(digest_field) != expected_digest
-        or value.get(digest_field)
-        != _canonical_artifact_digest(value, digest_field=digest_field)
+        or value.get("status")
+        not in status_aliases.get(expected_status, {expected_status})
+        or not scene_id_valid
+        or not digest_valid
     ):
         raise PaidLaneLaunchPreparationError(
             "native_task_arena_scene_claim_reference_invalid"
@@ -1426,7 +1458,11 @@ def _load_rights_evidence(value: Any) -> list[dict[str, Any]]:
 
 
 def _validate_provider_packet_source_rights(
-    *, packet_receipt: Mapping[str, Any], source_manifest: Mapping[str, Any]
+    *,
+    packet_receipt: Mapping[str, Any],
+    source_manifest: Mapping[str, Any],
+    configured_scene_revision: Mapping[str, Any] | None = None,
+    rights_admission: Mapping[str, Any] | None = None,
 ) -> None:
     """Require every provider-staged source binding to be upload-admitted."""
 
@@ -1443,13 +1479,37 @@ def _validate_provider_packet_source_rights(
             "native_task_arena_provider_source_rights_invalid"
         )
     admitted: set[tuple[str, int]] = set()
-    for raw in artifacts:
-        if not isinstance(raw, Mapping):
-            continue
-        digest = str(raw.get("sha256") or "")
-        size = raw.get("size_bytes")
-        if raw.get("provider_upload_allowed") is True and isinstance(size, int):
-            admitted.add((digest, size))
+    if configured_scene_revision is not None:
+        disclosure = (configured_scene_revision.get("source") or {}).get(
+            "provider_disclosure_decision"
+        ) or {}
+        if (
+            not isinstance(rights_admission, Mapping)
+            or rights_admission.get("private_provider_processing_allowed") is not True
+            or disclosure.get("rights_admission_permits_upload") is not True
+        ):
+            raise PaidLaneLaunchPreparationError(
+                "native_task_arena_provider_source_rights_invalid"
+            )
+        for raw in (
+            (configured_scene_revision.get("appearance") or {}).get(
+                "configured_representation"
+            ),
+            (configured_scene_revision.get("geometry") or {}).get(
+                "configured_collision"
+            ),
+            (configured_scene_revision.get("replacement") or {}).get("asset"),
+        ):
+            if isinstance(raw, Mapping) and isinstance(raw.get("size_bytes"), int):
+                admitted.add((str(raw.get("digest") or ""), raw["size_bytes"]))
+    else:
+        for raw in artifacts:
+            if not isinstance(raw, Mapping):
+                continue
+            digest = str(raw.get("sha256") or "")
+            size = raw.get("size_bytes")
+            if raw.get("provider_upload_allowed") is True and isinstance(size, int):
+                admitted.add((digest, size))
     for raw in bindings:
         if not isinstance(raw, Mapping):
             raise PaidLaneLaunchPreparationError(
@@ -1465,7 +1525,20 @@ def _validate_provider_packet_source_rights(
             str(raw.get("staged_sha256") or ""),
             raw.get("staged_size_bytes"),
         )
-        if source_pair != staged_pair or staged_pair not in admitted:
+        adaptation = raw.get("static_scene_collision_adaptation")
+        staged_matches_source = source_pair == staged_pair
+        staged_is_bound_adaptation = (
+            isinstance(adaptation, Mapping)
+            and adaptation.get("adaptation") == "static_convex_to_triangle_mesh"
+            and adaptation.get("derived_from_sha256") == source_pair[0]
+            and isinstance(adaptation.get("converted_prim_paths"), Sequence)
+            and bool(adaptation.get("converted_prim_paths"))
+            and isinstance(staged_pair[1], int)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", staged_pair[0]) is not None
+        )
+        if source_pair not in admitted or not (
+            staged_matches_source or staged_is_bound_adaptation
+        ):
             raise PaidLaneLaunchPreparationError(
                 "native_task_arena_provider_source_rights_invalid"
             )
@@ -1789,6 +1862,8 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
     _validate_provider_packet_source_rights(
         packet_receipt=packet_receipt,
         source_manifest=source_manifest,
+        configured_scene_revision=configured_scene_revision,
+        rights_admission=rights_admission,
     )
     if (
         reference_symlink_present
