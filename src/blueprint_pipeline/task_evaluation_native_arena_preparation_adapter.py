@@ -61,7 +61,7 @@ def _sha256_file(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _identity_bindings(request: Mapping[str, Any]) -> dict[str, Any]:
+def _construction_identity_bindings(request: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "scene": dict(request["scene"]["identity"]),
         "robot": dict(request["robot"]["identity"]),
@@ -73,6 +73,30 @@ def _identity_bindings(request: Mapping[str, Any]) -> dict[str, Any]:
         ],
         "runtime": dict(request["runtime"]["identity"]),
     }
+
+
+def _runtime_source_identity_bindings(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind reusable runtime bytes without pretending a revision exists.
+
+    A configured-controls intent is sealed before scene configuration runs, so
+    its runtime-source bundle cannot truthfully bind the future configured
+    revision digest.  Runtime source is release code, not scene content: bind it
+    to the exact evaluator commit and runtime identity.  The independently
+    compiled construction packet retains the full scene/revision/task binding.
+    """
+
+    return {
+        "expected_production_commit": request["expected_production_commit"],
+        "runtime": dict(request["runtime"]["identity"]),
+    }
+
+
+def _identity_bindings(
+    request: Mapping[str, Any], *, role: str
+) -> dict[str, Any]:
+    if role == "runtime_source":
+        return _runtime_source_identity_bindings(request)
+    return _construction_identity_bindings(request)
 
 
 def _verify_task_subject_binding(
@@ -224,7 +248,13 @@ def _manifest_from_archive(
         or value.get("adapter_kind") != ADAPTER_KIND
         or value.get("adapter_version") != ADAPTER_VERSION
         or value.get("bundle_role") != expected_role
-        or value.get("identity_bindings") != _identity_bindings(request)
+        or value.get("identity_bindings")
+        not in (
+            _identity_bindings(request, role=expected_role),
+            # Retain exact-request compatibility for already-sealed runtime
+            # bundles.  New runtime bundles use the prelaunch-safe binding.
+            _construction_identity_bindings(request),
+        )
         or value.get("manifest_digest")
         != canonical_digest(value, digest_field="manifest_digest")
     ):
@@ -545,7 +575,7 @@ def build_task_evaluation_adapter_bundle(
         "adapter_kind": ADAPTER_KIND,
         "adapter_version": ADAPTER_VERSION,
         "bundle_role": role,
-        "identity_bindings": _identity_bindings(validated),
+        "identity_bindings": _identity_bindings(validated, role=role),
         "entries": rows,
         "manifest_digest": "",
     }
