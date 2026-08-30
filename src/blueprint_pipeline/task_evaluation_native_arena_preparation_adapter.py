@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -522,16 +523,15 @@ def materialize_native_arena_adapter(
         raise
 
 
-def build_task_evaluation_adapter_bundle(
+def _build_task_evaluation_adapter_bundle(
     *,
     source_root: str | Path,
     output_path: str | Path,
-    request: Mapping[str, Any],
     role: str,
+    identity_bindings: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Build deterministic production-owned bytes for one adapter role."""
+    """Build deterministic bytes after the caller validates their identity."""
 
-    validated = validate_launch_preparation_request(request)
     if role not in _ROLES:
         raise TaskEvaluationNativeArenaAdapterError(
             "task_evaluation_adapter_bundle_role_invalid"
@@ -575,7 +575,7 @@ def build_task_evaluation_adapter_bundle(
         "adapter_kind": ADAPTER_KIND,
         "adapter_version": ADAPTER_VERSION,
         "bundle_role": role,
-        "identity_bindings": _identity_bindings(validated, role=role),
+        "identity_bindings": json.loads(json.dumps(dict(identity_bindings))),
         "entries": rows,
         "manifest_digest": "",
     }
@@ -636,11 +636,63 @@ def build_task_evaluation_adapter_bundle(
     }
 
 
+def build_task_evaluation_adapter_bundle(
+    *,
+    source_root: str | Path,
+    output_path: str | Path,
+    request: Mapping[str, Any],
+    role: str,
+) -> dict[str, Any]:
+    """Build one request-bound construction or compatible runtime archive."""
+
+    validated = validate_launch_preparation_request(request)
+    return _build_task_evaluation_adapter_bundle(
+        source_root=source_root,
+        output_path=output_path,
+        role=role,
+        identity_bindings=_identity_bindings(validated, role=role),
+    )
+
+
+def build_task_evaluation_runtime_source_bundle(
+    *,
+    source_root: str | Path,
+    output_path: str | Path,
+    expected_production_commit: str,
+    runtime_identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build reusable runtime bytes before a configured revision exists."""
+
+    identity = dict(runtime_identity) if isinstance(runtime_identity, Mapping) else {}
+    if (
+        re.fullmatch(r"[0-9a-f]{40}", expected_production_commit) is None
+        or set(identity) != {"id", "version"}
+        or any(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", str(identity[key]))
+            is None
+            for key in ("id", "version")
+        )
+    ):
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_runtime_source_bundle_identity_invalid"
+        )
+    return _build_task_evaluation_adapter_bundle(
+        source_root=source_root,
+        output_path=output_path,
+        role="runtime_source",
+        identity_bindings={
+            "expected_production_commit": expected_production_commit,
+            "runtime": identity,
+        },
+    )
+
+
 __all__ = [
     "ADAPTER_KIND",
     "ADAPTER_VERSION",
     "MANIFEST_SCHEMA_VERSION",
     "TaskEvaluationNativeArenaAdapterError",
     "build_task_evaluation_adapter_bundle",
+    "build_task_evaluation_runtime_source_bundle",
     "materialize_native_arena_adapter",
 ]
