@@ -2163,13 +2163,38 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     phases: dict[str, dict[str, str]] = {}
     for phase in ("construction", "controls"):
         phases[phase] = {}
-        names = ["release_window_path", "authorization_path", "launch_authority_path"]
+        names = ["release_window_template_path", "authorization_path", "launch_authority_path"]
         if phase == "construction":
             names.append("lineage_path")
         for name in names:
             path = autostart_inputs / phase / f"{name}.json"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("{}\n", encoding="utf-8")
+            if name == "release_window_template_path":
+                template = {
+                    "schema_version": "task_evaluation_configured_controls_release_window_template.v1",
+                    "status": "authorized_for_dynamic_release",
+                    "team_namespace": "team-a",
+                    "expected_production_commit": "a" * 40,
+                    "allowed_mutations": [
+                        "profile_publication",
+                        "catalog_synchronization",
+                        "standing_authorization",
+                    ],
+                    "provider_allowlist": ["vast"],
+                    "maximum_hard_cap_usd": 1.0,
+                    "valid_for_seconds": 3600,
+                    "released_by": "fixture-coordinator",
+                    "release_reference": "fixture configured-controls continuation",
+                    "provider_resource_allocation_allowed": False,
+                    "paid_request_allowed": False,
+                    "template_digest": "",
+                }
+                template["template_digest"] = canonical_digest(
+                    template, digest_field="template_digest"
+                )
+                path.write_text(json.dumps(template) + "\n", encoding="utf-8")
+            else:
+                path.write_text("{}\n", encoding="utf-8")
             phases[phase][name] = str(path.resolve())
     profiles = autostart_inputs / "profiles"
     profiles.mkdir()

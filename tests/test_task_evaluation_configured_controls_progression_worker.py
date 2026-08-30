@@ -2,15 +2,113 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline import task_evaluation_configured_controls_autostart as autostart
 from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
 
 
 SOURCE_CONFIGURATION_COMMIT = "c" * 40
+
+
+def _dynamic_window_inputs(tmp_path: Path) -> dict[str, object]:
+    reference = {
+        "uri": "s3://blueprint-production-inputs/lineage.json",
+        "digest": "sha256:" + "4" * 64,
+        "size_bytes": 1,
+    }
+    request = {
+        "run_id": "scene-839873-franka-episode",
+        "team_namespace": "blueprint-adp",
+        "preparation_id": "prep-scene-839873",
+        "spend": {
+            "provider_allowlist": ["vast"],
+            "hard_cap_usd": 1.0,
+        },
+    }
+    state: dict[str, object] = {
+        "schema_version": "task_evaluation_configured_controls_progression.v1",
+        "status": "episode_preparation_queued",
+        "configured_scene_revision_digest": "sha256:" + "5" * 64,
+        "expected_production_commit": "a" * 40,
+        "episode_preparation_request": request,
+        "episode_preparation_request_digest": "sha256:" + "6" * 64,
+        "progression_digest": "",
+    }
+    state["progression_digest"] = canonical_digest(
+        state, digest_field="progression_digest"
+    )
+    preparation: dict[str, object] = {
+        "schema_version": "task_evaluation_launch_preparation_result.v1",
+        "status": "queued_for_production_episode_compilation",
+        "run_mode": "episode_evaluation",
+        "configured_scene_revision_digest": state[
+            "configured_scene_revision_digest"
+        ],
+        "automatic_progression_required": True,
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "result_digest": "",
+    }
+    preparation["result_digest"] = canonical_digest(
+        preparation, digest_field="result_digest"
+    )
+    template: dict[str, object] = {
+        "schema_version": "task_evaluation_configured_controls_release_window_template.v1",
+        "status": "authorized_for_dynamic_release",
+        "team_namespace": "blueprint-adp",
+        "expected_production_commit": "a" * 40,
+        "allowed_mutations": [
+            "profile_publication",
+            "catalog_synchronization",
+            "standing_authorization",
+        ],
+        "provider_allowlist": ["vast"],
+        "maximum_hard_cap_usd": 1.0,
+        "valid_for_seconds": 60,
+        "released_by": "configured-controls-coordinator",
+        "release_reference": "ADP-009D Day-28 continuation",
+        "provider_resource_allocation_allowed": False,
+        "paid_request_allowed": False,
+        "template_digest": "",
+    }
+    template["template_digest"] = canonical_digest(
+        template, digest_field="template_digest"
+    )
+    template_path = tmp_path / "release-window-template.json"
+    _write(template_path, template)
+    return {
+        "state": state,
+        "preparation": preparation,
+        "phase": {"release_window_template_path": str(template_path)},
+        "lineage": {
+            "kind": "initial_project",
+            "project_spend_reconciliation": reference,
+            "initial_provider_zero": reference,
+        },
+        "authorization": {
+            "reference": "ADP-009D Day-28",
+            "authorized_by": "blueprint-owner",
+            "authorized_on": "2026-08-29T00:00:00+00:00",
+            "standing_authorization_expires_at": "2026-09-02T00:00:00+00:00",
+            "profile_revision": "scene-839873-r1",
+        },
+    }
+
+
+def _window_publisher(path: Path, object_name: str) -> dict[str, object]:
+    return {
+        "uri": f"s3://blueprint-production-inputs/{object_name}",
+        "digest": _digest(path),
+        "size_bytes": path.stat().st_size,
+        "full_byte_service_account_readback_passed": True,
+        "readback_digest": _digest(path),
+        "readback_size_bytes": path.stat().st_size,
+    }
 
 
 def _write(path: Path, value: dict[str, object]) -> None:
@@ -20,6 +118,133 @@ def _write(path: Path, value: dict[str, object]) -> None:
 
 def _digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_dynamic_window_retry_reopens_same_bytes_after_publish_failure(
+    tmp_path: Path,
+) -> None:
+    values = _dynamic_window_inputs(tmp_path)
+    observed: list[bytes] = []
+
+    def flaky_publisher(*, path: Path, object_name: str) -> dict[str, object]:
+        observed.append(path.read_bytes())
+        if len(observed) == 1:
+            raise RuntimeError("transient-object-store-failure")
+        return _window_publisher(path, object_name)
+
+    kwargs = {
+        **values,
+        "lane": "native_task_arena_construction",
+        "root": tmp_path / "state",
+        "publisher": flaky_publisher,
+        "now": datetime(2026, 8, 29, 18, 0, tzinfo=timezone.utc),
+    }
+    with pytest.raises(RuntimeError, match="transient-object-store-failure"):
+        worker._materialize_phase_release_window(**kwargs)
+    result = worker._materialize_phase_release_window(
+        **{
+            **kwargs,
+            "now": kwargs["now"] + timedelta(seconds=1),
+        }
+    )
+
+    assert result["digest"] == "sha256:" + hashlib.sha256(observed[1]).hexdigest()
+    assert observed[0] == observed[1]
+    assert len(list((tmp_path / "state/release-window-attempts").rglob("window-*.json"))) == 1
+
+
+def test_expired_dynamic_window_creates_versioned_refresh(tmp_path: Path) -> None:
+    values = _dynamic_window_inputs(tmp_path)
+    first_now = datetime(2026, 8, 29, 18, 0, tzinfo=timezone.utc)
+    common = {
+        **values,
+        "lane": "native_task_arena_construction",
+        "root": tmp_path / "state",
+        "publisher": _window_publisher,
+    }
+    first = worker._materialize_phase_release_window(now=first_now, **common)
+    second = worker._materialize_phase_release_window(
+        now=first_now + timedelta(minutes=2), **common
+    )
+
+    assert first["digest"] != second["digest"]
+    assert len(list((tmp_path / "state/release-window-attempts").rglob("window-*.json"))) == 2
+
+
+def test_one_shot_adoption_registry_targets_only_its_legacy_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch_id = "scene-839873-2deff449-r1"
+    launch_root = tmp_path / "launch-runs"
+    run_root = launch_root / launch_id
+    _write(
+        run_root / "launch_profile.json",
+        {
+            "immutable_inputs": [],
+            "task_evaluation_run": {
+                "team_namespace": "blueprint-adp",
+                "scene_id": "interiorgs-839873",
+                "task_id": "scene-839873-mug-planar-push",
+            },
+        },
+    )
+    _write(run_root / "launch_receipt.json", {"status": "completed"})
+    _write(run_root / "webapp_sync_succeeded.json", {"status": "succeeded"})
+    _write(
+        run_root / "post_teardown_provider_zero_receipt.json",
+        {"status": "provider_zero_confirmed"},
+    )
+    intent_root = tmp_path / "intents"
+    adoption_path = intent_root / autostart.configured_controls_autostart_adoption_registry_name(
+        team_namespace="blueprint-adp",
+        scene_id="interiorgs-839873",
+        task_id="scene-839873-mug-planar-push",
+        source_launch_id=launch_id,
+    )
+    _write(adoption_path, {"schema_version": "test.adoption.v1"})
+    automatic_path = intent_root / autostart.configured_controls_autostart_registry_name(
+        team_namespace="blueprint-adp",
+        scene_id="interiorgs-839873",
+        task_id="scene-839873-mug-planar-push",
+    )
+    _write(automatic_path, {"schema_version": "test.automatic.v1"})
+    adoption = {
+        "configuration_adoption": {
+            "mode": "explicit_terminal_adoption",
+            "source_launch_id": launch_id,
+        }
+    }
+    monkeypatch.setattr(
+        autostart,
+        "validate_configured_controls_autostart_intent",
+        lambda _value: adoption,
+    )
+    observed: dict[str, object] = {}
+
+    def materialize(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {
+            "status": "cpu_binding_accepted_plan_materialized",
+            "selected_candidate_id": "candidate-0001",
+            "plan_digest": "sha256:" + "8" * 64,
+        }
+
+    monkeypatch.setattr(
+        autostart, "materialize_configured_controls_autostart", materialize
+    )
+    report = worker.process_plans(
+        plan_root=tmp_path / "plans",
+        autostart_intent_root=intent_root,
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progression",
+        preparation_queue_root=tmp_path / "preparations",
+        activation_queue_root=tmp_path / "activations",
+    )
+
+    assert report["status"] == "completed"
+    assert observed["source_launch_id"] == launch_id
+    assert observed["intent_path_override"] == adoption_path
+    assert observed["intent_path_override"] != automatic_path
 
 
 def _seal_plan(plan: dict[str, object]) -> None:
@@ -172,7 +397,7 @@ def _plan(tmp_path: Path) -> Path:
     }
     for phase in ("construction", "controls"):
         for name in (
-            "release_window_path",
+            "release_window_template_path",
             "authorization_path",
             "launch_authority_path",
         ):
@@ -319,7 +544,7 @@ def test_timer_advances_completed_preparation_into_construction_activation(
 ) -> None:
     plan_path = _plan(tmp_path)
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    for name in ("release_window", "lineage", "authorization"):
+    for name in ("release_window_template", "lineage", "authorization"):
         path = tmp_path / "inputs" / f"{name}.json"
         _write(path, {"kind": name})
         plan["phases"]["construction"][f"{name}_path"] = str(path)
@@ -341,6 +566,15 @@ def test_timer_advances_completed_preparation_into_construction_activation(
         return _sealed_progression("construction_activation_queued")
 
     monkeypatch.setattr(worker, "stage_configured_controls_activation", stage)
+    monkeypatch.setattr(
+        worker,
+        "_materialize_phase_release_window",
+        lambda **_: {
+            "uri": "s3://configured-controls/window.json",
+            "digest": "sha256:" + "7" * 64,
+            "size_bytes": 1,
+        },
+    )
     result = worker.advance_configured_controls_plan(
         plan_path=plan_path,
         launch_state_root=tmp_path / "unused-launch-runs",
@@ -659,6 +893,15 @@ def test_timer_derives_controls_lineage_after_construction_launch(
         return _sealed_progression("controls_activation_queued")
 
     monkeypatch.setattr(worker, "stage_configured_controls_activation", stage)
+    monkeypatch.setattr(
+        worker,
+        "_materialize_phase_release_window",
+        lambda **_: {
+            "uri": "s3://configured-controls/window.json",
+            "digest": "sha256:" + "7" * 64,
+            "size_bytes": 1,
+        },
+    )
     result = worker.advance_configured_controls_plan(
         plan_path=plan_path,
         launch_state_root=tmp_path / "launch-runs",

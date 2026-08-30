@@ -841,11 +841,24 @@ def _install_configured_controls_autostart_registry(
             raise ControlPlaneDeployError(
                 "deploy_configured_controls_autostart_intent_commit_mismatch"
             )
-        destination = root / configured_controls_autostart_registry_name(
-            team_namespace=value["team_namespace"],
-            scene_id=value["scene_id"],
-            task_id=value["task_id"],
-        )
+        adoption = value["configuration_adoption"]
+        if adoption["mode"] == "explicit_terminal_adoption":
+            from blueprint_pipeline.task_evaluation_configured_controls_autostart import (
+                configured_controls_autostart_adoption_registry_name,
+            )
+
+            destination = root / configured_controls_autostart_adoption_registry_name(
+                team_namespace=value["team_namespace"],
+                scene_id=value["scene_id"],
+                task_id=value["task_id"],
+                source_launch_id=adoption["source_launch_id"],
+            )
+        else:
+            destination = root / configured_controls_autostart_registry_name(
+                team_namespace=value["team_namespace"],
+                scene_id=value["scene_id"],
+                task_id=value["task_id"],
+            )
         previous_sha256: str | None = None
         try:
             if destination.exists():
@@ -931,6 +944,7 @@ def _install_configured_controls_autostart_registry(
                 "scene_id": value["scene_id"],
                 "task_id": value["task_id"],
                 "intent_digest": value["intent_digest"],
+                "configuration_adoption_mode": adoption["mode"],
                 "replaced_previous_sha256": (
                     previous_sha256
                     if previous_sha256 != _sha256_bytes(payload)

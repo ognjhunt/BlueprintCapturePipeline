@@ -87,7 +87,7 @@ def _configured_controls_intent_root(
     phases: dict[str, dict[str, str]] = {}
     for phase in ("construction", "controls"):
         names = [
-            "release_window_path",
+            "release_window_template_path",
             "authorization_path",
             "launch_authority_path",
         ]
@@ -101,6 +101,32 @@ def _configured_controls_intent_root(
     team_namespace = str(preparation["team_namespace"])
     scene_id = str(preparation["scene"]["identity"]["id"])
     task_id = str(preparation["task"]["identity"]["id"])
+    for phase in ("construction", "controls"):
+        template = {
+            "schema_version": "task_evaluation_configured_controls_release_window_template.v1",
+            "status": "authorized_for_dynamic_release",
+            "team_namespace": team_namespace,
+            "expected_production_commit": str(preparation["expected_production_commit"]),
+            "allowed_mutations": [
+                "profile_publication",
+                "catalog_synchronization",
+                "standing_authorization",
+            ],
+            "provider_allowlist": ["vast"],
+            "maximum_hard_cap_usd": 1.0,
+            "valid_for_seconds": 3600,
+            "released_by": "test-coordinator",
+            "release_reference": "test configured-controls continuation",
+            "provider_resource_allocation_allowed": False,
+            "paid_request_allowed": False,
+            "template_digest": "",
+        }
+        template["template_digest"] = canonical_digest(
+            template, digest_field="template_digest"
+        )
+        Path(phases[phase]["release_window_template_path"]).write_text(
+            json.dumps(template, sort_keys=True) + "\n", encoding="utf-8"
+        )
     destination = root / configured_controls_autostart_registry_name(
         team_namespace=team_namespace, scene_id=scene_id, task_id=task_id
     )

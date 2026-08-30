@@ -602,7 +602,7 @@ def _validate_controls_predecessor_artifacts(
         )
 
 
-def stage_configured_controls_activation(
+def build_configured_controls_activation_request(
     *,
     progression: Mapping[str, Any],
     preparation_result: Mapping[str, Any],
@@ -610,12 +610,9 @@ def stage_configured_controls_activation(
     lineage: Mapping[str, Any],
     authorization: Mapping[str, Any],
     lane: str,
-    queue_root: str | Path,
-    submitted_by: str,
     lineage_artifact_paths: Mapping[str, str | Path] | None = None,
-    activation_stager: ActivationStager | None = None,
 ) -> dict[str, Any]:
-    """Queue construction or the combined control pair; never execute either."""
+    """Build the exact request so coordinator authority can bind its intent."""
 
     state = _copy(
         progression,
@@ -657,7 +654,7 @@ def stage_configured_controls_activation(
             artifact_paths=lineage_artifact_paths,
         )
     preparation_request = state["episode_preparation_request"]
-    request = _activation_request(
+    return _activation_request(
         lane=lane,
         expected_production_commit=state["expected_production_commit"],
         activation_id=(
@@ -673,6 +670,40 @@ def stage_configured_controls_activation(
         release_window=release_window,
         lineage=lineage,
         authorization=authorization,
+    )
+
+
+def stage_configured_controls_activation(
+    *,
+    progression: Mapping[str, Any],
+    preparation_result: Mapping[str, Any],
+    release_window: Mapping[str, Any],
+    lineage: Mapping[str, Any],
+    authorization: Mapping[str, Any],
+    lane: str,
+    queue_root: str | Path,
+    submitted_by: str,
+    lineage_artifact_paths: Mapping[str, str | Path] | None = None,
+    activation_stager: ActivationStager | None = None,
+) -> dict[str, Any]:
+    """Queue construction or the combined control pair; never execute either."""
+
+    state = _copy(
+        progression,
+        blocker="configured_controls_progression_state_invalid",
+    )
+    preparation = _copy(
+        preparation_result,
+        blocker="configured_controls_progression_preparation_result_invalid",
+    )
+    request = build_configured_controls_activation_request(
+        progression=progression,
+        preparation_result=preparation_result,
+        release_window=release_window,
+        lineage=lineage,
+        authorization=authorization,
+        lane=lane,
+        lineage_artifact_paths=lineage_artifact_paths,
     )
     if activation_stager is None:
         from .task_evaluation_launch_activation_queue import (

@@ -18,6 +18,7 @@ import stat
 import subprocess  # nosec B404 - fixed repository-owned launch-only client
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +27,19 @@ from .task_evaluation_configured_controls_progression import (
     PROGRESSION_SCHEMA_VERSION,
     TaskEvaluationConfiguredControlsProgressionError,
     _publish_materialized_file,
+    build_configured_controls_activation_request,
     stage_configured_controls_activation,
     stage_configured_controls_episode_preparation,
     submit_authorized_progression_launch,
+)
+from .task_evaluation_launch_activation_contract import (
+    launch_activation_intent_digest,
+)
+from .task_evaluation_shared_mutation_window import (
+    TaskEvaluationSharedMutationWindowError,
+    materialize_shared_mutation_window,
+    validate_shared_mutation_window,
+    validate_shared_mutation_window_template,
 )
 from .task_evaluation_configured_scene_object_store import (
     configured_scene_object_store_publisher,
@@ -127,14 +138,14 @@ def _plan(path: Path) -> dict[str, Any]:
         or set(value.get("phases") or {}) != {"construction", "controls"}
         or set(value["phases"].get("construction") or {})
         != {
-            "release_window_path",
+            "release_window_template_path",
             "lineage_path",
             "authorization_path",
             "launch_authority_path",
         }
         or set(value["phases"].get("controls") or {})
         != {
-            "release_window_path",
+            "release_window_template_path",
             "authorization_path",
             "launch_authority_path",
         }
@@ -298,6 +309,116 @@ def _phase(plan: Mapping[str, Any], name: str) -> dict[str, Any]:
             "configured_controls_worker_phase_invalid"
         )
     return dict(value)
+
+
+def _materialize_phase_release_window(
+    *,
+    state: Mapping[str, Any],
+    preparation: Mapping[str, Any],
+    phase: Mapping[str, Any],
+    lineage: Mapping[str, Any],
+    authorization: Mapping[str, Any],
+    lane: str,
+    root: Path,
+    publisher: Callable[..., Mapping[str, Any]],
+    lineage_artifact_paths: Mapping[str, str | Path] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Publish a current window bound to the now-complete activation intent."""
+
+    placeholder = {
+        "uri": "https://tryblueprint.io/internal/release-window-placeholder",
+        "digest": "sha256:" + "0" * 64,
+        "size_bytes": 1,
+    }
+    request = build_configured_controls_activation_request(
+        progression=state,
+        preparation_result=preparation,
+        release_window=placeholder,
+        lineage=lineage,
+        authorization=authorization,
+        lane=lane,
+        lineage_artifact_paths=lineage_artifact_paths,
+    )
+    template = _input(
+        phase.get("release_window_template_path"),
+        blocker="configured_controls_worker_release_window_template_missing",
+    )
+    template = validate_shared_mutation_window_template(
+        template,
+        team_namespace=str(request["team_namespace"]),
+        expected_production_commit=str(request["expected_production_commit"]),
+    )
+    provider_allowlist = list(
+        state["episode_preparation_request"]["spend"]["provider_allowlist"]
+    )
+    hard_cap_usd = float(
+        state["episode_preparation_request"]["spend"]["hard_cap_usd"]
+    )
+    observed_now = now or datetime.now(timezone.utc)
+    intent_digest = launch_activation_intent_digest(request)
+    attempts = (
+        root
+        / "release-window-attempts"
+        / lane
+        / (
+            intent_digest.removeprefix("sha256:")
+            + "-"
+            + str(template["template_digest"]).removeprefix("sha256:")
+        )
+    )
+    attempts.mkdir(parents=True, exist_ok=True, mode=0o750)
+    for existing_path in sorted(attempts.glob("window-*.json"), reverse=True):
+        existing = _input(
+            existing_path,
+            blocker="configured_controls_worker_release_window_checkpoint_invalid",
+        )
+        try:
+            window = validate_shared_mutation_window(
+                existing,
+                activation_id=str(request["activation_id"]),
+                activation_intent_digest=intent_digest,
+                team_namespace=str(request["team_namespace"]),
+                expected_production_commit=str(
+                    request["expected_production_commit"]
+                ),
+                provider_allowlist=provider_allowlist,
+                hard_cap_usd=hard_cap_usd,
+                now=observed_now,
+            )
+        except TaskEvaluationSharedMutationWindowError as exc:
+            if str(exc) == "shared_mutation_window_not_current":
+                continue
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_release_window_checkpoint_invalid"
+            ) from exc
+        return _publish_materialized_file(
+            path=existing_path,
+            object_name=(
+                f"release-windows/{request['activation_id']}/"
+                f"{window['window_digest'].removeprefix('sha256:')}.json"
+            ),
+            publisher=publisher,
+        )
+    window = materialize_shared_mutation_window(
+        template,
+        activation_request=request,
+        provider_allowlist=provider_allowlist,
+        hard_cap_usd=hard_cap_usd,
+        now=observed_now,
+    )
+    window_path = attempts / (
+        f"window-{window['window_digest'].removeprefix('sha256:')}.json"
+    )
+    _write_immutable(window_path, window)
+    return _publish_materialized_file(
+        path=window_path,
+        object_name=(
+            f"release-windows/{request['activation_id']}/"
+            f"{window['window_digest'].removeprefix('sha256:')}.json"
+        ),
+        publisher=publisher,
+    )
 
 
 def _queue_result(queue_root: Path, preparation_id: str) -> dict[str, Any] | None:
@@ -663,12 +784,24 @@ def advance_configured_controls_plan(
         construction_activation_path, statuses={"construction_activation_queued"}
     )
     if construction_activation is None:
+        lineage = _input(construction_phase.get("lineage_path"), blocker="configured_controls_worker_lineage_missing")
+        authorization = _input(construction_phase.get("authorization_path"), blocker="configured_controls_worker_authorization_missing")
+        release_window = _materialize_phase_release_window(
+            state=base,
+            preparation=preparation,
+            phase=construction_phase,
+            lineage=lineage,
+            authorization=authorization,
+            lane="native_task_arena_construction",
+            root=state,
+            publisher=publisher_factory(),
+        )
         result = stage_configured_controls_activation(
             progression=base,
             preparation_result=preparation,
-            release_window=_input(construction_phase.get("release_window_path"), blocker="configured_controls_worker_release_window_missing"),
-            lineage=_input(construction_phase.get("lineage_path"), blocker="configured_controls_worker_lineage_missing"),
-            authorization=_input(construction_phase.get("authorization_path"), blocker="configured_controls_worker_authorization_missing"),
+            release_window=release_window,
+            lineage=lineage,
+            authorization=authorization,
             lane="native_task_arena_construction",
             queue_root=activation_queue_root,
             submitted_by=plan["submitted_by"],
@@ -727,12 +860,24 @@ def advance_configured_controls_plan(
                 "source_launch_id": plan["source_launch_id"],
             }
         lineage, artifact_paths = predecessor
+        authorization = _input(controls_phase.get("authorization_path"), blocker="configured_controls_worker_authorization_missing")
+        release_window = _materialize_phase_release_window(
+            state=base,
+            preparation=preparation,
+            phase=controls_phase,
+            lineage=lineage,
+            authorization=authorization,
+            lane="native_task_arena_controls",
+            root=state,
+            publisher=publisher_factory(),
+            lineage_artifact_paths=artifact_paths,
+        )
         result = stage_configured_controls_activation(
             progression=base,
             preparation_result=preparation,
-            release_window=_input(controls_phase.get("release_window_path"), blocker="configured_controls_worker_release_window_missing"),
+            release_window=release_window,
             lineage=lineage,
-            authorization=_input(controls_phase.get("authorization_path"), blocker="configured_controls_worker_authorization_missing"),
+            authorization=authorization,
             lane="native_task_arena_controls",
             queue_root=activation_queue_root,
             submitted_by=plan["submitted_by"],
@@ -775,6 +920,12 @@ def advance_configured_controls_plan(
 
 def process_plans(**kwargs: Any) -> dict[str, Any]:
     plan_root = Path(kwargs.pop("plan_root")).expanduser()
+    intent_root_value = kwargs.pop("autostart_intent_root", None)
+    intent_root = (
+        Path(intent_root_value).expanduser()
+        if intent_root_value is not None
+        else None
+    )
     launch_state_root = Path(kwargs["launch_state_root"]).expanduser()
     rows: list[dict[str, Any]] = []
     # Configuration profiles carrying the required autostart intent need no
@@ -806,8 +957,58 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
             and item.get("name") == "configured_controls_autostart_intent"
             for item in profile.get("immutable_inputs") or []
         )
+        intent_path_override: Path | None = None
         if not has_intent:
-            continue
+            if (
+                intent_root is None
+                or not intent_root.is_absolute()
+                or intent_root.is_symlink()
+                or not intent_root.is_dir()
+            ):
+                continue
+            task_run = profile.get("task_evaluation_run")
+            if not isinstance(task_run, Mapping):
+                continue
+            from .task_evaluation_configured_controls_autostart import (
+                configured_controls_autostart_adoption_registry_name,
+                validate_configured_controls_autostart_intent,
+            )
+
+            candidate = intent_root / configured_controls_autostart_adoption_registry_name(
+                team_namespace=str(task_run.get("team_namespace") or ""),
+                scene_id=str(task_run.get("scene_id") or ""),
+                task_id=str(task_run.get("task_id") or ""),
+                source_launch_id=run_root.name,
+            )
+            if not candidate.is_file() or candidate.is_symlink():
+                continue
+            try:
+                registry_intent = validate_configured_controls_autostart_intent(
+                    _load(
+                        candidate,
+                        blocker="configured_controls_autostart_adoption_intent_invalid",
+                    )
+                )
+            except (
+                TaskEvaluationConfiguredControlsAutostartError,
+                TaskEvaluationConfiguredControlsProgressionWorkerError,
+            ) as exc:
+                rows.append(
+                    {
+                        "status": "blocked",
+                        "source_launch_id": run_root.name,
+                        "blockers": [str(exc)],
+                    }
+                )
+                continue
+            adoption = registry_intent.get("configuration_adoption")
+            if (
+                not isinstance(adoption, Mapping)
+                or adoption.get("mode") != "explicit_terminal_adoption"
+                or adoption.get("source_launch_id") != run_root.name
+            ):
+                continue
+            intent_path_override = candidate
         try:
             receipt = _load(
                 receipt_path,
@@ -831,6 +1032,7 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
                 launch_state_root=launch_state_root,
                 progression_root=kwargs["progression_root"],
                 plan_root=plan_root,
+                intent_path_override=intent_path_override,
             )
             rows.append({
                 "status": auto["status"],
@@ -867,6 +1069,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--progression-root", required=True)
     parser.add_argument("--preparation-queue-root", required=True)
     parser.add_argument("--activation-queue-root", required=True)
+    parser.add_argument("--autostart-intent-root", required=True)
     parser.add_argument("--repo-root", required=True)
     parser.add_argument("--webapp-secret-file", required=True)
     parser.add_argument("--webapp-endpoint", default="https://tryblueprint.io/api/internal/task-evaluation-launch-submissions")

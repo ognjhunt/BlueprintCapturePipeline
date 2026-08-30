@@ -26,7 +26,7 @@ _TOP_LEVEL_PATHS = {
     "runtime_binding_path",
 }
 _COMMON_PHASE_PATHS = {
-    "release_window_path",
+    "release_window_template_path",
     "authorization_path",
     "launch_authority_path",
 }
