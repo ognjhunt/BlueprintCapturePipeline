@@ -44,6 +44,7 @@ SUPPORTED_LANES = frozenset(
 DIAGNOSTIC_SCENE_CONFIGURATION_LANE = (
     "task_evaluation_scene_configuration_diagnostic"
 )
+PRODUCTION_SCENE_CONFIGURATION_LANE = "task_evaluation_scene_configuration"
 ZERO_CHARGE_ABSENCE_EVIDENCE_KIND = (
     "official_billing_zero_charge_absence_after_grace"
 )
@@ -198,6 +199,14 @@ def _attempt_id(result_path: Path, result: Mapping[str, Any]) -> str:
         value = result.get("attempt_id")
         if isinstance(value, str) and value.strip():
             return value.strip()
+    if (
+        result.get("schema_version")
+        == "task_evaluation_scene_configuration_vast_result.v1"
+        and result_path.name == "result.json"
+        and result_path.parent.name == "allocator"
+        and result_path.parent.parent.name
+    ):
+        return result_path.parent.parent.name
     for key in ("launch_id", "run_id", "attempt_id"):
         value = result.get(key)
         if isinstance(value, str) and value.strip():
@@ -416,6 +425,56 @@ def _entry(
         result, ("continuing_spend_from_this_run",), ("continuing_spend",)
     )
     bundle_path, bundle_sha256 = _json_path(result, ("bundle_sha256",))
+    provider_adapter_source: tuple[Path, dict[str, Any]] | None = None
+    estimate_source_role = "terminal_result"
+    if lane == PRODUCTION_SCENE_CONFIGURATION_LANE:
+        if (
+            result_path.name != "result.json"
+            or result_path.parent.name != "allocator"
+            or result.get("schema_version")
+            != "task_evaluation_scene_configuration_vast_result.v1"
+        ):
+            raise ValueError(
+                "same_goal_spend_production_scene_configuration_terminal_invalid"
+            )
+        adapter_candidate = (
+            result_path.parent
+            / "scene-configuration-job"
+            / "vast_provider_run"
+            / "vast_provider_adapter_result.json"
+        )
+        adapter_path, adapter = _read(
+            adapter_candidate,
+            code="same_goal_spend_production_scene_configuration_adapter_invalid",
+        )
+        adapter_instance_ids = adapter.get("vast_instance_ids")
+        if (
+            adapter.get("schema_version") != "vast_provider_adapter_result.v1"
+            or adapter.get("status") != "completed"
+            or adapter.get("continuing_spend_from_this_run") is not False
+            or adapter.get("provider_bundle_sha256") != bundle_sha256
+            or not isinstance(adapter_instance_ids, list)
+            or not adapter_instance_ids
+            or any(
+                isinstance(instance_id, bool)
+                or not isinstance(instance_id, int)
+                or instance_id <= 0
+                for instance_id in adapter_instance_ids
+            )
+            or len(set(adapter_instance_ids)) != len(adapter_instance_ids)
+        ):
+            raise ValueError(
+                "same_goal_spend_production_scene_configuration_adapter_invalid"
+            )
+        provider_adapter_source = (adapter_path, adapter)
+        estimate_source_role = "provider_adapter_result"
+        _estimate_path, estimated_cost = _json_path(
+            adapter, ("estimated_cost_usd",)
+        )
+    else:
+        _estimate_path, estimated_cost = _json_path(
+            result, ("estimated_cost_usd",), ("cost_usd",)
+        )
     admission_source: tuple[Path, dict[str, Any]] | None = None
     authority_source_role = "terminal_result"
     source_commit: str | None = None
@@ -465,9 +524,6 @@ def _entry(
     zero_binding_path, zero_confirmed = _json_path(
         zero, *zero_binding_candidates
     )
-    _estimate_path, estimated_cost = _json_path(
-        result, ("estimated_cost_usd",), ("cost_usd",)
-    )
     no_allocation = (
         lane == "native_task_arena"
         and teardown.get("vast_instance_ids") == []
@@ -511,6 +567,13 @@ def _entry(
         raise ValueError("same_goal_spend_terminal_or_zero_invalid")
 
     teardown_ids = [] if no_allocation else _instance_ids(teardown)
+    if (
+        provider_adapter_source is not None
+        and provider_adapter_source[1].get("vast_instance_ids") != teardown_ids
+    ):
+        raise ValueError(
+            "same_goal_spend_production_scene_configuration_adapter_invalid"
+        )
     results = billing.get("results")
     if not isinstance(results, list):
         raise ValueError("same_goal_spend_billing_results_invalid")
@@ -546,6 +609,14 @@ def _entry(
         _source("official_billing_response", billing_path, billing),
         _source("provider_billing_source_receipt", billing_source_path, billing_source),
     ]
+    if provider_adapter_source is not None:
+        sources.append(
+            _source(
+                "provider_adapter_result",
+                provider_adapter_source[0],
+                provider_adapter_source[1],
+            )
+        )
     evidence_kind = "fully_bound_official_billing"
     if no_allocation:
         instance_id = None
@@ -554,7 +625,7 @@ def _entry(
         cost_and_instance_bindings = [
             {
                 "kind": "cost_usd",
-                "source_role": "terminal_result",
+                "source_role": estimate_source_role,
                 "json_path": _estimate_path,
                 "expected_value": estimated_cost,
             },
@@ -746,7 +817,12 @@ def materialize_same_goal_spend_reconciliation(
         len(provider_billing_source_receipt_paths),
     }
     if (
-        lane not in SUPPORTED_LANES | {DIAGNOSTIC_SCENE_CONFIGURATION_LANE}
+        lane
+        not in SUPPORTED_LANES
+        | {
+            DIAGNOSTIC_SCENE_CONFIGURATION_LANE,
+            PRODUCTION_SCENE_CONFIGURATION_LANE,
+        }
         or counts == {0}
         or len(counts) != 1
     ):
@@ -828,7 +904,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--lane",
-        choices=sorted(SUPPORTED_LANES | {DIAGNOSTIC_SCENE_CONFIGURATION_LANE}),
+        choices=sorted(
+            SUPPORTED_LANES
+            | {
+                DIAGNOSTIC_SCENE_CONFIGURATION_LANE,
+                PRODUCTION_SCENE_CONFIGURATION_LANE,
+            }
+        ),
         required=True,
     )
     parser.add_argument("--terminal-result", action="append", required=True)

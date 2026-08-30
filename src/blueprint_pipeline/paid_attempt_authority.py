@@ -409,6 +409,8 @@ def bind_lane_prior_spend(
         "official_billing_response",
         "provider_billing_source_receipt",
     }
+    if lane == "task_evaluation_scene_configuration":
+        required_roles.add("provider_adapter_result")
     for result_path in result_paths:
         result = _read_json(result_path, code="prior_terminal_attempt_invalid")
         accepted_statuses = {
@@ -545,7 +547,33 @@ def bind_lane_prior_spend(
             )
         ):
             raise ValueError("prior_terminal_billing_or_zero_invalid")
-        estimate = result.get("estimated_cost_usd", result.get("cost_usd"))
+        estimate_source = result
+        if lane == "task_evaluation_scene_configuration":
+            adapter_source = sources.get("provider_adapter_result")
+            adapter_record = (
+                adapter_source.get("record")
+                if isinstance(adapter_source, Mapping)
+                else None
+            )
+            adapter_path = _bound_record(
+                adapter_record, code="prior_provider_adapter_result_unbound"
+            )
+            adapter = _read_json(
+                adapter_path, code="prior_provider_adapter_result_invalid"
+            )
+            if (
+                adapter.get("schema_version") != "vast_provider_adapter_result.v1"
+                or adapter.get("status") != "completed"
+                or adapter.get("continuing_spend_from_this_run") is not False
+                or adapter.get("vast_instance_ids") != teardown_instance_ids
+                or adapter.get("provider_bundle_sha256")
+                != result.get("bundle_sha256")
+            ):
+                raise ValueError("prior_provider_adapter_result_invalid")
+            estimate_source = adapter
+        estimate = estimate_source.get(
+            "estimated_cost_usd", estimate_source.get("cost_usd")
+        )
         if not _finite(estimate):
             raise ValueError("prior_terminal_attempt_estimate_invalid")
         rows.append(
