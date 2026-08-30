@@ -2210,6 +2210,8 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         phases=phases,
         profile_dir=profiles,
         output_path=intent_path,
+        openai_project_id="proj_test",
+        openai_api_key_id="key_visual_review",
     )
     profile = build_scene_configuration_live_profile(
         bundle_receipt_path=receipt_path,

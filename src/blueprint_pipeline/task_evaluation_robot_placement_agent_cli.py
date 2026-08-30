@@ -40,6 +40,9 @@ from .task_evaluation_robot_placement_warm_executor import (
     native_attempt_from_warm_result,
 )
 from .task_evaluation_supervisor.agents_sdk import OpenAIAgentsSDKInvoker
+from .task_evaluation_supervisor.inference_reservations import (
+    InferenceReservationAudit,
+)
 
 
 def _read_mapping(path: Path, *, label: str) -> dict[str, Any]:
@@ -116,6 +119,7 @@ def run_robot_placement_cli(
     prior_native_attempts: Sequence[Mapping[str, Any]] = (),
     candidate_inventory_checkpoint: Mapping[str, Any] | None = None,
     deterministic_selection: bool = False,
+    record_inference_reservations: bool = False,
 ) -> dict[str, Any]:
     root = output_dir.expanduser().resolve()
     if root.exists() and any(root.iterdir()):
@@ -350,37 +354,57 @@ def run_robot_placement_cli(
             tracing_disabled=tracing_disabled,
         )
     )
-    receipt = run_task_evaluation_robot_placement_agent(
-        invoker=invoker,
-        run_id=run_id,
-        scene_binding=scene_binding,
-        task_binding=task_binding,
-        scene_context={
-            "geometry_summary": summary,
-            "deterministic_geometry_passing_candidate_inventory": candidates,
-            "deterministic_geometry_passing_candidate_inventory_digest": (
-                candidate_inventory_digest
-            ),
-            "deterministic_geometry_passing_candidate_inventory_trajectory_digest": (
-                trajectory_digest
-            ),
-            "candidate_inventory_is_advisory": False,
-            "model_must_select_exact_inventory_member": True,
-            "candidate_pose_or_support_mutation_allowed": False,
-        },
-        task_context={
-            "target_position_world_m": [float(value) for value in target_position_world_m],
-            "robot_id": robot_id,
-        },
-        overview_images=overview_images,
-        validate_candidate=validator,
-        render_candidate=renderer,
-        execute_candidate=execute_candidate,
-        task_trajectory=task_trajectory,
-        prior_native_attempts=prior_native_attempts,
-        max_rounds=max_rounds,
-        max_input_tokens=max_input_tokens,
+    audit = (
+        InferenceReservationAudit(run_root=root, run_id=run_id)
+        if record_inference_reservations
+        else None
     )
+    if audit is not None:
+        invoker.configure_reservation_audit(
+            record_reservation=audit.record_reservation,
+            record_completion=audit.record_completion,
+            restored_reserved_cost_usd=0.0,
+        )
+    try:
+        receipt = run_task_evaluation_robot_placement_agent(
+            invoker=invoker,
+            run_id=run_id,
+            scene_binding=scene_binding,
+            task_binding=task_binding,
+            scene_context={
+                "geometry_summary": summary,
+                "deterministic_geometry_passing_candidate_inventory": candidates,
+                "deterministic_geometry_passing_candidate_inventory_digest": (
+                    candidate_inventory_digest
+                ),
+                "deterministic_geometry_passing_candidate_inventory_trajectory_digest": (
+                    trajectory_digest
+                ),
+                "candidate_inventory_is_advisory": False,
+                "model_must_select_exact_inventory_member": True,
+                "candidate_pose_or_support_mutation_allowed": False,
+            },
+            task_context={
+                "target_position_world_m": [
+                    float(value) for value in target_position_world_m
+                ],
+                "robot_id": robot_id,
+            },
+            overview_images=overview_images,
+            validate_candidate=validator,
+            render_candidate=renderer,
+            execute_candidate=execute_candidate,
+            task_trajectory=task_trajectory,
+            prior_native_attempts=prior_native_attempts,
+            max_rounds=max_rounds,
+            max_input_tokens=max_input_tokens,
+        )
+    except Exception:
+        if audit is not None:
+            audit.write_manifest()
+        raise
+    if audit is not None:
+        audit.write_manifest()
     write_json(root / "task_evaluation_robot_placement_receipt.v1.json", receipt)
     write_json(
         root / "task_evaluation_robot_placement_artifact_index.v1.json",
@@ -411,6 +435,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-inference-cost-usd", required=True, type=float)
     parser.add_argument("--allow-live-invocation", action="store_true")
     parser.add_argument("--disable-tracing", action="store_true")
+    parser.add_argument("--record-inference-reservations", action="store_true")
     trajectory_source = parser.add_mutually_exclusive_group()
     trajectory_source.add_argument(
         "--native-trajectory-plan",
@@ -532,6 +557,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.candidate_inventory_checkpoint
             else None
         ),
+        record_inference_reservations=args.record_inference_reservations,
     )
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt["status"] == "accepted" else 2

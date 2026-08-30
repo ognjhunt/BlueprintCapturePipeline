@@ -224,7 +224,7 @@ def test_one_shot_adoption_registry_targets_only_its_legacy_launch(
     def materialize(**kwargs: object) -> dict[str, object]:
         observed.update(kwargs)
         return {
-            "status": "cpu_binding_accepted_plan_materialized",
+            "status": "agent_binding_accepted_plan_materialized",
             "selected_candidate_id": "candidate-0001",
             "plan_digest": "sha256:" + "8" * 64,
         }
@@ -931,6 +931,19 @@ def test_systemd_worker_is_separate_from_reconciler_and_never_calls_allocator() 
     assert "Group=blueprint" in service
     assert "WorkingDirectory=/root" not in service
     assert "/root/" not in service
+    assert (
+        "Environment=OPENAI_API_KEY_FILE=/etc/blueprint/provider-secrets/"
+        "openai_api_key_artifixer_visual_review"
+    ) in service
+    assert (
+        "Environment=OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE="
+        "/etc/blueprint/provider-secrets/openai_api_key_artifixer_visual_review"
+    ) in service
+    assert "Environment=BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true" in service
+    assert (
+        "Environment=VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/"
+        "pipeline-control-plane/provider-locks/vast_paid_launch.lock"
+    ) in service
     assert "post_teardown" not in reconciler
     assert "paid_resource_allocator" not in service
     assert "vast_provider_adapter" not in service

@@ -4,9 +4,10 @@ The scene-configuration envelope has always declared that automatic progression
 is required, but the production timer previously consumed only a hand-written
 plan.  This module turns one immutable launch-profile input into that plan after
 the configured revision is published.  It performs deterministic
-geometry/trajectory placement on CPU, then binds the exact accepted inventory
-member.  It never invokes a model, allocates a provider resource, or submits a
-launch.
+geometry/trajectory placement on CPU, then lets the production OpenAI Agents
+SDK reviewer select one exact, unchanged inventory member.  The deterministic
+gates revalidate that selection before a construction plan can exist.  This
+module never allocates a GPU provider resource or submits a launch.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import stat
 import zipfile
@@ -23,6 +25,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .openai_official_cost_gate import (
+    RUN_COMPLETION_SCHEMA_VERSION,
+    RUN_RESERVATION_SCHEMA_VERSION,
+)
 from .task_evaluation_configured_controls_plan import (
     materialize_configured_controls_plan,
 )
@@ -31,6 +37,10 @@ from .task_evaluation_configured_scene_revision import (
 )
 from .task_evaluation_robot_placement_agent_cli import run_robot_placement_cli
 from .task_evaluation_robot_placement_agent import validate_robot_placement_receipt
+from .task_evaluation_robot_placement_agent import (
+    ROBOT_PLACEMENT_AGENT_MODEL,
+    ROBOT_PLACEMENT_AGENT_REASONING_EFFORT,
+)
 from .task_evaluation_robot_placement_readiness_candidate import (
     materialize_robot_placement_readiness_candidate,
 )
@@ -42,10 +52,17 @@ from .task_evaluation_shared_mutation_window import (
     TaskEvaluationSharedMutationWindowError,
     validate_shared_mutation_window_template,
 )
+from .task_evaluation_configured_controls_openai_placement import (
+    PAID_RESOURCE_CLASS as OPENAI_PLACEMENT_PAID_RESOURCE_CLASS,
+    VISUAL_REVIEW_CREDENTIAL_ROLE,
+    configured_controls_robot_placement_openai_gate,
+    exclusive_visual_review_cost_scope,
+)
 
 
-INTENT_SCHEMA_VERSION = "task_evaluation_configured_controls_autostart_intent.v1"
-RESULT_SCHEMA_VERSION = "task_evaluation_configured_controls_autostart.v1"
+INTENT_SCHEMA_VERSION = "task_evaluation_configured_controls_autostart_intent.v2"
+RESULT_SCHEMA_VERSION = "task_evaluation_configured_controls_autostart.v2"
+DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD = 2.56
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _FIXED_PATHS = {
@@ -80,6 +97,9 @@ ReadinessMaterializer = Callable[..., Mapping[str, Any]]
 PlanMaterializer = Callable[..., Mapping[str, Any]]
 _PLACEMENT_CHECKPOINT_SCHEMA_VERSION = (
     "task_evaluation_configured_controls_cpu_placement_checkpoint.v1"
+)
+_AGENT_PLACEMENT_CHECKPOINT_SCHEMA_VERSION = (
+    "task_evaluation_configured_controls_agent_placement_checkpoint.v1"
 )
 _PLACEMENT_CAMERA_SCHEMA_VERSION = (
     "task_evaluation_placement_aware_camera_candidates.v1"
@@ -416,6 +436,11 @@ def validate_configured_controls_autostart_intent(
     intent = json.loads(json.dumps(dict(value), allow_nan=False))
     target = intent.get("target_position_world_m")
     placement = intent.get("placement")
+    placement_authority = (
+        placement.get("official_cost_authority")
+        if isinstance(placement, Mapping)
+        else None
+    )
     adoption = intent.get("configuration_adoption")
     if (
         intent.get("schema_version") != INTENT_SCHEMA_VERSION
@@ -437,15 +462,43 @@ def validate_configured_controls_autostart_intent(
             "candidate_inventory_cap",
             "max_input_tokens",
             "max_inference_cost_usd",
+            "agent_selection_required",
+            "agent_model",
+            "reasoning_effort",
+            "official_cost_authority",
         }
         or placement.get("robot_id") != "franka_panda"
         or not 1 <= int(placement.get("max_rounds", 0)) <= 8
         or not 1 <= int(placement.get("candidate_inventory_cap", 0)) <= 128
         or not 1 <= int(placement.get("max_input_tokens", 0)) <= 1_000_000
-        or float(placement.get("max_inference_cost_usd", -1.0)) != 0.0
+        or float(placement.get("max_inference_cost_usd", -1.0))
+        != DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD
+        or placement.get("agent_selection_required") is not True
+        or placement.get("agent_model") != ROBOT_PLACEMENT_AGENT_MODEL
+        or placement.get("reasoning_effort")
+        != ROBOT_PLACEMENT_AGENT_REASONING_EFFORT
+        or not isinstance(placement_authority, Mapping)
+        or set(placement_authority)
+        != {
+            "provider_id",
+            "credential_role",
+            "project_id",
+            "api_key_id",
+            "paid_resource_class",
+            "maximum_cost_usd",
+        }
+        or placement_authority.get("provider_id") != "openai"
+        or placement_authority.get("credential_role")
+        != VISUAL_REVIEW_CREDENTIAL_ROLE
+        or not str(placement_authority.get("project_id") or "").strip()
+        or not str(placement_authority.get("api_key_id") or "").strip()
+        or placement_authority.get("paid_resource_class")
+        != OPENAI_PLACEMENT_PAID_RESOURCE_CLASS
+        or float(placement_authority.get("maximum_cost_usd", -1.0))
+        != float(placement["max_inference_cost_usd"])
         or not Path(str(intent.get("profile_dir") or "")).is_absolute()
         or intent.get("provider_mutation_performed") is not False
-        or intent.get("paid_execution_requested") is not False
+        or intent.get("paid_execution_requested") is not True
         or not isinstance(adoption, Mapping)
         or intent.get("intent_digest")
         != canonical_digest(intent, digest_field="intent_digest")
@@ -539,7 +592,9 @@ def materialize_configured_controls_autostart_intent(
     max_rounds: int = 2,
     candidate_inventory_cap: int = 24,
     max_input_tokens: int = 120_000,
-    max_inference_cost_usd: float = 0.0,
+    max_inference_cost_usd: float = DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD,
+    openai_project_id: str,
+    openai_api_key_id: str,
     configuration_source_commit: str | None = None,
     configuration_adoption: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -570,13 +625,24 @@ def materialize_configured_controls_autostart_intent(
             "candidate_inventory_cap": int(candidate_inventory_cap),
             "max_input_tokens": int(max_input_tokens),
             "max_inference_cost_usd": float(max_inference_cost_usd),
+            "agent_selection_required": True,
+            "agent_model": ROBOT_PLACEMENT_AGENT_MODEL,
+            "reasoning_effort": ROBOT_PLACEMENT_AGENT_REASONING_EFFORT,
+            "official_cost_authority": {
+                "provider_id": "openai",
+                "credential_role": VISUAL_REVIEW_CREDENTIAL_ROLE,
+                "project_id": str(openai_project_id),
+                "api_key_id": str(openai_api_key_id),
+                "paid_resource_class": OPENAI_PLACEMENT_PAID_RESOURCE_CLASS,
+                "maximum_cost_usd": float(max_inference_cost_usd),
+            },
         },
         "profile_dir": str(Path(profile_dir).expanduser()),
         "paths": json.loads(json.dumps(dict(paths))),
         "phases": json.loads(json.dumps(dict(phases))),
         "artifact_inventory": {},
         "provider_mutation_performed": False,
-        "paid_execution_requested": False,
+        "paid_execution_requested": True,
         "intent_digest": "",
     }
     flattened = _intent_paths(draft)
@@ -786,11 +852,22 @@ def _validate_configuration_adoption(
         )
 
 
+def _artifact_record_valid(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    try:
+        path = Path(str(value.get("path") or ""))
+        return dict(value) == _artifact(path)
+    except (OSError, TaskEvaluationConfiguredControlsAutostartError):
+        return False
+
+
 def _validate_result(value: Mapping[str, Any]) -> dict[str, Any]:
     result = json.loads(json.dumps(dict(value), allow_nan=False))
+    openai_evidence = result.get("official_openai_cost_evidence")
     if (
         result.get("schema_version") != RESULT_SCHEMA_VERSION
-        or result.get("status") != "cpu_binding_accepted_plan_materialized"
+        or result.get("status") != "agent_binding_accepted_plan_materialized"
         or not str(result.get("source_launch_id") or "")
         or _DIGEST.fullmatch(
             str(result.get("configured_scene_revision_digest") or "")
@@ -802,6 +879,29 @@ def _validate_result(value: Mapping[str, Any]) -> dict[str, Any]:
         )
         is None
         or not str(result.get("selected_candidate_id") or "")
+        or _DIGEST.fullmatch(
+            str(result.get("cpu_inventory_ranker_receipt_digest") or "")
+        )
+        is None
+        or _DIGEST.fullmatch(
+            str(result.get("placement_agent_receipt_digest") or "")
+        )
+        is None
+        or result.get("placement_agent_model") != ROBOT_PLACEMENT_AGENT_MODEL
+        or result.get("placement_agent_reasoning_effort")
+        != ROBOT_PLACEMENT_AGENT_REASONING_EFFORT
+        or result.get("placement_agent_selected_exact_inventory_member") is not True
+        or result.get("placement_agent_visual_review_completed") is not True
+        or not isinstance(openai_evidence, Mapping)
+        or set(openai_evidence)
+        != {
+            "reservation",
+            "completion",
+            "exclusive_lock",
+            "exclusive_lock_release",
+            "inference_reservations",
+        }
+        or not all(_artifact_record_valid(row) for row in openai_evidence.values())
         or not Path(str(result.get("base_pose_candidate_path") or "")).is_absolute()
         or not Path(str(result.get("plan_path") or "")).is_absolute()
         or _DIGEST.fullmatch(str(result.get("plan_digest") or "")) is None
@@ -811,7 +911,7 @@ def _validate_result(value: Mapping[str, Any]) -> dict[str, Any]:
         )
         is not True
         or result.get("provider_mutation_performed") is not False
-        or result.get("paid_execution_requested") is not False
+        or result.get("paid_execution_requested") is not True
         or result.get("result_digest")
         != canonical_digest(result, digest_field="result_digest")
     ):
@@ -828,12 +928,15 @@ def _placement_checkpoint(
     runner_kwargs: Mapping[str, Any],
     expected_scene_binding_digest: str,
     expected_task_binding_digest: str,
+    attempts_dir_name: str = "placement-attempts",
+    checkpoint_file_name: str = "cpu-placement-checkpoint.v1.json",
+    checkpoint_schema_version: str = _PLACEMENT_CHECKPOINT_SCHEMA_VERSION,
 ) -> tuple[dict[str, Any], dict[str, Any], Path]:
     """Run in a fresh attempt and publish one immutable completed checkpoint."""
 
-    attempts_root = root / "placement-attempts"
+    attempts_root = root / attempts_dir_name
     attempts_root.mkdir(parents=True, exist_ok=True, mode=0o750)
-    checkpoint_path = root / "cpu-placement-checkpoint.v1.json"
+    checkpoint_path = root / checkpoint_file_name
 
     def reopen() -> tuple[dict[str, Any], dict[str, Any], Path]:
         checkpoint = _read(
@@ -841,7 +944,7 @@ def _placement_checkpoint(
             blocker="configured_controls_autostart_placement_checkpoint_invalid",
         )
         if (
-            checkpoint.get("schema_version") != _PLACEMENT_CHECKPOINT_SCHEMA_VERSION
+            checkpoint.get("schema_version") != checkpoint_schema_version
             or checkpoint.get("status") != "complete"
             or checkpoint.get("checkpoint_digest")
             != canonical_digest(checkpoint, digest_field="checkpoint_digest")
@@ -942,7 +1045,7 @@ def _placement_checkpoint(
             "configured_controls_autostart_placement_checkpoint_invalid"
         )
     checkpoint = {
-        "schema_version": _PLACEMENT_CHECKPOINT_SCHEMA_VERSION,
+        "schema_version": checkpoint_schema_version,
         "status": "complete",
         "attempt_root": str(attempt_root),
         "receipt_path": str(receipt_path),
@@ -966,6 +1069,103 @@ def _placement_checkpoint(
     return validated_receipt, inventory, attempt_root
 
 
+def _validated_agent_openai_evidence(
+    *,
+    cost_root: Path,
+    agent_attempt_root: Path,
+    intent: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    inventory: Mapping[str, Any],
+) -> dict[str, Any]:
+    reservation_path = cost_root / "openai_official_cost_run_reservation.v1.json"
+    completion_path = cost_root / "openai_official_cost_run_completion.v1.json"
+    lock_path = cost_root / "openai_scope_lock_acquired.v1.json"
+    release_path = cost_root / "openai_scope_lock_released.v1.json"
+    inference_path = agent_attempt_root / "inference_reservations" / "manifest.json"
+    reservation = _read(
+        reservation_path,
+        blocker="configured_controls_autostart_openai_evidence_invalid",
+    )
+    completion = _read(
+        completion_path,
+        blocker="configured_controls_autostart_openai_evidence_invalid",
+    )
+    lock = _read(
+        lock_path,
+        blocker="configured_controls_autostart_openai_evidence_invalid",
+    )
+    release = _read(
+        release_path,
+        blocker="configured_controls_autostart_openai_evidence_invalid",
+    )
+    inference = _read(
+        inference_path,
+        blocker="configured_controls_autostart_openai_evidence_invalid",
+    )
+    placement = intent["placement"]
+    if (
+        reservation.get("schema_version") != RUN_RESERVATION_SCHEMA_VERSION
+        or reservation.get("status") != "reserved_before_openai_call"
+        or reservation.get("request_digest")
+        != canonical_digest(
+            {
+                "intent_digest": intent["intent_digest"],
+                "candidate_inventory_checkpoint_digest": inventory[
+                    "checkpoint_digest"
+                ],
+                "scene_binding_digest": receipt["scene_binding_digest"],
+                "task_binding_digest": receipt["task_binding_digest"],
+            }
+        )
+        or reservation.get("candidate_digest")
+        != inventory.get("candidate_inventory_digest")
+        or reservation.get("authorization_receipt_digest")
+        != intent.get("intent_digest")
+        or float(reservation.get("maximum_cost_usd", -1.0))
+        != float(placement["max_inference_cost_usd"])
+        or reservation.get("reservation_receipt_digest")
+        != canonical_digest(reservation, digest_field="reservation_receipt_digest")
+        or completion.get("schema_version") != RUN_COMPLETION_SCHEMA_VERSION
+        or completion.get("status") != "official_cost_reporting_pending"
+        or completion.get("reservation_receipt_digest")
+        != reservation.get("reservation_receipt_digest")
+        or completion.get("provider_call_performed") is not True
+        or completion.get("runtime_result_digest") != receipt.get("receipt_digest")
+        or completion.get("completion_receipt_digest")
+        != canonical_digest(completion, digest_field="completion_receipt_digest")
+        or lock.get("status") != "acquired"
+        or lock.get("all_vast_launch_slots_held") is not True
+        or lock.get("credential_role") != VISUAL_REVIEW_CREDENTIAL_ROLE
+        or lock.get("lock_receipt_digest")
+        != canonical_digest(lock, digest_field="lock_receipt_digest")
+        or release.get("status") != "released"
+        or release.get("all_vast_launch_slots_released") is not True
+        or release.get("acquisition_receipt_digest")
+        != lock.get("lock_receipt_digest")
+        or release.get("release_receipt_digest")
+        != canonical_digest(release, digest_field="release_receipt_digest")
+        or inference.get("run_id") != receipt.get("run_id")
+        or not 1 <= int(inference.get("reservation_count", 0)) <= 4
+        or inference.get("in_flight_unknown_count") != 0
+        or float(inference.get("reserved_max_cost_usd", -1.0))
+        > float(placement["max_inference_cost_usd"])
+        or inference.get("inference_reservation_manifest_digest")
+        != canonical_digest(
+            inference, digest_field="inference_reservation_manifest_digest"
+        )
+    ):
+        raise TaskEvaluationConfiguredControlsAutostartError(
+            "configured_controls_autostart_openai_evidence_invalid"
+        )
+    return {
+        "reservation": _artifact(reservation_path),
+        "completion": _artifact(completion_path),
+        "exclusive_lock": _artifact(lock_path),
+        "exclusive_lock_release": _artifact(release_path),
+        "inference_reservations": _artifact(inference_path),
+    }
+
+
 def materialize_configured_controls_autostart(
     *,
     source_launch_id: str,
@@ -973,9 +1173,15 @@ def materialize_configured_controls_autostart(
     progression_root: str | Path,
     plan_root: str | Path,
     placement_runner: PlacementRunner = run_robot_placement_cli,
+    agent_placement_runner: PlacementRunner | None = None,
     readiness_materializer: ReadinessMaterializer = materialize_robot_placement_readiness_candidate,
     plan_materializer: PlanMaterializer = materialize_configured_controls_plan,
     intent_path_override: str | Path | None = None,
+    environment: Mapping[str, str] | None = None,
+    openai_gate_builder: Callable[..., Any] = (
+        configured_controls_robot_placement_openai_gate
+    ),
+    openai_scope_lock: Callable[..., Any] = exclusive_visual_review_cost_scope,
 ) -> dict[str, Any]:
     """Produce an exact plan from one completed, Website-synced configuration."""
 
@@ -1074,7 +1280,7 @@ def materialize_configured_controls_autostart(
         "trajectory_digest": trajectory["trajectory_digest"],
     }
     placement = intent["placement"]
-    placement_receipt, inventory, _placement_root = _placement_checkpoint(
+    cpu_placement_receipt, inventory, _placement_root = _placement_checkpoint(
         root=root,
         placement_runner=placement_runner,
         expected_scene_binding_digest=canonical_digest(scene_binding),
@@ -1099,6 +1305,101 @@ def materialize_configured_controls_autostart(
             "task_trajectory": trajectory,
             "deterministic_selection": True,
         },
+    )
+    selected_agent_runner = agent_placement_runner or placement_runner
+    selected_environment = dict(os.environ if environment is None else environment)
+    agent_request_digest = canonical_digest(
+        {
+            "intent_digest": intent["intent_digest"],
+            "candidate_inventory_checkpoint_digest": inventory["checkpoint_digest"],
+            "scene_binding_digest": canonical_digest(scene_binding),
+            "task_binding_digest": canonical_digest(task_binding),
+        }
+    )
+    intent_token = intent["intent_digest"].removeprefix("sha256:")[:16]
+
+    def reviewed_placement_runner(*, output_dir: Path, **runner_kwargs: Any):
+        cost_root = root / "agent-official-openai-cost" / output_dir.name
+        with openai_scope_lock(
+            environment=selected_environment,
+            output_root=cost_root,
+        ):
+            cost_gate = openai_gate_builder(
+                environment=selected_environment,
+                placement_authority=placement["official_cost_authority"],
+                run_id=str(runner_kwargs["run_id"]),
+                request_digest=agent_request_digest,
+                candidate_digest=str(inventory["candidate_inventory_digest"]),
+                authorization_receipt_digest=str(intent["intent_digest"]),
+                output_root=cost_root,
+            )
+            cost_gate.reserve()
+            try:
+                agent_receipt = dict(
+                    selected_agent_runner(
+                        output_dir=output_dir,
+                        record_inference_reservations=True,
+                        **runner_kwargs,
+                    )
+                )
+            except Exception as exc:
+                cost_gate.complete(
+                    provider_call_performed=True,
+                    runtime_result_digest=None,
+                    runtime_exception_type=type(exc).__name__,
+                )
+                raise
+            cost_gate.complete(
+                provider_call_performed=True,
+                runtime_result_digest=str(agent_receipt.get("receipt_digest") or ""),
+                runtime_exception_type=None,
+            )
+            return agent_receipt
+
+    placement_receipt, agent_inventory, agent_placement_root = _placement_checkpoint(
+        root=root,
+        placement_runner=reviewed_placement_runner,
+        expected_scene_binding_digest=canonical_digest(scene_binding),
+        expected_task_binding_digest=canonical_digest(task_binding),
+        attempts_dir_name=f"agent-placement-attempts-{intent_token}",
+        checkpoint_file_name=f"agent-placement-checkpoint-{intent_token}.v1.json",
+        checkpoint_schema_version=_AGENT_PLACEMENT_CHECKPOINT_SCHEMA_VERSION,
+        runner_kwargs={
+            "run_id": f"{terminal['run_id']}-agent-placement",
+            "scene_collision_usd": collision,
+            "robot_asset_usd": Path(paths["robot_asset_usd_path"]),
+            "target_position_world_m": intent["target_position_world_m"],
+            "scene_binding": scene_binding,
+            "task_binding": task_binding,
+            "overview_image_paths": [
+                Path(item) for item in paths["overview_image_paths"]
+            ],
+            "max_rounds": placement["max_rounds"],
+            "candidate_inventory_cap": placement["candidate_inventory_cap"],
+            "max_input_tokens": placement["max_input_tokens"],
+            "max_inference_cost_usd": placement["max_inference_cost_usd"],
+            "allow_live_invocation": True,
+            "tracing_disabled": True,
+            "robot_id": "franka_panda",
+            "task_trajectory": trajectory,
+            "candidate_inventory_checkpoint": inventory,
+            "deterministic_selection": False,
+        },
+    )
+    if (
+        agent_inventory.get("checkpoint_digest") != inventory.get("checkpoint_digest")
+        or placement_receipt.get("candidate_inventory_digest")
+        != cpu_placement_receipt.get("candidate_inventory_digest")
+    ):
+        raise TaskEvaluationConfiguredControlsAutostartError(
+            "configured_controls_autostart_agent_inventory_binding_invalid"
+        )
+    openai_evidence = _validated_agent_openai_evidence(
+        cost_root=root / "agent-official-openai-cost" / agent_placement_root.name,
+        agent_attempt_root=agent_placement_root,
+        intent=intent,
+        receipt=placement_receipt,
+        inventory=inventory,
     )
     camera_candidates_path = _materialize_placement_aware_cameras(
         root=root,
@@ -1137,19 +1438,30 @@ def materialize_configured_controls_autostart(
     ))
     result = {
         "schema_version": RESULT_SCHEMA_VERSION,
-        "status": "cpu_binding_accepted_plan_materialized",
+        "status": "agent_binding_accepted_plan_materialized",
         "source_launch_id": source_launch_id,
         "configured_scene_revision_digest": revision["revision_digest"],
         "trajectory_digest": trajectory["trajectory_digest"],
         "candidate_inventory_digest": placement_receipt["candidate_inventory_digest"],
         "selected_candidate_id": placement_receipt["accepted_candidate_id"],
+        "cpu_inventory_ranker_receipt_digest": cpu_placement_receipt[
+            "receipt_digest"
+        ],
+        "placement_agent_receipt_digest": placement_receipt["receipt_digest"],
+        "placement_agent_model": ROBOT_PLACEMENT_AGENT_MODEL,
+        "placement_agent_reasoning_effort": (
+            ROBOT_PLACEMENT_AGENT_REASONING_EFFORT
+        ),
+        "placement_agent_selected_exact_inventory_member": True,
+        "placement_agent_visual_review_completed": True,
+        "official_openai_cost_evidence": openai_evidence,
         "base_pose_candidate_path": str(base_path),
         "plan_path": plan["plan_path"],
         "plan_digest": plan["plan_digest"],
         "cpu_position_ik_qualified": True,
         "native_orientation_collision_contact_camera_and_execution_required": True,
         "provider_mutation_performed": False,
-        "paid_execution_requested": False,
+        "paid_execution_requested": True,
         "result_digest": "",
     }
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
