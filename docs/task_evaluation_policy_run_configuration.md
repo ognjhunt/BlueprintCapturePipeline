@@ -32,11 +32,13 @@ simulator episodes.
 
 Quick has exactly one canonical anchor, two placement/approach cells, one
 illumination cell, one camera/sensor cell, one bounded-physics cell, two
-pairwise cells, and two held-out-composition cells. Standard and Deep are
-disabled until their complete ordered manifests are published. Their preset
-descriptors bind the parent prefix and a nesting proof so that enabling them
-requires Quick to be the first 10 cells of Standard and Standard to be the
-first 100 cells of Deep.
+pairwise cells, and two held-out-composition cells. The server-owned setup
+contains one exact ordered 500-cell inventory, its stable selection-seed and
+coverage-recipe digests, and each cell's resolved-parameter digest. Standard
+and Deep remain disabled, but all three scenario-set digests are computed from
+the exact `[0:10]`, `[0:100]`, and `[0:500]` prefixes. Their parent digests and
+nesting proofs therefore make Quick the first 10 cells of Standard and Standard
+the first 100 cells of Deep from published bytes, rather than metadata alone.
 
 Duration and cost are never guessed. Each preset carries either an unavailable
 estimate or a range with an as-of timestamp and digest-bound basis.
@@ -49,8 +51,10 @@ ID, offering digest, setup digest, and preset ID. It has no cells, seeds,
 provider, email, or team field.
 
 Pipeline compiles `task_evaluation_policy_run_configuration.v1` from the
-published ordered prefix. One seed per cell is derived from the setup digest,
-run ID, preset ID, and cell ID. The compiled configuration carries exact cells,
+published ordered prefix. One seed per cell is derived only from the immutable
+inventory-seed digest and cell ID, so a retained prefix cell keeps the same ID,
+resolved parameters, and seed in Quick, Standard, and Deep and across replayed
+runs. The compiled configuration carries the inventory digest, exact cells,
 cell-spec digests, seeds, counts, no-retry guards, and evidence requirements.
 An agent may propose or classify future variations, but cannot select compiled
 cells or inspect outcomes during compilation.
