@@ -865,7 +865,13 @@ def complete_provider_render_inputs(
         "path": str(calibration_path),
     }
     completed["render_completed_on_provider"] = True
-    completed["control_plane_result_digest"] = render_inputs.get("result_digest")
+    # A portable packet already names the control-plane record it was sealed
+    # from; keep that name so stage one can still match the render handoff
+    # against the envelope it executes under.  Only a packet that never carried
+    # one adopts its own digest.
+    completed["control_plane_result_digest"] = render_inputs.get(
+        "control_plane_result_digest"
+    ) or render_inputs.get("result_digest")
     completed["result_digest"] = ""
     completed["result_digest"] = canonical_digest(
         completed, digest_field="result_digest"
