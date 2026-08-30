@@ -353,6 +353,11 @@ class LaneLiveProfileSpec:
     subcommand: str = "gpu-canary"
     provider: str = "vast"
     extra_path_names: Sequence[str] = field(default_factory=tuple)
+    #: Inputs this lane binds only when the run supplies them. A name here
+    #: is resolved and bound exactly like a required one when present, and
+    #: is simply absent from the profile when not -- it never becomes an
+    #: empty path or an unbound placeholder.
+    optional_extra_path_names: Sequence[str] = field(default_factory=tuple)
     #: Require the website standing authorization to be a single-use launch
     #: capability.  The dispatcher consumes it atomically before invoking the
     #: allocator, so an explicit launch-id scope cannot bypass this lane's
@@ -519,6 +524,11 @@ def build_lane_live_profile(
         raw = (extra_paths or {}).get(name)
         if raw is None:
             blockers.append(f"lane_input_missing:{name}")
+            continue
+        resolved_extras[name] = Path(raw).expanduser().resolve()
+    for name in spec.optional_extra_path_names:
+        raw = (extra_paths or {}).get(name)
+        if raw is None or str(raw) == "":
             continue
         resolved_extras[name] = Path(raw).expanduser().resolve()
 

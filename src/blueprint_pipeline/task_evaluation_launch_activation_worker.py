@@ -811,29 +811,43 @@ def _build_scene_configuration_context(
         task_id=str(preparation_request["task"]["identity"]["id"]),
     )
     intent_source = configured_controls_autostart_intent_root / registry_name
-    try:
-        intent = validate_configured_controls_autostart_intent(
-            _read_json(
-                intent_source,
-                blocker="launch_activation_configured_controls_autostart_intent_invalid",
+    # A scene reaches its first configuration before any controls continuation
+    # can exist for it -- the continuation binds a trajectory plan that is only
+    # authored against a published configured revision.  So an absent intent
+    # means "no continuation authorized yet", not "refuse this configuration".
+    # It is never fail-open: the progression worker skips every profile that
+    # carries no intent, so controls still cannot start without one.  An intent
+    # that is present but unreadable, malformed, or bound to another
+    # scene/task/commit remains a refusal.
+    continuation_provisioned = (
+        intent_source.is_file() and not intent_source.is_symlink()
+    )
+    if continuation_provisioned:
+        try:
+            intent = validate_configured_controls_autostart_intent(
+                _read_json(
+                    intent_source,
+                    blocker="launch_activation_configured_controls_autostart_intent_invalid",
+                )
             )
-        )
-    except (OSError, ValueError) as exc:
-        raise TaskEvaluationLaunchActivationWorkerError(
-            "launch_activation_configured_controls_autostart_intent_invalid"
-        ) from exc
-    if (
-        intent["expected_production_commit"] != source_commit
-        or intent["configuration_source_commit"] != source_commit
-        or intent["configuration_adoption"]
-        != {"mode": "same_commit_automatic"}
-        or intent["team_namespace"] != activation_request["team_namespace"]
-        or intent["scene_id"] != preparation_request["scene"]["identity"]["id"]
-        or intent["task_id"] != preparation_request["task"]["identity"]["id"]
-    ):
-        raise TaskEvaluationLaunchActivationWorkerError(
-            "launch_activation_configured_controls_autostart_intent_mismatch"
-        )
+        except (OSError, ValueError) as exc:
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_configured_controls_autostart_intent_invalid"
+            ) from exc
+        if (
+            intent["expected_production_commit"] != source_commit
+            or intent["configuration_source_commit"] != source_commit
+            or intent["configuration_adoption"]
+            != {"mode": "same_commit_automatic"}
+            or intent["team_namespace"] != activation_request["team_namespace"]
+            or intent["scene_id"]
+            != preparation_request["scene"]["identity"]["id"]
+            or intent["task_id"]
+            != preparation_request["task"]["identity"]["id"]
+        ):
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_configured_controls_autostart_intent_mismatch"
+            )
     unresolved_construction_envelope = Path(
         str(construction_input.get("construction_envelope_path") or "")
     )
@@ -928,7 +942,20 @@ def _build_scene_configuration_context(
         "initial_provider_zero": str(
             activation_materialized["lineage.initial_provider_zero"]
         ),
-        "configured_controls_autostart_intent_source": str(intent_source.resolve()),
+        # Empty when no continuation is authorized yet: the lane skips the
+        # intent step and the profile is built without the continuation input,
+        # which is exactly what the progression worker refuses to act on.
+        "configured_controls_autostart_intent_source": (
+            str(intent_source.resolve()) if continuation_provisioned else ""
+        ),
+        "configured_controls_autostart_intent_artifacts": (
+            str(
+                Path(activation_root / "launch-set")
+                / "task_evaluation_configured_controls_autostart_intent.v1.json"
+            )
+            if continuation_provisioned
+            else ""
+        ),
         "python": sys.executable,
         "service_account": service_account,
         "service_group": service_group,
