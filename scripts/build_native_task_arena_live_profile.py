@@ -515,9 +515,12 @@ def _lane_blockers(
                         )
                     )
                     retain_warm_session = bool(authority.get("retain_warm_session"))
-                    if retain_warm_session and link.probe_kind != CONTROLS_PROBE_KIND:
+                    if retain_warm_session and link.probe_kind not in {
+                        CONSTRUCTION_PROBE_KIND,
+                        CONTROLS_PROBE_KIND,
+                    }:
                         raise ValueError(
-                            "native_task_arena_warm_session_requires_controls"
+                            "native_task_arena_warm_session_requires_construction_or_controls"
                         )
                     validate_native_task_arena_paid_attempt_authority(
                         authority,

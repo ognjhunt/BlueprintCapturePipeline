@@ -906,7 +906,11 @@ def _run_native_task_arena_warm_vast(
         "provider_instance_absent": False,
         "continuing_spend_from_this_run": True,
     }
-    if not blockers and close_on_success:
+    # ``close_on_success`` marks the final warm attachment in the admitted
+    # construction -> controls chain.  A scientific/runtime blocker in that
+    # final controls attempt must not silently turn into retained paid spend:
+    # there is no authorized retry after this single-use attachment.
+    if close_on_success:
         closeout = _close_warm_instance(instance_id=instance_id, api_key=api_key)
         if closeout.get("provider_instance_absent") is not True:
             blockers.extend(closeout.get("blockers") or [])
