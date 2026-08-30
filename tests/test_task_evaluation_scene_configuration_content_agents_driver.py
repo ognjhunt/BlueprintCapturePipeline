@@ -482,11 +482,31 @@ def test_provider_render_handoff_reopens_frame_bytes_before_content_spend(
     sealed_frame = Path(handoff["path"]).parent / manifest["frames"][0][
         "relative_path"
     ]
+
+    assert _reference_frames(
+        {"construction_envelope": {"render_inputs_result": pending}},
+        [{"output_artifacts": [handoff]}],
+    ) == [sealed_frame]
+
+    wrong_pending = dict(pending)
+    wrong_pending["result_digest"] = "sha256:" + "0" * 64
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationContentAgentsError,
+        match=(
+            r"^scene_configuration_content_agents_reference_invalid:"
+            r"handoff_control_plane_digest$"
+        ),
+    ):
+        _reference_frames(
+            {"construction_envelope": {"render_inputs_result": wrong_pending}},
+            [{"output_artifacts": [handoff]}],
+        )
+
     sealed_frame.write_bytes(b"tampered-after-stage-1")
 
     with pytest.raises(
         TaskEvaluationSceneConfigurationContentAgentsError,
-        match="scene_configuration_content_agents_reference_invalid",
+        match=r"^scene_configuration_content_agents_reference_invalid:manifest$",
     ):
         _reference_frames(
             {"construction_envelope": {"render_inputs_result": pending}},
