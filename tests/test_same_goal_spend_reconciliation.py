@@ -17,6 +17,7 @@ from blueprint_pipeline.project_spend_reconciliation import (
 )
 from blueprint_pipeline.same_goal_spend_reconciliation import (
     DIAGNOSTIC_SCENE_CONFIGURATION_LANE,
+    PRODUCTION_SCENE_CONFIGURATION_LANE,
     SUPPORTED_LANES,
     _attempt_id,
     main as same_goal_main,
@@ -214,6 +215,88 @@ def _materialize(root: Path, lane: str, fixture: dict[str, Path]) -> tuple[Path,
         output_path=output,
     )
     return output, value
+
+
+def test_materializer_binds_production_scene_configuration_adapter_estimate(
+    tmp_path: Path,
+) -> None:
+    """Production closeout derives the estimate from the allocator-owned adapter.
+
+    The production scene-configuration terminal intentionally carries the
+    authority and bundle identity, while its exact Vast adapter sibling carries
+    the provider estimate and instance inventory.  The ledger must bind both
+    records and use the posted instance charge as actual spend.
+    """
+
+    launch_id = (
+        "adp-new-scene-simple-relocation-839873-2deff449-r1-web-"
+        "20260830T021051Z"
+    )
+    root = tmp_path
+    fixture = _fixture(root, instance_id=49206605, amount=0.945)
+    (root / "launch").rename(root / launch_id)
+    fixture["result"] = root / launch_id / "allocator" / "result.json"
+    result = json.loads(fixture["result"].read_text(encoding="utf-8"))
+    result.update(
+        {
+            "schema_version": "task_evaluation_scene_configuration_vast_result.v1",
+            "status": "blocked",
+            "run_id": (
+                "adp-new-scene-simple-relocation-839873-2deff449-"
+                "20260830t020241z-scene-configuration"
+            ),
+            "source_commit": "2deff449b5bfe4a777ecf052f1f88e0b9f7a13c6",
+        }
+    )
+    result.pop("launch_id")
+    result.pop("estimated_cost_usd")
+    result.pop("receipt_digest")
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    fixture["result"].write_text(json.dumps(result), encoding="utf-8")
+
+    adapter = _write(
+        fixture["result"].parent
+        / "scene-configuration-job"
+        / "vast_provider_run"
+        / "vast_provider_adapter_result.json",
+        {
+            "schema_version": "vast_provider_adapter_result.v1",
+            "status": "completed",
+            "estimated_cost_usd": 1.019205,
+            "continuing_spend_from_this_run": False,
+            "vast_instance_ids": [49206605],
+            "provider_bundle_sha256": result["bundle_sha256"],
+            "blockers": [],
+        },
+    )
+    zero = json.loads(fixture["zero"].read_text(encoding="utf-8"))
+    zero["schema_version"] = "task_evaluation_post_teardown_provider_zero.v1"
+    zero.pop("receipt_digest")
+    zero["provider_zero_receipt_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_receipt_digest"
+    )
+    fixture["zero"].write_text(json.dumps(zero), encoding="utf-8")
+
+    output, value = _materialize(
+        root, PRODUCTION_SCENE_CONFIGURATION_LANE, fixture
+    )
+
+    entry = value["entries"][0]
+    assert entry["attempt_id"] == launch_id
+    assert entry["cost_usd"] == 0.945
+    assert entry["evidence_kind"] == "fully_bound_official_billing"
+    assert next(
+        source
+        for source in entry["source_receipts"]
+        if source["role"] == "provider_adapter_result"
+    )["record"]["path"] == str(adapter.resolve())
+    bound = bind_lane_prior_spend(
+        prior_result_paths=[fixture["result"]],
+        reconciliation_path=output,
+        lane=PRODUCTION_SCENE_CONFIGURATION_LANE,
+    )
+    assert bound["prior_terminal_attempts"][0]["estimated_cost_usd"] == 1.019205
+    assert bound["prior_terminal_attempts"][0]["actual_provider_charge_usd"] == 0.945
 
 
 @pytest.mark.parametrize("lane", sorted(SUPPORTED_LANES))
