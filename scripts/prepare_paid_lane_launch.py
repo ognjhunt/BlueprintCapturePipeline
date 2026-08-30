@@ -547,6 +547,9 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
         "{set_root}/task_evaluation_scene_configuration_paid_authority.v1.json"
     )
     profile = "{set_root}/live_profile-{revision}.v1.json"
+    autostart_intent = (
+        "{set_root}/task_evaluation_configured_controls_autostart_intent.v1.json"
+    )
     return (
         LaneStep(
             step_id="provider_bundle",
@@ -663,6 +666,27 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
             produces="{set_root}/allocator_dry_run.v1.json",
         ),
         LaneStep(
+            step_id="configured_controls_autostart_intent",
+            argv=(
+                "{python}",
+                "-m",
+                "blueprint_pipeline.task_evaluation_configured_controls_autostart",
+                "--intent",
+                "{configured_controls_autostart_intent_source}",
+                "--expected-production-commit",
+                "{source_commit}",
+                "--team-namespace",
+                "{team_namespace}",
+                "--scene-id",
+                "{scene_id}",
+                "--task-id",
+                "{task_id}",
+                "--output",
+                autostart_intent,
+            ),
+            produces=autostart_intent,
+        ),
+        LaneStep(
             step_id="live_profile",
             argv=(
                 "{python}",
@@ -690,6 +714,8 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
                 "{scene_id}",
                 "--task-id",
                 "{task_id}",
+                "--configured-controls-autostart-intent",
+                autostart_intent,
                 "--pod-name",
                 "{pod_name}",
                 "--output",

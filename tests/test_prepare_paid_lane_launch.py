@@ -36,6 +36,25 @@ def _lane(tmp_path: Path) -> tuple[prep.LaneStep, ...]:
     )
 
 
+def test_scene_configuration_graph_stages_autostart_before_live_profile() -> None:
+    """The Website activation graph must carry the downstream CPU intent."""
+
+    steps = prep.LANES["task_evaluation_scene_configuration"]
+    step_ids = [step.step_id for step in steps]
+    assert step_ids.index("configured_controls_autostart_intent") < step_ids.index(
+        "live_profile"
+    )
+    autostart = steps[step_ids.index("configured_controls_autostart_intent")]
+    live_profile = steps[step_ids.index("live_profile")]
+    assert "{configured_controls_autostart_intent_source}" in autostart.argv
+    argument_index = live_profile.argv.index(
+        "--configured-controls-autostart-intent"
+    )
+    assert live_profile.argv[argument_index + 1] == (
+        "{set_root}/task_evaluation_configured_controls_autostart_intent.v1.json"
+    )
+
+
 def _writing_runner(
     calls: list[list[str]],
     artifacts: dict[str, str],
@@ -378,6 +397,7 @@ def test_every_shipped_lane_is_satisfiable_by_its_own_command_line() -> None:
         "task_id",
         "project_spend_reconciliation",
         "initial_provider_zero",
+        "configured_controls_autostart_intent_source",
         "prior_authority",
         "prior_result",
         "prior_provider_zero",
@@ -419,6 +439,7 @@ def test_scene_configuration_prepares_rehearses_then_publishes_once() -> None:
         "immutable_manifest",
         "paid_authority",
         "allocator_dry_run",
+        "configured_controls_autostart_intent",
         "live_profile",
         "terminal_rehearsal",
         "profile_publication",

@@ -16,6 +16,9 @@ from PIL import Image
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_live_profile import file_digest
+from blueprint_pipeline.task_evaluation_configured_controls_autostart import (
+    materialize_configured_controls_autostart_intent,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
     BUNDLE_SCHEMA_VERSION,
     TaskEvaluationSceneConfigurationBundleError,
@@ -2140,6 +2143,49 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
     publication_path.write_text(
         json.dumps(manifest_publication), encoding="utf-8"
     )
+    autostart_inputs = tmp_path / "autostart-inputs"
+    autostart_inputs.mkdir()
+    fixed: dict[str, str] = {}
+    for name in (
+        "robot_asset_usd_path",
+        "robot_mount_interface_path",
+        "scene_camera_calibration_path",
+        "native_trajectory_plan_path",
+        "cameras_path",
+        "runtime_binding_path",
+    ):
+        path = autostart_inputs / f"{name}.json"
+        path.write_text("{}\n", encoding="utf-8")
+        fixed[name] = str(path.resolve())
+    overview = autostart_inputs / "overview.png"
+    overview.write_bytes(b"png")
+    fixed["overview_image_paths"] = [str(overview.resolve())]
+    phases: dict[str, dict[str, str]] = {}
+    for phase in ("construction", "controls"):
+        phases[phase] = {}
+        names = ["release_window_path", "authorization_path", "launch_authority_path"]
+        if phase == "construction":
+            names.append("lineage_path")
+        for name in names:
+            path = autostart_inputs / phase / f"{name}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}\n", encoding="utf-8")
+            phases[phase][name] = str(path.resolve())
+    profiles = autostart_inputs / "profiles"
+    profiles.mkdir()
+    intent_path = autostart_inputs / "intent.json"
+    materialize_configured_controls_autostart_intent(
+        expected_production_commit="a" * 40,
+        submitted_by="fixture",
+        team_namespace="team-a",
+        scene_id="interiorgs-839873",
+        task_id="planar-mug-push",
+        target_position_world_m=[1.0, 2.0, 3.0],
+        paths=fixed,
+        phases=phases,
+        profile_dir=profiles,
+        output_path=intent_path,
+    )
     profile = build_scene_configuration_live_profile(
         bundle_receipt_path=receipt_path,
         attempt_authority_path=authority_path,
@@ -2152,6 +2198,7 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         team_namespace="team-a",
         scene_id="interiorgs-839873",
         task_id="planar-mug-push",
+        configured_controls_autostart_intent_path=intent_path,
     )
     assert profile["task_evaluation_run"]["run_mode"] == (
         "scene_configuration"
@@ -2189,6 +2236,7 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         team_namespace="team-a",
         scene_id="interiorgs-839873",
         task_id="planar-mug-push",
+        configured_controls_autostart_intent_path=intent_path,
         pod_name=authority["resource_name"],
     )
     bound_argv = bound["allocator"]["argv"]
@@ -2226,6 +2274,7 @@ def test_scene_configuration_authority_binds_fresh_zero_and_project_spend(
         team_namespace="team-a",
         scene_id="interiorgs-839873",
         task_id="planar-mug-push",
+        configured_controls_autostart_intent_path=intent_path,
         pod_name=retry_authority["resource_name"],
     )
     assert retry_bound["profile_id"] != bound["profile_id"]

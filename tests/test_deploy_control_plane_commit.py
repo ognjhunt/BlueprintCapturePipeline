@@ -984,6 +984,14 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     )
     monkeypatch.setattr(
         deploy,
+        "_install_configured_controls_autostart_registry",
+        lambda **kwargs: {
+            "root": "/etc/blueprint/configured-controls-intents",
+            "entry_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        deploy,
         "validate_splat_render_prerequisites",
         lambda **kwargs: {
             "entrypoints": {
@@ -1102,6 +1110,10 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     ]
     assert receipt["configured_controls_runtime"] == {
         "plan_root": "/etc/blueprint/configured-controls"
+    }
+    assert receipt["configured_controls_autostart_registry"] == {
+        "root": "/etc/blueprint/configured-controls-intents",
+        "entry_count": 1,
     }
     assert receipt["activated_path_units"] == [
         {
@@ -1225,6 +1237,62 @@ def test_configured_controls_prerequisites_repair_wrong_state(
     assert (str(root), 0o750, -1) in calls
     assert (str(secret), 0o440, -1) in calls
     assert receipt["secret_bytes_read"] is False
+
+
+def test_autostart_registry_atomically_refreshes_on_consecutive_deploys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "configured-controls-intents"
+    first_source = tmp_path / "first.json"
+    second_source = tmp_path / "second.json"
+    identity = {
+        "team_namespace": "blueprint-adp",
+        "scene_id": "interiorgs-839873",
+        "task_id": "scene-839873-mug-planar-push",
+    }
+    first = {
+        **identity,
+        "expected_production_commit": "a" * 40,
+        "intent_digest": "sha256:" + "1" * 64,
+    }
+    second = {
+        **identity,
+        "expected_production_commit": "b" * 40,
+        "intent_digest": "sha256:" + "2" * 64,
+    }
+    first_source.write_text(json.dumps(first), encoding="utf-8")
+    second_source.write_text(json.dumps(second), encoding="utf-8")
+    monkeypatch.setattr(
+        deploy, "_service_account_ids", lambda _account: (os.getuid(), os.getgid())
+    )
+    monkeypatch.setattr(
+        deploy,
+        "validate_configured_controls_autostart_intent",
+        lambda value: dict(value),
+    )
+
+    first_receipt = deploy._install_configured_controls_autostart_registry(
+        intent_root=str(root),
+        intent_sources=(str(first_source.resolve()),),
+        source_commit="a" * 40,
+        account="test-service",
+        root_uid=os.getuid(),
+    )
+    second_receipt = deploy._install_configured_controls_autostart_registry(
+        intent_root=str(root),
+        intent_sources=(str(second_source.resolve()),),
+        source_commit="b" * 40,
+        account="test-service",
+        root_uid=os.getuid(),
+    )
+
+    destination = Path(second_receipt["entries"][0]["path"])
+    assert first_receipt["entry_count"] == 1
+    assert second_receipt["entry_count"] == 1
+    assert second_receipt["entries"][0]["replaced_previous_sha256"] == (
+        first_receipt["entries"][0]["sha256"]
+    )
+    assert json.loads(destination.read_text(encoding="utf-8")) == second
 
 
 def test_deploy_refuses_mismatched_promotion_before_moving_source(

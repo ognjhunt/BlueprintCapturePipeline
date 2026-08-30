@@ -12,6 +12,9 @@ from blueprint_pipeline.task_evaluation_robot_placement_agent_cli import (
     _read_mapping,
     run_robot_placement_cli,
 )
+from blueprint_pipeline.task_evaluation_robot_placement_agent import (
+    validate_robot_placement_receipt,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_robot_placement_inventory import (
     build_candidate_inventory_checkpoint,
@@ -303,3 +306,91 @@ def test_candidate_inventory_checkpoint_revalidates_before_reuse(monkeypatch) ->
             trajectory_digest="sha256:plan",
             geometry_summary_digest="sha256:geometry-summary",
         )
+
+
+def test_deterministic_selection_never_invokes_paid_model(tmp_path, monkeypatch) -> None:
+    import blueprint_pipeline.task_evaluation_robot_placement_agent_cli as module
+
+    candidate = {
+        "candidate_id": "candidate-0001",
+        "support_surface_id": "surface",
+        "pose": {
+            "position_world_m": [3.0, -6.3, 0.75],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "geometry_gate_digest": "sha256:geometry",
+        "shoulder_to_target_distance_m": 0.5,
+        "trajectory_position_ik_gate_digest": "sha256:trajectory",
+        "trajectory_minimum_manipulability": 0.2,
+        "trajectory_position_ik_gate": {"status": "passed"},
+    }
+    gate = {
+        "schema_version": "task_evaluation_robot_placement_geometry_gate.v1",
+        "candidate_id": candidate["candidate_id"],
+        "declared_support_surface_id": "surface",
+        "status": "passed",
+        "blockers": [],
+        "orientation_slew_feasibility": {"feasible": True, "blockers": []},
+        "geometry_gate_digest": "",
+    }
+    gate["geometry_gate_digest"] = canonical_digest(
+        gate, digest_field="geometry_gate_digest"
+    )
+    monkeypatch.setattr(module, "build_robot_placement_geometry_index", lambda **_: object())
+    monkeypatch.setattr(module, "summarize_robot_placement_geometry", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        module, "enumerate_robot_placement_geometry_candidates", lambda **_: [candidate]
+    )
+    monkeypatch.setattr(module, "validate_robot_placement_geometry_candidate", lambda **_: gate)
+    monkeypatch.setattr(module, "_reject_infeasible_orientation_slew", lambda **kwargs: kwargs["gate"])
+    digest = "sha256:" + hashlib.sha256(_ONE_PIXEL_PNG).hexdigest()
+    monkeypatch.setattr(
+        module,
+        "render_robot_placement_geometry_previews",
+        lambda **_: [{
+            "label": "top_down",
+            "digest": digest,
+            "image_url": "data:image/png;base64," + base64.b64encode(_ONE_PIXEL_PNG).decode("ascii"),
+            "detail": "high",
+        }],
+    )
+    monkeypatch.setattr(
+        module,
+        "OpenAIAgentsSDKInvoker",
+        lambda *_a, **_k: pytest.fail("deterministic CPU path must not invoke OpenAI"),
+    )
+
+    receipt = run_robot_placement_cli(
+        run_id="cpu-only",
+        scene_collision_usd=Path("scene.usda"),
+        robot_asset_usd=Path("robot.usda"),
+        target_position_world_m=[3.0, -6.7, 0.8],
+        scene_binding={"scene": "839873"},
+        task_binding={"task": "push"},
+        overview_image_paths=[],
+        output_dir=tmp_path / "output",
+        max_rounds=1,
+        candidate_inventory_cap=12,
+        max_input_tokens=1_000,
+        max_inference_cost_usd=0.0,
+        allow_live_invocation=False,
+        tracing_disabled=True,
+        deterministic_selection=True,
+    )
+
+    validated = validate_robot_placement_receipt(
+        receipt,
+        expected_scene_binding_digest=canonical_digest({"scene": "839873"}),
+        expected_task_binding_digest=canonical_digest({"task": "push"}),
+    )
+    assert validated["selection_method"] == "deterministic_inventory_rank"
+    assert validated["visual_review_completed"] is False
+    assert validated["native_camera_visibility_required"] is True
+
+    forged = json.loads(json.dumps(receipt))
+    forged["claim_ceiling"] = "analytic_and_visual_robot_placement_candidate"
+    forged["receipt_digest"] = canonical_digest(
+        forged, digest_field="receipt_digest"
+    )
+    with pytest.raises(ValueError, match="robot_placement_receipt_invalid"):
+        validate_robot_placement_receipt(forged)

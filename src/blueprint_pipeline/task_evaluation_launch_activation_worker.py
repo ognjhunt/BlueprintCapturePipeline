@@ -31,6 +31,10 @@ from .task_evaluation_configured_scene_revision import (
     TaskEvaluationConfiguredSceneRevisionError,
     validate_configured_scene_revision,
 )
+from .task_evaluation_configured_controls_autostart import (
+    configured_controls_autostart_registry_name,
+    validate_configured_controls_autostart_intent,
+)
 from .task_evaluation_launch_activation_contract import (
     launch_activation_intent_digest,
     validate_launch_activation_request,
@@ -104,6 +108,9 @@ PROFILE_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR"
 WEBAPP_CATALOG_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_CATALOG"
 STANDING_AUTHORIZATION_DIR_ENV = (
     "BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR"
+)
+CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT"
 )
 
 ReferenceFetcher = Callable[[str, Path, int], None]
@@ -781,6 +788,7 @@ def _build_scene_configuration_context(
     standing_authorization_dir: Path,
     service_account: str,
     service_group: str,
+    configured_controls_autostart_intent_root: Path,
 ) -> dict[str, Any]:
     """Build server-owned inputs for one Website-started configuration profile."""
 
@@ -796,10 +804,36 @@ def _build_scene_configuration_context(
         raise TaskEvaluationLaunchActivationWorkerError(
             "launch_activation_scene_configuration_context_invalid"
         )
+    source_commit = str(activation_request["expected_production_commit"])
+    registry_name = configured_controls_autostart_registry_name(
+        team_namespace=str(activation_request["team_namespace"]),
+        scene_id=str(preparation_request["scene"]["identity"]["id"]),
+        task_id=str(preparation_request["task"]["identity"]["id"]),
+    )
+    intent_source = configured_controls_autostart_intent_root / registry_name
+    try:
+        intent = validate_configured_controls_autostart_intent(
+            _read_json(
+                intent_source,
+                blocker="launch_activation_configured_controls_autostart_intent_invalid",
+            )
+        )
+    except (OSError, ValueError) as exc:
+        raise TaskEvaluationLaunchActivationWorkerError(
+            "launch_activation_configured_controls_autostart_intent_invalid"
+        ) from exc
+    if (
+        intent["expected_production_commit"] != source_commit
+        or intent["team_namespace"] != activation_request["team_namespace"]
+        or intent["scene_id"] != preparation_request["scene"]["identity"]["id"]
+        or intent["task_id"] != preparation_request["task"]["identity"]["id"]
+    ):
+        raise TaskEvaluationLaunchActivationWorkerError(
+            "launch_activation_configured_controls_autostart_intent_mismatch"
+        )
     unresolved_construction_envelope = Path(
         str(construction_input.get("construction_envelope_path") or "")
     )
-    source_commit = str(activation_request["expected_production_commit"])
     if unresolved_construction_envelope.is_symlink():
         raise TaskEvaluationLaunchActivationWorkerError(
             "launch_activation_scene_configuration_context_invalid"
@@ -891,6 +925,7 @@ def _build_scene_configuration_context(
         "initial_provider_zero": str(
             activation_materialized["lineage.initial_provider_zero"]
         ),
+        "configured_controls_autostart_intent_source": str(intent_source.resolve()),
         "python": sys.executable,
         "service_account": service_account,
         "service_group": service_group,
@@ -1064,6 +1099,7 @@ def process_launch_activation_queue(
     standing_authorization_dir: str | Path,
     scene_construction_queue_root: str | Path | None = None,
     scene_configuration_toolchain_root: str | Path | None = None,
+    configured_controls_autostart_intent_root: str | Path | None = None,
     source_commit: str | None = None,
     max_messages: int = 1,
     fetcher: ReferenceFetcher = default_reference_fetcher,
@@ -1179,6 +1215,27 @@ def process_launch_activation_queue(
                     raise TaskEvaluationLaunchActivationWorkerError(
                         "launch_activation_scene_configuration_toolchain_missing"
                     )
+                if configured_controls_autostart_intent_root is None:
+                    raise TaskEvaluationLaunchActivationWorkerError(
+                        "launch_activation_configured_controls_autostart_intent_root_missing"
+                    )
+                raw_autostart_root = Path(
+                    configured_controls_autostart_intent_root
+                ).expanduser()
+                if raw_autostart_root.is_symlink():
+                    raise TaskEvaluationLaunchActivationWorkerError(
+                        "launch_activation_configured_controls_autostart_intent_root_invalid"
+                    )
+                try:
+                    resolved_autostart_root = raw_autostart_root.resolve(strict=True)
+                except OSError as exc:
+                    raise TaskEvaluationLaunchActivationWorkerError(
+                        "launch_activation_configured_controls_autostart_intent_root_invalid"
+                    ) from exc
+                if not resolved_autostart_root.is_dir():
+                    raise TaskEvaluationLaunchActivationWorkerError(
+                        "launch_activation_configured_controls_autostart_intent_root_invalid"
+                    )
                 context = _build_scene_configuration_context(
                     activation_request=request,
                     preparation_request=preparation_request,
@@ -1197,6 +1254,9 @@ def process_launch_activation_queue(
                     ).resolve(),
                     service_account=service_account,
                     service_group=service_group,
+                    configured_controls_autostart_intent_root=(
+                        resolved_autostart_root
+                    ),
                 )
                 context_path = (
                     owned_root
@@ -1341,6 +1401,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--scene-configuration-toolchain-root",
         default=os.getenv(SCENE_CONFIGURATION_TOOLCHAIN_ROOT_ENV, ""),
     )
+    parser.add_argument(
+        "--configured-controls-autostart-intent-root",
+        default=os.getenv(CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT_ENV, ""),
+    )
     parser.add_argument("--activation-root", default=os.getenv(ACTIVATION_ROOT_ENV, ""))
     parser.add_argument(
         "--allowed-uri-prefixes-json", default=os.getenv(ALLOWED_URI_PREFIXES_ENV, "")
@@ -1372,6 +1436,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.episode_compilation_output_root,
         args.scene_construction_queue_root,
         args.scene_configuration_toolchain_root,
+        args.configured_controls_autostart_intent_root,
         args.activation_root,
         args.repository_root,
         args.destination_prefix,
@@ -1403,6 +1468,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             scene_construction_queue_root=args.scene_construction_queue_root,
             scene_configuration_toolchain_root=(
                 args.scene_configuration_toolchain_root
+            ),
+            configured_controls_autostart_intent_root=(
+                args.configured_controls_autostart_intent_root
             ),
             activation_root=args.activation_root,
             allowed_uri_prefixes=prefixes,

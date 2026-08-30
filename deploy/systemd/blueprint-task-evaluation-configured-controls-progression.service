@@ -28,13 +28,13 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
-ReadOnlyPaths=/etc/blueprint/task-evaluation-configured-controls-plans /etc/blueprint/provider-secrets
-ReadWritePaths=/var/lib/blueprint
+ReadOnlyPaths=/etc/blueprint/provider-secrets
+ReadWritePaths=/var/lib/blueprint /etc/blueprint/task-evaluation-configured-controls-plans
 TasksMax=512
 LimitNOFILE=4096
 MemoryMax=8G
 CPUQuota=200%
-TimeoutStartSec=5min
+TimeoutStartSec=15min
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_PLAN_ROOT=/etc/blueprint/task-evaluation-configured-controls-plans
