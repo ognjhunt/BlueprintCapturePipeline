@@ -374,7 +374,11 @@ def _materialize_placement_aware_cameras(
         trajectory=trajectory,
         source_commit=source_commit,
     )
-    destination = root / "placement-aware-camera-candidates.v1.json"
+    # The document embeds source_commit, so the filename must carry it too;
+    # otherwise each redeploy collides with its predecessor bytes.
+    destination = (
+        root / f"placement-aware-camera-candidates-{source_commit[:12]}.v1.json"
+    )
     payload = (
         json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode()
@@ -1143,6 +1147,23 @@ def _cpu_placement_checkpoint_root(
     )
 
 
+def _autostart_result_path(*, root: Path, intent_digest: str) -> Path:
+    """Bind the autostart result to the intent that produced it.
+
+    The result is validated against the intent digest on reopen, so a shared
+    filename does not silently reuse a stale result -- it raises, and keeps
+    raising for every successor intent. Give each intent its own destination so
+    a redeploy derives fresh while its predecessor survives as evidence.
+    """
+
+    if _DIGEST.fullmatch(intent_digest) is None:
+        raise TaskEvaluationConfiguredControlsAutostartError(
+            "configured_controls_autostart_result_binding_invalid"
+        )
+    token = intent_digest.removeprefix("sha256:")[:16]
+    return root / f"{RESULT_SCHEMA_VERSION}-{token}.json"
+
+
 def _validated_agent_openai_evidence(
     *,
     cost_root: Path,
@@ -1352,7 +1373,9 @@ def materialize_configured_controls_autostart(
         scene_binding_digest=scene_binding_digest,
         task_binding_digest=task_binding_digest,
     )
-    result_path = root / f"{RESULT_SCHEMA_VERSION}.json"
+    result_path = _autostart_result_path(
+        root=root, intent_digest=str(intent["intent_digest"])
+    )
     result_validation_kwargs = {
         "expected_intent_digest": str(intent["intent_digest"]),
         "expected_scene_binding_digest": scene_binding_digest,
@@ -1510,7 +1533,11 @@ def materialize_configured_controls_autostart(
         trajectory=trajectory,
         source_commit=intent["expected_production_commit"],
     )
-    base_path = root / "task_evaluation_robot_placement_readiness_candidate.v1.json"
+    # Bind the readiness candidate to the intent that produced it. A shared
+    # filename silently reuses a previous intent's accepted pose.
+    base_path = root / (
+        f"task_evaluation_robot_placement_readiness_candidate-{intent_token}.v1.json"
+    )
     if not base_path.is_file():
         readiness_materializer(
             configured_revision=revision,

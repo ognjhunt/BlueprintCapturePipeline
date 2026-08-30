@@ -137,6 +137,41 @@ def test_materializes_exact_present_inputs_and_binds_future_identities(
     assert plan["provider_mutation_performed"] is False
 
 
+def test_plan_destination_is_scoped_to_the_expected_production_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A redeploy authors a plan whose bytes differ only by commit. Keying the
+    file on the launch id alone turns that into a permanent
+    configured_controls_plan_immutable_conflict, so the filename must carry the
+    commit and give each production commit its own immutable plan."""
+
+    _qualifying_source(monkeypatch)
+    kwargs = {
+        "source_launch_id": SOURCE_LAUNCH_ID,
+        "launch_state_root": tmp_path / "launch-runs",
+        "expected_production_commit": TARGET_COMMIT,
+        "submitted_by": "configured-controls-materializer",
+        "bindings": _bindings(tmp_path),
+        "plan_root": tmp_path / "plans",
+        "profile_dir": tmp_path / "profiles",
+    }
+    (tmp_path / "profiles").mkdir()
+    first = materialize_configured_controls_plan(**kwargs)
+
+    assert Path(first["plan_path"]).name == (
+        f"{SOURCE_LAUNCH_ID}-{TARGET_COMMIT[:12]}.json"
+    )
+    # Idempotency within one commit is unchanged.
+    assert materialize_configured_controls_plan(**kwargs)["status"] == "replayed"
+    # A successor commit therefore claims a distinct destination rather than
+    # colliding with the plan already sealed for its predecessor.
+    successor = "c" * 40
+    assert (
+        f"{SOURCE_LAUNCH_ID}-{successor[:12]}.json"
+        != Path(first["plan_path"]).name
+    )
+
+
 def test_nonqualifying_source_refuses_before_plan_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
