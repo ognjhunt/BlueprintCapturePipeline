@@ -14,7 +14,10 @@ from typing import Any, Mapping, Sequence
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_robot_placement_agent import (
+    DETERMINISTIC_ROBOT_PLACEMENT_CLAIM_CEILING,
+    DETERMINISTIC_ROBOT_PLACEMENT_MODEL,
     PlacementExecutor,
+    _reject_infeasible_orientation_slew,
     robot_placement_agents_sdk_config,
     run_task_evaluation_robot_placement_agent,
 )
@@ -112,6 +115,7 @@ def run_robot_placement_cli(
     task_trajectory: Mapping[str, Any] | None = None,
     prior_native_attempts: Sequence[Mapping[str, Any]] = (),
     candidate_inventory_checkpoint: Mapping[str, Any] | None = None,
+    deterministic_selection: bool = False,
 ) -> dict[str, Any]:
     root = output_dir.expanduser().resolve()
     if root.exists() and any(root.iterdir()):
@@ -235,6 +239,109 @@ def run_robot_placement_cli(
             for image in persisted
         )
         return persisted
+
+    if deterministic_selection:
+        candidate = candidates[0]
+        proposal = {
+            "candidate_id": candidate["candidate_id"],
+            "pose": candidate["pose"],
+            "support_surface_id": candidate["support_surface_id"],
+            "rationale": "Top-ranked exact member of the digest-bound CPU inventory.",
+            "addressed_blockers": [],
+            "uncertainty": "Native orientation, collision/contact, camera, and execution gates remain unresolved.",
+        }
+        gate = _reject_infeasible_orientation_slew(
+            gate=validator(proposal),
+            proposal=proposal,
+            trajectory=task_trajectory,
+            robot_id=robot_id,
+            maximum_steps_per_phase=(
+                task_trajectory.get("maximum_steps_per_phase")
+                if task_trajectory is not None
+                else None
+            ),
+        )
+        if gate.get("status") != "passed":
+            raise ValueError("robot_placement_deterministic_candidate_rejected")
+        previews = renderer(proposal, 0)
+        round_record = {
+            "round_index": 0,
+            "proposal": proposal,
+            "proposal_provider": "local_cpu",
+            "proposal_model": DETERMINISTIC_ROBOT_PLACEMENT_MODEL,
+            "proposal_sdk_version": None,
+            "proposal_usage": {"total_tokens": 0},
+            "proposal_trace_id": None,
+            "geometry_gate": gate,
+            "visual_review": None,
+            "preview_images": [
+                {"label": row["label"], "digest": row["digest"]}
+                for row in previews
+            ],
+            "native_attempt": None,
+        }
+        receipt = {
+            "schema_version": "task_evaluation_robot_placement_receipt.v1",
+            "status": "accepted",
+            "run_id": run_id,
+            "model": DETERMINISTIC_ROBOT_PLACEMENT_MODEL,
+            "reasoning_effort": "none",
+            "max_rounds": 1,
+            "round_count": 1,
+            "scene_binding_digest": canonical_digest(scene_binding),
+            "task_binding_digest": canonical_digest(task_binding),
+            "scene_context_digest": canonical_digest({
+                "geometry_summary": summary,
+                "deterministic_geometry_passing_candidate_inventory": candidates,
+                "deterministic_geometry_passing_candidate_inventory_digest": candidate_inventory_digest,
+                "deterministic_geometry_passing_candidate_inventory_trajectory_digest": trajectory_digest,
+            }),
+            "task_context_digest": canonical_digest({
+                "target_position_world_m": [float(value) for value in target_position_world_m],
+                "robot_id": robot_id,
+                "native_trajectory": task_trajectory,
+            }),
+            "task_trajectory_digest": trajectory_digest,
+            "candidate_inventory_digest": candidate_inventory_digest,
+            "candidate_inventory_trajectory_digest": trajectory_digest,
+            "overview_images": [
+                {"label": row["label"], "digest": row["digest"]}
+                for row in overview_images
+            ],
+            "prior_native_attempts": [],
+            "prior_native_attempt_count": 0,
+            "rounds": [round_record],
+            "accepted_pose": proposal["pose"],
+            "accepted_candidate_id": proposal["candidate_id"],
+            "accepted_support_surface_id": proposal["support_surface_id"],
+            "accepted_geometry_gate_digest": gate["geometry_gate_digest"],
+            "native_agent_loop_enabled": False,
+            "native_attempt_count": 0,
+            "accepted_native_attempt_digest": None,
+            "candidate_may_self_authorize": False,
+            "physical_execution_authorized": False,
+            "native_construction_required": True,
+            "model_grades_controls": False,
+            "selection_method": "deterministic_inventory_rank",
+            "visual_review_completed": False,
+            "native_camera_visibility_required": True,
+            "claim_ceiling": DETERMINISTIC_ROBOT_PLACEMENT_CLAIM_CEILING,
+            "receipt_digest": "",
+        }
+        receipt["receipt_digest"] = canonical_digest(
+            receipt, digest_field="receipt_digest"
+        )
+        write_json(root / "task_evaluation_robot_placement_receipt.v1.json", receipt)
+        write_json(
+            root / "task_evaluation_robot_placement_artifact_index.v1.json",
+            {
+                "schema_version": "task_evaluation_robot_placement_artifact_index.v1",
+                "run_id": run_id,
+                "receipt_digest": receipt["receipt_digest"],
+                "artifacts": artifact_records,
+            },
+        )
+        return receipt
 
     invoker = OpenAIAgentsSDKInvoker(
         robot_placement_agents_sdk_config(

@@ -28,6 +28,9 @@ from blueprint_pipeline.task_evaluation_scene_configuration_paid_authority impor
     MIN_TTL_SECONDS,
     validate_scene_configuration_paid_authority,
 )
+from blueprint_pipeline.task_evaluation_configured_controls_autostart import (
+    validate_configured_controls_autostart_intent,
+)
 
 
 PROFILE_BUILDER = "build_task_evaluation_scene_configuration_live_profile.py"
@@ -70,6 +73,23 @@ def _blockers(context: LaneLiveProfileContext) -> list[str]:
         blockers.append("scene_configuration_live_profile_ttl_mismatch")
     if authority.get("hard_attempt_spend_cap_usd") != context.max_spend_usd:
         blockers.append("scene_configuration_live_profile_spend_mismatch")
+    try:
+        intent = json.loads(
+            context.extra_paths["configured_controls_autostart_intent"].read_text(
+                encoding="utf-8"
+            )
+        )
+        intent = validate_configured_controls_autostart_intent(intent)
+    except (OSError, json.JSONDecodeError, ValueError):
+        blockers.append("scene_configuration_live_profile_autostart_intent_invalid")
+    else:
+        if (
+            intent["expected_production_commit"] != context.source_commit
+            or intent["team_namespace"] != context.extra_values["team_namespace"]
+            or intent["scene_id"] != context.extra_values["scene_id"]
+            or intent["task_id"] != context.extra_values["task_id"]
+        ):
+            blockers.append("scene_configuration_live_profile_autostart_intent_mismatch")
     return blockers
 
 
@@ -102,6 +122,13 @@ def _inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
             "path": str(authority),
             "digest": file_digest(authority),
         },
+        {
+            "name": "configured_controls_autostart_intent",
+            "path": str(context.extra_paths["configured_controls_autostart_intent"]),
+            "digest": file_digest(
+                context.extra_paths["configured_controls_autostart_intent"]
+            ),
+        },
     ]
 
 
@@ -128,7 +155,7 @@ SPEC = LaneLiveProfileSpec(
     },
     declared_spend=lambda context: context.max_spend_usd,
     claim_ceiling="development_only",
-    extra_path_names=("attempt_authority",),
+    extra_path_names=("attempt_authority", "configured_controls_autostart_intent"),
     one_use_standing_authority_required=True,
     additional_terminal_path_fields=(
         "execution_result_path",
@@ -151,6 +178,7 @@ def build_scene_configuration_live_profile(
     team_namespace: str,
     scene_id: str,
     task_id: str,
+    configured_controls_autostart_intent_path: str | Path,
     pod_name: str | None = None,
 ) -> dict[str, Any]:
     return build_lane_live_profile(
@@ -164,7 +192,12 @@ def build_scene_configuration_live_profile(
         revision=revision,
         pod_name=pod_name,
         profile_binding_identity=pod_name,
-        extra_paths={"attempt_authority": attempt_authority_path},
+        extra_paths={
+            "attempt_authority": attempt_authority_path,
+            "configured_controls_autostart_intent": (
+                configured_controls_autostart_intent_path
+            ),
+        },
         extra_values={
             "team_namespace": team_namespace,
             "scene_id": scene_id,
@@ -211,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--team-namespace", required=True)
     parser.add_argument("--scene-id", required=True)
     parser.add_argument("--task-id", required=True)
+    parser.add_argument("--configured-controls-autostart-intent", required=True)
     parser.add_argument(
         "--pod-name",
         default=None,
@@ -236,6 +270,9 @@ def main(argv: list[str] | None = None) -> int:
             team_namespace=args.team_namespace,
             scene_id=args.scene_id,
             task_id=args.task_id,
+            configured_controls_autostart_intent_path=(
+                args.configured_controls_autostart_intent
+            ),
             pod_name=args.pod_name,
         )
     except (OSError, ValueError, TaskEvaluationLaunchError) as exc:

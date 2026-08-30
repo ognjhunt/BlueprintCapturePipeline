@@ -1,7 +1,7 @@
 """Production-owned automatic progression from configured scenes to controls.
 
 The launch reconciler remains observation-only.  This separate timer worker
-consumes an operator-authored immutable plan, a qualifying terminal launch, a
+consumes an immutable CPU-materialized plan, a qualifying terminal launch, a
 successful WebApp sync, and the reconciler's post-teardown global provider-zero
 receipt.  It advances existing no-spend preparation/activation queues and uses
 the canonical WebApp-only client for paid launch submission.  It never invokes
@@ -775,7 +775,77 @@ def advance_configured_controls_plan(
 
 def process_plans(**kwargs: Any) -> dict[str, Any]:
     plan_root = Path(kwargs.pop("plan_root")).expanduser()
+    launch_state_root = Path(kwargs["launch_state_root"]).expanduser()
     rows: list[dict[str, Any]] = []
+    # Configuration profiles carrying the required autostart intent need no
+    # operator-written plan.  The no-spend materializer reopens the completed
+    # revision, runs the full CPU placement inventory/trajectory gate, and
+    # writes the same immutable plan consumed below.  A profile without the
+    # intent remains untouched for backwards-compatible observation.
+    from .task_evaluation_configured_controls_autostart import (
+        TaskEvaluationConfiguredControlsAutostartError,
+        materialize_configured_controls_autostart,
+    )
+
+    for run_root in sorted(launch_state_root.iterdir()) if launch_state_root.is_dir() else []:
+        if not run_root.is_dir() or run_root.is_symlink():
+            continue
+        profile_path = run_root / "launch_profile.json"
+        receipt_path = run_root / "launch_receipt.json"
+        if not profile_path.is_file() or not receipt_path.is_file():
+            continue
+        try:
+            profile = _load(
+                profile_path, blocker="configured_controls_autostart_profile_invalid"
+            )
+        except TaskEvaluationConfiguredControlsProgressionWorkerError as exc:
+            rows.append({"status": "blocked", "source_launch_id": run_root.name, "blockers": [str(exc)]})
+            continue
+        has_intent = any(
+            isinstance(item, Mapping)
+            and item.get("name") == "configured_controls_autostart_intent"
+            for item in profile.get("immutable_inputs") or []
+        )
+        if not has_intent:
+            continue
+        try:
+            receipt = _load(
+                receipt_path,
+                blocker="configured_controls_autostart_launch_receipt_invalid",
+            )
+        except TaskEvaluationConfiguredControlsProgressionWorkerError as exc:
+            rows.append({"status": "blocked", "source_launch_id": run_root.name, "blockers": [str(exc)]})
+            continue
+        if receipt.get("status") != "completed":
+            rows.append({"status": "awaiting_configuration_terminal", "source_launch_id": run_root.name})
+            continue
+        if not (run_root / "webapp_sync_succeeded.json").is_file():
+            rows.append({"status": "awaiting_configuration_webapp_sync", "source_launch_id": run_root.name})
+            continue
+        if not (run_root / "post_teardown_provider_zero_receipt.json").is_file():
+            rows.append({"status": "awaiting_configuration_provider_zero", "source_launch_id": run_root.name})
+            continue
+        try:
+            auto = materialize_configured_controls_autostart(
+                source_launch_id=run_root.name,
+                launch_state_root=launch_state_root,
+                progression_root=kwargs["progression_root"],
+                plan_root=plan_root,
+            )
+            rows.append({
+                "status": auto["status"],
+                "source_launch_id": run_root.name,
+                "selected_candidate_id": auto["selected_candidate_id"],
+                "plan_digest": auto["plan_digest"],
+            })
+        except (
+            TaskEvaluationConfiguredControlsAutostartError,
+            TaskEvaluationConfiguredControlsProgressionError,
+            TaskEvaluationConfiguredControlsProgressionWorkerError,
+            OSError,
+            ValueError,
+        ) as exc:
+            rows.append({"status": "blocked", "source_launch_id": run_root.name, "blockers": [str(exc)]})
     for path in sorted(plan_root.glob("*.json")) if plan_root.is_dir() else []:
         try:
             rows.append(advance_configured_controls_plan(plan_path=path, **kwargs))

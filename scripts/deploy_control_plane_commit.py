@@ -61,6 +61,10 @@ from provision_task_evaluation_scene_configuration_release import (  # noqa: E40
     provision_scene_configuration_release,
     service_account_readback,
 )
+from blueprint_pipeline.task_evaluation_configured_controls_autostart import (  # noqa: E402
+    configured_controls_autostart_registry_name,
+    validate_configured_controls_autostart_intent,
+)
 
 SCHEMA_VERSION = "control_plane_commit_deploy_receipt.v1"
 
@@ -136,6 +140,9 @@ DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES = (
 )
 DEFAULT_CONFIGURED_CONTROLS_PLAN_ROOT = (
     "/etc/blueprint/task-evaluation-configured-controls-plans"
+)
+DEFAULT_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT = (
+    "/etc/blueprint/task-evaluation-configured-controls-intents"
 )
 DEFAULT_CONFIGURED_CONTROLS_WEBAPP_SECRET = (
     "/etc/blueprint/provider-secrets/blueprint_task_evaluation_launch_submit_secret"
@@ -760,6 +767,186 @@ def _install_configured_controls_runtime_prerequisites(
         "webapp_secret_owner_gid": owner_gid,
         "webapp_secret_mode": "0440",
         "secret_bytes_read": False,
+    }
+
+
+def _install_configured_controls_autostart_registry(
+    *,
+    intent_root: str = DEFAULT_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT,
+    intent_sources: Sequence[str] = (),
+    source_commit: str,
+    account: str = DEFAULT_SERVICE_ACCOUNT,
+    root_uid: int = 0,
+) -> dict[str, Any]:
+    """Install immutable per-scene continuation intent with readback proof.
+
+    This registry is a pre-admission boundary, not universal task inference: a
+    scene-configuration activation is admitted only when its exact team/scene/
+    task intent was provisioned at the same production commit.
+    """
+
+    account_ids = _service_account_ids(account)
+    if account_ids is None:
+        raise ControlPlaneDeployError(
+            f"deploy_configured_controls_account_missing:{account}"
+        )
+    _owner_uid, owner_gid = account_ids
+    root = Path(intent_root).expanduser()
+    if not root.is_absolute() or root.is_symlink():
+        raise ControlPlaneDeployError(
+            "deploy_configured_controls_autostart_intent_root_invalid"
+        )
+    try:
+        root.mkdir(parents=True, exist_ok=True, mode=0o750)
+        if root.is_symlink() or not root.is_dir():
+            raise ControlPlaneDeployError(
+                "deploy_configured_controls_autostart_intent_root_invalid"
+            )
+        metadata = root.stat()
+        if metadata.st_uid != root_uid or metadata.st_gid != owner_gid:
+            os.chown(root, root_uid, owner_gid)
+        if stat.S_IMODE(metadata.st_mode) != 0o750:
+            root.chmod(0o750)
+        readback = root.stat()
+    except OSError as exc:
+        raise ControlPlaneDeployError(
+            "deploy_configured_controls_autostart_intent_root_install_failed"
+        ) from exc
+    if (
+        readback.st_uid != root_uid
+        or readback.st_gid != owner_gid
+        or stat.S_IMODE(readback.st_mode) != 0o750
+    ):
+        raise ControlPlaneDeployError(
+            "deploy_configured_controls_autostart_intent_root_readback_mismatch"
+        )
+
+    entries: list[dict[str, Any]] = []
+    for raw_source in intent_sources:
+        source = Path(raw_source).expanduser()
+        if not source.is_absolute() or source.is_symlink() or not source.is_file():
+            raise ControlPlaneDeployError(
+                "deploy_configured_controls_autostart_intent_source_invalid"
+            )
+        try:
+            payload = source.read_bytes()
+            value = validate_configured_controls_autostart_intent(
+                json.loads(payload)
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ControlPlaneDeployError(
+                "deploy_configured_controls_autostart_intent_source_invalid"
+            ) from exc
+        if value["expected_production_commit"] != source_commit:
+            raise ControlPlaneDeployError(
+                "deploy_configured_controls_autostart_intent_commit_mismatch"
+            )
+        destination = root / configured_controls_autostart_registry_name(
+            team_namespace=value["team_namespace"],
+            scene_id=value["scene_id"],
+            task_id=value["task_id"],
+        )
+        previous_sha256: str | None = None
+        try:
+            if destination.exists():
+                if destination.is_symlink() or not destination.is_file():
+                    raise ControlPlaneDeployError(
+                        "deploy_configured_controls_autostart_intent_conflict"
+                    )
+                previous_payload = destination.read_bytes()
+                try:
+                    previous = validate_configured_controls_autostart_intent(
+                        json.loads(previous_payload)
+                    )
+                except (
+                    UnicodeError,
+                    json.JSONDecodeError,
+                    ValueError,
+                ) as exc:
+                    raise ControlPlaneDeployError(
+                        "deploy_configured_controls_autostart_existing_intent_invalid"
+                    ) from exc
+                if (
+                    previous["team_namespace"] != value["team_namespace"]
+                    or previous["scene_id"] != value["scene_id"]
+                    or previous["task_id"] != value["task_id"]
+                ):
+                    raise ControlPlaneDeployError(
+                        "deploy_configured_controls_autostart_intent_conflict"
+                    )
+                previous_sha256 = _sha256_bytes(previous_payload)
+            if not destination.exists() or destination.read_bytes() != payload:
+                temporary: Path | None = None
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        mode="wb",
+                        dir=root,
+                        prefix=f".{destination.name}.",
+                        delete=False,
+                    ) as stream:
+                        temporary = Path(stream.name)
+                        stream.write(payload)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.chown(temporary, root_uid, owner_gid)
+                    temporary.chmod(0o440)
+                    os.replace(temporary, destination)
+                    temporary = None
+                    directory_fd = os.open(root, os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+                finally:
+                    if temporary is not None:
+                        with contextlib.suppress(OSError):
+                            temporary.unlink()
+            else:
+                os.chown(destination, root_uid, owner_gid)
+                destination.chmod(0o440)
+            destination_payload = destination.read_bytes()
+            destination_metadata = destination.stat()
+        except OSError as exc:
+            raise ControlPlaneDeployError(
+                "deploy_configured_controls_autostart_intent_install_failed"
+            ) from exc
+        if (
+            destination.is_symlink()
+            or destination_payload != payload
+            or destination_metadata.st_uid != root_uid
+            or destination_metadata.st_gid != owner_gid
+            or stat.S_IMODE(destination_metadata.st_mode) != 0o440
+        ):
+            raise ControlPlaneDeployError(
+                "deploy_configured_controls_autostart_intent_readback_mismatch"
+            )
+        entries.append(
+            {
+                "path": str(destination),
+                "sha256": _sha256_bytes(payload),
+                "size_bytes": len(payload),
+                "mode": "0440",
+                "expected_production_commit": source_commit,
+                "team_namespace": value["team_namespace"],
+                "scene_id": value["scene_id"],
+                "task_id": value["task_id"],
+                "intent_digest": value["intent_digest"],
+                "replaced_previous_sha256": (
+                    previous_sha256
+                    if previous_sha256 != _sha256_bytes(payload)
+                    else None
+                ),
+            }
+        )
+    return {
+        "root": str(root),
+        "root_owner_uid": root_uid,
+        "root_owner_gid": owner_gid,
+        "root_mode": "0750",
+        "status": "provisioned" if entries else "empty_pre_admission_required",
+        "pre_admission_required": True,
+        "entry_count": len(entries),
+        "entries": entries,
     }
 
 
@@ -1418,6 +1605,10 @@ def deploy_control_plane_commit(
     ),
     artifixer_source_root: str | Path = DEFAULT_ARTIFIXER_SOURCE_ROOT,
     content_agents_source_root: str | Path = DEFAULT_CONTENT_AGENTS_SOURCE_ROOT,
+    configured_controls_autostart_intent_root: str | Path = (
+        DEFAULT_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT
+    ),
+    configured_controls_autostart_intent_sources: Sequence[str] = (),
     arm_path_units: bool = False,
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both."""
@@ -1615,6 +1806,13 @@ def deploy_control_plane_commit(
         configured_controls_runtime = (
             _install_configured_controls_runtime_prerequisites()
         )
+        configured_controls_autostart_registry = (
+            _install_configured_controls_autostart_registry(
+                intent_root=str(configured_controls_autostart_intent_root),
+                intent_sources=configured_controls_autostart_intent_sources,
+                source_commit=commit,
+            )
+        )
 
         runtime_binding = _install_intake_runtime_identity_drop_in(
             Path(intake_runtime_drop_in).expanduser(),
@@ -1672,6 +1870,9 @@ def deploy_control_plane_commit(
             episode_compilation_runtime_directories
         ),
         "configured_controls_runtime": configured_controls_runtime,
+        "configured_controls_autostart_registry": (
+            configured_controls_autostart_registry
+        ),
         "path_unit_states": [
             row for row in automation_unit_state_receipts if row["unit"].endswith(".path")
         ],
@@ -1811,6 +2012,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--content-agents-source-root", default=DEFAULT_CONTENT_AGENTS_SOURCE_ROOT
     )
     parser.add_argument(
+        "--configured-controls-autostart-intent-root",
+        default=DEFAULT_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT,
+    )
+    parser.add_argument(
+        "--configured-controls-autostart-intent",
+        action="append",
+        default=None,
+        help=(
+            "Exact digest-bound per-scene continuation intent to provision. "
+            "Repeatable; omitting it leaves scene configuration fail-closed "
+            "until pre-admission is provisioned."
+        ),
+    )
+    parser.add_argument(
         "--arm-path-units",
         action="store_true",
         help=(
@@ -1843,6 +2058,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             splat_render_prerequisite_root=args.splat_render_prerequisite_root,
             artifixer_source_root=args.artifixer_source_root,
             content_agents_source_root=args.content_agents_source_root,
+            configured_controls_autostart_intent_root=(
+                args.configured_controls_autostart_intent_root
+            ),
+            configured_controls_autostart_intent_sources=tuple(
+                args.configured_controls_autostart_intent or ()
+            ),
             arm_path_units=args.arm_path_units,
         )
     except (OSError, ValueError, ControlPlaneReleaseError) as exc:

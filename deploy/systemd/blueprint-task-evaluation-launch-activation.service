@@ -28,7 +28,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
-ReadOnlyPaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations /var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations /var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions /var/lib/blueprint/task-evaluation-inputs/prepared-references /var/lib/blueprint/task-evaluation-inputs/compiled-episodes /var/lib/blueprint/task-evaluation-inputs/system-runtimes
+ReadOnlyPaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations /var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations /var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions /var/lib/blueprint/task-evaluation-inputs/prepared-references /var/lib/blueprint/task-evaluation-inputs/compiled-episodes /var/lib/blueprint/task-evaluation-inputs/system-runtimes /etc/blueprint/task-evaluation-configured-controls-intents
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations /var/lib/blueprint/task-evaluation-inputs/launch-activations /etc/blueprint/task-evaluation-launch-profiles /var/lib/blueprint/pipeline-control-plane /var/lib/blueprint/pipeline-control-plane/standing-authorizations
 TasksMax=512
 LimitNOFILE=8192
@@ -50,6 +50,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_SERVICE_GROUP=blueprint
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_CATALOG=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
 Environment=BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR=/var/lib/blueprint/pipeline-control-plane/standing-authorizations
+Environment=BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT=/etc/blueprint/task-evaluation-configured-controls-intents
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env
 WorkingDirectory=/

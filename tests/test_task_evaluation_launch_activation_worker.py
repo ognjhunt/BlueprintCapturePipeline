@@ -34,6 +34,10 @@ from blueprint_pipeline.task_evaluation_launch_preparation_queue import (
 from blueprint_pipeline.task_evaluation_launch_preparation_worker import (
     process_launch_preparation_queue,
 )
+from blueprint_pipeline.task_evaluation_configured_controls_autostart import (
+    configured_controls_autostart_registry_name,
+    materialize_configured_controls_autostart_intent,
+)
 from tests.test_task_evaluation_launch_activation_contract import (
     request as activation_request,
 )
@@ -53,6 +57,66 @@ from tests.test_task_evaluation_scene_configuration_bundle import (
 
 
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
+
+
+def _configured_controls_intent_root(
+    tmp_path: Path, preparation: dict[str, object]
+) -> Path:
+    root = tmp_path / "configured-controls-intents"
+    root.mkdir(exist_ok=True)
+    inputs = tmp_path / "configured-controls-inputs"
+    inputs.mkdir(exist_ok=True)
+
+    def artifact(name: str) -> str:
+        path = inputs / name
+        path.write_text("{}\n", encoding="utf-8")
+        return str(path.resolve())
+
+    paths: dict[str, object] = {
+        name: artifact(f"{name}.json")
+        for name in (
+            "robot_asset_usd_path",
+            "robot_mount_interface_path",
+            "scene_camera_calibration_path",
+            "native_trajectory_plan_path",
+            "cameras_path",
+            "runtime_binding_path",
+        )
+    }
+    paths["overview_image_paths"] = [artifact("overview.png")]
+    phases: dict[str, dict[str, str]] = {}
+    for phase in ("construction", "controls"):
+        names = [
+            "release_window_path",
+            "authorization_path",
+            "launch_authority_path",
+        ]
+        if phase == "construction":
+            names.append("lineage_path")
+        phases[phase] = {
+            name: artifact(f"{phase}-{name}.json") for name in names
+        }
+    profile_dir = tmp_path / "configured-controls-profiles"
+    profile_dir.mkdir(exist_ok=True)
+    team_namespace = str(preparation["team_namespace"])
+    scene_id = str(preparation["scene"]["identity"]["id"])
+    task_id = str(preparation["task"]["identity"]["id"])
+    destination = root / configured_controls_autostart_registry_name(
+        team_namespace=team_namespace, scene_id=scene_id, task_id=task_id
+    )
+    materialize_configured_controls_autostart_intent(
+        expected_production_commit=str(preparation["expected_production_commit"]),
+        submitted_by="test-autostart",
+        team_namespace=team_namespace,
+        scene_id=scene_id,
+        task_id=task_id,
+        target_position_world_m=[1.0, 2.0, 3.0],
+        paths=paths,
+        phases=phases,
+        profile_dir=profile_dir,
+        output_path=destination,
+    )
+    return root
 
 
 def test_release_window_must_use_coordinator_owned_prefix() -> None:
@@ -445,6 +509,9 @@ def test_activation_builds_robot_neutral_scene_configuration_context(
         standing_authorization_dir=tmp_path / "authorizations",
         service_account=SERVICE_ACCOUNT,
         service_group=SERVICE_ACCOUNT,
+        configured_controls_autostart_intent_root=(
+            _configured_controls_intent_root(tmp_path, preparation)
+        ),
     )
 
     assert context["lane"] == "task_evaluation_scene_configuration"
@@ -503,6 +570,9 @@ def test_activation_builds_robot_neutral_scene_configuration_context(
         standing_authorization_dir=tmp_path / "authorizations",
         service_account=SERVICE_ACCOUNT,
         service_group=SERVICE_ACCOUNT,
+        configured_controls_autostart_intent_root=(
+            _configured_controls_intent_root(tmp_path, preparation)
+        ),
     )
     assert provider_context["reference_bindings"][
         "raw_interiorgs_bytes_authorized_for_provider"

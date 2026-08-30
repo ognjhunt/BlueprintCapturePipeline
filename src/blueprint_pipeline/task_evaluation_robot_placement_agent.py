@@ -41,6 +41,8 @@ ROBOT_PLACEMENT_AGENT_MAX_OUTPUT_TOKENS = 8_000
 ROBOT_PLACEMENT_AGENT_SCHEMA_VERSION = "task_evaluation_robot_placement_agent.v1"
 ROBOT_PLACEMENT_RECEIPT_SCHEMA_VERSION = "task_evaluation_robot_placement_receipt.v1"
 ROBOT_PLACEMENT_CLAIM_CEILING = "analytic_and_visual_robot_placement_candidate"
+DETERMINISTIC_ROBOT_PLACEMENT_MODEL = "deterministic_cpu_inventory_ranker"
+DETERMINISTIC_ROBOT_PLACEMENT_CLAIM_CEILING = "analytic_robot_placement_candidate"
 DEFAULT_MAX_PLACEMENT_ROUNDS = 4
 NATIVE_REJECTED_POSE_EXCLUSION_RADIUS_M = 0.08
 NATIVE_REJECTED_POSE_ORIENTATION_EXCLUSION_RAD = math.radians(5.0)
@@ -905,8 +907,17 @@ def validate_robot_placement_receipt(
     if (
         receipt.get("schema_version") != ROBOT_PLACEMENT_RECEIPT_SCHEMA_VERSION
         or receipt.get("status") != "accepted"
-        or receipt.get("model") != ROBOT_PLACEMENT_AGENT_MODEL
-        or receipt.get("reasoning_effort") != ROBOT_PLACEMENT_AGENT_REASONING_EFFORT
+        or (
+            receipt.get("model") == ROBOT_PLACEMENT_AGENT_MODEL
+            and receipt.get("reasoning_effort")
+            != ROBOT_PLACEMENT_AGENT_REASONING_EFFORT
+        )
+        or (
+            receipt.get("model") == DETERMINISTIC_ROBOT_PLACEMENT_MODEL
+            and receipt.get("reasoning_effort") != "none"
+        )
+        or receipt.get("model")
+        not in {ROBOT_PLACEMENT_AGENT_MODEL, DETERMINISTIC_ROBOT_PLACEMENT_MODEL}
         or receipt.get("candidate_may_self_authorize") is not False
         or receipt.get("physical_execution_authorized") is not False
         or not isinstance(receipt.get("native_construction_required"), bool)
@@ -942,7 +953,12 @@ def validate_robot_placement_receipt(
             )
         )
         or receipt.get("model_grades_controls") is not False
-        or receipt.get("claim_ceiling") != ROBOT_PLACEMENT_CLAIM_CEILING
+        or receipt.get("claim_ceiling")
+        != (
+            DETERMINISTIC_ROBOT_PLACEMENT_CLAIM_CEILING
+            if receipt.get("model") == DETERMINISTIC_ROBOT_PLACEMENT_MODEL
+            else ROBOT_PLACEMENT_CLAIM_CEILING
+        )
         or receipt.get("receipt_digest")
         != canonical_digest(receipt, digest_field="receipt_digest")
     ):
@@ -985,11 +1001,23 @@ def validate_robot_placement_receipt(
         != receipt.get("accepted_geometry_gate_digest")
     ):
         raise RobotPlacementAgentError("robot_placement_receipt_acceptance_invalid")
-    visual = RobotPlacementVisualReviewOutput.model_validate(
-        accepted.get("visual_review")
-    )
-    if not _visual_passed(visual):
-        raise RobotPlacementAgentError("robot_placement_visual_acceptance_invalid")
+    deterministic = receipt.get("model") == DETERMINISTIC_ROBOT_PLACEMENT_MODEL
+    if deterministic:
+        if (
+            receipt.get("selection_method") != "deterministic_inventory_rank"
+            or receipt.get("visual_review_completed") is not False
+            or receipt.get("native_camera_visibility_required") is not True
+            or accepted.get("visual_review") is not None
+        ):
+            raise RobotPlacementAgentError(
+                "robot_placement_deterministic_acceptance_invalid"
+            )
+    else:
+        visual = RobotPlacementVisualReviewOutput.model_validate(
+            accepted.get("visual_review")
+        )
+        if not _visual_passed(visual):
+            raise RobotPlacementAgentError("robot_placement_visual_acceptance_invalid")
     if receipt.get("native_agent_loop_enabled") is True:
         native_attempt = accepted.get("native_attempt")
         if (
@@ -1010,6 +1038,8 @@ def validate_robot_placement_receipt(
 
 __all__ = [
     "DEFAULT_MAX_PLACEMENT_ROUNDS",
+    "DETERMINISTIC_ROBOT_PLACEMENT_CLAIM_CEILING",
+    "DETERMINISTIC_ROBOT_PLACEMENT_MODEL",
     "ROBOT_PLACEMENT_AGENT_MODEL",
     "ROBOT_PLACEMENT_AGENT_MAX_OUTPUT_TOKENS",
     "ROBOT_PLACEMENT_AGENT_REASONING_EFFORT",
