@@ -7,6 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+    GPU_STAGE_TIMEOUT_SECONDS,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
     builtin_scene_configuration_stage_producer_registry,
@@ -195,7 +198,9 @@ def test_builtin_producer_retains_redacted_partial_output_on_timeout(
         RuntimeError,
         match=(
             "scene_configuration_stage_producer_timeout:"
-            "artifixer3d_observed_object_removal:7800"
+            "artifixer3d_observed_object_removal:"
+            # Derived, so a stage budget change cannot leave this behind.
+            f"{GPU_STAGE_TIMEOUT_SECONDS['artifixer3d_observed_object_removal']}"
         ),
     ):
         registry.execute(
