@@ -26,6 +26,10 @@ from .task_evaluation_configured_scene_public_projection import (
     ConfiguredScenePublicProjectionError,
     validate_public_display_authorization,
 )
+from .task_evaluation_scene_configuration_appearance_review import (
+    AppearanceReviewContractError,
+    appearance_review_mode,
+)
 
 
 SCHEMA_VERSION = "task_evaluation_launch_preparation_request.v1"
@@ -168,6 +172,10 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
         )
     spend = request["spend"]
     if request["run_mode"] == "scene_configuration":
+        try:
+            appearance_review_mode(request)
+        except AppearanceReviewContractError as exc:
+            raise TaskEvaluationLaunchPreparationContractError(str(exc)) from exc
         openai = spend["external_service_caps"]["openai"]
         stage_caps = openai["stage_max_cost_usd"]
         openai_cap = float(openai["maximum_cost_usd"])
@@ -202,13 +210,18 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
             raise TaskEvaluationLaunchPreparationContractError(
                 "launch_preparation_scene_configuration_external_spend_invalid"
             )
-    elif (
-        float(spend["hard_cap_usd"]) > 5.0
-        or int(spend["hard_ttl_seconds"]) > 9_000
-    ):
-        raise TaskEvaluationLaunchPreparationContractError(
-            "launch_preparation_episode_spend_invalid"
-        )
+    else:
+        if request.get("appearance_review_override") is not None:
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_episode_appearance_review_override_forbidden"
+            )
+        if (
+            float(spend["hard_cap_usd"]) > 5.0
+            or int(spend["hard_ttl_seconds"]) > 9_000
+        ):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_episode_spend_invalid"
+            )
     output_mounts = [
         mount for mount in request["runtime"]["mounts"] if mount["mode"] == "output"
     ]

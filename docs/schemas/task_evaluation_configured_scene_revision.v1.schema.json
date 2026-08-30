@@ -96,7 +96,9 @@
         "observed_source": {"$ref": "#/$defs/reference"},
         "object_removal_result": {"$ref": "#/$defs/reference"},
         "configured_representation": {"$ref": "#/$defs/reference"},
-        "appearance_truth_source": {"const": "interiorgs_observed_plus_labeled_generated_edit"}
+        "appearance_truth_source": {"const": "interiorgs_observed_plus_labeled_generated_edit"},
+        "visual_review_status": {"enum": ["accepted", "paused_ungraded"]},
+        "warning_label": {"const": "Visual review paused - appearance ungraded"}
       }
     },
     "geometry": {
@@ -176,12 +178,13 @@
             "camera_id": {"$ref": "#/$defs/identifier"},
             "frame_digest": {"$ref": "#/$defs/digest"},
             "rationale": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "appearance_review_status": {"enum": ["accepted", "paused_ungraded"]},
             "reviewer": {
               "type": "object",
               "required": ["kind", "identity", "runtime", "model"],
               "additionalProperties": false,
               "properties": {
-                "kind": {"const": "ai"},
+                "kind": {"enum": ["ai", "system"]},
                 "identity": {"type": "string", "minLength": 1, "maxLength": 200},
                 "runtime": {"type": "string", "minLength": 1, "maxLength": 200},
                 "model": {"type": "string", "minLength": 1, "maxLength": 200}
@@ -189,7 +192,9 @@
             }
           }
         },
-        "selected_from_exact_reviewed_frame_count": {"const": 8},
+        "appearance_review_status": {"enum": ["accepted", "paused_ungraded"]},
+        "selected_from_exact_reviewed_frame_count": {"enum": [0, 8]},
+        "warning_label": {"const": "Visual review paused - appearance ungraded"},
         "derived_appearance_evidence": {"const": true},
         "capture_or_physical_evidence": {"const": false},
         "image_bytes_modified_after_selection": {"const": false}

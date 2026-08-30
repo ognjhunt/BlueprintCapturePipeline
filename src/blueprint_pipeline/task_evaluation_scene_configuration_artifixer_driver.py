@@ -85,6 +85,14 @@ from .task_evaluation_scene_configuration_artifixer_selective_repair import (
     materialize_selective_repair_request,
     merge_selective_repair_outputs,
 )
+from .task_evaluation_scene_configuration_appearance_review import (
+    AppearanceReviewContractError,
+    PAUSED_RECEIPT_SCHEMA_VERSION,
+    PAUSED_UNGRADED_MODE,
+    PAUSED_UNGRADED_WARNING,
+    REQUIRED_MODE,
+    appearance_review_mode,
+)
 from .task_evaluation_scene_configuration_semantic_locality import (
     SEMANTIC_LOCALITY_POLICY,
     materialize_semantic_locality_seal,
@@ -300,6 +308,105 @@ def _materialize_selected_task_thumbnail(
         "derived_appearance_evidence": True,
         "capture_or_physical_evidence": False,
     }
+
+
+def _materialize_ungraded_task_thumbnail_and_receipt(
+    *,
+    review_frames: list[Mapping[str, Any]],
+    publisher_instance_id: str,
+    minimum_frame_count: int,
+    thumbnail_destination: Path,
+    receipt_destination: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Select one rendered frame deterministically without claiming review."""
+
+    candidates: list[tuple[str, str, Path]] = []
+    for frame in review_frames:
+        final_frame = frame.get("final_frame")
+        if not isinstance(final_frame, Mapping):
+            continue
+        camera_id = str(frame.get("camera_id") or "")
+        digest = str(final_frame.get("sha256") or "")
+        path = Path(str(final_frame.get("path") or ""))
+        if (
+            not camera_id
+            or not digest
+            or path.is_symlink()
+            or not path.is_file()
+            or _sha256(path) != digest
+        ):
+            continue
+        candidates.append((camera_id, digest, path))
+    candidates.sort(key=lambda row: (row[0], row[1]))
+    if (
+        len(candidates) != minimum_frame_count
+        or len({(row[0], row[1]) for row in candidates}) != minimum_frame_count
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_ungraded_thumbnail_inventory_invalid"
+        )
+    camera_id, digest, selected_path = candidates[0]
+    shutil.copyfile(selected_path, thumbnail_destination)
+    if _sha256(thumbnail_destination) != digest:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_thumbnail_copy_mismatch"
+        )
+    rationale = (
+        "Deterministic first camera; visual review was explicitly paused and "
+        "this frame remains ungraded."
+    )
+    selector = {
+        "kind": "system",
+        "identity": "deterministic_ungraded_thumbnail_selector",
+        "runtime": "blueprint_pipeline",
+        "model": "none",
+    }
+    selection = {
+        "camera_id": camera_id,
+        "frame_sha256": digest,
+        "rationale": rationale,
+    }
+    receipt: dict[str, Any] = {
+        "schema_version": PAUSED_RECEIPT_SCHEMA_VERSION,
+        "status": "visual_review_paused_ungraded",
+        "decision": "not_reviewed",
+        "visual_review_mode": PAUSED_UNGRADED_MODE,
+        "publisher_instance_id": publisher_instance_id,
+        "review_frame_count": minimum_frame_count,
+        "frames": [
+            {"camera_id": row[0], "frame_sha256": row[1]}
+            for row in candidates
+        ],
+        "all_review_frames_digest_bound": True,
+        "ai_visual_review_completed": False,
+        "human_review_completed": False,
+        "semantic_object_absence_review_passed": False,
+        "multiview_consistency_review_passed": False,
+        "task_thumbnail_is_exact_review_frame": False,
+        "task_thumbnail_is_exact_rendered_frame": True,
+        "task_thumbnail_selection": selection,
+        "selector": selector,
+        "review_provider_call_performed": False,
+        "generated_output_is_capture_or_physical_evidence": False,
+        "warning_label": PAUSED_UNGRADED_WARNING,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_destination.write_text(
+        canonical_json(receipt) + "\n", encoding="utf-8"
+    )
+    return (
+        {
+            **selection,
+            "reviewer": selector,
+            "appearance_review_status": PAUSED_UNGRADED_MODE,
+            "derived_appearance_evidence": True,
+            "capture_or_physical_evidence": False,
+        },
+        receipt,
+    )
 
 
 def _materialize_diagnostic_rejected_artifixer_artifacts(
@@ -1216,10 +1323,20 @@ def execute_artifixer_component(
     stage = stage_input.get("stage") or {}
     configuration = stage_input.get("configuration") or {}
     envelope = stage_input.get("construction_envelope") or {}
+    request = envelope.get("request")
+    try:
+        review_mode = (
+            appearance_review_mode(request)
+            if isinstance(request, Mapping)
+            else REQUIRED_MODE
+        )
+    except AppearanceReviewContractError as exc:
+        raise TaskEvaluationSceneConfigurationArtifixerError(str(exc)) from exc
     if (
         stage.get("adapter", {}).get("id") != _ADAPTER_ID
         or configuration.get("schema_version")
         != "observed_appearance_object_removal_configuration.v1"
+        or review_mode is None
         or dependencies != []
     ):
         raise TaskEvaluationSceneConfigurationArtifixerError(
@@ -1464,6 +1581,88 @@ def execute_artifixer_component(
             else None
         ),
     )
+    if review_mode == PAUSED_UNGRADED_MODE:
+        review_frames = training["review_frames"]
+        thumbnail = output_root / "configured_task_thumbnail.png"
+        copied_review = output_root / "appearance_visual_review_receipt.v1.json"
+        thumbnail_selection, pause_receipt = (
+            _materialize_ungraded_task_thumbnail_and_receipt(
+                review_frames=review_frames,
+                publisher_instance_id=str(
+                    configuration["source_object"]["publisher_instance_id"]
+                ),
+                minimum_frame_count=int(
+                    (configuration.get("required_views") or {}).get("minimum")
+                    or len(review_frames)
+                ),
+                thumbnail_destination=thumbnail,
+                receipt_destination=copied_review,
+            )
+        )
+        appearance = output_root / "configured_appearance_without_source_object.usdz"
+        shutil.copyfile(training["native_appearance_source"], appearance)
+        removal: dict[str, Any] = {
+            "schema_version": "task_evaluation_artifixer_object_removal_result.v1",
+            "status": "completed_ungraded_generated_appearance_edit",
+            "visual_review_mode": PAUSED_UNGRADED_MODE,
+            "publisher_instance_id": configuration["source_object"][
+                "publisher_instance_id"
+            ],
+            "raw_interiorgs_bytes_sent_to_external_provider": False,
+            "visual_review_receipt_digest": pause_receipt["receipt_digest"],
+            "visual_review_receipt_sha256": _sha256(copied_review),
+            "semantic_object_free_visual_review_passed": False,
+            "multiview_consistency_review_passed": False,
+            "review_provider_call_performed": False,
+            "ungraded_publication_acknowledged": True,
+            "warning_label": PAUSED_UNGRADED_WARNING,
+            "task_thumbnail_selection": thumbnail_selection,
+            "generated_pixels_labeled": True,
+            "appearance_authority": (
+                "generated_support_not_observed_source_or_physics_truth"
+            ),
+            "result_digest": "",
+        }
+        removal["result_digest"] = canonical_digest(
+            removal, digest_field="result_digest"
+        )
+        removal_path = output_root / "appearance_removal_receipt.v1.json"
+        removal_path.write_text(
+            canonical_json(removal) + "\n", encoding="utf-8"
+        )
+        artifacts = [
+            {
+                "role": "configured_appearance_without_source_object",
+                **_component_record(appearance),
+            },
+            {"role": "appearance_removal_receipt", **_component_record(removal_path)},
+            {
+                "role": "appearance_visual_review_receipt",
+                **_component_record(copied_review),
+            },
+            {"role": "configured_task_thumbnail", **_component_record(thumbnail)},
+            render_handoff,
+        ]
+        result = {
+            "schema_version": COMPONENT_RESULT_SCHEMA_VERSION,
+            "status": "completed",
+            "adapter_id": _ADAPTER_ID,
+            "stage_id": stage["stage_id"],
+            "provider_mutations_performed": 0,
+            "nested_paid_execution_requested": False,
+            "appearance_review_status": PAUSED_UNGRADED_MODE,
+            "appearance_quality_graded": False,
+            "ungraded_publication_authorized": True,
+            "artifacts": artifacts,
+            "result_digest": "",
+        }
+        result["result_digest"] = canonical_digest(
+            result, digest_field="result_digest"
+        )
+        component_result_path.write_text(
+            canonical_json(result) + "\n", encoding="utf-8"
+        )
+        return result
     reviewed = _run_artifixer_visual_review_round(
         review_round=0,
         round_root=first_round_root,

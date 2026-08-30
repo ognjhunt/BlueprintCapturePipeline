@@ -333,6 +333,98 @@ def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
     ] == result["configured_scene_revision_reference"]
     assert result["provider_mutation_performed"] is False
 
+    request["appearance_review_override"] = {
+        "mode": "paused_ungraded",
+        "scope": "artifixer_appearance_only",
+        "ungraded_publication_acknowledged": True,
+        "review_provider_call_permitted": False,
+        "warning_label": "Visual review paused - appearance ungraded",
+    }
+    thumbnail_path = artifacts / "configured-task-thumbnail.png"
+    pause_review = {
+        "schema_version": "task_evaluation_artifixer_visual_review_pause_receipt.v1",
+        "status": "visual_review_paused_ungraded",
+        "decision": "not_reviewed",
+        "visual_review_mode": "paused_ungraded",
+        "publisher_instance_id": "104",
+        "review_frame_count": 8,
+        "frames": [
+            {"camera_id": f"camera-{index}", "frame_sha256": _sha256(thumbnail_path)}
+            for index in range(8)
+        ],
+        "all_review_frames_digest_bound": True,
+        "ai_visual_review_completed": False,
+        "human_review_completed": False,
+        "semantic_object_absence_review_passed": False,
+        "multiview_consistency_review_passed": False,
+        "task_thumbnail_is_exact_review_frame": False,
+        "task_thumbnail_is_exact_rendered_frame": True,
+        "task_thumbnail_selection": {
+            "camera_id": "camera-0",
+            "frame_sha256": _sha256(thumbnail_path),
+            "rationale": "Deterministic ungraded thumbnail.",
+        },
+        "selector": {
+            "kind": "system",
+            "identity": "deterministic_ungraded_thumbnail_selector",
+            "runtime": "blueprint_pipeline",
+            "model": "none",
+        },
+        "review_provider_call_performed": False,
+        "generated_output_is_capture_or_physical_evidence": False,
+        "warning_label": "Visual review paused - appearance ungraded",
+        "receipt_digest": "",
+    }
+    pause_review["receipt_digest"] = canonical_digest(
+        pause_review, digest_field="receipt_digest"
+    )
+    pause_review_path = artifacts / "appearance-review.json"
+    pause_review_path.write_text(json.dumps(pause_review), encoding="utf-8")
+    pause_removal = {
+        "schema_version": "task_evaluation_artifixer_object_removal_result.v1",
+        "status": "completed_ungraded_generated_appearance_edit",
+        "visual_review_mode": "paused_ungraded",
+        "publisher_instance_id": "104",
+        "visual_review_receipt_digest": pause_review["receipt_digest"],
+        "warning_label": "Visual review paused - appearance ungraded",
+        "result_digest": "",
+    }
+    pause_removal["result_digest"] = canonical_digest(
+        pause_removal, digest_field="result_digest"
+    )
+    (artifacts / "appearance-receipt.json").write_text(
+        json.dumps(pause_removal), encoding="utf-8"
+    )
+    paused_rows = [
+        _artifact(str(row["role"]), Path(str(row["path"]))) for row in rows
+    ]
+    paused_output = tmp_path / "paused-publication"
+    paused_output.mkdir()
+    paused = publish_configured_scene_revision(
+        envelope=envelope,
+        stage_results=[{"output_artifacts": paused_rows}],
+        output_root=paused_output,
+        publisher=publish,
+    )
+    paused_revision = validate_configured_scene_revision(
+        json.loads(Path(paused["configured_scene_revision"]["path"]).read_text())
+    )
+    assert paused_revision["presentation"]["appearance_review_status"] == (
+        "paused_ungraded"
+    )
+    assert paused_revision["presentation"][
+        "selected_from_exact_reviewed_frame_count"
+    ] == 0
+    assert paused["configured_scene_offering"]["status"] == (
+        "configured_controls_pending"
+    )
+    assert paused["configured_scene_offering"]["proof_boundary"][
+        "appearance_visual_review_completed"
+    ] is False
+    assert paused["configured_scene_offering"]["proof_boundary"][
+        "appearance_warning_label"
+    ] == "Visual review paused - appearance ungraded"
+
 
 def test_revision_reports_provider_disclosure_truthfully(tmp_path: Path) -> None:
     request = configuration_request_fixture()
