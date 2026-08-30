@@ -381,6 +381,9 @@ def test_compiles_exact_pair_and_shared_matrix_without_execution() -> None:
 
 
 def test_activation_materializes_ten_existing_paired_campaign_units() -> None:
+    from blueprint_pipeline.native_task_arena_policy_campaign import MEMBER_IDS
+
+    assert FROZEN_CANDIDATE_IDS == tuple(MEMBER_IDS)
     setup_value = setup()
     config = configuration(setup_value)
     plan = build_policy_run_plan(config, setup=setup_value)

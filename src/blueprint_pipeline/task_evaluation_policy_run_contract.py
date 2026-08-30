@@ -629,9 +629,7 @@ def build_policy_campaign_activation_manifest(
     qualification = validate_policy_controls_qualification(
         controls_qualification, configuration=configuration, plan=plan
     )
-    from .native_task_arena_policy_campaign import MEMBER_IDS
-
-    if tuple(configuration["candidate_ids"]) != tuple(MEMBER_IDS):
+    if tuple(configuration["candidate_ids"]) != FROZEN_CANDIDATE_IDS:
         raise TaskEvaluationPolicyRunContractError(
             "policy_campaign_activation_member_pair_invalid"
         )
@@ -664,7 +662,7 @@ def build_policy_campaign_activation_manifest(
         "configuration_digest": configuration["configuration_digest"],
         "plan_digest": plan["plan_digest"],
         "controls_qualification_digest": qualification["qualification_digest"],
-        "candidate_ids": list(MEMBER_IDS),
+        "candidate_ids": list(FROZEN_CANDIDATE_IDS),
         "campaign_unit_count": len(units),
         "campaign_units": units,
         "status": "paired_campaign_queue_materialized_no_execution",
