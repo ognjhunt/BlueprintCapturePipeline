@@ -775,6 +775,7 @@ def test_s3_fetch_uses_canonical_private_secret_files(
     values = {
         "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE": "access",
         "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE": "secret",
+        "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE": "blueprint-production-inputs",
         "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE": "https://objects.example.test",
         "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE": "region-1",
     }
@@ -827,10 +828,108 @@ def test_s3_fetch_uses_canonical_private_secret_files(
     }
 
 
+def test_s3_fetch_routes_private_artifact_bucket_to_its_exact_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    values = {
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE": "b2-access",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE": "b2-secret",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE": (
+            "blueprint-task-evaluation-artifacts-prod"
+        ),
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE": (
+            "https://s3.us-west-004.backblazeb2.com"
+        ),
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE": "us-west-004",
+    }
+    for environment_name, value in values.items():
+        path = tmp_path / environment_name.lower()
+        path.write_text(value + "\n", encoding="utf-8")
+        path.chmod(0o640)
+        monkeypatch.setenv(environment_name, str(path))
+    monkeypatch.setenv(
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET",
+        "blueprint-task-evaluation-artifacts-prod",
+    )
+
+    observed: dict[str, object] = {}
+
+    class Body:
+        def read(self, _count: int) -> bytes:
+            if observed.get("read"):
+                return b""
+            observed["read"] = True
+            return b"payload"
+
+    class Client:
+        def get_object(self, **kwargs):
+            observed["request"] = kwargs
+            return {"ContentLength": 7, "Body": Body()}
+
+    def client(name: str, **kwargs):
+        observed["name"] = name
+        observed["kwargs"] = kwargs
+        return Client()
+
+    monkeypatch.setitem(sys.modules, "boto3", types.SimpleNamespace(client=client))
+    destination = tmp_path / "artifact-download"
+    default_reference_fetcher(
+        "s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/"
+        "configured-scenes/artifacts/native-runtime/sha256/abc/runtime.zip",
+        destination,
+        7,
+    )
+
+    assert destination.read_bytes() == b"payload"
+    assert observed["kwargs"] == {
+        "aws_access_key_id": "b2-access",
+        "aws_secret_access_key": "b2-secret",
+        "endpoint_url": "https://s3.us-west-004.backblazeb2.com",
+        "region_name": "us-west-004",
+    }
+    assert observed["request"] == {
+        "Bucket": "blueprint-task-evaluation-artifacts-prod",
+        "Key": (
+            "blueprint/arm-decision-proof-v1/configured-scenes/artifacts/"
+            "native-runtime/sha256/abc/runtime.zip"
+        ),
+    }
+
+
+def test_s3_fetch_rejects_artifact_bucket_identity_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bucket_file = tmp_path / "artifact-bucket"
+    bucket_file.write_text("lookalike-artifacts-prod\n", encoding="utf-8")
+    bucket_file.chmod(0o640)
+    monkeypatch.setenv(
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE", str(bucket_file)
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET",
+        "blueprint-task-evaluation-artifacts-prod",
+    )
+
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationWorkerError,
+        match="launch_preparation_artifact_store_bucket_identity_mismatch",
+    ):
+        default_reference_fetcher(
+            "s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/"
+            "configured-scenes/artifacts/native-runtime/sha256/abc/runtime.zip",
+            tmp_path / "download",
+            7,
+        )
+
+
 @pytest.mark.parametrize("mode", [0o660, 0o644, 0o604])
 def test_s3_fetch_rejects_secret_files_with_excess_permissions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int
 ) -> None:
+    bucket = tmp_path / "bucket"
+    bucket.write_text("blueprint-production-inputs\n", encoding="utf-8")
+    bucket.chmod(0o640)
+    monkeypatch.setenv("BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE", str(bucket))
     access_key = tmp_path / "access-key"
     access_key.write_text("access\n", encoding="utf-8")
     access_key.chmod(mode)
@@ -852,6 +951,10 @@ def test_s3_fetch_rejects_secret_files_with_excess_permissions(
 def test_s3_fetch_rejects_symlinked_or_oversized_secret_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    bucket = tmp_path / "bucket"
+    bucket.write_text("blueprint-production-inputs\n", encoding="utf-8")
+    bucket.chmod(0o640)
+    monkeypatch.setenv("BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE", str(bucket))
     secret = tmp_path / "secret"
     secret.write_bytes(b"x" * 4097)
     secret.chmod(0o600)
