@@ -32,7 +32,7 @@ def test_provider_runner_redacts_failure_before_retaining_result(
     monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_PROVIDER_RESULT", str(result_path))
     monkeypatch.setenv(
         "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH",
-        str(time.time() + 25_200),
+        str(time.time() + 27_000),
     )
     monkeypatch.setattr(
         runner,
