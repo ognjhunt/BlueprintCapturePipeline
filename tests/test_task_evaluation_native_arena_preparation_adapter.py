@@ -12,6 +12,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_native_arena_preparation_adapter import (
     TaskEvaluationNativeArenaAdapterError,
     build_task_evaluation_adapter_bundle,
+    build_task_evaluation_runtime_source_bundle,
     materialize_native_arena_adapter,
 )
 from tests.test_native_task_arena_bundle import _packet, _runtime_source_packet
@@ -66,11 +67,11 @@ def _bundles(
         request=value,
         role="construction_packet",
     )
-    build_task_evaluation_adapter_bundle(
+    build_task_evaluation_runtime_source_bundle(
         source_root=runtime_receipt.parent,
         output_path=runtime_bundle,
-        request=value,
-        role="runtime_source",
+        expected_production_commit=value["expected_production_commit"],
+        runtime_identity=value["runtime"]["identity"],
     )
     value["execution_adapter"]["runtime_source_bundle"] = _identity(
         runtime_bundle
@@ -155,6 +156,55 @@ def test_runtime_source_bundle_is_prelaunch_reusable_across_revision_digest(
     )
 
     assert result["status"] == "native_arena_adapter_materialized"
+
+
+def test_prelaunch_runtime_source_builder_needs_no_future_request(
+    tmp_path: Path,
+) -> None:
+    runtime_receipt = _runtime_source_packet(tmp_path)
+    destination = tmp_path / "prelaunch-runtime-source.zip"
+
+    receipt = build_task_evaluation_runtime_source_bundle(
+        source_root=runtime_receipt.parent,
+        output_path=destination,
+        expected_production_commit="a" * 40,
+        runtime_identity={"id": "native-arena", "version": "isaac-2026-1"},
+    )
+
+    with zipfile.ZipFile(destination) as archive:
+        manifest = json.loads(
+            archive.read("task_evaluation_adapter_bundle_manifest.v1.json")
+        )
+    assert receipt["status"] == "built"
+    assert manifest["identity_bindings"] == {
+        "expected_production_commit": "a" * 40,
+        "runtime": {"id": "native-arena", "version": "isaac-2026-1"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("commit", "runtime_identity"),
+    [
+        ("not-a-commit", {"id": "native-arena", "version": "v1"}),
+        ("a" * 40, {"id": "native-arena"}),
+        ("a" * 40, {"id": "native arena", "version": "v1"}),
+    ],
+)
+def test_prelaunch_runtime_source_builder_rejects_unbound_identity(
+    tmp_path: Path, commit: str, runtime_identity: dict[str, str]
+) -> None:
+    runtime_receipt = _runtime_source_packet(tmp_path)
+
+    with pytest.raises(
+        TaskEvaluationNativeArenaAdapterError,
+        match="task_evaluation_runtime_source_bundle_identity_invalid",
+    ):
+        build_task_evaluation_runtime_source_bundle(
+            source_root=runtime_receipt.parent,
+            output_path=tmp_path / "runtime-source.zip",
+            expected_production_commit=commit,
+            runtime_identity=runtime_identity,
+        )
 
 
 def test_runtime_source_bundle_rejects_different_production_commit(
