@@ -244,16 +244,14 @@ def test_diagnostic_adapter_continues_but_production_adapter_refuses_same_bytes(
 ) -> None:
     fixture, artifacts = _materialize(tmp_path)
     render_result_digest = "sha256:" + "c" * 64
+    render_reference = {
+        "control_plane_render_result_digest": render_result_digest,
+        "render_completed_on_provider": False,
+    }
     monkeypatch.setattr(
         adapters,
         "validate_provider_render_handoff",
-        lambda _path: (
-            {
-                "control_plane_render_result_digest": render_result_digest,
-                "render_completed_on_provider": False,
-            },
-            [],
-        ),
+        lambda _path: (dict(render_reference), []),
     )
     envelope = {
         "render_inputs_result": {
@@ -281,6 +279,26 @@ def test_diagnostic_adapter_continues_but_production_adapter_refuses_same_bytes(
     assert result["appearance_visual_review_rejected"] is True
     assert result["qualification_eligible"] is False
     assert result["offering_publication_permitted"] is False
+    render_reference["control_plane_render_result_digest"] = "sha256:" + "0" * 64
+    invalid_output = tmp_path / "adapter-output-invalid-handoff"
+    invalid_output.mkdir()
+    with pytest.raises(
+        adapters.TaskEvaluationSceneConfigurationAdapterError,
+        match=(
+            r"^artifixer3d_diagnostic_rejection_result_invalid:"
+            r"handoff_control_plane_digest$"
+        ),
+    ):
+        adapters.execute_artifixer3d_diagnostic_object_removal(
+            envelope=envelope,
+            stage=stage,
+            configuration=fixture["configuration"],
+            configuration_path=fixture["configuration_path"],
+            dependency_results=(),
+            output_root=invalid_output,
+            provider_runtime_artifacts=artifacts,
+        )
+    render_reference["control_plane_render_result_digest"] = render_result_digest
     with pytest.raises(
         RuntimeError,
         match="scene_configuration_provider_runtime_artifact_missing:configured_appearance_without_source_object",

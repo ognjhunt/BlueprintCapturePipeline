@@ -15,6 +15,9 @@ from blueprint_pipeline.task_evaluation_scene_configuration_builtin_adapters imp
     execute_simready_static_rigid_qualification,
     execute_simready_native_import_qualification,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_adapters import (
+    TaskEvaluationSceneConfigurationAdapterError,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_static_qualification import (
     _is_exact_package_member,
     _usd_findings,
@@ -374,6 +377,51 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
         "provider_render_reference_manifest",
     }
     assert result["provider_mutations_performed"] == 0
+
+    handoff_path = Path(str(render_handoff["path"]))
+    valid_handoff_bytes = handoff_path.read_bytes()
+    bad_handoff_manifest = json.loads(valid_handoff_bytes)
+    bad_handoff_manifest["control_plane_render_result_digest"] = (
+        "sha256:" + "0" * 64
+    )
+    bad_handoff_manifest["manifest_digest"] = canonical_digest(
+        bad_handoff_manifest, digest_field="manifest_digest"
+    )
+    handoff_path.write_text(json.dumps(bad_handoff_manifest), encoding="utf-8")
+    bad_render_handoff = artifact(
+        "provider_render_reference_manifest", handoff_path
+    )
+    invalid_output = tmp_path / "appearance-output-invalid-handoff"
+    invalid_output.mkdir()
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationAdapterError,
+        match=(
+            r"^artifixer3d_object_removal_result_invalid:"
+            r"handoff_control_plane_digest$"
+        ),
+    ):
+        execute_artifixer3d_observed_object_removal(
+            envelope={"render_inputs_result": render_inputs},
+            stage={
+                "stage_id": "stage-1",
+                "capability": "observed_appearance_object_removal",
+                "execution_class": "gpu_canary",
+            },
+            configuration=configuration,
+            configuration_path=configuration_path,
+            dependency_results=(),
+            output_root=invalid_output,
+            provider_runtime_artifacts=(
+                artifact(
+                    "configured_appearance_without_source_object", appearance
+                ),
+                artifact("appearance_removal_receipt", receipt_path),
+                artifact("appearance_visual_review_receipt", review_path),
+                artifact("configured_task_thumbnail", thumbnail_path),
+                bad_render_handoff,
+            ),
+        )
+    handoff_path.write_bytes(valid_handoff_bytes)
 
     pause_review = {
         "schema_version": "task_evaluation_artifixer_visual_review_pause_receipt.v1",

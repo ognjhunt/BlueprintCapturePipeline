@@ -401,13 +401,13 @@ def _reference_frames(
         or _sha256(path) != record.get("digest")
     ):
         raise TaskEvaluationSceneConfigurationContentAgentsError(
-            "scene_configuration_content_agents_reference_invalid"
+            "scene_configuration_content_agents_reference_invalid:artifact_binding"
         )
     try:
         manifest, frames = validate_provider_render_handoff(path)
     except TaskEvaluationSceneConfigurationRenderHandoffError as exc:
         raise TaskEvaluationSceneConfigurationContentAgentsError(
-            "scene_configuration_content_agents_reference_invalid"
+            "scene_configuration_content_agents_reference_invalid:manifest"
         ) from exc
     render = (
         (stage_input.get("construction_envelope") or {}).get(
@@ -422,7 +422,7 @@ def _reference_frames(
     )
     if manifest.get("control_plane_render_result_digest") != expected_control_plane_digest:
         raise TaskEvaluationSceneConfigurationContentAgentsError(
-            "scene_configuration_content_agents_reference_invalid"
+            "scene_configuration_content_agents_reference_invalid:handoff_control_plane_digest"
         )
     return list(frames)
 

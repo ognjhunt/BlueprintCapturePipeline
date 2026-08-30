@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import shutil
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +52,22 @@ _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _ARTIFIXER_REVIEW_EXECUTION_SCHEMA_VERSION = (
     "task_evaluation_artifixer_ai_visual_review_execution.v1"
 )
+_PREDICATE_NAME = re.compile(r"[a-z][a-z0-9_]*\Z")
+
+
+def _require_named_predicates(
+    base_code: str,
+    predicates: Sequence[tuple[str, Callable[[], bool]]],
+) -> None:
+    """Raise the existing refusal prefix plus the first failed safe term."""
+
+    for name, predicate in predicates:
+        if _PREDICATE_NAME.fullmatch(name) is None:
+            raise ValueError("scene_configuration_predicate_name_invalid")
+        if not predicate():
+            raise TaskEvaluationSceneConfigurationAdapterError(
+                f"{base_code}:{name}"
+            )
 
 
 def _sha256_and_size(path: Path) -> tuple[str, int]:
@@ -310,31 +326,6 @@ def execute_artifixer3d_observed_object_removal(
         else None
     )
     reviewer = review.get("reviewer")
-    strict_review_valid = (
-        review.get("schema_version")
-        == "task_evaluation_artifixer_ai_visual_review.v1"
-        and review.get("status") == "accepted"
-        and review.get("publisher_instance_id")
-        == source_publisher_id
-        and review.get("decision") == "accepted"
-        and review.get("semantic_object_absence_review_passed") is True
-        and review.get("multiview_consistency_review_passed") is True
-        and review.get("review_frame_count", 0) >= minimum_views
-        and review.get("all_review_frames_digest_bound") is True
-        and review.get("ai_visual_review_completed") is True
-        and review.get("human_review_completed") is False
-        and review.get("generated_output_is_capture_or_physical_evidence") is False
-        and isinstance(reviewer, Mapping)
-        and bool(str(reviewer.get("identity") or ""))
-        and bool(str(reviewer.get("runtime") or ""))
-        and bool(str(reviewer.get("model") or ""))
-        and review.get("receipt_digest")
-        == canonical_digest(review, digest_field="receipt_digest")
-        and review.get("task_thumbnail_is_exact_review_frame") is True
-        and isinstance(review.get("task_thumbnail_selection"), Mapping)
-        and review["task_thumbnail_selection"].get("frame_sha256")
-        == thumbnail_digest
-    )
     paused_review_valid = (
         isinstance(source_object, Mapping)
         and paused_review_receipt_valid(
@@ -344,66 +335,232 @@ def execute_artifixer3d_observed_object_removal(
             thumbnail_digest=thumbnail_digest,
         )
     )
-    receipt_mode_valid = (
-        review_mode == REQUIRED_MODE
-        and receipt.get("status") == "qualified_generated_appearance_edit"
-        and receipt.get("semantic_object_free_visual_review_passed") is True
-        and receipt.get("multiview_consistency_review_passed") is True
-        and strict_review_valid
-    ) or (
-        review_mode == PAUSED_UNGRADED_MODE
-        and receipt.get("status")
-        == "completed_ungraded_generated_appearance_edit"
-        and receipt.get("visual_review_mode") == PAUSED_UNGRADED_MODE
-        and receipt.get("semantic_object_free_visual_review_passed") is False
-        and receipt.get("multiview_consistency_review_passed") is False
-        and receipt.get("review_provider_call_performed") is False
-        and receipt.get("ungraded_publication_acknowledged") is True
-        and receipt.get("warning_label") == PAUSED_UNGRADED_WARNING
-        and paused_review_valid
-    )
-    if (
-        configuration.get("schema_version")
-        != "observed_appearance_object_removal_configuration.v1"
-        or not isinstance(source_object, Mapping)
-        or configuration.get("production_render_required") is not True
-        or stage_requests_upload(configuration)
-        is not renders_on_provider(
-            (envelope.get("render_inputs_result") or {}).get(
-                "disclosure_decision"
+    predicates: list[tuple[str, Callable[[], bool]]] = [
+        (
+            "configuration_schema",
+            lambda: configuration.get("schema_version")
+            == "observed_appearance_object_removal_configuration.v1",
+        ),
+        ("source_object", lambda: isinstance(source_object, Mapping)),
+        (
+            "production_render_required",
+            lambda: configuration.get("production_render_required") is True,
+        ),
+        (
+            "provider_render_site",
+            lambda: stage_requests_upload(configuration)
+            is renders_on_provider(input_render.get("disclosure_decision") or {}),
+        ),
+        (
+            "generated_pixels_required",
+            lambda: configuration.get("output_requirements", {}).get(
+                "generated_pixels_labeled"
             )
-            or {}
+            is True,
+        ),
+        (
+            "receipt_schema",
+            lambda: receipt.get("schema_version")
+            == "task_evaluation_artifixer_object_removal_result.v1",
+        ),
+    ]
+    if review_mode == REQUIRED_MODE:
+        predicates.extend(
+            [
+                (
+                    "receipt_status",
+                    lambda: receipt.get("status")
+                    == "qualified_generated_appearance_edit",
+                ),
+                (
+                    "receipt_semantic_absence",
+                    lambda: receipt.get(
+                        "semantic_object_free_visual_review_passed"
+                    )
+                    is True,
+                ),
+                (
+                    "receipt_multiview_consistency",
+                    lambda: receipt.get("multiview_consistency_review_passed")
+                    is True,
+                ),
+                (
+                    "review_schema",
+                    lambda: review.get("schema_version")
+                    == "task_evaluation_artifixer_ai_visual_review.v1",
+                ),
+                ("review_status", lambda: review.get("status") == "accepted"),
+                (
+                    "review_publisher_instance",
+                    lambda: review.get("publisher_instance_id")
+                    == source_publisher_id,
+                ),
+                ("review_decision", lambda: review.get("decision") == "accepted"),
+                (
+                    "review_semantic_absence",
+                    lambda: review.get("semantic_object_absence_review_passed")
+                    is True,
+                ),
+                (
+                    "review_multiview_consistency",
+                    lambda: review.get("multiview_consistency_review_passed")
+                    is True,
+                ),
+                (
+                    "review_frame_count",
+                    lambda: review.get("review_frame_count", 0) >= minimum_views,
+                ),
+                (
+                    "review_frames_digest_bound",
+                    lambda: review.get("all_review_frames_digest_bound") is True,
+                ),
+                (
+                    "review_ai_completed",
+                    lambda: review.get("ai_visual_review_completed") is True,
+                ),
+                (
+                    "review_human_not_completed",
+                    lambda: review.get("human_review_completed") is False,
+                ),
+                (
+                    "review_generated_not_physical",
+                    lambda: review.get(
+                        "generated_output_is_capture_or_physical_evidence"
+                    )
+                    is False,
+                ),
+                ("reviewer_record", lambda: isinstance(reviewer, Mapping)),
+                (
+                    "reviewer_identity",
+                    lambda: bool(str(reviewer.get("identity") or "")),
+                ),
+                (
+                    "reviewer_runtime",
+                    lambda: bool(str(reviewer.get("runtime") or "")),
+                ),
+                (
+                    "reviewer_model",
+                    lambda: bool(str(reviewer.get("model") or "")),
+                ),
+                (
+                    "review_receipt_digest",
+                    lambda: review.get("receipt_digest")
+                    == canonical_digest(review, digest_field="receipt_digest"),
+                ),
+                (
+                    "thumbnail_exact_review_frame",
+                    lambda: review.get("task_thumbnail_is_exact_review_frame")
+                    is True,
+                ),
+                (
+                    "thumbnail_selection",
+                    lambda: isinstance(
+                        review.get("task_thumbnail_selection"), Mapping
+                    ),
+                ),
+                (
+                    "thumbnail_frame_digest",
+                    lambda: review["task_thumbnail_selection"].get("frame_sha256")
+                    == thumbnail_digest,
+                ),
+            ]
         )
-        or configuration.get("output_requirements", {}).get(
-            "generated_pixels_labeled"
+    else:
+        predicates.extend(
+            [
+                (
+                    "receipt_status",
+                    lambda: receipt.get("status")
+                    == "completed_ungraded_generated_appearance_edit",
+                ),
+                (
+                    "visual_review_mode",
+                    lambda: receipt.get("visual_review_mode")
+                    == PAUSED_UNGRADED_MODE,
+                ),
+                (
+                    "receipt_semantic_ungraded",
+                    lambda: receipt.get(
+                        "semantic_object_free_visual_review_passed"
+                    )
+                    is False,
+                ),
+                (
+                    "receipt_multiview_ungraded",
+                    lambda: receipt.get("multiview_consistency_review_passed")
+                    is False,
+                ),
+                (
+                    "review_provider_call_not_performed",
+                    lambda: receipt.get("review_provider_call_performed") is False,
+                ),
+                (
+                    "ungraded_publication_acknowledged",
+                    lambda: receipt.get("ungraded_publication_acknowledged")
+                    is True,
+                ),
+                (
+                    "warning_label",
+                    lambda: receipt.get("warning_label")
+                    == PAUSED_UNGRADED_WARNING,
+                ),
+                ("paused_review_receipt", lambda: paused_review_valid),
+            ]
         )
-        is not True
-        or receipt.get("schema_version")
-        != "task_evaluation_artifixer_object_removal_result.v1"
-        or not receipt_mode_valid
-        or receipt.get("publisher_instance_id")
-        != source_object.get("publisher_instance_id")
-        or receipt.get("raw_interiorgs_bytes_sent_to_external_provider")
-        is not False
-        or receipt.get("visual_review_receipt_digest")
-        != review.get("receipt_digest")
-        or receipt.get("visual_review_receipt_sha256")
-        != review_record.get("digest")
-        or receipt.get("generated_pixels_labeled") is not True
-        or receipt.get("result_digest")
-        != canonical_digest(receipt, digest_field="result_digest")
-        or render_reference.get("control_plane_render_result_digest")
-        != (
-            input_render.get("control_plane_result_digest")
-            if renders_on_provider(input_render.get("disclosure_decision") or {})
-            else input_render.get("result_digest")
-        )
-        or render_reference.get("render_completed_on_provider")
-        is not renders_on_provider(input_render.get("disclosure_decision") or {})
-    ):
-        raise TaskEvaluationSceneConfigurationAdapterError(
-            "artifixer3d_object_removal_result_invalid"
-        )
+    predicates.extend(
+        [
+            (
+                "receipt_publisher_instance",
+                lambda: receipt.get("publisher_instance_id")
+                == source_publisher_id,
+            ),
+            (
+                "raw_source_bytes_not_external",
+                lambda: receipt.get(
+                    "raw_interiorgs_bytes_sent_to_external_provider"
+                )
+                is False,
+            ),
+            (
+                "visual_review_receipt_digest",
+                lambda: receipt.get("visual_review_receipt_digest")
+                == review.get("receipt_digest"),
+            ),
+            (
+                "visual_review_receipt_sha256",
+                lambda: receipt.get("visual_review_receipt_sha256")
+                == review_record.get("digest"),
+            ),
+            (
+                "generated_pixels_labeled",
+                lambda: receipt.get("generated_pixels_labeled") is True,
+            ),
+            (
+                "receipt_digest",
+                lambda: receipt.get("result_digest")
+                == canonical_digest(receipt, digest_field="result_digest"),
+            ),
+            (
+                "handoff_control_plane_digest",
+                lambda: render_reference.get("control_plane_render_result_digest")
+                == (
+                    input_render.get("control_plane_result_digest")
+                    if renders_on_provider(
+                        input_render.get("disclosure_decision") or {}
+                    )
+                    else input_render.get("result_digest")
+                ),
+            ),
+            (
+                "handoff_render_site",
+                lambda: render_reference.get("render_completed_on_provider")
+                is renders_on_provider(input_render.get("disclosure_decision") or {}),
+            ),
+        ]
+    )
+    _require_named_predicates(
+        "artifixer3d_object_removal_result_invalid", predicates
+    )
     copied_appearance = _copy_artifact(
         appearance, output_root / f"configured_appearance{appearance.suffix}"
     )
@@ -530,87 +687,213 @@ def execute_artifixer3d_diagnostic_object_removal(
         if isinstance(row, Mapping)
     }
     input_render = envelope.get("render_inputs_result") or {}
-    if (
-        configuration.get("schema_version")
-        != "observed_appearance_object_removal_configuration.v1"
-        or configuration.get("production_render_required") is not True
-        or configuration.get("output_requirements", {}).get(
-            "generated_pixels_labeled"
-        )
-        is not True
-        or stage_requests_upload(configuration)
-        is not renders_on_provider(input_render.get("disclosure_decision") or {})
-        or rejection.get("schema_version")
-        != "task_evaluation_artifixer_object_removal_result.v1"
-        or rejection.get("status")
-        != "diagnostic_generated_appearance_edit_visual_review_rejected"
-        or rejection.get("publisher_instance_id")
-        != (configuration.get("source_object") or {}).get("publisher_instance_id")
-        or rejection.get("diagnostic_rejected_appearance_candidate_sha256")
-        != candidate_record.get("digest")
-        or rejection.get("visual_review_execution_digest")
-        != execution.get("execution_digest")
-        or rejection.get("visual_review_execution_sha256")
-        != execution_record.get("digest")
-        or rejection.get("review_frame_count") != minimum_views
-        or rejection.get("accepted_review_frame_count") != minimum_views - 1
-        or rejection.get("rejected_review_frame_count") != 1
-        or len(accepted) != minimum_views - 1
-        or len(rejected) != 1
-        or len(execution_identities) != minimum_views
-        or receipt_identities != execution_identities
-        or execution.get("schema_version")
-        != _ARTIFIXER_REVIEW_EXECUTION_SCHEMA_VERSION
-        or execution.get("status") != "completed"
-        or execution.get("decision") != "rejected"
-        or execution.get("publisher_instance_id")
-        != (configuration.get("source_object") or {}).get("publisher_instance_id")
-        or execution.get("review_frame_count") != minimum_views
-        or execution.get("provider_called") is not True
-        or execution.get("provider") != "openai"
-        or execution.get("response_store") is not False
-        or execution.get("tracing_disabled") is not True
-        or execution.get("raw_secret_values_recorded") is not False
-        or execution.get("execution_digest")
-        != canonical_digest(execution, digest_field="execution_digest")
-        or any(
-            row.get("orientation_is_upright") is not True
-            or row.get("source_object_absent") is not True
-            or row.get("repair_is_locally_plausible") is not True
-            or row.get("preserves_non_target_content") is not True
-            for row in accepted
-        )
-        or rejection.get("raw_interiorgs_bytes_sent_to_external_provider") is not False
-        or rejection.get("generated_pixels_labeled") is not True
-        or rejection.get("diagnostic_only") is not True
-        or rejection.get("qualification_eligible") is not False
-        or rejection.get("configured_revision_publication_permitted") is not False
-        or rejection.get("offering_publication_permitted") is not False
-        or rejection.get("terminal_e2e_completion_permitted") is not False
-        or rejection.get("semantic_object_free_visual_review_passed") is not False
-        or rejection.get("multiview_consistency_review_passed") is not False
-        or rejection.get("result_digest")
-        != canonical_digest(rejection, digest_field="result_digest")
-        or _DIGEST.fullmatch(
-            str(rejection.get("source_diagnostic_checkpoint_digest") or "")
-        )
-        is None
-        or _DIGEST.fullmatch(
-            str(rejection.get("post_training_binding_digest") or "")
-        )
-        is None
-        or render_reference.get("control_plane_render_result_digest")
-        != (
-            input_render.get("control_plane_result_digest")
-            if renders_on_provider(input_render.get("disclosure_decision") or {})
-            else input_render.get("result_digest")
-        )
-        or render_reference.get("render_completed_on_provider")
-        is not renders_on_provider(input_render.get("disclosure_decision") or {})
-    ):
-        raise TaskEvaluationSceneConfigurationAdapterError(
-            "artifixer3d_diagnostic_rejection_result_invalid"
-        )
+    source_object = configuration.get("source_object")
+    source_publisher_id = (
+        source_object.get("publisher_instance_id")
+        if isinstance(source_object, Mapping)
+        else None
+    )
+    predicates: list[tuple[str, Callable[[], bool]]] = [
+        (
+            "configuration_schema",
+            lambda: configuration.get("schema_version")
+            == "observed_appearance_object_removal_configuration.v1",
+        ),
+        ("source_object", lambda: isinstance(source_object, Mapping)),
+        (
+            "production_render_required",
+            lambda: configuration.get("production_render_required") is True,
+        ),
+        (
+            "generated_pixels_required",
+            lambda: configuration.get("output_requirements", {}).get(
+                "generated_pixels_labeled"
+            )
+            is True,
+        ),
+        (
+            "provider_render_site",
+            lambda: stage_requests_upload(configuration)
+            is renders_on_provider(input_render.get("disclosure_decision") or {}),
+        ),
+        (
+            "rejection_schema",
+            lambda: rejection.get("schema_version")
+            == "task_evaluation_artifixer_object_removal_result.v1",
+        ),
+        (
+            "rejection_status",
+            lambda: rejection.get("status")
+            == "diagnostic_generated_appearance_edit_visual_review_rejected",
+        ),
+        (
+            "rejection_publisher_instance",
+            lambda: rejection.get("publisher_instance_id") == source_publisher_id,
+        ),
+        (
+            "candidate_digest",
+            lambda: rejection.get(
+                "diagnostic_rejected_appearance_candidate_sha256"
+            )
+            == candidate_record.get("digest"),
+        ),
+        (
+            "review_execution_digest",
+            lambda: rejection.get("visual_review_execution_digest")
+            == execution.get("execution_digest"),
+        ),
+        (
+            "review_execution_sha256",
+            lambda: rejection.get("visual_review_execution_sha256")
+            == execution_record.get("digest"),
+        ),
+        (
+            "review_frame_count",
+            lambda: rejection.get("review_frame_count") == minimum_views,
+        ),
+        (
+            "accepted_frame_count",
+            lambda: rejection.get("accepted_review_frame_count")
+            == minimum_views - 1,
+        ),
+        (
+            "rejected_frame_count",
+            lambda: rejection.get("rejected_review_frame_count") == 1,
+        ),
+        ("accepted_frames", lambda: len(accepted) == minimum_views - 1),
+        ("rejected_frames", lambda: len(rejected) == 1),
+        (
+            "execution_frame_count",
+            lambda: len(execution_identities) == minimum_views,
+        ),
+        (
+            "frame_decisions",
+            lambda: receipt_identities == execution_identities,
+        ),
+        (
+            "execution_schema",
+            lambda: execution.get("schema_version")
+            == _ARTIFIXER_REVIEW_EXECUTION_SCHEMA_VERSION,
+        ),
+        ("execution_status", lambda: execution.get("status") == "completed"),
+        ("execution_decision", lambda: execution.get("decision") == "rejected"),
+        (
+            "execution_publisher_instance",
+            lambda: execution.get("publisher_instance_id") == source_publisher_id,
+        ),
+        (
+            "execution_review_frame_count",
+            lambda: execution.get("review_frame_count") == minimum_views,
+        ),
+        (
+            "execution_provider_called",
+            lambda: execution.get("provider_called") is True,
+        ),
+        ("execution_provider", lambda: execution.get("provider") == "openai"),
+        (
+            "execution_response_store",
+            lambda: execution.get("response_store") is False,
+        ),
+        (
+            "execution_tracing_disabled",
+            lambda: execution.get("tracing_disabled") is True,
+        ),
+        (
+            "execution_secrets_redacted",
+            lambda: execution.get("raw_secret_values_recorded") is False,
+        ),
+        (
+            "execution_digest",
+            lambda: execution.get("execution_digest")
+            == canonical_digest(execution, digest_field="execution_digest"),
+        ),
+        (
+            "accepted_frame_semantics",
+            lambda: all(
+                row.get("orientation_is_upright") is True
+                and row.get("source_object_absent") is True
+                and row.get("repair_is_locally_plausible") is True
+                and row.get("preserves_non_target_content") is True
+                for row in accepted
+            ),
+        ),
+        (
+            "raw_source_bytes_not_external",
+            lambda: rejection.get(
+                "raw_interiorgs_bytes_sent_to_external_provider"
+            )
+            is False,
+        ),
+        (
+            "generated_pixels_labeled",
+            lambda: rejection.get("generated_pixels_labeled") is True,
+        ),
+        ("diagnostic_only", lambda: rejection.get("diagnostic_only") is True),
+        (
+            "qualification_ineligible",
+            lambda: rejection.get("qualification_eligible") is False,
+        ),
+        (
+            "configured_revision_not_publishable",
+            lambda: rejection.get("configured_revision_publication_permitted")
+            is False,
+        ),
+        (
+            "offering_not_publishable",
+            lambda: rejection.get("offering_publication_permitted") is False,
+        ),
+        (
+            "terminal_completion_not_permitted",
+            lambda: rejection.get("terminal_e2e_completion_permitted") is False,
+        ),
+        (
+            "semantic_absence_not_qualified",
+            lambda: rejection.get("semantic_object_free_visual_review_passed")
+            is False,
+        ),
+        (
+            "multiview_not_qualified",
+            lambda: rejection.get("multiview_consistency_review_passed") is False,
+        ),
+        (
+            "rejection_digest",
+            lambda: rejection.get("result_digest")
+            == canonical_digest(rejection, digest_field="result_digest"),
+        ),
+        (
+            "source_checkpoint_digest",
+            lambda: _DIGEST.fullmatch(
+                str(rejection.get("source_diagnostic_checkpoint_digest") or "")
+            )
+            is not None,
+        ),
+        (
+            "post_training_binding_digest",
+            lambda: _DIGEST.fullmatch(
+                str(rejection.get("post_training_binding_digest") or "")
+            )
+            is not None,
+        ),
+        (
+            "handoff_control_plane_digest",
+            lambda: render_reference.get("control_plane_render_result_digest")
+            == (
+                input_render.get("control_plane_result_digest")
+                if renders_on_provider(
+                    input_render.get("disclosure_decision") or {}
+                )
+                else input_render.get("result_digest")
+            ),
+        ),
+        (
+            "handoff_render_site",
+            lambda: render_reference.get("render_completed_on_provider")
+            is renders_on_provider(input_render.get("disclosure_decision") or {}),
+        ),
+    ]
+    _require_named_predicates(
+        "artifixer3d_diagnostic_rejection_result_invalid", predicates
+    )
     copied_candidate = _copy_artifact(
         candidate, output_root / f"diagnostic_rejected_appearance_candidate{candidate.suffix}"
     )
