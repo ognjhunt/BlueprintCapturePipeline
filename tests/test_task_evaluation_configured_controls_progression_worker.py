@@ -550,7 +550,12 @@ def test_timer_advances_completed_preparation_into_construction_activation(
         plan["phases"]["construction"][f"{name}_path"] = str(path)
     _seal_plan(plan)
     _write(plan_path, plan)
-    state = tmp_path / "progressions" / plan["source_launch_id"]
+    state = (
+        tmp_path
+        / "progressions"
+        / plan["source_launch_id"]
+        / f"franka-controls-{str(plan['expected_production_commit'])[:12]}"
+    )
     base = _sealed_progression(
         "episode_preparation_queued",
         episode_preparation_request={"preparation_id": "prep-1"},
@@ -589,6 +594,79 @@ def test_timer_advances_completed_preparation_into_construction_activation(
     assert (state / "construction_activation_progression.json").is_file()
 
 
+def test_progression_state_is_scoped_to_the_expected_production_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A redeployed commit must derive its own progression state.
+
+    Reusing the previous commit's sealed receipt carries its preparation id
+    forward, and preparation results are immutable, so a launch that blocked
+    under the old commit can never be answered under the new one.
+    """
+
+    plan_path = _plan(tmp_path)
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    for name in ("release_window_template", "lineage", "authorization"):
+        path = tmp_path / "inputs" / f"{name}.json"
+        _write(path, {"kind": name})
+        plan["phases"]["construction"][f"{name}_path"] = str(path)
+    _seal_plan(plan)
+    _write(plan_path, plan)
+
+    launch = tmp_path / "progressions" / plan["source_launch_id"]
+    _write(
+        launch / "configured_controls_progression.v1.json",
+        _sealed_progression(
+            "episode_preparation_queued",
+            episode_preparation_request={"preparation_id": "prep-previous-commit"},
+        ),
+    )
+    scoped = launch / (
+        f"franka-controls-{str(plan['expected_production_commit'])[:12]}"
+    )
+    _write(
+        scoped / "configured_controls_progression.v1.json",
+        _sealed_progression(
+            "episode_preparation_queued",
+            episode_preparation_request={"preparation_id": "prep-this-commit"},
+        ),
+    )
+
+    prep_root = tmp_path / "preparations"
+    for prep in ("prep-previous-commit", "prep-this-commit"):
+        _write(prep_root / "identities" / f"{prep}.json", {"identity": prep})
+    _write(prep_root / "results" / "prep-previous-commit-a.json", {"status": "blocked"})
+    _write(prep_root / "results" / "prep-this-commit-a.json", {"status": "prepared"})
+
+    monkeypatch.setattr(
+        worker,
+        "stage_configured_controls_activation",
+        lambda **_: _sealed_progression("construction_activation_queued"),
+    )
+    monkeypatch.setattr(
+        worker,
+        "_materialize_phase_release_window",
+        lambda **_: {
+            "uri": "s3://configured-controls/window.json",
+            "digest": "sha256:" + "7" * 64,
+            "size_bytes": 1,
+        },
+    )
+
+    result = worker.advance_configured_controls_plan(
+        plan_path=plan_path,
+        launch_state_root=tmp_path / "unused-launch-runs",
+        progression_root=tmp_path / "progressions",
+        preparation_queue_root=prep_root,
+        activation_queue_root=tmp_path / "activations",
+        publisher_factory=lambda: object(),
+    )
+
+    assert result["status"] == "construction_activation_queued"
+    assert (scoped / "construction_activation_progression.json").is_file()
+    assert not (launch / "construction_activation_progression.json").is_file()
+
+
 def test_paid_transition_uses_only_injected_webapp_submitter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -599,7 +677,12 @@ def test_paid_transition_uses_only_injected_webapp_submitter(
     plan["phases"]["construction"]["launch_authority_path"] = str(authority)
     _seal_plan(plan)
     _write(plan_path, plan)
-    state = tmp_path / "progressions" / plan["source_launch_id"]
+    state = (
+        tmp_path
+        / "progressions"
+        / plan["source_launch_id"]
+        / f"franka-controls-{str(plan['expected_production_commit'])[:12]}"
+    )
     _write(
         state / "configured_controls_progression.v1.json",
         _sealed_progression(
@@ -843,7 +926,12 @@ def test_timer_derives_controls_lineage_after_construction_launch(
 ) -> None:
     plan_path = _plan(tmp_path)
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    state = tmp_path / "progressions" / plan["source_launch_id"]
+    state = (
+        tmp_path
+        / "progressions"
+        / plan["source_launch_id"]
+        / f"franka-controls-{str(plan['expected_production_commit'])[:12]}"
+    )
     _write(
         state / "configured_controls_progression.v1.json",
         _sealed_progression(

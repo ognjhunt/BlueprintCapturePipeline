@@ -715,7 +715,15 @@ def advance_configured_controls_plan(
 
     plan = _plan(Path(plan_path).expanduser())
     run_root = Path(launch_state_root).expanduser() / plan["source_launch_id"]
-    state = Path(progression_root).expanduser() / plan["source_launch_id"]
+    # Scope progression state to the production commit. The sealed receipt
+    # carries the episode preparation id, and preparation results are
+    # immutable, so sharing one directory across commits makes a launch that
+    # blocked under an earlier commit unanswerable under its successor.
+    state = (
+        Path(progression_root).expanduser()
+        / plan["source_launch_id"]
+        / f"franka-controls-{plan['expected_production_commit'][:12]}"
+    )
     state.mkdir(parents=True, exist_ok=True, mode=0o750)
     base_path = state / "configured_controls_progression.v1.json"
     base = _sealed_progression(base_path, statuses={"episode_preparation_queued"})
