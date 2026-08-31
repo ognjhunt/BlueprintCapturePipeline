@@ -90,6 +90,7 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-scene-object-discovery.path",
     "blueprint-task-evaluation-configured-controls-progression.service",
     "blueprint-task-evaluation-configured-controls-progression.timer",
+    "blueprint-pipeline-intake.service",
 )
 #: Watchers whose execution surface is provably no-spend and may be armed on a
 #: fresh host without widening provider authority.  The paid dispatcher is
@@ -1420,7 +1421,9 @@ def _install_intake_runtime_identity_drop_in(
         "# Contains deployment identity only; no credentials.\n"
         f"BLUEPRINT_PIPELINE_REPO={source_repo}\n"
         f"BLUEPRINT_SOURCE_COMMIT={source_commit}\n"
-        f"BLUEPRINT_PIPELINE_PYTHON={Path(sys.executable).resolve()}\n"
+        # Preserve the virtualenv entrypoint. Resolving this symlink selects
+        # the system interpreter and silently drops production dependencies.
+        f"BLUEPRINT_PIPELINE_PYTHON={Path(sys.executable).absolute()}\n"
         f"PYTHONPATH={source_repo / 'src'}\n"
         "BLUEPRINT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT="
         f"{DEFAULT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT}\n"

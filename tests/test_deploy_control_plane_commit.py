@@ -365,6 +365,11 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "[Timer]\nOnUnitInactiveSec=2min\n",
         encoding="utf-8",
     )
+    intake_service = unit_dir / "blueprint-pipeline-intake.service"
+    intake_service.write_text(
+        "[Service]\nExecStart=/usr/bin/blueprint-live-pipeline-intake\n",
+        encoding="utf-8",
+    )
     systemd = tmp_path / "systemd"
     systemd.mkdir()
     (systemd / service.name).write_text(
@@ -396,6 +401,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         discovery_path,
         progression_service,
         progression_timer,
+        intake_service,
     ):
         destination = systemd / source.name
         assert destination.read_bytes() == source.read_bytes()
@@ -436,6 +442,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-object-discovery.path",
         "blueprint-task-evaluation-configured-controls-progression.service",
         "blueprint-task-evaluation-configured-controls-progression.timer",
+        "blueprint-pipeline-intake.service",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
@@ -897,7 +904,7 @@ def test_runtime_identity_drop_in_is_atomic_and_contains_no_credentials(
     )
     assert f"BLUEPRINT_SOURCE_COMMIT={'b' * 40}" in env_content
     assert f"BLUEPRINT_PIPELINE_REPO={tmp_path / 'repo'}" in env_content
-    assert f"BLUEPRINT_PIPELINE_PYTHON={Path(sys.executable).resolve()}" in env_content
+    assert f"BLUEPRINT_PIPELINE_PYTHON={Path(sys.executable).absolute()}" in env_content
     assert f"PYTHONPATH={tmp_path / 'repo' / 'src'}" in env_content
     # Environment= loses to the base unit's EnvironmentFile= regardless of
     # drop-in order.  The regression is specifically that this must be a later
