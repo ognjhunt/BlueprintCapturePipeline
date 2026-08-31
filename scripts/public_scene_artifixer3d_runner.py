@@ -40,10 +40,6 @@ CHECKPOINT_REUSE_SCHEMA = "public_scene_artifixer3d_checkpoint_reuse.v1"
 # a scene the frame-alignment gate then refuses. Measure representability here,
 # where the checkpoint is still addressable, instead of after the export.
 NATIVE_EXPORT_POSITION_MAGNITUDE_LIMIT = 65504.0
-# Diverged far-field floaters are a known 3DGS artifact and are dropped. A
-# larger share is a scale defect rather than floaters, and gutting the scene
-# would be worse than refusing it.
-MAX_PRUNABLE_UNREPRESENTABLE_POSITION_FRACTION = 0.001
 NATIVE_APPEARANCE_EXPORT_SCHEMA = "public_scene_artifixer3d_native_appearance_export.v1"
 DUAL_TARGET_PHASES = [
     "dual_target_input_validation",
@@ -71,9 +67,7 @@ DUAL_TARGET_LOSS_OVERRIDES = {
 # Read from the registry rather than a second copy of the same literals: this
 # module and the bundle module each had their own set, so admitting a backend in
 # one and not the other was a silent disagreement waiting to happen.
-DIRECT_EDITOR_BACKENDS = set(
-    registered_backend_ids(capability=ARTIFIXER_DIRECT_CAPABILITY)
-)
+DIRECT_EDITOR_BACKENDS = set(registered_backend_ids(capability=ARTIFIXER_DIRECT_CAPABILITY))
 SEMANTIC_EDITOR_PROMPT = (
     "Reconstruct the natural empty background where the solid black masked hole "
     "appears. Continue the surrounding floor, wall, cabinet, desk, curtain, and "
@@ -782,7 +776,7 @@ class _CheckpointExportModel:
         "features_specular",
     )
 
-    def __init__(self, checkpoint: Mapping[str, Any]) -> None:
+    def __init__(self, checkpoint: Mapping[str, Any], *, reference_splat: Any) -> None:
         missing = [name for name in self._TENSOR_FIELDS if name not in checkpoint]
         if missing:
             raise ValueError("artifixer3d_native_export_checkpoint_fields_missing")
@@ -811,10 +805,11 @@ class _CheckpointExportModel:
             or tuple(self.features_specular.shape) != (count, expected_specular)
         ):
             raise ValueError("artifixer3d_native_export_checkpoint_features_invalid")
-        self._seal_representable_positions(count)
+        self._validate_representable_positions(count)
+        self._validate_source_relative_geometry(reference_splat)
 
-    def _seal_representable_positions(self, count: int) -> None:
-        """Drop unrepresentable floaters, or refuse a scene that is not floaters."""
+    def _validate_representable_positions(self, count: int) -> None:
+        """Refuse every unrepresentable center; never mutate learned tensors."""
 
         import numpy as np
 
@@ -825,20 +820,47 @@ class _CheckpointExportModel:
         retained = int(keep.sum())
         unrepresentable = count - retained
         self.unrepresentable_position_count = unrepresentable
-        self.exported_gaussian_count = retained
-        if not unrepresentable:
-            return
-        if (
-            not retained
-            or unrepresentable / count
-            > MAX_PRUNABLE_UNREPRESENTABLE_POSITION_FRACTION
-        ):
+        self.exported_gaussian_count = count
+        if unrepresentable:
             raise ValueError(
-                "artifixer3d_native_export_positions_unrepresentable:"
-                f"{unrepresentable}/{count}"
+                f"artifixer3d_native_export_positions_unrepresentable:{unrepresentable}/{count}"
             )
-        for name in self._TENSOR_FIELDS:
-            setattr(self, name, getattr(self, name)[keep])
+
+    def _validate_source_relative_geometry(self, reference_splat: Any) -> None:
+        """Bind the trained tensors to the immutable retained Gaussian field."""
+
+        import numpy as np
+
+        from blueprint_pipeline.gaussian_field_quality import (
+            measure_source_relative_gaussian_drift,
+        )
+
+        candidate_log_scales = np.asarray(self.scale.detach(), dtype=np.float64)
+        reference_log_scales = np.asarray(reference_splat.scales, dtype=np.float64)
+        with np.errstate(over="ignore", invalid="ignore"):
+            candidate_scales = np.exp(candidate_log_scales)
+            reference_scales = np.exp(reference_log_scales)
+        raw_density = np.asarray(self.density.detach(), dtype=np.float64).reshape(-1)
+        with np.errstate(over="ignore", invalid="ignore"):
+            candidate_opacities = 1.0 / (1.0 + np.exp(-raw_density))
+        try:
+            quality = measure_source_relative_gaussian_drift(
+                reference_positions=reference_splat.xyz,
+                reference_activated_scales=reference_scales,
+                candidate_positions=np.asarray(self.positions.detach(), dtype=np.float64),
+                candidate_activated_scales=candidate_scales,
+                candidate_opacities=candidate_opacities,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"artifixer3d_native_export_gaussian_field_drift_invalid:{type(exc).__name__}"
+            ) from exc
+        self.gaussian_field_drift_quality = quality
+        if quality.get("status") != "qualified" or quality.get("blockers"):
+            raise ValueError(
+                "artifixer3d_native_export_gaussian_field_drift_invalid:"
+                + ",".join(str(value) for value in quality.get("blockers") or ())
+            )
 
     def get_positions(self):
         return self.positions
@@ -871,7 +893,9 @@ class _CheckpointExportModel:
         return self.features_specular
 
 
-def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path) -> dict[str, Any]:
+def _export_checkpoint_native_appearance(
+    *, checkpoint: Path, task_output: Path, reference_gaussian_ply: Path
+) -> dict[str, Any]:
     """Serialize one bound checkpoint to standard PLY and Isaac-ready USDZ.
 
     The trained coordinates are retained verbatim.  Two separate transforms
@@ -894,6 +918,7 @@ def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path)
     from threedgrut.export.ply_exporter import PLYExporter
     from threedgrut.export.usdz_exporter import USDZExporter
 
+    from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply
     from blueprint_pipeline.nurec_usdz_layer_transform import (
         pin_nurec_usdz_layer_transform_to_identity,
     )
@@ -915,7 +940,11 @@ def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path)
         config.export_usdz.apply_normalizing_transform = False
     except (AttributeError, KeyError, TypeError) as exc:
         raise ValueError("artifixer3d_native_export_config_invalid") from exc
-    model = _CheckpointExportModel(checkpoint_value)
+    try:
+        reference_splat = read_standard_3dgs_ply(reference_gaussian_ply)
+    except (OSError, ValueError) as exc:
+        raise ValueError("artifixer3d_native_export_reference_gaussians_invalid") from exc
+    model = _CheckpointExportModel(checkpoint_value, reference_splat=reference_splat)
     ply_path = output_root / "repaired_scene.ply"
     usdz_path = output_root / "repaired_scene.usdz"
     PLYExporter().export(model, ply_path, dataset=None, conf=config)
@@ -934,11 +963,12 @@ def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path)
         "status": "native_appearance_candidates_exported_pending_native_import_and_multiview_review",
         "source_checkpoint": _file_record(checkpoint),
         "gaussian_count": int(model.positions.shape[0]),
-        # Disclosed rather than silent: a run that drops floaters says so, and
-        # a receipt that says zero is evidence the export needed no pruning.
+        # A successful export never prunes learned tensors.  The zero count is
+        # retained in the receipt as evidence that no row needed mutation.
         "exported_gaussian_count": int(model.exported_gaussian_count),
         "unrepresentable_position_count": int(model.unrepresentable_position_count),
         "position_magnitude_limit": NATIVE_EXPORT_POSITION_MAGNITUDE_LIMIT,
+        "gaussian_field_source_relative_drift": model.gaussian_field_drift_quality,
         "coordinate_contract": {
             "source_gaussian_tensor_coordinates_preserved": True,
             "camera_derived_normalizing_transform_applied": False,
@@ -980,6 +1010,15 @@ def _export_checkpoint_native_appearance(*, checkpoint: Path, task_output: Path)
     result["export_digest"] = _canonical_digest(result, "export_digest")
     del checkpoint_value
     return result
+
+
+def _retained_reference_gaussian_ply(input_root: Path) -> Path:
+    """Resolve the one immutable retained field shared by every task."""
+
+    matches = sorted((input_root / "shared_initialization").glob("*.ply"))
+    if len(matches) != 1 or matches[0].is_symlink() or not matches[0].is_file():
+        raise ValueError("artifixer3d_native_export_reference_gaussians_not_exact")
+    return matches[0]
 
 
 def _align_and_validate_usdz(path: Path) -> list[dict[str, Any]]:
@@ -1415,7 +1454,9 @@ def _dual_target_task_runtime(
     if len(review_rows) != task["physical_camera_count"]:
         raise ValueError("artifixer3d_dual_target_review_coverage_invalid")
     native_appearance = _export_checkpoint_native_appearance(
-        checkpoint=checkpoint, task_output=task_output
+        checkpoint=checkpoint,
+        task_output=task_output,
+        reference_gaussian_ply=_retained_reference_gaussian_ply(input_root),
     )
     return {
         "task_id": task_id,
@@ -1491,7 +1532,9 @@ def _dual_target_render_only_task_runtime(
     if len(review_rows) != task["physical_camera_count"]:
         raise ValueError("artifixer3d_dual_target_review_coverage_invalid")
     native_appearance = _export_checkpoint_native_appearance(
-        checkpoint=checkpoint, task_output=task_output
+        checkpoint=checkpoint,
+        task_output=task_output,
+        reference_gaussian_ply=_retained_reference_gaussian_ply(input_root),
     )
     return {
         "task_id": task_id,

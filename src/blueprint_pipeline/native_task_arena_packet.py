@@ -17,6 +17,7 @@ from typing import Any, Mapping
 
 from .common import usd_payload_format_matches, write_json
 from .decision_evidence_contracts import canonical_digest
+from .gaussian_field_quality import gaussian_quality_is_qualified
 from .native_task_arena_scene_plan import (
     materialize_native_task_arena_scene_plan,
 )
@@ -63,21 +64,19 @@ def _clone_request(value: Mapping[str, Any]) -> dict[str, Any]:
     try:
         request = json.loads(json.dumps(value))
     except (TypeError, ValueError) as exc:
-        raise NativeTaskArenaPacketError(
-            ["native_task_arena_packet_request_invalid"]
-        ) from exc
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_request_invalid"]) from exc
+    if not isinstance(request, dict) or request.get("schema_version") != REQUEST_SCHEMA_VERSION:
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_request_invalid"])
+    if request.get("request_digest") != canonical_digest(request, digest_field="request_digest"):
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_request_digest_invalid"])
+    appearance_variant = request.get("appearance_variant")
     if (
-        not isinstance(request, dict)
-        or request.get("schema_version") != REQUEST_SCHEMA_VERSION
+        isinstance(appearance_variant, Mapping)
+        and appearance_variant.get("representation") == "particlefield_3d_gaussian_splat"
+        and not gaussian_quality_is_qualified(appearance_variant.get("gaussian_field_quality"))
     ):
         raise NativeTaskArenaPacketError(
-            ["native_task_arena_packet_request_invalid"]
-        )
-    if request.get("request_digest") != canonical_digest(
-        request, digest_field="request_digest"
-    ):
-        raise NativeTaskArenaPacketError(
-            ["native_task_arena_packet_request_digest_invalid"]
+            ["native_task_arena_particlefield_quality_missing_or_invalid"]
         )
     return request
 
@@ -103,9 +102,7 @@ def materialize_native_task_arena_appearance_variant_request(
     root = Path(evidence_root).expanduser().resolve()
     try:
         base = json.loads(Path(base_request_path).read_text(encoding="utf-8"))
-        appearance = json.loads(
-            Path(appearance_authoring_receipt_path).read_text(encoding="utf-8")
-        )
+        appearance = json.loads(Path(appearance_authoring_receipt_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise NativeTaskArenaPacketError(
             ["native_task_arena_appearance_variant_input_invalid"]
@@ -114,29 +111,23 @@ def materialize_native_task_arena_appearance_variant_request(
     sh_degree = appearance.get("sh_degree")
     sh_element_size = (
         (sh_degree + 1) ** 2
-        if isinstance(sh_degree, int)
-        and not isinstance(sh_degree, bool)
-        and 0 <= sh_degree <= 3
+        if isinstance(sh_degree, int) and not isinstance(sh_degree, bool) and 0 <= sh_degree <= 3
         else None
     )
     if (
-        appearance.get("schema_version")
-        != "particlefield_3dgs_authoring_receipt.v1"
+        appearance.get("schema_version") != "particlefield_3dgs_authoring_receipt.v1"
         or appearance.get("status") != "completed"
         or appearance.get("schema") != "ParticleField3DGaussianSplat"
         or appearance.get("sh_primvar_element_size") != sh_element_size
         or appearance.get("sh_primvar_interpolation") != "vertex"
         or appearance.get("display_color_fallback_authored") is not True
-        or appearance.get("particlefield_emissive_material_binding_authored")
-        is not True
-        or appearance.get("particlefield_emissive_material_inputs")
-        != "mdl_defaults"
+        or appearance.get("particlefield_emissive_material_binding_authored") is not True
+        or appearance.get("particlefield_emissive_material_inputs") != "mdl_defaults"
+        or not gaussian_quality_is_qualified(appearance.get("gaussian_field_quality"))
         or appearance.get("receipt_digest")
         != canonical_digest(appearance, digest_field="receipt_digest")
     ):
-        raise NativeTaskArenaPacketError(
-            ["native_task_arena_appearance_variant_receipt_invalid"]
-        )
+        raise NativeTaskArenaPacketError(["native_task_arena_appearance_variant_receipt_invalid"])
     asset = Path(str(appearance.get("output") or "")).expanduser().resolve()
     outside = asset != root and root not in asset.parents
     if (
@@ -146,9 +137,7 @@ def materialize_native_task_arena_appearance_variant_request(
         or asset.stat().st_size != int(appearance.get("output_bytes") or 0)
         or _sha256(asset) != appearance.get("output_sha256")
     ):
-        raise NativeTaskArenaPacketError(
-            ["native_task_arena_appearance_variant_asset_invalid"]
-        )
+        raise NativeTaskArenaPacketError(["native_task_arena_appearance_variant_asset_invalid"])
     relative = asset.relative_to(root).as_posix()
     rows = [
         row
@@ -156,9 +145,7 @@ def materialize_native_task_arena_appearance_variant_request(
         if isinstance(row, dict) and row.get("semantic_role") == "scene_appearance"
     ]
     if len(rows) != 1:
-        raise NativeTaskArenaPacketError(
-            ["native_task_arena_appearance_variant_role_not_exact"]
-        )
+        raise NativeTaskArenaPacketError(["native_task_arena_appearance_variant_role_not_exact"])
     rows[0]["filename"] = filename
     rows[0]["source"] = {
         "root": "evidence",
@@ -178,45 +165,27 @@ def materialize_native_task_arena_appearance_variant_request(
         "display_color_fallback_authored": True,
         "particlefield_emissive_material_binding_authored": True,
         "particlefield_emissive_material_inputs": "mdl_defaults",
+        "gaussian_field_quality": appearance["gaussian_field_quality"],
     }
-    request["request_digest"] = canonical_digest(
-        request, digest_field="request_digest"
-    )
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     write_json(Path(output_path), request)
     return request
 
 
-def _asset_source(
-    row: Mapping[str, Any], *, evidence_root: Path
-) -> tuple[Path, str, int]:
+def _asset_source(row: Mapping[str, Any], *, evidence_root: Path) -> tuple[Path, str, int]:
     role = str(row.get("semantic_role") or "")
     source = row.get("source")
     if not isinstance(source, Mapping) or source.get("root") != "evidence":
-        raise NativeTaskArenaPacketError(
-            [f"native_task_arena_packet_asset_source_invalid:{role}"]
-        )
+        raise NativeTaskArenaPacketError([f"native_task_arena_packet_asset_source_invalid:{role}"])
     relative = str(source.get("relative_path") or "")
     pure = PurePosixPath(relative)
-    if (
-        not relative
-        or pure.is_absolute()
-        or ".." in pure.parts
-        or pure.name in {"", ".", ".."}
-    ):
-        raise NativeTaskArenaPacketError(
-            [f"native_task_arena_packet_asset_source_invalid:{role}"]
-        )
+    if not relative or pure.is_absolute() or ".." in pure.parts or pure.name in {"", ".", ".."}:
+        raise NativeTaskArenaPacketError([f"native_task_arena_packet_asset_source_invalid:{role}"])
     candidate = evidence_root.joinpath(*pure.parts)
     resolved = candidate.resolve()
     outside = resolved != evidence_root and evidence_root not in resolved.parents
-    if (
-        _has_symlink_component(candidate, root=evidence_root)
-        or not resolved.is_file()
-        or outside
-    ):
-        raise NativeTaskArenaPacketError(
-            [f"native_task_arena_packet_asset_source_missing:{role}"]
-        )
+    if _has_symlink_component(candidate, root=evidence_root) or not resolved.is_file() or outside:
+        raise NativeTaskArenaPacketError([f"native_task_arena_packet_asset_source_missing:{role}"])
     try:
         size = int(source["size_bytes"])
         digest = str(source["sha256"])
@@ -233,9 +202,7 @@ def _asset_source(
 
 def _validated_scenario_context(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
-        raise NativeTaskArenaPacketError(
-            ["native_task_arena_packet_scenario_invalid"]
-        )
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_scenario_invalid"])
     scenario = json.loads(json.dumps(value))
     kind = str(scenario.get("context_kind") or "")
     expected_schema, digest_field = {
@@ -244,16 +211,13 @@ def _validated_scenario_context(value: Any) -> dict[str, Any]:
     }.get(kind, (None, None))
     document = scenario.get("context_document")
     if not isinstance(document, Mapping) or expected_schema is None or digest_field is None:
-        raise NativeTaskArenaPacketError(
-            ["native_task_arena_packet_scenario_invalid"]
-        )
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_scenario_invalid"])
     context = json.loads(json.dumps(document))
     errors: list[str] = []
     if context.get("schema_version") != expected_schema:
         errors.append("native_task_arena_packet_scenario_schema_invalid")
-    if (
-        context.get("cell_id") != scenario.get("cell_id")
-        or context.get("seed") != scenario.get("seed")
+    if context.get("cell_id") != scenario.get("cell_id") or context.get("seed") != scenario.get(
+        "seed"
     ):
         errors.append("native_task_arena_packet_scenario_binding_mismatch")
     expected_digest = canonical_digest(context, digest_field=digest_field)
@@ -281,9 +245,7 @@ def _scenario_parameter_bindings(scenario: Mapping[str, Any]) -> list[dict[str, 
     records = context.get("factor_records") or []
     resolved = context.get("resolved_parameters") or {}
     if not isinstance(records, list) or not isinstance(resolved, Mapping):
-        raise NativeTaskArenaPacketError(
-            ["native_task_arena_scenario_parameters_invalid"]
-        )
+        raise NativeTaskArenaPacketError(["native_task_arena_scenario_parameters_invalid"])
     rows: list[dict[str, Any]] = []
     for index, record in enumerate(records):
         if not isinstance(record, Mapping):
@@ -353,13 +315,9 @@ def materialize_native_task_arena_packet(
     evidence = Path(evidence_root).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
     if not evidence.is_dir() or evidence.is_symlink():
-        raise NativeTaskArenaPacketError(
-            ["native_task_arena_packet_evidence_root_invalid"]
-        )
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_evidence_root_invalid"])
     if output.exists():
-        raise NativeTaskArenaPacketError(
-            ["native_task_arena_packet_output_exists"]
-        )
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_output_exists"])
     output.parent.mkdir(parents=True, exist_ok=True)
     output.mkdir()
     assets_dir = output / "assets"
@@ -369,23 +327,17 @@ def materialize_native_task_arena_packet(
     try:
         raw_assets = frozen.get("assets")
         if not isinstance(raw_assets, list) or not raw_assets:
-            raise NativeTaskArenaPacketError(
-                ["native_task_arena_packet_assets_invalid"]
-            )
+            raise NativeTaskArenaPacketError(["native_task_arena_packet_assets_invalid"])
         for raw in raw_assets:
             if not isinstance(raw, Mapping):
-                raise NativeTaskArenaPacketError(
-                    ["native_task_arena_packet_assets_invalid"]
-                )
+                raise NativeTaskArenaPacketError(["native_task_arena_packet_assets_invalid"])
             role = str(raw.get("semantic_role") or "")
             filename = str(raw.get("filename") or "")
             if PurePosixPath(filename).name != filename or not filename:
                 raise NativeTaskArenaPacketError(
                     [f"native_task_arena_packet_asset_filename_invalid:{role}"]
                 )
-            source_path, source_digest, source_size = _asset_source(
-                raw, evidence_root=evidence
-            )
+            source_path, source_digest, source_size = _asset_source(raw, evidence_root=evidence)
             if not usd_payload_format_matches(source_path, filename):
                 raise NativeTaskArenaPacketError(
                     [f"native_task_arena_packet_asset_format_invalid:{role}"]
@@ -441,9 +393,7 @@ def materialize_native_task_arena_packet(
                     "semantic_role": role,
                     "name": str(raw.get("name") or role),
                     **(
-                        {"asset_id": raw.get("asset_id")}
-                        if raw.get("asset_id") is not None
-                        else {}
+                        {"asset_id": raw.get("asset_id")} if raw.get("asset_id") is not None else {}
                     ),
                     **(
                         {"object_type": raw.get("object_type")}
@@ -463,11 +413,7 @@ def materialize_native_task_arena_packet(
                     # the runtime contract joins the GPU collision
                     # qualification through it
                     **(
-                        {
-                            "articulation_adaptation": dict(
-                                raw["articulation_adaptation"]
-                            )
-                        }
+                        {"articulation_adaptation": dict(raw["articulation_adaptation"])}
                         if isinstance(raw.get("articulation_adaptation"), Mapping)
                         else {}
                     ),
@@ -485,16 +431,12 @@ def materialize_native_task_arena_packet(
             task_state_binding=frozen.get("task_state_binding"),
             assets=runtime_assets,
             robot_base_pose_world=frozen.get("robot_base_pose_world") or {},
-            robot_joint_reset_positions_rad=(
-                frozen.get("robot_joint_reset_positions_rad") or {}
-            ),
+            robot_joint_reset_positions_rad=(frozen.get("robot_joint_reset_positions_rad") or {}),
             cameras=frozen.get("cameras") or [],
             scenario_cell_id=str(scenario.get("cell_id") or ""),
             scenario_instance_digest=str(scenario.get("instance_digest") or ""),
             seed=scenario.get("seed"),
-            scenario_context_kind=str(
-                scenario.get("context_kind") or "evaluation_cell"
-            ),
+            scenario_context_kind=str(scenario.get("context_kind") or "evaluation_cell"),
             construction_bindings=frozen.get("construction_bindings"),
             task_freeze_digest=frozen.get("task_freeze_digest"),
             scenario_parameter_bindings=scenario_parameter_bindings,
@@ -532,9 +474,7 @@ def materialize_native_task_arena_packet(
             "arena_scene_plan_digest": plan["plan_digest"],
             "task_freeze_digest": contract.get("task_freeze_digest"),
             "shared_construction_digest": (
-                (contract.get("construction_bindings") or {}).get(
-                    "construction_digest"
-                )
+                (contract.get("construction_bindings") or {}).get("construction_digest")
             ),
             "scenario_instance_digest": scenario["instance_digest"],
             "source_bindings": source_bindings,
@@ -548,22 +488,12 @@ def materialize_native_task_arena_packet(
         for binding, raw in zip(source_bindings, raw_assets, strict=True):
             path, digest, size = _asset_source(raw, evidence_root=evidence)
             if digest != binding["source"]["sha256"] or _sha256(path) != digest:
-                raise NativeTaskArenaPacketError(
-                    ["native_task_arena_packet_sealed_source_mutated"]
-                )
-            if (
-                "static_scene_collision_adaptation" not in binding
-                and (
-                    digest != binding["staged_sha256"]
-                    or size != binding["staged_size_bytes"]
-                )
+                raise NativeTaskArenaPacketError(["native_task_arena_packet_sealed_source_mutated"])
+            if "static_scene_collision_adaptation" not in binding and (
+                digest != binding["staged_sha256"] or size != binding["staged_size_bytes"]
             ):
-                raise NativeTaskArenaPacketError(
-                    ["native_task_arena_packet_asset_copy_mismatch"]
-                )
-        receipt["receipt_digest"] = canonical_digest(
-            receipt, digest_field="receipt_digest"
-        )
+                raise NativeTaskArenaPacketError(["native_task_arena_packet_asset_copy_mismatch"])
+        receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
         write_json(output / "native_task_arena_packet_receipt.v1.json", receipt)
         construction = contract.get("construction_bindings") or {}
         if construction.get("schema_version") == PAIRED_CONSTRUCTION_SCHEMA_VERSION:
@@ -571,14 +501,10 @@ def materialize_native_task_arena_packet(
             runtime_record = construction.get("native_import_result") or {}
             try:
                 candidate = json.loads(
-                    Path(str(candidate_record.get("path") or "")).read_text(
-                        encoding="utf-8"
-                    )
+                    Path(str(candidate_record.get("path") or "")).read_text(encoding="utf-8")
                 )
                 runtime_result = json.loads(
-                    Path(str(runtime_record.get("path") or "")).read_text(
-                        encoding="utf-8"
-                    )
+                    Path(str(runtime_record.get("path") or "")).read_text(encoding="utf-8")
                 )
             except (OSError, json.JSONDecodeError) as exc:
                 raise NativeTaskArenaPacketError(

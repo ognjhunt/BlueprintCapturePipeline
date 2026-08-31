@@ -65,9 +65,7 @@ def _configured_bundle(path: Path) -> None:
         "assets": rows,
         "manifest_digest": "",
     }
-    manifest["manifest_digest"] = canonical_digest(
-        manifest, digest_field="manifest_digest"
-    )
+    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
     with zipfile.ZipFile(path, "w") as archive:
         for name, payload in payloads.items():
             archive.writestr(name, payload)
@@ -123,9 +121,7 @@ def _rigid_task_documents(
             "maximum_step_count": 240,
             "resolved_seed": 839873104,
             "action_bounds_m_per_step": {"minimum": -0.02, "maximum": 0.02},
-            "collision_exclusions": [
-                "robot_self_collision_pairs_declared_by_robot_configuration"
-            ],
+            "collision_exclusions": ["robot_self_collision_pairs_declared_by_robot_configuration"],
             "termination": ["success", "timeout"],
         },
     }
@@ -177,9 +173,7 @@ def _configured_runtime_documents(configured: dict[str, object]) -> dict[str, di
     }
 
 
-def test_closed_compiler_joins_revision_and_robot_team_inputs(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_closed_compiler_joins_revision_and_robot_team_inputs(tmp_path: Path, monkeypatch) -> None:
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     value = request()
@@ -212,9 +206,9 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
             "schema_version": "task_evaluation_robot_to_scene_registration.v1",
             "robot_identity": robot_identity,
             "scene_identity": value["scene"]["identity"],
-            "robot_mount_interface_digest": configured["registration"][
-                "robot_mount_interface"
-            ]["digest"],
+            "robot_mount_interface_digest": configured["registration"]["robot_mount_interface"][
+                "digest"
+            ],
             "pose_world": {
                 "position_world_m": [0.0, 0.0, 0.0],
                 "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
@@ -227,9 +221,9 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
         },
         "sensors.configuration": {
             "schema_version": "task_evaluation_native_sensor_configuration.v1",
-            "scene_camera_calibration_digest": configured["registration"][
-                "camera_calibration"
-            ]["digest"],
+            "scene_camera_calibration_digest": configured["registration"]["camera_calibration"][
+                "digest"
+            ],
             "cameras": [{"role": "external"}],
         },
         "scene.configured_revision.task_template.definition": {
@@ -278,9 +272,7 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
             "maximum_step_count": 240,
             "resolved_seed": 839873104,
             "action_bounds_m_per_step": {"minimum": -0.02, "maximum": 0.02},
-            "collision_exclusions": [
-                "robot_self_collision_pairs_declared_by_robot_configuration"
-            ],
+            "collision_exclusions": ["robot_self_collision_pairs_declared_by_robot_configuration"],
             "termination": ["success", "timeout"],
         },
         **_configured_runtime_documents(configured),
@@ -324,20 +316,12 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
         ),
     ):
         record = _record(document_paths[contract_path], contract_path)
-        configured[section][field] = {
-            key: record[key] for key in ("uri", "digest", "size_bytes")
-        }
-    configured["revision_digest"] = canonical_digest(
-        configured, digest_field="revision_digest"
-    )
-    value["task"]["configured_scene_revision_digest"] = configured[
-        "revision_digest"
-    ]
+        configured[section][field] = {key: record[key] for key in ("uri", "digest", "size_bytes")}
+    configured["revision_digest"] = canonical_digest(configured, digest_field="revision_digest")
+    value["task"]["configured_scene_revision_digest"] = configured["revision_digest"]
     revision_path = _write_json(inputs, "revision.json", configured)
     references = {
-        "scene.configured_revision": _record(
-            revision_path, "scene.configured_revision"
-        ),
+        "scene.configured_revision": _record(revision_path, "scene.configured_revision"),
         "scene.configured_revision.configured_scene_bundle": _record(
             bundle_path, "scene.configured_revision.configured_scene_bundle"
         ),
@@ -396,6 +380,12 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
             "particlefield_size_bytes": size,
             "representation_conversion_performed": True,
             "exact_learned_arrays_preserved": True,
+            "gaussian_field_quality": {
+                "schema_version": "gaussian_field_quality.v1",
+                "status": "qualified",
+                "blockers": [],
+                "learned_tensors_mutated": False,
+            },
         }
 
     monkeypatch.setattr(
@@ -431,15 +421,11 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     assert result["compiled_by_production"] is True
     assert result["customer_supplied_prebuilt_episode_packet"] is False
     assert result["provider_mutation_performed"] is False
-    assert result["adapter_result"]["packet_receipt_digest"] == (
-        "sha256:" + "b" * 64
-    )
+    assert result["adapter_result"]["packet_receipt_digest"] == ("sha256:" + "b" * 64)
     assert result["native_scene_appearance"]["representation"] == (
         "particlefield_3d_gaussian_splat"
     )
-    assert result["native_scene_appearance"][
-        "representation_conversion_performed"
-    ] is True
+    assert result["native_scene_appearance"]["representation_conversion_performed"] is True
     appearance = next(
         row
         for row in observed["packet_request"]["assets"]
@@ -448,46 +434,42 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     assert appearance["filename"] == "scene_appearance.usdc"
     assert observed["packet_request"]["appearance_variant"] == {
         "representation": "particlefield_3d_gaussian_splat",
-        "source_configured_appearance_digest": result[
-            "native_scene_appearance"
-        ]["source_configured_appearance_digest"],
+        "source_configured_appearance_digest": result["native_scene_appearance"][
+            "source_configured_appearance_digest"
+        ],
         "representation_conversion_performed": True,
         "exact_learned_arrays_preserved": True,
+        "gaussian_field_quality": {
+            "schema_version": "gaussian_field_quality.v1",
+            "status": "qualified",
+            "blockers": [],
+            "learned_tensors_mutated": False,
+        },
     }
     source_subject_id = configured["replacement"]["identity"]["id"]
     runtime_subject_id = source_subject_id.replace("-", "_")
-    assert observed["packet_request"]["task_spec"]["subject_asset_id"] == (
-        runtime_subject_id
+    assert observed["packet_request"]["task_spec"]["subject_asset_id"] == (runtime_subject_id)
+    assert observed["packet_request"]["task_spec"]["source_subject_identity"] == (source_subject_id)
+    assert (
+        observed["packet_request"]["task_spec"]["interaction_affordance"]["subject_asset_id"]
+        == runtime_subject_id
     )
-    assert observed["packet_request"]["task_spec"]["source_subject_identity"] == (
-        source_subject_id
-    )
-    assert observed["packet_request"]["task_spec"]["interaction_affordance"][
-        "subject_asset_id"
-    ] == runtime_subject_id
-    assert observed["packet_request"]["assets"][2]["asset_id"] == (
-        runtime_subject_id
-    )
-    assert observed["packet_request"]["assets"][2]["source_asset_id"] == (
-        source_subject_id
-    )
-    assert observed["packet_request"]["task_spec"]["manipulation_strategy"] == (
-        "planar_push"
-    )
-    assert observed["packet_request"]["task_spec"]["task_kind"] == (
-        "rigid_pick_place"
-    )
-    assert observed["packet_request"]["task_spec"]["schema_version"] == (
-        "adp_task_spec.v2"
-    )
+    assert observed["packet_request"]["assets"][2]["asset_id"] == (runtime_subject_id)
+    assert observed["packet_request"]["assets"][2]["source_asset_id"] == (source_subject_id)
+    assert observed["packet_request"]["task_spec"]["manipulation_strategy"] == ("planar_push")
+    assert observed["packet_request"]["task_spec"]["task_kind"] == ("rigid_pick_place")
+    assert observed["packet_request"]["task_spec"]["schema_version"] == ("adp_task_spec.v2")
     assert observed["packet_request"]["task_spec"]["start_pose_world"][:3] == [
         2.9742285,
         -6.7605156,
         0.818319,
     ]
-    assert observed["packet_request"]["task_spec"][
-        "configured_success_criteria"
-    ]["maximum_final_planar_target_error_m"] == 0.05
+    assert (
+        observed["packet_request"]["task_spec"]["configured_success_criteria"][
+            "maximum_final_planar_target_error_m"
+        ]
+        == 0.05
+    )
     assert observed["packet_request"]["physics_frequency_hz"] == 120
     assert observed["packet_request"]["assets"][2]["pose_world"][
         "position_world_m"
@@ -496,23 +478,18 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     assert observed["packet_request"]["scenario"]["cell_id"] == (
         "configured_scene_canonical.seed_839873104"
     )
-    assert observed["packet_request"]["configured_task_template_adapter"][
-        "manipulation_strategy"
-    ] == "planar_push"
+    assert (
+        observed["packet_request"]["configured_task_template_adapter"]["manipulation_strategy"]
+        == "planar_push"
+    )
     assert result["configured_task_template_adapter"]["source_documents_digest"].startswith(
         "sha256:"
     )
     replacement = next(
-        row
-        for row in observed["packet_request"]["assets"]
-        if row["semantic_role"] == "task_object"
+        row for row in observed["packet_request"]["assets"] if row["semantic_role"] == "task_object"
     )
-    assert replacement["asset_id"] == configured["replacement"]["identity"][
-        "id"
-    ].replace("-", "_")
-    assert replacement["source_asset_id"] == configured["replacement"][
-        "identity"
-    ]["id"]
+    assert replacement["asset_id"] == configured["replacement"]["identity"]["id"].replace("-", "_")
+    assert replacement["source_asset_id"] == configured["replacement"]["identity"]["id"]
 
 
 def test_closed_compiler_refuses_sensor_calibration_from_another_scene(
@@ -613,15 +590,9 @@ def test_closed_compiler_refuses_sensor_calibration_from_another_scene(
         ),
     ):
         record = _record(document_paths[contract_path], contract_path)
-        configured[section][field] = {
-            key: record[key] for key in ("uri", "digest", "size_bytes")
-        }
-    configured["revision_digest"] = canonical_digest(
-        configured, digest_field="revision_digest"
-    )
-    value["task"]["configured_scene_revision_digest"] = configured[
-        "revision_digest"
-    ]
+        configured[section][field] = {key: record[key] for key in ("uri", "digest", "size_bytes")}
+    configured["revision_digest"] = canonical_digest(configured, digest_field="revision_digest")
+    value["task"]["configured_scene_revision_digest"] = configured["revision_digest"]
     revision_path = _write_json(inputs, "revision.json", configured)
     references = {
         "scene.configured_revision": _record(revision_path, "scene.configured_revision"),

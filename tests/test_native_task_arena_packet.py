@@ -14,6 +14,7 @@ from blueprint_pipeline.native_task_arena_packet import (
     NativeTaskArenaPacketError,
     materialize_native_task_arena_appearance_variant_request,
     materialize_native_task_arena_packet,
+    validate_native_task_arena_packet_request,
 )
 from blueprint_pipeline.native_task_runtime_contract import (
     DROID_FRANKA_RESET_JOINT_NAMES,
@@ -401,6 +402,12 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "display_color_fallback_authored": True,
         "particlefield_emissive_material_binding_authored": True,
         "particlefield_emissive_material_inputs": "mdl_defaults",
+        "gaussian_field_quality": {
+            "schema_version": "gaussian_field_quality.v1",
+            "status": "qualified",
+            "blockers": [],
+            "learned_tensors_mutated": False,
+        },
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = canonical_digest(
@@ -436,10 +443,24 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
     assert variant["appearance_variant"][
         "particlefield_emissive_material_binding_authored"
     ] is True
+    assert variant["appearance_variant"]["gaussian_field_quality"]["status"] == (
+        "qualified"
+    )
     assert variant["request_digest"] == canonical_digest(
         variant, digest_field="request_digest"
     )
     assert json.loads(output.read_text()) == variant
+
+    missing_quality = json.loads(json.dumps(variant))
+    missing_quality["appearance_variant"].pop("gaussian_field_quality")
+    missing_quality["request_digest"] = canonical_digest(
+        missing_quality, digest_field="request_digest"
+    )
+    with pytest.raises(
+        NativeTaskArenaPacketError,
+        match="native_task_arena_particlefield_quality_missing_or_invalid",
+    ):
+        validate_native_task_arena_packet_request(missing_quality)
 
     for missing in (
         "sh_primvar_element_size",
@@ -447,6 +468,7 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "display_color_fallback_authored",
         "particlefield_emissive_material_binding_authored",
         "particlefield_emissive_material_inputs",
+        "gaussian_field_quality",
     ):
         invalid = dict(receipt)
         invalid.pop(missing)

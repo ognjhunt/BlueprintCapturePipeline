@@ -3,6 +3,7 @@
 The convention math is pure-numpy and tested here; the USD writer needs pxr/usd-core
 (skipped when absent — it's exercised via the usd-core venv / Isaac pod).
 """
+
 from __future__ import annotations
 
 import json
@@ -114,9 +115,7 @@ def test_full_sh_layout_degree3() -> None:
     # coeff 1 == (R_0, G_0, B_0) == (1, 101, 201)
     np.testing.assert_allclose(coeffs[0, 1, :], [1.0, 101.0, 201.0], rtol=1e-6)
     np.testing.assert_allclose(coeffs[0, 15, :], [15.0, 115.0, 215.0], rtol=1e-6)
-    expected_display = np.clip(
-        0.5 + particlefield_usd.SH_C0 * splat.f_dc, 0.0, 1.0
-    )
+    expected_display = np.clip(0.5 + particlefield_usd.SH_C0 * splat.f_dc, 0.0, 1.0)
     np.testing.assert_allclose(arr["display_colors"], expected_display, rtol=1e-6)
 
 
@@ -152,9 +151,7 @@ def test_path_source_is_digest_bound_and_authors_default_prim(
     source = tmp_path / "retained_scene_gaussians.ply"
     source.write_bytes(b"sealed-standard-3dgs-fixture")
     source_sha256 = f"sha256:{sha256_file(source)}"
-    monkeypatch.setattr(
-        particlefield_usd, "read_standard_3dgs_ply", lambda _: splat
-    )
+    monkeypatch.setattr(particlefield_usd, "read_standard_3dgs_ply", lambda _: splat)
     out = tmp_path / "scene.usdc"
     receipt = tmp_path / "particlefield_receipt.json"
 
@@ -176,9 +173,7 @@ def test_path_source_is_digest_bound_and_authors_default_prim(
     prim = stage.GetPrimAtPath(result["prim_path"])
     from pxr import UsdGeom
 
-    sh_primvar = UsdGeom.Primvar(
-        prim.GetAttribute("radiance:sphericalHarmonicsCoefficients")
-    )
+    sh_primvar = UsdGeom.Primvar(prim.GetAttribute("radiance:sphericalHarmonicsCoefficients"))
     assert sh_primvar.GetElementSize() == 16
     assert sh_primvar.GetInterpolation() == UsdGeom.Tokens.vertex
     display_color = UsdGeom.PrimvarsAPI(prim).GetPrimvar("displayColor")
@@ -191,15 +186,9 @@ def test_path_source_is_digest_bound_and_authors_default_prim(
     assert result["particlefield_emissive_material_binding_authored"] is True
     assert result["particlefield_emissive_material_inputs"] == "mdl_defaults"
     binding = prim.GetRelationship("material:binding").GetTargets()
-    assert [str(path) for path in binding] == [
-        result["particlefield_emissive_material_path"]
-    ]
-    shader = stage.GetPrimAtPath(
-        result["particlefield_emissive_material_path"] + "/Shader"
-    )
-    assert shader.GetAttribute("info:mdl:sourceAsset").Get().path == (
-        "ParticleFieldEmissive.mdl"
-    )
+    assert [str(path) for path in binding] == [result["particlefield_emissive_material_path"]]
+    shader = stage.GetPrimAtPath(result["particlefield_emissive_material_path"] + "/Shader")
+    assert shader.GetAttribute("info:mdl:sourceAsset").Get().path == ("ParticleFieldEmissive.mdl")
     assert not shader.GetAttribute("inputs:apply_inverse_tonemap")
     assert not shader.GetAttribute("inputs:apply_srgb_linear")
 
@@ -211,9 +200,7 @@ def test_path_source_digest_mismatch_fails_before_authoring(
     splat, _ = _splat(8)
     source = tmp_path / "retained_scene_gaussians.ply"
     source.write_bytes(b"actual-source")
-    monkeypatch.setattr(
-        particlefield_usd, "read_standard_3dgs_ply", lambda _: splat
-    )
+    monkeypatch.setattr(particlefield_usd, "read_standard_3dgs_ply", lambda _: splat)
     out = tmp_path / "scene.usdc"
 
     result = write_particlefield_usd(
@@ -299,3 +286,73 @@ def test_nurec_is_represented_as_particlefield_without_changing_gaussians(
         after["stored_tensor_occupied_bounds_m"]["maximum"],
         before["stored_tensor_occupied_bounds_m"]["maximum"],
     )
+
+
+@pytest.mark.skipif(not _HAS_PXR, reason="usd-core unavailable")
+def test_nurec_with_scene_relative_gaussian_divergence_is_refused(
+    tmp_path: Path,
+) -> None:
+    count = 1_200
+    rng = np.random.default_rng(839873)
+    splat = SplatData(
+        count=count,
+        xyz=rng.uniform([-4.0, -6.0, 0.0], [4.0, 6.0, 3.0], (count, 3)).astype(np.float32),
+        opacity=np.full(count, 2.0, dtype=np.float32),
+        f_dc=np.zeros((count, 3), dtype=np.float32),
+        scales=np.full((count, 3), -3.0, dtype=np.float32),
+        quats=np.tile(
+            np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+            (count, 1),
+        ),
+        properties=(),
+        sh_rest=np.zeros((count, 45), dtype=np.float32),
+    )
+    splat.xyz[-1] = [8_000.0, -7_000.0, 900.0]
+    splat.scales[-1] = [6.88, 0.0, 0.0]
+    document = {
+        "version": "0.2.576",
+        "model": "nre",
+        "config": {
+            "layers": {
+                "gaussians": {
+                    "precision": 32,
+                    "density_activation": "sigmoid",
+                    "scale_activation": "exp",
+                    "rotation_activation": "normalize",
+                    "particle": {
+                        "density_kernel_planar": False,
+                        "radiance_sph_degree": 3,
+                    },
+                }
+            },
+            "renderer": {"name": "3dgut-nrend"},
+        },
+        "state_dict": build_state_dict(
+            {
+                "positions": splat.xyz,
+                "rotations": splat.quats,
+                "scales": splat.scales,
+                "densities": splat.opacity[:, None],
+                "features_albedo": splat.f_dc,
+                "features_specular": splat.sh_rest,
+            },
+            precision=32,
+        ),
+    }
+    source = tmp_path / "configured_appearance.usdz"
+    write_aura_nurec_usdz(document, source)
+    output = tmp_path / "scene_appearance.usdc"
+    receipt_path = tmp_path / "particlefield_authoring_receipt.v1.json"
+
+    result = write_particlefield_usd_from_nurec(
+        source,
+        output,
+        expected_source_sha256=f"sha256:{sha256_file(source)}",
+        receipt_path=receipt_path,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["particlefield_gaussian_field_quality_invalid"]
+    assert result["gaussian_field_quality"]["status"] == "blocked"
+    assert not output.exists()
+    assert not receipt_path.exists()

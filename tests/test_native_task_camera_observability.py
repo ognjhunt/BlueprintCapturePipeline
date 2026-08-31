@@ -94,9 +94,7 @@ def _policy_start_construction() -> dict:
 
 
 def test_policy_start_gate_binds_exact_reset_policy_inputs() -> None:
-    result = validate_native_task_policy_start_camera_observability(
-        _policy_start_construction()
-    )
+    result = validate_native_task_policy_start_camera_observability(_policy_start_construction())
 
     assert result["snapshot_id"] == "reset"
     assert result["required_policy_input_roles"] == ["external", "wrist"]
@@ -128,9 +126,7 @@ def test_policy_start_gate_allows_target_absent_rendered_wrist_at_reset() -> Non
     later["snapshot_id"] = "contact_sweep_clearance_00"
     for camera in later["cameras"]:
         camera["snapshot_id"] = later["snapshot_id"]
-    later["cameras"][1] = _passing_policy_start_camera(
-        "wrist", snapshot_id=later["snapshot_id"]
-    )
+    later["cameras"][1] = _passing_policy_start_camera("wrist", snapshot_id=later["snapshot_id"])
     construction["camera_snapshots"].append(later)
     construction["camera_gates"] = {
         "wrist": {
@@ -197,11 +193,7 @@ def test_policy_start_gate_refuses_unrendered_wrist_view() -> None:
         ),
         (
             lambda value: value["camera_snapshots"][0].update(
-                {
-                    "cameras": [
-                        value["camera_snapshots"][0]["cameras"][0]
-                    ]
-                }
+                {"cameras": [value["camera_snapshots"][0]["cameras"][0]]}
             ),
             "native_task_policy_start_camera_role_missing:wrist",
         ),
@@ -482,9 +474,7 @@ def test_a_site_expectation_must_be_stated() -> None:
 )
 def test_an_unreadable_frame_is_refused(frame: np.ndarray, expected: str) -> None:
     with pytest.raises(NativeTaskCameraObservabilityError) as raised:
-        measure_native_task_frame_render_evidence(
-            rgb=frame, site_appearance_render_expected=False
-        )
+        measure_native_task_frame_render_evidence(rgb=frame, site_appearance_render_expected=False)
 
     assert raised.value.errors == (expected,)
 
@@ -502,9 +492,7 @@ def test_a_frame_that_does_not_match_the_semantic_buffer_is_refused() -> None:
             minimum_pixel_fraction=0.005,
         )
 
-    assert raised.value.errors == (
-        "native_task_camera_rgb_semantic_shape_mismatch",
-    )
+    assert raised.value.errors == ("native_task_camera_rgb_semantic_shape_mismatch",)
 
 
 # --- nothing rendered vs THIS content did not render -----------------------
@@ -553,9 +541,7 @@ def test_the_r13_signature_fails_only_when_the_site_is_claimed() -> None:
     assert unclaimed["passed"] is True
     assert unclaimed["site_appearance_claimed"] is False
     assert unclaimed["claim"] == CLAIM_WITHOUT_SITE
-    assert (
-        unclaimed["render_evidence"]["site_region"]["void_pixel_fraction"] == site_void
-    )
+    assert unclaimed["render_evidence"]["site_region"]["void_pixel_fraction"] == site_void
 
 
 def test_a_site_that_renders_while_unclaimed_is_reported() -> None:
@@ -681,6 +667,9 @@ def test_a_float_frame_in_zero_to_one_is_read_at_full_scale() -> None:
 
     assert evidence["frame"]["luminance_max"] > 200.0
     assert evidence["passed"] is True
+    assert evidence["appearance_quality_claimed"] is False
+    assert evidence["appearance_fidelity_qualified"] is False
+    assert evidence["quality_boundary"] == ("render_presence_only_not_appearance_quality")
 
 
 def test_an_alpha_channel_and_a_batch_axis_are_accepted() -> None:
