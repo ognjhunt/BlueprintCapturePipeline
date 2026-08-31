@@ -1420,6 +1420,7 @@ def _install_intake_runtime_identity_drop_in(
         "# Contains deployment identity only; no credentials.\n"
         f"BLUEPRINT_PIPELINE_REPO={source_repo}\n"
         f"BLUEPRINT_SOURCE_COMMIT={source_commit}\n"
+        f"BLUEPRINT_PIPELINE_PYTHON={Path(sys.executable).resolve()}\n"
         f"PYTHONPATH={source_repo / 'src'}\n"
         "BLUEPRINT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT="
         f"{DEFAULT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT}\n"
