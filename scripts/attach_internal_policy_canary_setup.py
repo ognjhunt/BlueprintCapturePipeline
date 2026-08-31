@@ -66,18 +66,37 @@ def materialize_policy_canary_launch_profile(
     if blockers:
         raise ValueError("policy_canary_source_profile_invalid:" + ",".join(blockers))
     wrapper = deepcopy(dict(profile_materialization_input))
+    expected_wrapper_fields = {
+        "schema_version",
+        "profile_id",
+        "configured_base_profile_id",
+        "configured_base_profile_digest",
+        "configured_source_launch_id",
+        "source_commit",
+        "internal_policy_canary_setup",
+        "internal_policy_canary_execution_plan",
+        "materialization_digest",
+    }
     if (
-        wrapper.get("schema_version")
+        set(wrapper) != expected_wrapper_fields
+        or wrapper.get("schema_version")
         != "task_evaluation_policy_canary_profile_materialization_input.v1"
         or wrapper.get("materialization_digest")
         != canonical_digest(wrapper, digest_field="materialization_digest")
-        or wrapper.get("configured_source_launch_id") != base.get("profile_id")
+        or wrapper.get("configured_base_profile_id") != base.get("profile_id")
+        or wrapper.get("configured_base_profile_digest") != base.get("profile_digest")
     ):
         raise ValueError("policy_canary_profile_materialization_input_invalid")
     setup = validate_policy_canary_setup(wrapper["internal_policy_canary_setup"])
     plan = validate_policy_canary_execution_plan(
         wrapper["internal_policy_canary_execution_plan"], public_setup=setup
     )
+    if (
+        wrapper["configured_source_launch_id"] != setup["source_launch_id"]
+        or wrapper["configured_source_launch_id"]
+        != plan["configured_source_launch_id"]
+    ):
+        raise ValueError("policy_canary_offering_lineage_invalid")
     output = deepcopy(base)
     output.update(
         {

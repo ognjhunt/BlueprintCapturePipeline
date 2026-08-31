@@ -260,6 +260,11 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     assert "capture_session_id" not in setup
     assert "intake_id" not in setup
     assert wrapper["profile_id"] == "scene839873-internal-policy-canary-c412"
+    assert wrapper["configured_base_profile_id"] == "scene839873-current"
+    assert wrapper["configured_base_profile_digest"].startswith("sha256:")
+    assert wrapper["configured_base_profile_id"] != wrapper[
+        "configured_source_launch_id"
+    ]
     assert wrapper["configured_source_launch_id"] != wrapper["profile_id"]
     assert wrapper["internal_policy_canary_setup"] == setup
     plan = wrapper["internal_policy_canary_execution_plan"]

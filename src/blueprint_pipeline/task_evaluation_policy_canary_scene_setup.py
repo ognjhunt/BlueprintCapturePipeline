@@ -923,9 +923,18 @@ def materialize_policy_canary_presubmission_setup(
         "plan_digest": "",
     }
     execution_plan["plan_digest"] = canonical_digest(execution_plan, digest_field="plan_digest")
+    configured_base_profile = _read(
+        launch_profile_path, code="policy_canary_launch_profile_invalid"
+    )
+    if configured_base_profile.get("profile_digest") != canonical_digest(
+        configured_base_profile, digest_field="profile_digest"
+    ):
+        raise PolicyCanarySetupError(["policy_canary_profile_digest_invalid"])
     wrapper: dict[str, Any] = {
         "schema_version": PROFILE_INPUT_SCHEMA_VERSION,
         "profile_id": profile_id,
+        "configured_base_profile_id": configured_base_profile["profile_id"],
+        "configured_base_profile_digest": configured_base_profile["profile_digest"],
         "configured_source_launch_id": configured_source_launch_id,
         "source_commit": source_commit,
         "internal_policy_canary_setup": setup,
