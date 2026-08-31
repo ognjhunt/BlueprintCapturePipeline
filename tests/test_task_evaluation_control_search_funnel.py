@@ -8,8 +8,11 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_control_search_funnel import (
     CLAIM_CEILING,
     ControlSearchFunnelError,
+    OUTCOME_SCHEMA_VERSION,
     build_control_search_funnel_plan,
+    build_control_search_sweep_result,
     validate_control_search_funnel_plan,
+    validate_control_search_sweep_result,
 )
 
 
@@ -119,3 +122,139 @@ def test_plan_refuses_tampered_or_model_authored_inventory() -> None:
     tampered["vector_sweep"]["camera_mode"] = "enabled"
     with pytest.raises(ControlSearchFunnelError, match="control_search_plan_invalid"):
         validate_control_search_funnel_plan(tampered)
+
+
+def _outcome(
+    candidate: dict,
+    *,
+    seed_index: int,
+    wave_index: int,
+    environment_index: int,
+    collision: float,
+    coverage: float,
+    path_error: float,
+    destination_error: float,
+    stability_error: float,
+    displacement: float,
+    reset_passed: bool = True,
+) -> dict:
+    value = {
+        "schema_version": OUTCOME_SCHEMA_VERSION,
+        "candidate_id": candidate["candidate_id"],
+        "candidate_digest": candidate["candidate_digest"],
+        "seed_index": seed_index,
+        "resolved_seed": 839873104 + seed_index,
+        "wave_index": wave_index,
+        "environment_index": environment_index,
+        "reset_readback_passed": reset_passed,
+        "forbidden_collision_peak_force_n": collision,
+        "required_task_contact_coverage_fraction": coverage,
+        "push_path_tracking_error_m": path_error,
+        "destination_error_m": destination_error,
+        "support_stability_error_m": stability_error,
+        "task_displacement_m": displacement,
+        "physics_steps": 220,
+        "measurement_authority": (
+            "isaac_lab_simulator_state_and_contact_sensors"
+        ),
+        "learned_grader_used": False,
+        "outcome_digest": "",
+    }
+    value["outcome_digest"] = canonical_digest(
+        value, digest_field="outcome_digest"
+    )
+    return value
+
+
+def test_sweep_ranks_worst_case_physics_and_emits_bounded_shortlist() -> None:
+    plan = _plan(
+        candidate_inventory=_inventory(10),
+        requested_vector_env_count=20,
+        maximum_vector_env_count=1_024,
+        seeds_per_candidate=2,
+        shortlist_size=8,
+    )
+    outcomes = []
+    for index, candidate in enumerate(plan["candidate_index"]):
+        for seed_index in range(2):
+            outcomes.append(
+                _outcome(
+                    candidate,
+                    seed_index=seed_index,
+                    wave_index=0,
+                    environment_index=index * 2 + seed_index,
+                    collision=0.1 + index,
+                    coverage=0.95 - index * 0.01,
+                    path_error=0.01 + index * 0.001,
+                    destination_error=0.02 + index * 0.001,
+                    stability_error=0.001 + index * 0.0001,
+                    displacement=0.12 - index * 0.001,
+                    reset_passed=index != 9,
+                )
+            )
+
+    result = build_control_search_sweep_result(
+        plan=plan,
+        outcomes=outcomes,
+        actual_vector_env_count=20,
+        peak_gpu_memory_bytes=18_000_000_000,
+    )
+
+    assert validate_control_search_sweep_result(result, plan=plan) == result
+    assert result["qualification_effect"] == "none_until_full_fidelity_replay"
+    assert len(result["shortlist"]) == 8
+    assert result["shortlist"][0]["candidate_id"] == (
+        "curobo-r0-candidate-0000"
+    )
+    assert result["ranked_candidates"][-1]["candidate_id"] == (
+        "curobo-r0-candidate-0009"
+    )
+    assert result["learned_grader_used"] is False
+
+
+def test_sweep_requires_every_candidate_seed_and_unique_env_assignment() -> None:
+    plan = _plan(
+        candidate_inventory=_inventory(10),
+        requested_vector_env_count=10,
+        seeds_per_candidate=1,
+        shortlist_size=8,
+    )
+    outcomes = [
+        _outcome(
+            candidate,
+            seed_index=0,
+            wave_index=0,
+            environment_index=index,
+            collision=0.0,
+            coverage=1.0,
+            path_error=0.0,
+            destination_error=0.0,
+            stability_error=0.0,
+            displacement=0.12,
+        )
+        for index, candidate in enumerate(plan["candidate_index"])
+    ]
+    with pytest.raises(
+        ControlSearchFunnelError, match="control_search_sweep_result_incomplete"
+    ):
+        build_control_search_sweep_result(
+            plan=plan,
+            outcomes=outcomes[:-1],
+            actual_vector_env_count=10,
+            peak_gpu_memory_bytes=1,
+        )
+
+    duplicate = copy.deepcopy(outcomes)
+    duplicate[1]["environment_index"] = duplicate[0]["environment_index"]
+    duplicate[1]["outcome_digest"] = canonical_digest(
+        duplicate[1], digest_field="outcome_digest"
+    )
+    with pytest.raises(
+        ControlSearchFunnelError, match="control_search_sweep_result_invalid"
+    ):
+        build_control_search_sweep_result(
+            plan=plan,
+            outcomes=duplicate,
+            actual_vector_env_count=10,
+            peak_gpu_memory_bytes=1,
+        )

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
@@ -21,6 +21,8 @@ from .task_evaluation_curobo_candidate_generator import CUROBO_BACKEND_IDENTITY
 
 
 PLAN_SCHEMA_VERSION = "task_evaluation_control_search_funnel_plan.v1"
+OUTCOME_SCHEMA_VERSION = "task_evaluation_control_search_vector_outcome.v1"
+SWEEP_RESULT_SCHEMA_VERSION = "task_evaluation_control_search_sweep_result.v1"
 CLAIM_CEILING = "development_only_control_search"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -43,6 +45,18 @@ def _copy(value: Mapping[str, Any], *, blocker: str) -> dict[str, Any]:
 
 def _digest(value: object) -> bool:
     return isinstance(value, str) and bool(_SHA256.fullmatch(value))
+
+
+def _finite_nonnegative(value: object, *, blocker: str) -> float:
+    if isinstance(value, bool):
+        raise ControlSearchFunnelError(blocker)
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ControlSearchFunnelError(blocker) from exc
+    if not math.isfinite(result) or result < 0.0:
+        raise ControlSearchFunnelError(blocker)
+    return result
 
 
 def _candidate_index(inventory: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -244,10 +258,272 @@ def validate_control_search_funnel_plan(
     return plan
 
 
+def _validated_outcome(
+    value: Mapping[str, Any],
+    *,
+    candidates: Mapping[str, Mapping[str, Any]],
+    seeds_per_candidate: int,
+) -> dict[str, Any]:
+    outcome = _copy(value, blocker="control_search_vector_outcome_invalid")
+    candidate_id = outcome.get("candidate_id")
+    candidate = candidates.get(str(candidate_id))
+    if (
+        outcome.get("schema_version") != OUTCOME_SCHEMA_VERSION
+        or candidate is None
+        or outcome.get("candidate_digest") != candidate["candidate_digest"]
+        or not isinstance(outcome.get("seed_index"), int)
+        or isinstance(outcome.get("seed_index"), bool)
+        or not 0 <= outcome["seed_index"] < seeds_per_candidate
+        or not isinstance(outcome.get("resolved_seed"), int)
+        or isinstance(outcome.get("resolved_seed"), bool)
+        or outcome["resolved_seed"] < 0
+        or not isinstance(outcome.get("wave_index"), int)
+        or isinstance(outcome.get("wave_index"), bool)
+        or outcome["wave_index"] < 0
+        or not isinstance(outcome.get("environment_index"), int)
+        or isinstance(outcome.get("environment_index"), bool)
+        or outcome["environment_index"] < 0
+        or outcome.get("reset_readback_passed") not in {True, False}
+        or not isinstance(outcome.get("physics_steps"), int)
+        or isinstance(outcome.get("physics_steps"), bool)
+        or outcome["physics_steps"] < 1
+        or outcome.get("measurement_authority")
+        != "isaac_lab_simulator_state_and_contact_sensors"
+        or outcome.get("learned_grader_used") is not False
+        or outcome.get("outcome_digest")
+        != canonical_digest(outcome, digest_field="outcome_digest")
+    ):
+        raise ControlSearchFunnelError("control_search_vector_outcome_invalid")
+    for field in (
+        "forbidden_collision_peak_force_n",
+        "required_task_contact_coverage_fraction",
+        "push_path_tracking_error_m",
+        "destination_error_m",
+        "support_stability_error_m",
+        "task_displacement_m",
+    ):
+        outcome[field] = _finite_nonnegative(
+            outcome.get(field), blocker="control_search_vector_outcome_invalid"
+        )
+    if outcome["required_task_contact_coverage_fraction"] > 1.0:
+        raise ControlSearchFunnelError("control_search_vector_outcome_invalid")
+    return outcome
+
+
+def _aggregate_candidate_outcomes(
+    *,
+    candidate: Mapping[str, Any],
+    outcomes: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    aggregate: dict[str, Any] = {
+        "candidate_id": candidate["candidate_id"],
+        "candidate_digest": candidate["candidate_digest"],
+        "source_deterministic_rank": candidate["deterministic_rank"],
+        "seed_count": len(outcomes),
+        "all_resets_passed": all(
+            row["reset_readback_passed"] is True for row in outcomes
+        ),
+        "worst_forbidden_collision_peak_force_n": max(
+            row["forbidden_collision_peak_force_n"] for row in outcomes
+        ),
+        "worst_required_task_contact_coverage_fraction": min(
+            row["required_task_contact_coverage_fraction"] for row in outcomes
+        ),
+        "worst_push_path_tracking_error_m": max(
+            row["push_path_tracking_error_m"] for row in outcomes
+        ),
+        "worst_destination_error_m": max(
+            row["destination_error_m"] for row in outcomes
+        ),
+        "worst_support_stability_error_m": max(
+            row["support_stability_error_m"] for row in outcomes
+        ),
+        "worst_task_displacement_m": min(
+            row["task_displacement_m"] for row in outcomes
+        ),
+        "outcome_digests": [row["outcome_digest"] for row in outcomes],
+        "aggregate_digest": "",
+    }
+    aggregate["aggregate_digest"] = canonical_digest(
+        aggregate, digest_field="aggregate_digest"
+    )
+    return aggregate
+
+
+def _ranking_key(value: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        value["all_resets_passed"] is not True,
+        value["worst_forbidden_collision_peak_force_n"],
+        -value["worst_required_task_contact_coverage_fraction"],
+        value["worst_push_path_tracking_error_m"],
+        value["worst_destination_error_m"],
+        value["worst_support_stability_error_m"],
+        -value["worst_task_displacement_m"],
+        value["source_deterministic_rank"],
+        value["candidate_id"],
+    )
+
+
+def build_control_search_sweep_result(
+    *,
+    plan: Mapping[str, Any],
+    outcomes: Sequence[Mapping[str, Any]],
+    actual_vector_env_count: int,
+    peak_gpu_memory_bytes: int,
+) -> dict[str, Any]:
+    """Seal raw Isaac Lab outcomes and deterministically choose a shortlist."""
+
+    frozen_plan = validate_control_search_funnel_plan(plan)
+    vector = frozen_plan["vector_sweep"]
+    if (
+        not isinstance(actual_vector_env_count, int)
+        or isinstance(actual_vector_env_count, bool)
+        or not 1
+        <= actual_vector_env_count
+        <= vector["maximum_vector_env_count"]
+        or not isinstance(peak_gpu_memory_bytes, int)
+        or isinstance(peak_gpu_memory_bytes, bool)
+        or peak_gpu_memory_bytes < 1
+        or not isinstance(outcomes, Sequence)
+        or isinstance(outcomes, (str, bytes))
+    ):
+        raise ControlSearchFunnelError("control_search_sweep_result_invalid")
+    candidates = {
+        row["candidate_id"]: row for row in frozen_plan["candidate_index"]
+    }
+    validated = [
+        _validated_outcome(
+            row,
+            candidates=candidates,
+            seeds_per_candidate=vector["seeds_per_candidate"],
+        )
+        for row in outcomes
+        if isinstance(row, Mapping)
+    ]
+    if len(validated) != len(outcomes):
+        raise ControlSearchFunnelError("control_search_sweep_result_invalid")
+    grouped: dict[str, list[dict[str, Any]]] = {
+        candidate_id: [] for candidate_id in candidates
+    }
+    assignments: set[tuple[int, int]] = set()
+    for outcome in validated:
+        assignment = (outcome["wave_index"], outcome["environment_index"])
+        if assignment in assignments:
+            raise ControlSearchFunnelError("control_search_sweep_result_invalid")
+        assignments.add(assignment)
+        grouped[outcome["candidate_id"]].append(outcome)
+    expected_seeds = set(range(vector["seeds_per_candidate"]))
+    if any(
+        {row["seed_index"] for row in rows} != expected_seeds
+        or len(rows) != vector["seeds_per_candidate"]
+        for rows in grouped.values()
+    ):
+        raise ControlSearchFunnelError("control_search_sweep_result_incomplete")
+    validated.sort(
+        key=lambda row: (
+            candidates[row["candidate_id"]]["deterministic_rank"],
+            row["candidate_id"],
+            row["seed_index"],
+        )
+    )
+    aggregates = [
+        _aggregate_candidate_outcomes(
+            candidate=candidate,
+            outcomes=sorted(
+                grouped[candidate["candidate_id"]],
+                key=lambda row: row["seed_index"],
+            ),
+        )
+        for candidate in frozen_plan["candidate_index"]
+    ]
+    aggregates.sort(key=_ranking_key)
+    ranked = []
+    for rank, aggregate in enumerate(aggregates):
+        row = dict(aggregate)
+        row["control_search_rank"] = rank
+        row["ranking_key"] = {
+            "all_resets_passed": row["all_resets_passed"],
+            "worst_forbidden_collision_peak_force_n": row[
+                "worst_forbidden_collision_peak_force_n"
+            ],
+            "worst_required_task_contact_coverage_fraction": row[
+                "worst_required_task_contact_coverage_fraction"
+            ],
+            "worst_push_path_tracking_error_m": row[
+                "worst_push_path_tracking_error_m"
+            ],
+            "worst_destination_error_m": row["worst_destination_error_m"],
+            "worst_support_stability_error_m": row[
+                "worst_support_stability_error_m"
+            ],
+            "worst_task_displacement_m": row["worst_task_displacement_m"],
+        }
+        ranked.append(row)
+    shortlist_size = frozen_plan["shortlist"]["resolved_maximum_size"]
+    result: dict[str, Any] = {
+        "schema_version": SWEEP_RESULT_SCHEMA_VERSION,
+        "status": "completed_development_only",
+        "run_id": frozen_plan["run_id"],
+        "source_commit": frozen_plan["source_commit"],
+        "plan_digest": frozen_plan["plan_digest"],
+        "claim_ceiling": CLAIM_CEILING,
+        "qualification_effect": "none_until_full_fidelity_replay",
+        "actual_vector_env_count": actual_vector_env_count,
+        "peak_gpu_memory_bytes": peak_gpu_memory_bytes,
+        "outcomes": validated,
+        "ranked_candidates": ranked,
+        "shortlist": [
+            {
+                "candidate_id": row["candidate_id"],
+                "candidate_digest": row["candidate_digest"],
+                "aggregate_digest": row["aggregate_digest"],
+                "control_search_rank": row["control_search_rank"],
+            }
+            for row in ranked[:shortlist_size]
+        ],
+        "learned_grader_used": False,
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(
+        result, digest_field="result_digest"
+    )
+    return result
+
+
+def validate_control_search_sweep_result(
+    value: Mapping[str, Any], *, plan: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Reopen a sweep receipt and its exact plan binding."""
+
+    result = _copy(value, blocker="control_search_sweep_result_invalid")
+    frozen_plan = validate_control_search_funnel_plan(plan)
+    if (
+        result.get("schema_version") != SWEEP_RESULT_SCHEMA_VERSION
+        or result.get("status") != "completed_development_only"
+        or result.get("plan_digest") != frozen_plan["plan_digest"]
+        or result.get("claim_ceiling") != CLAIM_CEILING
+        or result.get("qualification_effect")
+        != "none_until_full_fidelity_replay"
+        or result.get("learned_grader_used") is not False
+        or result.get("result_digest")
+        != canonical_digest(result, digest_field="result_digest")
+        or not isinstance(result.get("shortlist"), list)
+        or not 1
+        <= len(result["shortlist"])
+        <= frozen_plan["shortlist"]["resolved_maximum_size"]
+    ):
+        raise ControlSearchFunnelError("control_search_sweep_result_invalid")
+    return result
+
+
 __all__ = [
     "CLAIM_CEILING",
     "ControlSearchFunnelError",
+    "OUTCOME_SCHEMA_VERSION",
     "PLAN_SCHEMA_VERSION",
+    "SWEEP_RESULT_SCHEMA_VERSION",
     "build_control_search_funnel_plan",
+    "build_control_search_sweep_result",
     "validate_control_search_funnel_plan",
+    "validate_control_search_sweep_result",
 ]
