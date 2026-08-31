@@ -94,6 +94,23 @@ def _referenced_json(reference: Mapping[str, Any], *, role: str) -> dict[str, An
         or reference.get("role") != role
     ):
         raise CuroboCandidateServiceError(f"curobo_{role}_invalid")
+    for attachment in reference.get("attachments") or []:
+        attachment_path = Path(str(attachment.get("path") or ""))
+        try:
+            attachment_data = attachment_path.read_bytes()
+        except OSError as exc:
+            raise CuroboCandidateServiceError(
+                f"curobo_{role}_attachment_invalid"
+            ) from exc
+        if (
+            attachment_path.is_symlink()
+            or len(attachment_data) != attachment.get("size_bytes")
+            or "sha256:" + hashlib.sha256(attachment_data).hexdigest()
+            != attachment.get("digest")
+        ):
+            raise CuroboCandidateServiceError(
+                f"curobo_{role}_attachment_invalid"
+            )
     try:
         value = json.loads(data)
     except json.JSONDecodeError as exc:
@@ -219,12 +236,12 @@ def _generate(request: Mapping[str, Any]) -> dict[str, Any]:
     joint_names = [str(value) for value in robot.get("joint_names") or []]
     if not joint_names:
         raise CuroboCandidateServiceError("curobo_robot_joint_names_missing")
-    phases = task.get("phases")
-    if (
-        not isinstance(phases, list)
-        or [row.get("stage_kind") for row in phases] != list(REQUIRED_STAGE_KINDS)
-    ):
+    candidate_phases = task.get("candidate_phases")
+    if not isinstance(candidate_phases, Mapping):
         raise CuroboCandidateServiceError("curobo_task_stages_invalid")
+    phases = None
+    # Per-base entry variants are part of the immutable candidate universe;
+    # select them only after the analytic candidate id is known below.
     candidates = analytic.get("candidates")
     if not isinstance(candidates, list) or not candidates:
         raise CuroboCandidateServiceError("curobo_analytic_candidates_missing")
@@ -234,6 +251,13 @@ def _generate(request: Mapping[str, Any]) -> dict[str, Any]:
         if len(solutions) >= int(request["maximum_candidates"]):
             break
         seed_id = str(seed.get("candidate_id") or "")
+        phases = candidate_phases.get(seed_id)
+        if (
+            not isinstance(phases, list)
+            or [row.get("stage_kind") for row in phases]
+            != list(REQUIRED_STAGE_KINDS)
+        ):
+            raise CuroboCandidateServiceError("curobo_task_stages_invalid")
         world_models = world.get("candidate_world_models_robot_frame")
         if not isinstance(world_models, Mapping) or seed_id not in world_models:
             raise CuroboCandidateServiceError("curobo_candidate_world_model_missing")
