@@ -17,6 +17,7 @@ from .gaussian_field_quality import gaussian_drift_is_qualified
 RAW_RESULT_SCHEMA = "public_scene_artifixer3d_raw_result.v1"
 EXPORT_SCHEMA = "public_scene_artifixer3d_native_appearance_export.v1"
 EXPORT_STATUS = "native_appearance_candidates_exported_pending_native_import_and_multiview_review"
+RETAINED_GEOMETRY_MODE = "freeze_retained_source_geometry"
 
 
 class ArtiFixerNativeExportError(ValueError):
@@ -58,6 +59,18 @@ def _digest(value: Any) -> bool:
     )
 
 
+def geometry_protection_is_qualified(value: Any) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and value.get("mode") == RETAINED_GEOMETRY_MODE
+        and value.get("status") == "qualified"
+        and value.get("exact_position_tensor_match") is True
+        and value.get("exact_rotation_tensor_match") is True
+        and value.get("exact_scale_tensor_match") is True
+        and value.get("blockers") == []
+    )
+
+
 def _bound_file(record: Any, code: str) -> Path:
     if not isinstance(record, Mapping):
         raise ArtiFixerNativeExportError(code)
@@ -90,6 +103,7 @@ def validate_artifixer3d_native_appearance_export(
         or value.get("generated_output_is_capture_or_physical_evidence") is not False
         or value.get("native_import_qualified") is not False
         or not gaussian_drift_is_qualified(value.get("gaussian_field_source_relative_drift"))
+        or not geometry_protection_is_qualified(value.get("geometry_protection"))
     ):
         raise ArtiFixerNativeExportError("artifixer3d_native_export_receipt_invalid")
     source_raw = value.get("source_raw_result")
@@ -166,6 +180,7 @@ def materialize_artifixer3d_native_appearance_exports(
             or native.get("generated_output_is_capture_or_physical_evidence") is not False
             or native.get("native_import_qualified") is not False
             or not gaussian_drift_is_qualified(native.get("gaussian_field_source_relative_drift"))
+            or not geometry_protection_is_qualified(native.get("geometry_protection"))
         ):
             raise ArtiFixerNativeExportError("artifixer3d_native_export_task_invalid")
         for field in ("standard_gaussian_ply", "isaac_nurec_usdz"):
@@ -225,6 +240,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "ArtiFixerNativeExportError",
+    "geometry_protection_is_qualified",
     "materialize_artifixer3d_native_appearance_exports",
     "validate_artifixer3d_native_appearance_export",
 ]

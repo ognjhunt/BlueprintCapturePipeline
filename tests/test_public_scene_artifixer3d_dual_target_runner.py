@@ -55,6 +55,7 @@ def _request(runner) -> dict[str, object]:
             "steps": 10,
             "config_name": "apps/colmap_3dgut_sparse_mcmc_lpips",
             "loss_overrides": runner.DUAL_TARGET_LOSS_OVERRIDES,
+            "geometry_policy": runner.RETAINED_GEOMETRY_POLICY,
             "anchor_mask_reduction": "full_frame_mean",
         },
     }
@@ -104,6 +105,32 @@ def test_actual_materialized_dual_target_contract_and_masks_are_accepted(
     ]
     assert not (images / "frame_00001_mask.png").exists()
     assert not (images / "frame_00003_mask.png").exists()
+
+
+def test_retained_geometry_policy_disables_optimizer_and_mcmc_mutation() -> None:
+    runner = _runner_module()
+
+    assert runner._retained_geometry_training_overrides(
+        steps=30_000,
+        geometry_policy=runner.RETAINED_GEOMETRY_POLICY,
+    ) == [
+        "model.optimize_position=false",
+        "model.optimize_rotation=false",
+        "model.optimize_scale=false",
+        "strategy.relocate.start_iteration=30001",
+        "strategy.relocate.end_iteration=30001",
+        "strategy.add.start_iteration=30001",
+        "strategy.add.end_iteration=30001",
+        "strategy.perturb.start_iteration=30001",
+        "strategy.perturb.end_iteration=30001",
+        "strategy.perturb.noise_lr=0.0",
+    ]
+
+    with pytest.raises(ValueError, match="artifixer3d_geometry_policy_invalid"):
+        runner._retained_geometry_training_overrides(
+            steps=30_000,
+            geometry_policy={"mode": "source_relative_limits_only"},
+        )
 
 
 def test_native_review_layout_is_byte_copied_to_provider_retained_directory(
@@ -332,6 +359,7 @@ def test_render_only_task_reuses_exact_checkpoint_and_normalizes_eight_cameras(
             },
             "anchor_mask_reduction": "full_frame_mean",
             "loss_overrides": runner.DUAL_TARGET_LOSS_OVERRIDES,
+            "geometry_policy": runner.RETAINED_GEOMETRY_POLICY,
         }
     }
     shared = tmp_path / "input/shared_initialization"
@@ -404,6 +432,7 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
         "n_active_features": 3,
         "config": config,
     }
+    checkpoint_value["rotation"]._array[:, 0] = 1.0
     checkpoint = tmp_path / "ckpt_30000.pt"
     checkpoint.write_bytes(b"bound-checkpoint")
 
@@ -481,6 +510,7 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
         checkpoint=checkpoint,
         task_output=tmp_path / "task",
         reference_gaussian_ply=reference,
+        geometry_policy=runner.RETAINED_GEOMETRY_POLICY,
     )
 
     assert result["gaussian_count"] == 2
@@ -532,6 +562,33 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
         assert nurec[4:8] == b"\0" * 4
         assert gaussian_arrays(decode_nurec_bytes(nurec))["positions"].shape == (512, 3)
     assert result["native_import_qualified"] is False
+    assert result["geometry_protection"] == {
+        "mode": "freeze_retained_source_geometry",
+        "status": "qualified",
+        "reference_gaussian_count": 2,
+        "checkpoint_gaussian_count": 2,
+        "exact_position_tensor_match": True,
+        "exact_rotation_tensor_match": True,
+        "exact_scale_tensor_match": True,
+        "maximum_absolute_drift": {
+            "positions": 0.0,
+            "rotation": 0.0,
+            "scale": 0.0,
+        },
+        "blockers": [],
+    }
+
+    checkpoint_value["positions"]._array[0, 0] = 0.001
+    with pytest.raises(
+        ValueError,
+        match="artifixer3d_native_export_retained_geometry_mismatch:positions",
+    ):
+        runner._export_checkpoint_native_appearance(
+            checkpoint=checkpoint,
+            task_output=tmp_path / "task-with-drift",
+            reference_gaussian_ply=reference,
+            geometry_policy=runner.RETAINED_GEOMETRY_POLICY,
+        )
 
 
 def test_render_only_execute_skips_training_direct_and_3d_plus(
