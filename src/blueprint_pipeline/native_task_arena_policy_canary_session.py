@@ -86,17 +86,28 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = json.loads(json.dumps(value, allow_nan=False))
     if (
         payload.get("schema_version")
-        != "native_task_arena_policy_canary_runtime_inputs.v1"
+        != "task_evaluation_policy_canary_runtime_inputs.v1"
         or payload.get("run_kind") != RUN_KIND
         or payload.get("claim_ceiling") != CLAIM_CEILING
         or tuple(payload.get("candidate_ids") or ()) != CANDIDATE_IDS
     ):
         raise PolicyCanarySessionError("policy_canary_runtime_input_identity_invalid")
-    for field in ("activation_digest", "configuration_digest", "plan_digest", "matrix_digest"):
+    for field in ("activation_digest", "configuration_digest", "plan_digest"):
         if not _digest(payload.get(field)):
             raise PolicyCanarySessionError("policy_canary_runtime_input_digest_invalid")
-    for field in ("base_packet", "runtime_source", "construction_result"):
+    if "matrix_digest" in payload and not _digest(payload.get("matrix_digest")):
+        raise PolicyCanarySessionError("policy_canary_runtime_input_digest_invalid")
+    for field in ("base_native_packet", "runtime_source", "construction_result"):
         _record(payload.get(field), code=f"policy_canary_runtime_input_{field}_invalid")
+    execution_authority = _mapping(payload.get("execution_authority"))
+    if (
+        execution_authority.get("maximum_provider_allocations") != 1
+        or execution_authority.get("retry_cap") != 0
+        or execution_authority.get("single_warm_provider_session_required") is not True
+        or execution_authority.get("caller_surviving_watchdog_required") is not True
+        or execution_authority.get("billing_teardown_provider_zero_required") is not True
+    ):
+        raise PolicyCanarySessionError("policy_canary_runtime_input_authority_invalid")
     cells = payload.get("cells")
     if not isinstance(cells, list) or len(cells) != EPISODES_PER_POLICY:
         raise PolicyCanarySessionError("policy_canary_runtime_input_cells_invalid")
@@ -131,8 +142,8 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
             _record(control.get("receipt"), code="policy_canary_control_receipt_invalid")
         seen_cells.add(cell_id)
         seen_seeds.add(seed)
-    if payload.get("runtime_input_digest") != canonical_digest(
-        payload, digest_field="runtime_input_digest"
+    if payload.get("runtime_inputs_digest") != canonical_digest(
+        payload, digest_field="runtime_inputs_digest"
     ):
         raise PolicyCanarySessionError("policy_canary_runtime_input_self_digest_invalid")
     return payload
@@ -159,6 +170,8 @@ def validate_session_authority(value: Mapping[str, Any]) -> dict[str, Any]:
         raise PolicyCanarySessionError("policy_canary_session_authority_identity_invalid")
     for field in ("activation_manifest", "runtime_inputs"):
         _record(payload.get(field), code=f"policy_canary_session_{field}_invalid")
+    if not _digest(payload.get("runtime_inputs_digest")):
+        raise PolicyCanarySessionError("policy_canary_session_runtime_inputs_digest_invalid")
     if (
         not _finite_positive(payload.get("hard_cap_usd"))
         or isinstance(payload.get("hard_ttl_seconds"), bool)
@@ -229,8 +242,8 @@ def validate_provider_bundle(
         or payload.get("retry_cap") != 0
         or payload.get("candidate_policy_queried") is not False
         or payload.get("expected_output_filename") != PROVIDER_RESULT_FILENAME
-        or payload.get("runtime_input_digest")
-        != bound_authority["runtime_input_digest"]
+        or payload.get("runtime_inputs_digest")
+        != bound_authority["runtime_inputs_digest"]
         or payload.get("authority_digest") != bound_authority["authority_digest"]
     ):
         raise PolicyCanarySessionError("policy_canary_provider_bundle_invalid")
@@ -281,7 +294,7 @@ def build_session_authority(
         "runtime_inputs": _record(
             runtime_input_record, code="policy_canary_session_runtime_inputs_invalid"
         ),
-        "runtime_input_digest": inputs["runtime_input_digest"],
+        "runtime_inputs_digest": inputs["runtime_inputs_digest"],
         "resource_name": resource_name,
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
@@ -412,12 +425,13 @@ def execute_paired_session(
     close_policy: Callable[[Any], None],
     close_session: Callable[[Any], Mapping[str, Any]],
     output_path: str | Path | None = None,
+    provider_closeout_pending: bool = False,
 ) -> dict[str, Any]:
     """Execute all twenty learned rollouts in one caller-owned warm session."""
 
     bound_authority = validate_session_authority(authority)
     inputs = validate_runtime_input_manifest(runtime_inputs)
-    if bound_authority["runtime_input_digest"] != inputs["runtime_input_digest"]:
+    if bound_authority["runtime_inputs_digest"] != inputs["runtime_inputs_digest"]:
         raise PolicyCanarySessionError("policy_canary_session_runtime_binding_mismatch")
     session = None
     episodes: list[dict[str, Any]] = []
@@ -431,7 +445,10 @@ def execute_paired_session(
     open_failure: Exception | None = None
     try:
         session = open_session(inputs)
-        if not isinstance(session, Mapping) or session.get("provider_allocations_observed") != 1:
+        if not isinstance(session, Mapping) or (
+            not provider_closeout_pending
+            and session.get("provider_allocations_observed") != 1
+        ):
             raise PolicyCanarySessionError("policy_canary_session_open_receipt_invalid")
         for candidate_id in CANDIDATE_IDS:
             policy = load_policy(session, candidate_id)
@@ -504,7 +521,11 @@ def execute_paired_session(
         "candidate_ids": list(CANDIDATE_IDS),
         "episodes_per_policy": EPISODES_PER_POLICY,
         "learned_policy_rollout_count": LEARNED_ROLLOUT_COUNT,
-        "provider_allocations_observed": closeout.get("provider_allocations_observed"),
+        "provider_allocations_observed": (
+            None
+            if provider_closeout_pending
+            else closeout.get("provider_allocations_observed")
+        ),
         "retry_cap": 0,
         "warm_session_open_count": 1,
         "policy_loads": policy_loads,
@@ -527,6 +548,12 @@ def execute_paired_session(
         and closeout.get("provider_zero_confirmed") is True
     ):
         result["status"] = "completed_unqualified"
+    if (
+        provider_closeout_pending
+        and len(episodes) == LEARNED_ROLLOUT_COUNT
+        and closeout.get("runtime_closed") is True
+    ):
+        result["status"] = "runtime_completed_unqualified_pending_closeout"
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     if output_path is not None:
         write_json(Path(output_path), result)
