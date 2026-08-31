@@ -51,6 +51,7 @@ from .public_scene_artifixer3d_bundle import (
     USE_ATTESTATION_SCHEMA_VERSION,
 )
 from .public_scene_artifixer3d_native_exports import (
+    geometry_protection_is_qualified,
     materialize_artifixer3d_native_appearance_exports,
 )
 from .task_evaluation_artifact_manifest import (
@@ -1543,6 +1544,9 @@ def _materialize_raw_result(
                 or not gaussian_drift_is_qualified(
                     native_appearance_record.get("gaussian_field_source_relative_drift")
                 )
+                or not geometry_protection_is_qualified(
+                    native_appearance_record.get("geometry_protection")
+                )
             ):
                 raise ValueError("artifixer3d_runtime_native_appearance_invalid")
             exports: dict[str, Any] = {}
@@ -1590,6 +1594,9 @@ def _materialize_raw_result(
                 "gaussian_count": native_appearance_record.get("gaussian_count"),
                 "gaussian_field_source_relative_drift": dict(
                     native_appearance_record["gaussian_field_source_relative_drift"]
+                ),
+                "geometry_protection": dict(
+                    native_appearance_record["geometry_protection"]
                 ),
                 "coordinate_contract": dict(coordinate),
                 **exports,

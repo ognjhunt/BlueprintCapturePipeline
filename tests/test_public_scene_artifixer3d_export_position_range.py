@@ -75,17 +75,25 @@ def _room(count: int) -> np.ndarray:
 
 def _reference(positions: np.ndarray) -> SimpleNamespace:
     return SimpleNamespace(
+        count=int(positions.shape[0]),
         xyz=np.asarray(positions, dtype=np.float32),
         scales=np.full_like(positions, -3.0, dtype=np.float32),
+        quats=np.zeros((positions.shape[0], 4), dtype=np.float32),
+    )
+
+
+def _model(runner: Any, checkpoint: dict[str, Any], reference: SimpleNamespace):
+    return runner._CheckpointExportModel(
+        checkpoint,
+        reference_splat=reference,
+        geometry_policy=runner.RETAINED_GEOMETRY_POLICY,
     )
 
 
 def test_representable_room_positions_export_every_gaussian() -> None:
     runner = _load_real_provider_runner()
     positions = _room(1000)
-    model = runner._CheckpointExportModel(
-        _checkpoint(positions), reference_splat=_reference(positions)
-    )
+    model = _model(runner, _checkpoint(positions), _reference(positions))
     assert model.exported_gaussian_count == 1000
     assert model.unrepresentable_position_count == 0
     assert int(model.positions.shape[0]) == 1000
@@ -98,9 +106,7 @@ def test_one_unrepresentable_floater_refuses_the_export() -> None:
     positions = _room(1000)
     positions[7] = [153532.48, -58422.664, 76406.766]
     with pytest.raises(ValueError, match="artifixer3d_native_export_positions_unrepresentable"):
-        runner._CheckpointExportModel(
-            _checkpoint(positions), reference_splat=_reference(_room(1000))
-        )
+        _model(runner, _checkpoint(positions), _reference(_room(1000)))
 
 
 def test_non_finite_positions_are_treated_as_unrepresentable() -> None:
@@ -111,9 +117,7 @@ def test_non_finite_positions_are_treated_as_unrepresentable() -> None:
     positions[3] = [np.inf, 0.0, 0.0]
     positions[4] = [0.0, np.nan, 0.0]
     with pytest.raises(ValueError, match="artifixer3d_native_export_positions_unrepresentable"):
-        runner._CheckpointExportModel(
-            _checkpoint(positions), reference_splat=_reference(_room(4000))
-        )
+        _model(runner, _checkpoint(positions), _reference(_room(4000)))
 
 
 def test_widespread_unrepresentable_positions_fail_closed() -> None:
@@ -123,9 +127,7 @@ def test_widespread_unrepresentable_positions_fail_closed() -> None:
     positions = _room(1000)
     positions[:200] = 1.0e6
     with pytest.raises(ValueError) as excinfo:
-        runner._CheckpointExportModel(
-            _checkpoint(positions), reference_splat=_reference(_room(1000))
-        )
+        _model(runner, _checkpoint(positions), _reference(_room(1000)))
     assert "artifixer3d_native_export_positions_unrepresentable" in str(excinfo.value)
 
 
@@ -133,7 +135,7 @@ def test_all_positions_unrepresentable_fail_closed() -> None:
     runner = _load_real_provider_runner()
     positions = np.full((16, 3), np.inf, dtype=np.float64)
     with pytest.raises(ValueError) as excinfo:
-        runner._CheckpointExportModel(_checkpoint(positions), reference_splat=_reference(_room(16)))
+        _model(runner, _checkpoint(positions), _reference(_room(16)))
     assert "artifixer3d_native_export_positions_unrepresentable" in str(excinfo.value)
 
 
@@ -150,8 +152,8 @@ def test_representable_but_far_field_position_drift_is_refused() -> None:
     positions = reference.copy()
     positions[7] = [8_000.0, -7_000.0, 900.0]
 
-    with pytest.raises(ValueError, match="artifixer3d_native_export_gaussian_field_drift_invalid"):
-        runner._CheckpointExportModel(_checkpoint(positions), reference_splat=_reference(reference))
+    with pytest.raises(ValueError, match="retained_geometry_mismatch:positions"):
+        _model(runner, _checkpoint(positions), _reference(reference))
 
 
 def test_representable_but_massive_kernel_scale_is_refused() -> None:
@@ -160,5 +162,5 @@ def test_representable_but_massive_kernel_scale_is_refused() -> None:
     checkpoint = _checkpoint(reference)
     checkpoint["scale"]._array[7] = [6.88, 0.0, 0.0]
 
-    with pytest.raises(ValueError, match="artifixer3d_native_export_gaussian_field_drift_invalid"):
-        runner._CheckpointExportModel(checkpoint, reference_splat=_reference(reference))
+    with pytest.raises(ValueError, match="retained_geometry_mismatch:scale"):
+        _model(runner, checkpoint, _reference(reference))
