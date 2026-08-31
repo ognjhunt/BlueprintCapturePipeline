@@ -65,6 +65,9 @@ from blueprint_pipeline.task_evaluation_policy_run_contract import (
     build_policy_run_plan,
     compile_policy_run_configuration,
 )
+from blueprint_pipeline.native_task_arena_policy_canary_session import (
+    validate_runtime_input_manifest,
+)
 
 
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
@@ -296,6 +299,7 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
     runtime_inputs = json.loads(
         Path(result["policy_canary_runtime_inputs_path"]).read_text(encoding="utf-8")
     )
+    assert validate_runtime_input_manifest(runtime_inputs) == runtime_inputs
     assert runtime_inputs["execution_authority"]["maximum_provider_allocations"] == 1
     assert len(runtime_inputs["cells"]) == 10
     assert runtime_inputs["cells"][0]["resolved_scenario_digest"] == canonical_digest(
