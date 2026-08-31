@@ -733,7 +733,13 @@ def _validate_ai_execution_receipt(
         or manifest.get("reservation_count") != 1
         or manifest.get("in_flight_unknown_count") != 0
         or not isinstance(manifest.get("reserved_max_cost_usd"), (int, float))
-        or not 0 < float(manifest["reserved_max_cost_usd"]) <= AI_REVIEW_MAX_COST_USD
+        or float(manifest["reserved_max_cost_usd"]) != 0.0
+        or not isinstance(
+            manifest.get("projected_max_cost_usd_total"), (int, float)
+        )
+        or not 0
+        < float(manifest["projected_max_cost_usd_total"])
+        <= AI_REVIEW_MAX_COST_USD
         or not isinstance(rows, list)
         or len(rows) != 1
         or rows[0].get("status") != "completed"
@@ -754,16 +760,21 @@ def _validate_ai_execution_receipt(
     _completion_path, completion = _read(
         completion_path, code="sam31_review_execution_receipt_invalid"
     )
-    expected_reservation_id = canonical_digest(
-        {
-            "run_id": execution["run_id"],
-            "capability": AI_REVIEW_CAPABILITY,
-            "model": reviewer["model"],
-            "input_digest": execution["input_digest"],
-            "max_turns": reservation.get("max_turns"),
-            "max_output_tokens": reservation.get("max_output_tokens"),
-        }
-    )
+    reservation_identity = {
+        "run_id": execution["run_id"],
+        "capability": AI_REVIEW_CAPABILITY,
+        "model": reviewer["model"],
+        "input_digest": execution["input_digest"],
+        "max_turns": reservation.get("max_turns"),
+        "max_output_tokens": reservation.get("max_output_tokens"),
+    }
+    for optional_identity_field in ("reasoning_effort", "cache_policy_digest"):
+        if optional_identity_field in reservation:
+            reservation_identity[optional_identity_field] = reservation.get(
+                optional_identity_field
+            )
+    expected_reservation_id = canonical_digest(reservation_identity)
+    cache_policy = reservation.get("cache_policy")
     if (
         reservation.get("schema_version") != INFERENCE_RESERVATION_SCHEMA_VERSION
         or reservation.get("reservation_id") != expected_reservation_id
@@ -773,6 +784,9 @@ def _validate_ai_execution_receipt(
         or reservation.get("input_digest") != execution["input_digest"]
         or reservation.get("input_kind") != "multimodal"
         or reservation.get("input_token_ceiling") != AI_REVIEW_INPUT_TOKEN_CEILING
+        or not isinstance(cache_policy, Mapping)
+        or cache_policy.get("policy_digest")
+        != reservation.get("cache_policy_digest")
         or not isinstance(reservation.get("projected_max_cost_usd"), (int, float))
         or not 0 < float(reservation["projected_max_cost_usd"]) <= AI_REVIEW_MAX_COST_USD
         or reservation.get("inference_reservation_digest")
@@ -787,6 +801,9 @@ def _validate_ai_execution_receipt(
         or completion.get("provider") != "openai"
         or completion.get("model") != reviewer["model"]
         or completion.get("agents_sdk_version") != reviewer["sdk_version"]
+        or completion.get("cache_policy") != cache_policy
+        or completion.get("breakpoint_digests")
+        != reservation.get("breakpoint_digests")
         or completion.get("structured_output_digest")
         != execution["structured_output_digest"]
         or completion.get("inference_completion_digest")
