@@ -38,13 +38,13 @@ def load_secure_api_key_file(path_value: str | Path | None) -> str:
     raw = str(path_value or os.getenv("OPENAI_API_KEY_FILE") or "").strip()
     if not raw:
         raise OpenAIPromptCacheCanaryError("openai_api_key_file_missing")
-    path = Path(raw).expanduser().resolve()
-    if (
-        path.is_symlink()
-        or not path.is_file()
-        or stat.S_IMODE(path.stat().st_mode) != 0o600
-    ):
-        raise OpenAIPromptCacheCanaryError("openai_api_key_file_not_secure_0600")
+    unresolved = Path(raw).expanduser()
+    if unresolved.is_symlink():
+        raise OpenAIPromptCacheCanaryError("openai_api_key_file_not_secure")
+    path = unresolved.resolve()
+    mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0
+    if not path.is_file() or mode & ~0o640 or not mode & 0o440:
+        raise OpenAIPromptCacheCanaryError("openai_api_key_file_not_secure")
     value = path.read_text(encoding="utf-8").strip()
     if not value:
         raise OpenAIPromptCacheCanaryError("openai_api_key_file_empty")
