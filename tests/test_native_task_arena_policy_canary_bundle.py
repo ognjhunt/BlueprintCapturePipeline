@@ -92,7 +92,8 @@ def test_provider_worker_has_one_simulation_launch_outside_episode_loop() -> Non
     assert "execute_paired_session(" in source
     assert "provider_closeout_pending=True" in source
     assert "policy_canary_telemetry.jsonl" in source
-    assert "mcap_writer_not_present_in_pinned_provider_runtime" in source
+    assert "from mcap.writer import Writer" in source
+    assert "mcap_unavailable:" in source
 
 
 def test_paid_allocator_routes_canary_only_through_one_session_transport(

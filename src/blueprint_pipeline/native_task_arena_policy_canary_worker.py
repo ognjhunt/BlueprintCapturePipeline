@@ -78,13 +78,47 @@ def _write_indexed_telemetry(
     }
     schema_path = output_root / "policy_canary_telemetry_schema.json"
     schema_path.write_text(json.dumps(schema, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    primary_path = telemetry_path
+    primary_format = "typed_jsonl"
+    mcap_gap: str | None = None
+    try:
+        from mcap.writer import Writer
+
+        mcap_path = output_root / "policy_canary_telemetry.mcap"
+        with mcap_path.open("wb") as stream:
+            writer = Writer(stream)
+            writer.start(profile="blueprint-policy-canary", library="blueprint_pipeline")
+            schema_id = writer.register_schema(
+                name="policy_canary_episode_telemetry.v1",
+                encoding="jsonschema",
+                data=json.dumps(schema, sort_keys=True).encode("utf-8"),
+            )
+            channel_id = writer.register_channel(
+                topic="/blueprint/policy_canary/episode",
+                message_encoding="json",
+                schema_id=schema_id,
+            )
+            for row in rows:
+                telemetry = row.get("telemetry") or {}
+                timestamp = int(telemetry.get("completed_at_unix_ns") or time.time_ns())
+                writer.add_message(
+                    channel_id=channel_id,
+                    log_time=timestamp,
+                    publish_time=timestamp,
+                    data=json.dumps(row, sort_keys=True).encode("utf-8"),
+                )
+            writer.finish()
+        primary_path = mcap_path
+        primary_format = "mcap"
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        mcap_gap = f"mcap_unavailable:{type(exc).__name__}"
     index = {
         "schema_version": "policy_canary_telemetry_index.v1",
-        "format": "typed_jsonl",
+        "format": primary_format,
         "artifact": {
-            "path": telemetry_path.name,
-            "size_bytes": telemetry_path.stat().st_size,
-            "sha256": _sha256(telemetry_path),
+            "path": primary_path.name,
+            "size_bytes": primary_path.stat().st_size,
+            "sha256": _sha256(primary_path),
         },
         "schema": {
             "path": schema_path.name,
@@ -97,7 +131,7 @@ def _write_indexed_telemetry(
         "calibration_references": [
             (row.get("telemetry") or {}).get("camera_calibration") for row in rows
         ],
-        "mcap_gap": "mcap_writer_not_present_in_pinned_provider_runtime",
+        "mcap_gap": mcap_gap,
         "evidence_gaps": sorted(
             {
                 gap
@@ -110,17 +144,39 @@ def _write_indexed_telemetry(
     index["index_digest"] = canonical_digest(index, digest_field="index_digest")
     index_path = output_root / "policy_canary_telemetry_index.json"
     index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    import mimetypes
+
     artifacts = []
-    for path, role, media_type in (
-        (telemetry_path, "indexed_episode_telemetry", "application/x-ndjson"),
-        (schema_path, "telemetry_schema", "application/json"),
-        (index_path, "telemetry_index", "application/json"),
-    ):
+    seen: set[str] = set()
+    for path in sorted(output_root.rglob("*")):
+        if not path.is_file() or path.name == PROVIDER_RESULT_FILENAME:
+            continue
+        relative = path.relative_to(output_root).as_posix()
+        if relative in seen:
+            continue
+        seen.add(relative)
+        lowered = relative.lower()
+        role = (
+            "indexed_episode_telemetry"
+            if path in {primary_path, telemetry_path}
+            else "telemetry_schema"
+            if path == schema_path
+            else "telemetry_index"
+            if path == index_path
+            else "review_video"
+            if path.suffix.lower() in {".mp4", ".mov", ".webm"}
+            else "lossless_frame_manifest"
+            if "frame" in lowered and "manifest" in lowered
+            else "episode_evidence"
+            if "episode" in lowered
+            else "runtime_supporting_evidence"
+        )
         artifacts.append(
             {
                 "role": role,
-                "media_type": media_type,
-                "relative_path": path.name,
+                "media_type": mimetypes.guess_type(path.name)[0]
+                or "application/octet-stream",
+                "relative_path": relative,
                 "size_bytes": path.stat().st_size,
                 "sha256": _sha256(path),
             }
