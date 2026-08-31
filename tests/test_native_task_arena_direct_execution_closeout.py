@@ -273,9 +273,11 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
         "result_digest": "",
     }
     direct_path = _identity(direct_root / "result.json", direct, "result_digest")
+    job_result = dict(direct)
+    job_result.pop("result_digest")
     _write(
         direct_root / "arena-construction-job" / "adp_arena_vast_result.json",
-        direct,
+        job_result,
     )
     zero = {
         "schema_version": "adp_paid_provider_zero.v1",
@@ -482,6 +484,23 @@ def test_adoption_refuses_dispatcher_that_mutated_a_provider(tmp_path: Path) -> 
     _identity(paths["receipt"], receipt, "receipt_digest")
 
     with pytest.raises(ValueError, match="dispatcher_refusal_invalid"):
+        _adopt(paths)
+
+
+def test_adoption_refuses_any_inner_result_delta_beyond_missing_self_digest(
+    tmp_path: Path,
+) -> None:
+    paths = _fixture(tmp_path)
+    inner = (
+        paths["direct"].parent
+        / "arena-construction-job"
+        / "adp_arena_vast_result.json"
+    )
+    value = json.loads(inner.read_text(encoding="utf-8"))
+    value["blockers"] = [*value["blockers"], "unbound_inner_delta"]
+    _write(inner, value)
+
+    with pytest.raises(ValueError, match="allocator_result_invalid"):
         _adopt(paths)
 
 
