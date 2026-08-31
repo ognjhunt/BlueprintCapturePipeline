@@ -897,7 +897,7 @@ def test_runtime_identity_drop_in_is_atomic_and_contains_no_credentials(
     )
     assert f"BLUEPRINT_SOURCE_COMMIT={'b' * 40}" in env_content
     assert f"BLUEPRINT_PIPELINE_REPO={tmp_path / 'repo'}" in env_content
-    assert f"BLUEPRINT_PIPELINE_PYTHON={Path(sys.executable).resolve()}" in env_content
+    assert f"BLUEPRINT_PIPELINE_PYTHON={Path(sys.executable).absolute()}" in env_content
     assert f"PYTHONPATH={tmp_path / 'repo' / 'src'}" in env_content
     # Environment= loses to the base unit's EnvironmentFile= regardless of
     # drop-in order.  The regression is specifically that this must be a later
