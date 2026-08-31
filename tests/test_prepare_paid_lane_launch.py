@@ -519,6 +519,10 @@ def test_scene_configuration_prepares_rehearses_then_publishes_once() -> None:
         "standing_authorization",
     ]
     by_id = {step.step_id: step for step in steps}
+    assert (
+        "--production-semantic-reuse-checkpoint-root",
+        "production_semantic_reuse_checkpoint_root",
+    ) in by_id["provider_bundle"].repeated_argv
     assert "--execute" not in by_id["allocator_dry_run"].argv
     assert (
         by_id["allocator_dry_run"].argv[
@@ -563,6 +567,8 @@ def test_scene_configuration_context_reopens_server_owned_inputs(
     envelope.chmod(0o440)
     toolchain = tmp_path / "toolchain"
     toolchain.mkdir(mode=0o550)
+    semantic_reuse = tmp_path / "semantic-reuse"
+    semantic_reuse.mkdir(mode=0o550)
     context_path = tmp_path / "context.json"
     source_commit = "a" * 40
     context_path.write_text(
@@ -581,6 +587,9 @@ def test_scene_configuration_context_reopens_server_owned_inputs(
                     "construction_envelope": str(envelope),
                     "toolchain_root": str(toolchain),
                     "source_commit": source_commit,
+                    "production_semantic_reuse_checkpoint_root": str(
+                        semantic_reuse
+                    ),
                 },
             }
         ),
@@ -594,6 +603,9 @@ def test_scene_configuration_context_reopens_server_owned_inputs(
     assert loaded["construction_envelope"] == str(envelope.resolve())
     assert loaded["toolchain_root"] == str(toolchain.resolve())
     assert loaded["team_namespace"] == "team-a"
+    assert loaded["production_semantic_reuse_checkpoint_root"] == str(
+        semantic_reuse
+    )
     assert loaded["reference_bindings"]["source_commit"] == source_commit
 
 

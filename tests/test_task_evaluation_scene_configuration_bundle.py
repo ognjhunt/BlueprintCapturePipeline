@@ -804,6 +804,11 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
     monkeypatch.setattr(
         bundle_module, "validate_splat_render_runtime", lambda **_kwargs: identity
     )
+    monkeypatch.setattr(
+        bundle_module,
+        "validate_diagnostic_splat_render_runtime",
+        lambda **_kwargs: identity,
+    )
     checkpoint_renderer_identity = {
         "mode": "digest_bound_provider_bundle_renderer",
         "schema_version": PROVIDER_RENDERER_SCHEMA_VERSION,
@@ -991,6 +996,101 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
     assert preflight["blockers"] == []
     assert preflight["status"] == "passed"
 
+    production_commit = "b" * 40
+    production_toolchain = _toolchain(
+        tmp_path / "production-semantic-reuse" / "toolchain",
+        production_commit,
+    )
+    production = build_scene_configuration_provider_bundle(
+        construction_envelope_path=envelope_path,
+        toolchain_root=production_toolchain,
+        repository_root=repo,
+        splat_render_runtime_root=runtime,
+        production_semantic_reuse_checkpoint_root=checkpoint_root,
+        output_root=tmp_path / "production-semantic-reuse-bundle",
+        expected_source_commit=production_commit,
+    )
+    assert production["production_semantic_input_reuse"] is True
+    assert production["source_semantic_checkpoint_digest"] == checkpoint[
+        "checkpoint_digest"
+    ]
+    assert production["semantic_reuse_completed_stage_prefix_count"] == 0
+    assert production["source_commit"] == production_commit
+    assert production["construction_source_commit"] == commit
+    assert production["configured_revision_publication_permitted"] is True
+    assert production["offering_publication_permitted"] is True
+    assert "diagnostic_only" not in production
+    with zipfile.ZipFile(production["bundle_path"]) as archive:
+        production_names = set(archive.namelist())
+        production_portable = json.loads(
+            archive.read(
+                "provider_runtime/input/portable_construction_envelope.v1.json"
+            )
+        )
+        production_runner = archive.read(
+            "provider_runtime/task_evaluation_scene_configuration_provider_runner.py"
+        )
+    assert any(
+        name.startswith(
+            "provider_runtime/input/production_semantic_reuse_checkpoint/semantic/"
+        )
+        for name in production_names
+    )
+    assert not any(
+        name.startswith("provider_runtime/input/diagnostic_checkpoint/")
+        for name in production_names
+    )
+    assert all(
+        row["path"].startswith("input/production_semantic_reuse_checkpoint/")
+        for row in production_portable["render_inputs_result"]["derived_frames"]
+    )
+    assert production_portable["expected_production_commit"] == production_commit
+    assert production_runner == (
+        repo / "scripts/task_evaluation_scene_configuration_provider_runner.py"
+    ).read_bytes()
+    assert load_scene_configuration_provider_bundle_receipt(
+        tmp_path
+        / "production-semantic-reuse-bundle"
+        / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    )["bundle_sha256"] == production["bundle_sha256"]
+    production_extracted = tmp_path / "production-semantic-reuse-extracted"
+    with zipfile.ZipFile(production["bundle_path"]) as archive:
+        archive.extractall(production_extracted)
+    production_runtime = production_extracted / "provider_runtime"
+    runner_spec = importlib.util.spec_from_file_location(
+        "production_semantic_reuse_runner",
+        production_runtime
+        / "task_evaluation_scene_configuration_provider_runner.py",
+    )
+    assert runner_spec is not None and runner_spec.loader is not None
+    runner_module = importlib.util.module_from_spec(runner_spec)
+    runner_spec.loader.exec_module(runner_module)
+    monkeypatch.setattr(
+        runner_module,
+        "validate_scene_configuration_diagnostic_checkpoint",
+        lambda **_kwargs: checkpoint,
+    )
+    manifest = json.loads(
+        (
+            production_runtime / f"{BUNDLE_SCHEMA_VERSION}.json"
+        ).read_text(encoding="utf-8")
+    )
+    try:
+        configured_root = runner_module._configure_production_semantic_reuse(
+            runtime=production_runtime,
+            bundle_manifest=manifest,
+        )
+        assert configured_root == (
+            production_runtime / "input/production_semantic_reuse_checkpoint"
+        )
+        assert os.environ[
+            "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT"
+        ] == str(configured_root)
+    finally:
+        os.environ.pop(
+            "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT", None
+        )
+
     unsafe = dict(advanced_reference)
     unsafe["manifest_path"] = str(tmp_path / "outside.json")
     unsafe["reference_digest"] = canonical_digest(
@@ -1177,6 +1277,16 @@ def test_fresh_diagnostic_bootstrap_authorizes_uncarried_paid_stages() -> None:
         "artifixer_semantic_teacher": 0.0,
         "artifixer_visual_review": 0.0,
         "content_agents": 0.0,
+    }
+    assert authority_module._required_external_stage_minima(
+        diagnostic_only=False,
+        diagnostic_bootstrap_mode=None,
+        carried_stage_count=0,
+        production_semantic_reuse=True,
+    ) == {
+        "artifixer_semantic_teacher": 0.0,
+        "artifixer_visual_review": MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
+        "content_agents": 0.2,
     }
     assert authority_module._required_external_stage_minima(
         diagnostic_only=True,

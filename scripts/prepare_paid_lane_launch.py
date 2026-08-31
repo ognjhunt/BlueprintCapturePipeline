@@ -618,6 +618,12 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
                 "{source_commit}",
             ),
             produces=bundle_receipt,
+            repeated_argv=(
+                (
+                    "--production-semantic-reuse-checkpoint-root",
+                    "production_semantic_reuse_checkpoint_root",
+                ),
+            ),
         ),
         LaneStep(
             step_id="immutable_manifest",
