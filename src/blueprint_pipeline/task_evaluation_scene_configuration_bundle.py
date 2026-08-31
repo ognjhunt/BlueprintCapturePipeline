@@ -655,7 +655,7 @@ def build_scene_configuration_provider_bundle(
     provider_render = diagnostic_checkpoint is None and source_renders_on_provider
     provider_render_runtime: dict[str, Any] | None = None
     provider_render_runtime_source: Path | None = None
-    if source_renders_on_provider:
+    if source_renders_on_provider and not production_semantic_reuse:
         unresolved_runtime = str(splat_render_runtime_root or "").strip()
         if not unresolved_runtime:
             raise TaskEvaluationSceneConfigurationBundleError(
@@ -685,9 +685,9 @@ def build_scene_configuration_provider_bundle(
     diagnostic_scientific_binding_digest: str | None = None
     if diagnostic_checkpoint is not None:
         if (
-            provider_render_runtime is None
-            or diagnostic_first_configuration is None
+            diagnostic_first_configuration is None
             or diagnostic_first_configuration_path is None
+            or (not production_semantic_reuse and provider_render_runtime is None)
         ):
             raise TaskEvaluationSceneConfigurationBundleError(
                 "scene_configuration_bundle_diagnostic_renderer_identity_missing"
@@ -703,23 +703,32 @@ def build_scene_configuration_provider_bundle(
         ):
             current_binding_render[key] = json.loads(json.dumps(render_inputs[key]))
         checkpoint_renderer = current_binding_render.get("renderer_runtime")
-        retained_host_runtime = provider_render_runtime.get("identity")
         if (
             not isinstance(checkpoint_renderer, Mapping)
-            or not isinstance(retained_host_runtime, Mapping)
             or checkpoint_renderer.get("mode")
             != "digest_bound_provider_bundle_renderer"
             or checkpoint_renderer.get("schema_version")
             != PROVIDER_RENDERER_SCHEMA_VERSION
             or checkpoint_renderer.get("provider_full_byte_inventory_reopened")
             is not True
+            or not isinstance(checkpoint_renderer.get("file_count"), int)
+            or isinstance(checkpoint_renderer.get("file_count"), bool)
+            or checkpoint_renderer.get("file_count", 0) <= 0
+        ):
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_diagnostic_checkpoint_binding_mismatch"
+            )
+        retained_host_runtime = (
+            provider_render_runtime.get("identity")
+            if isinstance(provider_render_runtime, Mapping)
+            else None
+        )
+        if not production_semantic_reuse and (
+            not isinstance(retained_host_runtime, Mapping)
             or checkpoint_renderer.get("source_runtime_digest")
             != retained_host_runtime.get("runtime_digest")
             or checkpoint_renderer.get("platform")
             != retained_host_runtime.get("platform")
-            or not isinstance(checkpoint_renderer.get("file_count"), int)
-            or isinstance(checkpoint_renderer.get("file_count"), bool)
-            or checkpoint_renderer.get("file_count", 0) <= 0
             or not isinstance(retained_host_runtime.get("file_count"), int)
             or isinstance(retained_host_runtime.get("file_count"), bool)
             or retained_host_runtime.get("file_count", 0) <= 0
