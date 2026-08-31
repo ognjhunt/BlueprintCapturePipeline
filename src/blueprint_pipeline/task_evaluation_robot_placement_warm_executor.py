@@ -891,6 +891,7 @@ def _run_retained_native_construction_feedback(
     allocator_main: Callable[[Sequence[str] | None], int] | None = None,
     candidate_generator: Any | None = None,
     search_ledger: Any | None = None,
+    terminal_feedback_adoption_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Continue one retained cold construction through variants and controls.
 
@@ -911,6 +912,19 @@ def _run_retained_native_construction_feedback(
         blocker="native_construction_feedback_cold_result_invalid",
     )
     feedback = summarize_native_construction_feedback(native)
+    adopted_baseline = None
+    if terminal_feedback_adoption_path is not None:
+        from .native_construction_terminal_feedback_contract import (
+            validate_terminal_feedback_adoption,
+        )
+
+        adopted_baseline = validate_terminal_feedback_adoption(
+            _read_mapping(
+                terminal_feedback_adoption_path,
+                blocker="native_construction_terminal_feedback_adoption_invalid",
+            )
+        )
+        feedback = dict(adopted_baseline["initial_native_feedback"])
     warm_session = _read_mapping(
         warm_session_path,
         blocker="native_construction_feedback_warm_session_invalid",
@@ -954,6 +968,20 @@ def _run_retained_native_construction_feedback(
         not in {"/workspace", "/tmp/blueprint_vast_work"}
         or cold.get("continuing_spend_from_this_run") is not True
         or cold.get("retry_cap") != 0
+        or (
+            adopted_baseline is not None
+            and (
+                native.get("feedback_bootstrap_only") is not True
+                or native.get("baseline_physics_replayed") is not False
+                or native.get("terminal_feedback_adoption_digest")
+                != adopted_baseline.get("checkpoint_digest")
+                or adopted_baseline.get("packet_request_digest")
+                != request.get("request_digest")
+                or adopted_baseline.get("candidate_universe_digest")
+                != universe.get("inventory_digest")
+                or adopted_baseline.get("run_id") != universe.get("run_id")
+            )
+        )
     ):
         raise WarmRobotPlacementExecutorError(
             "native_construction_feedback_cold_continuation_invalid"
@@ -1071,6 +1099,12 @@ def _run_retained_native_construction_feedback(
         search_ledger = NativeConstructionOptunaSearchLedger(
             root=Path(output_root) / "search-ledger",
             run_id=run_id,
+        )
+    if adopted_baseline is not None and hasattr(
+        search_ledger, "record_adopted_baseline"
+    ):
+        search_ledger.record_adopted_baseline(
+            baseline_record=adopted_baseline
         )
     if invoker is None:
         invoker = OpenAIAgentsSDKInvoker(

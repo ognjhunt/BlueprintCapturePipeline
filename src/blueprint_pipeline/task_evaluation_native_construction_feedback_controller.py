@@ -440,6 +440,10 @@ def validate_native_construction_inventory(
 
 def _sample(row: Mapping[str, Any]) -> Mapping[str, Any]:
     raw = row.get("task_sample")
+    return _normalized_sample(raw)
+
+
+def _normalized_sample(raw: object) -> Mapping[str, Any]:
     if not isinstance(raw, Mapping):
         return {}
     native = raw.get("native_readback")
@@ -450,6 +454,20 @@ def _sample(row: Mapping[str, Any]) -> Mapping[str, Any]:
     # ``native_readback``.  Merge those namespaces so the controller never
     # drops either the measured force or the link that produced it.
     return {**dict(raw), **dict(native)}
+
+
+def _phase_samples(row: Mapping[str, Any]) -> list[tuple[int, str, Mapping[str, Any]]]:
+    sampled = row.get("task_samples")
+    sampled = sampled if isinstance(sampled, list) else []
+    result = [
+        (index, "step", _normalized_sample(sample))
+        for index, sample in enumerate(sampled)
+        if isinstance(sample, Mapping)
+    ]
+    terminal = _normalized_sample(row.get("task_sample"))
+    if terminal:
+        result.append((len(sampled), "terminal", terminal))
+    return result
 
 
 def _pose_from_sample(sample: Mapping[str, Any]) -> list[float] | None:
@@ -497,6 +515,106 @@ def _first_link_hint(sample: Mapping[str, Any], channel: str) -> str | None:
     return None
 
 
+def _physics_objective_measurements(
+    native: Mapping[str, Any], phase_rows: Sequence[Mapping[str, Any]]
+) -> dict[str, Any] | None:
+    plan = native.get("construction_phase_plan")
+    if not isinstance(plan, Mapping) or plan.get("task_kind") != "rigid_pick_place":
+        return None
+    thresholds = plan.get("thresholds")
+    if not isinstance(thresholds, Mapping):
+        return None
+    try:
+        contact_threshold = float(thresholds["task_contact_minimum_force_n"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    by_id = {
+        str(row.get("phase_id") or ""): row
+        for row in phase_rows
+        if isinstance(row, Mapping)
+    }
+    collision_samples = [
+        (phase_id, index, kind, sample)
+        for phase_id, row in by_id.items()
+        for index, kind, sample in _phase_samples(row)
+    ]
+    robot_scene = []
+    for phase_id, index, kind, sample in collision_samples:
+        try:
+            force = float(sample.get("robot_scene_contact_peak_force_n"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(force):
+            robot_scene.append((phase_id, index, kind, force))
+    positive = [row for row in robot_scene if row[3] > 0.0]
+    first_force = positive[0][3] if positive else 0.0
+    peak_force = max((row[3] for row in robot_scene), default=0.0)
+    contact_ids = [
+        phase_id
+        for phase_id in by_id
+        if phase_id == "push_contact"
+        or (
+            phase_id.startswith("push_")
+            and phase_id not in {"push_release"}
+        )
+    ]
+    contact_samples = [
+        sample for phase_id in contact_ids for _index, _kind, sample in _phase_samples(by_id[phase_id])
+    ]
+    covered = sum(
+        1
+        for sample in contact_samples
+        if float(sample.get("task_robot_contact_peak_force_n") or 0.0)
+        >= contact_threshold
+    )
+    phase_plan = {
+        str(row.get("phase_id") or ""): row
+        for row in plan.get("phases") or []
+        if isinstance(row, Mapping)
+    }
+    push_errors = []
+    for phase_id in contact_ids:
+        if phase_id == "push_contact":
+            continue
+        expected = (phase_plan.get(phase_id) or {}).get(
+            "expected_scoring_position_world_m"
+        )
+        terminal = _pose_from_sample(_sample(by_id[phase_id]))
+        if isinstance(expected, list) and terminal is not None:
+            push_errors.append(math.dist(expected, terminal[:3]))
+    destination = plan.get("destination_position_world_m")
+    settle = by_id.get("settle_observe")
+    final_pose = _pose_from_sample(_sample(settle)) if settle is not None else None
+    destination_error = (
+        math.dist(destination, final_pose[:3])
+        if isinstance(destination, list) and final_pose is not None
+        else None
+    )
+    result: dict[str, Any] = {
+        "schema_version": (
+            "task_evaluation_native_construction_physics_objective_measurements.v1"
+        ),
+        "forbidden_robot_scene_collision_peak_force_n": peak_force,
+        "forbidden_robot_scene_collision_first_sample_force_n": first_force,
+        "required_task_contact_covered_sample_count": covered,
+        "required_task_contact_sample_count": len(contact_samples),
+        "required_task_contact_coverage_fraction": (
+            covered / len(contact_samples) if contact_samples else 0.0
+        ),
+        "push_path_tracking_error_m": max(push_errors, default=None),
+        "destination_error_m": destination_error,
+        "native_thresholds_changed": False,
+        "native_verdict_recomputed": False,
+        "measurement_only_not_native_grade": True,
+        "native_result_digest": native.get("result_digest"),
+        "measurement_digest": "",
+    }
+    result["measurement_digest"] = canonical_digest(
+        result, digest_field="measurement_digest"
+    )
+    return result
+
+
 def summarize_native_construction_feedback(
     native_result: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -537,6 +655,7 @@ def summarize_native_construction_feedback(
     )
     phases: list[dict[str, Any]] = []
     first_collision: dict[str, Any] | None = None
+    peak_collision: dict[str, Any] | None = None
     first_failed_phase: str | None = None
     collision_channels = (
         "robot_scene_contact",
@@ -567,20 +686,36 @@ def summarize_native_construction_feedback(
             contacts[f"{channel}_peak_force_n"] = (
                 force if force is not None and math.isfinite(force) else None
             )
-            if (
-                first_collision is None
-                and channel in collision_channels
-                and force is not None
-                and math.isfinite(force)
-                and force > 0.0
-            ):
-                first_collision = {
+        phase_first_collision = None
+        phase_peak_collision = None
+        for sample_index, sample_kind, measured in _phase_samples(raw):
+            for channel in collision_channels:
+                try:
+                    force = float(measured.get(f"{channel}_peak_force_n"))
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(force) or force <= 0.0:
+                    continue
+                collision = {
                     "phase_id": str(raw.get("phase_id") or ""),
+                    "sample_index": sample_index,
+                    "sample_kind": sample_kind,
                     "channel": channel,
                     "peak_force_n": force,
-                    "link_or_sensor_id": _first_link_hint(sample, channel),
+                    "link_or_sensor_id": _first_link_hint(measured, channel),
                     "measurement_only_not_regraded": True,
                 }
+                if first_collision is None:
+                    first_collision = collision
+                if phase_first_collision is None:
+                    phase_first_collision = collision
+                if peak_collision is None or force > peak_collision["peak_force_n"]:
+                    peak_collision = collision
+                if (
+                    phase_peak_collision is None
+                    or force > phase_peak_collision["peak_force_n"]
+                ):
+                    phase_peak_collision = collision
         target_reached = raw.get("target_reached") is True
         if first_failed_phase is None and not target_reached:
             first_failed_phase = str(raw.get("phase_id") or "")
@@ -598,6 +733,8 @@ def summarize_native_construction_feedback(
                 "task_pose_world": pose,
                 "task_displacement_from_reset_m": displacement,
                 "contacts": contacts,
+                "first_collision_sample": phase_first_collision,
+                "peak_collision_sample": phase_peak_collision,
             }
         )
     cameras: dict[str, Any] = {}
@@ -621,6 +758,19 @@ def summarize_native_construction_feedback(
             ),
             "blockers": list(best.get("blockers") or []),
         }
+    gate_failure_codes = sorted(
+        {
+            "gate_failed:" + blocker.split(":", 1)[1]
+            for blocker in native["blockers"]
+            if isinstance(blocker, str)
+            and blocker.startswith(
+                (
+                    "native_rigid_construction_gate_failed:",
+                    "native_articulated_construction_gate_failed:",
+                )
+            )
+        }
+    )
     feedback: dict[str, Any] = {
         "schema_version": FEEDBACK_SCHEMA_VERSION,
         "native_result_digest": native["result_digest"],
@@ -637,8 +787,13 @@ def summarize_native_construction_feedback(
         ),
         "first_failed_phase": first_failed_phase,
         "first_collision": first_collision,
+        "peak_collision": peak_collision,
+        "feedback_codes": gate_failure_codes,
         "phase_measurements": phases,
         "camera_measurements": cameras,
+        "physics_objective_measurements": _physics_objective_measurements(
+            native, native.get("phase_results") or []
+        ),
         "claim_boundary": (
             "measured_native_feedback_only;does_not_change_or_recompute_any_"
             "construction_gate"
@@ -723,7 +878,9 @@ def native_construction_feedback_codes(
         raise NativeConstructionFeedbackControllerError(
             "native_construction_feedback_invalid"
         )
-    codes: set[str] = set()
+    codes: set[str] = {
+        str(code) for code in value.get("feedback_codes") or [] if str(code)
+    }
     failed = str(value.get("first_failed_phase") or "")
     if failed:
         codes.add(f"phase_unreached:{failed}")

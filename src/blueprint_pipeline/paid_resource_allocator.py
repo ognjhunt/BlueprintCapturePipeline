@@ -215,6 +215,7 @@ from .native_task_arena_warm_vast import (
 from .native_task_arena_feedback_allocator_adapter import (
     continue_retained_feedback_if_requested,
     native_feedback_runtime_blockers,
+    terminal_feedback_bootstrap_blockers,
 )
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
@@ -1821,6 +1822,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Sealed retained-worker receipt. With a warm-attempt authority, "
             "attach the controls bundle without allocating another GPU."
         ),
+    )
+    gpu.add_argument(
+        "--native-task-arena-terminal-feedback-adoption",
+        help="Exact checkpoint for retained bootstrap without baseline replay.",
     )
     gpu.add_argument("--adp009d-sage-collision")
     gpu.add_argument("--adp009d-harness-manifest")
@@ -5129,6 +5134,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             any_policy_requested = policy_requested or policy_diagnostic_requested
             warm_attach_requested = bool(args.native_task_arena_warm_session)
+            feedback_bootstrap_requested = bool(
+                args.native_task_arena_terminal_feedback_adoption
+            )
             missing = [
                 name
                 for name in (
@@ -5145,6 +5153,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.native_task_arena_construction_result
             ):
                 missing.append("native_task_arena_construction_result")
+            if feedback_bootstrap_requested and (
+                preflight_requested or controls_requested or any_policy_requested or warm_attach_requested
+                or not args.native_task_arena_retain_warm_session
+            ):
+                missing.append("native_task_arena_feedback_bootstrap_mode_invalid")
             if any_policy_requested and not args.native_task_arena_control_result:
                 missing.append("native_task_arena_control_result")
             if any_policy_requested and not args.native_task_arena_policy_execution_spec:
@@ -5333,12 +5346,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 ),
                             )
                             if controls_requested
-                            else build_native_task_arena_construction_bundle(**bundle_kwargs)
+                            else build_native_task_arena_construction_bundle(
+                                **bundle_kwargs, terminal_feedback_adoption_path=args.native_task_arena_terminal_feedback_adoption
+                            )
                         )
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     blockers.append(
                         f"native_task_arena_bundle_preparation_failed:{type(exc).__name__}"
                     )
+            blockers.extend(
+                terminal_feedback_bootstrap_blockers(
+                    packet_dir=args.native_task_arena_packet,
+                    prepared_bundle=prepared_bundle,
+                    adoption_path=args.native_task_arena_terminal_feedback_adoption,
+                )
+            )
             if (
                 any_policy_requested
                 and prepared_bundle is not None
@@ -5664,6 +5686,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
                     hard_cap_usd=args.adp_max_spend_usd,
                     hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                    terminal_feedback_adoption_path=(
+                        args.native_task_arena_terminal_feedback_adoption
+                    ),
                 )
             result = _write_native_task_arena_adapter_output(
                 args.adapter_output, result

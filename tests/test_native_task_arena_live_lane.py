@@ -1105,6 +1105,72 @@ def test_construction_profile_forwards_digest_bound_warm_retention(lane) -> None
     assert "--native-task-arena-retain-warm-session" in argv
 
 
+def test_construction_profile_routes_terminal_feedback_bootstrap(
+    lane, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority_path = lane["authorities"]["construction"]
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    authority["retain_warm_session"] = True
+    authority["authorization_digest"] = canonical_digest(
+        authority, digest_field="authorization_digest"
+    )
+    write_json(authority_path, authority)
+    request = json.loads(
+        (lane["packet"] / builder.PACKET_REQUEST_NAME).read_text(encoding="utf-8")
+    )
+    adoption_path = tmp_path / "terminal-feedback-adoption.json"
+    write_json(
+        adoption_path,
+        {"packet_request_digest": request["request_digest"]},
+    )
+    adoption_digest = builder.file_digest(adoption_path)
+    original_loader = builder.BUNDLE_LOADERS[builder.CONSTRUCTION_PROBE_KIND]
+
+    def loader(*args, **kwargs):
+        prepared = dict(original_loader(*args, **kwargs))
+        prepared["bound_runtime_inputs"] = [
+            *list(prepared.get("bound_runtime_inputs") or []),
+            {
+                "relative_path": (
+                    "runtime_inputs/"
+                    "native_construction_terminal_feedback_adoption.v1.json"
+                ),
+                "sha256": adoption_digest,
+            },
+        ]
+        return prepared
+
+    monkeypatch.setitem(
+        builder.BUNDLE_LOADERS,
+        builder.CONSTRUCTION_PROBE_KIND,
+        loader,
+    )
+    monkeypatch.setattr(
+        builder, "validate_terminal_feedback_adoption", lambda value: value
+    )
+    monkeypatch.setattr(
+        builder,
+        "validate_native_task_arena_paid_attempt_authority",
+        lambda *_args, **_kwargs: authority,
+    )
+
+    profile = _build(
+        lane,
+        "construction",
+        terminal_feedback_adoption_path=adoption_path,
+    )
+
+    argv = profile["allocator"]["argv"]
+    assert argv[argv.index("--native-task-arena-terminal-feedback-adoption") + 1] == str(
+        adoption_path
+    )
+    assert any(
+        row["name"] == "native_task_arena_terminal_feedback_adoption"
+        and row["digest"] == adoption_digest
+        for row in profile["immutable_inputs"]
+    )
+
+
 def test_controls_profile_forwards_authorized_external_active_instances(lane) -> None:
     authority_path = lane["authorities"]["controls"]
     authority = json.loads(authority_path.read_text(encoding="utf-8"))

@@ -52,6 +52,8 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "task_evaluation_curobo_candidate_service.py",
     "native_task_curobo_path_execution.py",
     "native_task_servo_command_limits.py",
+    "native_construction_terminal_feedback_contract.py",
+    "native_task_arena_feedback_bootstrap_runtime.py",
 )
 
 RUNTIME_PREFLIGHT_MODULE_NAMES = tuple(

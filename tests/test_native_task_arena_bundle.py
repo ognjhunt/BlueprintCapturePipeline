@@ -3130,6 +3130,70 @@ def test_construction_bundle_cli_supplies_exact_phase_plan_override(
     assert observed["construction_phase_plan_override"] == override
 
 
+def test_construction_bundle_binds_terminal_feedback_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    scene = {
+        "schema_version": "native_task_arena_scene_plan.v1",
+        "plan_digest": "sha256:" + "1" * 64,
+    }
+    request = {
+        "request_digest": "sha256:" + "2" * 64,
+        "native_construction_feedback": {
+            "candidate_universe": {
+                "inventory_digest": "sha256:" + "3" * 64
+            }
+        },
+    }
+    write_json(packet / "native_task_arena_scene_plan.v1.json", scene)
+    write_json(packet / "native_task_arena_packet_request.v1.json", request)
+    adoption = {
+        "packet_request_digest": request["request_digest"],
+        "candidate_universe_digest": "sha256:" + "3" * 64,
+    }
+    adoption_path = tmp_path / "adoption.json"
+    write_json(adoption_path, adoption)
+    phase_plan = {
+        "schema_version": "native_rigid_construction_phase_plan.v1",
+        "scene_plan_digest": scene["plan_digest"],
+        "phases": [],
+        "phase_count": 0,
+        "plan_digest": "sha256:" + "4" * 64,
+    }
+    observed = {}
+    monkeypatch.setattr(
+        construction_bundle_module,
+        "materialize_native_task_construction_phase_plan",
+        lambda _scene: phase_plan,
+    )
+    monkeypatch.setattr(
+        construction_bundle_module,
+        "validate_native_construction_terminal_feedback_adoption",
+        lambda value: value,
+    )
+
+    def build(**kwargs):
+        observed.update(kwargs)
+        return {"status": "ready"}
+
+    monkeypatch.setattr(construction_bundle_module, "build_native_task_arena_bundle", build)
+    result = build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "bundle",
+        packet_dir=packet,
+        runtime_source_packet_receipt=tmp_path / "runtime.json",
+        implementation_commit="a" * 40,
+        terminal_feedback_adoption_path=adoption_path,
+    )
+
+    assert result["status"] == "ready"
+    assert set(observed["bound_runtime_inputs"]) == {
+        "native_task_construction_phase_plan.v1.json",
+        "native_construction_terminal_feedback_adoption.v1.json",
+    }
+
+
 @pytest.mark.parametrize("execute", [False, True])
 def test_canonical_allocator_routes_sealed_native_task_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool

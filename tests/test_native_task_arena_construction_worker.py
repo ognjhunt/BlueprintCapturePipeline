@@ -18,7 +18,10 @@ from blueprint_pipeline.native_task_arena_construction_worker import (
     _retain_task_path_samples,
     _task_joint_reset_passed,
     _terminal_grasp_frame_arrival_readback,
-    _verified_construction_phase_plan_path,
+)
+from blueprint_pipeline.native_task_arena_feedback_bootstrap_runtime import (
+    verified_construction_phase_plan_path,
+    verified_terminal_feedback_adoption_path,
 )
 from blueprint_pipeline.native_task_arena_import_scope import ROBOT_EMBODIMENT_MODULES
 from blueprint_pipeline.native_task_runtime_source_provision import TOP_LEVEL_PACKAGES
@@ -275,14 +278,45 @@ def test_worker_reverifies_frozen_construction_plan_before_native_startup(
         ]
     }
 
-    assert _verified_construction_phase_plan_path(tmp_path, manifest) == plan
+    assert verified_construction_phase_plan_path(tmp_path, manifest) == plan
     plan.write_text("tampered\n", encoding="utf-8")
     try:
-        _verified_construction_phase_plan_path(tmp_path, manifest)
+        verified_construction_phase_plan_path(tmp_path, manifest)
     except RuntimeError as exc:
         assert str(exc) == "native_task_construction_phase_plan_identity_mismatch"
     else:
         raise AssertionError("tampered construction phase plan was accepted")
+
+
+def test_worker_reverifies_optional_terminal_feedback_bootstrap_input(
+    tmp_path: Path,
+) -> None:
+    runtime_inputs = tmp_path / "runtime_inputs"
+    runtime_inputs.mkdir()
+    plan = runtime_inputs / "native_task_construction_phase_plan.v1.json"
+    adoption = (
+        runtime_inputs / "native_construction_terminal_feedback_adoption.v1.json"
+    )
+    plan.write_text("{}\n", encoding="utf-8")
+    adoption.write_text('{"checkpoint_digest":"sha256:fixture"}\n', encoding="utf-8")
+
+    def row(path: Path) -> dict:
+        return {
+            "relative_path": "runtime_inputs/" + path.name,
+            "size_bytes": path.stat().st_size,
+            "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+
+    manifest = {"bound_runtime_inputs": [row(plan), row(adoption)]}
+    assert verified_construction_phase_plan_path(tmp_path, manifest) == plan
+    assert verified_terminal_feedback_adoption_path(tmp_path, manifest) == adoption
+    adoption.write_text("tampered\n", encoding="utf-8")
+    try:
+        verified_terminal_feedback_adoption_path(tmp_path, manifest)
+    except RuntimeError as exc:
+        assert str(exc) == "native_task_terminal_feedback_adoption_invalid"
+    else:
+        raise AssertionError("tampered terminal feedback adoption was accepted")
 
 
 def test_rigid_initial_support_force_is_not_misclassified_as_penetration() -> None:

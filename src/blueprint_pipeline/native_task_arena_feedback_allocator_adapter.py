@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -11,6 +12,9 @@ from typing import Any
 from .common import write_json
 from .task_evaluation_robot_placement_warm_executor import (
     run_retained_native_construction_feedback,
+)
+from .native_construction_terminal_feedback_contract import (
+    validate_terminal_feedback_adoption,
 )
 
 
@@ -33,6 +37,47 @@ def native_feedback_runtime_blockers(packet_dir: str | Path | None) -> list[str]
     request = _mapping(
         request_path, blocker="native_construction_feedback_packet_request_invalid"
     )
+    if not isinstance(request.get("native_construction_feedback"), Mapping):
+        return []
+
+
+def terminal_feedback_bootstrap_blockers(
+    *,
+    packet_dir: str | Path | None,
+    prepared_bundle: Mapping[str, Any] | None,
+    adoption_path: str | Path | None,
+) -> list[str]:
+    if adoption_path is None:
+        return []
+    try:
+        path = Path(adoption_path).expanduser().resolve()
+        adoption = validate_terminal_feedback_adoption(
+            _mapping(
+                path,
+                blocker="native_construction_terminal_feedback_adoption_invalid",
+            )
+        )
+        request = _mapping(
+            Path(str(packet_dir)) / "native_task_arena_packet_request.v1.json",
+            blocker="native_construction_feedback_packet_request_invalid",
+        )
+        rows = [
+            row
+            for row in (prepared_bundle or {}).get("bound_runtime_inputs") or []
+            if isinstance(row, Mapping)
+            and Path(str(row.get("relative_path") or "")).name
+            == "native_construction_terminal_feedback_adoption.v1.json"
+        ]
+        digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        if (
+            len(rows) != 1
+            or rows[0].get("sha256") != digest
+            or adoption.get("packet_request_digest") != request.get("request_digest")
+        ):
+            raise ValueError("binding_mismatch")
+    except (OSError, ValueError, TypeError):
+        return ["native_construction_terminal_feedback_bootstrap_invalid"]
+    return []
     if not isinstance(request.get("native_construction_feedback"), Mapping):
         return []
     try:
@@ -60,6 +105,7 @@ def continue_retained_feedback_if_requested(
     max_hourly_rate_usd: float,
     hard_cap_usd: float,
     hard_ttl_seconds: int,
+    terminal_feedback_adoption_path: str | Path | None = None,
 ) -> dict[str, Any]:
     value = dict(result)
     if not (
@@ -78,6 +124,28 @@ def continue_retained_feedback_if_requested(
     feedback = request.get("native_construction_feedback")
     if not isinstance(feedback, Mapping):
         return value
+    if terminal_feedback_adoption_path is not None:
+        adoption_path = Path(terminal_feedback_adoption_path).expanduser().resolve()
+        adoption = validate_terminal_feedback_adoption(
+            _mapping(
+                adoption_path,
+                blocker="native_construction_terminal_feedback_adoption_invalid",
+            )
+        )
+        expected = [
+            row
+            for row in prepared_bundle.get("bound_runtime_inputs") or []
+            if isinstance(row, Mapping)
+            and Path(str(row.get("relative_path") or "")).name
+            == "native_construction_terminal_feedback_adoption.v1.json"
+        ]
+        digest = "sha256:" + hashlib.sha256(adoption_path.read_bytes()).hexdigest()
+        if (
+            len(expected) != 1
+            or expected[0].get("sha256") != digest
+            or adoption.get("packet_request_digest") != request.get("request_digest")
+        ):
+            raise ValueError("native_construction_terminal_feedback_bundle_mismatch")
     controller = run_retained_native_construction_feedback(
         cold_allocator_result=value,
         packet_dir=packet,
@@ -91,6 +159,7 @@ def continue_retained_feedback_if_requested(
         hard_cap_usd=hard_cap_usd,
         hard_ttl_seconds=hard_ttl_seconds,
         maximum_rounds=min(int(feedback.get("maximum_rounds") or 4), 8),
+        terminal_feedback_adoption_path=terminal_feedback_adoption_path,
     )
     value["native_construction_feedback_controller"] = controller
     if controller.get("status") != "controls_completed":
@@ -125,4 +194,5 @@ def continue_retained_feedback_if_requested(
 __all__ = [
     "continue_retained_feedback_if_requested",
     "native_feedback_runtime_blockers",
+    "terminal_feedback_bootstrap_blockers",
 ]
