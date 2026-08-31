@@ -41,8 +41,8 @@ Environment=PIPELINE_SYNC_REQUIRED=true
 Environment=RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
-ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.production_runtime_env_guard; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_runtime_env_guard'
-ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/blueprint-live-pipeline-intake-service ]; then exec .venv/bin/blueprint-live-pipeline-intake-service; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.live_pipeline_intake_service; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.live_pipeline_intake_service'
+ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -n "$${BLUEPRINT_PIPELINE_PYTHON:-}" ] && [ -x "$${BLUEPRINT_PIPELINE_PYTHON}" ]; then exec "$${BLUEPRINT_PIPELINE_PYTHON}" -m blueprint_pipeline.production_runtime_env_guard; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.production_runtime_env_guard; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_runtime_env_guard'
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -n "$${BLUEPRINT_PIPELINE_PYTHON:-}" ] && [ -x "$${BLUEPRINT_PIPELINE_PYTHON}" ]; then exec "$${BLUEPRINT_PIPELINE_PYTHON}" -m blueprint_pipeline.live_pipeline_intake_service; fi; if [ -x .venv/bin/blueprint-live-pipeline-intake-service ]; then exec .venv/bin/blueprint-live-pipeline-intake-service; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.live_pipeline_intake_service; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.live_pipeline_intake_service'
 Restart=on-failure
 RestartSec=5
 Nice=5
