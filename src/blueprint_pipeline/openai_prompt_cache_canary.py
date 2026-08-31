@@ -149,10 +149,25 @@ def run_mechanics_canary(
     output_root.mkdir(parents=True, exist_ok=True, mode=0o750)
     report_path = output_root / "openai_prompt_cache_mechanics_canary.v1.json"
 
-    prefix_v1 = _stable_prefix("mechanics-v1")
-    prefix_v2 = _stable_prefix("mechanics-v2")
-    policy_v1 = _policy(contract_version="mechanics-v1", stable_prefix=prefix_v1, reuse_count=2)
-    policy_v2 = _policy(contract_version="mechanics-v2", stable_prefix=prefix_v2, reuse_count=1)
+    # A canary must prove a cold write for the exact deployed source even when
+    # an earlier canary ran inside the provider TTL. Deployment identity is a
+    # stable contract dimension, unlike the per-call run IDs kept after the
+    # breakpoint, so it deliberately isolates canary generations.
+    cache_generation = source_commit[:12]
+    contract_v1 = f"mechanics-v1-{cache_generation}"
+    contract_v2 = f"mechanics-v2-{cache_generation}"
+    prefix_v1 = _stable_prefix(contract_v1)
+    prefix_v2 = _stable_prefix(contract_v2)
+    policy_v1 = _policy(
+        contract_version=contract_v1,
+        stable_prefix=prefix_v1,
+        reuse_count=2,
+    )
+    policy_v2 = _policy(
+        contract_version=contract_v2,
+        stable_prefix=prefix_v2,
+        reuse_count=1,
+    )
     one_off_policy = create_prompt_cache_policy(
         model=model,
         family="prompt_cache_mechanics_one_off",
@@ -291,6 +306,7 @@ def run_mechanics_canary(
         "status": "passed" if not blockers else "failed",
         "model": model,
         "source_commit": source_commit,
+        "cache_generation": cache_generation,
         "source_commit_matches_checkout_head": verify_source_commit,
         "request_count": len(records),
         "exact_request_count": EXACT_REQUEST_COUNT,
