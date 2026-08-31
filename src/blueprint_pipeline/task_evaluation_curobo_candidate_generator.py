@@ -249,11 +249,18 @@ fi
 test "$(git -C "$root" rev-parse HEAD)" = {CUROBO_BACKEND_IDENTITY['source_revision']}
 test "$(git -C "$root" rev-parse 'HEAD^{{tree}}')" = {CUROBO_BACKEND_IDENTITY['source_tree']}
 test "sha256:$(sha256sum "$root/LICENSE" | cut -d' ' -f1)" = {CUROBO_BACKEND_IDENTITY['license_sha256']}
-/isaac-sim/python.sh -m pip install -e "$root" --no-deps --no-build-isolation
+# nvidia-curobo declares a dynamic version that setuptools_scm resolves from
+# git metadata. The pinned checkout is a depth-1 fetch of a bare revision, so
+# it carries no tags, git describe finds nothing, and the built distribution
+# reports a dev version instead of the release. That made the version check
+# below fail on every provisioning attempt after a clean clone and install.
+# Pin it to the identity the revision, tree and license digests already prove.
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_NVIDIA_CUROBO={CUROBO_BACKEND_IDENTITY['package_version']} \
+  /isaac-sim/python.sh -m pip install -e "$root" --no-deps --no-build-isolation
 PYTHONPATH="$root" /isaac-sim/python.sh - <<'PY'
 import importlib.metadata
 import curobo
-assert importlib.metadata.version("nvidia-curobo") == "0.8.0"
+assert importlib.metadata.version("{CUROBO_BACKEND_IDENTITY['package_name']}") == "{CUROBO_BACKEND_IDENTITY['package_version']}"
 assert str(curobo.__version__).lstrip("v") == "0.8.0"
 PY
 printf '%s\n' BLUEPRINT_CUROBO_RUNTIME_READY
