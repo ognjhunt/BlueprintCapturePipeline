@@ -54,6 +54,9 @@ WORKER_RESULT_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_
 CONFIGURED_CONTROLS_KEY_PREFIX = (
     "task-evaluation/production-inputs/configured-controls"
 )
+CONFIGURED_CONTROLS_RELEASE_WINDOW_KEY_PREFIX = (
+    "task-evaluation/production-inputs/coordinator-release-windows"
+)
 Submitter = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 PublisherFactory = Callable[[], Callable[..., Mapping[str, Any]]]
 
@@ -67,6 +70,14 @@ def configured_controls_object_store_publisher() -> Callable[..., Mapping[str, A
 
     return configured_scene_object_store_publisher(
         key_prefix=CONFIGURED_CONTROLS_KEY_PREFIX
+    )
+
+
+def configured_controls_release_window_publisher() -> Callable[..., Mapping[str, Any]]:
+    """Publish coordinator authority under the activation worker's exact prefix."""
+
+    return configured_scene_object_store_publisher(
+        key_prefix=CONFIGURED_CONTROLS_RELEASE_WINDOW_KEY_PREFIX
     )
 
 
@@ -708,6 +719,9 @@ def advance_configured_controls_plan(
     preparation_queue_root: str | Path,
     activation_queue_root: str | Path,
     publisher_factory: PublisherFactory = configured_controls_object_store_publisher,
+    release_window_publisher_factory: PublisherFactory = (
+        configured_controls_release_window_publisher
+    ),
     submitter: Submitter | None = None,
     repo_root: str | Path | None = None,
     webapp_secret_file: str | Path | None = None,
@@ -804,7 +818,7 @@ def advance_configured_controls_plan(
             authorization=authorization,
             lane="native_task_arena_construction",
             root=state,
-            publisher=publisher_factory(),
+            publisher=release_window_publisher_factory(),
         )
         result = stage_configured_controls_activation(
             progression=base,
@@ -879,7 +893,7 @@ def advance_configured_controls_plan(
             authorization=authorization,
             lane="native_task_arena_controls",
             root=state,
-            publisher=publisher_factory(),
+            publisher=release_window_publisher_factory(),
             lineage_artifact_paths=artifact_paths,
         )
         result = stage_configured_controls_activation(

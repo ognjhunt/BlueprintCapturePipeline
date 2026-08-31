@@ -1460,12 +1460,14 @@ def _load_rights_evidence(value: Any) -> list[dict[str, Any]]:
 def _validate_provider_packet_source_rights(
     *,
     packet_receipt: Mapping[str, Any],
+    packet_request: Mapping[str, Any] | None = None,
     source_manifest: Mapping[str, Any],
     configured_scene_revision: Mapping[str, Any] | None = None,
     rights_admission: Mapping[str, Any] | None = None,
 ) -> None:
     """Require every provider-staged source binding to be upload-admitted."""
 
+    packet_request = packet_request or {}
     bindings = packet_receipt.get("source_bindings")
     artifacts = source_manifest.get("artifacts")
     if (
@@ -1479,6 +1481,12 @@ def _validate_provider_packet_source_rights(
             "native_task_arena_provider_source_rights_invalid"
         )
     admitted: set[tuple[str, int]] = set()
+    appearance_variant = packet_request.get("appearance_variant")
+    request_digest_valid = (
+        packet_request.get("request_digest")
+        == packet_receipt.get("request_digest")
+        == _canonical_artifact_digest(packet_request, digest_field="request_digest")
+    )
     if configured_scene_revision is not None:
         disclosure = (configured_scene_revision.get("source") or {}).get(
             "provider_disclosure_decision"
@@ -1536,8 +1544,31 @@ def _validate_provider_packet_source_rights(
             and isinstance(staged_pair[1], int)
             and re.fullmatch(r"sha256:[0-9a-f]{64}", staged_pair[0]) is not None
         )
-        if source_pair not in admitted or not (
-            staged_matches_source or staged_is_bound_adaptation
+        configured_appearance = (
+            (configured_scene_revision.get("appearance") or {}).get(
+                "configured_representation"
+            )
+            if configured_scene_revision is not None
+            else None
+        )
+        staged_is_bound_particlefield = (
+            raw.get("semantic_role") == "scene_appearance"
+            and request_digest_valid
+            and isinstance(appearance_variant, Mapping)
+            and appearance_variant.get("representation")
+            == "particlefield_3d_gaussian_splat"
+            and appearance_variant.get("representation_conversion_performed") is True
+            and appearance_variant.get("exact_learned_arrays_preserved") is True
+            and isinstance(configured_appearance, Mapping)
+            and appearance_variant.get("source_configured_appearance_digest")
+            == configured_appearance.get("digest")
+            and source_pair == staged_pair
+        )
+        source_is_admitted = source_pair in admitted or staged_is_bound_particlefield
+        if not source_is_admitted or not (
+            staged_matches_source
+            or staged_is_bound_adaptation
+            or staged_is_bound_particlefield
         ):
             raise PaidLaneLaunchPreparationError(
                 "native_task_arena_provider_source_rights_invalid"
@@ -1852,6 +1883,11 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
             )
     try:
         packet_receipt = json.loads(packet_receipt_path.read_text(encoding="utf-8"))
+        packet_request = json.loads(
+            (packet_dir / "native_task_arena_packet_request.v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
         runtime_contract = json.loads(runtime_contract_path.read_text(encoding="utf-8"))
         runtime_source = json.loads(runtime_source_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -1861,6 +1897,7 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
     container_image = str(runtime.get("container_image") or "")
     _validate_provider_packet_source_rights(
         packet_receipt=packet_receipt,
+        packet_request=packet_request,
         source_manifest=source_manifest,
         configured_scene_revision=configured_scene_revision,
         rights_admission=rights_admission,
