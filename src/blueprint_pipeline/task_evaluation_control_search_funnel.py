@@ -14,7 +14,6 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-from .native_task_arena_packet import validate_native_task_arena_packet_request
 from .task_evaluation_collision_aware_candidate_generation import (
     INVENTORY_SCHEMA_VERSION,
 )
@@ -537,6 +536,8 @@ def build_full_fidelity_replay_plan(
     sweep = validate_control_search_sweep_result(
         sweep_result, plan=frozen_plan
     )
+    from .native_task_arena_packet import validate_native_task_arena_packet_request
+
     try:
         packet = validate_native_task_arena_packet_request(
             full_fidelity_packet_request
