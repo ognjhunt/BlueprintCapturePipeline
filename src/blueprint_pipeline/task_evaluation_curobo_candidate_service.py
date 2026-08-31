@@ -176,6 +176,8 @@ def _generate(request: Mapping[str, Any]) -> dict[str, Any]:
         request.get("schema_version") != REQUEST_SCHEMA_VERSION
         or request.get("backend_identity") != CUROBO_BACKEND_IDENTITY
         or request.get("required_stage_kinds") != list(REQUIRED_STAGE_KINDS)
+        or os.environ.get("BLUEPRINT_SOURCE_COMMIT")
+        != request.get("expected_production_commit")
         or request.get("request_digest")
         != canonical_digest(request, digest_field="request_digest")
     ):

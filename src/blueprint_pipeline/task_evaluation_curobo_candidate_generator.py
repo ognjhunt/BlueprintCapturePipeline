@@ -6,7 +6,7 @@ import sys
 import json
 import re
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_json
@@ -93,7 +93,13 @@ class RemoteCuroboCandidateGenerator:
         remote_python_package_root: str,
         identity_file: str | Path | None = None,
     ) -> None:
-        if not re.fullmatch(r"/workspace/[A-Za-z0-9_./-]+", remote_python_package_root):
+        remote_root = PurePosixPath(remote_python_package_root)
+        if (
+            not re.fullmatch(r"/workspace/[A-Za-z0-9_./-]+", remote_python_package_root)
+            or not remote_root.is_absolute()
+            or ".." in remote_root.parts
+            or remote_root.parts[:2] != ("/", "workspace")
+        ):
             raise CollisionAwareCandidateGenerationError(
                 "curobo_remote_runtime_root_invalid"
             )
@@ -164,6 +170,7 @@ class RemoteCuroboCandidateGenerator:
                 "BLUEPRINT_CUROBO_SOURCE_REVISION="
                 + CUROBO_BACKEND_IDENTITY["source_revision"]
             ),
+            "BLUEPRINT_SOURCE_COMMIT=" + self._context.expected_production_commit,
             "/isaac-sim/python.sh",
             "-m",
             "blueprint_pipeline.task_evaluation_curobo_candidate_service",
