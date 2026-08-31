@@ -100,4 +100,16 @@ def validate_policy_canary_setup(value: Mapping[str, Any]) -> dict[str, Any]:
     return setup
 
 
-__all__ = ["SCHEMA_PATH", "SCHEMA_VERSION", "TaskEvaluationPolicyCanarySetupError", "policy_canary_setup_schema", "validate_policy_canary_setup"]
+def policy_canary_setup_blockers(
+    value: Any, *, prefix: str, source_launch_id: str | None = None
+) -> list[str]:
+    try:
+        setup = validate_policy_canary_setup(value if isinstance(value, Mapping) else {})
+    except TaskEvaluationPolicyCanarySetupError as exc:
+        return [f"{prefix}:{exc}"]
+    if source_launch_id is not None and setup["source_launch_id"] != source_launch_id:
+        return [f"{prefix}:source_launch_id_mismatch"]
+    return []
+
+
+__all__ = ["SCHEMA_PATH", "SCHEMA_VERSION", "TaskEvaluationPolicyCanarySetupError", "policy_canary_setup_blockers", "policy_canary_setup_schema", "validate_policy_canary_setup"]

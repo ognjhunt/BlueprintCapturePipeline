@@ -54,10 +54,7 @@ from .task_evaluation_policy_run_contract import (
     TaskEvaluationPolicyRunContractError,
     validate_policy_run_setup,
 )
-from .task_evaluation_policy_canary_setup import (
-    TaskEvaluationPolicyCanarySetupError,
-    validate_policy_canary_setup,
-)
+from .task_evaluation_policy_canary_setup import policy_canary_setup_blockers
 
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
@@ -438,14 +435,7 @@ def _validate_launch_profile(
         except TaskEvaluationPolicyRunContractError as exc:
             blockers.append(f"launch_profile_policy_run_setup_invalid:{exc}")
     if "internal_policy_canary_setup" in profile:
-        try:
-            canary_setup = validate_policy_canary_setup(
-                _mapping(profile.get("internal_policy_canary_setup"))
-            )
-            if canary_setup["source_launch_id"] != profile.get("profile_id"):
-                blockers.append("launch_profile_policy_canary_source_launch_id_invalid")
-        except TaskEvaluationPolicyCanarySetupError as exc:
-            blockers.append(f"launch_profile_policy_canary_setup_invalid:{exc}")
+        blockers.extend(policy_canary_setup_blockers(profile["internal_policy_canary_setup"], prefix="launch_profile_policy_canary_setup_invalid", source_launch_id=str(profile.get("profile_id") or "")))
     _validate_reference(profile.get("source_bundle"), field="source_bundle", blockers=blockers)
     profile_source = _mapping(profile.get("source_bundle"))
     if not _is_identifier(profile_source.get("bundle_id")):
@@ -741,12 +731,7 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
         except TaskEvaluationPolicyRunContractError as exc:
             blockers.append(f"launch_profile_public_policy_run_setup_invalid:{exc}")
     if "internal_policy_canary_setup" in descriptor:
-        try:
-            validate_policy_canary_setup(
-                _mapping(descriptor.get("internal_policy_canary_setup"))
-            )
-        except TaskEvaluationPolicyCanarySetupError as exc:
-            blockers.append(f"launch_profile_public_policy_canary_setup_invalid:{exc}")
+        blockers.extend(policy_canary_setup_blockers(descriptor["internal_policy_canary_setup"], prefix="launch_profile_public_policy_canary_setup_invalid"))
     authorization = _mapping(descriptor.get("required_authorization"))
     if set(authorization) != {"max_spend_usd", "hard_ttl_seconds"}:
         blockers.append("launch_profile_public_required_authorization_fields_invalid")
