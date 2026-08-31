@@ -61,6 +61,10 @@ def test_five_call_canary_retains_write_read_version_and_one_off_proof(
     )
 
     assert report["status"] == "passed"
+    assert report["cache_generation"] == "1" * 12
+    assert report["calls"][0]["cache_policy"]["contract_version"] == (
+        "mechanics-v1-" + "1" * 12
+    )
     assert report["request_count"] == 5
     assert report["retry_cap"] == 0
     assert report["provider_stable_prefix_write_tokens"] == 1_464
