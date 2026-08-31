@@ -160,7 +160,7 @@ def test_warm_cache_proof_survives_a_truncated_noisy_log_tail() -> None:
         "sha256:" + "a" * 64
     )
 
-    assert vpa._runtime_dependency_cache_ready(
+    assert vpa.runtime_dependency_cache_ready(
         startup_log_text=(
             "Error: remote port forwarding failed for listen port 14060\n"
         ),
