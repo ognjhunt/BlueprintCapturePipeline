@@ -1323,12 +1323,36 @@ def _reserve_receipt_output(path: str | Path) -> tuple[Path, int]:
 
 
 def _write_reserved_receipt(
-    output: Path, descriptor: int, receipt: Mapping[str, Any]
+    output: Path,
+    descriptor: int,
+    receipt: Mapping[str, Any],
+    *,
+    service_account: str | None,
+    service_group: str | None,
 ) -> None:
+    account_entry = None
+    group_entry = None
+    if service_account is not None or service_group is not None:
+        if not service_account or not service_group:
+            os.close(descriptor)
+            raise PaidLaneLaunchPreparationError(
+                "paid_lane_receipt_service_identity_invalid"
+            )
+        try:
+            account_entry = pwd.getpwnam(service_account)
+            group_entry = grp.getgrnam(service_group)
+        except KeyError as exc:
+            os.close(descriptor)
+            raise PaidLaneLaunchPreparationError(
+                "paid_lane_receipt_service_identity_invalid"
+            ) from exc
     payload = (json.dumps(dict(receipt), indent=2, sort_keys=True) + "\n").encode(
         "utf-8"
     )
     with os.fdopen(descriptor, "wb") as stream:
+        if account_entry is not None and group_entry is not None:
+            os.fchown(stream.fileno(), account_entry.pw_uid, group_entry.gr_gid)
+        os.fchmod(stream.fileno(), 0o440)
         stream.write(payload)
         stream.flush()
         os.fsync(stream.fileno())
@@ -2294,7 +2318,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             reserved_output.unlink(missing_ok=True)
         raise
     if reserved_output is not None and reserved_descriptor is not None:
-        _write_reserved_receipt(reserved_output, reserved_descriptor, receipt)
+        _write_reserved_receipt(
+            reserved_output,
+            reserved_descriptor,
+            receipt,
+            service_account=(
+                None
+                if args.validate_only
+                else str(context.get("service_account") or DEFAULT_SERVICE_ACCOUNT)
+            ),
+            service_group=(
+                None
+                if args.validate_only
+                else str(context.get("service_group") or DEFAULT_SERVICE_GROUP)
+            ),
+        )
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt["status"] in {"prepared", "validated_no_commands_run"} else 2
 

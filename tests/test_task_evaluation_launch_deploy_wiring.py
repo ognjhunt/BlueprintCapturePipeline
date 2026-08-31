@@ -39,6 +39,15 @@ def test_shell_wrapped_production_unit_commands_parse_before_deploy() -> None:
         assert completed.returncode == 0, f"{relative} {directive}: {completed.stderr}"
 
 
+def test_task_evaluation_dispatcher_optuna_guard_survives_systemd_parsing() -> None:
+    dispatcher = _text(
+        "deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service"
+    )
+
+    assert "optuna.__version__ == str(4)+chr(46)+str(9)+chr(46)+str(0)" in dispatcher
+    assert 'optuna.__version__ == \\\"4.9.0\\\"' not in dispatcher
+
+
 def test_canonical_allocator_dependencies_are_in_the_production_base() -> None:
     pyproject = _text("pyproject.toml")
     base_dependencies = pyproject.split("[project.optional-dependencies]", 1)[0]

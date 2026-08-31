@@ -179,6 +179,28 @@ def test_blocked_receipt_resumes_after_verified_completed_prefix(
     ]
 
 
+def test_reserved_receipt_is_installed_for_service_identity(tmp_path: Path) -> None:
+    account = pwd.getpwuid(os.getuid()).pw_name
+    group = grp.getgrgid(os.getgid()).gr_name
+    output, descriptor = prep._reserve_receipt_output(tmp_path / "receipt.json")
+
+    prep._write_reserved_receipt(
+        output,
+        descriptor,
+        {"status": "prepared"},
+        service_account=account,
+        service_group=group,
+    )
+
+    metadata = output.stat()
+    assert metadata.st_uid == os.getuid()
+    assert metadata.st_gid == os.getgid()
+    assert stat.S_IMODE(metadata.st_mode) == 0o440
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "status": "prepared"
+    }
+
+
 def test_a_failing_step_retains_redacted_digest_bound_stdout_and_stderr(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

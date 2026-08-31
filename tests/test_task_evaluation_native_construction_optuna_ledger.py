@@ -475,6 +475,9 @@ def test_resume_after_enqueue_before_ask_reuses_waiting_trial(
     receipt = resumed.record_attempt(round_record=record)
     assert receipt["optuna_trial"]["state"] == "pruned"
     assert len(resumed._study().trials) == 1
+    assert len(resumed._physics_study().trials) == 1
+
+
 def test_rejects_nonmember_and_repeated_candidate(tmp_path: Path) -> None:
     first, outsider = _candidate("candidate-a", 0), _candidate("candidate-z", 9)
     inventory = _inventory(0, first)
