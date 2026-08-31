@@ -908,9 +908,24 @@ def build_native_task_arena_environment(
     device: str = "cuda:0",
     bundle_root: str | Path | None = None,
     preconstruction_receipt: Mapping[str, Any] | None = None,
+    num_envs: int = 1,
+    enable_cameras: bool = True,
+    include_scene_appearance: bool = True,
+    render_mode: str | None = "rgb_array",
 ) -> NativeTaskArenaEnvironment:
     """Instantiate the pinned Arena environment from one immutable plan."""
 
+    if (
+        not isinstance(num_envs, int)
+        or isinstance(num_envs, bool)
+        or not 1 <= num_envs <= 1_024
+        or not isinstance(enable_cameras, bool)
+        or not isinstance(include_scene_appearance, bool)
+        or render_mode not in {None, "rgb_array"}
+    ):
+        raise NativeTaskArenaRuntimeError(
+            ["native_task_arena_vector_runtime_configuration_invalid"]
+        )
     plan = _validated_plan(scene_plan)
     runtime_objects = _resolve_portable_assets(plan, bundle_root=bundle_root)
     scenario_applications = list(
@@ -1064,7 +1079,7 @@ def build_native_task_arena_environment(
     robot = plan["robot"]
     robot_pose = robot["base_pose_world"]
     embodiment = DroidAbsoluteJointPositionEmbodiment(
-        enable_cameras=True,
+        enable_cameras=enable_cameras,
         initial_pose=Pose(
             position_xyz=tuple(robot_pose["position_world_m"]),
             rotation_xyzw=tuple(robot_pose["orientation_xyzw"]),
@@ -1096,7 +1111,7 @@ def build_native_task_arena_environment(
 
     camera_names: dict[str, str] = {}
     camera_configuration_readback: dict[str, dict[str, Any]] = {}
-    for camera in plan["cameras"]:
+    for camera in plan["cameras"] if enable_cameras else ():
         parameters = camera_runtime_parameters(camera)
         camera_cfg = getattr(embodiment.camera_config, parameters["runtime_name"])
         camera_cfg.prim_path = parameters["prim_path"]
@@ -1139,6 +1154,8 @@ def build_native_task_arena_environment(
     task_object: Any | None = None
     for row in runtime_objects:
         role = row["semantic_role"]
+        if role == "scene_appearance" and not include_scene_appearance:
+            continue
         runtime_name = str(row.get("name") or role)
         task_subject = row.get("task_subject") is True or role == "task_object"
         spawn_addon: dict[str, Any] = {"visible": bool(row["visible"])}
@@ -1308,7 +1325,7 @@ def build_native_task_arena_environment(
     builder = ArenaEnvBuilder(
         arena_env,
         ArenaEnvBuilderCfg(
-            num_envs=1,
+            num_envs=num_envs,
             env_spacing=2.0,
             seed=int(plan["scenario"]["seed"]),
             solve_relations=False,
@@ -1328,7 +1345,7 @@ def build_native_task_arena_environment(
             language_instruction=None,
         ),
     )
-    env, cfg = builder.make_registered_and_return_cfg(render_mode="rgb_array")
+    env, cfg = builder.make_registered_and_return_cfg(render_mode=render_mode)
     scenario_native_readback: dict[str, Any] = {}
     if light_application is not None or any(
         row.get("readback_kind") == "task_subject_link_dynamic_friction"
@@ -1385,6 +1402,12 @@ def build_native_task_arena_environment(
         preconstruction_device_binding=preconstruction,
         native_configuration_readback={
             "cameras": camera_configuration_readback,
+            "control_search_runtime": {
+                "num_envs": num_envs,
+                "cameras_enabled": enable_cameras,
+                "scene_appearance_included": include_scene_appearance,
+                "render_mode": render_mode,
+            },
             "scenario_parameters": scenario_native_readback,
             # Never silent: an asset spawned with its authored kinematic base
             # made dynamic and grounded is recorded, so a reader can see the
