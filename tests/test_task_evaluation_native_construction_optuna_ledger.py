@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import optuna
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -277,6 +278,35 @@ def test_resume_after_trial_tell_before_receipt_write_does_not_duplicate(
     assert len(resumed._study().trials) == 1
 
 
+def test_resume_after_enqueue_before_ask_reuses_waiting_trial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = _candidate("candidate-waiting", 0)
+    inventory = _inventory(0, candidate)
+    ledger = NativeConstructionOptunaSearchLedger(root=tmp_path, run_id=RUN_ID)
+    ledger.record_inventory(inventory=inventory)
+    record = _round_record(
+        inventory=inventory,
+        candidate=candidate,
+        passed=False,
+        search_state="exhausted_round_cap",
+    )
+    original_ask = optuna.study.Study.ask
+
+    def fail_ask(self, *args, **kwargs):
+        raise OSError("simulated ask interruption")
+
+    monkeypatch.setattr(optuna.study.Study, "ask", fail_ask)
+    with pytest.raises(OSError, match="ask interruption"):
+        ledger.record_attempt(round_record=record)
+    assert len(ledger._study().trials) == 1
+    assert ledger._study().trials[0].state.name == "WAITING"
+
+    monkeypatch.setattr(optuna.study.Study, "ask", original_ask)
+    resumed = NativeConstructionOptunaSearchLedger(root=tmp_path, run_id=RUN_ID)
+    receipt = resumed.record_attempt(round_record=record)
+    assert receipt["optuna_trial"]["state"] == "pruned"
+    assert len(resumed._study().trials) == 1
 def test_rejects_nonmember_and_repeated_candidate(tmp_path: Path) -> None:
     first, outsider = _candidate("candidate-a", 0), _candidate("candidate-z", 9)
     inventory = _inventory(0, first)
