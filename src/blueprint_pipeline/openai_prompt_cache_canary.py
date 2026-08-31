@@ -263,13 +263,17 @@ def run_mechanics_canary(
     usage_c = by_name["C_different_run_id_read"]["usage"]
     usage_d = by_name["D_contract_version_miss"]["usage"]
     usage_e = by_name["E_one_off_no_write"]["usage"]
-    stable_floor = policy_v1.economics.stable_prefix_tokens
+    # Provider tokenization is authoritative for the deployed success target.
+    # The deterministic byte/5 estimate is intentionally conservative for the
+    # economic decision, but can overstate the exact cacheable-token count.
+    # Compare reads with the prefix OpenAI actually wrote on call A.
+    provider_stable_write_tokens = int(usage_a["cache_write_tokens"])
     blockers: list[str] = []
     if usage_a["cached_tokens"] != 0 or usage_a["cache_write_tokens"] < 1_024:
         blockers.append("call_a_did_not_write_reusable_prefix")
-    if usage_b["cached_tokens"] < 0.7 * stable_floor:
+    if usage_b["cached_tokens"] < 0.7 * provider_stable_write_tokens:
         blockers.append("call_b_reusable_prefix_read_below_target")
-    if usage_c["cached_tokens"] < 0.7 * stable_floor:
+    if usage_c["cached_tokens"] < 0.7 * provider_stable_write_tokens:
         blockers.append("call_c_different_run_id_did_not_read")
     if usage_d["cached_tokens"] != 0 or usage_d["cache_write_tokens"] < 1_024:
         blockers.append("call_d_contract_version_not_isolated")
@@ -294,6 +298,7 @@ def run_mechanics_canary(
         "max_total_cost_usd": max_total_cost_usd,
         "estimated_total_cost_usd": cumulative_cost,
         "reusable_family_estimated_cost_usd": reusable_cost,
+        "provider_stable_prefix_write_tokens": provider_stable_write_tokens,
         "reusable_family_no_cache_cost_usd": reusable_no_cache,
         "reusable_family_estimated_savings_usd": reusable_no_cache - reusable_cost,
         "reusable_family_estimated_savings_ratio": (
