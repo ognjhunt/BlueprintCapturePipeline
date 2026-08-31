@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_control_search_funnel import (
     OUTCOME_SCHEMA_VERSION,
@@ -9,6 +11,7 @@ from blueprint_pipeline.task_evaluation_control_search_funnel import (
 )
 from blueprint_pipeline.task_evaluation_isaaclab_control_sweep import (
     build_isaaclab_control_sweep_schedule,
+    build_isaaclab_control_search_outcome,
     compile_isaaclab_control_sweep_wave_commands,
     execute_isaaclab_control_sweep,
     validate_isaaclab_control_sweep_schedule,
@@ -220,3 +223,54 @@ def test_wave_compiler_preserves_curobo_joint_targets_per_clone() -> None:
     assert commands["assignments"][0]["waypoints"][1]["gripper_state"] == "closed"
     assert commands["assignments"][0]["waypoints"][2]["gripper_state"] == "open"
     assert commands["assignments"][7]["environment_index"] == 7
+
+
+def test_measurement_reducer_uses_raw_pose_and_contact_traces() -> None:
+    assignment = {
+        "candidate_id": "candidate-000",
+        "candidate_digest": "sha256:" + "a" * 64,
+        "seed_index": 0,
+        "resolved_seed": 839873104,
+        "wave_index": 0,
+        "environment_index": 0,
+    }
+    outcome = build_isaaclab_control_search_outcome(
+        assignment=assignment,
+        reset_readback_passed=True,
+        task_position_trace_world_m=[
+            [0.0, 0.0, 0.8],
+            [0.02, 0.01, 0.8],
+            [0.08, 0.0, 0.8],
+            [0.12, 0.0, 0.8],
+            [0.1205, 0.0, 0.8],
+        ],
+        forbidden_contact_force_trace_w_n=[
+            [0.0, 0.0, 0.0],
+            [0.2, 0.0, 0.0],
+            [0.1, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        required_contact_force_trace_w_n=[
+            [0.0, 0.0, 0.0],
+            [0.6, 0.0, 0.0],
+            [0.4, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        stage_kinds=["reset", "contact", "contact", "settle", "settle"],
+        target_position_world_m=[0.12, 0.0, 0.8],
+        required_contact_minimum_force_n=0.5,
+        settle_sample_count=2,
+    )
+
+    assert outcome["forbidden_collision_peak_force_n"] == 0.2
+    assert outcome["required_task_contact_coverage_fraction"] == 0.5
+    assert outcome["push_path_tracking_error_m"] == 0.01
+    assert outcome["destination_error_m"] == pytest.approx(0.0005)
+    assert outcome["support_stability_error_m"] == pytest.approx(0.0005)
+    assert outcome["task_displacement_m"] == pytest.approx(0.1205)
+    assert outcome["learned_grader_used"] is False
+    assert outcome["outcome_digest"] == canonical_digest(
+        outcome, digest_field="outcome_digest"
+    )

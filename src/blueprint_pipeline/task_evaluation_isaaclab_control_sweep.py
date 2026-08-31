@@ -320,6 +320,152 @@ def compile_isaaclab_control_sweep_wave_commands(
     return commands
 
 
+def _vec3(value: object, *, blocker: str) -> tuple[float, float, float]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or len(value) != 3
+    ):
+        raise ControlSearchFunnelError(blocker)
+    try:
+        result = tuple(float(item) for item in value)
+    except (TypeError, ValueError) as exc:
+        raise ControlSearchFunnelError(blocker) from exc
+    if not all(math.isfinite(item) for item in result):
+        raise ControlSearchFunnelError(blocker)
+    return result
+
+
+def _norm(value: Sequence[float]) -> float:
+    return math.sqrt(math.fsum(component * component for component in value))
+
+
+def _distance(a: Sequence[float], b: Sequence[float]) -> float:
+    return _norm(tuple(left - right for left, right in zip(a, b, strict=True)))
+
+
+def _segment_distance(
+    point: Sequence[float], start: Sequence[float], target: Sequence[float]
+) -> float:
+    direction = tuple(
+        right - left for left, right in zip(start, target, strict=True)
+    )
+    denominator = math.fsum(component * component for component in direction)
+    if denominator <= float.fromhex("0x1.0p-52"):
+        return _distance(point, start)
+    offset = tuple(
+        value - origin for value, origin in zip(point, start, strict=True)
+    )
+    fraction = min(
+        1.0,
+        max(
+            0.0,
+            math.fsum(
+                value * component
+                for value, component in zip(offset, direction, strict=True)
+            )
+            / denominator,
+        ),
+    )
+    projection = tuple(
+        origin + fraction * component
+        for origin, component in zip(start, direction, strict=True)
+    )
+    return _distance(point, projection)
+
+
+def build_isaaclab_control_search_outcome(
+    *,
+    assignment: Mapping[str, Any],
+    reset_readback_passed: bool,
+    task_position_trace_world_m: Sequence[Sequence[float]],
+    forbidden_contact_force_trace_w_n: Sequence[Sequence[float]],
+    required_contact_force_trace_w_n: Sequence[Sequence[float]],
+    stage_kinds: Sequence[str],
+    target_position_world_m: Sequence[float],
+    required_contact_minimum_force_n: float,
+    settle_sample_count: int,
+) -> dict[str, Any]:
+    """Reduce raw simulator tensors into one non-learned outcome receipt."""
+
+    positions = [
+        _vec3(row, blocker="control_search_measurement_trace_invalid")
+        for row in task_position_trace_world_m
+    ]
+    forbidden = [
+        _vec3(row, blocker="control_search_measurement_trace_invalid")
+        for row in forbidden_contact_force_trace_w_n
+    ]
+    required = [
+        _vec3(row, blocker="control_search_measurement_trace_invalid")
+        for row in required_contact_force_trace_w_n
+    ]
+    target = _vec3(
+        target_position_world_m,
+        blocker="control_search_measurement_trace_invalid",
+    )
+    if (
+        not isinstance(reset_readback_passed, bool)
+        or not positions
+        or len(forbidden) != len(positions)
+        or len(required) != len(positions)
+        or len(stage_kinds) != len(positions)
+        or any(
+            stage not in {"reset", "entry", "approach", "contact", "release", "retreat", "settle"}
+            for stage in stage_kinds
+        )
+        or isinstance(required_contact_minimum_force_n, bool)
+        or not math.isfinite(float(required_contact_minimum_force_n))
+        or float(required_contact_minimum_force_n) < 0.0
+        or not isinstance(settle_sample_count, int)
+        or isinstance(settle_sample_count, bool)
+        or not 1 <= settle_sample_count <= len(positions)
+    ):
+        raise ControlSearchFunnelError("control_search_measurement_trace_invalid")
+    contact_indices = [
+        index for index, stage in enumerate(stage_kinds) if stage == "contact"
+    ]
+    if not contact_indices:
+        raise ControlSearchFunnelError("control_search_measurement_trace_invalid")
+    contact_coverage = sum(
+        _norm(required[index]) >= float(required_contact_minimum_force_n)
+        for index in contact_indices
+    ) / len(contact_indices)
+    path_error = max(
+        _segment_distance(positions[index], positions[0], target)
+        for index in contact_indices
+    )
+    settle = positions[-settle_sample_count:]
+    outcome: dict[str, Any] = {
+        "schema_version": "task_evaluation_control_search_vector_outcome.v1",
+        "candidate_id": assignment.get("candidate_id"),
+        "candidate_digest": assignment.get("candidate_digest"),
+        "seed_index": assignment.get("seed_index"),
+        "resolved_seed": assignment.get("resolved_seed"),
+        "wave_index": assignment.get("wave_index"),
+        "environment_index": assignment.get("environment_index"),
+        "reset_readback_passed": reset_readback_passed,
+        "forbidden_collision_peak_force_n": max(_norm(row) for row in forbidden),
+        "required_task_contact_coverage_fraction": contact_coverage,
+        "push_path_tracking_error_m": path_error,
+        "destination_error_m": _distance(positions[-1], target),
+        "support_stability_error_m": max(
+            _distance(position, settle[-1]) for position in settle
+        ),
+        "task_displacement_m": _distance(positions[-1], positions[0]),
+        "physics_steps": len(positions),
+        "measurement_authority": (
+            "isaac_lab_simulator_state_and_contact_sensors"
+        ),
+        "learned_grader_used": False,
+        "outcome_digest": "",
+    }
+    outcome["outcome_digest"] = canonical_digest(
+        outcome, digest_field="outcome_digest"
+    )
+    return outcome
+
+
 WaveRunner = Callable[..., Mapping[str, Any]]
 EnvironmentBuilder = Callable[..., Any]
 
@@ -388,6 +534,7 @@ __all__ = [
     "SCHEDULE_SCHEMA_VERSION",
     "WAVE_COMMANDS_SCHEMA_VERSION",
     "build_isaaclab_control_sweep_schedule",
+    "build_isaaclab_control_search_outcome",
     "compile_isaaclab_control_sweep_wave_commands",
     "execute_isaaclab_control_sweep",
     "validate_isaaclab_control_sweep_schedule",
