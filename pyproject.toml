@@ -69,6 +69,9 @@ dependencies = [
     # Canonical agent harness for the Task Evaluation Supervisor and its
     # specialized agents. Blueprint contracts remain the proof authority.
     "openai-agents>=0.19.1,<0.20",
+    # Persistent bounded native-construction search ledger. Optuna is MIT;
+    # JournalStorage keeps ask/tell history durable without a database daemon.
+    "optuna==4.9.0",
     # Bounded, jittered, allowlisted retries for transport_retry_policy —
     # the shared read-retry layer behind provider_transport and the job
     # transport. Mutations are never auto-retried (reconcile-first contract).
