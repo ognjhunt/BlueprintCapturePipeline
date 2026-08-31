@@ -117,6 +117,7 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.task_evaluation_episode_compilation_worker",
     "blueprint_pipeline.task_evaluation_launch_reconciler",
     "blueprint_pipeline.task_evaluation_launch_supervisor",
+    "blueprint_pipeline.task_evaluation_policy_canary_dispatcher",
     "blueprint_pipeline.task_evaluation_terminal_resource_release",
     "blueprint_pipeline.task_evaluation_configured_controls_progression_worker",
 )
