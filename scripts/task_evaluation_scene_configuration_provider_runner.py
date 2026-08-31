@@ -13,12 +13,16 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest, can
 from blueprint_pipeline.task_evaluation_scene_configuration_provider_runtime import (
     execute_scene_configuration_stage_chain,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_checkpoint import (
+    validate_scene_configuration_diagnostic_checkpoint,
+)
 from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
     PARENT_DEADLINE_EPOCH_ENV,
 )
 
 
 RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_provider_result.v1"
+BUNDLE_SCHEMA_VERSION = "task_evaluation_scene_configuration_provider_bundle.v1"
 
 
 def _read(path: Path) -> dict:
@@ -181,6 +185,33 @@ def _portable_stage_chain(chain: dict, *, output_root: Path) -> dict:
     return portable
 
 
+def _configure_production_semantic_reuse(
+    *, runtime: Path, bundle_manifest: dict
+) -> Path | None:
+    if bundle_manifest.get("production_semantic_input_reuse") is not True:
+        return None
+    if bundle_manifest.get("manifest_digest") != canonical_digest(
+        bundle_manifest, digest_field="manifest_digest"
+    ):
+        raise ValueError("scene_configuration_provider_bundle_manifest_invalid")
+    reuse_root = runtime / "input/production_semantic_reuse_checkpoint"
+    checkpoint = validate_scene_configuration_diagnostic_checkpoint(
+        checkpoint_root=reuse_root
+    )
+    if (
+        checkpoint.get("checkpoint_digest")
+        != bundle_manifest.get("source_semantic_checkpoint_digest")
+        or checkpoint.get("completed_stage_prefix_count") != 0
+        or bundle_manifest.get("full_downstream_stage_chain_required") is not True
+        or bundle_manifest.get("normal_production_runner_used") is not True
+    ):
+        raise ValueError("scene_configuration_provider_semantic_reuse_invalid")
+    os.environ[
+        "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT"
+    ] = str(reuse_root)
+    return reuse_root
+
+
 def main() -> int:
     runtime = Path(
         os.environ.get(
@@ -201,6 +232,11 @@ def main() -> int:
         )
     ).resolve()
     portable = _read(runtime / "input/portable_construction_envelope.v1.json")
+    bundle_manifest = _read(runtime / f"{BUNDLE_SCHEMA_VERSION}.json")
+    _configure_production_semantic_reuse(
+        runtime=runtime,
+        bundle_manifest=bundle_manifest,
+    )
     try:
         parent_deadline_epoch = float(os.environ[PARENT_DEADLINE_EPOCH_ENV])
     except (KeyError, TypeError, ValueError) as exc:

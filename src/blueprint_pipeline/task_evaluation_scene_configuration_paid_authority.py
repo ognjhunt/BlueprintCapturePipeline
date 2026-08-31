@@ -57,6 +57,7 @@ def _required_external_stage_minima(
     diagnostic_bootstrap_mode: object,
     carried_stage_count: int,
     historical_terminal_evidence: bool = False,
+    production_semantic_reuse: bool = False,
 ) -> dict[str, float]:
     fresh_diagnostic_bootstrap = (
         diagnostic_only
@@ -65,7 +66,8 @@ def _required_external_stage_minima(
     return {
         "artifixer_semantic_teacher": (
             0.0
-            if diagnostic_only and not fresh_diagnostic_bootstrap
+            if production_semantic_reuse
+            or (diagnostic_only and not fresh_diagnostic_bootstrap)
             else MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
         ),
         "artifixer_visual_review": (
@@ -223,6 +225,9 @@ def materialize_scene_configuration_paid_authority(
         receipt_path, code="scene_configuration_bundle_receipt_invalid"
     )
     diagnostic_only = receipt_value.get("diagnostic_only") is True
+    production_semantic_reuse = (
+        receipt_value.get("production_semantic_input_reuse") is True
+    )
     receipt = load_scene_configuration_provider_bundle_receipt(
         receipt_path,
         expected_source_commit=source_commit,
@@ -264,6 +269,7 @@ def materialize_scene_configuration_paid_authority(
         diagnostic_only=diagnostic_only,
         diagnostic_bootstrap_mode=diagnostic_bootstrap_mode,
         carried_stage_count=carried_stage_count,
+        production_semantic_reuse=production_semantic_reuse,
     )
     minimum_external_cap = sum(required_stage_minima.values())
     diagnostic_budget_blockers = (
@@ -287,6 +293,10 @@ def materialize_scene_configuration_paid_authority(
         and (
             not diagnostic_only
             or fresh_diagnostic_bootstrap
+            or stage_caps["artifixer_semantic_teacher"] == 0
+        )
+        and (
+            not production_semantic_reuse
             or stage_caps["artifixer_semantic_teacher"] == 0
         )
         and (
@@ -472,6 +482,9 @@ def validate_scene_configuration_paid_authority(
     external_requests = external.get("maximum_requests") if isinstance(external, Mapping) else None
     stage_caps = external.get("stage_max_cost_usd") if isinstance(external, Mapping) else None
     diagnostic_only = bundle_receipt.get("diagnostic_only") is True
+    production_semantic_reuse = (
+        bundle_receipt.get("production_semantic_input_reuse") is True
+    )
     diagnostic_bootstrap_mode = bundle_receipt.get("diagnostic_bootstrap_mode")
     fresh_diagnostic_bootstrap = (
         diagnostic_only
@@ -485,6 +498,7 @@ def validate_scene_configuration_paid_authority(
         diagnostic_bootstrap_mode=diagnostic_bootstrap_mode,
         carried_stage_count=carried_stage_count,
         historical_terminal_evidence=historical_terminal_evidence,
+        production_semantic_reuse=production_semantic_reuse,
     )
     if historical_terminal_evidence and not diagnostic_only:
         errors.append("historical_terminal_evidence_scope_invalid")
@@ -538,6 +552,10 @@ def validate_scene_configuration_paid_authority(
         and (
             not diagnostic_only
             or fresh_diagnostic_bootstrap
+            or float(stage_caps["artifixer_semantic_teacher"]) == 0
+        )
+        and (
+            not production_semantic_reuse
             or float(stage_caps["artifixer_semantic_teacher"]) == 0
         )
         and (

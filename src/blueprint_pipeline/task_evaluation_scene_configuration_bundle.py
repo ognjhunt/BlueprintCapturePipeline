@@ -393,7 +393,10 @@ def _remove_self_created_stage_tree(stage: Path) -> None:
 
 
 def _diagnostic_portable_render_inputs(
-    *, checkpoint: Mapping[str, Any]
+    *,
+    checkpoint: Mapping[str, Any],
+    path_prefix: str = "input/diagnostic_checkpoint/",
+    reuse_field: str = "diagnostic_checkpoint_reused",
 ) -> dict[str, Any]:
     """Point the slim envelope at its sole checkpoint inventory copy."""
 
@@ -412,9 +415,7 @@ def _diagnostic_portable_render_inputs(
             raise TaskEvaluationSceneConfigurationBundleError(
                 "scene_configuration_bundle_diagnostic_checkpoint_role_missing"
             )
-        row["path"] = (
-            "input/diagnostic_checkpoint/" + str(source["relative_path"])
-        )
+        row["path"] = path_prefix + str(source["relative_path"])
         row["digest"] = source["digest"]
         row["size_bytes"] = source["size_bytes"]
 
@@ -431,7 +432,7 @@ def _diagnostic_portable_render_inputs(
         bind(candidate, required=False)
         if "path" not in candidate:
             cutout.pop("source_object_candidate", None)
-    render["diagnostic_checkpoint_reused"] = True
+    render[reuse_field] = True
     render["provider_render_skipped"] = True
     # This field describes bytes in the *current* provider packet, not the
     # historical checkpoint's original render site. Diagnostic retries carry
@@ -497,6 +498,7 @@ def build_scene_configuration_provider_bundle(
     diagnostic_checkpoint_root: str | Path | None = None,
     diagnostic_checkpoint_reference_path: str | Path | None = None,
     fresh_diagnostic_bootstrap: bool = False,
+    production_semantic_reuse_checkpoint_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Package provider-authorized derived inputs; raw InteriorGS stays local."""
 
@@ -505,6 +507,11 @@ def build_scene_configuration_provider_bundle(
         or diagnostic_checkpoint_root is not None
         or diagnostic_checkpoint_reference_path is not None
     )
+    production_semantic_reuse = production_semantic_reuse_checkpoint_root is not None
+    if production_semantic_reuse and diagnostic_mode_requested:
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_semantic_reuse_source_ambiguous"
+        )
     if (
         diagnostic_checkpoint_root is not None
         and diagnostic_checkpoint_reference_path is not None
@@ -537,7 +544,7 @@ def build_scene_configuration_provider_bundle(
         envelope.get("schema_version") != ENVELOPE_SCHEMA_VERSION
         or _COMMIT.fullmatch(construction_source_commit) is None
         or (
-            not diagnostic_mode_requested
+            not (diagnostic_mode_requested or production_semantic_reuse)
             and construction_source_commit != expected_source_commit
         )
         or envelope.get("envelope_digest")
@@ -582,7 +589,7 @@ def build_scene_configuration_provider_bundle(
     toolchain = Path(toolchain_root).resolve()
     toolchain_source_commit = (
         expected_source_commit
-        if diagnostic_mode_requested
+        if diagnostic_mode_requested or production_semantic_reuse
         else construction_source_commit
     )
     toolchain_manifest = validate_scene_configuration_toolchain(
@@ -616,7 +623,20 @@ def build_scene_configuration_provider_bundle(
         diagnostic_checkpoint = validate_scene_configuration_diagnostic_checkpoint(
             checkpoint_root=diagnostic_checkpoint_root
         )
-    diagnostic_mode = diagnostic_checkpoint is not None or fresh_diagnostic_bootstrap
+    if production_semantic_reuse_checkpoint_root is not None:
+        first_stage_id = str(envelope["recipe"]["stage_sequence"][0]["stage_id"])
+        diagnostic_first_configuration_path = configuration_sources[first_stage_id]
+        diagnostic_first_configuration = configuration_values[first_stage_id]
+        diagnostic_checkpoint = validate_scene_configuration_diagnostic_checkpoint(
+            checkpoint_root=production_semantic_reuse_checkpoint_root
+        )
+        if diagnostic_checkpoint.get("completed_stage_prefix_count") != 0:
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_semantic_reuse_checkpoint_invalid"
+            )
+    diagnostic_mode = (
+        diagnostic_checkpoint is not None and not production_semantic_reuse
+    ) or fresh_diagnostic_bootstrap
     diagnostic_bootstrap_mode = (
         FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
         if fresh_diagnostic_bootstrap
@@ -643,7 +663,7 @@ def build_scene_configuration_provider_bundle(
             )
         provider_render_runtime_source = Path(unresolved_runtime).expanduser()
         try:
-            if diagnostic_mode_requested and (
+            if (diagnostic_mode_requested or production_semantic_reuse) and (
                 construction_source_commit != expected_source_commit
             ):
                 provider_render_runtime = (
@@ -814,12 +834,32 @@ def build_scene_configuration_provider_bundle(
             appearance_row, code="scene_configuration_bundle_reference_invalid"
         )
     if diagnostic_checkpoint is not None:
+        checkpoint_root = (
+            production_semantic_reuse_checkpoint_root
+            if production_semantic_reuse
+            else diagnostic_checkpoint_root
+        )
         _copy_tree(
-            Path(diagnostic_checkpoint_root).expanduser().resolve(),
-            runtime / "input/diagnostic_checkpoint",
+            Path(checkpoint_root).expanduser().resolve(),
+            runtime
+            / (
+                "input/production_semantic_reuse_checkpoint"
+                if production_semantic_reuse
+                else "input/diagnostic_checkpoint"
+            ),
         )
         portable["render_inputs_result"] = _diagnostic_portable_render_inputs(
-            checkpoint=diagnostic_checkpoint
+            checkpoint=diagnostic_checkpoint,
+            path_prefix=(
+                "input/production_semantic_reuse_checkpoint/"
+                if production_semantic_reuse
+                else "input/diagnostic_checkpoint/"
+            ),
+            reuse_field=(
+                "production_semantic_input_reuse"
+                if production_semantic_reuse
+                else "diagnostic_checkpoint_reused"
+            ),
         )
     else:
         portable["render_inputs_result"] = _portable_render_inputs(
@@ -957,6 +997,26 @@ def build_scene_configuration_provider_bundle(
                 "configured_revision_publication_permitted": False,
                 "offering_publication_permitted": False,
                 "terminal_e2e_completion_permitted": False,
+            }
+        )
+    elif production_semantic_reuse:
+        manifest.update(
+            {
+                "construction_source_commit": construction_source_commit,
+                "production_semantic_input_reuse": True,
+                "source_semantic_checkpoint_digest": diagnostic_checkpoint[
+                    "checkpoint_digest"
+                ],
+                "semantic_reuse_scientific_binding_digest": (
+                    diagnostic_scientific_binding_digest
+                ),
+                "semantic_reuse_completed_stage_prefix_count": 0,
+                "provider_render_outputs_reused": True,
+                "semantic_teacher_outputs_reused": True,
+                "full_downstream_stage_chain_required": True,
+                "normal_production_runner_used": True,
+                "configured_revision_publication_permitted": True,
+                "offering_publication_permitted": True,
             }
         )
     if provider_renderer is not None:
@@ -1139,6 +1199,9 @@ def load_scene_configuration_provider_bundle_receipt(
     receipt = _read(
         receipt_path, code="scene_configuration_bundle_receipt_invalid"
     )
+    production_semantic_reuse = (
+        receipt.get("production_semantic_input_reuse") is True
+    )
     bundle = Path(str(receipt.get("bundle_path") or "")).expanduser().resolve()
     errors: list[str] = []
     if (
@@ -1153,7 +1216,8 @@ def load_scene_configuration_provider_bundle_receipt(
         or (
             diagnostic_only
             and (
-                receipt.get("diagnostic_only") is not True
+                production_semantic_reuse
+                or receipt.get("diagnostic_only") is not True
                 or receipt.get("qualification_eligible") is not False
                 or receipt.get("executed_inside_one_parent_provider_run") is not False
                 or receipt.get("configured_revision_publication_permitted") is not False
@@ -1211,6 +1275,35 @@ def load_scene_configuration_provider_bundle_receipt(
         )
         or (
             not diagnostic_only
+            and production_semantic_reuse
+            and (
+                _COMMIT.fullmatch(
+                    str(receipt.get("construction_source_commit") or "")
+                )
+                is None
+                or _DIGEST.fullmatch(
+                    str(receipt.get("source_semantic_checkpoint_digest") or "")
+                )
+                is None
+                or _DIGEST.fullmatch(
+                    str(
+                        receipt.get("semantic_reuse_scientific_binding_digest")
+                        or ""
+                    )
+                )
+                is None
+                or receipt.get("semantic_reuse_completed_stage_prefix_count") != 0
+                or receipt.get("provider_render_outputs_reused") is not True
+                or receipt.get("semantic_teacher_outputs_reused") is not True
+                or receipt.get("full_downstream_stage_chain_required") is not True
+                or receipt.get("normal_production_runner_used") is not True
+                or receipt.get("configured_revision_publication_permitted") is not True
+                or receipt.get("offering_publication_permitted") is not True
+            )
+        )
+        or (
+            not diagnostic_only
+            and not production_semantic_reuse
             and any(
                 key in receipt
                 for key in (
@@ -1223,6 +1316,14 @@ def load_scene_configuration_provider_bundle_receipt(
                     "diagnostic_scientific_binding_digest",
                     "diagnostic_stage_sequence_ids",
                     "construction_source_commit",
+                    "production_semantic_input_reuse",
+                    "source_semantic_checkpoint_digest",
+                    "semantic_reuse_scientific_binding_digest",
+                    "semantic_reuse_completed_stage_prefix_count",
+                    "provider_render_outputs_reused",
+                    "semantic_teacher_outputs_reused",
+                    "full_downstream_stage_chain_required",
+                    "normal_production_runner_used",
                 )
             )
         )
@@ -1341,6 +1442,49 @@ def load_scene_configuration_provider_bundle_receipt(
                         )
                     if not diagnostic_archive_valid:
                         errors.append("bundle_diagnostic_archive_invalid")
+                elif production_semantic_reuse:
+                    names = {
+                        row.filename
+                        for row in archive.infolist()
+                        if not row.is_dir()
+                    }
+                    portable_value = json.loads(
+                        archive.read(
+                            "provider_runtime/input/portable_construction_envelope.v1.json"
+                        ).decode("utf-8")
+                    )
+                    reuse_render = (
+                        portable_value.get("render_inputs_result")
+                        if isinstance(portable_value, Mapping)
+                        else None
+                    )
+                    reuse_archive_valid = (
+                        isinstance(reuse_render, Mapping)
+                        and reuse_render.get("production_semantic_input_reuse") is True
+                        and reuse_render.get("provider_render_skipped") is True
+                        and not any(
+                            name.startswith("provider_runtime/renderer/")
+                            or name.startswith(
+                                "provider_runtime/input/render/source_appearance"
+                            )
+                            for name in names
+                        )
+                        and any(
+                            name.startswith(
+                                "provider_runtime/input/production_semantic_reuse_checkpoint/semantic/"
+                            )
+                            for name in names
+                        )
+                        and all(
+                            str(row.get("path") or "").startswith(
+                                "input/production_semantic_reuse_checkpoint/"
+                            )
+                            for row in reuse_render.get("derived_frames") or []
+                            if isinstance(row, Mapping)
+                        )
+                    )
+                    if not reuse_archive_valid:
+                        errors.append("bundle_semantic_reuse_archive_invalid")
             internal = (
                 dict(internal_value)
                 if isinstance(internal_value, Mapping)
@@ -1398,6 +1542,20 @@ def load_scene_configuration_provider_bundle_receipt(
             "offering_publication_permitted",
             "terminal_e2e_completion_permitted",
         )
+    elif production_semantic_reuse:
+        compared_fields += (
+            "construction_source_commit",
+            "production_semantic_input_reuse",
+            "source_semantic_checkpoint_digest",
+            "semantic_reuse_scientific_binding_digest",
+            "semantic_reuse_completed_stage_prefix_count",
+            "provider_render_outputs_reused",
+            "semantic_teacher_outputs_reused",
+            "full_downstream_stage_chain_required",
+            "normal_production_runner_used",
+            "configured_revision_publication_permitted",
+            "offering_publication_permitted",
+        )
     if receipt.get("provider_renderer_required") is True:
         compared_fields += (
             "provider_renderer_required",
@@ -1445,6 +1603,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--diagnostic-checkpoint-root")
     parser.add_argument("--diagnostic-checkpoint-reference")
     parser.add_argument("--fresh-diagnostic-bootstrap", action="store_true")
+    parser.add_argument("--production-semantic-reuse-checkpoint-root")
     args = parser.parse_args(argv)
     receipt = build_scene_configuration_provider_bundle(
         construction_envelope_path=args.construction_envelope,
@@ -1456,6 +1615,9 @@ def main(argv: list[str] | None = None) -> int:
         diagnostic_checkpoint_root=args.diagnostic_checkpoint_root,
         diagnostic_checkpoint_reference_path=args.diagnostic_checkpoint_reference,
         fresh_diagnostic_bootstrap=args.fresh_diagnostic_bootstrap,
+        production_semantic_reuse_checkpoint_root=(
+            args.production_semantic_reuse_checkpoint_root
+        ),
     )
     print(canonical_json(receipt))
     return 0
