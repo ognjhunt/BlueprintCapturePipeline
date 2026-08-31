@@ -212,6 +212,36 @@ def test_passed_trial_is_kept_and_completed(tmp_path: Path) -> None:
     assert receipt["controller_search_state"] == "qualified"
 
 
+def test_attempt_receipt_accumulates_native_runtime_and_cost(tmp_path: Path) -> None:
+    first, second = _candidate("candidate-a", 0), _candidate("candidate-b", 1)
+    ledger = NativeConstructionOptunaSearchLedger(root=tmp_path, run_id=RUN_ID)
+    initial = _inventory(0, first)
+    ledger.record_inventory(inventory=initial)
+    ledger.record_attempt(
+        round_record=_round_record(
+            inventory=initial,
+            candidate=first,
+            passed=False,
+            search_state="continuing",
+        )
+    )
+    following = _inventory(1, second)
+    ledger.record_inventory(inventory=following)
+
+    receipt = ledger.record_attempt(
+        round_record=_round_record(
+            inventory=following,
+            candidate=second,
+            passed=True,
+            search_state="qualified",
+        )
+    )
+
+    assert receipt["attempted_candidate_count"] == 2
+    assert receipt["cumulative_runtime_seconds"] == 25.0
+    assert receipt["cumulative_incremental_cost_upper_bound_usd"] == 0.22
+
+
 def test_resume_after_trial_tell_before_receipt_write_does_not_duplicate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
