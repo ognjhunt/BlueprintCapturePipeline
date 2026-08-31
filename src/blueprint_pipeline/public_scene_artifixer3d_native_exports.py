@@ -11,13 +11,12 @@ from typing import Any
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .gaussian_field_quality import gaussian_drift_is_qualified
 
 
 RAW_RESULT_SCHEMA = "public_scene_artifixer3d_raw_result.v1"
 EXPORT_SCHEMA = "public_scene_artifixer3d_native_appearance_export.v1"
-EXPORT_STATUS = (
-    "native_appearance_candidates_exported_pending_native_import_and_multiview_review"
-)
+EXPORT_STATUS = "native_appearance_candidates_exported_pending_native_import_and_multiview_review"
 
 
 class ArtiFixerNativeExportError(ValueError):
@@ -85,20 +84,18 @@ def validate_artifixer3d_native_appearance_export(
     if (
         value.get("schema_version") != EXPORT_SCHEMA
         or value.get("status") != EXPORT_STATUS
-        or value.get("export_digest")
-        != canonical_digest(value, digest_field="export_digest")
+        or value.get("export_digest") != canonical_digest(value, digest_field="export_digest")
         or not _digest(value.get("source_export_digest"))
         or value.get("host_path_rebased_from_provider_runtime_output") is not True
         or value.get("generated_output_is_capture_or_physical_evidence") is not False
         or value.get("native_import_qualified") is not False
+        or not gaussian_drift_is_qualified(value.get("gaussian_field_source_relative_drift"))
     ):
         raise ArtiFixerNativeExportError("artifixer3d_native_export_receipt_invalid")
     source_raw = value.get("source_raw_result")
     if not isinstance(source_raw, Mapping) or not _digest(source_raw.get("result_digest")):
         raise ArtiFixerNativeExportError("artifixer3d_native_export_source_invalid")
-    raw_path = _bound_file(
-        source_raw, "artifixer3d_native_export_source_invalid"
-    )
+    raw_path = _bound_file(source_raw, "artifixer3d_native_export_source_invalid")
     raw = _read(raw_path, "artifixer3d_native_export_source_invalid")
     if (
         raw.get("schema_version") != RAW_RESULT_SCHEMA
@@ -168,6 +165,7 @@ def materialize_artifixer3d_native_appearance_exports(
             or "export_digest" in native
             or native.get("generated_output_is_capture_or_physical_evidence") is not False
             or native.get("native_import_qualified") is not False
+            or not gaussian_drift_is_qualified(native.get("gaussian_field_source_relative_drift"))
         ):
             raise ArtiFixerNativeExportError("artifixer3d_native_export_task_invalid")
         for field in ("standard_gaussian_ply", "isaac_nurec_usdz"):
@@ -179,9 +177,7 @@ def materialize_artifixer3d_native_appearance_exports(
             "host_path_rebased_from_provider_runtime_output": True,
             "export_digest": "",
         }
-        receipt["export_digest"] = canonical_digest(
-            receipt, digest_field="export_digest"
-        )
+        receipt["export_digest"] = canonical_digest(receipt, digest_field="export_digest")
         receipts.append((task_id, receipt))
 
     destination = Path(output_root).expanduser().resolve()

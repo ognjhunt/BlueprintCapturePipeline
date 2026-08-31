@@ -17,6 +17,7 @@ The array math (:func:`build_particlefield_arrays`) is pure numpy and unit-teste
 writer (:func:`write_particlefield_usd`) needs ``pxr`` (OpenUSD / usd-core); it is
 fail-closed when pxr is unavailable. This module claims authoring only — not rendering.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -28,6 +29,7 @@ import numpy as np
 
 from .common import sha256_file, write_json
 from .decision_evidence_contracts import canonical_digest
+from .gaussian_field_quality import measure_gaussian_field_quality
 from .gaussian_splat_decode import (
     GaussianSurfelData,
     SplatData,
@@ -85,6 +87,7 @@ def gaussian_surflet_schema_available(usd_vol: object) -> bool:
 
     return all(hasattr(usd_vol, name) for name in _GAUSSIAN_SURFLET_SCHEMA_MEMBERS)
 
+
 def _sigmoid(x: np.ndarray) -> np.ndarray:
     result = 1.0 / (1.0 + np.exp(-np.clip(x, -30.0, 30.0)))
     result = np.where(np.isposinf(x), 1.0, result)
@@ -113,9 +116,7 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
     if raw_opacity.shape != (splat.count,) or np.isnan(raw_opacity).any():
         raise ValueError("particlefield_nonfinite_input")
     with np.errstate(over="ignore", invalid="ignore"):
-        scales = np.exp(np.asarray(splat.scales, dtype=np.float32)).astype(
-            np.float32
-        )
+        scales = np.exp(np.asarray(splat.scales, dtype=np.float32)).astype(np.float32)
     if not np.isfinite(scales).all() or (scales <= 0.0).any():
         raise ValueError("particlefield_activated_scale_invalid")
 
@@ -131,12 +132,7 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
     dc = np.asarray(splat.f_dc, dtype=np.float32).reshape(n, 1, 3)  # coeff 0 (RGB)
     if sh_rest is not None and np.asarray(sh_rest).size:
         rest = np.asarray(sh_rest, dtype=np.float32)
-        if (
-            rest.ndim != 2
-            or rest.shape[0] != n
-            or rest.shape[1] % 3
-            or not np.isfinite(rest).all()
-        ):
+        if rest.ndim != 2 or rest.shape[0] != n or rest.shape[1] % 3 or not np.isfinite(rest).all():
             raise ValueError("particlefield_sh_rest_invalid")
         n_rest = rest.shape[1] // 3
         # INRIA f_rest is channel-major: [R*n_rest, G*n_rest, B*n_rest] -> (n, n_rest, 3)
@@ -168,12 +164,8 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
         "sh_element_size": int((degree + 1) ** 2),
         "display_colors": display_colors,
         "extent": extent,
-        "positive_infinite_opacity_logit_count": int(
-            np.isposinf(raw_opacity).sum()
-        ),
-        "negative_infinite_opacity_logit_count": int(
-            np.isneginf(raw_opacity).sum()
-        ),
+        "positive_infinite_opacity_logit_count": int(np.isposinf(raw_opacity).sum()),
+        "negative_infinite_opacity_logit_count": int(np.isneginf(raw_opacity).sum()),
     }
 
 
@@ -228,9 +220,9 @@ def build_gaussian_surflet_arrays(surfel: GaussianSurfelData) -> dict:
     # Flat means proportional to the surfel, not a constant: a fixed epsilon
     # would be thicker than wide for the smallest surfels here, which is the
     # same error at a different magnitude.
-    structural_z = (
-        planar_scales.min(axis=1, keepdims=True) * STRUCTURAL_Z_SCALE_FRACTION
-    ).astype(np.float32)
+    structural_z = (planar_scales.min(axis=1, keepdims=True) * STRUCTURAL_Z_SCALE_FRACTION).astype(
+        np.float32
+    )
     scales = np.concatenate([planar_scales, structural_z], axis=1)
 
     raw_quats = np.asarray(surfel.quats, dtype=np.float64)
@@ -265,10 +257,7 @@ def build_gaussian_surflet_arrays(surfel: GaussianSurfelData) -> dict:
         # outside displayable range and decide, rather than be told nothing.
         "sh_dc_out_of_display_range_fraction": float(
             1.0
-            - (
-                (0.5 + SH_C0 * dc.reshape(-1, 3) >= 0.0)
-                & (0.5 + SH_C0 * dc.reshape(-1, 3) <= 1.0)
-            )
+            - ((0.5 + SH_C0 * dc.reshape(-1, 3) >= 0.0) & (0.5 + SH_C0 * dc.reshape(-1, 3) <= 1.0))
             .all(axis=1)
             .mean()
         ),
@@ -318,7 +307,9 @@ def write_gaussian_surflet_particlefield_usd(
                 "expected_source_sha256": expected_source_sha256,
                 "observed_source_sha256": source_sha256,
             }
-    surfel = source if isinstance(source, GaussianSurfelData) else read_aura_2dgs_surfel_ply(source_path)
+    surfel = (
+        source if isinstance(source, GaussianSurfelData) else read_aura_2dgs_surfel_ply(source_path)
+    )
     arrays = build_gaussian_surflet_arrays(surfel)
     if not gaussian_surflet_schema_available(UsdVol):
         return {
@@ -370,21 +361,14 @@ def write_gaussian_surflet_particlefield_usd(
 
     position_api.CreatePositionsAttr().Set(vec3f(arrays["positions"]))
     scale_api.CreateScalesAttr().Set(vec3f(arrays["scales"]))
-    opacity_api.CreateOpacitiesAttr().Set(
-        Vt.FloatArray.FromNumpy(arrays["opacities"])
-    )
-    sh_api.CreateRadianceSphericalHarmonicsCoefficientsAttr().Set(
-        vec3f(arrays["sh_coefficients"])
-    )
+    opacity_api.CreateOpacitiesAttr().Set(Vt.FloatArray.FromNumpy(arrays["opacities"]))
+    sh_api.CreateRadianceSphericalHarmonicsCoefficientsAttr().Set(vec3f(arrays["sh_coefficients"]))
     sh_api.CreateRadianceSphericalHarmonicsDegreeAttr().Set(arrays["sh_degree"])
     field.CreateExtentAttr().Set(vec3f(arrays["extent"]))
     quaternions = arrays["orientations"]
     orientation_api.CreateOrientationsAttr().Set(
         Vt.QuatfArray(
-            [
-                Gf.Quatf(float(w), float(x), float(y), float(z))
-                for w, x, y, z in quaternions
-            ]
+            [Gf.Quatf(float(w), float(x), float(y), float(z)) for w, x, y, z in quaternions]
         )
     )
 
@@ -396,21 +380,19 @@ def write_gaussian_surflet_particlefield_usd(
     shader_path = f"{material_path}/Shader"
     material = stage.DefinePrim(material_path, "Material")
     shader = stage.DefinePrim(shader_path, "Shader")
-    shader.CreateAttribute("info:implementationSource", Sdf.ValueTypeNames.Token).Set(
-        "sourceAsset"
-    )
+    shader.CreateAttribute("info:implementationSource", Sdf.ValueTypeNames.Token).Set("sourceAsset")
     shader.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(
         "ParticleFieldEmissive.mdl"
     )
-    shader.CreateAttribute(
-        "info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token
-    ).Set("ParticleFieldEmissive")
+    shader.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set(
+        "ParticleFieldEmissive"
+    )
     shader.CreateAttribute(
         "inputs:apply_inverse_tonemap", Sdf.ValueTypeNames.Bool, custom=True
     ).Set(False)
-    shader.CreateAttribute(
-        "inputs:apply_srgb_linear", Sdf.ValueTypeNames.Bool, custom=True
-    ).Set(False)
+    shader.CreateAttribute("inputs:apply_srgb_linear", Sdf.ValueTypeNames.Bool, custom=True).Set(
+        False
+    )
     shader.CreateAttribute("outputs:out", Sdf.ValueTypeNames.Token, custom=True)
     for output_name in ("mdl:displacement", "mdl:surface", "mdl:volume"):
         material.CreateAttribute(f"outputs:{output_name}", Sdf.ValueTypeNames.Token).AddConnection(
@@ -437,13 +419,9 @@ def write_gaussian_surflet_particlefield_usd(
         "structural_z_scale_fraction": arrays["structural_z_scale_fraction"],
         "structural_z_scale_median_m": arrays["structural_z_scale_median_m"],
         "structural_z_scale_max_m": arrays["structural_z_scale_max_m"],
-        "sh_dc_out_of_display_range_fraction": arrays[
-            "sh_dc_out_of_display_range_fraction"
-        ],
+        "sh_dc_out_of_display_range_fraction": arrays["sh_dc_out_of_display_range_fraction"],
         "sh_dc_radiance_max": arrays["sh_dc_radiance_max"],
-        "positive_infinite_opacity_logit_count": arrays[
-            "positive_infinite_opacity_logit_count"
-        ],
+        "positive_infinite_opacity_logit_count": arrays["positive_infinite_opacity_logit_count"],
         "material": {
             "path": material_path,
             "shader": "ParticleFieldEmissive.mdl",
@@ -497,23 +475,31 @@ def write_particlefield_usd(
                 "blockers": ["particlefield_3dgs_source_missing"],
             }
         source_sha256 = f"sha256:{sha256_file(source_path)}"
-        if (
-            expected_source_sha256 is not None
-            and source_sha256 != expected_source_sha256
-        ):
+        if expected_source_sha256 is not None and source_sha256 != expected_source_sha256:
             return {
                 "status": "blocked",
                 "blockers": ["particlefield_3dgs_source_sha256_mismatch"],
                 "expected_source_sha256": expected_source_sha256,
                 "observed_source_sha256": source_sha256,
             }
-    splat = (
-        source
-        if isinstance(source, SplatData)
-        else read_standard_3dgs_ply(source_path)
-    )
+    splat = source if isinstance(source, SplatData) else read_standard_3dgs_ply(source_path)
     effective_sh_rest = sh_rest if sh_rest is not None else splat.sh_rest
     arr = build_particlefield_arrays(splat, sh_rest=effective_sh_rest)
+    field_quality = measure_gaussian_field_quality(
+        positions=arr["positions"],
+        activated_scales=arr["scales"],
+        opacities=arr["opacities"],
+    )
+    if field_quality.get("status") != "qualified" or field_quality.get("blockers"):
+        return {
+            "status": "blocked",
+            "blockers": ["particlefield_gaussian_field_quality_invalid"],
+            "gaussian_field_quality": field_quality,
+            "proof_boundary": (
+                "No ParticleField authored because the exact learned field failed "
+                "scene-relative geometry quality."
+            ),
+        }
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     stage = Usd.Stage.CreateNew(str(out_path))
@@ -529,14 +515,13 @@ def write_particlefield_usd(
     stage.SetDefaultPrim(world.GetPrim())
     typed_schema = getattr(UsdVol, "ParticleField3DGaussianSplat", None)
     field = typed_schema.Define(stage, prim_path) if typed_schema else None
-    prim = (
-        field.GetPrim()
-        if field
-        else stage.DefinePrim(prim_path, PARTICLEFIELD_SCHEMA)
-    )
+    prim = field.GetPrim() if field else stage.DefinePrim(prim_path, PARTICLEFIELD_SCHEMA)
     if not prim or not prim.IsValid():
-        return {"status": "blocked", "blockers": ["particlefield_schema_unavailable"],
-                "remediation": "usd-core build lacks ParticleField3DGaussianSplat (need a recent UsdVol)"}
+        return {
+            "status": "blocked",
+            "blockers": ["particlefield_schema_unavailable"],
+            "remediation": "usd-core build lacks ParticleField3DGaussianSplat (need a recent UsdVol)",
+        }
 
     transform = np.asarray(
         layer_transform_row_major if layer_transform_row_major is not None else np.eye(4),
@@ -558,9 +543,7 @@ def write_particlefield_usd(
         field.CreatePositionsAttr(vec3f(arr["positions"]))
         field.CreateScalesAttr(vec3f(arr["scales"]))
         field.CreateOpacitiesAttr(
-            Vt.FloatArray.FromNumpy(
-                np.ascontiguousarray(arr["opacities"], dtype=np.float32)
-            )
+            Vt.FloatArray.FromNumpy(np.ascontiguousarray(arr["opacities"], dtype=np.float32))
         )
         sh_attr = field.CreateRadianceSphericalHarmonicsCoefficientsAttr(
             vec3f(arr["sh_coefficients"])
@@ -570,22 +553,18 @@ def write_particlefield_usd(
         prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set(
             vec3f(arr["positions"])
         )
-        prim.CreateAttribute("scales", Sdf.ValueTypeNames.Float3Array).Set(
-            vec3f(arr["scales"])
-        )
+        prim.CreateAttribute("scales", Sdf.ValueTypeNames.Float3Array).Set(vec3f(arr["scales"]))
         prim.CreateAttribute("opacities", Sdf.ValueTypeNames.FloatArray).Set(
-            Vt.FloatArray.FromNumpy(
-                np.ascontiguousarray(arr["opacities"], dtype=np.float32)
-            )
+            Vt.FloatArray.FromNumpy(np.ascontiguousarray(arr["opacities"], dtype=np.float32))
         )
         sh_attr = prim.CreateAttribute(
             "radiance:sphericalHarmonicsCoefficients",
             Sdf.ValueTypeNames.Float3Array,
         )
         sh_attr.Set(vec3f(arr["sh_coefficients"]))
-        prim.CreateAttribute(
-            "radiance:sphericalHarmonicsDegree", Sdf.ValueTypeNames.Int
-        ).Set(int(arr["sh_degree"]))
+        prim.CreateAttribute("radiance:sphericalHarmonicsDegree", Sdf.ValueTypeNames.Int).Set(
+            int(arr["sh_degree"])
+        )
     UsdGeom.Boundable(prim).CreateExtentAttr(vec3f(arr["extent"]))
 
     # The coefficient array is flattened as (degree + 1)^2 float3 values per
@@ -610,20 +589,18 @@ def write_particlefield_usd(
     shader_path = f"{material_path}/Shader"
     material = stage.DefinePrim(material_path, "Material")
     shader = stage.DefinePrim(shader_path, "Shader")
-    shader.CreateAttribute(
-        "info:implementationSource", Sdf.ValueTypeNames.Token
-    ).Set("sourceAsset")
-    shader.CreateAttribute(
-        "info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset
-    ).Set("ParticleFieldEmissive.mdl")
-    shader.CreateAttribute(
-        "info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token
-    ).Set("ParticleFieldEmissive")
+    shader.CreateAttribute("info:implementationSource", Sdf.ValueTypeNames.Token).Set("sourceAsset")
+    shader.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(
+        "ParticleFieldEmissive.mdl"
+    )
+    shader.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set(
+        "ParticleFieldEmissive"
+    )
     shader.CreateAttribute("outputs:out", Sdf.ValueTypeNames.Token, custom=True)
     for output_name in ("mdl:displacement", "mdl:surface", "mdl:volume"):
-        material.CreateAttribute(
-            f"outputs:{output_name}", Sdf.ValueTypeNames.Token
-        ).AddConnection(shader.GetPath().AppendProperty("outputs:out"))
+        material.CreateAttribute(f"outputs:{output_name}", Sdf.ValueTypeNames.Token).AddConnection(
+            shader.GetPath().AppendProperty("outputs:out")
+        )
     prim.CreateRelationship("material:binding").SetTargets([material.GetPath()])
     prim.CreateAttribute("projectionModeHint", Sdf.ValueTypeNames.Token).Set("perspective")
     prim.CreateAttribute("sortingModeHint", Sdf.ValueTypeNames.Token).Set(sorting_mode)
@@ -638,7 +615,9 @@ def write_particlefield_usd(
     try:
         quat_attr.Set(Vt.QuatfArray.FromNumpy(np.ascontiguousarray(q, dtype=np.float32)))
     except Exception:  # noqa: BLE001
-        quat_attr.Set(Vt.QuatfArray([Gf.Quatf(float(w), float(x), float(y), float(z)) for w, x, y, z in q]))
+        quat_attr.Set(
+            Vt.QuatfArray([Gf.Quatf(float(w), float(x), float(y), float(z)) for w, x, y, z in q])
+        )
 
     stage.GetRootLayer().Save()
     if source_path is not None and f"sha256:{sha256_file(source_path)}" != source_sha256:
@@ -665,22 +644,15 @@ def write_particlefield_usd(
         "prim_path": prim_path,
         "default_prim": "/World",
         "source_sha256": source_sha256,
-        "source_kind": (
-            "in_memory_splat_data" if source_path is None else "standard_3dgs_ply"
-        ),
-        "positive_infinite_opacity_logit_count": arr[
-            "positive_infinite_opacity_logit_count"
-        ],
-        "negative_infinite_opacity_logit_count": arr[
-            "negative_infinite_opacity_logit_count"
-        ],
+        "source_kind": ("in_memory_splat_data" if source_path is None else "standard_3dgs_ply"),
+        "positive_infinite_opacity_logit_count": arr["positive_infinite_opacity_logit_count"],
+        "negative_infinite_opacity_logit_count": arr["negative_infinite_opacity_logit_count"],
+        "gaussian_field_quality": field_quality,
         "sealed_source_mutated": False,
         "layer_transform_row_major": transform.tolist(),
         "proof_boundary": "ParticleField USD authoring only; Isaac RTX render is the GPU step.",
     }
-    result["receipt_digest"] = canonical_digest(
-        result, digest_field="receipt_digest"
-    )
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
     if receipt_path is not None:
         write_json(Path(receipt_path), result)
     return result
@@ -706,9 +678,7 @@ def _nurec_payload_and_transform(
     if stage is None or not stage.GetDefaultPrim():
         raise NuRecCodecError(["nurec_particlefield_source_unreadable"])
     volumes = [
-        prim
-        for prim in stage.Traverse()
-        if bool(prim.GetAttribute(NUREC_VOLUME_MARKER).Get())
+        prim for prim in stage.Traverse() if bool(prim.GetAttribute(NUREC_VOLUME_MARKER).Get())
     ]
     if len(volumes) != 1:
         raise NuRecCodecError(["nurec_particlefield_volume_not_exact"])
@@ -735,12 +705,8 @@ def _nurec_payload_and_transform(
     except (OSError, zipfile.BadZipFile) as exc:
         raise NuRecCodecError(["nurec_particlefield_source_unreadable"]) from exc
     document = decode_nurec_bytes(payload)
-    matrix = UsdGeom.Xformable(volume).ComputeLocalToWorldTransform(
-        Usd.TimeCode.Default()
-    )
-    transform = [
-        [float(matrix[row][column]) for column in range(4)] for row in range(4)
-    ]
+    matrix = UsdGeom.Xformable(volume).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    transform = [[float(matrix[row][column]) for column in range(4)] for row in range(4)]
     return document, transform, str(volume.GetPath()), payload
 
 
@@ -758,9 +724,7 @@ def write_particlefield_usd_from_nurec(
     """
 
     source = Path(source_path)
-    observed_source_sha256 = (
-        f"sha256:{sha256_file(source)}" if source.is_file() else None
-    )
+    observed_source_sha256 = f"sha256:{sha256_file(source)}" if source.is_file() else None
     if (
         source.is_symlink()
         or not source.is_file()
@@ -773,9 +737,7 @@ def write_particlefield_usd_from_nurec(
             "observed_source_sha256": observed_source_sha256,
         }
     try:
-        document, transform, source_prim_path, payload = (
-            _nurec_payload_and_transform(source)
-        )
+        document, transform, source_prim_path, payload = _nurec_payload_and_transform(source)
         description = describe_volume(document)
         arrays = gaussian_arrays(document)
     except (NuRecCodecError, KeyError, ValueError) as exc:
@@ -828,9 +790,7 @@ def write_particlefield_usd_from_nurec(
             "Isaac RTX render remains the GPU gate."
         ),
     )
-    result["receipt_digest"] = canonical_digest(
-        result, digest_field="receipt_digest"
-    )
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
     if receipt_path is not None:
         write_json(Path(receipt_path), result)
     return result

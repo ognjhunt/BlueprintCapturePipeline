@@ -12,6 +12,7 @@ import numpy
 import pytest
 from PIL import Image
 
+from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from blueprint_pipeline.native_task_appearance_frame_alignment import (
     measure_native_task_appearance_frame,
 )
@@ -333,6 +334,11 @@ def test_render_only_task_reuses_exact_checkpoint_and_normalizes_eight_cameras(
             "loss_overrides": runner.DUAL_TARGET_LOSS_OVERRIDES,
         }
     }
+    shared = tmp_path / "input/shared_initialization"
+    shared.mkdir(parents=True)
+    (shared / "retained_scene_gaussians_without_source_object.ply").write_bytes(
+        b"mocked-export-reference"
+    )
     result = runner._dual_target_render_only_task_runtime(
         task={
             "task_id": task_id,
@@ -456,8 +462,25 @@ def test_checkpoint_native_export_is_coordinate_preserving_and_bound(
     monkeypatch.setitem(sys.modules, "threedgrut.export.ply_exporter", ply_module)
     monkeypatch.setitem(sys.modules, "threedgrut.export.usdz_exporter", usdz_module)
 
+    reference = write_standard_3dgs_ply(
+        SplatData(
+            count=2,
+            xyz=numpy.zeros((2, 3), dtype=numpy.float32),
+            opacity=numpy.zeros(2, dtype=numpy.float32),
+            f_dc=numpy.zeros((2, 3), dtype=numpy.float32),
+            scales=numpy.zeros((2, 3), dtype=numpy.float32),
+            quats=numpy.asarray(
+                [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+                dtype=numpy.float32,
+            ),
+            properties=(),
+        ),
+        tmp_path / "reference.ply",
+    )
     result = runner._export_checkpoint_native_appearance(
-        checkpoint=checkpoint, task_output=tmp_path / "task"
+        checkpoint=checkpoint,
+        task_output=tmp_path / "task",
+        reference_gaussian_ply=reference,
     )
 
     assert result["gaussian_count"] == 2

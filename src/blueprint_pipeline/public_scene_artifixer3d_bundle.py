@@ -43,13 +43,14 @@ ENTRYPOINT = "provider_runtime/run_public_scene_artifixer3d.sh"
 RUNNER = "provider_runtime/public_scene_artifixer3d_runner.py"
 RUNTIME_PACKAGE_INIT = "provider_runtime/blueprint_pipeline/__init__.py"
 RUNTIME_EDITOR_REGISTRY = "provider_runtime/blueprint_pipeline/image_editor_backend_registry.py"
-RUNTIME_CUDA_PACKAGE_PATHS = (
-    "provider_runtime/blueprint_pipeline/artifixer_cuda_package_paths.py"
-)
+RUNTIME_CUDA_PACKAGE_PATHS = "provider_runtime/blueprint_pipeline/artifixer_cuda_package_paths.py"
 RUNTIME_BLUEPRINT_MODULES = (
     "__init__.py",
     "image_editor_backend_registry.py",
     "artifixer_cuda_package_paths.py",
+    "decision_evidence_contracts.py",
+    "gaussian_field_quality.py",
+    "gaussian_splat_decode.py",
     "nurec_usdz_layer_transform.py",
     "aura_nurec_usdz.py",
     "native_task_appearance_frame_alignment.py",
@@ -57,9 +58,7 @@ RUNTIME_BLUEPRINT_MODULES = (
 )
 VGG16_WEIGHTS_FILENAME = "vgg16-397923af.pth"
 VGG16_WEIGHTS_SOURCE_URL = "https://download.pytorch.org/models/vgg16-397923af.pth"
-VGG16_WEIGHTS_SHA256 = (
-    "sha256:397923af8e79cdbb6a7127f12361acd7a2f83e06b05044ddf496e83de57a5bf0"
-)
+VGG16_WEIGHTS_SHA256 = "sha256:397923af8e79cdbb6a7127f12361acd7a2f83e06b05044ddf496e83de57a5bf0"
 VGG16_WEIGHTS_SIZE_BYTES = 553_433_881
 RUNTIME_VGG16_WEIGHTS = f"torch_home/hub/checkpoints/{VGG16_WEIGHTS_FILENAME}"
 RUNTIME_EDITOR_REGISTRY_MANIFEST = (
@@ -118,9 +117,7 @@ def direct_editor_backends() -> frozenset[str]:
 
     global _DIRECT_EDITOR_BACKENDS
     if _DIRECT_EDITOR_BACKENDS is None:
-        _DIRECT_EDITOR_BACKENDS = registered_backend_ids(
-            capability=ARTIFIXER_DIRECT_CAPABILITY
-        )
+        _DIRECT_EDITOR_BACKENDS = registered_backend_ids(capability=ARTIFIXER_DIRECT_CAPABILITY)
     return _DIRECT_EDITOR_BACKENDS
 
 
@@ -130,6 +127,8 @@ def __getattr__(name: str) -> Any:
     if name == "DIRECT_EDITOR_BACKENDS":
         return direct_editor_backends()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 NO_DIRECT_EDITOR = REGISTRY_NO_DIRECT_EDITOR
 
 
@@ -641,9 +640,7 @@ def _zip_tree(source: Path, destination: Path) -> None:
             # this is what the scene-configuration builder's own _zip_tree
             # already does.
             executable = bool(item.stat().st_mode & 0o111)
-            info.external_attr = (
-                stat.S_IFREG | (0o755 if executable else 0o644)
-            ) << 16
+            info.external_attr = (stat.S_IFREG | (0o755 if executable else 0o644)) << 16
             with item.open("rb") as input_stream, archive.open(info, "w") as output:
                 shutil.copyfileobj(input_stream, output, length=1024 * 1024)
 
@@ -653,13 +650,9 @@ def _require_executable_archive_entrypoint(bundle_path: Path) -> None:
         with zipfile.ZipFile(bundle_path) as archive:
             archived_mode = stat.S_IMODE(archive.getinfo(ENTRYPOINT).external_attr >> 16)
     except (KeyError, OSError, zipfile.BadZipFile) as exc:
-        raise ArtiFixer3DBundleError(
-            ["artifixer3d_provider_entrypoint_archive_invalid"]
-        ) from exc
+        raise ArtiFixer3DBundleError(["artifixer3d_provider_entrypoint_archive_invalid"]) from exc
     if archived_mode & 0o111 == 0:
-        raise ArtiFixer3DBundleError(
-            ["artifixer3d_provider_entrypoint_not_executable"]
-        )
+        raise ArtiFixer3DBundleError(["artifixer3d_provider_entrypoint_not_executable"])
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -1021,9 +1014,7 @@ def build_artifixer3d_bundle(
     shutil.copyfile(repo / "scripts" / Path(ENTRYPOINT).name, entrypoint_path)
     entrypoint_path.chmod(0o755)
     if stat.S_IMODE(entrypoint_path.stat().st_mode) != 0o755:
-        raise ArtiFixer3DBundleError(
-            ["artifixer3d_provider_entrypoint_permission_install_failed"]
-        )
+        raise ArtiFixer3DBundleError(["artifixer3d_provider_entrypoint_permission_install_failed"])
     shutil.copyfile(repo / "scripts" / Path(RUNNER).name, runtime / Path(RUNNER).name)
     runtime_package = runtime / "blueprint_pipeline"
     runtime_package.mkdir()
@@ -1170,9 +1161,7 @@ def build_artifixer3d_bundle(
                 "source_url": VGG16_WEIGHTS_SOURCE_URL,
                 "size_bytes": VGG16_WEIGHTS_SIZE_BYTES,
                 "sha256": VGG16_WEIGHTS_SHA256,
-                "torch_home_relative_path": (
-                    f"hub/checkpoints/{VGG16_WEIGHTS_FILENAME}"
-                ),
+                "torch_home_relative_path": (f"hub/checkpoints/{VGG16_WEIGHTS_FILENAME}"),
                 "network_retrieval_during_method_execution_required": False,
             },
         },

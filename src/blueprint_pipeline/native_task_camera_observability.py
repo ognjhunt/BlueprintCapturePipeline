@@ -115,22 +115,16 @@ BLOCKER_FRAME_UNIFORM = "native_task_camera_rgb_frame_uniform"
 BLOCKER_FRAME_TONAL_RANGE = "native_task_camera_rgb_frame_tonal_range_below_floor"
 BLOCKER_TARGET_VOID = "native_task_camera_rgb_target_region_void"
 BLOCKER_TARGET_UNIFORM = "native_task_camera_rgb_target_region_uniform"
-BLOCKER_TARGET_TONAL_RANGE = (
-    "native_task_camera_rgb_target_region_tonal_range_below_floor"
-)
+BLOCKER_TARGET_TONAL_RANGE = "native_task_camera_rgb_target_region_tonal_range_below_floor"
 BLOCKER_SITE_VOID = "native_task_camera_rgb_site_void_fraction_above_ceiling"
-BLOCKER_SITE_DOMINANT_COLOR = (
-    "native_task_camera_rgb_site_dominant_color_fraction_above_ceiling"
-)
+BLOCKER_SITE_DOMINANT_COLOR = "native_task_camera_rgb_site_dominant_color_fraction_above_ceiling"
 BLOCKER_SEMANTIC_FRAMING = "native_task_camera_semantic_framing_below_threshold"
 
 # Not a blocker: the caller declared the runtime cannot render the captured
 # site, and it rendered anyway.  That is not a defect -- it means the image
 # changed and the declaration is stale, which is exactly the thing that would
 # otherwise slip past unnoticed.
-NOTICE_SITE_RENDERED_WHILE_UNCLAIMED = (
-    "native_task_camera_site_rendered_while_unclaimed"
-)
+NOTICE_SITE_RENDERED_WHILE_UNCLAIMED = "native_task_camera_site_rendered_while_unclaimed"
 
 REFUSAL_RGB_MISSING = "native_task_camera_rgb_frame_missing"
 REFUSAL_RGB_SHAPE = "native_task_camera_rgb_shape_invalid"
@@ -140,35 +134,19 @@ REFUSAL_RGB_SEMANTIC_MISMATCH = "native_task_camera_rgb_semantic_shape_mismatch"
 CLAIM_WITH_SITE = "camera_observes_task_object_in_rendered_site"
 CLAIM_WITHOUT_SITE = "camera_observes_task_object_without_site_appearance"
 
-POLICY_START_OBSERVABILITY_SCHEMA_VERSION = (
-    "native_task_policy_start_camera_observability.v1"
-)
+POLICY_START_OBSERVABILITY_SCHEMA_VERSION = "native_task_policy_start_camera_observability.v1"
 POLICY_START_SNAPSHOT_ID = "reset"
 POLICY_INPUT_CAMERA_ROLES = ("external", "wrist")
 POLICY_START_TARGET_VISIBLE_ROLES = ("external",)
 
-REFUSAL_POLICY_START_SNAPSHOTS_INVALID = (
-    "native_task_policy_start_camera_snapshots_invalid"
-)
-REFUSAL_POLICY_START_SNAPSHOT_MISSING = (
-    "native_task_policy_start_camera_snapshot_missing"
-)
-REFUSAL_POLICY_START_SNAPSHOT_DUPLICATE = (
-    "native_task_policy_start_camera_snapshot_duplicate"
-)
-REFUSAL_POLICY_START_CAMERAS_INVALID = (
-    "native_task_policy_start_cameras_invalid"
-)
+REFUSAL_POLICY_START_SNAPSHOTS_INVALID = "native_task_policy_start_camera_snapshots_invalid"
+REFUSAL_POLICY_START_SNAPSHOT_MISSING = "native_task_policy_start_camera_snapshot_missing"
+REFUSAL_POLICY_START_SNAPSHOT_DUPLICATE = "native_task_policy_start_camera_snapshot_duplicate"
+REFUSAL_POLICY_START_CAMERAS_INVALID = "native_task_policy_start_cameras_invalid"
 REFUSAL_POLICY_START_ROLE_MISSING = "native_task_policy_start_camera_role_missing"
-REFUSAL_POLICY_START_ROLE_DUPLICATE = (
-    "native_task_policy_start_camera_role_duplicate"
-)
-REFUSAL_POLICY_START_ROLE_NOT_OBSERVABLE = (
-    "native_task_policy_start_camera_role_not_observable"
-)
-REFUSAL_POLICY_START_ROLE_NOT_RENDERED = (
-    "native_task_policy_start_camera_role_not_rendered"
-)
+REFUSAL_POLICY_START_ROLE_DUPLICATE = "native_task_policy_start_camera_role_duplicate"
+REFUSAL_POLICY_START_ROLE_NOT_OBSERVABLE = "native_task_policy_start_camera_role_not_observable"
+REFUSAL_POLICY_START_ROLE_NOT_RENDERED = "native_task_policy_start_camera_role_not_rendered"
 
 
 class NativeTaskCameraObservabilityError(ValueError):
@@ -204,9 +182,7 @@ def validate_native_task_policy_start_camera_observability(
 
     requested_snapshot = str(snapshot_id or "").strip()
     roles = tuple(str(role or "").strip() for role in required_roles)
-    semantic_roles = tuple(
-        str(role or "").strip() for role in target_visible_roles
-    )
+    semantic_roles = tuple(str(role or "").strip() for role in target_visible_roles)
     errors: list[str] = []
     if (
         not requested_snapshot
@@ -216,24 +192,17 @@ def validate_native_task_policy_start_camera_observability(
         or not set(semantic_roles).issubset(roles)
         or len(set(semantic_roles)) != len(semantic_roles)
     ):
-        raise NativeTaskCameraObservabilityError(
-            [REFUSAL_POLICY_START_SNAPSHOTS_INVALID]
-        )
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_START_SNAPSHOTS_INVALID])
     if len(set(roles)) != len(roles):
-        raise NativeTaskCameraObservabilityError(
-            [REFUSAL_POLICY_START_ROLE_DUPLICATE]
-        )
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_START_ROLE_DUPLICATE])
 
     raw_snapshots = construction_result.get("camera_snapshots")
     if not isinstance(raw_snapshots, list):
-        raise NativeTaskCameraObservabilityError(
-            [REFUSAL_POLICY_START_SNAPSHOTS_INVALID]
-        )
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_START_SNAPSHOTS_INVALID])
     matches = [
         row
         for row in raw_snapshots
-        if isinstance(row, Mapping)
-        and str(row.get("snapshot_id") or "") == requested_snapshot
+        if isinstance(row, Mapping) and str(row.get("snapshot_id") or "") == requested_snapshot
     ]
     if not matches:
         raise NativeTaskCameraObservabilityError(
@@ -246,9 +215,7 @@ def validate_native_task_policy_start_camera_observability(
 
     cameras = matches[0].get("cameras")
     if not isinstance(cameras, list):
-        raise NativeTaskCameraObservabilityError(
-            [REFUSAL_POLICY_START_CAMERAS_INVALID]
-        )
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_START_CAMERAS_INVALID])
 
     summaries: list[dict[str, Any]] = []
     for role in roles:
@@ -265,15 +232,9 @@ def validate_native_task_policy_start_camera_observability(
             continue
         row = role_rows[0]
         observability = row.get("observability")
-        thresholds = (
-            observability.get("thresholds")
-            if isinstance(observability, Mapping)
-            else None
-        )
+        thresholds = observability.get("thresholds") if isinstance(observability, Mapping) else None
         render = (
-            observability.get("render_evidence")
-            if isinstance(observability, Mapping)
-            else None
+            observability.get("render_evidence") if isinstance(observability, Mapping) else None
         )
         try:
             pixel_count = int(observability["pixel_count"])
@@ -289,22 +250,10 @@ def validate_native_task_policy_start_camera_observability(
             bbox_values = [int(value) for value in observability["bbox_xyxy"]]
         except (KeyError, TypeError, ValueError):
             bbox_values = []
-        blockers = (
-            observability.get("blockers")
-            if isinstance(observability, Mapping)
-            else None
-        )
-        bbox = (
-            observability.get("bbox_xyxy")
-            if isinstance(observability, Mapping)
-            else None
-        )
+        blockers = observability.get("blockers") if isinstance(observability, Mapping) else None
+        bbox = observability.get("bbox_xyxy") if isinstance(observability, Mapping) else None
         rgb_png = row.get("rgb_png")
-        rgb_png_sha256 = (
-            str(rgb_png.get("sha256") or "")
-            if isinstance(rgb_png, Mapping)
-            else ""
-        )
+        rgb_png_sha256 = str(rgb_png.get("sha256") or "") if isinstance(rgb_png, Mapping) else ""
         rendered = (
             isinstance(observability, Mapping)
             and observability.get("schema_version") == SCHEMA_VERSION
@@ -319,10 +268,7 @@ def validate_native_task_policy_start_camera_observability(
             and str(row.get("snapshot_id") or "") == requested_snapshot
             and rgb_png_sha256.startswith("sha256:")
             and len(rgb_png_sha256) == 71
-            and all(
-                character in "0123456789abcdef"
-                for character in rgb_png_sha256[7:]
-            )
+            and all(character in "0123456789abcdef" for character in rgb_png_sha256[7:])
         )
         if not rendered:
             errors.append(f"{REFUSAL_POLICY_START_ROLE_NOT_RENDERED}:{role}")
@@ -425,9 +371,7 @@ def _as_uint8_rgb(rgb: Any) -> Any:
     return np.clip(values, 0.0, 255.0).astype(np.uint8)
 
 
-def _region_statistics(
-    luminance: Any, void: Any, selector: Any, *, rgb: Any
-) -> dict[str, Any]:
+def _region_statistics(luminance: Any, void: Any, selector: Any, *, rgb: Any) -> dict[str, Any]:
     """Void fraction and tonal structure over one region of a frame."""
 
     import numpy as np
@@ -447,9 +391,7 @@ def _region_statistics(
     return {
         "pixel_count": int(values.size),
         "void_pixel_fraction": float(void[selector].mean()),
-        "distinct_luminance_levels": int(
-            np.unique(np.rint(values).astype(np.uint8)).size
-        ),
+        "distinct_luminance_levels": int(np.unique(np.rint(values).astype(np.uint8)).size),
         "luminance_mean": float(values.mean()),
         "luminance_std": float(values.std()),
         "dominant_rgb_pixel_fraction": float(color_counts.max() / values.size),
@@ -505,9 +447,7 @@ def measure_native_task_frame_render_evidence(
     import numpy as np
 
     if not isinstance(site_appearance_render_expected, bool):
-        raise NativeTaskCameraObservabilityError(
-            ["native_task_camera_site_expectation_invalid"]
-        )
+        raise NativeTaskCameraObservabilityError(["native_task_camera_site_expectation_invalid"])
     frame = _as_uint8_rgb(rgb)
     height, width = (int(value) for value in frame.shape[:2])
     if expected_resolution_hw is not None:
@@ -518,9 +458,7 @@ def measure_native_task_frame_render_evidence(
     void = frame.max(axis=-1) == 0
     luminance = frame.astype(np.float64).mean(axis=-1)
     everywhere = np.ones_like(void, dtype=bool)
-    frame_statistics = _region_statistics(
-        luminance, void, everywhere, rgb=frame
-    )
+    frame_statistics = _region_statistics(luminance, void, everywhere, rgb=frame)
     frame_statistics["near_black_pixel_fraction"] = float(
         (luminance <= NEAR_BLACK_LUMINANCE_MAX).mean()
     )
@@ -567,10 +505,7 @@ def measure_native_task_frame_render_evidence(
     notices: list[str] = []
     if site_statistics is not None:
         site_blockers: list[str] = []
-        if (
-            float(site_statistics["void_pixel_fraction"])
-            > MAXIMUM_SITE_VOID_PIXEL_FRACTION
-        ):
+        if float(site_statistics["void_pixel_fraction"]) > MAXIMUM_SITE_VOID_PIXEL_FRACTION:
             site_blockers.append(BLOCKER_SITE_VOID)
         if (
             float(site_statistics["dominant_rgb_pixel_fraction"])
@@ -593,14 +528,18 @@ def measure_native_task_frame_render_evidence(
         "target_rendered": target_rendered,
         "site_rendered": site_rendered,
         "site_appearance_render_expected": site_appearance_render_expected,
-        "site_appearance_claimed": bool(
-            site_appearance_render_expected and site_rendered
-        ),
+        "site_appearance_claimed": bool(site_appearance_render_expected and site_rendered),
+        "site_appearance_presence_claimed": bool(site_appearance_render_expected and site_rendered),
+        # RGB statistics establish that non-void site radiance is present. They
+        # cannot establish reconstruction fidelity, Gaussian geometry quality,
+        # or sharpness without an independently bound reference. Those gates
+        # live at producer, representation, and packet boundaries.
+        "appearance_quality_claimed": False,
+        "appearance_fidelity_qualified": False,
+        "quality_boundary": "render_presence_only_not_appearance_quality",
         "thresholds": {
             "maximum_site_void_pixel_fraction": MAXIMUM_SITE_VOID_PIXEL_FRACTION,
-            "maximum_site_dominant_rgb_pixel_fraction": (
-                MAXIMUM_SITE_DOMINANT_RGB_PIXEL_FRACTION
-            ),
+            "maximum_site_dominant_rgb_pixel_fraction": (MAXIMUM_SITE_DOMINANT_RGB_PIXEL_FRACTION),
             "minimum_distinct_luminance_levels": MINIMUM_DISTINCT_LUMINANCE_LEVELS,
             "minimum_luminance_std": MINIMUM_LUMINANCE_STD,
             "near_black_luminance_max": NEAR_BLACK_LUMINANCE_MAX,
@@ -644,9 +583,7 @@ def measure_native_task_camera_observability(
     if semantic.ndim == 3 and semantic.shape[-1] == 1:
         semantic = semantic[..., 0]
     if semantic.ndim != 2 or not semantic.size:
-        raise NativeTaskCameraObservabilityError(
-            ["native_task_camera_semantic_shape_invalid"]
-        )
+        raise NativeTaskCameraObservabilityError(["native_task_camera_semantic_shape_invalid"])
     if (
         isinstance(minimum_pixels, bool)
         or int(minimum_pixels) < 1
@@ -656,9 +593,7 @@ def measure_native_task_camera_observability(
         or float(centroid_margin_fraction) < 0.0
         or float(centroid_margin_fraction) >= 0.5
     ):
-        raise NativeTaskCameraObservabilityError(
-            ["native_task_camera_threshold_invalid"]
-        )
+        raise NativeTaskCameraObservabilityError(["native_task_camera_threshold_invalid"])
     target_ids: list[int] = []
     for identifier, entry in id_to_labels.items():
         label = entry.get("class") if isinstance(entry, Mapping) else entry
@@ -703,9 +638,7 @@ def measure_native_task_camera_observability(
             expected_bbox_area_px=framing_expectation["expected_bbox_area_px"],
         )
         effective_minimum_pixels = framing_thresholds["effective_minimum_pixels"]
-        effective_minimum_fraction = framing_thresholds[
-            "effective_minimum_pixel_fraction"
-        ]
+        effective_minimum_fraction = framing_thresholds["effective_minimum_pixel_fraction"]
     semantic_passed = (
         count >= effective_minimum_pixels
         and fraction >= effective_minimum_fraction
@@ -747,9 +680,7 @@ def measure_native_task_camera_observability(
         "render_evidence": render,
         "site_appearance_claimed": bool(render["site_appearance_claimed"]),
         "claim": (
-            CLAIM_WITH_SITE
-            if passed and render["site_appearance_claimed"]
-            else CLAIM_WITHOUT_SITE
+            CLAIM_WITH_SITE if passed and render["site_appearance_claimed"] else CLAIM_WITHOUT_SITE
         ),
         "blockers": sorted(set(blockers)),
         "notices": list(render["notices"]),

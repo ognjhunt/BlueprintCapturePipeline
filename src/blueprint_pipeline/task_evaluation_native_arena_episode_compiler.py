@@ -19,6 +19,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from .decision_evidence_contracts import canonical_digest
+from .gaussian_field_quality import (
+    gaussian_quality_is_qualified,
+    measure_gaussian_field_quality,
+)
 from .native_task_arena_packet import materialize_native_task_arena_packet
 from .particlefield_usd import write_particlefield_usd_from_nurec
 from .task_evaluation_configured_scene_revision import (
@@ -85,13 +89,9 @@ def _sha256_and_size(path: Path) -> tuple[str, int]:
     return "sha256:" + digest.hexdigest(), size
 
 
-def _reference_path(
-    references: Mapping[str, Mapping[str, Any]], contract_path: str
-) -> Path:
+def _reference_path(references: Mapping[str, Mapping[str, Any]], contract_path: str) -> Path:
     row = references.get(contract_path)
-    unresolved_path = Path(
-        str((row or {}).get("materialized_path") or "")
-    ).expanduser()
+    unresolved_path = Path(str((row or {}).get("materialized_path") or "")).expanduser()
     path = unresolved_path.resolve()
     if (
         row is None
@@ -127,20 +127,14 @@ def _json_reference(
 
 def _safe_member(value: Any) -> PurePosixPath:
     member = PurePosixPath(str(value or ""))
-    if (
-        member.is_absolute()
-        or member.as_posix() in {"", ".", ".."}
-        or ".." in member.parts
-    ):
+    if member.is_absolute() or member.as_posix() in {"", ".", ".."} or ".." in member.parts:
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             "episode_compiler_configured_bundle_member_invalid"
         )
     return member
 
 
-def _extract_configured_assets(
-    bundle_path: Path, *, output_root: Path
-) -> dict[str, Path]:
+def _extract_configured_assets(bundle_path: Path, *, output_root: Path) -> dict[str, Path]:
     destination = output_root / "configured-scene"
     destination.mkdir(mode=0o750)
     try:
@@ -174,8 +168,7 @@ def _extract_configured_assets(
             not isinstance(manifest, Mapping)
             or manifest.get("schema_version")
             != "task_evaluation_configured_scene_bundle_candidate.v1"
-            or manifest.get("status")
-            != "assembled_pending_control_plane_publication"
+            or manifest.get("status") != "assembled_pending_control_plane_publication"
             or manifest.get("robot_neutral") is not True
             or manifest.get("robot_specific_base_registration_included") is not False
             or manifest.get("manifest_digest")
@@ -185,7 +178,9 @@ def _extract_configured_assets(
                 "episode_compiler_configured_bundle_manifest_invalid"
             )
         rows = manifest.get("assets")
-        if not isinstance(rows, list) or {row.get("role") for row in rows if isinstance(row, Mapping)} != {
+        if not isinstance(rows, list) or {
+            row.get("role") for row in rows if isinstance(row, Mapping)
+        } != {
             "appearance",
             "collision",
             "replacement",
@@ -268,6 +263,21 @@ def _materialize_native_particlefield_appearance(
     ]
     source_digest, source_size = _sha256_and_size(source_path)
     if len(particlefields) == 1 and not nurec_volumes:
+        field = particlefields[0]
+        try:
+            field_quality = measure_gaussian_field_quality(
+                positions=field.GetAttribute("positions").Get(),
+                activated_scales=field.GetAttribute("scales").Get(),
+                opacities=field.GetAttribute("opacities").Get(),
+            )
+        except ValueError as exc:
+            raise TaskEvaluationNativeArenaEpisodeCompilerError(
+                "episode_compiler_configured_appearance_gaussian_field_quality_invalid"
+            ) from exc
+        if not gaussian_quality_is_qualified(field_quality):
+            raise TaskEvaluationNativeArenaEpisodeCompilerError(
+                "episode_compiler_configured_appearance_gaussian_field_quality_invalid"
+            )
         return {
             "status": "existing_particlefield_selected",
             "path": str(source_path),
@@ -276,6 +286,7 @@ def _materialize_native_particlefield_appearance(
             "source_configured_appearance_size_bytes": source_size,
             "representation_conversion_performed": False,
             "exact_learned_arrays_preserved": True,
+            "gaussian_field_quality": field_quality,
         }
     if len(nurec_volumes) != 1 or particlefields:
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
@@ -294,15 +305,14 @@ def _materialize_native_particlefield_appearance(
     )
     if (
         receipt.get("status") != "completed"
-        or receipt.get("schema_version")
-        != "particlefield_3dgs_authoring_receipt.v1"
+        or receipt.get("schema_version") != "particlefield_3dgs_authoring_receipt.v1"
         or receipt.get("schema") != "ParticleField3DGaussianSplat"
         or receipt.get("source_sha256") != source_digest
         or receipt.get("source_kind") != "nurec_usdz"
         or receipt.get("exact_learned_arrays_preserved") is not True
         or receipt.get("representation_conversion_only") is not True
-        or receipt.get("receipt_digest")
-        != canonical_digest(receipt, digest_field="receipt_digest")
+        or not gaussian_quality_is_qualified(receipt.get("gaussian_field_quality"))
+        or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
         or output_path.is_symlink()
         or not output_path.is_file()
         or _sha256_and_size(output_path)
@@ -325,6 +335,7 @@ def _materialize_native_particlefield_appearance(
         "particlefield_authoring_receipt_digest": receipt["receipt_digest"],
         "representation_conversion_performed": True,
         "exact_learned_arrays_preserved": True,
+        "gaussian_field_quality": receipt["gaussian_field_quality"],
     }
 
 
@@ -352,8 +363,7 @@ def compile_native_arena_episode(
         revision["revision_digest"] != envelope["configured_scene_revision_digest"]
         or revision["scene_identity"] != request["scene"]["identity"]
         or revision["task_template"]["identity"] != request["task"]["identity"]
-        or revision["replacement"]["identity"]
-        != request["task"]["subject"]["identity"]
+        or revision["replacement"]["identity"] != request["task"]["subject"]["identity"]
     ):
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             "episode_compiler_configured_revision_binding_mismatch"
@@ -428,9 +438,7 @@ def compile_native_arena_episode(
     task_spec["manipulation_strategy"] = request["task"]["strategy"]
     task_spec["success_criteria"] = success.get("criteria")
     task_spec = _runtime_subject_task_spec(task_spec)
-    native_candidate_universe = robot.get(
-        "native_construction_candidate_universe"
-    )
+    native_candidate_universe = robot.get("native_construction_candidate_universe")
     if native_candidate_universe is not None:
         if not isinstance(native_candidate_universe, Mapping):
             raise TaskEvaluationNativeArenaEpisodeCompilerError(
@@ -465,15 +473,11 @@ def compile_native_arena_episode(
     )
     native_appearance_path = Path(str(native_appearance.get("path") or ""))
     if (
-        native_appearance.get("representation")
-        != "particlefield_3d_gaussian_splat"
+        native_appearance.get("representation") != "particlefield_3d_gaussian_splat"
         or native_appearance.get("exact_learned_arrays_preserved") is not True
         or native_appearance_path.is_symlink()
         or not native_appearance_path.is_file()
-        or (
-            native_appearance_path != root
-            and root not in native_appearance_path.resolve().parents
-        )
+        or (native_appearance_path != root and root not in native_appearance_path.resolve().parents)
     ):
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             "episode_compiler_native_appearance_invalid"
@@ -485,11 +489,7 @@ def compile_native_arena_episode(
         ("collision", "scene_collision"),
         ("replacement", "task_object"),
     ):
-        path = (
-            native_appearance_path
-            if role == "appearance"
-            else configured_assets[role]
-        )
+        path = native_appearance_path if role == "appearance" else configured_assets[role]
         digest, size = _sha256_and_size(path)
         row: dict[str, Any] = {
             "semantic_role": semantic_role,
@@ -500,7 +500,9 @@ def compile_native_arena_episode(
                 "size_bytes": size,
                 "sha256": digest,
             },
-            "pose_world": object_pose if role == "replacement" else {
+            "pose_world": object_pose
+            if role == "replacement"
+            else {
                 "position_world_m": [0.0, 0.0, 0.0],
                 "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
             },
@@ -536,19 +538,16 @@ def compile_native_arena_episode(
                 "representation_conversion_performed"
             ],
             "exact_learned_arrays_preserved": True,
+            "gaussian_field_quality": native_appearance["gaussian_field_quality"],
         },
         "native_construction_feedback": (
             {
-                "selected_placement_candidate_id": robot.get(
-                    "selected_placement_candidate_id"
-                ),
+                "selected_placement_candidate_id": robot.get("selected_placement_candidate_id"),
                 "candidate_universe": native_candidate_universe,
                 "candidate_generator_authority": {
                     "generator": "remote_curobo_v2_motion_generation",
                     "package_version": "0.8.0",
-                    "source_revision": (
-                        "4ea77366ca48ee453e7df139e39fa6532af49f3b"
-                    ),
+                    "source_revision": ("4ea77366ca48ee453e7df139e39fa6532af49f3b"),
                     "required_on_retained_gpu": True,
                     "deterministic_cpu_prefilter_required": True,
                     "silent_fallback_permitted": False,
@@ -602,9 +601,7 @@ def compile_native_arena_episode(
         "configured_task_template_adapter": {
             "schema_version": task_adapter["schema_version"],
             "adapter_digest": task_adapter["adapter_digest"],
-            "source_documents_digest": task_adapter["source_documents"][
-                "source_documents_digest"
-            ],
+            "source_documents_digest": task_adapter["source_documents"]["source_documents_digest"],
             "manipulation_strategy": task_adapter["manipulation_strategy"],
         },
         "compiled_episode_packet": {
@@ -621,14 +618,10 @@ def compile_native_arena_episode(
             ),
             "digest": adapter_result["result_digest"],
             "packet_receipt_digest": adapter_result["packet_receipt_digest"],
-            "runtime_source_receipt_digest": adapter_result[
-                "runtime_source_receipt_digest"
-            ],
+            "runtime_source_receipt_digest": adapter_result["runtime_source_receipt_digest"],
         },
         "native_scene_appearance": {
-            key: value
-            for key, value in native_appearance.items()
-            if key != "path"
+            key: value for key, value in native_appearance.items() if key != "path"
         },
         "compiled_by_production": True,
         "customer_supplied_prebuilt_episode_packet": False,
