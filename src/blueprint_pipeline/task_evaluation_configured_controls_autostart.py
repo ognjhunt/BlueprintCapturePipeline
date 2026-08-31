@@ -432,8 +432,15 @@ def _native_feedback_candidate_universe(
             "pose": json.loads(json.dumps(raw.get("pose"))),
             "support_surface_id": str(raw.get("support_surface_id") or ""),
         }
+        # The compact inventory deliberately retains only the digest of the
+        # already-passed geometry gate.  Recompute the task-aware orientation
+        # report without pretending that compact row is the full gate document.
         gate = _reject_infeasible_orientation_slew(
-            gate=raw,
+            gate={
+                "status": "passed",
+                "blockers": [],
+                "source_geometry_gate_digest": raw.get("geometry_gate_digest"),
+            },
             proposal=proposal,
             trajectory=validated_trajectory,
             robot_id="franka_panda",
