@@ -213,6 +213,10 @@ echo BLUEPRINT_ARENA_WARM_PROVIDER_OUTPUT_UPLOAD_OK
 """
 
 
+_DEFAULT_MAX_WARM_SSH_TIMEOUT_SECONDS = 300.0
+_ABSOLUTE_MAX_WARM_SSH_TIMEOUT_SECONDS = 1800.0
+
+
 def _run_pinned_ssh(
     *,
     session: Mapping[str, Any],
@@ -221,6 +225,7 @@ def _run_pinned_ssh(
     stdin: bytes | None = None,
     identity_file: str | Path | None = None,
     timeout_seconds: float = 30.0,
+    maximum_timeout_seconds: float = _DEFAULT_MAX_WARM_SSH_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Run one bounded command on the retained worker over strict pinned SSH."""
 
@@ -257,7 +262,15 @@ def _run_pinned_ssh(
             "known_hosts_sha256": known_hosts_sha256,
             "raw_secret_values_recorded": False,
         }
-    timeout = min(300.0, max(1.0, float(timeout_seconds)))
+    # A probe should stay short, but provisioning a GPU runtime legitimately
+    # compiles CUDA extensions and does not finish inside a five minute probe
+    # budget. Callers opt into a longer ceiling explicitly; the absolute bound
+    # still holds, and the session TTL and spend cap are unchanged.
+    ceiling = min(
+        _ABSOLUTE_MAX_WARM_SSH_TIMEOUT_SECONDS,
+        max(1.0, float(maximum_timeout_seconds)),
+    )
+    timeout = min(ceiling, max(1.0, float(timeout_seconds)))
     command = [
         "ssh",
         "-i",
@@ -275,7 +288,7 @@ def _run_pinned_ssh(
         "-o",
         "GlobalKnownHostsFile=/dev/null",
         "-o",
-        f"ConnectTimeout={max(1, int(timeout))}",
+        f"ConnectTimeout={max(1, int(min(30.0, timeout)))}",
         "-o",
         "ServerAliveInterval=5",
         "-o",

@@ -160,7 +160,11 @@ class RemoteCuroboCandidateGenerator:
         *,
         stdin: bytes | None = None,
         timeout_seconds: float,
+        maximum_timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
+        extra: dict[str, Any] = {}
+        if maximum_timeout_seconds is not None:
+            extra["maximum_timeout_seconds"] = maximum_timeout_seconds
         result = _run_warm_ssh(
             session=self._session,
             known_hosts_file=self._known_hosts,
@@ -168,10 +172,25 @@ class RemoteCuroboCandidateGenerator:
             remote_argv=argv,
             stdin=stdin,
             timeout_seconds=timeout_seconds,
+            **extra,
         )
         if result.get("status") != "completed":
+            # The transport already reports why -- a timeout, or an exit code --
+            # and redacts the output before returning it. Collapsing that into
+            # one generic word costs a GPU allocation to rediscover, so the
+            # predicate carries the transport blocker and the exit status.
             raise CollisionAwareCandidateGenerationError(
-                "curobo_remote_process_failed"
+                ":".join(
+                    [
+                        "curobo_remote_process_failed",
+                        *(str(value) for value in (result.get("blockers") or [])),
+                        *(
+                            [f"exit_{result['returncode']}"]
+                            if result.get("returncode") is not None
+                            else []
+                        ),
+                    ]
+                )
             )
         return result
 
@@ -208,8 +227,12 @@ assert str(curobo.__version__).lstrip("v") == "0.8.0"
 PY
 printf '%s\n' BLUEPRINT_CUROBO_RUNTIME_READY
 """
+        # Cloning curobo and building its CUDA extensions does not finish in a
+        # five minute probe budget on a cold container.
         result = self._ssh(
-            ["/bin/bash", "-c", script], timeout_seconds=300.0
+            ["/bin/bash", "-c", script],
+            timeout_seconds=1500.0,
+            maximum_timeout_seconds=1800.0,
         )
         if "BLUEPRINT_CUROBO_RUNTIME_READY" not in str(result.get("stdout") or ""):
             raise CollisionAwareCandidateGenerationError(
