@@ -115,6 +115,35 @@ def _record(path: Path) -> dict[str, Any]:
     return {"path": str(path), "size_bytes": path.stat().st_size, "sha256": _sha256(path)}
 
 
+def _terminal_feedback_adoption_is_bundle_bound(
+    prepared_bundle: Mapping[str, Any],
+) -> bool:
+    """True only when the immutable construction bundle contains feedback."""
+
+    inputs = prepared_bundle.get("bound_runtime_inputs")
+    if not isinstance(inputs, list):
+        return False
+    matches = [
+        item
+        for item in inputs
+        if isinstance(item, Mapping)
+        and item.get("relative_path")
+        == "runtime_inputs/native_construction_terminal_feedback_adoption.v1.json"
+    ]
+    if len(matches) != 1:
+        return False
+    match = matches[0]
+    digest = str(match.get("sha256") or "")
+    size = match.get("size_bytes")
+    return (
+        digest.startswith("sha256:")
+        and _lower_hex(digest.removeprefix("sha256:"), length=64)
+        and isinstance(size, int)
+        and not isinstance(size, bool)
+        and size > 0
+    )
+
+
 def _lexical_absolute_path(value: Any, code: str) -> Path:
     raw = str(value or "")
     expanded = Path(raw).expanduser()
@@ -949,6 +978,7 @@ def materialize_native_task_arena_paid_attempt_authority(
             "receipt_digest"
         ),
     )
+    feedback_adoption_bound = _terminal_feedback_adoption_is_bundle_bound(bundle)
     terminal_inputs = (
         prior_authority_path,
         prior_result_path,
@@ -1055,7 +1085,7 @@ def materialize_native_task_arena_paid_attempt_authority(
             or (authorized_time - zero_time).total_seconds()
             > MAX_INITIAL_PROVIDER_ZERO_AGE_SECONDS
             or allowed_active_instance_ids
-            or retain_warm_session
+            or (retain_warm_session and not feedback_adoption_bound)
             or policy_campaign_path is not None
             or campaign_member_id is not None
         ):
@@ -1141,7 +1171,13 @@ def materialize_native_task_arena_paid_attempt_authority(
         "aggregate_goal_spend_before_attempt_usd": prior_spend,
         "aggregate_goal_spend_cap_usd": aggregate_cap,
         "lineage_kind": (
-            "terminal_predecessor" if terminal_mode else "project_spend_genesis"
+            "terminal_predecessor"
+            if terminal_mode
+            else (
+                "project_spend_feedback_continuation"
+                if feedback_adoption_bound
+                else "project_spend_genesis"
+            )
         ),
         **(
             {
@@ -1213,6 +1249,9 @@ def validate_native_task_arena_paid_attempt_authority(
     retain_warm_session: bool = False,
 ) -> dict[str, Any]:
     value = dict(authority)
+    feedback_adoption_bound = _terminal_feedback_adoption_is_bundle_bound(
+        prepared_bundle
+    )
     expected_allowlist = {
         "external_provider_owned": tuple(sorted(set(allowed_active_instance_ids))),
         "same_goal_concurrent": (),
@@ -1279,12 +1318,21 @@ def validate_native_task_arena_paid_attempt_authority(
         if recorded_receipt_path != expected_receipt_path:
             errors.append("bundle_receipt_path_mismatch")
         lineage_kind = value.get("lineage_kind", "terminal_predecessor")
-        if lineage_kind == "project_spend_genesis":
+        if lineage_kind in {
+            "project_spend_genesis",
+            "project_spend_feedback_continuation",
+        }:
             if (
                 value.get("prior_terminal_attempt") is not None
                 or value.get("prior_spend_reconciliation") is not None
                 or value.get("prior_terminal_attempts") != []
-                or retain_warm_session
+                or (
+                    retain_warm_session
+                    and (
+                        lineage_kind != "project_spend_feedback_continuation"
+                        or not feedback_adoption_bound
+                    )
+                )
                 or allowed_active_instance_ids
                 or value.get("policy_campaign_binding") is not None
             ):
@@ -1320,6 +1368,10 @@ def validate_native_task_arena_paid_attempt_authority(
                 or value.get("prior_actual_provider_spend_usd") != actual_after
                 or value.get("aggregate_goal_spend_before_attempt_usd")
                 != actual_after
+                or (
+                    lineage_kind == "project_spend_feedback_continuation"
+                    and not feedback_adoption_bound
+                )
             ):
                 errors.append("project_spend_genesis_mismatch")
         elif lineage_kind == "terminal_predecessor":

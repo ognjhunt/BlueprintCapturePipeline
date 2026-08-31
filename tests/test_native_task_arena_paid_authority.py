@@ -276,6 +276,53 @@ def test_new_lane_genesis_binds_project_spend_and_fresh_provider_zero(
         hard_ttl_seconds=3_300,
     )["authorization_digest"] == authority["authorization_digest"]
 
+    prepared["bound_runtime_inputs"] = [
+        {
+            "relative_path": (
+                "runtime_inputs/"
+                "native_construction_terminal_feedback_adoption.v1.json"
+            ),
+            "size_bytes": 128,
+            "sha256": "sha256:" + "9" * 64,
+        }
+    ]
+    feedback_authority = paid.materialize_native_task_arena_paid_attempt_authority(
+        bundle_receipt_path=receipt_path,
+        project_spend_reconciliation_path=reconciliation_path,
+        initial_provider_zero_path=zero_path,
+        authorization_reference="user-authorized feedback continuation",
+        authorized_by="user",
+        authorized_on="2026-08-25T14:30:00+00:00",
+        blueprint_commit=COMMIT,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+        output_path=tmp_path / "feedback-authority.json",
+        retain_warm_session=True,
+    )
+    assert feedback_authority["lineage_kind"] == (
+        "project_spend_feedback_continuation"
+    )
+    assert paid.validate_native_task_arena_paid_attempt_authority(
+        feedback_authority,
+        prepared_bundle=prepared,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+        retain_warm_session=True,
+    )["authorization_digest"] == feedback_authority["authorization_digest"]
+
+    prepared["bound_runtime_inputs"] = []
+    with pytest.raises(ValueError, match="prior_terminal_spend_invalid"):
+        paid.validate_native_task_arena_paid_attempt_authority(
+            feedback_authority,
+            prepared_bundle=prepared,
+            max_hourly_rate_usd=0.8,
+            hard_cap_usd=0.75,
+            hard_ttl_seconds=3_300,
+            retain_warm_session=True,
+        )
+
 
 def test_terminal_continuation_uses_newer_conservative_project_spend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
