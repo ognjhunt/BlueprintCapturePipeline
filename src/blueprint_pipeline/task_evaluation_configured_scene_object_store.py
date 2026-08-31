@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
 import os
 import re
 import stat
@@ -681,6 +683,35 @@ def read_configured_scene_object(
     return payload
 
 
+def main(argv: list[str] | None = None) -> int:
+    """Materialize one verified configured-scene artifact from a JSON reference."""
+
+    parser = argparse.ArgumentParser(
+        description="Materialize one digest-bound configured-scene artifact."
+    )
+    parser.add_argument("--reference", type=Path, required=True)
+    parser.add_argument("--destination", type=Path, required=True)
+    parser.add_argument("--maximum-size-bytes", type=int, required=True)
+    args = parser.parse_args(argv)
+    try:
+        reference = json.loads(args.reference.expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_reference_unreadable"
+        ) from exc
+    if not isinstance(reference, dict):
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_reference_invalid"
+        )
+    result = materialize_configured_scene_artifact(
+        reference=reference,
+        destination=args.destination,
+        maximum_size_bytes=args.maximum_size_bytes,
+    )
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
 __all__ = [
     "DEFAULT_KEY_PREFIX",
     "LARGE_ARTIFACT_KEY_PREFIX",
@@ -692,3 +723,7 @@ __all__ = [
     "read_configured_scene_object",
     "validate_configured_scene_object_store_configuration",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through module CLI
+    raise SystemExit(main())

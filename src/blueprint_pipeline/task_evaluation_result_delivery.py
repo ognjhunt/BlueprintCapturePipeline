@@ -8,6 +8,7 @@ WebApp never becomes the authority for scores or evidence completeness.
 
 from __future__ import annotations
 
+import argparse
 import csv
 import hashlib
 import io
@@ -228,6 +229,45 @@ def _blocked_delivery(
     }
     delivery["delivery_digest"] = canonical_digest(delivery, digest_field="delivery_digest")
     return delivery
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Materialize one terminal Task Evaluation result-delivery projection."""
+
+    parser = argparse.ArgumentParser(
+        description="Verify and materialize a Task Evaluation result delivery."
+    )
+    parser.add_argument("--run-root", type=Path, required=True)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument(
+        "--state",
+        choices=("decided", "partially_decided", "abstained"),
+        required=True,
+    )
+    parser.add_argument("--decision-envelope", type=Path, required=True)
+    parser.add_argument("--episode-evidence-index", type=Path)
+    args = parser.parse_args(argv)
+    try:
+        decision_envelope = json.loads(
+            args.decision_envelope.expanduser().read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationResultDeliveryError(
+            "result_delivery_decision_envelope_unreadable"
+        ) from exc
+    if not isinstance(decision_envelope, Mapping):
+        raise TaskEvaluationResultDeliveryError(
+            "result_delivery_decision_envelope_invalid"
+        )
+    result = materialize_task_evaluation_result_delivery(
+        run_root=args.run_root,
+        run_id=args.run_id,
+        state=args.state,
+        decision_envelope=decision_envelope,
+        episode_evidence_index_path=args.episode_evidence_index,
+    )
+    print(canonical_json(result))
+    return 0
 
 
 def materialize_task_evaluation_result_delivery(
@@ -881,3 +921,7 @@ __all__ = [
     "materialize_task_evaluation_result_delivery",
     "resolve_task_evaluation_result_artifact",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through module CLI
+    raise SystemExit(main())
