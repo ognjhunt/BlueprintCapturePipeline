@@ -1760,6 +1760,7 @@ def deploy_control_plane_commit(
             state_root=state_root,
             active_link=active,
             activate=False,
+            allow_unmerged_remote_commit=canary,
         )
         try:
             prerequisite = validate_splat_render_prerequisites(
