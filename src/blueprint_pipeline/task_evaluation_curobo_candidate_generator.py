@@ -54,6 +54,11 @@ class CuroboCandidateGenerator(JsonProcessCandidateGenerator):
                 "blueprint_pipeline.task_evaluation_curobo_candidate_service",
             ),
             require_cuda=True,
+            environment={
+                "BLUEPRINT_CUROBO_SOURCE_REVISION": CUROBO_BACKEND_IDENTITY[
+                    "source_revision"
+                ]
+            },
             **kwargs,
         )
 

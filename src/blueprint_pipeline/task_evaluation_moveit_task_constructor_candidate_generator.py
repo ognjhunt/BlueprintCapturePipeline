@@ -65,6 +65,7 @@ class MoveItTaskConstructorCandidateGenerator(JsonProcessCandidateGenerator):
             backend_identity=MOVEIT_TASK_CONSTRUCTOR_BACKEND_IDENTITY,
             command=command,
             require_cuda=False,
+            environment={"ROS_DISTRO": "jazzy"},
             **kwargs,
         )
 

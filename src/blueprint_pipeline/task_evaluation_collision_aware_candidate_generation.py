@@ -548,12 +548,16 @@ class JsonProcessCandidateGenerator:
         backend_identity: Mapping[str, Any],
         command: Sequence[str],
         require_cuda: bool,
+        environment: Mapping[str, str] | None = None,
         runner: CommandRunner = subprocess.run,
     ) -> None:
         self._context = context
         self._backend_identity = _copy(backend_identity)
         self._command = tuple(str(item) for item in command)
         self._require_cuda = require_cuda
+        self._environment = {
+            str(key): str(value) for key, value in (environment or {}).items()
+        }
         self._runner = runner
         if not self._command or not os.path.isabs(self._command[0]):
             raise CollisionAwareCandidateGenerationError(
@@ -586,6 +590,7 @@ class JsonProcessCandidateGenerator:
                     capture_output=True,
                     timeout=max(30.0, self._context.maximum_runtime_seconds + 30.0),
                     cwd="/tmp",
+                    env={**os.environ, **self._environment},
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 raise CollisionAwareCandidateGenerationError(

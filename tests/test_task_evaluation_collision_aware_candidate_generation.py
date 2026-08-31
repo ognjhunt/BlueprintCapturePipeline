@@ -125,6 +125,13 @@ class _Process:
         self.requests: list[dict] = []
 
     def __call__(self, argv, **_kwargs):
+        environment = _kwargs["env"]
+        if self.backend_identity == CUROBO_BACKEND_IDENTITY:
+            assert environment["BLUEPRINT_CUROBO_SOURCE_REVISION"] == (
+                CUROBO_BACKEND_IDENTITY["source_revision"]
+            )
+        else:
+            assert environment["ROS_DISTRO"] == "jazzy"
         output = Path(argv[argv.index("--result-json") + 1])
         if "--probe" in argv:
             probe = _sealed(
