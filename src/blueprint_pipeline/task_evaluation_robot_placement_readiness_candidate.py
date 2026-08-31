@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -172,6 +173,16 @@ def materialize_robot_placement_readiness_candidate(
         if isinstance(geometry_gate, Mapping)
         else None
     )
+    task_aware_reset = (
+        orientation_gate.get("task_aware_reset")
+        if isinstance(orientation_gate, Mapping)
+        else None
+    )
+    reset_joints = (
+        task_aware_reset.get("joint_positions_rad")
+        if isinstance(task_aware_reset, Mapping)
+        else None
+    )
     inventory_geometry_gate = dict(geometry_gate or {})
     inventory_geometry_gate.pop("orientation_slew_feasibility", None)
     inventory_geometry_gate_digest = canonical_digest(
@@ -206,6 +217,15 @@ def materialize_robot_placement_readiness_candidate(
         or not isinstance(orientation_gate, Mapping)
         or orientation_gate.get("feasible") is not True
         or orientation_gate.get("blockers") not in ([], ())
+        or not isinstance(task_aware_reset, Mapping)
+        or not isinstance(reset_joints, list)
+        or len(reset_joints) != 7
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in reset_joints
+        )
     ):
         raise TaskEvaluationRobotPlacementReadinessCandidateError(
             "robot_placement_readiness_candidate_evidence_invalid"
@@ -243,6 +263,12 @@ def materialize_robot_placement_readiness_candidate(
         "orientation_slew_feasibility_digest": canonical_digest(
             orientation_gate
         ),
+        # The placement gate derived the reset whose grasp orientation made the
+        # accepted trajectory feasible.  Carry the exact joints forward: using
+        # the generic home pose here makes the native arm pay a different
+        # orientation path and can sweep through the task object before the
+        # authored precontact phase begins.
+        "task_aware_reset": json.loads(json.dumps(dict(task_aware_reset))),
         "pose_world": receipt["accepted_pose"],
         "task_trajectory_considered": trajectory_digest is not None,
         "deterministic_candidate_inventory_member_verified": True,

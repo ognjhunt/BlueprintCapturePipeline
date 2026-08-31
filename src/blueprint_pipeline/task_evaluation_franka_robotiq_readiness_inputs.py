@@ -202,6 +202,12 @@ def _base_pose_candidate_matches(
         return False
     trajectory_digest = candidate.get("task_trajectory_digest")
     manipulability = candidate.get("trajectory_minimum_manipulability")
+    task_aware_reset = candidate.get("task_aware_reset")
+    reset_joints = (
+        task_aware_reset.get("joint_positions_rad")
+        if isinstance(task_aware_reset, Mapping)
+        else None
+    )
     return (
         candidate.get("derivation_method")
         == "deterministic_trajectory_inventory_selection"
@@ -231,6 +237,15 @@ def _base_pose_candidate_matches(
         and not isinstance(manipulability, bool)
         and math.isfinite(float(manipulability))
         and float(manipulability) > 0.0
+        and isinstance(task_aware_reset, Mapping)
+        and isinstance(reset_joints, list)
+        and len(reset_joints) == 7
+        and all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            for value in reset_joints
+        )
     )
 
 
@@ -370,6 +385,16 @@ def materialize_franka_robotiq_readiness_inputs(
         )
     pose = _validated_pose(base_pose_candidate.get("pose_world"))
     camera_rows = _validated_cameras(cameras)
+    joint_reset_positions = dict(_RESET_JOINT_POSITIONS_RAD)
+    task_aware_reset = base_pose_candidate.get("task_aware_reset")
+    if isinstance(task_aware_reset, Mapping):
+        reset_joints = [float(value) for value in task_aware_reset["joint_positions_rad"]]
+        joint_reset_positions.update(
+            {
+                f"panda_joint{index}": value
+                for index, value in enumerate(reset_joints, start=1)
+            }
+        )
 
     source = {
         "isaac_lab_asset_symbol": "FRANKA_ROBOTIQ_GRIPPER_CFG",
@@ -385,7 +410,12 @@ def materialize_franka_robotiq_readiness_inputs(
                 "robot": "Franka Panda",
                 "gripper": "Robotiq 2F-85",
                 "source": source,
-                "joint_reset_positions_rad": dict(_RESET_JOINT_POSITIONS_RAD),
+                "joint_reset_positions_rad": joint_reset_positions,
+                "task_aware_reset": (
+                    json.loads(json.dumps(dict(task_aware_reset)))
+                    if isinstance(task_aware_reset, Mapping)
+                    else None
+                ),
                 "candidate_policy_queried": False,
             }
         ),
