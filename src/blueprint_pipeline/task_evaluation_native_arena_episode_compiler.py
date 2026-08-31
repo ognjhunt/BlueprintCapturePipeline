@@ -572,7 +572,7 @@ def compile_native_arena_episode(
                     "silent_fallback_permitted": False,
                 },
                 "allocator_retry_cap": 0,
-                "maximum_rounds": 4,
+                "maximum_rounds": 8,
                 "native_gates_unchanged": True,
                 "control_search": control_search,
             }
