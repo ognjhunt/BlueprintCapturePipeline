@@ -67,10 +67,8 @@ from .task_evaluation_native_construction_feedback_controller import (
 from .task_evaluation_native_interaction_variants import (
     build_native_interaction_variants,
 )
-from .task_evaluation_openai_inference_usage import (
-    build_placement_inference_usage_packet,
-    sync_inference_usage_to_webapp,
-)
+from . import task_evaluation_openai_inference_usage as inference_usage
+from . import task_evaluation_configured_controls_autostart_validation as autostart_validation
 
 INTENT_SCHEMA_VERSION = "task_evaluation_configured_controls_autostart_intent.v2"
 RESULT_SCHEMA_VERSION = "task_evaluation_configured_controls_autostart.v3"
@@ -104,6 +102,7 @@ class TaskEvaluationConfiguredControlsAutostartError(RuntimeError):
     """Automatic continuation input or CPU evidence was unsafe."""
 
 
+_validate_configuration_adoption = autostart_validation.configuration_adoption_validator(TaskEvaluationConfiguredControlsAutostartError)
 PlacementRunner = Callable[..., Mapping[str, Any]]
 ReadinessMaterializer = Callable[..., Mapping[str, Any]]
 PlanMaterializer = Callable[..., Mapping[str, Any]]
@@ -780,10 +779,7 @@ def validate_configured_controls_autostart_intent(
             "candidate_inventory_cap",
             "max_input_tokens",
             "max_inference_cost_usd",
-            "expected_proposal_reuse_probability",
-            "expected_visual_review_reuse_probability",
-            "expected_proposal_reuse_count",
-            "expected_visual_review_reuse_count",
+            *inference_usage.PROMPT_CACHE_INTENT_FIELDS,
             "agent_selection_required",
             "agent_model",
             "reasoning_effort",
@@ -795,16 +791,7 @@ def validate_configured_controls_autostart_intent(
         or not 1 <= int(placement.get("max_input_tokens", 0)) <= 1_000_000
         or float(placement.get("max_inference_cost_usd", -1.0))
         != DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD
-        or not 0
-        <= float(placement.get("expected_proposal_reuse_probability", -1.0))
-        <= 1
-        or not 0 <= int(placement.get("expected_proposal_reuse_count", -1)) <= 20
-        or not 0
-        <= int(placement.get("expected_visual_review_reuse_count", -1))
-        <= 20
-        or not 0
-        <= float(placement.get("expected_visual_review_reuse_probability", -1.0))
-        <= 1
+        or not inference_usage.prompt_cache_placement_intent_valid(placement)
         or placement.get("agent_selection_required") is not True
         or placement.get("agent_model") != ROBOT_PLACEMENT_AGENT_MODEL
         or placement.get("reasoning_effort")
@@ -961,15 +948,11 @@ def materialize_configured_controls_autostart_intent(
             "candidate_inventory_cap": int(candidate_inventory_cap),
             "max_input_tokens": int(max_input_tokens),
             "max_inference_cost_usd": float(max_inference_cost_usd),
-            "expected_proposal_reuse_probability": float(
-                expected_proposal_reuse_probability
-            ),
-            "expected_visual_review_reuse_probability": float(
-                expected_visual_review_reuse_probability
-            ),
-            "expected_proposal_reuse_count": int(expected_proposal_reuse_count),
-            "expected_visual_review_reuse_count": int(
-                expected_visual_review_reuse_count
+            **inference_usage.prompt_cache_intent_values(
+                proposal_probability=expected_proposal_reuse_probability,
+                visual_review_probability=expected_visual_review_reuse_probability,
+                proposal_count=expected_proposal_reuse_count,
+                visual_review_count=expected_visual_review_reuse_count,
             ),
             "agent_selection_required": True,
             "agent_model": ROBOT_PLACEMENT_AGENT_MODEL,
@@ -1171,43 +1154,6 @@ def _profile_intent(
     return profile, path
 
 
-def _validate_configuration_adoption(
-    *,
-    adoption: Mapping[str, Any],
-    source_launch_id: str,
-    terminal: Mapping[str, Any],
-    receipt: Mapping[str, Any],
-    revision: Mapping[str, Any],
-    publication: Mapping[str, Any],
-    sync: Mapping[str, Any],
-    zero: Mapping[str, Any],
-) -> None:
-    if (
-        adoption.get("mode") != "explicit_terminal_adoption"
-        or adoption.get("source_launch_id") != source_launch_id
-        or adoption.get("source_launch_receipt_digest") != receipt.get("receipt_digest")
-        or adoption.get("terminal_result_digest") != terminal.get("result_digest")
-        or adoption.get("configured_scene_revision_digest") != revision.get("revision_digest")
-        or adoption.get("publication_result_digest") != publication.get("result_digest")
-        or adoption.get("webapp_sync_result_digest") != sync.get("sync_result_digest")
-        or adoption.get("provider_zero_receipt_digest")
-        != zero.get("provider_zero_receipt_digest")
-    ):
-        raise TaskEvaluationConfiguredControlsAutostartError(
-            "configured_controls_autostart_adoption_evidence_invalid"
-        )
-
-
-def _artifact_record_valid(value: Any) -> bool:
-    if not isinstance(value, Mapping):
-        return False
-    try:
-        path = Path(str(value.get("path") or ""))
-        return dict(value) == _artifact(path)
-    except (OSError, TaskEvaluationConfiguredControlsAutostartError):
-        return False
-
-
 def _validate_result(
     value: Mapping[str, Any],
     *,
@@ -1218,8 +1164,6 @@ def _validate_result(
 ) -> dict[str, Any]:
     result = json.loads(json.dumps(dict(value), allow_nan=False))
     openai_evidence = result.get("official_openai_cost_evidence")
-    inference_usage = result.get("openai_inference_usage_packet")
-    inference_sync = result.get("openai_inference_usage_webapp_sync")
     native_universe = result.get("native_construction_candidate_universe")
     native_universe_path = (
         Path(str(native_universe.get("path") or ""))
@@ -1268,22 +1212,8 @@ def _validate_result(
             "exclusive_lock_release",
             "inference_reservations",
         }
-        or not all(_artifact_record_valid(row) for row in openai_evidence.values())
-        or not isinstance(inference_usage, Mapping)
-        or not _artifact_record_valid(inference_usage)
-        or not isinstance(inference_sync, Mapping)
-        or not isinstance(inference_sync.get("required"), bool)
-        or (
-            inference_sync.get("required") is True
-            and inference_sync.get("status") != "succeeded"
-        )
-        or (
-            inference_sync.get("required") is False
-            and inference_sync.get("status") not in {"succeeded", "skipped"}
-        )
-        or not _artifact_record_valid(inference_sync.get("artifact"))
-        or _DIGEST.fullmatch(str(inference_sync.get("packet_digest") or "")) is None
-        or not 1 <= int(inference_sync.get("call_count") or 0) <= 8
+        or not all(inference_usage.artifact_record_valid(row) for row in openai_evidence.values())
+        or not inference_usage.result_projection_valid(result)
         or not Path(str(result.get("base_pose_candidate_path") or "")).is_absolute()
         or not isinstance(native_universe, Mapping)
         or not Path(str(native_universe.get("path") or "")).is_absolute()
@@ -1793,18 +1723,7 @@ def materialize_configured_controls_autostart(
             "candidate_inventory_cap": placement["candidate_inventory_cap"],
             "max_input_tokens": placement["max_input_tokens"],
             "max_inference_cost_usd": placement["max_inference_cost_usd"],
-            "expected_proposal_reuse_probability": placement[
-                "expected_proposal_reuse_probability"
-            ],
-            "expected_visual_review_reuse_probability": placement[
-                "expected_visual_review_reuse_probability"
-            ],
-            "expected_proposal_reuse_count": placement[
-                "expected_proposal_reuse_count"
-            ],
-            "expected_visual_review_reuse_count": placement[
-                "expected_visual_review_reuse_count"
-            ],
+            **inference_usage.placement_prompt_cache_settings(placement),
             "allow_live_invocation": False,
             "tracing_disabled": True,
             "robot_id": "franka_panda",
@@ -1889,18 +1808,7 @@ def materialize_configured_controls_autostart(
             "candidate_inventory_cap": placement["candidate_inventory_cap"],
             "max_input_tokens": placement["max_input_tokens"],
             "max_inference_cost_usd": placement["max_inference_cost_usd"],
-            "expected_proposal_reuse_probability": placement[
-                "expected_proposal_reuse_probability"
-            ],
-            "expected_visual_review_reuse_probability": placement[
-                "expected_visual_review_reuse_probability"
-            ],
-            "expected_proposal_reuse_count": placement[
-                "expected_proposal_reuse_count"
-            ],
-            "expected_visual_review_reuse_count": placement[
-                "expected_visual_review_reuse_count"
-            ],
+            **inference_usage.placement_prompt_cache_settings(placement),
             "allow_live_invocation": True,
             "tracing_disabled": True,
             "robot_id": "franka_panda",
@@ -1929,54 +1837,21 @@ def materialize_configured_controls_autostart(
         receipt=placement_receipt,
         inventory=inventory,
     )
-    inference_usage_packet = build_placement_inference_usage_packet(
-        placement_receipt=placement_receipt,
-        packet_run_id=str(
-            receipt.get("run_id") or terminal.get("run_id") or source_launch_id
-        ),
-        launch_id=source_launch_id,
-        source_commit=str(intent["expected_production_commit"]),
-    )
-    inference_usage_packet_path = (
-        agent_placement_root / "openai_inference_usage_packet.v1.json"
-    )
-    inference_usage_packet_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-    inference_usage_payload = (
-        json.dumps(
-            inference_usage_packet,
-            sort_keys=True,
-            separators=(",", ":"),
+    try:
+        inference_usage_projection = inference_usage.materialize_placement_usage_projection(
+            placement_receipt=placement_receipt,
+            packet_run_id=str(
+                receipt.get("run_id") or terminal.get("run_id") or source_launch_id
+            ),
+            launch_id=source_launch_id,
+            source_commit=str(intent["expected_production_commit"]),
+            output_root=agent_placement_root,
+            require_sync=require_inference_usage_webapp_sync,
         )
-        + "\n"
-    ).encode("utf-8")
-    with inference_usage_packet_path.open("xb") as stream:
-        stream.write(inference_usage_payload)
-    inference_usage_packet_path.chmod(0o440)
-    inference_usage_sync = sync_inference_usage_to_webapp(
-        packet=inference_usage_packet
-    )
-    if (
-        require_inference_usage_webapp_sync
-        and inference_usage_sync.get("status") != "succeeded"
-    ):
+    except inference_usage.OpenAIInferenceUsageError as exc:
         raise TaskEvaluationConfiguredControlsAutostartError(
             "configured_controls_autostart_inference_usage_sync_required"
-        )
-    inference_usage_sync_path = (
-        agent_placement_root / "openai_inference_usage_webapp_sync.v1.json"
-    )
-    with inference_usage_sync_path.open("xb") as stream:
-        stream.write(
-            (
-                json.dumps(
-                    inference_usage_sync,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                + "\n"
-            ).encode("utf-8")
-        )
-    inference_usage_sync_path.chmod(0o440)
+        ) from exc
     native_universe_path, native_universe = (
         _materialize_native_feedback_candidate_universe(
             root=root,
@@ -2061,15 +1936,7 @@ def materialize_configured_controls_autostart(
         "placement_agent_selected_exact_inventory_member": True,
         "placement_agent_visual_review_completed": True,
         "official_openai_cost_evidence": openai_evidence,
-        "openai_inference_usage_packet": _artifact(inference_usage_packet_path),
-        "openai_inference_usage_webapp_sync": {
-            "artifact": _artifact(inference_usage_sync_path),
-            "status": inference_usage_sync["status"],
-            "required": require_inference_usage_webapp_sync,
-            "reason": inference_usage_sync.get("reason"),
-            "packet_digest": inference_usage_packet["packet_digest"],
-            "call_count": len(inference_usage_packet["calls"]),
-        },
+        **inference_usage_projection,
         "base_pose_candidate_path": str(base_path),
         "native_construction_candidate_universe": native_universe_reference,
         "plan_path": plan["plan_path"],
