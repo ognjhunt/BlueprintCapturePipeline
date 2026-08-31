@@ -137,6 +137,7 @@ class RemoteCuroboCandidateGenerator:
             )
         self._context = context
         self._session = json.loads(json.dumps(dict(warm_session), allow_nan=False))
+        self._remote_work_dir = remote_work_dir
         self._root = Path(local_transport_root).expanduser().resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         self._remote_python_package_root = package_root.rstrip("/")
@@ -176,17 +177,17 @@ class RemoteCuroboCandidateGenerator:
 
     def _provision_runtime(self) -> None:
         source_root = (
-            "/workspace/blueprint-curobo-v080/"
+            self._remote_work_dir + "/blueprint-curobo-v080/"
             + CUROBO_BACKEND_IDENTITY["source_revision"]
         )
         script = f"""set -euo pipefail
-mkdir -p /workspace/blueprint-curobo-v080
-exec 9>/workspace/blueprint-curobo-v080/provision.lock
+mkdir -p {self._remote_work_dir}/blueprint-curobo-v080
+exec 9>{self._remote_work_dir}/blueprint-curobo-v080/provision.lock
 flock 9
 test -f {self._remote_python_package_root}/blueprint_pipeline/task_evaluation_curobo_candidate_service.py || exit 81
 root={source_root}
 if [ ! -d "$root/.git" ]; then
-  stage="$(mktemp -d /workspace/blueprint-curobo-v080/stage.XXXXXXXX)"
+  stage="$(mktemp -d {self._remote_work_dir}/blueprint-curobo-v080/stage.XXXXXXXX)"
   git clone --filter=blob:none --no-checkout {CUROBO_BACKEND_IDENTITY['source_url']} "$stage"
   git -C "$stage" fetch --depth 1 origin {CUROBO_BACKEND_IDENTITY['source_revision']}
   git -C "$stage" checkout --detach {CUROBO_BACKEND_IDENTITY['source_revision']}
@@ -222,7 +223,7 @@ printf '%s\n' BLUEPRINT_CUROBO_RUNTIME_READY
             if request is None
             else str(request["request_digest"])[7:]
         )
-        remote_root = f"/workspace/blueprint-curobo-candidates/{key}"
+        remote_root = f"{self._remote_work_dir}/blueprint-curobo-candidates/{key}"
         request_path = f"{remote_root}/request.json"
         result_path = f"{remote_root}/result.json"
         if request is not None:
@@ -298,7 +299,10 @@ printf '%s\n' BLUEPRINT_CUROBO_RUNTIME_READY
                 "curobo_remote_input_invalid"
             )
         suffix = local_path.suffix if re.fullmatch(r"\.[A-Za-z0-9]{1,8}", local_path.suffix) else ".bin"
-        remote_path = f"/workspace/blueprint-curobo-inputs/{digest[7:]}{suffix}"
+        remote_path = (
+            f"{self._remote_work_dir}/blueprint-curobo-inputs/"
+            f"{digest[7:]}{suffix}"
+        )
         upload_code = (
             "import hashlib,os,sys,pathlib;"
             "p=pathlib.Path(sys.argv[1]);e=sys.argv[2];d=sys.stdin.buffer.read();"
