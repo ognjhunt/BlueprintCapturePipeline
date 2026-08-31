@@ -1067,6 +1067,7 @@ def prepare_paid_lane_launch(
     lane: str,
     context: Mapping[str, Any],
     *,
+    resume_receipt: Mapping[str, Any] | None = None,
     runner: Callable[
         [Sequence[str]], int | subprocess.CompletedProcess[str]
     ] = _default_runner,
@@ -1095,6 +1096,30 @@ def prepare_paid_lane_launch(
     completed: list[dict[str, Any]] = []
     step_logs: list[dict[str, Any]] = []
     blockers: list[str] = []
+    resumed_rows: list[Mapping[str, Any]] = []
+    if resume_receipt is not None:
+        if (
+            resume_receipt.get("schema_version") != PREPARATION_SCHEMA_VERSION
+            or resume_receipt.get("lane") != lane
+            or resume_receipt.get("status") != "blocked"
+            or resume_receipt.get("source_commit")
+            != str(context.get("source_commit") or "")
+            or resume_receipt.get("paid_inference_performed") is not False
+            or resume_receipt.get("provider_allocation_performed") is not False
+            or not isinstance(resume_receipt.get("completed_steps"), list)
+            or not resume_receipt.get("blockers")
+        ):
+            raise PaidLaneLaunchPreparationError(
+                "paid_lane_resume_receipt_invalid"
+            )
+        resumed_rows = list(resume_receipt["completed_steps"])
+        retained_logs = resume_receipt.get("step_logs") or []
+        if not isinstance(retained_logs, list):
+            raise PaidLaneLaunchPreparationError(
+                "paid_lane_resume_receipt_invalid"
+            )
+        step_logs.extend(dict(row) for row in retained_logs if isinstance(row, Mapping))
+    resume_index = 0
     secret_values = _step_log_secret_values(context)
     for step in LANES[lane]:
         if not step_is_active(step, resolved):
@@ -1104,6 +1129,42 @@ def prepare_paid_lane_launch(
             for value in _repeated_values(resolved.get(context_name)):
                 argv.extend((flag, value))
         produces = Path(_render(step.produces, resolved))
+        if resume_index < len(resumed_rows):
+            row = resumed_rows[resume_index]
+            if (
+                not isinstance(row, Mapping)
+                or row.get("step_id") != step.step_id
+                or Path(str(row.get("artifact_path") or "")).resolve()
+                != produces.resolve()
+                or produces.is_symlink()
+                or not produces.is_file()
+                or row.get("artifact_sha256") != _sha256_file(produces)
+            ):
+                raise PaidLaneLaunchPreparationError(
+                    f"paid_lane_resume_step_invalid:{step.step_id}"
+                )
+            restored = dict(row)
+            for name, key in step.exports:
+                try:
+                    payload = json.loads(produces.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    raise PaidLaneLaunchPreparationError(
+                        f"paid_lane_resume_export_invalid:{step.step_id}:{name}"
+                    ) from exc
+                value = payload.get(key) if isinstance(payload, Mapping) else None
+                if (
+                    not isinstance(value, str)
+                    or not value
+                    or not isinstance(row.get("exports"), Mapping)
+                    or row["exports"].get(name) != value
+                ):
+                    raise PaidLaneLaunchPreparationError(
+                        f"paid_lane_resume_export_invalid:{step.step_id}:{name}"
+                    )
+                resolved[name] = value
+            completed.append(restored)
+            resume_index += 1
+            continue
         execution = runner(argv)
         if isinstance(execution, subprocess.CompletedProcess):
             returncode = int(execution.returncode)
@@ -1177,6 +1238,10 @@ def prepare_paid_lane_launch(
         completed.append(record)
         if export_failed:
             break
+    if resume_index != len(resumed_rows):
+        raise PaidLaneLaunchPreparationError(
+            "paid_lane_resume_completed_steps_not_prefix"
+        )
     return {
         "schema_version": PREPARATION_SCHEMA_VERSION,
         "lane": lane,
@@ -2159,6 +2224,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Validate and seal the ordered command plan without running a command.",
     )
+    parser.add_argument(
+        "--resume-from",
+        help="Resume after the verified completed-step prefix of one blocked receipt.",
+    )
     parser.add_argument("--receipt-out")
     args = parser.parse_args(argv)
 
@@ -2184,10 +2253,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
         else:
             context = _context_from_args(args)
+        resume_receipt = None
+        if args.resume_from:
+            resume_path = Path(args.resume_from).expanduser()
+            if resume_path.is_symlink() or not resume_path.resolve().is_file():
+                raise PaidLaneLaunchPreparationError(
+                    "paid_lane_resume_receipt_invalid"
+                )
+            try:
+                resume_receipt = json.loads(
+                    resume_path.resolve().read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise PaidLaneLaunchPreparationError(
+                    "paid_lane_resume_receipt_invalid"
+                ) from exc
+            if not isinstance(resume_receipt, Mapping):
+                raise PaidLaneLaunchPreparationError(
+                    "paid_lane_resume_receipt_invalid"
+                )
         receipt = (
             validate_paid_lane_launch(args.lane, context)
             if args.validate_only
-            else prepare_paid_lane_launch(args.lane, context)
+            else prepare_paid_lane_launch(
+                args.lane, context, resume_receipt=resume_receipt
+            )
         )
     except PaidLaneLaunchPreparationError as exc:
         if reserved_descriptor is not None:
