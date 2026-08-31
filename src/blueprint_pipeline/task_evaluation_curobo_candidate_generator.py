@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .decision_evidence_contracts import canonical_json
+from .decision_evidence_contracts import canonical_digest, canonical_json
 from .gpu_render_providers import enroll_vast_ssh_host_key
 from .native_task_arena_warm_vast import _run_pinned_ssh
 from .task_evaluation_collision_aware_candidate_generation import (
@@ -204,6 +204,55 @@ class RemoteCuroboCandidateGenerator:
             )
         return dict(value)
 
+    def _upload_input(self, reference: Mapping[str, Any]) -> dict[str, Any]:
+        local_path = Path(str(reference["path"]))
+        try:
+            payload = local_path.read_bytes()
+        except OSError as exc:
+            raise CollisionAwareCandidateGenerationError(
+                "curobo_remote_input_unavailable"
+            ) from exc
+        digest = str(reference["digest"])
+        if len(payload) != reference["size_bytes"]:
+            raise CollisionAwareCandidateGenerationError(
+                "curobo_remote_input_invalid"
+            )
+        remote_path = f"/workspace/blueprint-curobo-inputs/{digest[7:]}.json"
+        upload_code = (
+            "import hashlib,os,sys,pathlib;"
+            "p=pathlib.Path(sys.argv[1]);e=sys.argv[2];d=sys.stdin.buffer.read();"
+            "a='sha256:'+hashlib.sha256(d).hexdigest();"
+            "(_ for _ in ()).throw(RuntimeError('digest')) if a!=e else None;"
+            "p.parent.mkdir(parents=True,exist_ok=True);t=p.with_suffix('.tmp');"
+            "t.write_bytes(d);os.chmod(t,0o600);os.replace(t,p)"
+        )
+        self._ssh(
+            [
+                "/isaac-sim/python.sh",
+                "-c",
+                upload_code,
+                remote_path,
+                digest,
+            ],
+            stdin=payload,
+            timeout_seconds=max(30.0, min(300.0, len(payload) / 1_000_000 + 30.0)),
+        )
+        return {**dict(reference), "path": remote_path}
+
+    def _stage_remote_request(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        remote = json.loads(json.dumps(dict(request), allow_nan=False))
+        for role in (
+            "robot_configuration",
+            "world_configuration",
+            "task_trajectory",
+            "analytic_candidate_inventory",
+        ):
+            remote[role] = self._upload_input(remote[role])
+        remote["request_digest"] = canonical_digest(
+            remote, digest_field="request_digest"
+        )
+        return remote
+
     def generate(
         self,
         *,
@@ -222,7 +271,7 @@ class RemoteCuroboCandidateGenerator:
             raise CollisionAwareCandidateGenerationError(
                 "candidate_generator_cuda_unavailable"
             )
-        request = build_candidate_generation_request(
+        local_request = build_candidate_generation_request(
             context=self._context,
             backend_identity=CUROBO_BACKEND_IDENTITY,
             source_native_feedback=source_native_feedback,
@@ -230,6 +279,7 @@ class RemoteCuroboCandidateGenerator:
             round_index=round_index,
             maximum_candidates=maximum_candidates,
         )
+        request = self._stage_remote_request(local_request)
         return build_native_candidate_inventory(
             result=self._invoke(request),
             request=request,

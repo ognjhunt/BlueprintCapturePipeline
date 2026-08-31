@@ -336,7 +336,12 @@ def test_remote_curobo_uses_retained_worker_without_allocating(
 
     def ssh(*, remote_argv, stdin=None, **_kwargs):
         if remote_argv[:2] == ["/isaac-sim/python.sh", "-c"]:
-            remote[remote_argv[-1]] = bytes(stdin)
+            remote_path = next(
+                value
+                for value in reversed(remote_argv)
+                if isinstance(value, str) and value.startswith("/workspace/")
+            )
+            remote[remote_path] = bytes(stdin)
         elif remote_argv[0] == "env":
             output = remote_argv[remote_argv.index("--result-json") + 1]
             if "--probe" in remote_argv:
@@ -354,6 +359,16 @@ def test_remote_curobo_uses_retained_worker_without_allocating(
             else:
                 request_path = remote_argv[remote_argv.index("--request-json") + 1]
                 request = json.loads(remote[request_path])
+                for role in (
+                    "robot_configuration",
+                    "world_configuration",
+                    "task_trajectory",
+                    "analytic_candidate_inventory",
+                ):
+                    assert request[role]["path"].startswith(
+                        "/workspace/blueprint-curobo-inputs/"
+                    )
+                    assert "/private/" not in request[role]["path"]
                 value = _sealed(
                     {
                         "schema_version": RESULT_SCHEMA_VERSION,
