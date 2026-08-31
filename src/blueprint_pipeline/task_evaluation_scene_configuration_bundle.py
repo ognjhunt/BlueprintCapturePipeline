@@ -781,6 +781,8 @@ def build_scene_configuration_provider_bundle(
         )
     portable = json.loads(json.dumps(envelope))
     portable["control_plane_envelope_digest"] = envelope["envelope_digest"]
+    if production_semantic_reuse:
+        portable["expected_production_commit"] = expected_source_commit
     portable_refs = []
     for index, row in enumerate(envelope.get("materialized_references") or []):
         contract_path = str(row.get("contract_path") or "")

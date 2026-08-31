@@ -804,6 +804,11 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
     monkeypatch.setattr(
         bundle_module, "validate_splat_render_runtime", lambda **_kwargs: identity
     )
+    monkeypatch.setattr(
+        bundle_module,
+        "validate_diagnostic_splat_render_runtime",
+        lambda **_kwargs: identity,
+    )
     checkpoint_renderer_identity = {
         "mode": "digest_bound_provider_bundle_renderer",
         "schema_version": PROVIDER_RENDERER_SCHEMA_VERSION,
@@ -991,20 +996,27 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
     assert preflight["blockers"] == []
     assert preflight["status"] == "passed"
 
+    production_commit = "b" * 40
+    production_toolchain = _toolchain(
+        tmp_path / "production-semantic-reuse" / "toolchain",
+        production_commit,
+    )
     production = build_scene_configuration_provider_bundle(
         construction_envelope_path=envelope_path,
-        toolchain_root=toolchain,
+        toolchain_root=production_toolchain,
         repository_root=repo,
         splat_render_runtime_root=runtime,
         production_semantic_reuse_checkpoint_root=checkpoint_root,
         output_root=tmp_path / "production-semantic-reuse-bundle",
-        expected_source_commit=commit,
+        expected_source_commit=production_commit,
     )
     assert production["production_semantic_input_reuse"] is True
     assert production["source_semantic_checkpoint_digest"] == checkpoint[
         "checkpoint_digest"
     ]
     assert production["semantic_reuse_completed_stage_prefix_count"] == 0
+    assert production["source_commit"] == production_commit
+    assert production["construction_source_commit"] == commit
     assert production["configured_revision_publication_permitted"] is True
     assert production["offering_publication_permitted"] is True
     assert "diagnostic_only" not in production
@@ -1032,6 +1044,7 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
         row["path"].startswith("input/production_semantic_reuse_checkpoint/")
         for row in production_portable["render_inputs_result"]["derived_frames"]
     )
+    assert production_portable["expected_production_commit"] == production_commit
     assert production_runner == (
         repo / "scripts/task_evaluation_scene_configuration_provider_runner.py"
     ).read_bytes()
