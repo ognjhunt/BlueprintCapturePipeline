@@ -34,7 +34,7 @@
     "episodes_per_policy": 10,
     "policy_count": 2,
     "learned_policy_rollout_count": 20,
-    "matrix_digest": "sha256:b1b62f93eca4d2df205c02b91fc6247ddfea710809c6173d3a32c84ba55564c4",
+    "matrix_digest": "sha256:9f7e11803a1e5c5c6f8d99e4bf64a67daa425666b8acfb1e4d385362d1280c20",
     "cells": [
       {"cell_id": "scene839873.quick10.00.canonical_anchor", "family": "canonical_anchor", "seed": 1110864352, "cell_digest": "sha256:87564bcb8f5e8891c3a9121e896f7fb2855ccddcb070afdb7f1fe7131fdf5b70"},
       {"cell_id": "scene839873.quick10.01.canonical_anchor", "family": "canonical_anchor", "seed": 1154487970, "cell_digest": "sha256:a97daf915c61295cfbc9e62c2210151a535e7db0b133751d2abc400e21941f4a"},
@@ -45,7 +45,7 @@
       {"cell_id": "scene839873.quick10.06.bounded_physics", "family": "bounded_physics", "seed": 1494875239, "cell_digest": "sha256:741926db2c1f6fb9b5c9f3ccdd7d76db93c78148000176d100b38afa4f865c81"},
       {"cell_id": "scene839873.quick10.07.admitted_object_material_cousin", "family": "admitted_object_material_cousin", "seed": 995301867, "cell_digest": "sha256:2f6b7798dc68f99ecec1c65a314fcec5cd7b6b6b3ff0813b32c36cd66ca252f7"},
       {"cell_id": "scene839873.quick10.08.pairwise_stress", "family": "pairwise_stress", "seed": 1411639622, "cell_digest": "sha256:8aeecf788c9d5ec0e88a724910887082fe482114ae323c909d7f777eb89b7c62"},
-      {"cell_id": "scene839873.quick10.09.held_out_composition", "family": "held_out_composition", "seed": 199329357, "cell_digest": "sha256:593ee8e19910d5f77f23766f6a208111ed61f1eda44365d96f4183ee91f32858"}
+      {"cell_id": "scene839873.quick10.09.held_out_composition", "family": "held_out_composition", "seed": 199329357, "cell_digest": "sha256:5747b2f01bda4ebb53e302b87fc0ed72b895008bcf46d9c6c8e237347ff7c82d"}
     ]
   },
   "maximum_provider_allocations": 1,
@@ -55,5 +55,5 @@
   "ranking_permitted": false,
   "winner_selection_permitted": false,
   "scene_promotion_permitted": false,
-  "configuration_digest": "sha256:5727751a69e09c077f1df4d21d937f1e0fac5fb1efd4e995b300a98255725bae"
+  "configuration_digest": "sha256:fcb2a2993bdc9f608be11715b3a970cc1bc48f6ff9d2e35161ea51e737ee2156"
 }

@@ -21,6 +21,7 @@ from blueprint_pipeline.task_evaluation_policy_canary_setup import (
     validate_policy_canary_setup,
 )
 from blueprint_pipeline.task_evaluation_policy_run_contract import (
+    compile_policy_run_configuration,
     validate_policy_run_setup,
 )
 from scripts.attach_internal_policy_canary_setup import (
@@ -36,9 +37,7 @@ ACTIVATION = "sha256:" + "a" * 64
 REQUEST = "sha256:" + "b" * 64
 
 
-def test_cli_routes_both_public_materializers(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_cli_routes_both_public_materializers(tmp_path: Path, monkeypatch, capsys) -> None:
     parameters = tmp_path / "parameters.json"
     parameters.write_text(json.dumps({"marker": "bound"}), encoding="utf-8")
     calls = []
@@ -50,16 +49,11 @@ def test_cli_routes_both_public_materializers(
     monkeypatch.setattr(
         canary_setup_module,
         "materialize_policy_canary_presubmission_setup",
-        lambda **kwargs: calls.append(("presubmission", kwargs))
-        or {"status": "selectable"},
+        lambda **kwargs: calls.append(("presubmission", kwargs)) or {"status": "selectable"},
     )
 
-    assert canary_setup_module.main(
-        ["preflight", "--parameters", str(parameters)]
-    ) == 0
-    assert canary_setup_module.main(
-        ["presubmission", "--parameters", str(parameters)]
-    ) == 0
+    assert canary_setup_module.main(["preflight", "--parameters", str(parameters)]) == 0
+    assert canary_setup_module.main(["presubmission", "--parameters", str(parameters)]) == 0
 
     assert calls == [
         ("preflight", {"marker": "bound"}),
@@ -289,6 +283,36 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
         "intake_id_semantics": "configured_scene_offering_configuration_run_id",
     }
     assert plan["plan_digest"] == canonical_digest(plan, digest_field="plan_digest")
+    legacy_setup = plan["legacy_policy_run_setup"]
+    configuration = compile_policy_run_configuration(
+        {
+            "schema_version": "task_evaluation_policy_run_selection.v1",
+            "run_id": "scene839873-fixed-seed-canary",
+            "source_launch_id": legacy_setup["source_launch_id"],
+            "offering_digest": legacy_setup["offering_digest"],
+            "setup_digest": legacy_setup["setup_digest"],
+            "preset_id": "quick_10",
+            "run_kind": "internal_policy_canary",
+            "claim_ceiling": "diagnostic_policy_execution",
+            "scene_revision_digest": REVISION,
+            "scene_controls_status_at_submission": "configured_controls_pending",
+            "robot_preset_id": "franka_panda_robotiq_2f85_v1",
+            "policy_candidate_ids": ["pi05_droid", "groot_n17_droid"],
+            "notification": {
+                "email": "robotics@example.com",
+                "notify_on": ["completed", "blocked", "cancelled"],
+            },
+        },
+        setup=legacy_setup,
+    )
+    public_cells = setup["episode_presets"][0]["matrix"]["cells"]
+    legacy_cells = legacy_setup["presets"][0]["cells"]
+    compiled_cells = configuration["matrix"]["cells"]
+    assert (
+        [(row["cell_id"], row["seed"], row["cell_digest"]) for row in public_cells]
+        == [(row["cell_id"], row["seed"], row["cell_spec_digest"]) for row in legacy_cells]
+        == [(row["cell_id"], row["seed"], row["cell_spec_digest"]) for row in compiled_cells]
+    )
     assert Path(emitted["setup_path"]).is_file()
     assert Path(emitted["profile_materialization_input_path"]).is_file()
     assert Path(emitted["execution_setup_template_path"]).is_file()

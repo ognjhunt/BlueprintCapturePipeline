@@ -137,7 +137,7 @@ def _quick_cells(scene_revision_digest: str) -> list[dict[str, Any]]:
                 "family": family,
                 "partition": "held_out" if family == "held_out_composition" else "diagnostic",
                 "resolved_scenario": scenario,
-                "cell_spec_digest": canonical_digest(scenario),
+                "cell_spec_digest": cross_runtime_canonical_digest(scenario),
             }
         )
     return cells
@@ -749,7 +749,8 @@ def materialize_policy_canary_presubmission_setup(
                 "held_out" if row["family"] == "held_out_composition" else "qualification"
             ),
             "scored": True,
-            "cell_spec_digest": cross_runtime_canonical_digest(row["resolved_scenario"]),
+            "seed": row["seed"],
+            "cell_spec_digest": row["cell_spec_digest"],
             "resolved_scenario": row["resolved_scenario"],
         }
         for row in quick["cells"]
@@ -1083,9 +1084,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             help="JSON object containing the materializer's exact keyword arguments.",
         )
     args = parser.parse_args(argv)
-    parameters = _read(
-        args.parameters, code="policy_canary_cli_parameters_invalid"
-    )
+    parameters = _read(args.parameters, code="policy_canary_cli_parameters_invalid")
     if args.operation == "preflight":
         result = materialize_setup_preflight_decision(**parameters)
     else:
