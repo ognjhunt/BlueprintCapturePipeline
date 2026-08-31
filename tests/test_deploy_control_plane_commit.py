@@ -893,7 +893,7 @@ def test_runtime_identity_drop_in_is_atomic_and_contains_no_credentials(
         "# Loaded after the base unit credential EnvironmentFile.\n"
         "[Service]\n"
         f"EnvironmentFile={identity_env}\n"
-        "TimeoutStartSec=180s\n"
+        "TimeoutStartSec=300s\n"
     )
     assert f"BLUEPRINT_SOURCE_COMMIT={'b' * 40}" in env_content
     assert f"BLUEPRINT_PIPELINE_REPO={tmp_path / 'repo'}" in env_content

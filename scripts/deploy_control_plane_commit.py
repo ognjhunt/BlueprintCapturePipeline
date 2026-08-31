@@ -171,7 +171,7 @@ DEFAULT_CONTENT_AGENTS_SOURCE_ROOT = (
     "/var/lib/blueprint/task-evaluation-inputs/sources/"
     "usd-content-agents-v0.5.2-36dbf3f2"
 )
-INTAKE_START_TIMEOUT_SECONDS = 180
+INTAKE_START_TIMEOUT_SECONDS = 300
 DEPLOY_RELEASE_PROVENANCE_NAME = "deploy-release-provenance.json"
 SUPERSEDED_ITERATION_PROVENANCE_NAME = (
     "deploy-release-provenance.iteration-superseded.json"
