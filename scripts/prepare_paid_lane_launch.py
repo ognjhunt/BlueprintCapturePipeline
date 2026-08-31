@@ -45,6 +45,7 @@ from typing import Any, Callable, Mapping, Sequence
 import jsonschema
 
 from blueprint_pipeline.core.common import redacted_failure_text
+from blueprint_pipeline.gaussian_field_quality import gaussian_quality_is_qualified
 from blueprint_pipeline.native_construction_terminal_feedback_contract import (
     validate_terminal_feedback_adoption,
 )
@@ -2051,6 +2052,18 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
         if packet_request_path.is_file() and not packet_request_path.is_symlink()
         else {}
     )
+    appearance_variant = packet_request.get("appearance_variant")
+    if (
+        isinstance(appearance_variant, Mapping)
+        and appearance_variant.get("representation")
+        == "particlefield_3d_gaussian_splat"
+        and not gaussian_quality_is_qualified(
+            appearance_variant.get("gaussian_field_quality")
+        )
+    ):
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_particlefield_quality_missing_or_invalid"
+        )
     terminal_feedback_adoption = None
     if operations.get("terminal_feedback_adoption") is not None:
         unresolved_adoption = Path(
