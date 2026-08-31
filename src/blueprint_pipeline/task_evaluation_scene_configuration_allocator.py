@@ -520,8 +520,11 @@ def run_scene_configuration_allocator_probe(
             scene_construction_queue_root=(
                 None
                 if diagnostic_only
-                else os.getenv(
-                    "BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT"
+                else (
+                    getattr(args, "scene_configuration_queue_root", None)
+                    or os.getenv(
+                        "BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT"
+                    )
                 )
             ),
         )

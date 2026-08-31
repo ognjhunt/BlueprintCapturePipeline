@@ -523,6 +523,18 @@ def test_scene_configuration_prepares_rehearses_then_publishes_once() -> None:
         "--production-semantic-reuse-checkpoint-root",
         "production_semantic_reuse_checkpoint_root",
     ) in by_id["provider_bundle"].repeated_argv
+    assert (
+        "--production-semantic-reuse-queue-root",
+        "production_semantic_reuse_queue_root",
+    ) in by_id["provider_bundle"].repeated_argv
+    assert (
+        "--production-semantic-reuse-revision-id",
+        "production_semantic_reuse_revision_id",
+    ) in by_id["provider_bundle"].repeated_argv
+    assert (
+        "--scene-configuration-queue-root",
+        "production_semantic_reuse_queue_root",
+    ) in by_id["allocator_dry_run"].repeated_argv
     assert "--execute" not in by_id["allocator_dry_run"].argv
     assert (
         by_id["allocator_dry_run"].argv[
@@ -569,6 +581,8 @@ def test_scene_configuration_context_reopens_server_owned_inputs(
     toolchain.mkdir(mode=0o550)
     semantic_reuse = tmp_path / "semantic-reuse"
     semantic_reuse.mkdir(mode=0o550)
+    construction_queue = tmp_path / "construction-queue"
+    construction_queue.mkdir(mode=0o750)
     context_path = tmp_path / "context.json"
     source_commit = "a" * 40
     context_path.write_text(
@@ -590,6 +604,10 @@ def test_scene_configuration_context_reopens_server_owned_inputs(
                     "production_semantic_reuse_checkpoint_root": str(
                         semantic_reuse
                     ),
+                    "production_semantic_reuse_queue_root": str(
+                        construction_queue
+                    ),
+                    "production_semantic_reuse_revision_id": "corrective-r2",
                 },
             }
         ),
@@ -606,6 +624,10 @@ def test_scene_configuration_context_reopens_server_owned_inputs(
     assert loaded["production_semantic_reuse_checkpoint_root"] == str(
         semantic_reuse
     )
+    assert loaded["production_semantic_reuse_queue_root"] == str(
+        construction_queue
+    )
+    assert loaded["production_semantic_reuse_revision_id"] == "corrective-r2"
     assert loaded["reference_bindings"]["source_commit"] == source_commit
 
 

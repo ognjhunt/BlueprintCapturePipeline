@@ -24,6 +24,8 @@ from blueprint_pipeline.task_evaluation_scene_configuration_orchestrator import 
 from blueprint_pipeline.task_evaluation_scene_construction_queue import (
     TaskEvaluationSceneConstructionQueueError,
     finalize_scene_construction,
+    preflight_scene_construction_finalization,
+    stage_scene_configuration_revision,
 )
 from tests.test_task_evaluation_configured_scene_revision import revision
 from tests.test_task_evaluation_launch_preparation_worker import (
@@ -283,3 +285,77 @@ def test_paid_lane_refuses_to_finalize_a_different_envelope(tmp_path) -> None:
     assert pending.is_file()
     assert not list((queue / "completed").glob("*.json"))
     assert not list((queue / "blocked").glob("*.json"))
+
+
+def test_corrective_configuration_gets_fresh_queue_lifecycle(tmp_path) -> None:
+    value, queue, _inputs = staged_configuration(tmp_path)
+    pending = next((queue / "pending").glob("*.json"))
+    source = json.loads(pending.read_text(encoding="utf-8"))
+    portable = {
+        **source,
+        "control_plane_envelope_digest": source["envelope_digest"],
+    }
+    terminal = {
+        "status": "completed",
+        "run_id": source["run_id"],
+        "source_commit": value["expected_production_commit"],
+        "configuration_completed": True,
+        "configured_scene_published": True,
+        "configured_scene_revision_digest": "sha256:" + "a" * 64,
+        "publication_result_digest": "sha256:" + "b" * 64,
+        "full_byte_service_account_readback_passed": True,
+        "continuing_spend_from_this_run": False,
+        "blockers": [],
+    }
+    source_finalization = finalize_scene_construction(
+        queue_root=queue,
+        envelope=portable,
+        terminal_result=terminal,
+    )
+
+    first = stage_scene_configuration_revision(
+        queue_root=queue,
+        source_envelope=source,
+        expected_production_commit="c" * 40,
+        revision_id="corrective-r2",
+        semantic_checkpoint_digest="sha256:" + "d" * 64,
+    )
+    second = stage_scene_configuration_revision(
+        queue_root=queue,
+        source_envelope=source,
+        expected_production_commit="c" * 40,
+        revision_id="corrective-r2",
+        semantic_checkpoint_digest="sha256:" + "d" * 64,
+    )
+    derived = json.loads(Path(first["queue_path"]).read_text(encoding="utf-8"))
+    derived_portable = {
+        **derived,
+        "control_plane_envelope_digest": derived["envelope_digest"],
+    }
+
+    assert first["created"] is True
+    assert second["created"] is False
+    assert {
+        key: value
+        for key, value in first.items()
+        if key not in {"created", "receipt_digest"}
+    } == {
+        key: value
+        for key, value in second.items()
+        if key not in {"created", "receipt_digest"}
+    }
+    assert first["run_id"] != source["run_id"]
+    assert first["expected_production_commit"] == "c" * 40
+    assert derived["configuration_revision_lineage"][
+        "source_construction_envelope_digest"
+    ] == source["envelope_digest"]
+    assert derived["configuration_revision_lineage"][
+        "source_configuration_result_digest"
+    ] == source_finalization["result_digest"]
+    assert all(row["status"] == "pending" for row in derived["stage_states"])
+    assert len(list((queue / "completed").glob("*.json"))) == 1
+    assert len(list((queue / "pending").glob("*.json"))) == 1
+    assert preflight_scene_construction_finalization(
+        queue_root=queue,
+        envelope=derived_portable,
+    )["status"] == "ready"
