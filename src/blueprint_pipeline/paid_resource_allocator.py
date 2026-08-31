@@ -1601,10 +1601,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--bound-request-out")
     gpu.add_argument("--adapter-output")
     gpu.add_argument("--pod-name")
-    gpu.add_argument(
-        "--terminal-resource-release",
-        help="Immutable release-only request; cannot be combined with a launch profile.",
-    )
+    gpu.add_argument("--terminal-resource-release", help="Immutable release-only request; cannot be combined with a launch profile.")
     gpu.add_argument(
         "--terminal-resource-release-output",
         help="Receipt destination for an exact stopped-provider-record release.",
