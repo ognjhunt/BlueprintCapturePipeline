@@ -96,6 +96,28 @@ def _round_record(
         },
         "result_digest",
     )
+    physics_measurements = _sealed(
+        {
+            "schema_version": (
+                "task_evaluation_native_construction_physics_objective_"
+                "measurements.v1"
+            ),
+            "native_result_digest": native_result["result_digest"],
+            "forbidden_robot_scene_collision_peak_force_n": 0.0 if passed else 0.6,
+            "forbidden_robot_scene_collision_first_sample_force_n": (
+                0.0 if passed else 0.1
+            ),
+            "required_task_contact_covered_sample_count": 6 if passed else 3,
+            "required_task_contact_sample_count": 6,
+            "required_task_contact_coverage_fraction": 1.0 if passed else 0.5,
+            "push_path_tracking_error_m": 0.01 if passed else 0.12,
+            "destination_error_m": 0.02 if passed else 0.18,
+            "native_thresholds_changed": False,
+            "native_verdict_recomputed": False,
+            "measurement_only_not_native_grade": True,
+        },
+        "measurement_digest",
+    )
     feedback = _sealed(
         {
             "schema_version": "task_evaluation_native_construction_feedback.v1",
@@ -115,6 +137,7 @@ def _round_record(
             "camera_measurements": {
                 "external": {"passed": True, "pixel_count": 314}
             },
+            "physics_objective_measurements": physics_measurements,
         },
         "feedback_digest",
     )
@@ -145,6 +168,48 @@ def _round_record(
     }
 
 
+def _digest(index: int) -> str:
+    return "sha256:" + f"{index:064x}"
+
+
+def _baseline_checkpoint(feedback: dict) -> dict:
+    binding = _sealed(
+        {
+            "schema_version": "task_evaluation_native_construction_adopted_baseline.v1",
+            "baseline_kind": "cold_authored_baseline_not_feedback_candidate",
+            "selected_placement_candidate_id": "cpu-placement-baseline",
+            "robot_base_pose_world": {
+                "position_world_m": [2.92, -6.13, 0.752958],
+                "orientation_xyzw": [0.0, 0.0, 0.6, -0.8],
+            },
+            "robot_joint_reset_positions_digest": _digest(1),
+            "camera_configuration_digest": _digest(2),
+            "packet_request_digest": _digest(3),
+            "candidate_universe_digest": _digest(4),
+            "allocator_result_digest": _digest(5),
+            "native_result_digest": feedback["native_result_digest"],
+            "native_feedback_digest": feedback["feedback_digest"],
+            "incremental_cost_upper_bound_usd": 0.41,
+            "runtime_seconds": 83.0,
+            "optuna_trial_recorded": False,
+            "candidate_digest": None,
+        },
+        "binding_digest",
+    )
+    return _sealed(
+        {
+            "schema_version": (
+                "task_evaluation_native_construction_terminal_feedback_adoption.v1"
+            ),
+            "status": "accepted_for_feedback_bootstrap",
+            "run_id": RUN_ID,
+            "prior_attempted_baseline_binding": binding,
+            "initial_native_feedback": feedback,
+        },
+        "checkpoint_digest",
+    )
+
+
 def test_journal_records_rejected_trial_and_reopens_idempotently(tmp_path: Path) -> None:
     first, second = _candidate("candidate-a", 0), _candidate("candidate-b", 1)
     inventory = _inventory(0, first, second)
@@ -165,6 +230,20 @@ def test_journal_records_rejected_trial_and_reopens_idempotently(tmp_path: Path)
     assert inventory_receipt["candidate_authoring_performed"] is False
     assert inventory_receipt["grading_performed"] is False
     assert attempt_receipt["optuna_trial"]["state"] == "pruned"
+    assert attempt_receipt["optuna_physics_trial"]["state"] == "complete"
+    assert attempt_receipt["optuna_physics_trial"]["values"] == [
+        0.6,
+        0.1,
+        0.5,
+        0.12,
+        0.18,
+    ]
+    assert attempt_receipt["physics_objectives"]["native_passed"] is False
+    assert (
+        attempt_receipt["physics_objectives"]["native_verdict_authoritative"]
+        is True
+    )
+    assert attempt_receipt["physics_objectives"]["native_thresholds_changed"] is False
     assert attempt_receipt["candidate_disposition"] == "discard"
     assert attempt_receipt["candidate_inventory_exhausted"] is False
     assert attempt_receipt["prune_reasons"] == [
@@ -189,6 +268,7 @@ def test_journal_records_rejected_trial_and_reopens_idempotently(tmp_path: Path)
     assert reopened.record_inventory(inventory=inventory) == inventory_receipt
     assert reopened.record_attempt(round_record=record) == attempt_receipt
     assert len(reopened._study().trials) == 1
+    assert len(reopened._physics_study().trials) == 1
 
 
 def test_passed_trial_is_kept_and_completed(tmp_path: Path) -> None:
@@ -208,9 +288,96 @@ def test_passed_trial_is_kept_and_completed(tmp_path: Path) -> None:
 
     assert receipt["optuna_trial"]["state"] == "complete"
     assert receipt["optuna_trial"]["value"] == 1.0
+    assert receipt["optuna_physics_trial"]["values"] == [0.0, 0.0, 1.0, 0.01, 0.02]
     assert receipt["candidate_disposition"] == "keep"
     assert receipt["candidate_inventory_exhausted"] is True
     assert receipt["controller_search_state"] == "qualified"
+
+
+def test_adopted_baseline_is_objective_history_but_never_a_trial(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate("candidate-after-baseline", 0)
+    inventory = _inventory(0, candidate)
+    feedback = _round_record(
+        inventory=inventory,
+        candidate=candidate,
+        passed=False,
+        search_state="continuing",
+    )["native_feedback"]
+    checkpoint = _baseline_checkpoint(feedback)
+    ledger = NativeConstructionOptunaSearchLedger(root=tmp_path, run_id=RUN_ID)
+
+    receipt = ledger.record_adopted_baseline(baseline_record=checkpoint)
+
+    assert receipt["event"] == "adopted_baseline_observation_recorded"
+    assert receipt["candidate_digest"] is None
+    assert receipt["optuna_trial_recorded"] is False
+    assert receipt["optuna_trial"] is None
+    assert receipt["optuna_physics_trial"] is None
+    assert receipt["physics_objectives"]["objective_values"] == {
+        "destination_error_m": 0.18,
+        "forbidden_robot_scene_collision_first_sample_force_n": 0.1,
+        "forbidden_robot_scene_collision_peak_force_n": 0.6,
+        "push_path_tracking_error_m": 0.12,
+        "required_task_contact_coverage_fraction": 0.5,
+    }
+    assert ledger._study().trials == []
+    assert ledger._physics_study().trials == []
+    assert ledger.reopen_receipt(receipt) == receipt
+    assert ledger.record_adopted_baseline(baseline_record=checkpoint) == receipt
+
+    ledger.record_inventory(inventory=inventory)
+    ledger.record_attempt(
+        round_record=_round_record(
+            inventory=inventory,
+            candidate=candidate,
+            passed=True,
+            search_state="qualified",
+        )
+    )
+    assert len(ledger._study().trials) == 1
+    assert len(ledger._physics_study().trials) == 1
+    assert all(
+        trial.user_attrs.get("event")
+        != "adopted_baseline_observation_recorded"
+        for trial in [*ledger._study().trials, *ledger._physics_study().trials]
+    )
+
+
+def test_adopted_baseline_checkpoint_and_objectives_are_digest_bound(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate("candidate-baseline", 0)
+    inventory = _inventory(0, candidate)
+    feedback = _round_record(
+        inventory=inventory,
+        candidate=candidate,
+        passed=False,
+        search_state="continuing",
+    )["native_feedback"]
+    checkpoint = _baseline_checkpoint(feedback)
+    ledger = NativeConstructionOptunaSearchLedger(root=tmp_path, run_id=RUN_ID)
+
+    mutated = dict(checkpoint)
+    mutated["initial_native_feedback"] = dict(feedback)
+    mutated["initial_native_feedback"]["physics_objective_measurements"] = dict(
+        feedback["physics_objective_measurements"],
+        destination_error_m=0.0,
+    )
+    with pytest.raises(
+        NativeConstructionOptunaLedgerError,
+        match="native_construction_adopted_baseline_checkpoint_invalid",
+    ):
+        ledger.record_adopted_baseline(baseline_record=mutated)
+
+    receipt = ledger.record_adopted_baseline(baseline_record=checkpoint)
+    tampered = dict(receipt, physics_objective_digest=_digest(99))
+    with pytest.raises(
+        NativeConstructionOptunaLedgerError,
+        match="native_construction_search_ledger_receipt_invalid",
+    ):
+        ledger.reopen_receipt(tampered)
 
 
 def test_attempt_receipt_accumulates_native_runtime_and_cost(tmp_path: Path) -> None:
@@ -276,6 +443,7 @@ def test_resume_after_trial_tell_before_receipt_write_does_not_duplicate(
     receipt = resumed.record_attempt(round_record=record)
     assert receipt["controller_search_state"] == "exhausted_round_cap"
     assert len(resumed._study().trials) == 1
+    assert len(resumed._physics_study().trials) == 1
 
 
 def test_resume_after_enqueue_before_ask_reuses_waiting_trial(
@@ -307,6 +475,9 @@ def test_resume_after_enqueue_before_ask_reuses_waiting_trial(
     receipt = resumed.record_attempt(round_record=record)
     assert receipt["optuna_trial"]["state"] == "pruned"
     assert len(resumed._study().trials) == 1
+    assert len(resumed._physics_study().trials) == 1
+
+
 def test_rejects_nonmember_and_repeated_candidate(tmp_path: Path) -> None:
     first, outsider = _candidate("candidate-a", 0), _candidate("candidate-z", 9)
     inventory = _inventory(0, first)
@@ -371,6 +542,51 @@ def test_rejects_mutated_inventory_and_receipt_history(tmp_path: Path) -> None:
         match="native_construction_search_ledger_receipt_invalid",
     ):
         ledger.reopen_receipt(tampered)
+
+
+def test_attempt_refuses_missing_or_internally_inconsistent_physics_metrics(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate("candidate-physics", 0)
+    inventory = _inventory(0, candidate)
+    ledger = NativeConstructionOptunaSearchLedger(root=tmp_path, run_id=RUN_ID)
+    ledger.record_inventory(inventory=inventory)
+    record = _round_record(
+        inventory=inventory,
+        candidate=candidate,
+        passed=False,
+        search_state="continuing",
+    )
+    missing = dict(record)
+    missing["native_feedback"] = dict(record["native_feedback"])
+    missing["native_feedback"].pop("physics_objective_measurements")
+    missing["native_feedback"]["feedback_digest"] = canonical_digest(
+        missing["native_feedback"], digest_field="feedback_digest"
+    )
+    with pytest.raises(
+        NativeConstructionOptunaLedgerError,
+        match="native_construction_physics_measurements_missing",
+    ):
+        ledger.record_attempt(round_record=missing)
+
+    inconsistent = dict(record)
+    inconsistent["native_feedback"] = dict(record["native_feedback"])
+    measurements = dict(
+        inconsistent["native_feedback"]["physics_objective_measurements"]
+    )
+    measurements["required_task_contact_coverage_fraction"] = 0.75
+    measurements["measurement_digest"] = canonical_digest(
+        measurements, digest_field="measurement_digest"
+    )
+    inconsistent["native_feedback"]["physics_objective_measurements"] = measurements
+    inconsistent["native_feedback"]["feedback_digest"] = canonical_digest(
+        inconsistent["native_feedback"], digest_field="feedback_digest"
+    )
+    with pytest.raises(
+        NativeConstructionOptunaLedgerError,
+        match="native_construction_physics_measurements_invalid",
+    ):
+        ledger.record_attempt(round_record=inconsistent)
 
 
 def test_candidate_id_cannot_rebind_to_new_digest_between_rounds(tmp_path: Path) -> None:

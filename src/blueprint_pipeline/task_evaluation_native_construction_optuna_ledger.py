@@ -21,7 +21,7 @@ import math
 import os
 import re
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -43,9 +43,38 @@ INVENTORY_RECEIPT_SCHEMA_VERSION = (
 ATTEMPT_RECEIPT_SCHEMA_VERSION = (
     "task_evaluation_native_construction_optuna_attempt_ledger_receipt.v1"
 )
+PHYSICS_ATTEMPT_RECEIPT_SCHEMA_VERSION = (
+    "task_evaluation_native_construction_optuna_physics_attempt_ledger_receipt.v1"
+)
+ADOPTED_BASELINE_RECEIPT_SCHEMA_VERSION = (
+    "task_evaluation_native_construction_adopted_baseline_ledger_receipt.v1"
+)
+PHYSICS_MEASUREMENT_SCHEMA_VERSION = (
+    "task_evaluation_native_construction_physics_objective_measurements.v1"
+)
+PHYSICS_OBJECTIVE_SCHEMA_VERSION = (
+    "task_evaluation_native_construction_physics_objectives.v1"
+)
+ADOPTED_BASELINE_SCHEMA_VERSION = (
+    "task_evaluation_native_construction_adopted_baseline.v1"
+)
+TERMINAL_ADOPTION_SCHEMA_VERSION = (
+    "task_evaluation_native_construction_terminal_feedback_adoption.v1"
+)
 OPTUNA_VERSION = "4.9.0"
 OPTUNA_LICENSE = "MIT"
 STUDY_CONTRACT_VERSION = "blueprint_native_construction_optuna_study.v1"
+PHYSICS_STUDY_CONTRACT_VERSION = (
+    "blueprint_native_construction_optuna_physics_study.v1"
+)
+
+PHYSICS_OBJECTIVE_SPECS = (
+    ("forbidden_robot_scene_collision_peak_force_n", "minimize"),
+    ("forbidden_robot_scene_collision_first_sample_force_n", "minimize"),
+    ("required_task_contact_coverage_fraction", "maximize"),
+    ("push_path_tracking_error_m", "minimize"),
+    ("destination_error_m", "minimize"),
+)
 
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$")
@@ -83,6 +112,30 @@ def _finite_nonnegative(value: object, *, blocker: str) -> float:
     if not math.isfinite(number) or number < 0.0:
         raise NativeConstructionOptunaLedgerError(blocker)
     return number
+
+
+def _optional_finite_nonnegative(
+    value: object, *, blocker: str
+) -> float | None:
+    if value is None:
+        return None
+    return _finite_nonnegative(value, blocker=blocker)
+
+
+def _finite_vector(value: object, *, size: int, blocker: str) -> list[float]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or len(value) != size
+    ):
+        raise NativeConstructionOptunaLedgerError(blocker)
+    try:
+        result = [float(item) for item in value]
+    except (TypeError, ValueError) as exc:
+        raise NativeConstructionOptunaLedgerError(blocker) from exc
+    if not all(math.isfinite(item) for item in result):
+        raise NativeConstructionOptunaLedgerError(blocker)
+    return result
 
 
 def _iso(value: object) -> str | None:
@@ -252,6 +305,207 @@ def _trial_snapshot(trial: FrozenTrial) -> dict[str, Any]:
     }
 
 
+def _multiobjective_trial_snapshot(trial: FrozenTrial) -> dict[str, Any]:
+    distributions = {
+        name: json.loads(distribution_to_json(distribution))
+        for name, distribution in sorted(trial.distributions.items())
+    }
+    return {
+        "number": int(trial.number),
+        "state": trial.state.name.lower(),
+        "values": list(trial.values) if trial.values is not None else None,
+        "params": dict(sorted(trial.params.items())),
+        "distributions": distributions,
+        "user_attrs": dict(sorted(trial.user_attrs.items())),
+        "system_attrs": dict(sorted(trial.system_attrs.items())),
+        "datetime_start": _iso(trial.datetime_start),
+        "datetime_complete": _iso(trial.datetime_complete),
+    }
+
+
+def _physics_objectives(feedback: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind measured objectives without re-evaluating any native gate."""
+
+    admitted = _copy(
+        feedback, blocker="native_construction_physics_feedback_invalid"
+    )
+    if (
+        admitted.get("schema_version")
+        != "task_evaluation_native_construction_feedback.v1"
+        or admitted.get("feedback_digest")
+        != canonical_digest(admitted, digest_field="feedback_digest")
+        or not _digest(admitted.get("native_result_digest"))
+        or not isinstance(admitted.get("passed"), bool)
+    ):
+        raise NativeConstructionOptunaLedgerError(
+            "native_construction_physics_feedback_invalid"
+        )
+    raw = admitted.get("physics_objective_measurements")
+    if not isinstance(raw, Mapping):
+        raise NativeConstructionOptunaLedgerError(
+            "native_construction_physics_measurements_missing"
+        )
+    measurements = _copy(
+        raw, blocker="native_construction_physics_measurements_invalid"
+    )
+    try:
+        required_samples = int(measurements["required_task_contact_sample_count"])
+        covered_samples = int(
+            measurements["required_task_contact_covered_sample_count"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise NativeConstructionOptunaLedgerError(
+            "native_construction_physics_measurements_invalid"
+        ) from exc
+    values: dict[str, float] = {}
+    for name, _direction in PHYSICS_OBJECTIVE_SPECS:
+        values[name] = _finite_nonnegative(
+            measurements.get(name),
+            blocker="native_construction_physics_measurements_invalid",
+        )
+    expected_coverage = covered_samples / required_samples if required_samples else -1.0
+    if (
+        measurements.get("schema_version") != PHYSICS_MEASUREMENT_SCHEMA_VERSION
+        or measurements.get("native_result_digest")
+        != admitted["native_result_digest"]
+        or measurements.get("measurement_digest")
+        != canonical_digest(measurements, digest_field="measurement_digest")
+        or isinstance(
+            measurements.get("required_task_contact_sample_count"), bool
+        )
+        or isinstance(
+            measurements.get("required_task_contact_covered_sample_count"), bool
+        )
+        or required_samples <= 0
+        or not 0 <= covered_samples <= required_samples
+        or not math.isclose(
+            values["required_task_contact_coverage_fraction"],
+            expected_coverage,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
+        or values["required_task_contact_coverage_fraction"] > 1.0
+        or measurements.get("native_thresholds_changed") is not False
+        or measurements.get("native_verdict_recomputed") is not False
+        or measurements.get("measurement_only_not_native_grade") is not True
+    ):
+        raise NativeConstructionOptunaLedgerError(
+            "native_construction_physics_measurements_invalid"
+        )
+    objective: dict[str, Any] = {
+        "schema_version": PHYSICS_OBJECTIVE_SCHEMA_VERSION,
+        "source_native_feedback_digest": admitted["feedback_digest"],
+        "source_native_result_digest": admitted["native_result_digest"],
+        "source_measurement_digest": measurements["measurement_digest"],
+        "native_passed": admitted["passed"],
+        "objective_names": [name for name, _direction in PHYSICS_OBJECTIVE_SPECS],
+        "objective_directions": [
+            direction for _name, direction in PHYSICS_OBJECTIVE_SPECS
+        ],
+        "objective_values": values,
+        "required_task_contact_covered_sample_count": covered_samples,
+        "required_task_contact_sample_count": required_samples,
+        "native_verdict_authoritative": True,
+        "native_thresholds_changed": False,
+        "objective_values_do_not_imply_native_pass": True,
+        "objective_digest": "",
+    }
+    objective["objective_digest"] = canonical_digest(
+        objective, digest_field="objective_digest"
+    )
+    return objective
+
+
+def _validate_adopted_baseline_checkpoint(
+    value: Mapping[str, Any], *, run_id: str
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    checkpoint = _copy(
+        value, blocker="native_construction_adopted_baseline_checkpoint_invalid"
+    )
+    binding = checkpoint.get("prior_attempted_baseline_binding")
+    feedback = checkpoint.get("initial_native_feedback")
+    if not isinstance(binding, Mapping) or not isinstance(feedback, Mapping):
+        raise NativeConstructionOptunaLedgerError(
+            "native_construction_adopted_baseline_checkpoint_invalid"
+        )
+    binding = _copy(
+        binding, blocker="native_construction_adopted_baseline_binding_invalid"
+    )
+    feedback = _copy(
+        feedback, blocker="native_construction_adopted_baseline_feedback_invalid"
+    )
+    required_binding_digests = (
+        "robot_joint_reset_positions_digest",
+        "camera_configuration_digest",
+        "packet_request_digest",
+        "candidate_universe_digest",
+        "allocator_result_digest",
+        "native_result_digest",
+        "native_feedback_digest",
+    )
+    _optional_finite_nonnegative(
+        binding.get("runtime_seconds"),
+        blocker="native_construction_adopted_baseline_binding_invalid",
+    )
+    _optional_finite_nonnegative(
+        binding.get("incremental_cost_upper_bound_usd"),
+        blocker="native_construction_adopted_baseline_binding_invalid",
+    )
+    pose = binding.get("robot_base_pose_world")
+    position = (
+        _finite_vector(
+            pose.get("position_world_m"),
+            size=3,
+            blocker="native_construction_adopted_baseline_binding_invalid",
+        )
+        if isinstance(pose, Mapping)
+        else []
+    )
+    orientation = (
+        _finite_vector(
+            pose.get("orientation_xyzw"),
+            size=4,
+            blocker="native_construction_adopted_baseline_binding_invalid",
+        )
+        if isinstance(pose, Mapping)
+        else []
+    )
+    if (
+        checkpoint.get("schema_version") != TERMINAL_ADOPTION_SCHEMA_VERSION
+        or checkpoint.get("status") != "accepted_for_feedback_bootstrap"
+        or checkpoint.get("run_id") != run_id
+        or checkpoint.get("checkpoint_digest")
+        != canonical_digest(checkpoint, digest_field="checkpoint_digest")
+        or binding.get("schema_version") != ADOPTED_BASELINE_SCHEMA_VERSION
+        or binding.get("baseline_kind")
+        != "cold_authored_baseline_not_feedback_candidate"
+        or not _identifier(binding.get("selected_placement_candidate_id"))
+        or not isinstance(pose, Mapping)
+        or len(position) != 3
+        or len(orientation) != 4
+        or not math.isclose(
+            math.sqrt(math.fsum(item * item for item in orientation)),
+            1.0,
+            rel_tol=0.0,
+            abs_tol=1.0e-4,
+        )
+        or not all(_digest(binding.get(name)) for name in required_binding_digests)
+        or binding.get("optuna_trial_recorded") is not False
+        or binding.get("candidate_digest") is not None
+        or binding.get("binding_digest")
+        != canonical_digest(binding, digest_field="binding_digest")
+        or feedback.get("feedback_digest")
+        != canonical_digest(feedback, digest_field="feedback_digest")
+        or binding.get("native_feedback_digest") != feedback.get("feedback_digest")
+        or binding.get("native_result_digest") != feedback.get("native_result_digest")
+    ):
+        raise NativeConstructionOptunaLedgerError(
+            "native_construction_adopted_baseline_checkpoint_invalid"
+        )
+    objectives = _physics_objectives(feedback)
+    return checkpoint, binding, objectives
+
+
 class NativeConstructionOptunaSearchLedger:
     """Journal-backed implementation of the controller's ``SearchLedger`` API."""
 
@@ -288,6 +542,7 @@ class NativeConstructionOptunaSearchLedger:
             "blueprint-native-construction-"
             + hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:24]
         )
+        self.physics_study_name = self.study_name + "-physics-objectives-v1"
 
     @contextlib.contextmanager
     def _locked(self) -> Iterator[None]:
@@ -335,11 +590,262 @@ class NativeConstructionOptunaSearchLedger:
                 study.set_user_attr(key, expected)
         return study
 
+    def _physics_study(self) -> optuna.study.Study:
+        if self.journal_path.is_symlink():
+            raise NativeConstructionOptunaLedgerError(
+                "native_construction_search_ledger_journal_invalid"
+            )
+        storage = JournalStorage(JournalFileBackend(str(self.journal_path)))
+        study = optuna.create_study(
+            storage=storage,
+            study_name=self.physics_study_name,
+            directions=[direction for _name, direction in PHYSICS_OBJECTIVE_SPECS],
+            sampler=TPESampler(seed=self.seed),
+            load_if_exists=True,
+        )
+        self.journal_path.chmod(0o640)
+        expected_attrs: dict[str, Any] = {
+            "study_contract_version": PHYSICS_STUDY_CONTRACT_VERSION,
+            "run_id": self.run_id,
+            "deterministic_seed": self.seed,
+            "candidate_authoring_performed": False,
+            "grading_performed": False,
+            "native_verdict_authoritative": True,
+            "native_thresholds_changed": False,
+            "optimizer_package": "optuna",
+            "optimizer_version": OPTUNA_VERSION,
+            "optimizer_license": OPTUNA_LICENSE,
+            "storage_backend": "JournalStorage(JournalFileBackend)",
+            "sampler": "TPESampler",
+            "objective_specs": canonical_json(
+                {
+                    "objectives": [
+                        {"name": name, "direction": direction}
+                        for name, direction in PHYSICS_OBJECTIVE_SPECS
+                    ]
+                }
+            ),
+        }
+        for key, expected in expected_attrs.items():
+            existing = study.user_attrs.get(key)
+            if existing is not None and existing != expected:
+                raise NativeConstructionOptunaLedgerError(
+                    "native_construction_physics_study_conflict"
+                )
+            if existing is None:
+                study.set_user_attr(key, expected)
+        return study
+
     def _inventory_path(self, round_index: int) -> Path:
         return self.receipt_root / f"round-{round_index:03d}-inventory.v1.json"
 
     def _attempt_path(self, round_index: int) -> Path:
         return self.receipt_root / f"round-{round_index:03d}-attempt.v1.json"
+
+    def _baseline_path(self) -> Path:
+        return self.receipt_root / "adopted-baseline-observation.v1.json"
+
+    def record_adopted_baseline(
+        self, *, baseline_record: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Record the cold terminal baseline as history, never as a trial."""
+
+        checkpoint, binding, objectives = _validate_adopted_baseline_checkpoint(
+            baseline_record, run_id=self.run_id
+        )
+        receipt_path = self._baseline_path()
+        with self._locked():
+            if receipt_path.exists():
+                receipt = _load_receipt(receipt_path)
+                self.reopen_receipt(receipt)
+                if (
+                    receipt.get("terminal_adoption_checkpoint_digest")
+                    != checkpoint["checkpoint_digest"]
+                    or receipt.get("adopted_baseline_binding_digest")
+                    != binding["binding_digest"]
+                    or receipt.get("physics_objective_digest")
+                    != objectives["objective_digest"]
+                ):
+                    raise NativeConstructionOptunaLedgerError(
+                        "native_construction_search_ledger_immutable_conflict"
+                    )
+                return receipt
+            study = self._study()
+            physics_study = self._physics_study()
+            study_trial_numbers = [trial.number for trial in study.trials]
+            physics_trial_numbers = [trial.number for trial in physics_study.trials]
+            observation = {
+                "run_id": self.run_id,
+                "checkpoint_digest": checkpoint["checkpoint_digest"],
+                "binding_digest": binding["binding_digest"],
+                "native_feedback_digest": binding["native_feedback_digest"],
+                "native_result_digest": binding["native_result_digest"],
+                "physics_objective_digest": objectives["objective_digest"],
+                "optuna_trial_recorded": False,
+                "candidate_digest": None,
+            }
+            attr_value = canonical_json(observation)
+            for target in (study, physics_study):
+                existing = target.user_attrs.get("adopted_baseline_observation")
+                if existing is not None and existing != attr_value:
+                    raise NativeConstructionOptunaLedgerError(
+                        "native_construction_adopted_baseline_history_conflict"
+                    )
+                if existing is None:
+                    target.set_user_attr("adopted_baseline_observation", attr_value)
+            if (
+                [trial.number for trial in study.trials] != study_trial_numbers
+                or [trial.number for trial in physics_study.trials]
+                != physics_trial_numbers
+            ):
+                raise NativeConstructionOptunaLedgerError(
+                    "native_construction_adopted_baseline_trial_created"
+                )
+            receipt: dict[str, Any] = {
+                "schema_version": ADOPTED_BASELINE_RECEIPT_SCHEMA_VERSION,
+                "event": "adopted_baseline_observation_recorded",
+                "run_id": self.run_id,
+                "round_index": None,
+                "inventory_digest": binding["candidate_universe_digest"],
+                "candidate_digest": None,
+                "execution_result_digest": binding["allocator_result_digest"],
+                "native_feedback_digest": binding["native_feedback_digest"],
+                "native_result_digest": binding["native_result_digest"],
+                "terminal_adoption_checkpoint_digest": checkpoint[
+                    "checkpoint_digest"
+                ],
+                "adopted_baseline_binding": binding,
+                "adopted_baseline_binding_digest": binding["binding_digest"],
+                "physics_objectives": objectives,
+                "physics_objective_digest": objectives["objective_digest"],
+                "runtime_seconds": binding["runtime_seconds"],
+                "incremental_cost_upper_bound_usd": binding[
+                    "incremental_cost_upper_bound_usd"
+                ],
+                "optuna_study_name": self.study_name,
+                "optuna_physics_study_name": self.physics_study_name,
+                "optuna_history_attribute": "adopted_baseline_observation",
+                "optuna_history_observation": observation,
+                "optuna_trial_recorded": False,
+                "optuna_trial": None,
+                "optuna_physics_trial": None,
+                "optuna_trial_numbers_at_recording": study_trial_numbers,
+                "optuna_physics_trial_numbers_at_recording": physics_trial_numbers,
+                "candidate_authoring_performed": False,
+                "grading_performed": False,
+                "native_verdict_authoritative": True,
+                "native_thresholds_changed": False,
+                "deterministic_seed": self.seed,
+                "storage_backend": "JournalStorage(JournalFileBackend)",
+                "optimizer_package": "optuna",
+                "optimizer_version": OPTUNA_VERSION,
+                "optimizer_license": OPTUNA_LICENSE,
+                "ledger_receipt_digest": "",
+            }
+            receipt["ledger_receipt_digest"] = canonical_digest(
+                receipt, digest_field="ledger_receipt_digest"
+            )
+            _atomic_immutable_write(receipt_path, receipt)
+            return receipt
+
+    def _tell_physics_objectives(
+        self,
+        *,
+        study: optuna.study.Study,
+        candidate: Mapping[str, Any],
+        dimensions: Mapping[str, Any],
+        inventory_digest: str,
+        execution_result_digest: str,
+        native_feedback_digest: str,
+        native_status: str,
+        objectives: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        parameters = _trial_parameters(candidate, dimensions)
+        objective_values = [
+            float(objectives["objective_values"][name])
+            for name, _direction in PHYSICS_OBJECTIVE_SPECS
+        ]
+        event_record = {
+            "run_id": self.run_id,
+            "inventory_digest": inventory_digest,
+            "candidate_digest": candidate["candidate_digest"],
+            "execution_result_digest": execution_result_digest,
+            "native_feedback_digest": native_feedback_digest,
+            "native_status": native_status,
+            "physics_objective_digest": objectives["objective_digest"],
+            "native_verdict_authoritative": True,
+            "native_thresholds_changed": False,
+        }
+        event_digest = canonical_digest(event_record)
+        user_attrs: dict[str, Any] = {
+            "event": "candidate_physics_objectives_recorded",
+            "physics_event_digest": event_digest,
+            **event_record,
+            "candidate_id": candidate["candidate_id"],
+            "candidate_dimensions_json": canonical_json(dimensions),
+            "physics_objectives_json": canonical_json(objectives),
+            "candidate_authoring_performed": False,
+            "grading_performed": False,
+        }
+        matching: FrozenTrial | None = None
+        for trial in study.get_trials(deepcopy=False):
+            if trial.user_attrs.get("candidate_digest") != candidate["candidate_digest"]:
+                continue
+            if trial.user_attrs.get("physics_event_digest") != event_digest:
+                raise NativeConstructionOptunaLedgerError(
+                    "native_construction_physics_candidate_repeated"
+                )
+            matching = trial
+            break
+        if matching is None:
+            distributions = {
+                name: CategoricalDistribution([value])
+                for name, value in parameters.items()
+            }
+            study.enqueue_trial(
+                parameters,
+                user_attrs=user_attrs,
+                skip_if_exists=True,
+            )
+            live_trial = study.ask(fixed_distributions=distributions)
+            study.tell(live_trial, values=objective_values)
+            frozen = study.trials[live_trial.number]
+        elif matching.state in {TrialState.WAITING, TrialState.RUNNING}:
+            if matching.state == TrialState.WAITING:
+                distributions = {
+                    name: CategoricalDistribution([value])
+                    for name, value in parameters.items()
+                }
+                live_trial = study.ask(fixed_distributions=distributions)
+                if live_trial.number != matching.number:
+                    raise NativeConstructionOptunaLedgerError(
+                        "native_construction_physics_trial_invalid"
+                    )
+                matching = study.trials[live_trial.number]
+            if dict(matching.params) != parameters or any(
+                matching.user_attrs.get(key) != value
+                for key, value in user_attrs.items()
+            ):
+                raise NativeConstructionOptunaLedgerError(
+                    "native_construction_physics_trial_invalid"
+                )
+            study.tell(matching.number, values=objective_values)
+            frozen = study.trials[matching.number]
+        else:
+            frozen = matching
+        if (
+            frozen.state != TrialState.COMPLETE
+            or dict(frozen.params) != parameters
+            or list(frozen.values or ()) != objective_values
+            or any(
+                frozen.user_attrs.get(key) != value
+                for key, value in user_attrs.items()
+            )
+        ):
+            raise NativeConstructionOptunaLedgerError(
+                "native_construction_physics_trial_invalid"
+            )
+        return _multiobjective_trial_snapshot(frozen)
 
     def record_inventory(self, *, inventory: Mapping[str, Any]) -> Mapping[str, Any]:
         """Persist one exact digest-bound inventory without asking for new bytes."""
@@ -531,6 +1037,7 @@ class NativeConstructionOptunaSearchLedger:
             execution.get("incremental_cost_upper_bound_usd"),
             blocker="native_construction_search_attempt_cost_invalid",
         )
+        objectives = _physics_objectives(feedback)
         inventory_receipt_path = self._inventory_path(round_index)
         attempt_receipt_path = self._attempt_path(round_index)
         with self._locked():
@@ -561,6 +1068,8 @@ class NativeConstructionOptunaSearchLedger:
                     receipt.get("candidate_digest") != candidate_digest
                     or receipt.get("execution_result_digest") != execution_digest
                     or receipt.get("native_feedback_digest") != feedback_digest
+                    or receipt.get("physics_objective_digest")
+                    != objectives["objective_digest"]
                 ):
                     raise NativeConstructionOptunaLedgerError(
                         "native_construction_search_ledger_immutable_conflict"
@@ -618,6 +1127,7 @@ class NativeConstructionOptunaSearchLedger:
                 "native_feedback_digest": feedback_digest,
                 "candidate_dimensions_digest": dimension_digest,
                 "native_outcome_metrics_digest": outcome_metrics_digest,
+                "physics_objective_digest": objectives["objective_digest"],
                 "runtime_seconds": runtime_seconds,
                 "incremental_cost_upper_bound_usd": cost_usd,
                 "cumulative_runtime_seconds": cumulative_runtime_seconds,
@@ -710,8 +1220,19 @@ class NativeConstructionOptunaSearchLedger:
                     "native_construction_search_trial_invalid"
                 )
             snapshot = _trial_snapshot(frozen)
+            physics_study = self._physics_study()
+            physics_snapshot = self._tell_physics_objectives(
+                study=physics_study,
+                candidate=candidate,
+                dimensions=dimensions,
+                inventory_digest=str(inventory_digest),
+                execution_result_digest=str(execution_digest),
+                native_feedback_digest=str(feedback_digest),
+                native_status=str(status),
+                objectives=objectives,
+            )
             receipt = {
-                "schema_version": ATTEMPT_RECEIPT_SCHEMA_VERSION,
+                "schema_version": PHYSICS_ATTEMPT_RECEIPT_SCHEMA_VERSION,
                 "event": "attempt_recorded",
                 "run_id": self.run_id,
                 "round_index": round_index,
@@ -726,6 +1247,8 @@ class NativeConstructionOptunaSearchLedger:
                 "native_status": status,
                 "native_outcome_metrics": outcome_metrics,
                 "native_outcome_metrics_digest": outcome_metrics_digest,
+                "physics_objectives": objectives,
+                "physics_objective_digest": objectives["objective_digest"],
                 "runtime_seconds": runtime_seconds,
                 "incremental_cost_upper_bound_usd": cost_usd,
                 "cumulative_runtime_seconds": cumulative_runtime_seconds,
@@ -739,6 +1262,11 @@ class NativeConstructionOptunaSearchLedger:
                 "optuna_study_name": self.study_name,
                 "optuna_trial": snapshot,
                 "optuna_trial_snapshot_digest": canonical_digest(snapshot),
+                "optuna_physics_study_name": self.physics_study_name,
+                "optuna_physics_trial": physics_snapshot,
+                "optuna_physics_trial_snapshot_digest": canonical_digest(
+                    physics_snapshot
+                ),
                 "deterministic_seed": self.seed,
                 "storage_backend": "JournalStorage(JournalFileBackend)",
                 "optimizer_package": "optuna",
@@ -763,7 +1291,12 @@ class NativeConstructionOptunaSearchLedger:
         )
         if (
             value.get("schema_version")
-            not in {INVENTORY_RECEIPT_SCHEMA_VERSION, ATTEMPT_RECEIPT_SCHEMA_VERSION}
+            not in {
+                INVENTORY_RECEIPT_SCHEMA_VERSION,
+                ATTEMPT_RECEIPT_SCHEMA_VERSION,
+                PHYSICS_ATTEMPT_RECEIPT_SCHEMA_VERSION,
+                ADOPTED_BASELINE_RECEIPT_SCHEMA_VERSION,
+            }
             or value.get("run_id") != self.run_id
             or value.get("optuna_study_name") != self.study_name
             or value.get("deterministic_seed") != self.seed
@@ -781,6 +1314,59 @@ class NativeConstructionOptunaSearchLedger:
                 "native_construction_search_ledger_receipt_invalid"
             )
         study = self._study()
+        if value.get("event") == "adopted_baseline_observation_recorded":
+            physics_study = self._physics_study()
+            observation = value.get("optuna_history_observation")
+            binding = value.get("adopted_baseline_binding")
+            objective = value.get("physics_objectives")
+            if (
+                value.get("schema_version")
+                != ADOPTED_BASELINE_RECEIPT_SCHEMA_VERSION
+                or value.get("round_index") is not None
+                or value.get("candidate_digest") is not None
+                or value.get("optuna_trial_recorded") is not False
+                or value.get("optuna_trial") is not None
+                or value.get("optuna_physics_trial") is not None
+                or value.get("optuna_physics_study_name")
+                != self.physics_study_name
+                or not isinstance(binding, Mapping)
+                or value.get("adopted_baseline_binding_digest")
+                != binding.get("binding_digest")
+                or value.get("adopted_baseline_binding_digest")
+                != canonical_digest(binding, digest_field="binding_digest")
+                or value.get("native_feedback_digest")
+                != binding.get("native_feedback_digest")
+                or value.get("native_result_digest")
+                != binding.get("native_result_digest")
+                or not isinstance(objective, Mapping)
+                or value.get("physics_objective_digest")
+                != canonical_digest(
+                    objective,
+                    digest_field="objective_digest",
+                )
+                or value.get("physics_objective_digest")
+                != objective.get("objective_digest")
+                or objective.get("source_native_feedback_digest")
+                != value.get("native_feedback_digest")
+                or objective.get("source_native_result_digest")
+                != value.get("native_result_digest")
+                or not isinstance(observation, Mapping)
+                or study.user_attrs.get(value.get("optuna_history_attribute"))
+                != canonical_json(observation)
+                or physics_study.user_attrs.get(
+                    value.get("optuna_history_attribute")
+                )
+                != canonical_json(observation)
+                or any(
+                    trial.user_attrs.get("event")
+                    == "adopted_baseline_observation_recorded"
+                    for trial in [*study.trials, *physics_study.trials]
+                )
+            ):
+                raise NativeConstructionOptunaLedgerError(
+                    "native_construction_search_ledger_receipt_invalid"
+                )
+            return value
         if value.get("event") == "inventory_recorded":
             if (
                 value.get("schema_version") != INVENTORY_RECEIPT_SCHEMA_VERSION
@@ -796,7 +1382,11 @@ class NativeConstructionOptunaSearchLedger:
             return value
         if (
             value.get("event") != "attempt_recorded"
-            or value.get("schema_version") != ATTEMPT_RECEIPT_SCHEMA_VERSION
+            or value.get("schema_version")
+            not in {
+                ATTEMPT_RECEIPT_SCHEMA_VERSION,
+                PHYSICS_ATTEMPT_RECEIPT_SCHEMA_VERSION,
+            }
             or not _digest(value.get("candidate_digest"))
             or not _digest(value.get("execution_result_digest"))
             or not _digest(value.get("native_feedback_digest"))
@@ -822,4 +1412,42 @@ class NativeConstructionOptunaSearchLedger:
             raise NativeConstructionOptunaLedgerError(
                 "native_construction_search_ledger_receipt_history_mismatch"
             )
+        if value.get("schema_version") == PHYSICS_ATTEMPT_RECEIPT_SCHEMA_VERSION:
+            objective = value.get("physics_objectives")
+            physics_snapshot = value.get("optuna_physics_trial")
+            if (
+                not isinstance(objective, Mapping)
+                or value.get("physics_objective_digest")
+                != objective.get("objective_digest")
+                or value.get("physics_objective_digest")
+                != canonical_digest(objective, digest_field="objective_digest")
+                or objective.get("source_native_feedback_digest")
+                != value.get("native_feedback_digest")
+                or objective.get("source_native_result_digest")
+                != value.get("native_result_digest")
+                or not isinstance(physics_snapshot, Mapping)
+                or value.get("optuna_physics_study_name")
+                != self.physics_study_name
+                or value.get("optuna_physics_trial_snapshot_digest")
+                != canonical_digest(physics_snapshot)
+            ):
+                raise NativeConstructionOptunaLedgerError(
+                    "native_construction_search_ledger_receipt_invalid"
+                )
+            physics_study = self._physics_study()
+            physics_number = physics_snapshot.get("number")
+            physics_trials = {
+                trial.number: trial
+                for trial in physics_study.get_trials(deepcopy=False)
+            }
+            physics_trial = physics_trials.get(physics_number)
+            if (
+                not isinstance(physics_number, int)
+                or physics_trial is None
+                or _multiobjective_trial_snapshot(physics_trial)
+                != dict(physics_snapshot)
+            ):
+                raise NativeConstructionOptunaLedgerError(
+                    "native_construction_search_ledger_receipt_history_mismatch"
+                )
         return value
