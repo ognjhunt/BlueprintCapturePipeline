@@ -592,6 +592,35 @@ def test_path_unit_state_restore_failure_names_the_unit_and_verb(monkeypatch) ->
         )
 
 
+def test_missing_fresh_path_is_already_restored_when_disable_and_stop_fail(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def completed(argv, **kwargs):
+        calls.append(tuple(argv))
+        if argv[:2] in (["systemctl", "disable"], ["systemctl", "stop"]):
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="not found")
+        stdout = "not-found\n" if argv[:2] == ["systemctl", "is-enabled"] else "inactive\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+    unit = "blueprint-task-evaluation-policy-canary-dispatcher.path"
+
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit}], before={}, arm_path_units=False
+    )
+
+    assert restored[0]["after"] == {"enabled": "disabled", "state": "inactive"}
+    assert restored[0]["operator_freeze_preserved"] is True
+    assert calls[:4] == [
+        ("systemctl", "disable", unit),
+        ("systemctl", "is-enabled", unit),
+        ("systemctl", "is-active", unit),
+        ("systemctl", "stop", unit),
+    ]
+
+
 def test_a_watcher_that_is_not_waiting_after_requested_arm_blocks_the_deploy(
     monkeypatch,
 ) -> None:

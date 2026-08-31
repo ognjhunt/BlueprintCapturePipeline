@@ -1293,6 +1293,12 @@ def _restore_installed_path_units(
                 check=False,
             )
             if result.returncode != 0:
+                observed = _systemd_unit_state(unit)
+                already_restored = (
+                    verb == "disable" and observed["enabled"] == "disabled"
+                ) or (verb == "stop" and observed["state"] == "inactive")
+                if already_restored:
+                    continue
                 raise ControlPlaneDeployError(
                     f"deploy_path_unit_state_restore_failed:{unit}:{verb}"
                 )
