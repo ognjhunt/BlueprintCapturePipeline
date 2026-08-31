@@ -14,9 +14,9 @@ def test_five_call_canary_retains_write_read_version_and_one_off_proof(
     key_file.chmod(0o600)
     requests: list[dict] = []
     usages = [
-        (0, 2_500),
-        (2_500, 0),
-        (2_500, 0),
+        (0, 1_464),
+        (1_464, 0),
+        (1_464, 0),
         (0, 2_500),
         (0, 0),
     ]
@@ -63,9 +63,10 @@ def test_five_call_canary_retains_write_read_version_and_one_off_proof(
     assert report["status"] == "passed"
     assert report["request_count"] == 5
     assert report["retry_cap"] == 0
-    assert report["calls"][0]["usage"]["cache_write_tokens"] == 2_500
-    assert report["calls"][1]["usage"]["cached_tokens"] == 2_500
-    assert report["calls"][2]["usage"]["cached_tokens"] == 2_500
+    assert report["provider_stable_prefix_write_tokens"] == 1_464
+    assert report["calls"][0]["usage"]["cache_write_tokens"] == 1_464
+    assert report["calls"][1]["usage"]["cached_tokens"] == 1_464
+    assert report["calls"][2]["usage"]["cached_tokens"] == 1_464
     assert report["calls"][3]["usage"]["cache_write_tokens"] == 2_500
     assert report["calls"][4]["usage"]["cache_write_tokens"] == 0
     assert requests[0]["prompt_cache_key"] == requests[1]["prompt_cache_key"]
