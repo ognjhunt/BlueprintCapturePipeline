@@ -43,6 +43,13 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
     "native_task_torch_runtime_lock.py",
+    # The warm construction-repair loop invokes cuRobo as a separate process
+    # before the next native attempt.  Ship the exact typed boundary and lazy
+    # service entry point; cuRobo itself is independently source-pinned and
+    # must pass its GPU runtime probe before use.
+    "task_evaluation_collision_aware_candidate_generation.py",
+    "task_evaluation_curobo_candidate_generator.py",
+    "task_evaluation_curobo_candidate_service.py",
 )
 
 RUNTIME_PREFLIGHT_MODULE_NAMES = tuple(
@@ -105,6 +112,9 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
     "native_task_torch_runtime_lock.py",
+    "task_evaluation_collision_aware_candidate_generation.py",
+    "task_evaluation_curobo_candidate_generator.py",
+    "task_evaluation_curobo_candidate_service.py",
 )
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
