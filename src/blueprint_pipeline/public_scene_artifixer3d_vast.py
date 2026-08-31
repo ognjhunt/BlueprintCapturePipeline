@@ -1545,8 +1545,7 @@ def _materialize_raw_result(
                     native_appearance_record.get("gaussian_field_source_relative_drift")
                 )
                 or not geometry_protection_is_qualified(
-                    native_appearance_record.get("geometry_protection")
-                )
+                    native_appearance_record.get("geometry_protection"))
             ):
                 raise ValueError("artifixer3d_runtime_native_appearance_invalid")
             exports: dict[str, Any] = {}
@@ -1595,9 +1594,7 @@ def _materialize_raw_result(
                 "gaussian_field_source_relative_drift": dict(
                     native_appearance_record["gaussian_field_source_relative_drift"]
                 ),
-                "geometry_protection": dict(
-                    native_appearance_record["geometry_protection"]
-                ),
+                "geometry_protection": dict(native_appearance_record["geometry_protection"]),
                 "coordinate_contract": dict(coordinate),
                 **exports,
                 "isaac_nurec_usdz_archive_contract": dict(archive_contract),
