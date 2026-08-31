@@ -1883,17 +1883,18 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
             )
     try:
         packet_receipt = json.loads(packet_receipt_path.read_text(encoding="utf-8"))
-        packet_request = json.loads(
-            (packet_dir / "native_task_arena_packet_request.v1.json").read_text(
-                encoding="utf-8"
-            )
-        )
         runtime_contract = json.loads(runtime_contract_path.read_text(encoding="utf-8"))
         runtime_source = json.loads(runtime_source_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise PaidLaneLaunchPreparationError(
             "native_task_arena_reference_unreadable"
         ) from exc
+    packet_request_path = packet_dir / "native_task_arena_packet_request.v1.json"
+    packet_request = (
+        json.loads(packet_request_path.read_text(encoding="utf-8"))
+        if packet_request_path.is_file() and not packet_request_path.is_symlink()
+        else {}
+    )
     container_image = str(runtime.get("container_image") or "")
     _validate_provider_packet_source_rights(
         packet_receipt=packet_receipt,

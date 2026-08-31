@@ -719,15 +719,20 @@ def advance_configured_controls_plan(
     preparation_queue_root: str | Path,
     activation_queue_root: str | Path,
     publisher_factory: PublisherFactory = configured_controls_object_store_publisher,
-    release_window_publisher_factory: PublisherFactory = (
-        configured_controls_release_window_publisher
-    ),
+    release_window_publisher_factory: PublisherFactory | None = None,
     submitter: Submitter | None = None,
     repo_root: str | Path | None = None,
     webapp_secret_file: str | Path | None = None,
     webapp_endpoint: str = "https://tryblueprint.io/api/internal/task-evaluation-launch-submissions",
 ) -> dict[str, Any]:
     """Advance at most one transition for one immutable progression plan."""
+
+    if release_window_publisher_factory is None:
+        release_window_publisher_factory = (
+            configured_controls_release_window_publisher
+            if publisher_factory is configured_controls_object_store_publisher
+            else publisher_factory
+        )
 
     plan = _plan(Path(plan_path).expanduser())
     run_root = Path(launch_state_root).expanduser() / plan["source_launch_id"]
