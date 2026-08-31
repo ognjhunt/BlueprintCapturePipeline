@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 
 import pytest
 
@@ -92,6 +93,24 @@ def _placement(value: dict) -> tuple[dict, dict, dict, dict]:
         "blockers": [],
         "native_full_pose_ik_required": True,
         "native_collision_contact_and_reset_readback_required": True,
+        "task_aware_reset": {
+            "schema_version": (
+                "task_evaluation_robot_placement_orientation_feasibility.v1"
+            ),
+            "joint_positions_rad": [
+                0.0,
+                -0.6283185307179586,
+                0.0,
+                -1.3640709978718346,
+                1.358109375,
+                1.758415296076938,
+                -0.724325,
+            ],
+            "residual_slew_rad": 0.02266,
+            "nominal_slew_rad": 1.95044,
+            "improvement_rad": 1.92778,
+            "searchable_joint_indices": [3, 4, 5, 6],
+        },
     }
     inventory_geometry_gate = {
         "schema_version": "task_evaluation_robot_placement_geometry_gate.v1",
@@ -208,6 +227,9 @@ def test_exact_inventory_selection_materializes_and_enters_readiness(tmp_path) -
     assert candidate[
         "native_orientation_collision_contact_and_camera_gates_required"
     ] is True
+    assert candidate["task_aware_reset"] == receipt["rounds"][-1][
+        "geometry_gate"
+    ]["orientation_slew_feasibility"]["task_aware_reset"]
     assert (
         inventory["candidates"][0]["geometry_gate_digest"]
         != receipt["accepted_geometry_gate_digest"]
@@ -225,6 +247,44 @@ def test_exact_inventory_selection_materializes_and_enters_readiness(tmp_path) -
     )
     assert readiness["robot_base_qualified"] is False
     assert readiness["native_construction_readback_required"] is True
+    robot = json.loads(
+        Path(readiness["files"]["robot_configuration"]["path"]).read_text()
+    )
+    assert [
+        robot["joint_reset_positions_rad"][f"panda_joint{index}"]
+        for index in range(1, 8)
+    ] == candidate["task_aware_reset"]["joint_positions_rad"]
+
+
+def test_task_aware_reset_cannot_be_dropped_from_selected_evidence(tmp_path) -> None:
+    value, _, _, _ = _inputs(tmp_path)
+    scene, task, inventory, receipt = _placement(value)
+    del receipt["rounds"][-1]["geometry_gate"]["orientation_slew_feasibility"][
+        "task_aware_reset"
+    ]
+    receipt["rounds"][-1]["geometry_gate"]["geometry_gate_digest"] = canonical_digest(
+        receipt["rounds"][-1]["geometry_gate"],
+        digest_field="geometry_gate_digest",
+    )
+    receipt["accepted_geometry_gate_digest"] = receipt["rounds"][-1][
+        "geometry_gate"
+    ]["geometry_gate_digest"]
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+
+    with pytest.raises(
+        TaskEvaluationRobotPlacementReadinessCandidateError,
+        match="candidate_evidence_invalid",
+    ):
+        materialize_robot_placement_readiness_candidate(
+            configured_revision=value,
+            scene_binding=scene,
+            task_binding=task,
+            placement_receipt=receipt,
+            candidate_inventory=inventory,
+            output_path=tmp_path / "candidate.json",
+        )
 
 
 def test_unknown_candidate_is_rejected(tmp_path) -> None:
