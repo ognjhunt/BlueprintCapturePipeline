@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from blueprint_pipeline import (
 )
 from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import (
     QUICK_FAMILY_COUNTS,
+    _quick_cells,
     materialize_policy_canary_presubmission_setup,
     materialize_scene839873_policy_canary_setup,
     materialize_scene839873_policy_canary_setup_from_template,
@@ -18,13 +20,18 @@ from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import (
 from blueprint_pipeline.task_evaluation_policy_canary_setup import (
     validate_policy_canary_setup,
 )
+from blueprint_pipeline.task_evaluation_policy_run_contract import (
+    validate_policy_run_setup,
+)
 from scripts.attach_internal_policy_canary_setup import (
     attach_internal_policy_canary_setup,
 )
+from tests.test_task_evaluation_policy_run_contract import _template as policy_template
 
 
 COMMIT = "c" * 40
 REVISION = "sha256:" + "9" * 64
+LIVE_SCENE_REVISION = "sha256:9bd46da8b103a0ba5faa8a5c910652a3f35787c4bb0ebf8c5afa5cb2352d267d"
 ACTIVATION = "sha256:" + "a" * 64
 REQUEST = "sha256:" + "b" * 64
 
@@ -113,7 +120,26 @@ def _inputs(tmp_path: Path) -> dict[str, Path]:
         "packet_size_bytes": 4_287_162_924,
         "redistribution_permitted": True,
     }
-    progression = {"configured_scene_revision_digest": REVISION}
+    template = policy_template()
+    configured_preparation = {
+        field: template[field]
+        for field in (
+            "scene",
+            "construction",
+            "robot",
+            "controller",
+            "task",
+            "sensors",
+            "runtime",
+            "execution_adapter",
+            "spend",
+        )
+    }
+    progression = {
+        "configured_scene_revision_digest": REVISION,
+        "episode_preparation_request": configured_preparation,
+        "episode_preparation_request_digest": canonical_digest(configured_preparation),
+    }
     return {
         "request": _write(tmp_path / "request.json", request),
         "profile": _write(tmp_path / "profile.json", profile),
@@ -212,7 +238,18 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     for field in ("activation_digest", "capture_session_id", "intake_id"):
         kwargs.pop(field)
     kwargs["profile_id"] = "scene839873-internal-policy-canary-c412"
+    kwargs["configured_offering_configuration_run_id"] = "scene839873-configuration"
     kwargs["offering_digest"] = "sha256:" + "f" * 64
+    kwargs["policy_controller_configuration"] = {
+        "uri": "s3://blueprint/policy-canary/controller.json",
+        "digest": "sha256:" + "2" * 64,
+        "size_bytes": 512,
+    }
+    kwargs["model_rights"] = {
+        "uri": "s3://blueprint/policy-canary/model-rights.json",
+        "digest": "sha256:" + "3" * 64,
+        "size_bytes": 768,
+    }
     emitted = materialize_policy_canary_presubmission_setup(**kwargs)
     setup = emitted["setup"]
     wrapper = emitted["profile_materialization_input"]
@@ -231,6 +268,27 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     assert wrapper["profile_id"] == "scene839873-internal-policy-canary-c412"
     assert wrapper["configured_source_launch_id"] != wrapper["profile_id"]
     assert wrapper["internal_policy_canary_setup"] == setup
+    plan = wrapper["internal_policy_canary_execution_plan"]
+    assert validate_policy_run_setup(plan["legacy_policy_run_setup"])
+    assert (
+        plan["preparation_template"]["controller"]["configuration"]
+        == plan["policy_controller_configuration"]
+    )
+    assert (
+        plan["preparation_template"]["controller"]["model_or_asset_rights"] == plan["model_rights"]
+    )
+    assert len(plan["resolved_scenarios"]) == 10
+    assert all(isinstance(row["seed"], int) for row in plan["resolved_scenarios"])
+    assert plan["configured_offering_configuration_run_id"] == ("scene839873-configuration")
+    assert plan["lineage_aliases"] == {
+        "capture_session_id": "scene839873-configured-source",
+        "capture_session_id_semantics": (
+            "configured_scene_offering_source_launch_id_no_capture_upload_session"
+        ),
+        "intake_id": "scene839873-configuration",
+        "intake_id_semantics": "configured_scene_offering_configuration_run_id",
+    }
+    assert plan["plan_digest"] == canonical_digest(plan, digest_field="plan_digest")
     assert Path(emitted["setup_path"]).is_file()
     assert Path(emitted["profile_materialization_input_path"]).is_file()
     assert Path(emitted["execution_setup_template_path"]).is_file()
@@ -246,6 +304,8 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     assert sorted(robot) == shape["robot_keys"]
     assert sorted(robot["policy_candidates"][0]) == shape["candidate_keys"]
     assert sorted(setup["episode_presets"][0]) == shape["preset_keys"]
+    assert sorted(wrapper) == shape["profile_materialization_input_keys"]
+    assert sorted(plan) == shape["execution_plan_keys"]
     attached = attach_internal_policy_canary_setup(
         profile={
             "profile_id": wrapper["profile_id"],
@@ -265,7 +325,18 @@ def test_post_activation_template_separates_configured_and_canary_requests(
     for field in ("activation_digest", "capture_session_id", "intake_id"):
         kwargs.pop(field)
     kwargs["profile_id"] = "scene839873-internal-policy-canary-current"
+    kwargs["configured_offering_configuration_run_id"] = "scene839873-configuration"
     kwargs["offering_digest"] = "sha256:" + "f" * 64
+    kwargs["policy_controller_configuration"] = {
+        "uri": "s3://blueprint/policy-canary/controller.json",
+        "digest": "sha256:" + "2" * 64,
+        "size_bytes": 512,
+    }
+    kwargs["model_rights"] = {
+        "uri": "s3://blueprint/policy-canary/model-rights.json",
+        "digest": "sha256:" + "3" * 64,
+        "size_bytes": 768,
+    }
     emitted = materialize_policy_canary_presubmission_setup(**kwargs)
     activation_result = {
         "schema_version": "task_evaluation_launch_activation_result.v1",
@@ -307,3 +378,43 @@ def test_post_activation_template_separates_configured_and_canary_requests(
     assert setup["request_digest"] == "sha256:" + "e" * 64
     assert setup["capture_session_id"] == "capture-new-canary"
     assert setup["activation_digest"] == ACTIVATION
+
+
+def test_controller_and_rights_source_artifacts_are_exact_and_self_digesting() -> None:
+    root = Path(__file__).resolve().parents[1]
+    controller = json.loads(
+        (
+            root
+            / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_controller_configuration.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    rights = json.loads(
+        (
+            root
+            / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_model_rights.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert controller["configuration_digest"] == canonical_digest(
+        controller, digest_field="configuration_digest"
+    )
+    assert rights["rights_digest"] == canonical_digest(rights, digest_field="rights_digest")
+    assert controller["candidate_order"] == ["pi05_droid", "groot_n17_droid"]
+    assert [row["port"] for row in controller["candidates"]] == [8000, 5555]
+    assert controller["maximum_provider_allocations"] == 1
+    assert controller["retry_cap"] == 0
+    assert controller["ranking_permitted"] is False
+    quick = _quick_cells(LIVE_SCENE_REVISION)
+    assert controller["quick_10"]["matrix_digest"] == canonical_digest({"ordered_cells": quick})
+    assert [
+        (row["cell_id"], row["seed"], row["cell_digest"]) for row in controller["quick_10"]["cells"]
+    ] == [(row["cell_id"], row["seed"], row["cell_spec_digest"]) for row in quick]
+    assert [row["candidate_id"] for row in rights["candidates"]] == [
+        "pi05_droid",
+        "groot_n17_droid",
+    ]
+    assert rights["historical_runtime_smoke"]["input_evidence_only"] is True
+    assert rights["historical_runtime_smoke"]["current_scene_runtime_proof"] is False
+    for module in rights["blueprint_adapter_code"]["modules"]:
+        path = root / module["path"]
+        observed = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        assert observed == module["sha256"]

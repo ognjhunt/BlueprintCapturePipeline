@@ -43,5 +43,33 @@
     "matrix",
     "preset_id",
     "recommended"
+  ],
+  "profile_materialization_input_keys": [
+    "configured_source_launch_id",
+    "internal_policy_canary_execution_plan",
+    "internal_policy_canary_setup",
+    "materialization_digest",
+    "profile_id",
+    "schema_version",
+    "source_commit"
+  ],
+  "execution_plan_keys": [
+    "configured_offering_configuration_run_id",
+    "configured_preparation_request_digest",
+    "configured_source_launch_id",
+    "legacy_policy_run_setup",
+    "lineage_aliases",
+    "model_rights",
+    "paid_execution_requested",
+    "plan_digest",
+    "policy_controller_configuration",
+    "preparation_template",
+    "provider_mutation_performed",
+    "public_setup_digest",
+    "resolved_scenarios",
+    "resource_authority",
+    "scene_revision_digest",
+    "schema_version",
+    "source_commit"
   ]
 }

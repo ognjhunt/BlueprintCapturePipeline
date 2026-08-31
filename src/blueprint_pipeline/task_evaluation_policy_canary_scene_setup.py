@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import asdict
 import hashlib
 import json
@@ -21,10 +22,17 @@ from .adp009d_droid_observation import (
 )
 from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
 from .common import utc_now_iso, write_json
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import (
+    canonical_digest,
+    cross_runtime_canonical_digest,
+)
 from .native_task_arena_policy_bundle import _candidate_runtime_binding
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .task_evaluation_policy_canary_setup import validate_policy_canary_setup
+from .task_evaluation_policy_run_contract import (
+    policy_run_setup_digest,
+    validate_policy_run_setup,
+)
 
 
 SETUP_SCHEMA_VERSION = "task_evaluation_policy_canary_execution_setup.v1"
@@ -83,6 +91,20 @@ def _record(path: str | Path) -> dict[str, Any]:
     return {"path": str(source), "size_bytes": source.stat().st_size, "sha256": _sha256(source)}
 
 
+def _immutable_ref(value: Mapping[str, Any], *, code: str) -> dict[str, Any]:
+    ref = dict(value)
+    if (
+        set(ref) != {"uri", "digest", "size_bytes"}
+        or not str(ref.get("uri") or "").startswith(("gs://", "s3://", "https://"))
+        or not _DIGEST.fullmatch(str(ref.get("digest") or ""))
+        or isinstance(ref.get("size_bytes"), bool)
+        or not isinstance(ref.get("size_bytes"), int)
+        or ref["size_bytes"] <= 0
+    ):
+        raise PolicyCanarySetupError([code])
+    return ref
+
+
 def _quick_cells(scene_revision_digest: str) -> list[dict[str, Any]]:
     families = [family for family, count in QUICK_FAMILY_COUNTS.items() for _ in range(count)]
     parameters = [
@@ -103,7 +125,10 @@ def _quick_cells(scene_revision_digest: str) -> list[dict[str, Any]]:
     ]
     cells = []
     for index, (family, resolved) in enumerate(zip(families, parameters, strict=True)):
-        seed = int(hashlib.sha256(f"{scene_revision_digest}:{index}".encode()).hexdigest()[:8], 16)
+        seed = int(
+            hashlib.sha256(f"{scene_revision_digest}:{index}".encode()).hexdigest()[:8],
+            16,
+        ) % (2**31)
         scenario = {"family": family, "ordinal": index, "parameters": resolved}
         cells.append(
             {
@@ -400,6 +425,7 @@ def materialize_policy_canary_presubmission_setup(
     profile_id: str,
     source_commit: str,
     configured_source_launch_id: str,
+    configured_offering_configuration_run_id: str,
     configured_source_commit: str | None = None,
     offering_digest: str,
     scene_revision_digest: str,
@@ -412,15 +438,21 @@ def materialize_policy_canary_presubmission_setup(
     runtime_source_receipt_path: str | Path,
     historical_policy_readiness_path: str | Path,
     pi05_checkpoint_inventory_path: str | Path,
+    policy_controller_configuration: Mapping[str, Any],
+    model_rights: Mapping[str, Any],
     output_dir: str | Path,
     maximum_hourly_rate_usd: float = 0.8,
     hard_cap_usd: float = 4.0,
-    hard_ttl_seconds: int = 14_400,
+    hard_ttl_seconds: int = 9_000,
 ) -> dict[str, Any]:
     """Emit the Website descriptor before a user-created activation exists."""
 
     if not str(profile_id or "").strip():
         raise PolicyCanarySetupError(["policy_canary_profile_id_missing"])
+    if not str(configured_offering_configuration_run_id or "").strip():
+        raise PolicyCanarySetupError(
+            ["policy_canary_configured_offering_configuration_run_id_missing"]
+        )
     if not _DIGEST.fullmatch(str(offering_digest or "")):
         raise PolicyCanarySetupError(["policy_canary_offering_digest_invalid"])
     # Reuse the complete byte/static preflight without publishing its
@@ -660,12 +692,243 @@ def materialize_policy_canary_presubmission_setup(
     }
     setup["setup_digest"] = canonical_digest(setup, digest_field="setup_digest")
     setup = validate_policy_canary_setup(setup)
+    controller_ref = _immutable_ref(
+        policy_controller_configuration,
+        code="policy_canary_controller_configuration_invalid",
+    )
+    rights_ref = _immutable_ref(
+        model_rights,
+        code="policy_canary_model_rights_invalid",
+    )
+    progression = _read(
+        configured_progression_path,
+        code="policy_canary_progression_invalid",
+    )
+    configured_preparation = progression.get("episode_preparation_request")
+    if not isinstance(configured_preparation, Mapping):
+        raise PolicyCanarySetupError(["policy_canary_configured_preparation_request_missing"])
+    required_template_fields = (
+        "scene",
+        "construction",
+        "robot",
+        "task",
+        "sensors",
+        "runtime",
+        "execution_adapter",
+    )
+    if any(field not in configured_preparation for field in required_template_fields):
+        raise PolicyCanarySetupError(["policy_canary_configured_preparation_request_incomplete"])
+    preparation_template: dict[str, Any] = {
+        "schema_version": "task_evaluation_policy_run_preparation_template.v1",
+        **{field: deepcopy(configured_preparation[field]) for field in required_template_fields},
+        "controller": {
+            "identity": {"id": "paired-policy-canary", "version": "v1"},
+            "kind": "policy_container",
+            "configuration": controller_ref,
+            "model_or_asset_rights": rights_ref,
+        },
+        "publication": {"service_account_readback_required": True},
+        "spend": {
+            "hard_cap_usd": hard_cap_usd,
+            "hard_ttl_seconds": hard_ttl_seconds,
+            "maximum_hourly_rate_usd": maximum_hourly_rate_usd,
+            "provider_allowlist": ["vast"],
+            "retry_cap": 0,
+            "selected_provider": "vast",
+        },
+        "template_digest": "",
+    }
+    preparation_template["template_digest"] = cross_runtime_canonical_digest(
+        preparation_template, digest_field="template_digest"
+    )
+    legacy_cells = [
+        {
+            "cell_id": row["cell_id"],
+            "family": row["family"],
+            "partition": (
+                "held_out" if row["family"] == "held_out_composition" else "qualification"
+            ),
+            "scored": True,
+            "cell_spec_digest": cross_runtime_canonical_digest(row["resolved_scenario"]),
+            "resolved_scenario": row["resolved_scenario"],
+        }
+        for row in quick["cells"]
+    ]
+    legacy_estimate = {
+        "status": "estimated",
+        "duration_minutes": {"minimum": 20, "maximum": 60},
+        "cost_usd": {"minimum": 0, "maximum": hard_cap_usd},
+        "basis_digest": setup["episode_presets"][0]["estimate"]["basis_digest"],
+        "as_of": setup["episode_presets"][0]["estimate"]["as_of"],
+    }
+    legacy_preset_specs = (
+        (
+            "quick_10",
+            "Quick",
+            10,
+            "enabled",
+            True,
+            dict(QUICK_FAMILY_COUNTS),
+            legacy_cells,
+            None,
+            0,
+            legacy_estimate,
+        ),
+        (
+            "standard_100",
+            "Standard",
+            100,
+            "coming_later",
+            False,
+            {
+                "canonical_anchor": 2,
+                "placement_approach": 20,
+                "illumination": 14,
+                "camera_sensor": 14,
+                "bounded_physics": 14,
+                "admitted_object_material_cousin": 10,
+                "pairwise_stress": 13,
+                "held_out_composition": 13,
+            },
+            None,
+            "quick_10",
+            10,
+            {"status": "unavailable"},
+        ),
+        (
+            "deep_500",
+            "Deep",
+            500,
+            "coming_later",
+            False,
+            {
+                "canonical_anchor": 2,
+                "placement_approach": 100,
+                "illumination": 70,
+                "camera_sensor": 70,
+                "bounded_physics": 70,
+                "admitted_object_material_cousin": 50,
+                "pairwise_stress": 69,
+                "held_out_composition": 69,
+            },
+            None,
+            "standard_100",
+            100,
+            {"status": "unavailable"},
+        ),
+    )
+    legacy_presets = []
+    for (
+        preset_id,
+        label,
+        count,
+        availability,
+        default,
+        family_counts,
+        preset_cells,
+        parent_id,
+        parent_count,
+        preset_estimate,
+    ) in legacy_preset_specs:
+        scenario_set_digest = (
+            cross_runtime_canonical_digest({"ordered_cells": preset_cells})
+            if preset_cells is not None
+            else cross_runtime_canonical_digest(
+                {
+                    "preset_id": preset_id,
+                    "status": "coming_later",
+                    "scenario_count_per_policy": count,
+                }
+            )
+        )
+        preset = {
+            "preset_id": preset_id,
+            "label": label,
+            "scenario_count_per_policy": count,
+            "availability": availability,
+            "default": default,
+            "family_counts": family_counts,
+            "scenario_set_digest": scenario_set_digest,
+            "parent_preset_id": parent_id,
+            "parent_prefix_count": parent_count,
+            "nesting_proof_digest": cross_runtime_canonical_digest(
+                {
+                    "preset_id": preset_id,
+                    "scenario_set_digest": scenario_set_digest,
+                    "parent_preset_id": parent_id,
+                    "parent_prefix_count": parent_count,
+                    "selection_rule": "published_ordered_prefix",
+                }
+            ),
+            "estimate": preset_estimate,
+        }
+        if preset_cells is not None:
+            preset["cells"] = preset_cells
+        legacy_presets.append(preset)
+    legacy_setup: dict[str, Any] = {
+        "schema_version": "task_evaluation_policy_run_setup.v1",
+        "source_launch_id": configured_source_launch_id,
+        "offering_digest": offering_digest,
+        "embodiment_id": EMBODIMENT_ID,
+        "candidate_ids": list(CANDIDATE_IDS),
+        "matrix_profile_id": "franka_rigid_relocation_nested_v1",
+        "preregistration": rights_ref,
+        "scenario_compiler": {
+            "compiler_id": "franka_rigid_relocation_nested_prefix",
+            "compiler_version": "v1",
+            "selection_rule": "published_ordered_prefix",
+            "outcome_independent": True,
+            "agent_may_select_cells": False,
+        },
+        "presets": legacy_presets,
+        "preparation_template": preparation_template,
+        "setup_digest": "",
+    }
+    legacy_setup["setup_digest"] = policy_run_setup_digest(legacy_setup)
+    legacy_setup = validate_policy_run_setup(legacy_setup)
+    configured_preparation_digest = str(progression.get("episode_preparation_request_digest") or "")
+    if not _DIGEST.fullmatch(configured_preparation_digest):
+        configured_preparation_digest = canonical_digest(configured_preparation)
+    execution_plan: dict[str, Any] = {
+        "schema_version": "task_evaluation_policy_canary_execution_plan.v1",
+        "source_commit": source_commit,
+        "configured_source_launch_id": configured_source_launch_id,
+        "configured_offering_configuration_run_id": (configured_offering_configuration_run_id),
+        "scene_revision_digest": scene_revision_digest,
+        "public_setup_digest": setup["setup_digest"],
+        "configured_preparation_request_digest": configured_preparation_digest,
+        "policy_controller_configuration": controller_ref,
+        "model_rights": rights_ref,
+        "resolved_scenarios": quick["cells"],
+        "legacy_policy_run_setup": legacy_setup,
+        "preparation_template": preparation_template,
+        "resource_authority": {
+            "maximum_hourly_rate_usd": maximum_hourly_rate_usd,
+            "hard_cap_usd": hard_cap_usd,
+            "hard_ttl_seconds": hard_ttl_seconds,
+            "maximum_provider_allocations": 1,
+            "retry_cap": 0,
+        },
+        "lineage_aliases": {
+            "capture_session_id": configured_source_launch_id,
+            "capture_session_id_semantics": (
+                "configured_scene_offering_source_launch_id_no_capture_upload_session"
+            ),
+            "intake_id": configured_offering_configuration_run_id,
+            "intake_id_semantics": "configured_scene_offering_configuration_run_id",
+        },
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "plan_digest": "",
+    }
+    execution_plan["plan_digest"] = canonical_digest(execution_plan, digest_field="plan_digest")
     wrapper: dict[str, Any] = {
         "schema_version": PROFILE_INPUT_SCHEMA_VERSION,
         "profile_id": profile_id,
         "configured_source_launch_id": configured_source_launch_id,
         "source_commit": source_commit,
         "internal_policy_canary_setup": setup,
+        "internal_policy_canary_execution_plan": execution_plan,
         "materialization_digest": "",
     }
     wrapper["materialization_digest"] = canonical_digest(
