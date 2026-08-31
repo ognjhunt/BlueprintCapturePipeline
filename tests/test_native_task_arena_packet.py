@@ -382,6 +382,18 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     base = _request(evidence, articulated=True)
+    base["appearance_variant"] = {
+        "representation": "particlefield_3d_gaussian_splat",
+        "source_configured_appearance_digest": _sha("b"),
+        "representation_conversion_performed": True,
+        "exact_learned_arrays_preserved": True,
+    }
+    base["request_digest"] = canonical_digest(base, digest_field="request_digest")
+    with pytest.raises(
+        NativeTaskArenaPacketError,
+        match="native_task_arena_particlefield_quality_missing_or_invalid",
+    ):
+        validate_native_task_arena_packet_request(base)
     base_path = tmp_path / "base_request.json"
     base_path.write_text(json.dumps(base), encoding="utf-8")
     asset = evidence / "particlefield" / "scene_appearance.usdc"

@@ -937,6 +937,24 @@ def test_native_context_reopens_independent_versioned_references(
         row["role"] for row in context["reference_bindings"]["rights_evidence"]
     ] == ["publisher_terms", "human_authority_record"]
 
+    packet_request_path = packet / "native_task_arena_packet_request.v1.json"
+    packet_request_value = json.loads(packet_request_path.read_text(encoding="utf-8"))
+    packet_request_value["appearance_variant"] = {
+        "representation": "particlefield_3d_gaussian_splat",
+        "gaussian_field_quality": None,
+    }
+    packet_request_path.write_text(
+        json.dumps(packet_request_value), encoding="utf-8"
+    )
+    with pytest.raises(
+        prep.PaidLaneLaunchPreparationError,
+        match="native_task_arena_particlefield_quality_missing_or_invalid",
+    ):
+        prep._load_native_context(
+            context_file, expected_lane="native_task_arena_construction"
+        )
+    packet_request_path.write_text(json.dumps(packet_request), encoding="utf-8")
+
     rights_admission_value["provider_training_allowed"] = True
     rights_admission_value["rights_admission_digest"] = (
         prep._canonical_artifact_digest(
