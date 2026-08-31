@@ -10,6 +10,7 @@ import json
 import math
 from pathlib import Path
 import re
+import tempfile
 from typing import Any
 
 from .adp009d_droid_observation import (
@@ -27,6 +28,8 @@ from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 SETUP_SCHEMA_VERSION = "task_evaluation_policy_canary_execution_setup.v1"
 SPEC_SCHEMA_VERSION = "native_task_arena_policy_canary_execution_spec.v1"
 DECISION_SCHEMA_VERSION = "task_evaluation_policy_canary_setup_preflight.v1"
+PRESUBMISSION_SETUP_SCHEMA_VERSION = "task_evaluation_policy_canary_setup.v1"
+PROFILE_INPUT_SCHEMA_VERSION = "task_evaluation_policy_canary_profile_materialization_input.v1"
 RUN_KIND = "internal_policy_canary"
 CLAIM_CEILING = "diagnostic_policy_execution"
 SCENE_ID = "839873"
@@ -386,10 +389,212 @@ def materialize_setup_preflight_decision(
     return decision
 
 
+def materialize_policy_canary_presubmission_setup(
+    *,
+    profile_id: str,
+    source_commit: str,
+    configured_source_launch_id: str,
+    scene_revision_digest: str,
+    request_digest: str,
+    launch_request_path: str | Path,
+    launch_profile_path: str | Path,
+    configured_progression_path: str | Path,
+    scene_plan_path: str | Path,
+    packet_receipt_path: str | Path,
+    runtime_source_receipt_path: str | Path,
+    historical_policy_readiness_path: str | Path,
+    pi05_checkpoint_inventory_path: str | Path,
+    output_dir: str | Path,
+    maximum_hourly_rate_usd: float = 0.8,
+    hard_cap_usd: float = 4.0,
+    hard_ttl_seconds: int = 14_400,
+) -> dict[str, Any]:
+    """Emit the Website descriptor before a user-created activation exists."""
+
+    if not str(profile_id or "").strip():
+        raise PolicyCanarySetupError(["policy_canary_profile_id_missing"])
+    # Reuse the complete byte/static preflight without publishing its
+    # activation-bound output. The placeholder lineage lives only in a
+    # temporary directory and is never returned or persisted as evidence.
+    with tempfile.TemporaryDirectory(prefix="policy-canary-presubmission-") as raw:
+        verified = materialize_scene839873_policy_canary_setup(
+            source_commit=source_commit,
+            configured_source_launch_id=configured_source_launch_id,
+            scene_revision_digest=scene_revision_digest,
+            activation_digest=canonical_digest(
+                {
+                    "kind": "presubmission_static_preflight_only",
+                    "configured_source_launch_id": configured_source_launch_id,
+                }
+            ),
+            capture_session_id="presubmission_not_assigned",
+            intake_id="presubmission_not_assigned",
+            request_digest=request_digest,
+            launch_request_path=launch_request_path,
+            launch_profile_path=launch_profile_path,
+            configured_progression_path=configured_progression_path,
+            scene_plan_path=scene_plan_path,
+            packet_receipt_path=packet_receipt_path,
+            runtime_source_receipt_path=runtime_source_receipt_path,
+            historical_policy_readiness_path=historical_policy_readiness_path,
+            pi05_checkpoint_inventory_path=pi05_checkpoint_inventory_path,
+            output_dir=Path(raw) / "verification",
+            maximum_hourly_rate_usd=maximum_hourly_rate_usd,
+            hard_cap_usd=hard_cap_usd,
+            hard_ttl_seconds=hard_ttl_seconds,
+        )
+    launch_profile = _read(launch_profile_path, code="policy_canary_launch_profile_invalid")
+    readiness = _read(
+        historical_policy_readiness_path,
+        code="policy_canary_historical_readiness_invalid",
+    )
+    policies = []
+    readiness_by_id = {
+        row["candidate_id"]: row
+        for row in readiness["candidates"]
+        if isinstance(row, Mapping) and row.get("candidate_id") in CANDIDATE_IDS
+    }
+    for candidate_id in CANDIDATE_IDS:
+        row = readiness_by_id[candidate_id]
+        policies.append(
+            {
+                "candidate_id": candidate_id,
+                "display_name": row["model_name"],
+                "readiness_status": "verified_runnable",
+                "source": row["source"],
+                "checkpoint": {
+                    key: row["checkpoint"].get(key)
+                    for key in (
+                        "repository",
+                        "revision",
+                        "inventory_digest",
+                        "total_bytes",
+                        "provider_use_status",
+                        "redistribution_status",
+                    )
+                },
+                "runtime_dependencies": row["runtime_dependencies"],
+                "observation_schema": row["policy_input_schema"],
+                "action_schema": row["policy_output_schema"],
+                "action_adapter": row["action_adapter"],
+                "task_compatibility": ["rigid_relocation", "planar_push"],
+                "unavailable_reason": None,
+            }
+        )
+    quick = verified["quick_10"]
+    setup: dict[str, Any] = {
+        "schema_version": PRESUBMISSION_SETUP_SCHEMA_VERSION,
+        "status": "selectable",
+        "run_kind": RUN_KIND,
+        "claim_ceiling": CLAIM_CEILING,
+        "unqualified_warning": "Controls pending — results are unqualified.",
+        "configured_source_launch_id": configured_source_launch_id,
+        "configured_profile_lineage": {
+            "profile_id": launch_profile["profile_id"],
+            "profile_digest": launch_profile["profile_digest"],
+            "request_digest": request_digest,
+        },
+        "scene": {
+            "scene_id": SCENE_ID,
+            "scene_revision_digest": scene_revision_digest,
+            "controls_status": "configured_controls_pending",
+            "task_id": "scene-839873-mug-planar-push",
+            "task_kind": "rigid_relocation",
+        },
+        "source_commit": source_commit,
+        "registry": {
+            "candidate_ids": list(CANDIDATE_IDS),
+            "registry_digest": readiness["readiness_digest"],
+            "historical_runtime_smoke_is_input_only": True,
+            "current_runtime_execution_proven": False,
+        },
+        "robot_presets": [
+            {
+                "robot_preset_id": EMBODIMENT_ID,
+                "display_name": "Franka Panda + Robotiq 2F-85",
+                "runtime_robot_id": "franka_panda",
+                "runtime_image": NATIVE_TASK_ARENA_IMAGE,
+                "observation_cameras": ["external", "wrist"],
+                "action_schema": "absolute_7_joint_positions_plus_gripper",
+                "compatible_candidate_ids": list(CANDIDATE_IDS),
+                "readiness_status": "verified_runnable",
+            }
+        ],
+        "policies": policies,
+        "presets": [
+            {
+                "preset_id": "quick_10",
+                "label": "Quick — 10 episodes per policy",
+                "availability": "available",
+                "recommended": True,
+                **{
+                    key: quick[key]
+                    for key in (
+                        "policy_count",
+                        "episodes_per_policy",
+                        "learned_policy_rollout_count",
+                        "cells",
+                        "matrix_digest",
+                    )
+                },
+            },
+            {
+                "preset_id": "standard_100",
+                "label": "Standard — 100 episodes per policy",
+                "availability": "disabled",
+                "disabled_reason": "standard_runtime_contract_not_qualified",
+            },
+            {
+                "preset_id": "deep_500",
+                "label": "Deep — 500 episodes per policy",
+                "availability": "disabled",
+                "disabled_reason": "deep_runtime_contract_not_qualified",
+            },
+        ],
+        "estimate": verified["estimate"],
+        "diagnostics": {
+            "controls_mode": "nonblocking_diagnostic_pending",
+            "diagnostic_control_rollouts_listed_separately": True,
+            "failed_controls_preserved": True,
+            "uninterpretable_outcomes_not_ranked": True,
+            "scene_promotion_forbidden": True,
+            "official_ranking_forbidden": True,
+        },
+        "setup_digest": "",
+    }
+    setup["setup_digest"] = canonical_digest(setup, digest_field="setup_digest")
+    wrapper: dict[str, Any] = {
+        "schema_version": PROFILE_INPUT_SCHEMA_VERSION,
+        "profile_id": profile_id,
+        "configured_source_launch_id": configured_source_launch_id,
+        "source_commit": source_commit,
+        "internal_policy_canary_setup": setup,
+        "materialization_digest": "",
+    }
+    wrapper["materialization_digest"] = canonical_digest(
+        wrapper, digest_field="materialization_digest"
+    )
+    destination = Path(output_dir).expanduser().resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    setup_path = destination / "task_evaluation_policy_canary_setup.v1.json"
+    wrapper_path = destination / (
+        "task_evaluation_policy_canary_profile_materialization_input.v1.json"
+    )
+    write_json(setup_path, setup)
+    write_json(wrapper_path, wrapper)
+    return {
+        "setup": setup,
+        "setup_path": str(setup_path),
+        "profile_materialization_input": wrapper,
+        "profile_materialization_input_path": str(wrapper_path),
+    }
+
+
 __all__ = [
     "CANDIDATE_IDS",
     "PolicyCanarySetupError",
     "QUICK_FAMILY_COUNTS",
     "materialize_scene839873_policy_canary_setup",
+    "materialize_policy_canary_presubmission_setup",
     "materialize_setup_preflight_decision",
 ]

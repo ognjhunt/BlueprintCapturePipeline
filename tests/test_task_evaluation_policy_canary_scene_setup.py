@@ -7,6 +7,7 @@ from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import (
     QUICK_FAMILY_COUNTS,
+    materialize_policy_canary_presubmission_setup,
     materialize_scene839873_policy_canary_setup,
     materialize_setup_preflight_decision,
 )
@@ -151,9 +152,7 @@ def test_checkpoint_registry_drift_fails_before_specs_are_written(
     readiness_path = Path(kwargs["historical_policy_readiness_path"])
     readiness = json.loads(readiness_path.read_text(encoding="utf-8"))
     readiness["candidates"][0]["checkpoint"]["inventory_digest"] = "sha256:" + "f" * 64
-    readiness["readiness_digest"] = canonical_digest(
-        readiness, digest_field="readiness_digest"
-    )
+    readiness["readiness_digest"] = canonical_digest(readiness, digest_field="readiness_digest")
     changed = _write(tmp_path / "changed-readiness.json", readiness)
     kwargs["historical_policy_readiness_path"] = changed
     decision = materialize_setup_preflight_decision(
@@ -161,6 +160,32 @@ def test_checkpoint_registry_drift_fails_before_specs_are_written(
     )
 
     assert decision["status"] == "blocked"
-    assert decision["blockers"] == [
-        "policy_canary_pi05_droid_registry_or_rights_invalid"
-    ]
+    assert decision["blockers"] == ["policy_canary_pi05_droid_registry_or_rights_invalid"]
+
+
+def test_presubmission_setup_is_activation_independent_and_profile_ready(
+    tmp_path: Path,
+) -> None:
+    kwargs = _kwargs(tmp_path)
+    for field in ("activation_digest", "capture_session_id", "intake_id"):
+        kwargs.pop(field)
+    kwargs["profile_id"] = "scene839873-internal-policy-canary-c412"
+    emitted = materialize_policy_canary_presubmission_setup(**kwargs)
+    setup = emitted["setup"]
+    wrapper = emitted["profile_materialization_input"]
+
+    assert setup["schema_version"] == "task_evaluation_policy_canary_setup.v1"
+    assert setup["status"] == "selectable"
+    assert setup["configured_source_launch_id"] == "scene839873-configured-source"
+    assert setup["scene"]["controls_status"] == "configured_controls_pending"
+    assert setup["presets"][0]["learned_policy_rollout_count"] == 20
+    assert setup["presets"][1]["availability"] == "disabled"
+    assert setup["presets"][2]["availability"] == "disabled"
+    assert "activation_digest" not in setup
+    assert "capture_session_id" not in setup
+    assert "intake_id" not in setup
+    assert wrapper["profile_id"] == "scene839873-internal-policy-canary-c412"
+    assert wrapper["configured_source_launch_id"] != wrapper["profile_id"]
+    assert wrapper["internal_policy_canary_setup"] == setup
+    assert Path(emitted["setup_path"]).is_file()
+    assert Path(emitted["profile_materialization_input_path"]).is_file()
