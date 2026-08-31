@@ -129,6 +129,7 @@ def build_control_search_funnel_plan(
     candidate_inventory: Mapping[str, Any],
     runtime_source_packet_digest: str,
     scene_collision_digest: str,
+    task_object_asset_digest: str,
     robot_configuration_digest: str,
     task_scoring_digest: str,
     requested_vector_env_count: int = 256,
@@ -149,6 +150,7 @@ def build_control_search_funnel_plan(
                 packet_request_digest,
                 runtime_source_packet_digest,
                 scene_collision_digest,
+                task_object_asset_digest,
                 robot_configuration_digest,
                 task_scoring_digest,
             )
@@ -183,6 +185,7 @@ def build_control_search_funnel_plan(
             "candidate_inventory_digest": candidate_inventory["inventory_digest"],
             "runtime_source_packet_digest": runtime_source_packet_digest,
             "scene_collision_digest": scene_collision_digest,
+            "task_object_asset_digest": task_object_asset_digest,
             "robot_configuration_digest": robot_configuration_digest,
             "task_scoring_digest": task_scoring_digest,
         },
@@ -212,6 +215,7 @@ def build_control_search_funnel_plan(
             "appearance_mode": "omitted",
             "camera_mode": "disabled",
             "collision_authority": "exact_scene_collision_digest",
+            "task_object_authority": "exact_task_object_asset_digest",
             "robot_object_task_scoring_exact": True,
         },
         "shortlist": {
@@ -549,6 +553,12 @@ def build_full_fidelity_replay_plan(
         if isinstance(row, Mapping)
         and row.get("semantic_role") == "scene_collision"
     ]
+    task_assets = [
+        row
+        for row in packet.get("assets") or []
+        if isinstance(row, Mapping)
+        and row.get("semantic_role") == "task_object"
+    ]
     if (
         not _digest(camera_configuration_digest)
         or not isinstance(appearance, Mapping)
@@ -560,6 +570,9 @@ def build_full_fidelity_replay_plan(
         or len(collision_assets) != 1
         or (collision_assets[0].get("source") or {}).get("sha256")
         != frozen_plan["immutable_inputs"]["scene_collision_digest"]
+        or len(task_assets) != 1
+        or (task_assets[0].get("source") or {}).get("sha256")
+        != frozen_plan["immutable_inputs"]["task_object_asset_digest"]
     ):
         raise ControlSearchFunnelError(
             "control_search_full_fidelity_packet_invalid"
@@ -600,6 +613,9 @@ def build_full_fidelity_replay_plan(
             ),
             "scene_collision_digest": frozen_plan["immutable_inputs"][
                 "scene_collision_digest"
+            ],
+            "task_object_asset_digest": frozen_plan["immutable_inputs"][
+                "task_object_asset_digest"
             ],
             "camera_configuration_digest": camera_configuration_digest,
             "camera_roles": ["external", "wrist", "overview"],

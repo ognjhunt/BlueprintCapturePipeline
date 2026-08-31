@@ -57,8 +57,9 @@ def _plan(**overrides):
         "candidate_inventory": _inventory(),
         "runtime_source_packet_digest": "sha256:" + "3" * 64,
         "scene_collision_digest": "sha256:" + "4" * 64,
-        "robot_configuration_digest": "sha256:" + "5" * 64,
-        "task_scoring_digest": "sha256:" + "6" * 64,
+        "task_object_asset_digest": "sha256:" + "5" * 64,
+        "robot_configuration_digest": "sha256:" + "6" * 64,
+        "task_scoring_digest": "sha256:" + "7" * 64,
         "requested_vector_env_count": 256,
         "maximum_vector_env_count": 1_024,
         "seeds_per_candidate": 4,
@@ -84,6 +85,7 @@ def test_plan_freezes_search_without_granting_qualification() -> None:
         "appearance_mode": "omitted",
         "camera_mode": "disabled",
         "collision_authority": "exact_scene_collision_digest",
+        "task_object_authority": "exact_task_object_asset_digest",
         "robot_object_task_scoring_exact": True,
     }
     assert plan["shortlist"]["resolved_maximum_size"] == 16
@@ -309,7 +311,15 @@ def _full_fidelity_packet(plan: dict) -> dict:
                         "scene_collision_digest"
                     ]
                 },
-            }
+            },
+            {
+                "semantic_role": "task_object",
+                "source": {
+                    "sha256": plan["immutable_inputs"][
+                        "task_object_asset_digest"
+                    ]
+                },
+            },
         ],
         "request_digest": "",
     }
