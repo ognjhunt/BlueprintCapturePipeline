@@ -33,6 +33,16 @@ from .project_spend_reconciliation import validate_project_spend_reconciliation
 from .native_task_arena_spend_ceiling import rolling_aggregate_spend_ceiling_usd
 from .spend_authority_consumption_root import prepare_consumption_root
 from .native_task_arena_pre_spend_evidence import validate_pre_spend_original_evidence
+from .native_task_arena_paid_authority_io import (
+    bound_record_matches_observed as _bound_record_matches_observed,
+    lexical_absolute_path as _lexical_absolute_path,
+    lower_hex as _lower_hex,
+    read as _read,
+    record as _record,
+    recorded_path as _recorded_path,
+    sha256 as _sha256,
+    write_exclusive_json as _write_exclusive_json,
+)
 from .task_evaluation_immutable_input_resolver import (
     ImmutableInputResolutionError,
     resolve_immutable_input,
@@ -103,18 +113,6 @@ def native_task_arena_attempt_budget_blockers(
     return tuple(blockers)
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
-
-
-def _record(path: Path) -> dict[str, Any]:
-    return {"path": str(path), "size_bytes": path.stat().st_size, "sha256": _sha256(path)}
-
-
 def _terminal_feedback_adoption_is_bundle_bound(
     prepared_bundle: Mapping[str, Any],
 ) -> bool:
@@ -144,37 +142,9 @@ def _terminal_feedback_adoption_is_bundle_bound(
     )
 
 
-def _lexical_absolute_path(value: Any, code: str) -> Path:
-    raw = str(value or "")
-    expanded = Path(raw).expanduser()
-    if not raw or not expanded.is_absolute():
-        raise ValueError(code)
-    return Path(os.path.abspath(str(expanded)))
-
-
-def _recorded_path(record: Mapping[str, Any], code: str) -> Path:
-    """Return the source path sealed by one byte-verified record.
-
-    Dispatcher children read digest-named staged snapshots, while closeout
-    layout assertions still describe the original attempt tree.  The record
-    has already been verified by :func:`_bound_record`, so those assertions
-    must use its sealed source identity, not the transient staged filename.
-    """
-
-    return _lexical_absolute_path(record.get("path"), code)
-
-
-def _read(path: Path, code: str) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(code) from exc
-    if path.is_symlink() or not isinstance(value, dict):
-        raise ValueError(code)
-    return value
-
-
 def _bound_record(value: Any, code: str) -> tuple[Path, dict[str, Any]]:
+    """Resolve through this module's compatibility-patchable resolver."""
+
     if not isinstance(value, Mapping):
         raise ValueError(code)
     try:
@@ -195,24 +165,6 @@ def _bound_record(value: Any, code: str) -> tuple[Path, dict[str, Any]]:
     return path, dict(value)
 
 
-def _bound_record_matches_observed(
-    bound_record: Mapping[str, Any], observed_record: Mapping[str, Any]
-) -> bool:
-    """Compare a sealed source record with a validator's staged readback.
-
-    Dispatcher children reopen an immutable input through its digest-named
-    staged snapshot.  Validators therefore observe the staged filename even
-    though the authority must retain the original sealed source identity.
-    ``_bound_record`` has already proved that exact source path, size, and
-    digest map to the staged bytes, so only the transient readback path may
-    differ here; every other field remains exact and fail-closed.
-    """
-
-    normalized_observed = dict(observed_record)
-    normalized_observed["path"] = bound_record.get("path")
-    return dict(bound_record) == normalized_observed
-
-
 def _finite_cost(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("native_task_arena_terminal_cost_invalid")
@@ -220,22 +172,6 @@ def _finite_cost(value: Any) -> float:
     if not math.isfinite(cost) or cost < 0:
         raise ValueError("native_task_arena_terminal_cost_invalid")
     return cost
-
-
-def _write_exclusive_json(path: Path, value: Mapping[str, Any]) -> None:
-    """Write one immutable closeout member without replacing existing evidence."""
-
-    ensure_dir(path.parent)
-    payload = (json.dumps(dict(value), indent=1, sort_keys=True) + "\n").encode("utf-8")
-    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o440)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
 
 
 def _validated_api_provider_zero(path: Path) -> dict[str, Any]:
@@ -281,14 +217,6 @@ def _expected_job_dir(authority: Mapping[str, Any]) -> str:
         "policy": "arena-policy-job",
         "policy_diagnostic": "arena-policy-diagnostic-job",
     }[str(authority.get("execution_mode") or "")]
-
-
-def _lower_hex(value: Any, *, length: int) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == length
-        and all(character in "0123456789abcdef" for character in value)
-    )
 
 
 def _preallocation_cleanup_valid(value: Mapping[str, Any]) -> bool:
