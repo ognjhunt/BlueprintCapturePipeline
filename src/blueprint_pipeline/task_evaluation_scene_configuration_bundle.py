@@ -47,7 +47,11 @@ from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
     validate_scene_configuration_toolchain,
 )
-from .task_evaluation_scene_construction_queue import ENVELOPE_SCHEMA_VERSION
+from .task_evaluation_scene_construction_queue import (
+    ENVELOPE_SCHEMA_VERSION,
+    TaskEvaluationSceneConstructionQueueError,
+    stage_scene_configuration_revision,
+)
 from .task_evaluation_splat_render_runtime import (
     DEFAULT_ENVIRONMENT_VARIABLE as SPLAT_RENDER_RUNTIME_ROOT_ENV,
     PROVIDER_RENDERER_REQUIRED_PACKAGES,
@@ -499,6 +503,8 @@ def build_scene_configuration_provider_bundle(
     diagnostic_checkpoint_reference_path: str | Path | None = None,
     fresh_diagnostic_bootstrap: bool = False,
     production_semantic_reuse_checkpoint_root: str | Path | None = None,
+    production_semantic_reuse_queue_root: str | Path | None = None,
+    production_semantic_reuse_revision_id: str | None = None,
 ) -> dict[str, Any]:
     """Package provider-authorized derived inputs; raw InteriorGS stays local."""
 
@@ -508,6 +514,16 @@ def build_scene_configuration_provider_bundle(
         or diagnostic_checkpoint_reference_path is not None
     )
     production_semantic_reuse = production_semantic_reuse_checkpoint_root is not None
+    semantic_revision_inputs = (
+        production_semantic_reuse_queue_root is not None,
+        production_semantic_reuse_revision_id is not None,
+    )
+    if production_semantic_reuse != all(semantic_revision_inputs) or (
+        not production_semantic_reuse and any(semantic_revision_inputs)
+    ):
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_semantic_reuse_revision_binding_missing"
+        )
     if production_semantic_reuse and diagnostic_mode_requested:
         raise TaskEvaluationSceneConfigurationBundleError(
             "scene_configuration_bundle_semantic_reuse_source_ambiguous"
@@ -536,6 +552,7 @@ def build_scene_configuration_provider_bundle(
         )
     envelope_path = Path(construction_envelope_path).resolve()
     envelope = _read(envelope_path, code="scene_configuration_bundle_envelope_invalid")
+    source_envelope = json.loads(json.dumps(envelope))
     render_inputs = envelope.get("render_inputs_result")
     construction_source_commit = str(
         envelope.get("expected_production_commit") or ""
@@ -788,10 +805,39 @@ def build_scene_configuration_provider_bundle(
                 render_inputs=current_binding_render,
             )
         )
+    semantic_revision_receipt: dict[str, Any] | None = None
+    if production_semantic_reuse:
+        try:
+            semantic_revision_receipt = stage_scene_configuration_revision(
+                queue_root=production_semantic_reuse_queue_root,
+                source_envelope=source_envelope,
+                expected_production_commit=expected_source_commit,
+                revision_id=str(production_semantic_reuse_revision_id),
+                semantic_checkpoint_digest=str(
+                    diagnostic_checkpoint["checkpoint_digest"]
+                ),
+            )
+            envelope = _read(
+                Path(semantic_revision_receipt["queue_path"]),
+                code="scene_configuration_bundle_semantic_reuse_revision_invalid",
+            )
+        except (OSError, TaskEvaluationSceneConstructionQueueError) as exc:
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_semantic_reuse_revision_invalid:"
+                + str(exc)
+            ) from exc
+        if (
+            envelope.get("envelope_digest")
+            != semantic_revision_receipt.get("envelope_digest")
+            or envelope.get("expected_production_commit")
+            != expected_source_commit
+            or envelope.get("run_id") != semantic_revision_receipt.get("run_id")
+        ):
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_semantic_reuse_revision_invalid"
+            )
     portable = json.loads(json.dumps(envelope))
     portable["control_plane_envelope_digest"] = envelope["envelope_digest"]
-    if production_semantic_reuse:
-        portable["expected_production_commit"] = expected_source_commit
     portable_refs = []
     for index, row in enumerate(envelope.get("materialized_references") or []):
         contract_path = str(row.get("contract_path") or "")
@@ -1014,6 +1060,15 @@ def build_scene_configuration_provider_bundle(
         manifest.update(
             {
                 "construction_source_commit": construction_source_commit,
+                "source_construction_envelope_digest": source_envelope[
+                    "envelope_digest"
+                ],
+                "configuration_revision_intake_receipt_digest": (
+                    semantic_revision_receipt["receipt_digest"]
+                ),
+                "configuration_revision_id": semantic_revision_receipt[
+                    "revision_id"
+                ],
                 "production_semantic_input_reuse": True,
                 "source_semantic_checkpoint_digest": diagnostic_checkpoint[
                     "checkpoint_digest"
@@ -1297,6 +1352,22 @@ def load_scene_configuration_provider_bundle_receipt(
                 )
                 is None
                 or _DIGEST.fullmatch(
+                    str(receipt.get("source_construction_envelope_digest") or "")
+                )
+                is None
+                or _DIGEST.fullmatch(
+                    str(
+                        receipt.get("configuration_revision_intake_receipt_digest")
+                        or ""
+                    )
+                )
+                is None
+                or re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}",
+                    str(receipt.get("configuration_revision_id") or ""),
+                )
+                is None
+                or _DIGEST.fullmatch(
                     str(
                         receipt.get("semantic_reuse_scientific_binding_digest")
                         or ""
@@ -1327,6 +1398,9 @@ def load_scene_configuration_provider_bundle_receipt(
                     "diagnostic_scientific_binding_digest",
                     "diagnostic_stage_sequence_ids",
                     "construction_source_commit",
+                    "source_construction_envelope_digest",
+                    "configuration_revision_intake_receipt_digest",
+                    "configuration_revision_id",
                     "production_semantic_input_reuse",
                     "source_semantic_checkpoint_digest",
                     "semantic_reuse_scientific_binding_digest",
@@ -1556,6 +1630,9 @@ def load_scene_configuration_provider_bundle_receipt(
     elif production_semantic_reuse:
         compared_fields += (
             "construction_source_commit",
+            "source_construction_envelope_digest",
+            "configuration_revision_intake_receipt_digest",
+            "configuration_revision_id",
             "production_semantic_input_reuse",
             "source_semantic_checkpoint_digest",
             "semantic_reuse_scientific_binding_digest",
@@ -1615,6 +1692,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--diagnostic-checkpoint-reference")
     parser.add_argument("--fresh-diagnostic-bootstrap", action="store_true")
     parser.add_argument("--production-semantic-reuse-checkpoint-root")
+    parser.add_argument("--production-semantic-reuse-queue-root")
+    parser.add_argument("--production-semantic-reuse-revision-id")
     args = parser.parse_args(argv)
     receipt = build_scene_configuration_provider_bundle(
         construction_envelope_path=args.construction_envelope,
@@ -1628,6 +1707,12 @@ def main(argv: list[str] | None = None) -> int:
         fresh_diagnostic_bootstrap=args.fresh_diagnostic_bootstrap,
         production_semantic_reuse_checkpoint_root=(
             args.production_semantic_reuse_checkpoint_root
+        ),
+        production_semantic_reuse_queue_root=(
+            args.production_semantic_reuse_queue_root
+        ),
+        production_semantic_reuse_revision_id=(
+            args.production_semantic_reuse_revision_id
         ),
     )
     print(canonical_json(receipt))

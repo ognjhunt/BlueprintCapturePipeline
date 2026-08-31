@@ -1193,7 +1193,7 @@ def run_scene_configuration_vast(
                 diagnostic_only=diagnostic_only,
             )
         return _seal_terminal_result(job, blocked)
-    if execute and not diagnostic_only:
+    if not diagnostic_only and (execute or scene_construction_queue_root is not None):
         try:
             if scene_construction_queue_root is None or not str(
                 scene_construction_queue_root

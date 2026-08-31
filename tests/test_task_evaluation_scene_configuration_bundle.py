@@ -1001,11 +1001,42 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
         tmp_path / "production-semantic-reuse" / "toolchain",
         production_commit,
     )
+    revision_queue = ensure_scene_construction_queue_root(
+        tmp_path / "production-semantic-reuse" / "construction-queue"
+    )
+    source_filename = (
+        f"{envelope['orchestration_id']}-"
+        f"{envelope['recipe_digest'].removeprefix('sha256:')}.json"
+    )
+    (revision_queue / "pending" / source_filename).write_text(
+        json.dumps(envelope, sort_keys=True), encoding="utf-8"
+    )
+    scene_queue.finalize_scene_construction(
+        queue_root=revision_queue,
+        envelope={
+            **envelope,
+            "control_plane_envelope_digest": envelope["envelope_digest"],
+        },
+        terminal_result={
+            "status": "completed",
+            "run_id": envelope["run_id"],
+            "source_commit": commit,
+            "configuration_completed": True,
+            "configured_scene_published": True,
+            "configured_scene_revision_digest": "sha256:" + "1" * 64,
+            "publication_result_digest": "sha256:" + "2" * 64,
+            "full_byte_service_account_readback_passed": True,
+            "continuing_spend_from_this_run": False,
+            "blockers": [],
+        },
+    )
     production = build_scene_configuration_provider_bundle(
         construction_envelope_path=envelope_path,
         toolchain_root=production_toolchain,
         repository_root=repo,
         production_semantic_reuse_checkpoint_root=checkpoint_root,
+        production_semantic_reuse_queue_root=revision_queue,
+        production_semantic_reuse_revision_id="corrective-r2",
         output_root=tmp_path / "production-semantic-reuse-bundle",
         expected_source_commit=production_commit,
     )
@@ -1016,6 +1047,10 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
     assert production["semantic_reuse_completed_stage_prefix_count"] == 0
     assert production["source_commit"] == production_commit
     assert production["construction_source_commit"] == commit
+    assert production["source_construction_envelope_digest"] == envelope[
+        "envelope_digest"
+    ]
+    assert production["configuration_revision_id"] == "corrective-r2"
     assert production["configured_revision_publication_permitted"] is True
     assert production["offering_publication_permitted"] is True
     assert "diagnostic_only" not in production
@@ -1044,6 +1079,16 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
         for row in production_portable["render_inputs_result"]["derived_frames"]
     )
     assert production_portable["expected_production_commit"] == production_commit
+    assert production_portable["control_plane_envelope_digest"] == (
+        production["construction_envelope_source_digest"]
+    )
+    assert production_portable["configuration_revision_lineage"][
+        "source_construction_envelope_digest"
+    ] == envelope["envelope_digest"]
+    assert preflight_scene_construction_finalization(
+        queue_root=revision_queue,
+        envelope=production_portable,
+    )["status"] == "ready"
     assert production_runner == (
         repo / "scripts/task_evaluation_scene_configuration_provider_runner.py"
     ).read_bytes()

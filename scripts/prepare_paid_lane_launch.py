@@ -623,6 +623,14 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
                     "--production-semantic-reuse-checkpoint-root",
                     "production_semantic_reuse_checkpoint_root",
                 ),
+                (
+                    "--production-semantic-reuse-queue-root",
+                    "production_semantic_reuse_queue_root",
+                ),
+                (
+                    "--production-semantic-reuse-revision-id",
+                    "production_semantic_reuse_revision_id",
+                ),
             ),
         ),
         LaneStep(
@@ -719,6 +727,12 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
                 "{set_root}/dry-run-job/scene-configuration-job",
             ),
             produces="{set_root}/allocator_dry_run.v1.json",
+            repeated_argv=(
+                (
+                    "--scene-configuration-queue-root",
+                    "production_semantic_reuse_queue_root",
+                ),
+            ),
         ),
         LaneStep(
             step_id="configured_controls_autostart_intent",
@@ -2285,6 +2299,11 @@ def _load_scene_configuration_context(
     ).expanduser()
     toolchain = Path(str(operations.get("toolchain_root") or "")).expanduser()
     source_commit = str(operations.get("source_commit") or "")
+    semantic_reuse = operations.get(
+        "production_semantic_reuse_checkpoint_root"
+    )
+    semantic_queue = operations.get("production_semantic_reuse_queue_root")
+    semantic_revision = operations.get("production_semantic_reuse_revision_id")
     bindings = value["reference_bindings"]
     if (
         construction.is_symlink()
@@ -2301,6 +2320,34 @@ def _load_scene_configuration_context(
     ):
         raise PaidLaneLaunchPreparationError(
             "scene_configuration_context_binding_invalid"
+        )
+    if semantic_reuse is not None:
+        checkpoint = Path(str(semantic_reuse)).expanduser()
+        queue = Path(str(semantic_queue or "")).expanduser()
+        if (
+            checkpoint.is_symlink()
+            or not checkpoint.resolve().is_dir()
+            or queue.is_symlink()
+            or not queue.resolve().is_dir()
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}",
+                str(semantic_revision or ""),
+            )
+            is None
+        ):
+            raise PaidLaneLaunchPreparationError(
+                "scene_configuration_context_semantic_reuse_revision_invalid"
+            )
+        operations["production_semantic_reuse_checkpoint_root"] = str(
+            checkpoint.resolve()
+        )
+        operations["production_semantic_reuse_queue_root"] = str(queue.resolve())
+        operations["production_semantic_reuse_revision_id"] = str(
+            semantic_revision
+        )
+    elif semantic_queue is not None or semantic_revision is not None:
+        raise PaidLaneLaunchPreparationError(
+            "scene_configuration_context_semantic_reuse_revision_invalid"
         )
     operations.update(
         {

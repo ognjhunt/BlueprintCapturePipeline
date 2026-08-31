@@ -20,6 +20,9 @@ from .task_evaluation_release_reference_lock import release_reference_lock
 
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_scene_construction_envelope.v1"
 FINALIZATION_SCHEMA_VERSION = "task_evaluation_scene_construction_finalization.v1"
+REVISION_LINEAGE_SCHEMA_VERSION = (
+    "task_evaluation_scene_configuration_revision_lineage.v1"
+)
 QUEUE_STATES = ("pending", "processing", "completed", "blocked")
 
 
@@ -221,6 +224,218 @@ def stage_scene_construction(
         "queue_path": str(queue_path),
         "created": created,
         "automatic_progression_required": True,
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    return receipt
+
+
+def stage_scene_configuration_revision(
+    *,
+    queue_root: str | Path,
+    source_envelope: Mapping[str, Any],
+    expected_production_commit: str,
+    revision_id: str,
+    semantic_checkpoint_digest: str,
+) -> dict[str, Any]:
+    """Stage a fresh queue identity derived from one completed construction.
+
+    A corrective configuration is a new immutable attempt, not a replay of the
+    queue item that produced an earlier configured revision.  Reusing that
+    terminal item would either mutate historical state or make finalization
+    collide with its existing result.  This derivation keeps the captured scene,
+    recipe, and materialized references byte-bound while giving the new run its
+    own pending -> terminal lifecycle and current runtime commit.
+    """
+
+    source_orchestration_id = str(source_envelope.get("orchestration_id") or "")
+    source_run_id = str(source_envelope.get("run_id") or "")
+    source_commit = str(source_envelope.get("expected_production_commit") or "")
+    recipe_digest = str(source_envelope.get("recipe_digest") or "")
+    source_digest = str(source_envelope.get("envelope_digest") or "")
+    if (
+        source_envelope.get("schema_version") != ENVELOPE_SCHEMA_VERSION
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}", source_orchestration_id)
+        is None
+        or not source_run_id
+        or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None
+        or re.fullmatch(r"[0-9a-f]{40}", expected_production_commit) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", recipe_digest) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", source_digest) is None
+        or source_digest
+        != canonical_digest(source_envelope, digest_field="envelope_digest")
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", revision_id)
+        is None
+        or re.fullmatch(
+            r"sha256:[0-9a-f]{64}", semantic_checkpoint_digest
+        )
+        is None
+    ):
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_configuration_revision_source_binding_invalid"
+        )
+
+    root = ensure_scene_construction_queue_root(queue_root)
+    source_filename = (
+        f"{source_orchestration_id}-{recipe_digest.removeprefix('sha256:')}.json"
+    )
+    source_matches = [
+        root / state / source_filename
+        for state in QUEUE_STATES
+        if (root / state / source_filename).exists()
+    ]
+    source_path = root / "completed" / source_filename
+    source_result_path = root / "results" / source_filename
+    try:
+        queued_source = json.loads(source_path.read_text(encoding="utf-8"))
+        source_result = json.loads(source_result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_configuration_revision_source_not_completed"
+        ) from exc
+    if (
+        len(source_matches) != 1
+        or source_matches[0] != source_path
+        or source_path.is_symlink()
+        or source_result_path.is_symlink()
+        or queued_source != dict(source_envelope)
+        or source_result.get("schema_version") != FINALIZATION_SCHEMA_VERSION
+        or source_result.get("status") != "completed"
+        or source_result.get("queue_state") != "completed"
+        or source_result.get("finalization_performed") is not True
+        or source_result.get("orchestration_id") != source_orchestration_id
+        or source_result.get("run_id") != source_run_id
+        or source_result.get("source_commit") != source_commit
+        or source_result.get("recipe_digest") != recipe_digest
+        or source_result.get("construction_envelope_digest") != source_digest
+        or source_result.get("configuration_completed") is not True
+        or source_result.get("configured_scene_published") is not True
+        or re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(source_result.get("configured_scene_revision_digest") or ""),
+        )
+        is None
+        or source_result.get("full_byte_service_account_readback_passed")
+        is not True
+        or source_result.get("continuing_spend_from_this_run") is not False
+        or bool(source_result.get("blockers"))
+        or source_result.get("result_digest")
+        != canonical_digest(source_result, digest_field="result_digest")
+    ):
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_configuration_revision_source_not_completed"
+        )
+
+    identity_binding = {
+        "source_construction_envelope_digest": source_digest,
+        "source_configuration_result_digest": source_result["result_digest"],
+        "expected_production_commit": expected_production_commit,
+        "revision_id": revision_id,
+        "semantic_checkpoint_digest": semantic_checkpoint_digest,
+    }
+    identity_digest = canonical_digest(identity_binding)
+    suffix = f"-revision-{revision_id}-{identity_digest.removeprefix('sha256:')[:12]}"
+    if len(suffix) >= 192:
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_configuration_revision_identity_invalid"
+        )
+    orchestration_id = source_orchestration_id[: 192 - len(suffix)] + suffix
+    run_id = source_run_id[: 240 - len(suffix)] + suffix
+    lineage: dict[str, Any] = {
+        "schema_version": REVISION_LINEAGE_SCHEMA_VERSION,
+        "revision_id": revision_id,
+        "source_orchestration_id": source_orchestration_id,
+        "source_run_id": source_run_id,
+        "source_production_commit": source_commit,
+        "source_construction_envelope_digest": source_digest,
+        "source_configuration_result_digest": source_result["result_digest"],
+        "source_configured_scene_revision_digest": source_result.get(
+            "configured_scene_revision_digest"
+        ),
+        "semantic_checkpoint_digest": semantic_checkpoint_digest,
+        "lineage_digest": "",
+    }
+    lineage["lineage_digest"] = canonical_digest(
+        lineage, digest_field="lineage_digest"
+    )
+    derived = json.loads(json.dumps(source_envelope))
+    derived.update(
+        {
+            "orchestration_id": orchestration_id,
+            "preparation_id": orchestration_id,
+            "run_id": run_id,
+            "expected_production_commit": expected_production_commit,
+            "configuration_revision_lineage": lineage,
+            "stage_states": [
+                {**dict(row), "status": "pending"}
+                for row in source_envelope.get("stage_states") or []
+            ],
+            "provider_mutation_performed": False,
+            "paid_execution_requested": False,
+            "envelope_digest": "",
+        }
+    )
+    request = derived.get("request")
+    if isinstance(request, Mapping):
+        derived["request"] = {
+            **dict(request),
+            "preparation_id": orchestration_id,
+            "run_id": run_id,
+            "expected_production_commit": expected_production_commit,
+        }
+    derived.pop("control_plane_envelope_digest", None)
+    derived["envelope_digest"] = canonical_digest(
+        derived, digest_field="envelope_digest"
+    )
+
+    filename = f"{orchestration_id}-{recipe_digest.removeprefix('sha256:')}.json"
+    matches = [
+        root / state / filename
+        for state in QUEUE_STATES
+        if (root / state / filename).exists()
+    ]
+    target = root / "pending" / filename
+    created = False
+    if matches:
+        if len(matches) != 1 or matches[0] != target or target.is_symlink():
+            raise TaskEvaluationSceneConstructionQueueError(
+                "scene_configuration_revision_identity_already_terminal"
+            )
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TaskEvaluationSceneConstructionQueueError(
+                "scene_configuration_revision_existing_envelope_invalid"
+            ) from exc
+        if existing != derived:
+            raise TaskEvaluationSceneConstructionQueueError(
+                "scene_configuration_revision_immutable_conflict"
+            )
+    else:
+        try:
+            _write_exclusive(target, derived)
+            created = True
+        except FileExistsError:
+            raise TaskEvaluationSceneConstructionQueueError(
+                "scene_configuration_revision_race_conflict"
+            ) from None
+
+    receipt: dict[str, Any] = {
+        "schema_version": "task_evaluation_scene_configuration_revision_intake.v1",
+        "status": "queued_for_production_configuration_revision",
+        "revision_id": revision_id,
+        "source_construction_envelope_digest": source_digest,
+        "source_configuration_result_digest": source_result["result_digest"],
+        "semantic_checkpoint_digest": semantic_checkpoint_digest,
+        "run_id": run_id,
+        "expected_production_commit": expected_production_commit,
+        "envelope_digest": derived["envelope_digest"],
+        "queue_path": str(target),
+        "created": created,
         "provider_mutation_performed": False,
         "paid_execution_requested": False,
         "receipt_digest": "",
@@ -507,5 +722,6 @@ __all__ = [
     "ensure_scene_construction_queue_root",
     "finalize_scene_construction",
     "preflight_scene_construction_finalization",
+    "stage_scene_configuration_revision",
     "stage_scene_construction",
 ]
