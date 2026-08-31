@@ -3,7 +3,32 @@ from __future__ import annotations
 import json
 import types
 
-from blueprint_pipeline.openai_prompt_cache_canary import run_mechanics_canary
+import pytest
+
+from blueprint_pipeline.openai_prompt_cache_canary import (
+    OpenAIPromptCacheCanaryError,
+    load_secure_api_key_file,
+    run_mechanics_canary,
+)
+
+
+def test_api_key_file_accepts_service_mode_and_rejects_broad_or_symlinked_files(
+    tmp_path,
+) -> None:
+    key_file = tmp_path / "openai-key"
+    key_file.write_text("test-only-key\n", encoding="utf-8")
+    key_file.chmod(0o640)
+    assert load_secure_api_key_file(key_file) == "test-only-key"
+
+    key_file.chmod(0o644)
+    with pytest.raises(OpenAIPromptCacheCanaryError, match="not_secure"):
+        load_secure_api_key_file(key_file)
+
+    key_file.chmod(0o600)
+    link = tmp_path / "openai-key-link"
+    link.symlink_to(key_file)
+    with pytest.raises(OpenAIPromptCacheCanaryError, match="not_secure"):
+        load_secure_api_key_file(link)
 
 
 def test_five_call_canary_retains_write_read_version_and_one_off_proof(
