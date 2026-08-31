@@ -412,6 +412,21 @@ def test_remote_curobo_uses_retained_worker_without_allocating(
             assert CUROBO_BACKEND_IDENTITY["source_revision"] in script
             assert CUROBO_BACKEND_IDENTITY["source_tree"] in script
             assert "--no-deps --no-build-isolation" in script
+            # nvidia-curobo resolves its version through setuptools_scm from git
+            # metadata that a depth-1 fetch of a bare revision does not carry, so
+            # the version must be pinned or every provisioning attempt fails the
+            # check below after a clean clone and install.
+            assert (
+                "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_NVIDIA_CUROBO="
+                + CUROBO_BACKEND_IDENTITY["package_version"]
+            ) in script
+            assert (
+                'importlib.metadata.version("'
+                + CUROBO_BACKEND_IDENTITY["package_name"]
+                + '") == "'
+                + CUROBO_BACKEND_IDENTITY["package_version"]
+                + '"'
+            ) in script
             return {
                 "status": "completed",
                 "stdout": "BLUEPRINT_CUROBO_RUNTIME_READY\n",
