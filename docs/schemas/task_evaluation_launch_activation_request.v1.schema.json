@@ -22,6 +22,7 @@
     "expected_production_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "activation_id": {"$ref": "#/$defs/identifier"},
     "team_namespace": {"$ref": "#/$defs/identifier"},
+    "run_kind": {"enum": ["qualified_evaluation", "internal_policy_canary"]},
     "lane": {
       "enum": [
         "task_evaluation_scene_configuration",
@@ -127,11 +128,6 @@
       "if": {"properties": {"lane": {"const": "native_task_arena_policy_evaluation"}}},
       "then": {
         "properties": {
-          "lineage": {
-            "required": [
-              "controls_qualification_manifest"
-            ]
-          },
           "requested_mutations": {
             "required": ["profile_publication", "catalog_synchronization", "standing_authorization", "policy_campaign_queue"],
             "properties": {
@@ -154,6 +150,19 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "allOf": [
+          {"properties": {"lane": {"const": "native_task_arena_policy_evaluation"}}},
+          {"not": {"properties": {"run_kind": {"const": "internal_policy_canary"}}, "required": ["run_kind"]}}
+        ]
+      },
+      "then": {"properties": {"lineage": {"required": ["controls_qualification_manifest"]}}}
+    },
+    {
+      "if": {"properties": {"run_kind": {"const": "internal_policy_canary"}}, "required": ["run_kind"]},
+      "then": {"properties": {"lane": {"const": "native_task_arena_policy_evaluation"}}}
     }
   ],
   "$defs": {

@@ -11,8 +11,16 @@
     "source_launch_id": {"$ref": "#/$defs/identifier"},
     "offering_digest": {"$ref": "#/$defs/digest"},
     "setup_digest": {"$ref": "#/$defs/digest"},
-    "preset_id": {"enum": ["quick_10", "standard_100", "deep_500"]}
+    "preset_id": {"enum": ["quick_10", "standard_100", "deep_500"]},
+    "run_kind": {"enum": ["qualified_evaluation", "internal_policy_canary"]},
+    "claim_ceiling": {"const": "diagnostic_policy_execution"},
+    "scene_revision_digest": {"$ref": "#/$defs/digest"},
+    "scene_controls_status_at_submission": {"const": "configured_controls_pending"},
+    "robot_preset_id": {"const": "franka_panda_robotiq_2f85_v1"},
+    "policy_candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{"const": "pi05_droid"}, {"const": "groot_n17_droid"}], "items": false},
+    "notification": {"type": "object", "required": ["email", "notify_on"], "additionalProperties": false, "properties": {"email": {"type": "string", "format": "email", "maxLength": 254}, "notify_on": {"type": "array", "minItems": 3, "maxItems": 3, "prefixItems": [{"const": "completed"}, {"const": "blocked"}, {"const": "cancelled"}], "items": false}}}
   },
+  "allOf": [{"if": {"properties": {"run_kind": {"const": "internal_policy_canary"}}, "required": ["run_kind"]}, "then": {"required": ["claim_ceiling", "scene_revision_digest", "scene_controls_status_at_submission", "robot_preset_id", "policy_candidate_ids", "notification"]}}],
   "$defs": {
     "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}

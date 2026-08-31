@@ -346,6 +346,11 @@ def _load_verified_preparation(
     if activation_request.get("lane") == "native_task_arena_policy_evaluation":
         policy_configuration = request.get("policy_run_configuration")
         policy_plan = result.get("policy_run_plan")
+        configuration_run_kind = (
+            policy_configuration.get("run_kind", "qualified_evaluation")
+            if isinstance(policy_configuration, Mapping)
+            else None
+        )
         if (
             not isinstance(policy_configuration, Mapping)
             or not isinstance(policy_plan, Mapping)
@@ -357,6 +362,8 @@ def _load_verified_preparation(
             != canonical_digest(policy_plan, digest_field="plan_digest")
             or policy_plan.get("execution_performed") is not False
             or policy_plan.get("provider_mutation_performed") is not False
+            or activation_request.get("run_kind", "qualified_evaluation")
+            != configuration_run_kind
         ):
             raise TaskEvaluationLaunchActivationWorkerError(
                 "launch_activation_policy_run_plan_invalid"
@@ -650,7 +657,7 @@ def _build_native_context(
     activation_request: Mapping[str, Any],
     preparation_request: Mapping[str, Any],
     policy_run_plan: Mapping[str, Any] | None,
-    adapter: Mapping[str, Any],
+    adapter: Mapping[str, Any] | None = None,
     preparation_materialized: Mapping[str, Path],
     activation_materialized: Mapping[str, Path],
     activation_root: Path,
@@ -703,10 +710,10 @@ def _build_native_context(
             "evidence"
         ]
         rights_evidence_prefix = "scene.rights.evidence"
-    source_manifest = _read_json(
+    _read_json(
         source_manifest_path, blocker="launch_activation_source_manifest_invalid"
     )
-    rights_admission = _read_json(
+    _read_json(
         rights_admission_path, blocker="launch_activation_rights_admission_invalid"
     )
     packet_root = Path(str(adapter["packet_root"])).resolve()
@@ -852,6 +859,8 @@ def _build_native_context(
             "source_launch_id": policy_configuration["source_launch_id"],
             "offering_digest": policy_configuration["offering_digest"],
             "candidate_ids": policy_configuration["candidate_ids"],
+            "run_kind": policy_configuration.get("run_kind", "qualified_evaluation"),
+            "claim_ceiling": policy_configuration.get("claim_ceiling"),
         }
     return context
 
@@ -1201,13 +1210,21 @@ def _policy_campaign_activation_result(
     window: Mapping[str, Any],
     activation_materialized: Mapping[str, Path],
     activation_root: Path,
+    adapter: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seal the N-cell paired-campaign queue without profile or paid mutation."""
 
     try:
-        qualification = _read_json(
-            activation_materialized["lineage.controls_qualification_manifest"],
-            blocker="launch_activation_controls_qualification_manifest_invalid",
+        controls_path = activation_materialized.get(
+            "lineage.controls_qualification_manifest"
+        )
+        qualification = (
+            _read_json(
+                controls_path,
+                blocker="launch_activation_controls_qualification_manifest_invalid",
+            )
+            if controls_path is not None
+            else None
         )
         manifest = build_policy_campaign_activation_manifest(
             configuration=preparation_request["policy_run_configuration"],
@@ -1222,6 +1239,109 @@ def _policy_campaign_activation_result(
         activation_root / "task_evaluation_policy_campaign_activation.v1.json"
     )
     write_launch_preparation_record_exclusive(manifest_path, manifest)
+    runtime_inputs_path: Path | None = None
+    runtime_inputs: dict[str, Any] | None = None
+    if manifest["run_kind"] == "internal_policy_canary":
+        if adapter is None:
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_policy_canary_adapter_missing"
+            )
+        construction_path = activation_materialized.get("lineage.construction_result")
+        if construction_path is None:
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_policy_canary_construction_result_missing"
+            )
+        construction = _read_json(
+            construction_path,
+            blocker="launch_activation_policy_canary_construction_result_invalid",
+        )
+        if construction.get("result_digest") != canonical_digest(
+            construction, digest_field="result_digest"
+        ):
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_policy_canary_construction_result_invalid"
+            )
+        packet_root = Path(str(adapter.get("packet_root") or "")).resolve()
+        packet_receipt = packet_root / "native_task_arena_packet_receipt.v1.json"
+        runtime_receipt = Path(
+            str(adapter.get("runtime_source_receipt") or "")
+        ).resolve()
+        if (
+            not packet_root.is_dir()
+            or packet_receipt.is_symlink()
+            or not packet_receipt.is_file()
+            or runtime_receipt.is_symlink()
+            or not runtime_receipt.is_file()
+        ):
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_policy_canary_base_runtime_inputs_invalid"
+            )
+        cells = preparation_request["policy_run_configuration"]["matrix"]["cells"]
+        runtime_inputs = {
+            "schema_version": "task_evaluation_policy_canary_runtime_inputs.v1",
+            "run_id": preparation_request["run_id"],
+            "run_kind": "internal_policy_canary",
+            "claim_ceiling": "diagnostic_policy_execution",
+            "configuration_digest": preparation_request[
+                "policy_run_configuration"
+            ]["configuration_digest"],
+            "plan_digest": preparation_result["policy_run_plan"]["plan_digest"],
+            "activation_digest": manifest["activation_digest"],
+            "base_native_packet": {
+                "path": str(packet_receipt),
+                "size_bytes": packet_receipt.stat().st_size,
+                "sha256": _sha256_file(packet_receipt),
+            },
+            "runtime_source": {
+                "path": str(runtime_receipt),
+                "size_bytes": runtime_receipt.stat().st_size,
+                "sha256": _sha256_file(runtime_receipt),
+            },
+            "construction_result": {
+                "path": str(construction_path),
+                "size_bytes": construction_path.stat().st_size,
+                "sha256": _sha256_file(construction_path),
+            },
+            "policy_readiness": preparation_request["policy_run_setup"][
+                "preregistration"
+            ],
+            "candidate_ids": preparation_request["policy_run_configuration"][
+                "candidate_ids"
+            ],
+            "cells": [
+                {
+                    "cell_id": cell["cell_id"],
+                    "seed": cell["seed"],
+                    "family": cell["family"],
+                    "cell_spec_digest": cell["cell_spec_digest"],
+                    "resolved_scenario": cell["resolved_scenario"],
+                    "resolved_scenario_digest": canonical_digest(
+                        cell["resolved_scenario"]
+                    ),
+                    "control_diagnostic": {
+                        "mode": "nonblocking_diagnostic_pending",
+                        "typed_gap": "controls_pending_at_submission",
+                        "policy_execution_blocked": False,
+                    },
+                }
+                for cell in cells
+            ],
+            "execution_authority": {
+                "maximum_provider_allocations": 1,
+                "retry_cap": 0,
+                "single_warm_provider_session_required": True,
+                "caller_surviving_watchdog_required": True,
+                "billing_teardown_provider_zero_required": True,
+            },
+            "runtime_inputs_digest": "",
+        }
+        runtime_inputs["runtime_inputs_digest"] = canonical_digest(
+            runtime_inputs, digest_field="runtime_inputs_digest"
+        )
+        runtime_inputs_path = (
+            activation_root / "task_evaluation_policy_canary_runtime_inputs.v1.json"
+        )
+        write_launch_preparation_record_exclusive(runtime_inputs_path, runtime_inputs)
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "policy_campaign_queue_materialized_no_execution",
@@ -1235,6 +1355,21 @@ def _policy_campaign_activation_result(
         "policy_campaign_activation_digest": manifest["activation_digest"],
         "policy_campaign_activation_sha256": _sha256_file(manifest_path),
         "campaign_unit_count": manifest["campaign_unit_count"],
+        "run_kind": manifest["run_kind"],
+        "claim_ceiling": manifest.get("claim_ceiling"),
+        **(
+            {
+                "policy_canary_runtime_inputs_digest": runtime_inputs[
+                    "runtime_inputs_digest"
+                ],
+                "policy_canary_runtime_inputs_sha256": _sha256_file(
+                    runtime_inputs_path
+                ),
+                "policy_canary_runtime_inputs_path": str(runtime_inputs_path),
+            }
+            if runtime_inputs is not None and runtime_inputs_path is not None
+            else {}
+        ),
         "full_byte_activation_reference_readback_passed": True,
         "profile_publication_performed": False,
         "catalog_mutation_performed": False,
@@ -1466,6 +1601,7 @@ def process_launch_activation_queue(
                     window=window,
                     activation_materialized=materialized,
                     activation_root=owned_root,
+                    adapter=adapter,
                 )
             else:
                 receipt_path = owned_root / "paid_lane_launch_preparation.v1.json"

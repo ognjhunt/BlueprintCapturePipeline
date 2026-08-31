@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_policy_canary_result_projection.v1.schema.json",
+  "title": "Internal Task Evaluation policy canary terminal projection v1",
+  "type": "object",
+  "required": ["schema_version", "run_id", "request_digest", "configuration_digest", "result_delivery_digest", "run_kind", "claim_ceiling", "scene_controls_status", "result_status", "warning", "counts", "candidate_ids", "candidate_results", "episodes", "comparison", "report", "closure", "notification_delivery", "blockers", "projection_digest"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_policy_canary_result_projection.v1"},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "request_digest": {"$ref": "#/$defs/digest"},
+    "configuration_digest": {"$ref": "#/$defs/digest"},
+    "result_delivery_digest": {"$ref": "#/$defs/digest"},
+    "run_kind": {"const": "internal_policy_canary"},
+    "claim_ceiling": {"const": "diagnostic_policy_execution"},
+    "scene_controls_status": {"const": "configured_controls_pending"},
+    "result_status": {"enum": ["completed_unqualified", "blocked", "cancelled"]},
+    "warning": {"const": "Controls pending — results are unqualified."},
+    "counts": {
+      "type": "object",
+      "required": ["policy_count", "episodes_per_policy", "learned_policy_rollout_count", "completed_learned_policy_rollout_count", "diagnostic_control_rollout_count", "completed_diagnostic_control_rollout_count"],
+      "additionalProperties": false,
+      "properties": {
+        "policy_count": {"const": 2},
+        "episodes_per_policy": {"const": 10},
+        "learned_policy_rollout_count": {"const": 20},
+        "completed_learned_policy_rollout_count": {"type": "integer", "minimum": 0, "maximum": 20},
+        "diagnostic_control_rollout_count": {"type": "integer", "minimum": 0, "maximum": 20},
+        "completed_diagnostic_control_rollout_count": {"type": "integer", "minimum": 0, "maximum": 20}
+      }
+    },
+    "candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{"const": "pi05_droid"}, {"const": "groot_n17_droid"}], "items": false},
+    "candidate_results": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "object", "required": ["candidate_id", "episodes_completed", "interpretable_episode_count", "actions_delivered_episode_count", "metrics", "failure_counts"], "additionalProperties": false, "properties": {"candidate_id": {"enum": ["pi05_droid", "groot_n17_droid"]}, "episodes_completed": {"type": "integer", "minimum": 0, "maximum": 10}, "interpretable_episode_count": {"type": "integer", "minimum": 0, "maximum": 10}, "actions_delivered_episode_count": {"type": "integer", "minimum": 0, "maximum": 10}, "metrics": {"type": "object"}, "failure_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}}}},
+    "episodes": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/episode"}},
+    "comparison": {"type": "object", "required": ["matched_cell_count", "winner_declared", "official_ranking_contribution"], "additionalProperties": false, "properties": {"matched_cell_count": {"type": "integer", "minimum": 0, "maximum": 10}, "winner_declared": {"const": false}, "official_ranking_contribution": {"const": false}}},
+    "report": {"type": "object", "required": ["result_digest", "permanent_result_path", "machine_readable_report", "evidence_manifest"], "additionalProperties": false, "properties": {"result_digest": {"$ref": "#/$defs/digest"}, "permanent_result_path": {"type": "string", "pattern": "^/[^\\s]*$"}, "machine_readable_report": {"$ref": "#/$defs/artifact"}, "evidence_manifest": {"$ref": "#/$defs/artifact"}}},
+    "closure": {"type": "object", "required": ["billing", "teardown", "provider_zero"], "additionalProperties": false, "properties": {"billing": {"$ref": "#/$defs/artifact"}, "teardown": {"$ref": "#/$defs/artifact"}, "provider_zero": {"allOf": [{"$ref": "#/$defs/artifact"}, {"type": "object", "required": ["provider_zero_verified"], "properties": {"provider_zero_verified": {"const": true}}}]}}},
+    "notification_delivery": {"type": "object", "required": ["terminal_state", "status", "attempts", "provider", "message_id", "delivered_at", "run_result_digest"], "additionalProperties": false, "properties": {"terminal_state": {"enum": ["completed", "blocked", "cancelled"]}, "status": {"enum": ["delivered", "failed"]}, "attempts": {"type": "integer", "minimum": 1}, "provider": {"type": "string", "minLength": 1, "maxLength": 128}, "message_id": {"type": ["string", "null"], "maxLength": 512}, "delivered_at": {"type": ["string", "null"], "format": "date-time"}, "run_result_digest": {"$ref": "#/$defs/digest"}}},
+    "blockers": {"type": "array", "maxItems": 128, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512}},
+    "projection_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "artifact": {"type": "object", "required": ["digest", "size_bytes", "artifact_id"], "additionalProperties": false, "properties": {"digest": {"$ref": "#/$defs/digest"}, "size_bytes": {"type": "integer", "minimum": 1}, "artifact_id": {"$ref": "#/$defs/identifier"}, "provider_zero_verified": {"type": "boolean"}}},
+    "episode": {"type": "object", "required": ["episode_id", "candidate_id", "cell_id", "seed", "terminal_state", "candidate_policy_queried", "actions_reached_robot", "arm_moved", "policy_outcome_interpretable", "failure_taxonomy", "evidence"], "additionalProperties": false, "properties": {"episode_id": {"$ref": "#/$defs/identifier"}, "candidate_id": {"enum": ["pi05_droid", "groot_n17_droid"]}, "cell_id": {"$ref": "#/$defs/identifier"}, "seed": {"type": "integer", "minimum": 0, "maximum": 2147483647}, "terminal_state": {"enum": ["completed", "failed", "blocked", "cancelled"]}, "candidate_policy_queried": {"type": "boolean"}, "actions_reached_robot": {"type": "boolean"}, "arm_moved": {"type": "boolean"}, "policy_outcome_interpretable": {"type": "boolean"}, "failure_taxonomy": {"type": ["string", "null"], "maxLength": 128}, "evidence": {"type": "object", "required": ["checkpoint_digest", "runtime_identity_digest", "reset_state_digest", "frame_manifest", "review_video", "policy_query_receipt", "action_sequence", "action_delivery_readback", "state_trace", "contact_force_trace", "task_object_trajectory", "score_receipt"], "additionalProperties": false, "properties": {"checkpoint_digest": {"$ref": "#/$defs/digest"}, "runtime_identity_digest": {"$ref": "#/$defs/digest"}, "reset_state_digest": {"$ref": "#/$defs/digest"}, "frame_manifest": {"$ref": "#/$defs/artifact"}, "review_video": {"$ref": "#/$defs/artifact"}, "policy_query_receipt": {"$ref": "#/$defs/artifact"}, "action_sequence": {"$ref": "#/$defs/artifact"}, "action_delivery_readback": {"$ref": "#/$defs/artifact"}, "state_trace": {"$ref": "#/$defs/artifact"}, "contact_force_trace": {"$ref": "#/$defs/artifact"}, "task_object_trajectory": {"$ref": "#/$defs/artifact"}, "score_receipt": {"$ref": "#/$defs/artifact"}, "typed_media_gap": {"type": "string", "minLength": 1, "maxLength": 512}}}}}
+  }
+}

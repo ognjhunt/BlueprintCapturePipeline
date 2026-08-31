@@ -54,6 +54,10 @@ from .task_evaluation_policy_run_contract import (
     TaskEvaluationPolicyRunContractError,
     validate_policy_run_setup,
 )
+from .task_evaluation_policy_canary_setup import (
+    TaskEvaluationPolicyCanarySetupError,
+    validate_policy_canary_setup,
+)
 
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
@@ -121,6 +125,7 @@ PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS = (
     "source_commit",
     "task_evaluation_run",
     "policy_run_setup",
+    "internal_policy_canary_setup",
 )
 
 
@@ -432,6 +437,15 @@ def _validate_launch_profile(
             validate_policy_run_setup(_mapping(profile.get("policy_run_setup")))
         except TaskEvaluationPolicyRunContractError as exc:
             blockers.append(f"launch_profile_policy_run_setup_invalid:{exc}")
+    if "internal_policy_canary_setup" in profile:
+        try:
+            canary_setup = validate_policy_canary_setup(
+                _mapping(profile.get("internal_policy_canary_setup"))
+            )
+            if canary_setup["source_launch_id"] != profile.get("profile_id"):
+                blockers.append("launch_profile_policy_canary_source_launch_id_invalid")
+        except TaskEvaluationPolicyCanarySetupError as exc:
+            blockers.append(f"launch_profile_policy_canary_setup_invalid:{exc}")
     _validate_reference(profile.get("source_bundle"), field="source_bundle", blockers=blockers)
     profile_source = _mapping(profile.get("source_bundle"))
     if not _is_identifier(profile_source.get("bundle_id")):
@@ -629,6 +643,7 @@ def _validate_launch_profile(
     # The separately validated preparation template may name canonical
     # ``secret-file:...`` references but cannot contain a secret value.
     secret_scan.pop("policy_run_setup", None)
+    secret_scan.pop("internal_policy_canary_setup", None)
     if _contains_secret_key(secret_scan):
         blockers.append("launch_profile_secret_value_forbidden")
     return sorted(set(blockers))
@@ -725,6 +740,13 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
             validate_policy_run_setup(_mapping(descriptor.get("policy_run_setup")))
         except TaskEvaluationPolicyRunContractError as exc:
             blockers.append(f"launch_profile_public_policy_run_setup_invalid:{exc}")
+    if "internal_policy_canary_setup" in descriptor:
+        try:
+            validate_policy_canary_setup(
+                _mapping(descriptor.get("internal_policy_canary_setup"))
+            )
+        except TaskEvaluationPolicyCanarySetupError as exc:
+            blockers.append(f"launch_profile_public_policy_canary_setup_invalid:{exc}")
     authorization = _mapping(descriptor.get("required_authorization"))
     if set(authorization) != {"max_spend_usd", "hard_ttl_seconds"}:
         blockers.append("launch_profile_public_required_authorization_fields_invalid")
@@ -799,6 +821,7 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
         blockers.append("launch_profile_public_claim_ceiling_invalid")
     secret_scan = dict(descriptor)
     secret_scan.pop("policy_run_setup", None)
+    secret_scan.pop("internal_policy_canary_setup", None)
     if _contains_secret_key(secret_scan):
         blockers.append("launch_profile_public_secret_value_forbidden")
     return sorted(set(blockers))

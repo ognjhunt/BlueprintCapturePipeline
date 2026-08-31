@@ -16,6 +16,10 @@ from .task_evaluation_policy_run_contract import (
     TaskEvaluationPolicyRunContractError,
     validate_policy_run_result_projection,
 )
+from .task_evaluation_policy_canary_result import (
+    TaskEvaluationPolicyCanaryResultError,
+    validate_policy_canary_result,
+)
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 
 
@@ -24,6 +28,7 @@ TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV = (
     "PIPELINE_TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED"
 )
 _TERMINAL_STATES = {"decided", "partially_decided", "abstained"}
+_CANARY_TERMINAL_STATES = {"completed_unqualified", "blocked", "cancelled"}
 
 
 def _text(value: Any) -> str:
@@ -121,6 +126,72 @@ def build_task_evaluation_run_webapp_publication(
             raise ValueError("task_evaluation_policy_run_result_binding_mismatch")
         publication["policy_run_result"] = policy_result
     return publication
+
+
+def build_task_evaluation_policy_canary_webapp_publication(
+    *,
+    capture_session_id: str,
+    intake_id: str,
+    run_id: str,
+    request_digest: str,
+    configuration_digest: str,
+    result_status: str,
+    result_delivery: Mapping[str, Any],
+    policy_canary_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build additive v4 publication without inventing a decision envelope."""
+
+    session = strict_identifier(
+        capture_session_id, field="capture_session_id", max_length=192
+    )
+    intake = strict_identifier(intake_id, field="intake_id", max_length=192)
+    run = strict_identifier(run_id, field="run_id", max_length=192)
+    if result_status not in _CANARY_TERMINAL_STATES:
+        raise ValueError("task_evaluation_policy_canary_state_not_terminal")
+    delivery = dict(result_delivery)
+    if (
+        delivery.get("schema_version") != "task_evaluation_result_delivery.v2"
+        or delivery.get("run_id") != run
+        or delivery.get("result_status") != result_status
+        or delivery.get("claim_ceiling") != "diagnostic_policy_execution"
+        or delivery.get("delivery_digest")
+        != canonical_digest(delivery, digest_field="delivery_digest")
+    ):
+        raise ValueError("task_evaluation_policy_canary_result_delivery_invalid")
+    try:
+        canary = validate_policy_canary_result(policy_canary_result)
+    except TaskEvaluationPolicyCanaryResultError as exc:
+        raise ValueError("task_evaluation_policy_canary_result_invalid") from exc
+    if (
+        canary["run_id"] != run
+        or canary["request_digest"] != request_digest
+        or canary["configuration_digest"] != configuration_digest
+        or canary["result_status"] != result_status
+        or canary["result_delivery_digest"] != delivery["delivery_digest"]
+    ):
+        raise ValueError("task_evaluation_policy_canary_result_binding_mismatch")
+    return {
+        "schema_version": "task_evaluation_run_publication.v4",
+        "capture_session_id": session,
+        "intake_id": intake,
+        "run_id": run,
+        "request_digest": request_digest,
+        "configuration_digest": configuration_digest,
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "result_status": result_status,
+        "scene_controls_status": "configured_controls_pending",
+        "warning": "Controls pending — results are unqualified.",
+        "result_delivery": delivery,
+        "policy_canary_result": canary,
+        "proof_boundary": {
+            "scene_promotion_authorized": False,
+            "official_policy_ranking_authorized": False,
+            "winner_selection_authorized": False,
+            "simulation_is_physical_success": False,
+            "deployment_or_safety_approved": False,
+        },
+    }
 
 
 def sync_task_evaluation_run_to_webapp(
@@ -252,5 +323,6 @@ __all__ = [
     "TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV",
     "TASK_EVALUATION_RUN_WEBAPP_URL_ENV",
     "build_task_evaluation_run_webapp_publication",
+    "build_task_evaluation_policy_canary_webapp_publication",
     "sync_task_evaluation_run_to_webapp",
 ]

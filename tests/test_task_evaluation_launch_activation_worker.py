@@ -58,10 +58,12 @@ from tests.test_task_evaluation_scene_configuration_bundle import (
 from tests.test_task_evaluation_policy_run_contract import (
     configuration as policy_configuration,
     controls_qualification as policy_controls_qualification,
+    selection as policy_selection,
     setup as policy_setup,
 )
 from blueprint_pipeline.task_evaluation_policy_run_contract import (
     build_policy_run_plan,
+    compile_policy_run_configuration,
 )
 
 
@@ -208,6 +210,102 @@ def test_policy_activation_seals_paired_campaign_queue_without_preparer(
     assert result["standing_authorization_published"] is False
     assert result["provider_mutation_performed"] is False
     assert result["paid_execution_requested"] is False
+
+
+def test_policy_canary_activation_materializes_single_session_runtime_inputs(
+    tmp_path: Path,
+) -> None:
+    setup_value = policy_setup()
+    quick = setup_value["presets"][0]
+    for index, cell in enumerate(quick["cells"]):
+        cell["resolved_scenario"] = {"family": cell["family"], "ordinal": index}
+        cell["cell_spec_digest"] = canonical_digest(cell["resolved_scenario"])
+    quick["scenario_set_digest"] = canonical_digest(
+        {"ordered_cells": quick["cells"]}
+    )
+    quick["nesting_proof_digest"] = canonical_digest(
+        {
+            "preset_id": "quick_10",
+            "scenario_set_digest": quick["scenario_set_digest"],
+            "parent_preset_id": None,
+            "parent_prefix_count": 0,
+            "selection_rule": "published_ordered_prefix",
+        }
+    )
+    setup_value["setup_digest"] = canonical_digest(
+        setup_value, digest_field="setup_digest"
+    )
+    selected = policy_selection(setup_value)
+    selected.update(
+        {
+            "run_kind": "internal_policy_canary",
+            "claim_ceiling": "diagnostic_policy_execution",
+            "scene_revision_digest": "sha256:" + "9" * 64,
+            "scene_controls_status_at_submission": "configured_controls_pending",
+            "robot_preset_id": "franka_panda_robotiq_2f85_v1",
+            "policy_candidate_ids": ["pi05_droid", "groot_n17_droid"],
+            "notification": {
+                "email": "robotics@example.com",
+                "notify_on": ["completed", "blocked", "cancelled"],
+            },
+        }
+    )
+    configuration = compile_policy_run_configuration(selected, setup=setup_value)
+    plan = build_policy_run_plan(configuration, setup=setup_value)
+    request = activation_request(lane="native_task_arena_policy_evaluation")
+    request["run_kind"] = "internal_policy_canary"
+    request["preparation"] = {
+        "preparation_id": "policy-canary-preparation-1",
+        "request_digest": "sha256:" + "1" * 64,
+        "result_digest": "sha256:" + "2" * 64,
+    }
+    construction = {"schema_version": "native_task_arena_construction_result.v1"}
+    construction["result_digest"] = canonical_digest(
+        construction, digest_field="result_digest"
+    )
+    construction_path = tmp_path / "construction.json"
+    construction_path.write_text(json.dumps(construction), encoding="utf-8")
+    packet_root = tmp_path / "packet"
+    packet_root.mkdir()
+    (packet_root / "native_task_arena_packet_receipt.v1.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    runtime_receipt = tmp_path / "runtime-source.json"
+    runtime_receipt.write_text("{}\n", encoding="utf-8")
+
+    result = worker._policy_campaign_activation_result(
+        request=request,
+        preparation_request={
+            "run_id": "policy-run-1",
+            "policy_run_configuration": configuration,
+            "policy_run_setup": setup_value,
+        },
+        preparation_result={
+            "result_digest": request["preparation"]["result_digest"],
+            "policy_run_plan": plan,
+        },
+        window={"window_digest": "sha256:" + "3" * 64},
+        activation_materialized={"lineage.construction_result": construction_path},
+        activation_root=tmp_path,
+        adapter={
+            "packet_root": str(packet_root),
+            "runtime_source_receipt": str(runtime_receipt),
+        },
+    )
+
+    runtime_inputs = json.loads(
+        Path(result["policy_canary_runtime_inputs_path"]).read_text(encoding="utf-8")
+    )
+    assert runtime_inputs["execution_authority"]["maximum_provider_allocations"] == 1
+    assert len(runtime_inputs["cells"]) == 10
+    assert runtime_inputs["cells"][0]["resolved_scenario_digest"] == canonical_digest(
+        runtime_inputs["cells"][0]["resolved_scenario"]
+    )
+    assert runtime_inputs["cells"][0]["control_diagnostic"] == {
+        "mode": "nonblocking_diagnostic_pending",
+        "typed_gap": "controls_pending_at_submission",
+        "policy_execution_blocked": False,
+    }
 
 
 def test_configured_revision_rights_substitution_blocks_before_activation(
