@@ -11,8 +11,10 @@ from blueprint_pipeline.task_evaluation_control_search_funnel import (
     OUTCOME_SCHEMA_VERSION,
     build_control_search_funnel_plan,
     build_control_search_sweep_result,
+    build_full_fidelity_replay_plan,
     validate_control_search_funnel_plan,
     validate_control_search_sweep_result,
+    validate_full_fidelity_replay_plan,
 )
 
 
@@ -257,4 +259,106 @@ def test_sweep_requires_every_candidate_seed_and_unique_env_assignment() -> None
             outcomes=duplicate,
             actual_vector_env_count=10,
             peak_gpu_memory_bytes=1,
+        )
+
+
+def _completed_sweep(plan: dict) -> dict:
+    outcomes = [
+        _outcome(
+            candidate,
+            seed_index=0,
+            wave_index=0,
+            environment_index=index,
+            collision=0.0,
+            coverage=1.0,
+            path_error=0.0,
+            destination_error=0.0,
+            stability_error=0.0,
+            displacement=0.12,
+        )
+        for index, candidate in enumerate(plan["candidate_index"])
+    ]
+    return build_control_search_sweep_result(
+        plan=plan,
+        outcomes=outcomes,
+        actual_vector_env_count=len(outcomes),
+        peak_gpu_memory_bytes=18_000_000_000,
+    )
+
+
+def _full_fidelity_packet(plan: dict) -> dict:
+    request = {
+        "schema_version": "native_task_arena_packet_request.v1",
+        "appearance_variant": {
+            "representation": "particlefield_3d_gaussian_splat",
+            "gaussian_field_quality": {
+                "schema_version": "gaussian_field_quality.v1",
+                "status": "qualified",
+                "blockers": [],
+                "learned_tensors_mutated": False,
+            },
+        },
+        "cameras": [
+            {"role": role} for role in ("external", "wrist", "overview")
+        ],
+        "assets": [
+            {
+                "semantic_role": "scene_collision",
+                "source": {
+                    "sha256": plan["immutable_inputs"][
+                        "scene_collision_digest"
+                    ]
+                },
+            }
+        ],
+        "request_digest": "",
+    }
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    return request
+
+
+def test_full_fidelity_bridge_requires_qualified_particlefield_and_cameras() -> None:
+    plan = _plan(
+        candidate_inventory=_inventory(8),
+        requested_vector_env_count=8,
+        seeds_per_candidate=1,
+        shortlist_size=8,
+    )
+    sweep = _completed_sweep(plan)
+    packet = _full_fidelity_packet(plan)
+
+    replay = build_full_fidelity_replay_plan(
+        plan=plan,
+        sweep_result=sweep,
+        full_fidelity_packet_request=packet,
+        camera_configuration_digest="sha256:" + "7" * 64,
+    )
+
+    assert validate_full_fidelity_replay_plan(
+        replay, plan=plan, sweep_result=sweep
+    ) == replay
+    assert replay["status"] == "ready_for_full_fidelity_replay"
+    assert replay["qualification_effect_before_replay"] == "none"
+    assert replay["replay_count"] == 8
+    assert replay["requirements"]["particlefield_render_required"] is True
+    assert replay["requirements"]["each_replay_must_seal_terminal_evidence"] is True
+
+    packet["appearance_variant"]["gaussian_field_quality"]["status"] = "blocked"
+    packet["appearance_variant"]["gaussian_field_quality"]["blockers"] = [
+        "corrupt"
+    ]
+    packet["request_digest"] = canonical_digest(
+        packet, digest_field="request_digest"
+    )
+    with pytest.raises(
+        ControlSearchFunnelError,
+        match="control_search_full_fidelity_packet_invalid",
+    ):
+        build_full_fidelity_replay_plan(
+            plan=plan,
+            sweep_result=sweep,
+            full_fidelity_packet_request=packet,
+            camera_configuration_digest="sha256:" + "7" * 64,
         )

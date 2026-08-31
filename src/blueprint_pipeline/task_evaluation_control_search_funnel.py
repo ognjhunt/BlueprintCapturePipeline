@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .native_task_arena_packet import validate_native_task_arena_packet_request
 from .task_evaluation_collision_aware_candidate_generation import (
     INVENTORY_SCHEMA_VERSION,
 )
@@ -23,6 +24,9 @@ from .task_evaluation_curobo_candidate_generator import CUROBO_BACKEND_IDENTITY
 PLAN_SCHEMA_VERSION = "task_evaluation_control_search_funnel_plan.v1"
 OUTCOME_SCHEMA_VERSION = "task_evaluation_control_search_vector_outcome.v1"
 SWEEP_RESULT_SCHEMA_VERSION = "task_evaluation_control_search_sweep_result.v1"
+REPLAY_PLAN_SCHEMA_VERSION = (
+    "task_evaluation_control_search_full_fidelity_replay_plan.v1"
+)
 CLAIM_CEILING = "development_only_control_search"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -516,14 +520,152 @@ def validate_control_search_sweep_result(
     return result
 
 
+def build_full_fidelity_replay_plan(
+    *,
+    plan: Mapping[str, Any],
+    sweep_result: Mapping[str, Any],
+    full_fidelity_packet_request: Mapping[str, Any],
+    camera_configuration_digest: str,
+) -> dict[str, Any]:
+    """Bind the development-only shortlist to strict exact-scene replay."""
+
+    frozen_plan = validate_control_search_funnel_plan(plan)
+    sweep = validate_control_search_sweep_result(
+        sweep_result, plan=frozen_plan
+    )
+    try:
+        packet = validate_native_task_arena_packet_request(
+            full_fidelity_packet_request
+        )
+    except ValueError as exc:
+        raise ControlSearchFunnelError(
+            "control_search_full_fidelity_packet_invalid"
+        ) from exc
+    appearance = packet.get("appearance_variant")
+    cameras = packet.get("cameras")
+    collision_assets = [
+        row
+        for row in packet.get("assets") or []
+        if isinstance(row, Mapping)
+        and row.get("semantic_role") == "scene_collision"
+    ]
+    if (
+        not _digest(camera_configuration_digest)
+        or not isinstance(appearance, Mapping)
+        or appearance.get("representation")
+        != "particlefield_3d_gaussian_splat"
+        or not isinstance(cameras, list)
+        or {row.get("role") for row in cameras if isinstance(row, Mapping)}
+        != {"external", "wrist", "overview"}
+        or len(collision_assets) != 1
+        or (collision_assets[0].get("source") or {}).get("sha256")
+        != frozen_plan["immutable_inputs"]["scene_collision_digest"]
+    ):
+        raise ControlSearchFunnelError(
+            "control_search_full_fidelity_packet_invalid"
+        )
+    replay_rows = []
+    for replay_index, selected in enumerate(sweep["shortlist"]):
+        replay_rows.append(
+            {
+                "replay_index": replay_index,
+                "candidate_id": selected["candidate_id"],
+                "candidate_digest": selected["candidate_digest"],
+                "control_search_rank": selected["control_search_rank"],
+                "control_search_aggregate_digest": selected[
+                    "aggregate_digest"
+                ],
+                "full_fidelity_packet_request_digest": packet[
+                    "request_digest"
+                ],
+                "reset_before_replay_required": True,
+                "exact_candidate_application_required": True,
+            }
+        )
+    replay: dict[str, Any] = {
+        "schema_version": REPLAY_PLAN_SCHEMA_VERSION,
+        "status": "ready_for_full_fidelity_replay",
+        "run_id": frozen_plan["run_id"],
+        "source_commit": frozen_plan["source_commit"],
+        "control_search_plan_digest": frozen_plan["plan_digest"],
+        "control_search_result_digest": sweep["result_digest"],
+        "claim_ceiling_before_replay": CLAIM_CEILING,
+        "qualification_effect_before_replay": "none",
+        "full_fidelity_bindings": {
+            "packet_request_digest": packet["request_digest"],
+            "appearance_representation": appearance["representation"],
+            "gaussian_field_quality": _copy(
+                appearance["gaussian_field_quality"],
+                blocker="control_search_full_fidelity_packet_invalid",
+            ),
+            "scene_collision_digest": frozen_plan["immutable_inputs"][
+                "scene_collision_digest"
+            ],
+            "camera_configuration_digest": camera_configuration_digest,
+            "camera_roles": ["external", "wrist", "overview"],
+        },
+        "replays": replay_rows,
+        "replay_count": len(replay_rows),
+        "requirements": {
+            "particlefield_render_required": True,
+            "camera_evidence_required": True,
+            "reset_readback_required": True,
+            "native_orientation_collision_contact_and_task_gates_required": True,
+            "deterministic_simulator_state_scoring_required": True,
+            "learned_grader_used": False,
+            "each_replay_must_seal_terminal_evidence": True,
+        },
+        "replay_plan_digest": "",
+    }
+    replay["replay_plan_digest"] = canonical_digest(
+        replay, digest_field="replay_plan_digest"
+    )
+    return replay
+
+
+def validate_full_fidelity_replay_plan(
+    value: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any],
+    sweep_result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Reopen the bridge without treating readiness as execution evidence."""
+
+    replay = _copy(value, blocker="control_search_replay_plan_invalid")
+    frozen_plan = validate_control_search_funnel_plan(plan)
+    sweep = validate_control_search_sweep_result(
+        sweep_result, plan=frozen_plan
+    )
+    if (
+        replay.get("schema_version") != REPLAY_PLAN_SCHEMA_VERSION
+        or replay.get("status") != "ready_for_full_fidelity_replay"
+        or replay.get("control_search_plan_digest") != frozen_plan["plan_digest"]
+        or replay.get("control_search_result_digest") != sweep["result_digest"]
+        or replay.get("claim_ceiling_before_replay") != CLAIM_CEILING
+        or replay.get("qualification_effect_before_replay") != "none"
+        or replay.get("replay_count") != len(sweep["shortlist"])
+        or not isinstance(replay.get("replays"), list)
+        or len(replay["replays"]) != replay["replay_count"]
+        or (replay.get("requirements") or {}).get("learned_grader_used")
+        is not False
+        or replay.get("replay_plan_digest")
+        != canonical_digest(replay, digest_field="replay_plan_digest")
+    ):
+        raise ControlSearchFunnelError("control_search_replay_plan_invalid")
+    return replay
+
+
 __all__ = [
     "CLAIM_CEILING",
     "ControlSearchFunnelError",
     "OUTCOME_SCHEMA_VERSION",
     "PLAN_SCHEMA_VERSION",
+    "REPLAY_PLAN_SCHEMA_VERSION",
     "SWEEP_RESULT_SCHEMA_VERSION",
     "build_control_search_funnel_plan",
     "build_control_search_sweep_result",
+    "build_full_fidelity_replay_plan",
     "validate_control_search_funnel_plan",
     "validate_control_search_sweep_result",
+    "validate_full_fidelity_replay_plan",
 ]
