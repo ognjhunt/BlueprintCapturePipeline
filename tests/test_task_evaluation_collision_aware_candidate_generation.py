@@ -420,6 +420,15 @@ def test_remote_curobo_uses_retained_worker_without_allocating(
                 "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_NVIDIA_CUROBO="
                 + CUROBO_BACKEND_IDENTITY["package_version"]
             ) in script
+            # The env var demonstrably does not survive the isaac python
+            # wrapper (run r11 installed 0.0.0 with it set), so the script must
+            # also restore the release tag the digests already prove.
+            assert (
+                "git -C \"$root\" tag -f "
+                + CUROBO_BACKEND_IDENTITY["source_tag"]
+                + " "
+                + CUROBO_BACKEND_IDENTITY["source_revision"]
+            ) in script
             assert (
                 'importlib.metadata.version("'
                 + CUROBO_BACKEND_IDENTITY["package_name"]
