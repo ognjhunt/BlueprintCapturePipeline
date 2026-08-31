@@ -426,7 +426,8 @@ def sync_task_evaluation_policy_canary_to_webapp(
                         )
                     )
                     and notification.get("terminal_state") == expected_terminal
-                    and notification.get("status") in {"delivered", "failed"}
+                    and notification.get("status")
+                    in {"accepted", "delivered", "failed"}
                     and isinstance(notification.get("attempts"), int)
                     and not isinstance(notification.get("attempts"), bool)
                     and notification["attempts"] >= 1
@@ -515,7 +516,8 @@ def sync_policy_canary_preprovider_blocked_to_webapp(
         or receipt.get("request_digest") != request_digest
         or receipt.get("payload_digest") != payload["payload_digest"]
         or notification.get("terminal_state") != "blocked"
-        or notification.get("status") not in {"delivered", "failed"}
+        or notification.get("status")
+        not in {"accepted", "delivered", "failed"}
         or notification.get("run_result_digest") != payload["payload_digest"]
     ):
         return {"status": "failed", "reason": "response_binding_mismatch", **payload}
