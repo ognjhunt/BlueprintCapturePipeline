@@ -30,6 +30,9 @@ SPEC_SCHEMA_VERSION = "native_task_arena_policy_canary_execution_spec.v1"
 DECISION_SCHEMA_VERSION = "task_evaluation_policy_canary_setup_preflight.v1"
 PRESUBMISSION_SETUP_SCHEMA_VERSION = "task_evaluation_policy_canary_setup.v1"
 PROFILE_INPUT_SCHEMA_VERSION = "task_evaluation_policy_canary_profile_materialization_input.v1"
+EXECUTION_TEMPLATE_SCHEMA_VERSION = (
+    "task_evaluation_policy_canary_execution_setup_template.v1"
+)
 RUN_KIND = "internal_policy_canary"
 CLAIM_CEILING = "diagnostic_policy_execution"
 SCENE_ID = "839873"
@@ -181,6 +184,7 @@ def materialize_scene839873_policy_canary_setup(
     capture_session_id: str,
     intake_id: str,
     request_digest: str,
+    configured_request_digest: str | None = None,
     launch_request_path: str | Path,
     launch_profile_path: str | Path,
     configured_progression_path: str | Path,
@@ -225,7 +229,8 @@ def materialize_scene839873_policy_canary_setup(
         or profile.get("source_commit") != source_commit
     ):
         blockers.append("policy_canary_current_commit_binding_mismatch")
-    if launch_request.get("request_digest") != request_digest:
+    source_request_digest = configured_request_digest or request_digest
+    if launch_request.get("request_digest") != source_request_digest:
         blockers.append("policy_canary_request_digest_mismatch")
     if profile.get("profile_digest") != canonical_digest(profile, digest_field="profile_digest"):
         blockers.append("policy_canary_profile_digest_invalid")
@@ -328,6 +333,7 @@ def materialize_scene839873_policy_canary_setup(
         "capture_session_id": capture_session_id,
         "intake_id": intake_id,
         "request_digest": request_digest,
+        "configured_request_digest": source_request_digest,
         "runtime_inputs": {
             "native_packet": _record(packet_receipt_path),
             "scene_plan": _record(scene_plan_path),
@@ -582,12 +588,143 @@ def materialize_policy_canary_presubmission_setup(
     )
     write_json(setup_path, setup)
     write_json(wrapper_path, wrapper)
+    execution_template: dict[str, Any] = {
+        "schema_version": EXECUTION_TEMPLATE_SCHEMA_VERSION,
+        "source_commit": source_commit,
+        "configured_source_launch_id": configured_source_launch_id,
+        "scene_revision_digest": scene_revision_digest,
+        "configured_request_digest": request_digest,
+        "launch_request_path": str(Path(launch_request_path).expanduser().resolve()),
+        "launch_profile_path": str(Path(launch_profile_path).expanduser().resolve()),
+        "configured_progression_path": str(
+            Path(configured_progression_path).expanduser().resolve()
+        ),
+        "scene_plan_path": str(Path(scene_plan_path).expanduser().resolve()),
+        "packet_receipt_path": str(Path(packet_receipt_path).expanduser().resolve()),
+        "runtime_source_receipt_path": str(
+            Path(runtime_source_receipt_path).expanduser().resolve()
+        ),
+        "historical_policy_readiness_path": str(
+            Path(historical_policy_readiness_path).expanduser().resolve()
+        ),
+        "pi05_checkpoint_inventory_path": str(
+            Path(pi05_checkpoint_inventory_path).expanduser().resolve()
+        ),
+        "maximum_hourly_rate_usd": maximum_hourly_rate_usd,
+        "hard_cap_usd": hard_cap_usd,
+        "hard_ttl_seconds": hard_ttl_seconds,
+        "profile_materialization_input": _record(wrapper_path),
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "template_digest": "",
+    }
+    execution_template["template_digest"] = canonical_digest(
+        execution_template, digest_field="template_digest"
+    )
+    execution_template_path = destination / (
+        "task_evaluation_policy_canary_execution_setup_template.v1.json"
+    )
+    write_json(execution_template_path, execution_template)
     return {
         "setup": setup,
         "setup_path": str(setup_path),
         "profile_materialization_input": wrapper,
         "profile_materialization_input_path": str(wrapper_path),
+        "execution_setup_template": execution_template,
+        "execution_setup_template_path": str(execution_template_path),
     }
+
+
+def materialize_scene839873_policy_canary_setup_from_template(
+    *,
+    template_path: str | Path,
+    activation_envelope: Mapping[str, Any],
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Fill only Website-owned activation lineage into a staged static template."""
+
+    template = _read(template_path, code="policy_canary_execution_template_invalid")
+    if (
+        template.get("schema_version") != EXECUTION_TEMPLATE_SCHEMA_VERSION
+        or template.get("provider_mutation_performed") is not False
+        or template.get("paid_execution_requested") is not False
+        or template.get("template_digest")
+        != canonical_digest(template, digest_field="template_digest")
+    ):
+        raise PolicyCanarySetupError(["policy_canary_execution_template_invalid"])
+    wrapper_record = template.get("profile_materialization_input")
+    if not isinstance(wrapper_record, Mapping):
+        raise PolicyCanarySetupError(["policy_canary_profile_materialization_input_invalid"])
+    wrapper_path = Path(str(wrapper_record.get("path") or "")).expanduser().resolve()
+    if (
+        wrapper_path.is_symlink()
+        or not wrapper_path.is_file()
+        or wrapper_path.stat().st_size != wrapper_record.get("size_bytes")
+        or _sha256(wrapper_path) != wrapper_record.get("sha256")
+    ):
+        raise PolicyCanarySetupError(["policy_canary_profile_materialization_input_invalid"])
+    wrapper = _read(
+        wrapper_path, code="policy_canary_profile_materialization_input_invalid"
+    )
+    if (
+        wrapper.get("schema_version") != PROFILE_INPUT_SCHEMA_VERSION
+        or wrapper.get("configured_source_launch_id")
+        != template.get("configured_source_launch_id")
+        or wrapper.get("source_commit") != template.get("source_commit")
+        or wrapper.get("materialization_digest")
+        != canonical_digest(wrapper, digest_field="materialization_digest")
+    ):
+        raise PolicyCanarySetupError(["policy_canary_profile_materialization_input_invalid"])
+    if (
+        activation_envelope.get("schema_version")
+        != "task_evaluation_policy_canary_dispatch_envelope.v1"
+        or activation_envelope.get("run_kind") != RUN_KIND
+        or activation_envelope.get("claim_ceiling") != CLAIM_CEILING
+        or activation_envelope.get("source_commit") != template.get("source_commit")
+        or activation_envelope.get("envelope_digest")
+        != canonical_digest(activation_envelope, digest_field="envelope_digest")
+    ):
+        raise PolicyCanarySetupError(["policy_canary_activation_envelope_invalid"])
+    activation_record = activation_envelope.get("activation_result")
+    if not isinstance(activation_record, Mapping):
+        raise PolicyCanarySetupError(["policy_canary_activation_result_invalid"])
+    activation_path = Path(str(activation_record.get("path") or "")).expanduser().resolve()
+    if (
+        activation_path.is_symlink()
+        or not activation_path.is_file()
+        or activation_path.stat().st_size != activation_record.get("size_bytes")
+        or _sha256(activation_path) != activation_record.get("sha256")
+    ):
+        raise PolicyCanarySetupError(["policy_canary_activation_result_invalid"])
+    activation = _read(
+        activation_path, code="policy_canary_activation_result_invalid"
+    )
+    return materialize_scene839873_policy_canary_setup(
+        source_commit=str(template["source_commit"]),
+        configured_source_launch_id=str(template["configured_source_launch_id"]),
+        scene_revision_digest=str(template["scene_revision_digest"]),
+        activation_digest=str(activation["policy_campaign_activation_digest"]),
+        capture_session_id=str(activation_envelope["capture_session_id"]),
+        intake_id=str(activation_envelope["intake_id"]),
+        request_digest=str(activation_envelope["request_digest"]),
+        configured_request_digest=str(template["configured_request_digest"]),
+        launch_request_path=template["launch_request_path"],
+        launch_profile_path=template["launch_profile_path"],
+        configured_progression_path=template["configured_progression_path"],
+        scene_plan_path=template["scene_plan_path"],
+        packet_receipt_path=template["packet_receipt_path"],
+        runtime_source_receipt_path=template["runtime_source_receipt_path"],
+        historical_policy_readiness_path=template[
+            "historical_policy_readiness_path"
+        ],
+        pi05_checkpoint_inventory_path=template[
+            "pi05_checkpoint_inventory_path"
+        ],
+        output_dir=output_dir,
+        maximum_hourly_rate_usd=float(template["maximum_hourly_rate_usd"]),
+        hard_cap_usd=float(template["hard_cap_usd"]),
+        hard_ttl_seconds=int(template["hard_ttl_seconds"]),
+    )
 
 
 __all__ = [
@@ -596,5 +733,6 @@ __all__ = [
     "QUICK_FAMILY_COUNTS",
     "materialize_scene839873_policy_canary_setup",
     "materialize_policy_canary_presubmission_setup",
+    "materialize_scene839873_policy_canary_setup_from_template",
     "materialize_setup_preflight_decision",
 ]

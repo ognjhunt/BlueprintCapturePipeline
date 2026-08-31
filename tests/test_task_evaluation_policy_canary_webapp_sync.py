@@ -7,6 +7,7 @@ from blueprint_pipeline.task_evaluation_policy_canary_result import (
     validate_policy_canary_result,
 )
 from blueprint_pipeline.task_evaluation_run_webapp_sync import (
+    sync_policy_canary_preprovider_blocked_to_webapp,
     sync_task_evaluation_policy_canary_to_webapp,
 )
 
@@ -158,3 +159,59 @@ def test_canary_sync_requires_website_notification_receipt(monkeypatch) -> None:
     assert synced["status"] == "succeeded"
     assert synced["notification_delivery"]["status"] == "delivered"
     assert "sync-secret" not in json.dumps(synced)
+
+
+def test_preprovider_blocked_sync_requires_terminal_email_readback(monkeypatch) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self) -> bytes:
+            request = captured["request"]
+            payload = json.loads(request.data)
+            return json.dumps(
+                {
+                    "schema_version": (
+                        "capture_task_evaluation_policy_canary_blocked_receipt.v1"
+                    ),
+                    "status": "blocked",
+                    "activation_id": payload["activation_id"],
+                    "request_digest": payload["request_digest"],
+                    "payload_digest": payload["payload_digest"],
+                    "notification_delivery": {
+                        "terminal_state": "blocked",
+                        "status": "delivered",
+                        "attempts": 1,
+                        "provider": "resend",
+                        "message_id": "message-blocked-1",
+                        "delivered_at": "2026-08-31T14:00:00Z",
+                        "run_result_digest": payload["payload_digest"],
+                    },
+                }
+            ).encode("utf-8")
+
+    captured = {}
+
+    def open_response(request, **_kwargs):
+        captured["request"] = request
+        return Response()
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_run_webapp_sync.urllib_request.urlopen",
+        open_response,
+    )
+    synced = sync_policy_canary_preprovider_blocked_to_webapp(
+        activation_id="activation-839873",
+        capture_session_id="capture-839873",
+        intake_id="intake-839873",
+        request_digest="sha256:" + "1" * 64,
+        blockers=["policy_canary_setup_invalid"],
+        endpoint_url="https://webapp.example/api/internal/pipeline/task-evaluation-runs",
+        token="sync-secret",
+    )
+
+    assert synced["status"] == "succeeded"
+    assert synced["notification_delivery"]["status"] == "delivered"

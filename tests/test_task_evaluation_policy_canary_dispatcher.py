@@ -348,6 +348,53 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
     assert second["allocator_invoked"] is False
     assert calls == {"allocator": 1, "bundle": 1}
 
+    def post_billing(**kwargs):
+        _write(Path(kwargs["output_path"]), {"status": "reconciled_official_posted_charges"})
+        return True
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher._materialize_official_billing_if_posted",
+        post_billing,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_vast_official_same_goal_reconciliation",
+        lambda _path: {},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.materialize_policy_canary_result_delivery",
+        lambda **kwargs: {
+            "run_id": kwargs["run_id"],
+            "result_status": kwargs["result_status"],
+            "delivery_digest": "sha256:" + "d" * 64,
+            "report": {},
+            "closure": {},
+        },
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher._projection",
+        lambda **_kwargs: {"projection_digest": "sha256:" + "e" * 64},
+    )
+    third = dispatch_policy_canary_activation(
+        activation_result_path=activation_result,
+        execution_setup_path=setup_path,
+        output_root=output,
+        implementation_commit=COMMIT,
+        execute=True,
+        allocator_runner=lambda _argv: pytest.fail("allocator invoked on billing resume"),
+        provider_zero_collector=lambda: zero,
+        sync_runner=lambda **_kwargs: {
+            "status": "succeeded",
+            "notification_delivery": {
+                "status": "delivered",
+                "run_result_digest": "sha256:" + "e" * 64,
+            },
+        },
+    )
+
+    assert third["status"] == "completed_unqualified"
+    assert third["allocator_invoked"] is False
+    assert calls == {"allocator": 1, "bundle": 1}
+
 
 def test_paid_queue_waits_for_setup_without_invoking_dispatcher(tmp_path: Path) -> None:
     activation_result, _setup_path, _activation = _inputs(tmp_path)
@@ -391,3 +438,133 @@ def test_paid_queue_waits_for_setup_without_invoking_dispatcher(tmp_path: Path) 
     )
     assert observed["results"][0]["allocator_invoked"] is False
     assert envelope_path.is_file()
+    assert (
+        tmp_path / "dispatches/activation-1/preprovider_waiting.json"
+    ).is_file()
+
+
+def test_nonretryable_setup_refusal_moves_queue_only_after_blocked_email_sync(
+    tmp_path: Path,
+) -> None:
+    activation_result, _setup_path, _activation = _inputs(tmp_path)
+    queue = tmp_path / "queue"
+    for name in ("pending", "processing", "completed", "blocked"):
+        (queue / name).mkdir(parents=True, exist_ok=True)
+    envelope = {
+        "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
+        "activation_id": "activation-1",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "source_commit": COMMIT,
+        "activation_result": _record(activation_result),
+        "capture_session_id": "capture-839873",
+        "intake_id": "intake-839873",
+        "request_digest": "sha256:" + "7" * 64,
+        "maximum_provider_allocations": 1,
+        "retry_cap": 0,
+        "automatic_retry_authorized": False,
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "envelope_digest": "",
+    }
+    envelope["envelope_digest"] = canonical_digest(
+        envelope, digest_field="envelope_digest"
+    )
+    pending = _write(queue / "pending" / "activation-1.json", envelope)
+    setups = tmp_path / "setups"
+    setups.mkdir()
+    invalid_template = _write(tmp_path / "invalid-template.json", {})
+
+    observed = process_policy_canary_dispatch_queue(
+        dispatch_queue_root=queue,
+        execution_setup_root=setups,
+        execution_setup_template_path=invalid_template,
+        dispatch_root=tmp_path / "dispatches",
+        implementation_commit=COMMIT,
+        execute=True,
+        blocked_sync_runner=lambda **_kwargs: {
+            "status": "succeeded",
+            "notification_delivery": {"status": "delivered"},
+        },
+    )
+
+    assert observed["results"][0]["status"] == "blocked_before_paid_dispatch"
+    assert observed["results"][0]["allocator_invoked"] is False
+    assert not pending.exists()
+    assert (queue / "blocked" / pending.name).is_file()
+    assert (
+        tmp_path / "dispatches/activation-1/preprovider_blocked.json"
+    ).is_file()
+
+
+def test_paid_queue_materializes_setup_from_staged_template_before_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    activation_result, source_setup, _activation = _inputs(tmp_path)
+    queue = tmp_path / "queue"
+    for name in ("pending", "processing", "completed", "blocked"):
+        (queue / name).mkdir(parents=True, exist_ok=True)
+    envelope = {
+        "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
+        "activation_id": "activation-1",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "source_commit": COMMIT,
+        "activation_result": _record(activation_result),
+        "capture_session_id": "capture-839873",
+        "intake_id": "intake-839873",
+        "request_digest": "sha256:" + "7" * 64,
+        "maximum_provider_allocations": 1,
+        "retry_cap": 0,
+        "automatic_retry_authorized": False,
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "envelope_digest": "",
+    }
+    envelope["envelope_digest"] = canonical_digest(
+        envelope, digest_field="envelope_digest"
+    )
+    pending = _write(queue / "pending" / "activation-1.json", envelope)
+    template = _write(tmp_path / "template.json", {"static": True})
+    setups = tmp_path / "setups"
+    setups.mkdir()
+    dispatches = tmp_path / "dispatches"
+
+    def materialize(*, output_dir, **_kwargs):
+        destination = Path(output_dir)
+        destination.mkdir(parents=True, exist_ok=True)
+        target = destination / "task_evaluation_policy_canary_execution_setup.v1.json"
+        target.write_bytes(source_setup.read_bytes())
+        return json.loads(target.read_text(encoding="utf-8"))
+
+    def dispatch(**kwargs):
+        output = Path(kwargs["output_root"])
+        output.mkdir(parents=True, exist_ok=True)
+        _write(output / "dispatch_receipt.json", {"status": "prepared_no_execution"})
+        return {"status": "prepared_no_execution", "allocator_invoked": True}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.materialize_scene839873_policy_canary_setup_from_template",
+        materialize,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.dispatch_policy_canary_activation",
+        dispatch,
+    )
+
+    observed = process_policy_canary_dispatch_queue(
+        dispatch_queue_root=queue,
+        execution_setup_root=setups,
+        execution_setup_template_path=template,
+        dispatch_root=dispatches,
+        implementation_commit=COMMIT,
+        execute=False,
+    )
+
+    assert observed["results"][0]["status"] == "prepared_no_execution"
+    assert (
+        setups
+        / "activation-1/task_evaluation_policy_canary_execution_setup.v1.json"
+    ).is_file()
+    assert not pending.exists()
+    assert (queue / "completed" / pending.name).is_file()

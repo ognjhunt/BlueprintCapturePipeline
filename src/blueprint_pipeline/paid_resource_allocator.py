@@ -186,11 +186,7 @@ from .native_task_arena_policy_diagnostic_bundle import (
     build_native_task_arena_policy_diagnostic_bundle,
     load_verified_native_task_arena_policy_diagnostic_bundle,
 )
-from .native_task_arena_policy_canary_session import (
-    PROBE_KIND as NATIVE_TASK_ARENA_POLICY_CANARY_SESSION_PROBE_KIND,
-    validate_provider_bundle as validate_policy_canary_provider_bundle,
-    validate_session_authority as validate_policy_canary_session_authority,
-)
+from . import policy_canary_allocator_lane as policy_canary_lane
 from .native_task_arena_runtime_preflight_bundle import (
     PROBE_KIND as NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
     build_native_task_arena_runtime_preflight_bundle,
@@ -201,7 +197,6 @@ from .native_task_arena_vast import (
     run_native_task_arena_controls_vast,
     run_native_task_arena_policy_vast,
     run_native_task_arena_policy_diagnostic_vast,
-    run_native_task_arena_policy_canary_session_vast,
     run_native_task_arena_runtime_preflight_vast,
     run_native_task_arena_vast,
 )
@@ -369,7 +364,6 @@ _TYPED_AUTHORITY_ERROR = re.compile(r"^[a-z0-9_]+(?::[a-z0-9_,]+)?$")
 
 def _native_authority_validation_diagnostic(exc: BaseException) -> dict[str, Any]:
     """Retain a typed authority failure without leaking paths or payloads."""
-
     if isinstance(exc, json.JSONDecodeError):
         error_code = "json_decode_error"
     elif isinstance(exc, PermissionError):
@@ -395,7 +389,6 @@ def _write_native_task_arena_adapter_output(
     path: str | Path, result: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Seal the exact terminal mapping at the allocator's adapter output."""
-
     sealed = json.loads(json.dumps(dict(result), allow_nan=False))
     sealed["result_digest"] = canonical_digest(
         sealed, digest_field="result_digest"
@@ -481,13 +474,11 @@ CHECKOUT_IDENTITY_PROBE_BACKOFF_SECONDS = 2.0
 
 def _checkout_git_command(*arguments: str) -> list[str]:
     """Trust only the physical immutable checkout used by this allocator."""
-
     return ["git", "-c", f"safe.directory={ROOT}", "-C", str(ROOT), *arguments]
 
 
 def _run_checkout_probe(argv: Sequence[str]) -> subprocess.CompletedProcess | None:
     """Probe immutable checkout identity, retrying a transient Git lock."""
-
     result: subprocess.CompletedProcess | None = None
     for attempt in range(CHECKOUT_IDENTITY_PROBE_ATTEMPTS):
         try:
@@ -1665,7 +1656,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
-            NATIVE_TASK_ARENA_POLICY_CANARY_SESSION_PROBE_KIND,
+            policy_canary_lane.PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
@@ -1815,8 +1806,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--native-task-arena-control-result")
     gpu.add_argument("--native-task-arena-policy-execution-spec")
-    gpu.add_argument("--native-task-arena-policy-canary-session-authority")
-    gpu.add_argument("--native-task-arena-policy-canary-session-bundle-receipt")
+    policy_canary_lane.add_policy_canary_allocator_arguments(gpu)
     gpu.add_argument(
         "--native-task-arena-retain-warm-session",
         action="store_true",
@@ -3398,142 +3388,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
-        if args.probe_kind == NATIVE_TASK_ARENA_POLICY_CANARY_SESSION_PROBE_KIND:
-            control_blockers, control_identity = _control_plane_checkout_blockers()
-            blockers: list[str] = list(control_blockers)
-            if args.provider != "vast":
-                blockers.append("policy_canary_session_provider_must_be_vast")
-            if not args.adp_job_dir:
-                blockers.append("policy_canary_session_job_dir_missing")
-            if not args.native_task_arena_policy_canary_session_authority:
-                blockers.append("policy_canary_session_authority_missing")
-            if not args.native_task_arena_policy_canary_session_bundle_receipt:
-                blockers.append("policy_canary_session_bundle_receipt_missing")
-            authority = None
-            prepared_bundle = None
-            if not blockers:
-                try:
-                    authority = validate_policy_canary_session_authority(
-                        _load(
-                            Path(
-                                args.native_task_arena_policy_canary_session_authority
-                            ).expanduser().resolve()
-                        )
-                    )
-                    prepared_bundle = _load(
-                        Path(
-                            args.native_task_arena_policy_canary_session_bundle_receipt
-                        ).expanduser().resolve()
-                    )
-                    prepared_bundle = validate_policy_canary_provider_bundle(
-                        prepared_bundle, authority=authority
-                    )
-                    if (
-                        float(authority["hard_cap_usd"])
-                        != float(args.adp_max_spend_usd)
-                        or int(authority["hard_ttl_seconds"])
-                        != int(args.adp_hard_ttl_seconds)
-                    ):
-                        blockers.append("policy_canary_session_resource_bounds_mismatch")
-                except (OSError, ValueError, json.JSONDecodeError):
-                    blockers.append("policy_canary_session_contract_invalid")
-            allocation_binding = {
-                "program_id": "arm-decision-proof-v1",
-                "probe_kind": NATIVE_TASK_ARENA_POLICY_CANARY_SESSION_PROBE_KIND,
-                "orchestrator_source_commit": control_identity.get(
-                    "orchestrator_source_commit"
-                ),
-                "run_kind": "internal_policy_canary",
-                "claim_ceiling": "diagnostic_policy_execution",
-                "bundle_sha256": (
-                    prepared_bundle.get("bundle_sha256") if prepared_bundle else None
-                ),
-                "runtime_inputs_digest": (
-                    prepared_bundle.get("runtime_inputs_digest")
-                    if prepared_bundle
-                    else None
-                ),
-                "authority_digest": (
-                    authority.get("authority_digest") if authority else None
-                ),
-                "candidate_ids": ["pi05_droid", "groot_n17_droid"],
-                "episodes_per_policy": 10,
-                "learned_policy_rollout_count": 20,
-                "maximum_provider_allocations": 1,
-                "retry_cap": 0,
-                "hard_cap_usd": args.adp_max_spend_usd,
-                "hard_ttl_seconds": args.adp_hard_ttl_seconds,
-            }
-            allocation_binding_digest = "sha256:" + hashlib.sha256(
-                json.dumps(
-                    allocation_binding, sort_keys=True, separators=(",", ":")
-                ).encode("utf-8")
-            ).hexdigest()
-            paid_admission = build_paid_lane_admission(
-                resource_class="vast_provider_adapter", blockers=blockers
-            )
-            paid_admission.update(
-                {
-                    "program_id": "arm-decision-proof-v1",
-                    "probe_kind": NATIVE_TASK_ARENA_POLICY_CANARY_SESSION_PROBE_KIND,
-                    "control_plane_identity": control_identity,
-                    "max_hourly_rate_usd": args.adp_max_hourly_rate_usd,
-                    "hard_cap_usd": args.adp_max_spend_usd,
-                    "hard_ttl_seconds": args.adp_hard_ttl_seconds,
-                    "retry_cap": 0,
-                    "maximum_provider_allocations": 1,
-                    "candidate_policy_queried": True,
-                    "physical_outcome_values_uploaded": False,
-                    "allocation_binding": allocation_binding,
-                    "allocation_binding_digest": allocation_binding_digest,
-                }
-            )
-            write_json(Path(args.admission_out), paid_admission)
-            grant = None
-            if args.execute:
-                try:
-                    grant = require_paid_resource_admission(
-                        paid_admission,
-                        resource_class="vast_provider_adapter",
-                        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
-                    )
-                except PaidResourceAdmissionBlocked as exc:
-                    result = {
-                        "status": "blocked",
-                        "blockers": exc.blockers,
-                        "provider_mutations_performed": 0,
-                    }
-                    write_json(Path(args.adapter_output), result)
-                    print(json.dumps({"success": False}, sort_keys=True))
-                    return 2
-            if prepared_bundle is None or authority is None:
-                result = {
-                    "status": "blocked",
-                    "blockers": sorted(set(blockers)),
-                    "provider_mutations_performed": 0,
-                }
-            else:
-                result = run_native_task_arena_policy_canary_session_vast(
-                    job_dir=args.adp_job_dir,
-                    prepared_bundle=prepared_bundle,
-                    session_authority=authority,
-                    paid_resource_admission_grant=grant,
-                    execute=args.execute,
-                    machine_avoidlist_path=args.adp_machine_avoidlist,
-                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
-                    hard_cap_usd=args.adp_max_spend_usd,
-                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
-                    allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
-                    provider_runtime_environment={
-                        name: os.environ[name]
-                        for name in POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES
-                        if name in os.environ
-                    },
-                )
-            write_json(Path(args.adapter_output), result)
-            success = result.get("status") in {"dry_run_ready", "completed"}
-            print(json.dumps({"success": success}, sort_keys=True))
-            return 0 if success else 2
+        if args.probe_kind == policy_canary_lane.PROBE_KIND:
+            return policy_canary_lane.run_policy_canary_allocator_lane(args, _control_plane_checkout_blockers())
         if args.probe_kind in {
             ADP_AURA_SMOKE_PROBE_KIND,
             ADP_AURA_INTERIORGS_PROBE_KIND,

@@ -9,6 +9,7 @@ from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import (
     QUICK_FAMILY_COUNTS,
     materialize_policy_canary_presubmission_setup,
     materialize_scene839873_policy_canary_setup,
+    materialize_scene839873_policy_canary_setup_from_template,
     materialize_setup_preflight_decision,
 )
 
@@ -189,3 +190,58 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     assert wrapper["internal_policy_canary_setup"] == setup
     assert Path(emitted["setup_path"]).is_file()
     assert Path(emitted["profile_materialization_input_path"]).is_file()
+    assert Path(emitted["execution_setup_template_path"]).is_file()
+    assert emitted["execution_setup_template"]["provider_mutation_performed"] is False
+
+
+def test_post_activation_template_separates_configured_and_canary_requests(
+    tmp_path: Path,
+) -> None:
+    kwargs = _kwargs(tmp_path)
+    for field in ("activation_digest", "capture_session_id", "intake_id"):
+        kwargs.pop(field)
+    kwargs["profile_id"] = "scene839873-internal-policy-canary-current"
+    emitted = materialize_policy_canary_presubmission_setup(**kwargs)
+    activation_result = {
+        "schema_version": "task_evaluation_launch_activation_result.v1",
+        "status": "policy_campaign_queue_materialized_no_execution",
+        "policy_campaign_activation_digest": ACTIVATION,
+    }
+    activation_path = _write(tmp_path / "activation-result.json", activation_result)
+    envelope = {
+        "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
+        "activation_id": "activation-839873",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "source_commit": COMMIT,
+        "activation_result": {
+            "path": str(activation_path),
+            "size_bytes": activation_path.stat().st_size,
+            "sha256": "sha256:" + __import__("hashlib").sha256(
+                activation_path.read_bytes()
+            ).hexdigest(),
+        },
+        "capture_session_id": "capture-new-canary",
+        "intake_id": "intake-new-canary",
+        "request_digest": "sha256:" + "e" * 64,
+        "maximum_provider_allocations": 1,
+        "retry_cap": 0,
+        "automatic_retry_authorized": False,
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "envelope_digest": "",
+    }
+    envelope["envelope_digest"] = canonical_digest(
+        envelope, digest_field="envelope_digest"
+    )
+
+    setup = materialize_scene839873_policy_canary_setup_from_template(
+        template_path=emitted["execution_setup_template_path"],
+        activation_envelope=envelope,
+        output_dir=tmp_path / "post-activation",
+    )
+
+    assert setup["configured_request_digest"] == REQUEST
+    assert setup["request_digest"] == "sha256:" + "e" * 64
+    assert setup["capture_session_id"] == "capture-new-canary"
+    assert setup["activation_digest"] == ACTIVATION

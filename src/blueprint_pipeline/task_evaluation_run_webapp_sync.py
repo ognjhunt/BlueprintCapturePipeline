@@ -452,11 +452,87 @@ def sync_task_evaluation_policy_canary_to_webapp(
     }
 
 
+def sync_policy_canary_preprovider_blocked_to_webapp(
+    *,
+    activation_id: str,
+    capture_session_id: str,
+    intake_id: str,
+    request_digest: str,
+    blockers: list[str],
+    endpoint_url: str | None = None,
+    token: str | None = None,
+    timeout_seconds: float = 10.0,
+) -> dict[str, Any]:
+    """Publish a no-allocation terminal blocker and require email readback."""
+
+    payload = {
+        "schema_version": "task_evaluation_policy_canary_preprovider_blocked.v1",
+        "activation_id": strict_identifier(
+            activation_id, field="activation_id", max_length=192
+        ),
+        "capture_session_id": strict_identifier(
+            capture_session_id, field="capture_session_id", max_length=192
+        ),
+        "intake_id": strict_identifier(intake_id, field="intake_id", max_length=192),
+        "request_digest": request_digest,
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "result_status": "blocked",
+        "provider_allocation_performed": False,
+        "automatic_retry_performed": False,
+        "blockers": sorted(set(str(item) for item in blockers if str(item))),
+        "payload_digest": "",
+    }
+    payload["payload_digest"] = canonical_digest(
+        payload, digest_field="payload_digest"
+    )
+    resolved_url = _text(endpoint_url) or _text(
+        os.getenv(TASK_EVALUATION_RUN_WEBAPP_URL_ENV)
+    )
+    resolved_token = _text(token) or _text(os.getenv("PIPELINE_SYNC_TOKEN"))
+    if not resolved_url or not resolved_token:
+        return {"status": "skipped", "reason": "sync_not_configured", **payload}
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    outbound = urllib_request.Request(
+        validated_https_sync_url(resolved_url),
+        data=body,
+        headers=_pipeline_sync_headers(resolved_token, body),
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(  # nosec B310 - URL validated above
+            outbound, timeout=max(0.1, timeout_seconds)
+        ) as response:
+            receipt = _mapping(json.loads(response.read().decode("utf-8")))
+    except (urllib_error.HTTPError, urllib_error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+        return {"status": "failed", "reason": type(exc).__name__, **payload}
+    notification = _mapping(receipt.get("notification_delivery"))
+    if (
+        receipt.get("schema_version")
+        != "capture_task_evaluation_policy_canary_blocked_receipt.v1"
+        or receipt.get("status") != "blocked"
+        or receipt.get("activation_id") != payload["activation_id"]
+        or receipt.get("request_digest") != request_digest
+        or receipt.get("payload_digest") != payload["payload_digest"]
+        or notification.get("terminal_state") != "blocked"
+        or notification.get("status") not in {"delivered", "failed"}
+        or notification.get("run_result_digest") != payload["payload_digest"]
+    ):
+        return {"status": "failed", "reason": "response_binding_mismatch", **payload}
+    return {
+        "status": "succeeded",
+        "payload_digest": payload["payload_digest"],
+        "notification_delivery": notification,
+        "response": receipt,
+    }
+
+
 __all__ = [
     "TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV",
     "TASK_EVALUATION_RUN_WEBAPP_URL_ENV",
     "build_task_evaluation_run_webapp_publication",
     "build_task_evaluation_policy_canary_webapp_publication",
     "sync_task_evaluation_policy_canary_to_webapp",
+    "sync_policy_canary_preprovider_blocked_to_webapp",
     "sync_task_evaluation_run_to_webapp",
 ]

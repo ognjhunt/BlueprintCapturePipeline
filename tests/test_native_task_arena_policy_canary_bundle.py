@@ -7,6 +7,7 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import native_task_arena_policy_canary_bundle as bundle
 from blueprint_pipeline import paid_resource_allocator as allocator
+from blueprint_pipeline import policy_canary_allocator_lane as allocator_lane
 
 
 def _spec(candidate: str) -> dict[str, object]:
@@ -119,11 +120,11 @@ def test_paid_allocator_routes_canary_only_through_one_session_transport(
         lambda: ([], {"orchestrator_source_commit": "d" * 40}),
     )
     monkeypatch.setattr(
-        allocator, "validate_policy_canary_session_authority", lambda _value: authority
+        allocator_lane, "validate_session_authority", lambda _value: authority
     )
     monkeypatch.setattr(
-        allocator,
-        "validate_policy_canary_provider_bundle",
+        allocator_lane,
+        "validate_provider_bundle",
         lambda _value, **_kwargs: receipt,
     )
 
@@ -132,7 +133,7 @@ def test_paid_allocator_routes_canary_only_through_one_session_transport(
         return {"status": "dry_run_ready", "provider_mutations_performed": 0}
 
     monkeypatch.setattr(
-        allocator, "run_native_task_arena_policy_canary_session_vast", fake_run
+        allocator_lane, "run_native_task_arena_policy_canary_session_vast", fake_run
     )
     exit_code = allocator.main(
         [
@@ -140,7 +141,7 @@ def test_paid_allocator_routes_canary_only_through_one_session_transport(
             "--provider",
             "vast",
             "--probe-kind",
-            allocator.NATIVE_TASK_ARENA_POLICY_CANARY_SESSION_PROBE_KIND,
+            allocator_lane.PROBE_KIND,
             "--admission-out",
             str(tmp_path / "admission.json"),
             "--adapter-output",

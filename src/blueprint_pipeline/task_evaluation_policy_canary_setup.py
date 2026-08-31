@@ -112,4 +112,20 @@ def policy_canary_setup_blockers(
     return []
 
 
-__all__ = ["SCHEMA_PATH", "SCHEMA_VERSION", "TaskEvaluationPolicyCanarySetupError", "policy_canary_setup_blockers", "policy_canary_setup_schema", "validate_policy_canary_setup"]
+def launch_profile_policy_canary_setup_blockers(
+    profile: Mapping[str, Any], *, prefix: str
+) -> list[str]:
+    if "internal_policy_canary_setup" not in profile:
+        return []
+    return policy_canary_setup_blockers(
+        profile["internal_policy_canary_setup"],
+        prefix=prefix,
+        source_launch_id=str(
+            profile.get("configured_source_launch_id")
+            or profile.get("profile_id")
+            or ""
+        ),
+    )
+
+
+__all__ = ["SCHEMA_PATH", "SCHEMA_VERSION", "TaskEvaluationPolicyCanarySetupError", "launch_profile_policy_canary_setup_blockers", "policy_canary_setup_blockers", "policy_canary_setup_schema", "validate_policy_canary_setup"]

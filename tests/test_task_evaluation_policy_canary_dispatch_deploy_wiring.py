@@ -30,9 +30,12 @@ def test_canary_paid_dispatcher_is_installed_but_never_always_armed() -> None:
 
     assert "task_evaluation_policy_canary_dispatcher" in service
     assert "--dispatch-queue-root" in service
+    assert "--execution-setup-template" in service
+    assert "--billing-audit-root" in service
     assert "--execute" in service
     assert "KillMode=process" in service
     assert "task-evaluation-policy-canary-dispatches/pending" in path
+    assert "gpu_spend_guard/billing-audit" in path
     assert service_name in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
     assert path_name in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
     assert path_name not in deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS

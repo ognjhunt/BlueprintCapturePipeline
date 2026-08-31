@@ -323,6 +323,21 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "PathExistsGlob=/activations/pending/*.json\n",
         encoding="utf-8",
     )
+    canary_service = (
+        unit_dir / "blueprint-task-evaluation-policy-canary-dispatcher.service"
+    )
+    canary_service.write_text(
+        "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-policy-canary\n",
+        encoding="utf-8",
+    )
+    canary_path = (
+        unit_dir / "blueprint-task-evaluation-policy-canary-dispatcher.path"
+    )
+    canary_path.write_text(
+        "[Path]\nPathChanged=/policy-canaries/pending\n"
+        "PathExistsGlob=/policy-canaries/pending/*.json\n",
+        encoding="utf-8",
+    )
     discovery_service = unit_dir / "blueprint-scene-object-discovery.service"
     discovery_service.write_text(
         "[Service]\nExecStart=/usr/bin/blueprint-discover-scene-objects\n",
@@ -375,6 +390,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         compilation_path,
         activation_service,
         activation_path,
+        canary_service,
+        canary_path,
         discovery_service,
         discovery_path,
         progression_service,

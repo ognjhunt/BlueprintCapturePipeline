@@ -35,14 +35,21 @@ from .native_task_arena_policy_canary_session import (
     validate_runtime_input_manifest,
 )
 from .task_evaluation_policy_canary_result import validate_policy_canary_result
+from .task_evaluation_policy_canary_scene_setup import (
+    PolicyCanarySetupError,
+    materialize_scene839873_policy_canary_setup_from_template,
+)
 from .task_evaluation_result_delivery import (
     TaskEvaluationResultDeliveryError,
     materialize_policy_canary_result_delivery,
 )
 from .task_evaluation_run_webapp_sync import (
+    sync_policy_canary_preprovider_blocked_to_webapp,
     sync_task_evaluation_policy_canary_to_webapp,
 )
 from .vast_official_billing_extractor import (
+    VastOfficialBillingExtractionError,
+    materialize_vast_official_same_goal_reconciliation,
     validate_vast_official_same_goal_reconciliation,
 )
 
@@ -291,6 +298,48 @@ def _join_session_closeout(
     return value
 
 
+def _materialize_official_billing_if_posted(
+    *,
+    billing_audit_root: str | Path,
+    adapter_result_path: Path,
+    adapter: Mapping[str, Any],
+    launch_label: str,
+    output_path: Path,
+) -> bool:
+    if output_path.is_file():
+        validate_vast_official_same_goal_reconciliation(output_path)
+        return True
+    instance_ids = adapter.get("vast_instance_ids")
+    if (
+        not isinstance(instance_ids, list)
+        or len(instance_ids) != 1
+        or isinstance(instance_ids[0], bool)
+        or not isinstance(instance_ids[0], int)
+    ):
+        return False
+    audit = Path(billing_audit_root).expanduser().resolve()
+    if not audit.is_dir() or audit.is_symlink():
+        return False
+    candidates = sorted(
+        audit.rglob("provider_billing_source_receipt.json"),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for source in candidates:
+        try:
+            materialize_vast_official_same_goal_reconciliation(
+                provider_billing_source_receipt_path=source,
+                expected_instances=[
+                    (int(instance_ids[0]), launch_label, adapter_result_path)
+                ],
+                output_path=output_path,
+            )
+        except (OSError, VastOfficialBillingExtractionError):
+            continue
+        return True
+    return False
+
+
 def _projection(
     *, setup: Mapping[str, Any], result: Mapping[str, Any], delivery: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -496,6 +545,7 @@ def dispatch_policy_canary_activation(
     implementation_commit: str,
     execute: bool = False,
     official_billing_receipt_path: str | Path | None = None,
+    billing_audit_root: str | Path | None = None,
     allocator_runner: AllocatorRunner | None = None,
     provider_zero_collector: ProviderZeroCollector = collect_policy_canary_vast_provider_zero,
     sync_runner: SyncRunner = sync_task_evaluation_policy_canary_to_webapp,
@@ -778,6 +828,18 @@ def dispatch_policy_canary_activation(
         or root / "official_billing_reconciliation.json"
     ).expanduser().resolve()
     if not billing_path.is_file():
+        _materialize_official_billing_if_posted(
+            billing_audit_root=(
+                billing_audit_root
+                or os.getenv("BLUEPRINT_PROVIDER_BILLING_AUDIT_ROOT")
+                or "/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit"
+            ),
+            adapter_result_path=adapter_path,
+            adapter=adapter,
+            launch_label=str(resource["resource_name"]),
+            output_path=billing_path,
+        )
+    if not billing_path.is_file():
         pending = {
             "schema_version": SCHEMA_VERSION,
             "status": "awaiting_official_billing",
@@ -951,7 +1013,10 @@ def process_policy_canary_dispatch_queue(
     dispatch_root: str | Path,
     implementation_commit: str,
     execute: bool,
+    execution_setup_template_path: str | Path | None = None,
+    billing_audit_root: str | Path | None = None,
     max_messages: int = 1,
+    blocked_sync_runner: SyncRunner = sync_policy_canary_preprovider_blocked_to_webapp,
 ) -> dict[str, Any]:
     """Consume the activation worker's sealed canary-only paid queue."""
 
@@ -994,15 +1059,70 @@ def process_policy_canary_dispatch_queue(
             / "task_evaluation_policy_canary_execution_setup.v1.json",
         )
         setup_path = next((path for path in setup_candidates if path.is_file()), None)
-        if setup_path is None:
-            processed.append(
-                {
-                    "status": "waiting_for_scene839873_execution_setup",
+        if setup_path is None and execution_setup_template_path is not None:
+            setup_directory = setups / activation_id
+            try:
+                materialize_scene839873_policy_canary_setup_from_template(
+                    template_path=execution_setup_template_path,
+                    activation_envelope=envelope,
+                    output_dir=setup_directory,
+                )
+            except PolicyCanarySetupError as exc:
+                blocked: dict[str, Any] = {
+                    "schema_version": "task_evaluation_policy_canary_preprovider_blocked.v1",
+                    "status": "blocked_before_paid_dispatch",
                     "activation_id": activation_id,
+                    "run_kind": RUN_KIND,
+                    "claim_ceiling": CLAIM_CEILING,
                     "allocator_invoked": False,
                     "provider_mutation_performed": False,
+                    "automatic_retry_performed": False,
+                    "blockers": list(exc.blockers),
+                    "blocked_result_digest": "",
                 }
+                blocked["blocked_result_digest"] = canonical_digest(
+                    blocked, digest_field="blocked_result_digest"
+                )
+                blocked_root = outputs / activation_id
+                blocked_root.mkdir(parents=True, exist_ok=True)
+                write_json(blocked_root / "preprovider_blocked.json", blocked)
+                sync = dict(
+                    blocked_sync_runner(
+                        activation_id=activation_id,
+                        capture_session_id=envelope["capture_session_id"],
+                        intake_id=envelope["intake_id"],
+                        request_digest=envelope["request_digest"],
+                        blockers=list(exc.blockers),
+                    )
+                )
+                blocked["terminal_sync"] = sync
+                if sync.get("status") == "succeeded":
+                    os.replace(envelope_path, queue / "blocked" / envelope_path.name)
+                else:
+                    blocked["status"] = "blocked_awaiting_website_notification"
+                processed.append(blocked)
+                continue
+            setup_path = (
+                setup_directory
+                / "task_evaluation_policy_canary_execution_setup.v1.json"
             )
+        if setup_path is None:
+            waiting = {
+                "schema_version": "task_evaluation_policy_canary_preprovider_wait.v1",
+                "status": "waiting_for_scene839873_execution_setup",
+                "activation_id": activation_id,
+                "allocator_invoked": False,
+                "provider_mutation_performed": False,
+                "automatic_retry_performed": False,
+                "waiting_digest": "",
+            }
+            waiting["waiting_digest"] = canonical_digest(
+                waiting, digest_field="waiting_digest"
+            )
+            wait_root = outputs / activation_id
+            wait_root.mkdir(parents=True, exist_ok=True)
+            _write_exclusive(wait_root / "preprovider_waiting.json", waiting)
+            processed.append(waiting)
             continue
         output = outputs / activation_id
         result = dispatch_policy_canary_activation(
@@ -1014,6 +1134,7 @@ def process_policy_canary_dispatch_queue(
             official_billing_receipt_path=(
                 output / "official_billing_reconciliation.json"
             ),
+            billing_audit_root=billing_audit_root,
         )
         processed.append(result)
         if (output / "dispatch_receipt.json").is_file():
@@ -1034,9 +1155,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--activation-results-root")
     parser.add_argument("--dispatch-queue-root")
     parser.add_argument("--execution-setup-root")
+    parser.add_argument("--execution-setup-template")
     parser.add_argument("--dispatch-root")
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--official-billing-receipt")
+    parser.add_argument("--billing-audit-root")
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -1060,6 +1183,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dispatch_root=args.dispatch_root,
                 implementation_commit=args.implementation_commit,
                 execute=args.execute,
+                execution_setup_template_path=args.execution_setup_template,
+                billing_audit_root=args.billing_audit_root,
             )
             if queue_mode
             else process_policy_canary_activation_results(
@@ -1077,6 +1202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 implementation_commit=args.implementation_commit,
                 execute=args.execute,
                 official_billing_receipt_path=args.official_billing_receipt,
+                billing_audit_root=args.billing_audit_root,
             )
         )
     except (OSError, ValueError, TypeError, KeyError) as exc:
