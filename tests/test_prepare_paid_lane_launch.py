@@ -132,6 +132,53 @@ def test_a_failing_step_stops_the_sequence(
     assert receipt["completed_steps"] == []
 
 
+def test_blocked_receipt_resumes_after_verified_completed_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(prep.LANES, "fake", _lane(tmp_path))
+    first_calls: list[list[str]] = []
+
+    def first_runner(argv: Sequence[str]) -> int:
+        first_calls.append(list(argv))
+        if argv[0] == "cmd-first":
+            (tmp_path / "first.json").write_text(
+                json.dumps({"published_uri": "r2://bucket/key.json"}),
+                encoding="utf-8",
+            )
+            return 0
+        return 3
+
+    blocked = prep.prepare_paid_lane_launch(
+        "fake", {"value": "v"}, runner=first_runner
+    )
+    assert blocked["status"] == "blocked"
+    assert [row["step_id"] for row in blocked["completed_steps"]] == ["first"]
+
+    resumed_calls: list[list[str]] = []
+
+    def resumed_runner(argv: Sequence[str]) -> int:
+        resumed_calls.append(list(argv))
+        (tmp_path / "second.json").write_text(
+            json.dumps({"ok": True}), encoding="utf-8"
+        )
+        return 0
+
+    resumed = prep.prepare_paid_lane_launch(
+        "fake",
+        {"value": "v"},
+        resume_receipt=blocked,
+        runner=resumed_runner,
+    )
+
+    assert [call[0] for call in resumed_calls] == ["cmd-second"]
+    assert resumed_calls[0][1] == "r2://bucket/key.json"
+    assert resumed["status"] == "prepared"
+    assert [row["step_id"] for row in resumed["completed_steps"]] == [
+        "first",
+        "second",
+    ]
+
+
 def test_a_failing_step_retains_redacted_digest_bound_stdout_and_stderr(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
