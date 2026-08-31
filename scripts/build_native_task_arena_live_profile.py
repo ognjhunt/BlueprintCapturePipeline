@@ -745,6 +745,18 @@ def _immutable_inputs(link: ArenaLink):
                 },
             )
 
+        # The bundle contract now requires the packet's runtime contract beside
+        # the other three documents, and the dispatcher projects only declared
+        # inputs -- the same failure class as the meshes, one file later:
+        # run r14 refused with
+        # native_task_arena_bundle_packet_file_missing:native_task_runtime_contract.v1.json
+        # because this document was in the packet but never declared.
+        runtime_contract = packet_dir / "native_task_runtime_contract.v1.json"
+        if runtime_contract.is_file() and not runtime_contract.is_symlink():
+            append_file(
+                "native_task_arena_runtime_contract", runtime_contract
+            )
+
         preallocation_zero_seen: set[Path] = set()
 
         def append_preallocation_provider_zero_closure(

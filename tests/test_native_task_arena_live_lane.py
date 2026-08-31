@@ -507,6 +507,12 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         packet_receipt, digest_field="receipt_digest"
     )
     write_json(packet / builder.PACKET_RECEIPT_NAME, packet_receipt)
+    # Production packets carry the runtime contract beside the documents, and
+    # the bundle now refuses a packet without it, so the fixture must too.
+    write_json(
+        packet / "native_task_runtime_contract.v1.json",
+        {"schema_version": "native_task_runtime_contract.v1", "sealed": True},
+    )
     execution_admission = {
         "schema_version": "native_task_execution_admission.v1",
         "status": "admitted_for_native_gpu_construction",
@@ -810,6 +816,10 @@ def test_construction_profile_declares_every_staged_packet_asset(
         assert asset in declared, binding["semantic_role"]
         # Bound by exact bytes, so a swapped mesh is refused rather than staged.
         assert declared[asset] == binding["staged_sha256"]
+    # The runtime contract travels with the packet documents for the same
+    # reason the meshes do: the bundle refuses a packet without it.
+    contract = (lane["packet"] / "native_task_runtime_contract.v1.json").resolve()
+    assert contract in declared
 
 
 def test_profile_binds_the_explicit_admitted_provider(lane: dict) -> None:
