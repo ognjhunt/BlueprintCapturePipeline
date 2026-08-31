@@ -1005,7 +1005,6 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
         construction_envelope_path=envelope_path,
         toolchain_root=production_toolchain,
         repository_root=repo,
-        splat_render_runtime_root=runtime,
         production_semantic_reuse_checkpoint_root=checkpoint_root,
         output_root=tmp_path / "production-semantic-reuse-bundle",
         expected_source_commit=production_commit,
