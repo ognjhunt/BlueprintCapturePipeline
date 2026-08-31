@@ -196,6 +196,27 @@ def test_setup_and_profile_attachment_are_digest_bound() -> None:
     )
 
 
+def test_setup_attaches_to_new_profile_bound_to_configured_scene_launch() -> None:
+    setup = _setup()
+    profile = {
+        "profile_id": "scene-839873-policy-canary-current-main",
+        "configured_source_launch_id": setup["source_launch_id"],
+        "profile_digest": "sha256:" + "f" * 64,
+    }
+
+    attached = attach_internal_policy_canary_setup(
+        profile=profile,
+        setup=setup,
+        profile_validator=lambda value: [],
+    )
+
+    assert attached["profile_id"] != setup["source_launch_id"]
+    assert attached["configured_source_launch_id"] == setup["source_launch_id"]
+    assert attached["internal_policy_canary_setup"]["source_launch_id"] == setup[
+        "source_launch_id"
+    ]
+
+
 def test_setup_rejects_unrunnable_second_policy() -> None:
     setup = _setup()
     mutated = copy.deepcopy(setup)

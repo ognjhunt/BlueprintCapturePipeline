@@ -435,7 +435,17 @@ def _validate_launch_profile(
         except TaskEvaluationPolicyRunContractError as exc:
             blockers.append(f"launch_profile_policy_run_setup_invalid:{exc}")
     if "internal_policy_canary_setup" in profile:
-        blockers.extend(policy_canary_setup_blockers(profile["internal_policy_canary_setup"], prefix="launch_profile_policy_canary_setup_invalid", source_launch_id=str(profile.get("profile_id") or "")))
+        blockers.extend(
+            policy_canary_setup_blockers(
+                profile["internal_policy_canary_setup"],
+                prefix="launch_profile_policy_canary_setup_invalid",
+                source_launch_id=str(
+                    profile.get("configured_source_launch_id")
+                    or profile.get("profile_id")
+                    or ""
+                ),
+            )
+        )
     _validate_reference(profile.get("source_bundle"), field="source_bundle", blockers=blockers)
     profile_source = _mapping(profile.get("source_bundle"))
     if not _is_identifier(profile_source.get("bundle_id")):

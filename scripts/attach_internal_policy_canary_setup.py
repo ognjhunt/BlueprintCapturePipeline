@@ -30,7 +30,10 @@ def attach_internal_policy_canary_setup(
     if blockers:
         raise ValueError("policy_canary_source_profile_invalid:" + ",".join(blockers))
     canary = validate_policy_canary_setup(setup)
-    if canary["source_launch_id"] != source.get("profile_id"):
+    configured_source_launch_id = source.get(
+        "configured_source_launch_id", source.get("profile_id")
+    )
+    if canary["source_launch_id"] != configured_source_launch_id:
         raise ValueError("policy_canary_setup_profile_binding_mismatch")
     if "internal_policy_canary_setup" in source:
         if source["internal_policy_canary_setup"] != canary:
