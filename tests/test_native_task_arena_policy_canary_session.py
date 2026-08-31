@@ -79,22 +79,28 @@ def _runtime_inputs(tmp_path: Path, activation: dict[str, object]) -> dict[str, 
             }
         )
     value: dict[str, object] = {
-        "schema_version": "native_task_arena_policy_canary_runtime_inputs.v1",
+        "schema_version": "task_evaluation_policy_canary_runtime_inputs.v1",
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "candidate_ids": list(CANDIDATE_IDS),
         "activation_digest": activation["activation_digest"],
         "configuration_digest": "sha256:" + "1" * 64,
         "plan_digest": "sha256:" + "2" * 64,
-        "matrix_digest": "sha256:" + "3" * 64,
-        "base_packet": records["base-packet"],
+        "base_native_packet": records["base-packet"],
         "runtime_source": records["runtime-source"],
         "construction_result": records["construction"],
         "cells": cells,
-        "runtime_input_digest": "",
+        "execution_authority": {
+            "maximum_provider_allocations": 1,
+            "retry_cap": 0,
+            "single_warm_provider_session_required": True,
+            "caller_surviving_watchdog_required": True,
+            "billing_teardown_provider_zero_required": True,
+        },
+        "runtime_inputs_digest": "",
     }
-    value["runtime_input_digest"] = canonical_digest(
-        value, digest_field="runtime_input_digest"
+    value["runtime_inputs_digest"] = canonical_digest(
+        value, digest_field="runtime_inputs_digest"
     )
     return value
 
@@ -123,8 +129,8 @@ def test_session_authority_binds_one_allocation_and_typed_controls_gaps(
 ) -> None:
     authority, inputs = _authority(tmp_path)
 
-    assert validate_runtime_input_manifest(inputs)["runtime_input_digest"] == authority[
-        "runtime_input_digest"
+    assert validate_runtime_input_manifest(inputs)["runtime_inputs_digest"] == authority[
+        "runtime_inputs_digest"
     ]
     assert authority["maximum_provider_allocations"] == 1
     assert authority["retry_cap"] == 0
@@ -135,8 +141,8 @@ def test_session_authority_binds_one_allocation_and_typed_controls_gaps(
 def test_session_rejects_missing_resolved_scenario(tmp_path: Path) -> None:
     _authority_value, inputs = _authority(tmp_path)
     inputs["cells"][0].pop("resolved_scenario")  # type: ignore[index]
-    inputs["runtime_input_digest"] = canonical_digest(
-        inputs, digest_field="runtime_input_digest"
+    inputs["runtime_inputs_digest"] = canonical_digest(
+        inputs, digest_field="runtime_inputs_digest"
     )
 
     with pytest.raises(PolicyCanarySessionError, match="runtime_input_cell_invalid"):
