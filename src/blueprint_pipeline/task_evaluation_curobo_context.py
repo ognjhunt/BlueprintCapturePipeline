@@ -327,11 +327,20 @@ def materialize_remote_curobo_context(
     if len(collision_rows) != 1:
         raise CuroboContextError("curobo_scene_collision_binding_invalid")
     collision = collision_rows[0]
-    source_collision = Path(str(scene["asset_directory"])) / str(collision["filename"])
+    # The published plan addresses every asset by ``usd_path`` relative to the
+    # packet root, and that value already carries the plan's asset directory
+    # prefix. Rebuilding the path from ``asset_directory`` reintroduces the
+    # prefix and reads a key the published schema never emits.
+    collision_usd_path = str(collision.get("usd_path") or "")
+    if not collision_usd_path:
+        raise CuroboContextError("curobo_scene_collision_usd_path_missing")
+    source_collision = packet / collision_usd_path
     try:
         source_collision = source_collision.resolve(strict=True)
     except OSError as exc:
         raise CuroboContextError("curobo_scene_collision_missing") from exc
+    if not source_collision.is_relative_to(packet):
+        raise CuroboContextError("curobo_scene_collision_path_escapes_packet")
     if collision.get("sha256") != _sha256(source_collision):
         raise CuroboContextError("curobo_scene_collision_digest_mismatch")
     mesh_path = destination / "scene-collision-world.obj"

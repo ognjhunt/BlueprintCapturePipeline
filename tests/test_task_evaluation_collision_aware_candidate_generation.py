@@ -494,11 +494,11 @@ def test_context_materializer_binds_packet_mesh_and_five_native_stages(
             "scene_id": "839873",
             "task_id": "simple-relocation",
             "task_kind": "rigid_pick_place",
-            "asset_directory": str(assets),
+            "asset_directory": "assets",
             "objects": [
                 {
                     "semantic_role": "scene_collision",
-                    "filename": collision.name,
+                    "usd_path": f"assets/{collision.name}",
                     "sha256": collision_digest,
                 }
             ],
