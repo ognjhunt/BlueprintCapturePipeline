@@ -5,6 +5,9 @@ from pathlib import Path
 
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline import (
+    task_evaluation_policy_canary_scene_setup as canary_setup_module,
+)
 from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import (
     QUICK_FAMILY_COUNTS,
     materialize_policy_canary_presubmission_setup,
@@ -18,6 +21,38 @@ COMMIT = "c" * 40
 REVISION = "sha256:" + "9" * 64
 ACTIVATION = "sha256:" + "a" * 64
 REQUEST = "sha256:" + "b" * 64
+
+
+def test_cli_routes_both_public_materializers(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    parameters = tmp_path / "parameters.json"
+    parameters.write_text(json.dumps({"marker": "bound"}), encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(
+        canary_setup_module,
+        "materialize_setup_preflight_decision",
+        lambda **kwargs: calls.append(("preflight", kwargs)) or {"status": "ready"},
+    )
+    monkeypatch.setattr(
+        canary_setup_module,
+        "materialize_policy_canary_presubmission_setup",
+        lambda **kwargs: calls.append(("presubmission", kwargs))
+        or {"status": "selectable"},
+    )
+
+    assert canary_setup_module.main(
+        ["preflight", "--parameters", str(parameters)]
+    ) == 0
+    assert canary_setup_module.main(
+        ["presubmission", "--parameters", str(parameters)]
+    ) == 0
+
+    assert calls == [
+        ("preflight", {"marker": "bound"}),
+        ("presubmission", {"marker": "bound"}),
+    ]
+    assert '"status": "ready"' in capsys.readouterr().out
 
 
 def _write(path: Path, value: dict) -> Path:
