@@ -568,6 +568,26 @@ class NativeConstructionOptunaSearchLedger:
                 return receipt
 
             study = self._study()
+            prior_attempts = [
+                trial
+                for trial in study.get_trials(deepcopy=False)
+                if trial.user_attrs.get("event") == "attempt_recorded"
+                and trial.user_attrs.get("candidate_digest") != candidate_digest
+            ]
+            cumulative_runtime_seconds = runtime_seconds + math.fsum(
+                _finite_nonnegative(
+                    trial.user_attrs.get("runtime_seconds"),
+                    blocker="native_construction_search_trial_invalid",
+                )
+                for trial in prior_attempts
+            )
+            cumulative_cost_usd = cost_usd + math.fsum(
+                _finite_nonnegative(
+                    trial.user_attrs.get("incremental_cost_upper_bound_usd"),
+                    blocker="native_construction_search_trial_invalid",
+                )
+                for trial in prior_attempts
+            )
             dimensions = _candidate_dimensions(candidate)
             dimension_digest = canonical_digest(dimensions)
             parameters = _trial_parameters(candidate, dimensions)
@@ -600,6 +620,9 @@ class NativeConstructionOptunaSearchLedger:
                 "native_outcome_metrics_digest": outcome_metrics_digest,
                 "runtime_seconds": runtime_seconds,
                 "incremental_cost_upper_bound_usd": cost_usd,
+                "cumulative_runtime_seconds": cumulative_runtime_seconds,
+                "cumulative_incremental_cost_upper_bound_usd": cumulative_cost_usd,
+                "attempted_candidate_count": len(prior_attempts) + 1,
                 "disposition": disposition,
                 "controller_search_state": controller_state,
             }
@@ -705,6 +728,9 @@ class NativeConstructionOptunaSearchLedger:
                 "native_outcome_metrics_digest": outcome_metrics_digest,
                 "runtime_seconds": runtime_seconds,
                 "incremental_cost_upper_bound_usd": cost_usd,
+                "cumulative_runtime_seconds": cumulative_runtime_seconds,
+                "cumulative_incremental_cost_upper_bound_usd": cumulative_cost_usd,
+                "attempted_candidate_count": len(prior_attempts) + 1,
                 "candidate_disposition": disposition,
                 "prune_reasons": prune_reasons,
                 "candidate_inventory_remaining_digests": inventory_remaining,
