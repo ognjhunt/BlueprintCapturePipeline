@@ -50,6 +50,8 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "task_evaluation_collision_aware_candidate_generation.py",
     "task_evaluation_curobo_candidate_generator.py",
     "task_evaluation_curobo_candidate_service.py",
+    "native_task_curobo_path_execution.py",
+    "native_task_servo_command_limits.py",
 )
 
 RUNTIME_PREFLIGHT_MODULE_NAMES = tuple(

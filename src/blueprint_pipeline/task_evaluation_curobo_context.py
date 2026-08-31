@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import re
@@ -341,4 +342,55 @@ def materialize_remote_curobo_context(
     return context, remote_work_dir + "/adp_arena_provider_bundle/provider_runtime"
 
 
-__all__ = ["CuroboContextError", "materialize_remote_curobo_context"]
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--packet-dir", required=True)
+    parser.add_argument("--candidate-universe", required=True)
+    parser.add_argument("--output-root", required=True)
+    parser.add_argument("--commit", required=True)
+    parser.add_argument("--maximum-incremental-cost-usd", type=float, default=0.2)
+    parser.add_argument("--maximum-runtime-seconds", type=float, default=300.0)
+    parser.add_argument("--warm-session")
+    args = parser.parse_args(argv)
+    universe = _read(
+        Path(args.candidate_universe), blocker="curobo_candidate_universe_invalid"
+    )
+    warm_session = (
+        _read(Path(args.warm_session), blocker="curobo_warm_session_invalid")
+        if args.warm_session
+        else None
+    )
+    try:
+        context, remote_root = materialize_remote_curobo_context(
+            packet_dir=args.packet_dir,
+            universe=universe,
+            output_root=args.output_root,
+            commit=args.commit,
+            maximum_incremental_cost_usd=args.maximum_incremental_cost_usd,
+            maximum_runtime_seconds=args.maximum_runtime_seconds,
+            warm_session=warm_session,
+        )
+    except (CuroboContextError, OSError, ValueError) as exc:
+        print(json.dumps({"status": "blocked", "blockers": [str(exc)]}))
+        return 2
+    result = {
+        "status": "completed",
+        "run_id": context.run_id,
+        "expected_production_commit": context.expected_production_commit,
+        "robot_configuration": context.robot_configuration,
+        "world_configuration": context.world_configuration,
+        "task_trajectory": context.task_trajectory,
+        "analytic_candidate_inventory": context.analytic_candidate_inventory,
+        "maximum_incremental_cost_usd": context.maximum_incremental_cost_usd,
+        "maximum_runtime_seconds": context.maximum_runtime_seconds,
+        "remote_python_package_root": remote_root,
+    }
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
+
+
+__all__ = ["CuroboContextError", "main", "materialize_remote_curobo_context"]

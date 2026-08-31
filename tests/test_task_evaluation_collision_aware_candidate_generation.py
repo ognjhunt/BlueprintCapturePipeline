@@ -572,3 +572,42 @@ def test_context_materializer_binds_packet_mesh_and_five_native_stages(
         "position_world_m"
     ] == [2.8, -6.7, 0.94]
     assert remote_root == "/workspace/adp_arena_provider_bundle/provider_runtime"
+
+
+def test_curobo_context_cli_routes_every_materializer_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    universe = tmp_path / "universe.json"
+    warm = tmp_path / "warm.json"
+    universe.write_text("{}\n", encoding="utf-8")
+    warm.write_text("{}\n", encoding="utf-8")
+    observed = {}
+    context = _context(tmp_path)
+
+    def materialize(**kwargs):
+        observed.update(kwargs)
+        return context, "/workspace/adp_arena_provider_bundle/provider_runtime"
+
+    monkeypatch.setattr(curobo_context, "materialize_remote_curobo_context", materialize)
+    assert curobo_context.main(
+        [
+            "--packet-dir",
+            str(tmp_path / "packet"),
+            "--candidate-universe",
+            str(universe),
+            "--output-root",
+            str(tmp_path / "output"),
+            "--commit",
+            "a" * 40,
+            "--maximum-incremental-cost-usd",
+            "0.15",
+            "--maximum-runtime-seconds",
+            "180",
+            "--warm-session",
+            str(warm),
+        ]
+    ) == 0
+    assert observed["maximum_incremental_cost_usd"] == 0.15
+    assert observed["maximum_runtime_seconds"] == 180.0
+    assert observed["warm_session"] == {}
+    assert json.loads(capsys.readouterr().out)["status"] == "completed"

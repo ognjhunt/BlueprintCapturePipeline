@@ -11,6 +11,9 @@ import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import (
+    native_task_arena_feedback_allocator_adapter as feedback_adapter,
+)
+from blueprint_pipeline import (
     native_task_arena_construction_bundle as construction_bundle_module,
 )
 from blueprint_pipeline import native_task_arena_controls_bundle as controls_bundle_module
@@ -3090,6 +3093,43 @@ def test_dry_run_bundle_receipt_reloads_exact_bytes_and_rejects_tamper(
         )
 
 
+def test_construction_bundle_cli_supplies_exact_phase_plan_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    override = {
+        "schema_version": "native_rigid_construction_phase_plan.v1",
+        "plan_digest": "sha256:" + "1" * 64,
+    }
+    path = tmp_path / "phase-plan.json"
+    write_json(path, override)
+    observed = {}
+
+    def build(**kwargs):
+        observed.update(kwargs)
+        return {"status": "ready"}
+
+    monkeypatch.setattr(
+        construction_bundle_module,
+        "build_native_task_arena_construction_bundle",
+        build,
+    )
+    assert construction_bundle_module.main(
+        [
+            "--job-dir",
+            str(tmp_path / "job"),
+            "--packet-dir",
+            str(tmp_path / "packet"),
+            "--runtime-source-packet-receipt",
+            str(tmp_path / "runtime.json"),
+            "--implementation-commit",
+            "a" * 40,
+            "--construction-phase-plan-override",
+            str(path),
+        ]
+    ) == 0
+    assert observed["construction_phase_plan_override"] == override
+
+
 @pytest.mark.parametrize("execute", [False, True])
 def test_canonical_allocator_routes_sealed_native_task_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
@@ -3235,22 +3275,13 @@ def test_construction_allocator_automatically_enters_retained_feedback_and_contr
         }
 
     monkeypatch.setattr(allocator, "run_native_task_arena_vast", cold)
-    original_load = allocator._load
-
-    def load(path):
-        if Path(path).name == "native_task_arena_packet_request.v1.json":
-            return {
-                "native_construction_feedback": {
-                    "maximum_rounds": 4,
-                }
-            }
-        return original_load(path)
-
-    monkeypatch.setattr(allocator, "_load", load)
+    monkeypatch.setattr(allocator, "native_feedback_runtime_blockers", lambda _path: [])
     monkeypatch.setattr(
-        allocator.importlib.metadata,
-        "version",
-        lambda package: "4.9.0" if package == "optuna" else "test",
+        feedback_adapter,
+        "_mapping",
+        lambda _path, **_kwargs: {
+            "native_construction_feedback": {"maximum_rounds": 4}
+        },
     )
     final_native = {
         "schema_version": "native_task_arena_construction_result.v1",
@@ -3278,7 +3309,7 @@ def test_construction_allocator_automatically_enters_retained_feedback_and_contr
         }
 
     monkeypatch.setattr(
-        allocator,
+        feedback_adapter,
         "run_retained_native_construction_feedback",
         feedback_controller,
     )

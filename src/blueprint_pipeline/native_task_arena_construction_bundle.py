@@ -212,6 +212,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--implementation-commit", dest="implementation_commit", required=True)
     parser.add_argument("--container-image", default=NATIVE_TASK_ARENA_IMAGE)
     parser.add_argument("--generated-at", dest="generated_at")
+    parser.add_argument(
+        "--construction-phase-plan-override",
+        dest="construction_phase_plan_override",
+        help=(
+            "Exact self-digested candidate-bound construction phase plan. "
+            "Native gates and thresholds remain unchanged."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -222,6 +230,14 @@ def main(argv: list[str] | None = None) -> int:
             implementation_commit=args.implementation_commit,
             container_image=args.container_image,
             **({"generated_at": args.generated_at} if args.generated_at else {}),
+            construction_phase_plan_override=(
+                _read_mapping(
+                    Path(args.construction_phase_plan_override),
+                    error="native_task_arena_construction_phase_plan_override_invalid",
+                )
+                if args.construction_phase_plan_override
+                else None
+            ),
         )
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(
