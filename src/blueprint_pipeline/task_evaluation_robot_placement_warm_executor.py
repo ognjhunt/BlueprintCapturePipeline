@@ -37,6 +37,9 @@ from .task_evaluation_robot_placement_trajectory import (
     placement_trajectory_from_native_plan,
     validate_robot_placement_trajectory,
 )
+from .task_evaluation_native_construction_feedback_controller import (
+    summarize_native_construction_feedback,
+)
 
 
 CONFIG_SCHEMA_VERSION = "task_evaluation_robot_placement_warm_native_loop.v1"
@@ -189,6 +192,13 @@ def _native_feedback_summary(result: Mapping[str, Any]) -> dict[str, Any]:
         "rigid_construction_gates": result.get("rigid_construction_gates"),
         "phase_results": phases,
         "camera_gates": cameras,
+        # The historical summary is retained for receipt compatibility.  The
+        # controller-facing form adds collision/contact/task-pose/camera
+        # measurements and its own digest, so the next deterministic inventory
+        # does not need to reverse-engineer a paid result.
+        "scientific_construction_feedback": (
+            summarize_native_construction_feedback(result)
+        ),
     }
 
 
