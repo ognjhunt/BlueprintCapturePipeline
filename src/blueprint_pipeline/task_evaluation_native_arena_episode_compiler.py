@@ -16,10 +16,11 @@ import stat
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_packet import materialize_native_task_arena_packet
+from .particlefield_usd import write_particlefield_usd_from_nurec
 from .task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
@@ -37,6 +38,9 @@ OUTPUT_SCHEMA_VERSION = "task_evaluation_episode_compiler_output.v1"
 
 class TaskEvaluationNativeArenaEpisodeCompilerError(RuntimeError):
     """Verified robot-team inputs could not be compiled fail-closed."""
+
+
+NativeAppearanceMaterializer = Callable[..., Mapping[str, Any]]
 
 
 def _runtime_subject_task_spec(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -228,11 +232,107 @@ def _identity(value: Mapping[str, Any], expected: Mapping[str, Any], *, label: s
         )
 
 
+def _materialize_native_particlefield_appearance(
+    *, source_path: Path, output_root: Path
+) -> dict[str, Any]:
+    """Make Isaac's proven ParticleField representation the episode default."""
+
+    try:
+        from pxr import Usd
+    except Exception as exc:  # noqa: BLE001
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_appearance_usd_runtime_unavailable"
+        ) from exc
+    try:
+        stage = Usd.Stage.Open(str(source_path))
+    except Exception as exc:  # noqa: BLE001
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_configured_appearance_invalid"
+        ) from exc
+    if stage is None or not stage.GetDefaultPrim():
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_configured_appearance_invalid"
+        )
+    particlefields = [
+        prim
+        for prim in stage.Traverse()
+        if str(prim.GetTypeName()) == "ParticleField3DGaussianSplat"
+    ]
+    nurec_volumes = [
+        prim
+        for prim in stage.Traverse()
+        if bool(prim.GetAttribute("omni:nurec:isNuRecVolume").Get())
+    ]
+    source_digest, source_size = _sha256_and_size(source_path)
+    if len(particlefields) == 1 and not nurec_volumes:
+        return {
+            "status": "existing_particlefield_selected",
+            "path": str(source_path),
+            "representation": "particlefield_3d_gaussian_splat",
+            "source_configured_appearance_digest": source_digest,
+            "source_configured_appearance_size_bytes": source_size,
+            "representation_conversion_performed": False,
+            "exact_learned_arrays_preserved": True,
+        }
+    if len(nurec_volumes) != 1 or particlefields:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_configured_appearance_representation_unsupported"
+        )
+    output_root.mkdir(mode=0o750)
+    output_path = output_root / "scene_appearance.usdc"
+    receipt_path = output_root / "particlefield_authoring_receipt.v1.json"
+    receipt = dict(
+        write_particlefield_usd_from_nurec(
+            source_path,
+            output_path,
+            expected_source_sha256=source_digest,
+            receipt_path=receipt_path,
+        )
+    )
+    if (
+        receipt.get("status") != "completed"
+        or receipt.get("schema_version")
+        != "particlefield_3dgs_authoring_receipt.v1"
+        or receipt.get("schema") != "ParticleField3DGaussianSplat"
+        or receipt.get("source_sha256") != source_digest
+        or receipt.get("source_kind") != "nurec_usdz"
+        or receipt.get("exact_learned_arrays_preserved") is not True
+        or receipt.get("representation_conversion_only") is not True
+        or receipt.get("receipt_digest")
+        != canonical_digest(receipt, digest_field="receipt_digest")
+        or output_path.is_symlink()
+        or not output_path.is_file()
+        or _sha256_and_size(output_path)
+        != (receipt.get("output_sha256"), receipt.get("output_bytes"))
+    ):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_particlefield_derivation_invalid"
+        )
+    output_path.chmod(0o440)
+    receipt_path.chmod(0o440)
+    return {
+        "status": "nurec_converted_to_particlefield",
+        "path": str(output_path),
+        "representation": "particlefield_3d_gaussian_splat",
+        "source_configured_appearance_digest": source_digest,
+        "source_configured_appearance_size_bytes": source_size,
+        "particlefield_digest": receipt["output_sha256"],
+        "particlefield_size_bytes": receipt["output_bytes"],
+        "particlefield_authoring_receipt_path": str(receipt_path),
+        "particlefield_authoring_receipt_digest": receipt["receipt_digest"],
+        "representation_conversion_performed": True,
+        "exact_learned_arrays_preserved": True,
+    }
+
+
 def compile_native_arena_episode(
     *,
     envelope: Mapping[str, Any],
     materialized_references: Mapping[str, Mapping[str, Any]],
     output_root: str | Path,
+    native_appearance_materializer: NativeAppearanceMaterializer = (
+        _materialize_native_particlefield_appearance
+    ),
 ) -> dict[str, Any]:
     """Compile one production-owned native packet without provider mutation."""
 
@@ -334,6 +434,27 @@ def compile_native_arena_episode(
         ),
         output_root=root,
     )
+    native_appearance = dict(
+        native_appearance_materializer(
+            source_path=configured_assets["appearance"],
+            output_root=root / "native-appearance",
+        )
+    )
+    native_appearance_path = Path(str(native_appearance.get("path") or ""))
+    if (
+        native_appearance.get("representation")
+        != "particlefield_3d_gaussian_splat"
+        or native_appearance.get("exact_learned_arrays_preserved") is not True
+        or native_appearance_path.is_symlink()
+        or not native_appearance_path.is_file()
+        or (
+            native_appearance_path != root
+            and root not in native_appearance_path.resolve().parents
+        )
+    ):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_native_appearance_invalid"
+        )
     object_pose = task_definition.get("task_object_pose_world")
     packet_assets = []
     for role, semantic_role in (
@@ -341,7 +462,11 @@ def compile_native_arena_episode(
         ("collision", "scene_collision"),
         ("replacement", "task_object"),
     ):
-        path = configured_assets[role]
+        path = (
+            native_appearance_path
+            if role == "appearance"
+            else configured_assets[role]
+        )
         digest, size = _sha256_and_size(path)
         row: dict[str, Any] = {
             "semantic_role": semantic_role,
@@ -379,6 +504,16 @@ def compile_native_arena_episode(
         "scenario": execution.get("scenario"),
         "physics_frequency_hz": execution.get("physics_frequency_hz"),
         "configured_task_template_adapter": task_adapter,
+        "appearance_variant": {
+            "representation": "particlefield_3d_gaussian_splat",
+            "source_configured_appearance_digest": native_appearance[
+                "source_configured_appearance_digest"
+            ],
+            "representation_conversion_performed": native_appearance[
+                "representation_conversion_performed"
+            ],
+            "exact_learned_arrays_preserved": True,
+        },
         "request_digest": "",
     }
     packet_request["request_digest"] = canonical_digest(
@@ -443,6 +578,11 @@ def compile_native_arena_episode(
             "runtime_source_receipt_digest": adapter_result[
                 "runtime_source_receipt_digest"
             ],
+        },
+        "native_scene_appearance": {
+            key: value
+            for key, value in native_appearance.items()
+            if key != "path"
         },
         "compiled_by_production": True,
         "customer_supplied_prebuilt_episode_packet": False,
