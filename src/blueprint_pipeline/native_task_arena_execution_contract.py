@@ -53,6 +53,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "task_evaluation_curobo_candidate_service.py",
     "task_evaluation_control_search_funnel.py",
     "task_evaluation_isaaclab_control_sweep.py",
+    "native_task_isaaclab_control_sweep_runtime.py",
     "native_task_curobo_path_execution.py",
     "native_task_servo_command_limits.py",
     "native_construction_terminal_feedback_contract.py",
@@ -129,6 +130,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "task_evaluation_curobo_candidate_service.py",
     "task_evaluation_control_search_funnel.py",
     "task_evaluation_isaaclab_control_sweep.py",
+    "native_task_isaaclab_control_sweep_runtime.py",
 )
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
