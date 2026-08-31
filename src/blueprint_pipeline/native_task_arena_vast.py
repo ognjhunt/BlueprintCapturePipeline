@@ -20,6 +20,13 @@ from .native_task_arena_policy_bundle import RESULT_FILENAME as POLICY_RESULT_FI
 from .native_task_arena_policy_diagnostic_bundle import (
     RESULT_FILENAME as POLICY_DIAGNOSTIC_RESULT_FILENAME,
 )
+from .native_task_arena_policy_canary_session import (
+    PROVIDER_RESULT_FILENAME as POLICY_CANARY_RESULT_FILENAME,
+    RESULT_SCHEMA_VERSION as POLICY_CANARY_RESULT_SCHEMA_VERSION,
+    consume_session_authority_once,
+    validate_provider_bundle as validate_policy_canary_provider_bundle,
+    validate_session_authority as validate_policy_canary_session_authority,
+)
 from .native_task_arena_runtime_preflight_bundle import (
     RESULT_FILENAME as RUNTIME_PREFLIGHT_RESULT_FILENAME,
     RESULT_SCHEMA_VERSION as RUNTIME_PREFLIGHT_RESULT_SCHEMA_VERSION,
@@ -427,6 +434,96 @@ def run_native_task_arena_policy_diagnostic_vast(
     )
 
 
+def run_native_task_arena_policy_canary_session_vast(
+    *,
+    job_dir: str | Path,
+    prepared_bundle: Mapping[str, Any],
+    session_authority: Mapping[str, Any] | None,
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
+    execute: bool,
+    machine_avoidlist_path: str | Path | None = None,
+    max_hourly_rate_usd: float = 0.80,
+    hard_cap_usd: float = 4.00,
+    hard_ttl_seconds: int = 14_400,
+    allowed_active_instance_ids: Sequence[int] = (),
+    provider_runtime_environment: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Run the paired Quick-10 bundle through one canonical Vast allocation."""
+
+    if session_authority is None:
+        if execute:
+            raise ValueError("policy_canary_session_authority_missing")
+        authority = None
+    else:
+        authority = validate_policy_canary_session_authority(session_authority)
+        validate_policy_canary_provider_bundle(prepared_bundle, authority=authority)
+        if (
+            float(authority["hard_cap_usd"]) != float(hard_cap_usd)
+            or int(authority["hard_ttl_seconds"]) != int(hard_ttl_seconds)
+        ):
+            raise ValueError("policy_canary_session_resource_bounds_mismatch")
+    if authority is None:
+        raise ValueError("policy_canary_session_authority_missing")
+    consumption = (
+        consume_session_authority_once(
+            authority,
+            consumption_path=Path(job_dir) / "policy_canary_session_consumption.json",
+        )
+        if execute
+        else None
+    )
+    if consumption is not None and consumption.get("status") != "consumed":
+        return {
+            "schema_version": POLICY_CANARY_RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "provider_allocations_observed": 0,
+            "retry_cap": 0,
+            "authorization_consumption": consumption,
+            "blockers": list(consumption.get("blockers") or []),
+        }
+    pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
+    groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
+    validated_environment = _validated_policy_provider_runtime_environment(
+        provider_runtime_environment
+    )
+    return run_arena_native_control_vast(
+        approval_path=".",
+        job_dir=job_dir,
+        paid_resource_admission_grant=paid_resource_admission_grant,
+        execute=execute,
+        prepared_bundle=prepared_bundle,
+        machine_avoidlist_path=machine_avoidlist_path,
+        max_hourly_rate_usd=max_hourly_rate_usd,
+        hard_cap_usd=hard_cap_usd,
+        hard_ttl_seconds=hard_ttl_seconds,
+        expected_output_filename=POLICY_CANARY_RESULT_FILENAME,
+        container_image=str(prepared_bundle["container_image"]),
+        provider_bundle_kind="native_task_arena_policy_canary_session",
+        result_schema_version=POLICY_CANARY_RESULT_SCHEMA_VERSION,
+        object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/policy-canary-session",
+        instance_label_prefix="blueprint-native-task-policy-canary-",
+        instance_label_exact=str(authority["resource_name"]),
+        blocker_prefix="native_task_arena_policy_canary_session",
+        min_gpu_ram_mb=46_000,
+        min_compute_cap=POLICY_MIN_COMPUTE_CAP,
+        allowed_active_instance_ids=tuple(
+            sorted({int(value) for value in allowed_active_instance_ids})
+        ),
+        vast_launch_lock_file=None,
+        candidate_policy_query_expected=True,
+        forward_hf_token=True,
+        preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
+        minimum_driver_version=MINIMUM_DRIVER_VERSION,
+        require_independent_watchdog=True,
+        authorization_consumption=consumption,
+        stale_offer_create_retry_limit=0,
+        expected_provider_download_bytes=pi_download + groot_download,
+        expected_provider_upload_bytes=8_000_000_000,
+        provider_runtime_environment=validated_environment,
+    )
+
+
 def _run_native_task_arena_policy_vast(
     *,
     job_dir: str | Path,
@@ -567,4 +664,5 @@ __all__ = [
     "run_native_task_arena_controls_vast",
     "run_native_task_arena_policy_vast",
     "run_native_task_arena_policy_diagnostic_vast",
+    "run_native_task_arena_policy_canary_session_vast",
 ]
