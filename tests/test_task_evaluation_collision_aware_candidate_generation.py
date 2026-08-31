@@ -15,8 +15,10 @@ from blueprint_pipeline.task_evaluation_collision_aware_candidate_generation imp
 from blueprint_pipeline.task_evaluation_curobo_candidate_generator import (
     CUROBO_BACKEND_IDENTITY,
     CuroboCandidateGenerator,
+    RemoteCuroboCandidateGenerator,
     curobo_gpu_runtime_capability_contract,
 )
+import blueprint_pipeline.task_evaluation_curobo_candidate_generator as curobo_adapter
 from blueprint_pipeline.task_evaluation_moveit_task_constructor_candidate_generator import (
     MOVEIT_TASK_CONSTRUCTOR_BACKEND_IDENTITY,
     MoveItTaskConstructorCandidateGenerator,
@@ -316,3 +318,76 @@ def test_runtime_contracts_pin_source_version_license_and_claim_boundary() -> No
     assert moveit["backend_identity"]["license_expression"] == "BSD-3-Clause"
     assert moveit["provisioning"]["coinstallation_in_current_isaac_image_claimed"] is False
     assert moveit["provisioning"]["fail_closed_when_process_or_identity_unavailable"] is True
+
+
+def test_remote_curobo_uses_retained_worker_without_allocating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    remote: dict[str, bytes] = {}
+
+    monkeypatch.setattr(
+        curobo_adapter,
+        "enroll_vast_ssh_host_key",
+        lambda *_args, **_kwargs: {
+            "status": "enrolled",
+            "known_hosts_file": str(tmp_path / "known_hosts"),
+        },
+    )
+
+    def ssh(*, remote_argv, stdin=None, **_kwargs):
+        if remote_argv[:2] == ["/isaac-sim/python.sh", "-c"]:
+            remote[remote_argv[-1]] = bytes(stdin)
+        elif remote_argv[0] == "env":
+            output = remote_argv[remote_argv.index("--result-json") + 1]
+            if "--probe" in remote_argv:
+                value = _sealed(
+                    {
+                        "schema_version": "task_evaluation_candidate_generator_runtime_probe.v1",
+                        "runtime_ready": True,
+                        "backend_identity": CUROBO_BACKEND_IDENTITY,
+                        "cuda_available": True,
+                        "cuda_device_count": 1,
+                        "probe_digest": "",
+                    },
+                    "probe_digest",
+                )
+            else:
+                request_path = remote_argv[remote_argv.index("--request-json") + 1]
+                request = json.loads(remote[request_path])
+                value = _sealed(
+                    {
+                        "schema_version": RESULT_SCHEMA_VERSION,
+                        "backend_identity": CUROBO_BACKEND_IDENTITY,
+                        "request_digest": request["request_digest"],
+                        "solutions": [_solution(request)],
+                        "result_digest": "",
+                    },
+                    "result_digest",
+                )
+            remote[output] = json.dumps(value).encode()
+        elif remote_argv[0] == "cat":
+            return {
+                "status": "completed",
+                "stdout": remote[remote_argv[-1]].decode(),
+                "stdout_truncation": {"truncated": False},
+            }
+        return {"status": "completed", "stdout": ""}
+
+    monkeypatch.setattr(curobo_adapter, "_run_pinned_ssh", ssh)
+    generator = RemoteCuroboCandidateGenerator(
+        context=_context(tmp_path),
+        warm_session={"ssh_host": "worker.example", "ssh_port": 22022},
+        local_transport_root=tmp_path / "transport",
+        remote_python_package_root="/workspace/released/provider_runtime",
+    )
+    inventory = generator.generate(
+        source_native_feedback=None,
+        prior_history=[],
+        round_index=0,
+        maximum_candidates=2,
+    )
+    assert inventory["generator_backend"] == CUROBO_BACKEND_IDENTITY
+    assert inventory["candidates"][0]["candidate_id"].startswith(
+        "curobo_v2_motion_generation-r0-"
+    )
+    assert all("provider" not in path for path in remote)
