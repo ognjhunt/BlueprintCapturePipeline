@@ -282,6 +282,11 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
             "run_id": "policy-run-1",
             "policy_run_configuration": configuration,
             "policy_run_setup": setup_value,
+            "spend": {
+                "maximum_hourly_rate_usd": 0.80,
+                "hard_cap_usd": 4.0,
+                "hard_ttl_seconds": 14_400,
+            },
         },
         preparation_result={
             "result_digest": request["preparation"]["result_digest"],
@@ -301,6 +306,20 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
     )
     assert validate_runtime_input_manifest(runtime_inputs) == runtime_inputs
     assert runtime_inputs["execution_authority"]["maximum_provider_allocations"] == 1
+    assert runtime_inputs["scene_revision_digest"] == selected["scene_revision_digest"]
+    assert runtime_inputs["matrix_digest"] == configuration["matrix"][
+        "scenario_set_digest"
+    ]
+    assert runtime_inputs["resource_authority"] == {
+        "resource_name": (
+            "blueprint-native-task-policy-canary-"
+            + runtime_inputs["activation_digest"].removeprefix("sha256:")[:16]
+        ),
+        "maximum_hourly_rate_usd": 0.8,
+        "hard_cap_usd": 4.0,
+        "hard_ttl_seconds": 14_400,
+        "user_confirmed": True,
+    }
     assert len(runtime_inputs["cells"]) == 10
     assert runtime_inputs["cells"][0]["resolved_scenario_digest"] == canonical_digest(
         runtime_inputs["cells"][0]["resolved_scenario"]

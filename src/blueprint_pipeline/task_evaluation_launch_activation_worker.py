@@ -1277,11 +1277,37 @@ def _policy_campaign_activation_result(
                 "launch_activation_policy_canary_base_runtime_inputs_invalid"
             )
         cells = preparation_request["policy_run_configuration"]["matrix"]["cells"]
+        spend = preparation_request.get("spend")
+        if (
+            not isinstance(spend, Mapping)
+            or not isinstance(spend.get("hard_cap_usd"), (int, float))
+            or isinstance(spend.get("hard_cap_usd"), bool)
+            or float(spend["hard_cap_usd"]) <= 0
+            or not isinstance(spend.get("hard_ttl_seconds"), int)
+            or isinstance(spend.get("hard_ttl_seconds"), bool)
+            or int(spend["hard_ttl_seconds"]) <= 0
+            or not isinstance(spend.get("maximum_hourly_rate_usd"), (int, float))
+            or isinstance(spend.get("maximum_hourly_rate_usd"), bool)
+            or float(spend["maximum_hourly_rate_usd"]) <= 0
+        ):
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_policy_canary_resource_authority_invalid"
+            )
+        resource_name = (
+            "blueprint-native-task-policy-canary-"
+            + manifest["activation_digest"].removeprefix("sha256:")[:16]
+        )
         runtime_inputs = {
             "schema_version": "task_evaluation_policy_canary_runtime_inputs.v1",
             "run_id": preparation_request["run_id"],
             "run_kind": "internal_policy_canary",
             "claim_ceiling": "diagnostic_policy_execution",
+            "scene_revision_digest": preparation_request[
+                "policy_run_configuration"
+            ]["scene_revision_digest"],
+            "matrix_digest": preparation_request["policy_run_configuration"][
+                "matrix"
+            ]["scenario_set_digest"],
             "configuration_digest": preparation_request[
                 "policy_run_configuration"
             ]["configuration_digest"],
@@ -1332,6 +1358,15 @@ def _policy_campaign_activation_result(
                 "single_warm_provider_session_required": True,
                 "caller_surviving_watchdog_required": True,
                 "billing_teardown_provider_zero_required": True,
+            },
+            "resource_authority": {
+                "resource_name": resource_name,
+                "maximum_hourly_rate_usd": float(
+                    spend["maximum_hourly_rate_usd"]
+                ),
+                "hard_cap_usd": float(spend["hard_cap_usd"]),
+                "hard_ttl_seconds": int(spend["hard_ttl_seconds"]),
+                "user_confirmed": True,
             },
             "capture_contract": {
                 "schema_version": "task_evaluation_policy_canary_capture_contract.v1",
