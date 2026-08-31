@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Sequence
+import json
+import re
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
+from .decision_evidence_contracts import canonical_json
+from .gpu_render_providers import enroll_vast_ssh_host_key
+from .native_task_arena_warm_vast import _run_pinned_ssh
 from .task_evaluation_collision_aware_candidate_generation import (
     CandidateGeneratorContext,
+    CollisionAwareCandidateGenerationError,
     CommandRunner,
     JsonProcessCandidateGenerator,
+    build_candidate_generation_request,
+    build_native_candidate_inventory,
+    validate_runtime_probe,
 )
 
 
@@ -63,6 +73,163 @@ class CuroboCandidateGenerator(JsonProcessCandidateGenerator):
         )
 
 
+class RemoteCuroboCandidateGenerator:
+    """Run the exact cuRobo service on an already-owned warm Vast worker.
+
+    The transport allocates nothing.  It uses the existing production SSH
+    identity and attempt-local pinned host key, streams a canonical request to
+    a digest-addressed remote checkpoint, executes the bundled service, and
+    streams the exact result back.  Runtime provisioning must supply both the
+    Blueprint service package root and pinned cuRobo source; absence is a typed
+    refusal that the composite controller may record before CPU fallback.
+    """
+
+    def __init__(
+        self,
+        *,
+        context: CandidateGeneratorContext,
+        warm_session: Mapping[str, Any],
+        local_transport_root: str | Path,
+        remote_python_package_root: str,
+        identity_file: str | Path | None = None,
+    ) -> None:
+        if not re.fullmatch(r"/workspace/[A-Za-z0-9_./-]+", remote_python_package_root):
+            raise CollisionAwareCandidateGenerationError(
+                "curobo_remote_runtime_root_invalid"
+            )
+        self._context = context
+        self._session = json.loads(json.dumps(dict(warm_session), allow_nan=False))
+        self._root = Path(local_transport_root).expanduser().resolve()
+        self._root.mkdir(parents=True, exist_ok=True)
+        self._remote_python_package_root = remote_python_package_root.rstrip("/")
+        self._identity_file = identity_file
+        enrollment = enroll_vast_ssh_host_key(
+            self._session,
+            attempt_dir=self._root / "ssh-trust",
+            timeout_seconds=15.0,
+        )
+        if enrollment.get("status") != "enrolled":
+            raise CollisionAwareCandidateGenerationError(
+                "curobo_remote_ssh_unavailable"
+            )
+        self._known_hosts = str(enrollment["known_hosts_file"])
+
+    def _ssh(
+        self,
+        argv: list[str],
+        *,
+        stdin: bytes | None = None,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        result = _run_pinned_ssh(
+            session=self._session,
+            known_hosts_file=self._known_hosts,
+            identity_file=self._identity_file,
+            remote_argv=argv,
+            stdin=stdin,
+            timeout_seconds=timeout_seconds,
+        )
+        if result.get("status") != "completed":
+            raise CollisionAwareCandidateGenerationError(
+                "curobo_remote_process_failed"
+            )
+        return result
+
+    def _invoke(self, request: Mapping[str, Any] | None) -> dict[str, Any]:
+        key = (
+            "probe"
+            if request is None
+            else str(request["request_digest"])[7:]
+        )
+        remote_root = f"/workspace/blueprint-curobo-candidates/{key}"
+        request_path = f"{remote_root}/request.json"
+        result_path = f"{remote_root}/result.json"
+        if request is not None:
+            payload = (canonical_json(dict(request)) + "\n").encode("utf-8")
+            upload_code = (
+                "import os,sys,pathlib,tempfile;"
+                "p=pathlib.Path(sys.argv[1]);p.parent.mkdir(parents=True,exist_ok=True);"
+                "d=sys.stdin.buffer.read();t=p.with_suffix('.tmp');"
+                "t.write_bytes(d);os.chmod(t,0o600);os.replace(t,p)"
+            )
+            self._ssh(
+                ["/isaac-sim/python.sh", "-c", upload_code, request_path],
+                stdin=payload,
+                timeout_seconds=30.0,
+            )
+        command = [
+            "env",
+            f"PYTHONPATH={self._remote_python_package_root}",
+            (
+                "BLUEPRINT_CUROBO_SOURCE_REVISION="
+                + CUROBO_BACKEND_IDENTITY["source_revision"]
+            ),
+            "/isaac-sim/python.sh",
+            "-m",
+            "blueprint_pipeline.task_evaluation_curobo_candidate_service",
+        ]
+        if request is None:
+            command.append("--probe")
+        else:
+            command.extend(("--request-json", request_path))
+        command.extend(("--result-json", result_path))
+        self._ssh(
+            command,
+            timeout_seconds=max(30.0, self._context.maximum_runtime_seconds + 30.0),
+        )
+        downloaded = self._ssh(
+            ["cat", "--", result_path], timeout_seconds=30.0
+        )
+        truncation = downloaded.get("stdout_truncation") or {}
+        if truncation.get("truncated") is True:
+            raise CollisionAwareCandidateGenerationError(
+                "curobo_remote_result_too_large"
+            )
+        try:
+            value = json.loads(str(downloaded.get("stdout") or ""))
+        except json.JSONDecodeError as exc:
+            raise CollisionAwareCandidateGenerationError(
+                "curobo_remote_result_invalid"
+            ) from exc
+        if not isinstance(value, Mapping):
+            raise CollisionAwareCandidateGenerationError(
+                "curobo_remote_result_invalid"
+            )
+        return dict(value)
+
+    def generate(
+        self,
+        *,
+        source_native_feedback: Mapping[str, Any] | None,
+        prior_history: Sequence[Mapping[str, Any]],
+        round_index: int,
+        maximum_candidates: int,
+    ) -> Mapping[str, Any]:
+        probe = validate_runtime_probe(
+            self._invoke(None), expected_backend_identity=CUROBO_BACKEND_IDENTITY
+        )
+        if (
+            probe.get("cuda_available") is not True
+            or int(probe.get("cuda_device_count") or 0) < 1
+        ):
+            raise CollisionAwareCandidateGenerationError(
+                "candidate_generator_cuda_unavailable"
+            )
+        request = build_candidate_generation_request(
+            context=self._context,
+            backend_identity=CUROBO_BACKEND_IDENTITY,
+            source_native_feedback=source_native_feedback,
+            prior_history=prior_history,
+            round_index=round_index,
+            maximum_candidates=maximum_candidates,
+        )
+        return build_native_candidate_inventory(
+            result=self._invoke(request),
+            request=request,
+            backend_identity=CUROBO_BACKEND_IDENTITY,
+        )
+
+
 def curobo_gpu_runtime_capability_contract() -> dict[str, Any]:
     """Provisioning requirements; this is not an availability assertion."""
 
@@ -104,5 +271,6 @@ def curobo_gpu_runtime_capability_contract() -> dict[str, Any]:
 __all__ = [
     "CUROBO_BACKEND_IDENTITY",
     "CuroboCandidateGenerator",
+    "RemoteCuroboCandidateGenerator",
     "curobo_gpu_runtime_capability_contract",
 ]
