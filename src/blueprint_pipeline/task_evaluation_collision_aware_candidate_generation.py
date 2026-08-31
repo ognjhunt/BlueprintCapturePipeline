@@ -138,6 +138,27 @@ def validate_sealed_file_reference(
             f"candidate_generation_{role}_invalid"
         )
     reference["path"] = str(path)
+    attachments = reference.get("attachments")
+    if attachments is not None:
+        if (
+            not isinstance(attachments, list)
+            or not attachments
+            or any(not isinstance(row, Mapping) for row in attachments)
+        ):
+            raise CollisionAwareCandidateGenerationError(
+                f"candidate_generation_{role}_attachments_invalid"
+            )
+        validated_attachments = []
+        for row in attachments:
+            attachment_role = str(row.get("role") or "")
+            if not attachment_role or row.get("attachments") is not None:
+                raise CollisionAwareCandidateGenerationError(
+                    f"candidate_generation_{role}_attachments_invalid"
+                )
+            validated_attachments.append(
+                validate_sealed_file_reference(row, role=attachment_role)
+            )
+        reference["attachments"] = validated_attachments
     return reference
 
 

@@ -24,6 +24,10 @@ from blueprint_pipeline.task_evaluation_moveit_task_constructor_candidate_genera
     MoveItTaskConstructorCandidateGenerator,
     moveit_task_constructor_runtime_capability_contract,
 )
+from blueprint_pipeline.task_evaluation_curobo_context import (
+    materialize_remote_curobo_context,
+)
+import blueprint_pipeline.task_evaluation_curobo_context as curobo_context
 
 
 def _sealed(value: dict, field: str) -> dict:
@@ -335,6 +339,16 @@ def test_remote_curobo_uses_retained_worker_without_allocating(
     )
 
     def ssh(*, remote_argv, stdin=None, **_kwargs):
+        if remote_argv[:2] == ["/bin/bash", "-c"]:
+            script = remote_argv[2]
+            assert "git clone --filter=blob:none --no-checkout" in script
+            assert CUROBO_BACKEND_IDENTITY["source_revision"] in script
+            assert CUROBO_BACKEND_IDENTITY["source_tree"] in script
+            assert "--no-deps --no-build-isolation" in script
+            return {
+                "status": "completed",
+                "stdout": "BLUEPRINT_CUROBO_RUNTIME_READY\n",
+            }
         if remote_argv[:2] == ["/isaac-sim/python.sh", "-c"]:
             remote[remote_argv[-1]] = bytes(stdin)
         elif remote_argv[0] == "env":
@@ -376,9 +390,12 @@ def test_remote_curobo_uses_retained_worker_without_allocating(
     monkeypatch.setattr(curobo_adapter, "_run_pinned_ssh", ssh)
     generator = RemoteCuroboCandidateGenerator(
         context=_context(tmp_path),
-        warm_session={"ssh_host": "worker.example", "ssh_port": 22022},
+        warm_session={
+            "ssh_host": "worker.example",
+            "ssh_port": 22022,
+            "remote_work_dir": "/workspace",
+        },
         local_transport_root=tmp_path / "transport",
-        remote_python_package_root="/workspace/released/provider_runtime",
     )
     inventory = generator.generate(
         source_native_feedback=None,
@@ -391,3 +408,107 @@ def test_remote_curobo_uses_retained_worker_without_allocating(
         "curobo_v2_motion_generation-r0-"
     )
     assert all("provider" not in path for path in remote)
+
+
+def test_context_materializer_binds_packet_mesh_and_five_native_stages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = tmp_path / "packet"
+    assets = packet / "assets"
+    assets.mkdir(parents=True)
+    collision = assets / "scene.usd"
+    collision.write_bytes(b"sealed-scene-collision")
+    import hashlib
+
+    collision_digest = "sha256:" + hashlib.sha256(collision.read_bytes()).hexdigest()
+    scene = _sealed(
+        {
+            "schema_version": "native_task_arena_scene_plan.v1",
+            "scene_id": "839873",
+            "task_id": "simple-relocation",
+            "task_kind": "rigid_pick_place",
+            "asset_directory": str(assets),
+            "objects": [
+                {
+                    "semantic_role": "scene_collision",
+                    "filename": collision.name,
+                    "sha256": collision_digest,
+                }
+            ],
+            "robot": {"robot_id": "franka_panda"},
+            "plan_digest": "",
+        },
+        "plan_digest",
+    )
+    (packet / "native_task_arena_scene_plan.v1.json").write_text(
+        json.dumps(scene), encoding="utf-8"
+    )
+
+    phases = []
+    for phase_id, x in (
+        ("precontact", 2.8),
+        ("push_contact", 2.9),
+        ("push_01", 3.0),
+        ("push_release", 3.1),
+        ("retreat", 3.2),
+        ("recovery", 2.8),
+    ):
+        phases.append(
+            {
+                "phase_id": phase_id,
+                "position_world_m": [x, -6.7, 0.82],
+                "orientation_world_xyzw": [0.0, 0.70710678, 0.0, 0.70710678],
+            }
+        )
+    phase_plan = _sealed(
+        {"phases": phases, "plan_digest": ""}, "plan_digest"
+    )
+    monkeypatch.setattr(
+        curobo_context,
+        "materialize_native_task_construction_phase_plan",
+        lambda _scene: phase_plan,
+    )
+    monkeypatch.setattr(
+        curobo_context,
+        "_write_world_obj",
+        lambda _source, output: output.write_text(
+            "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="utf-8"
+        ),
+    )
+    candidate = {
+        "candidate_id": "analytic-00",
+        "deterministic_rank": 0,
+        "robot_base_pose_world": {
+            "position_world_m": [2.925996, -6.132664, 0.752958],
+            "orientation_xyzw": [0.0, 0.0, 0.608761429, -0.79335334],
+        },
+        "support_surface_id": "/Site/counter@z=0.752958",
+        "reset_variant": {
+            "robot_joint_reset_positions_rad": {
+                f"panda_joint{index}": 0.01 * index for index in range(1, 8)
+            }
+        },
+        "camera_variant": {
+            "cameras": [
+                {"role": "external"},
+                {"role": "overview"},
+                {"role": "wrist"},
+            ]
+        },
+        "addressed_feedback_codes": [],
+    }
+    context, remote_root = materialize_remote_curobo_context(
+        packet_dir=packet,
+        universe={"inventory_digest": "sha256:" + "c" * 64, "candidates": [candidate]},
+        output_root=tmp_path / "context",
+        commit="a" * 40,
+        warm_session={"remote_work_dir": "/workspace"},
+    )
+    world = json.loads(Path(context.world_configuration["path"]).read_text())
+    task = json.loads(Path(context.task_trajectory["path"]).read_text())
+    assert context.world_configuration["attachments"][0]["role"] == "world_collision_mesh"
+    assert world["source_scene_collision_digest"] == collision_digest
+    assert [
+        row["stage_kind"] for row in task["candidate_phases"]["analytic-00"]
+    ] == ["entry", "approach", "contact", "release", "retreat"]
+    assert remote_root == "/workspace/adp_arena_provider_bundle/provider_runtime"

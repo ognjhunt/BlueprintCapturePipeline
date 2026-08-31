@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import sys
+import hashlib
 import json
 import re
+import sys
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .decision_evidence_contracts import canonical_json
+from .decision_evidence_contracts import canonical_digest, canonical_json
 from .gpu_render_providers import enroll_vast_ssh_host_key
 from .native_task_arena_warm_vast import _run_pinned_ssh
 from .task_evaluation_collision_aware_candidate_generation import (
@@ -90,10 +91,35 @@ class RemoteCuroboCandidateGenerator:
         context: CandidateGeneratorContext,
         warm_session: Mapping[str, Any],
         local_transport_root: str | Path,
-        remote_python_package_root: str,
+        remote_python_package_root: str | None = None,
         identity_file: str | Path | None = None,
     ) -> None:
-        if not re.fullmatch(r"/workspace/[A-Za-z0-9_./-]+", remote_python_package_root):
+        remote_work_dir = str(warm_session.get("remote_work_dir") or "")
+        if remote_work_dir not in {"/workspace", "/tmp/blueprint_vast_work"}:
+            raise CollisionAwareCandidateGenerationError(
+                "curobo_remote_work_dir_invalid"
+            )
+        expected_package_root = (
+            remote_work_dir + "/adp_arena_provider_bundle/provider_runtime"
+        )
+        package_root = remote_python_package_root or expected_package_root
+        if package_root != expected_package_root:
+            raise CollisionAwareCandidateGenerationError(
+                "curobo_remote_runtime_root_mismatch"
+            )
+        remote_root = PurePosixPath(package_root)
+        if (
+            not re.fullmatch(
+                r"/(workspace|tmp/blueprint_vast_work)/[A-Za-z0-9_./-]+",
+                package_root,
+            )
+            or not remote_root.is_absolute()
+            or ".." in remote_root.parts
+            or not (
+                remote_root.parts[:2] == ("/", "workspace")
+                or remote_root.parts[:3] == ("/", "tmp", "blueprint_vast_work")
+            )
+        ):
             raise CollisionAwareCandidateGenerationError(
                 "curobo_remote_runtime_root_invalid"
             )
@@ -101,7 +127,7 @@ class RemoteCuroboCandidateGenerator:
         self._session = json.loads(json.dumps(dict(warm_session), allow_nan=False))
         self._root = Path(local_transport_root).expanduser().resolve()
         self._root.mkdir(parents=True, exist_ok=True)
-        self._remote_python_package_root = remote_python_package_root.rstrip("/")
+        self._remote_python_package_root = package_root.rstrip("/")
         self._identity_file = identity_file
         enrollment = enroll_vast_ssh_host_key(
             self._session,
@@ -113,6 +139,7 @@ class RemoteCuroboCandidateGenerator:
                 "curobo_remote_ssh_unavailable"
             )
         self._known_hosts = str(enrollment["known_hosts_file"])
+        self._provision_runtime()
 
     def _ssh(
         self,
@@ -134,6 +161,48 @@ class RemoteCuroboCandidateGenerator:
                 "curobo_remote_process_failed"
             )
         return result
+
+    def _provision_runtime(self) -> None:
+        source_root = (
+            "/workspace/blueprint-curobo-v080/"
+            + CUROBO_BACKEND_IDENTITY["source_revision"]
+        )
+        script = f"""set -euo pipefail
+exec 9>/workspace/blueprint-curobo-v080/provision.lock
+flock 9
+test -f {self._remote_python_package_root}/blueprint_pipeline/task_evaluation_curobo_candidate_service.py || exit 81
+root={source_root}
+if [ ! -d "$root/.git" ]; then
+  mkdir -p /workspace/blueprint-curobo-v080
+  stage="$(mktemp -d /workspace/blueprint-curobo-v080/stage.XXXXXXXX)"
+  git clone --filter=blob:none --no-checkout {CUROBO_BACKEND_IDENTITY['source_url']} "$stage"
+  git -C "$stage" fetch --depth 1 origin {CUROBO_BACKEND_IDENTITY['source_revision']}
+  git -C "$stage" checkout --detach {CUROBO_BACKEND_IDENTITY['source_revision']}
+  test "$(git -C "$stage" rev-parse HEAD)" = {CUROBO_BACKEND_IDENTITY['source_revision']}
+  test "$(git -C "$stage" rev-parse 'HEAD^{{tree}}')" = {CUROBO_BACKEND_IDENTITY['source_tree']}
+  test "sha256:$(sha256sum "$stage/LICENSE" | cut -d' ' -f1)" = {CUROBO_BACKEND_IDENTITY['license_sha256']}
+  mv "$stage" "$root"
+fi
+test "$(git -C "$root" rev-parse HEAD)" = {CUROBO_BACKEND_IDENTITY['source_revision']}
+test "$(git -C "$root" rev-parse 'HEAD^{{tree}}')" = {CUROBO_BACKEND_IDENTITY['source_tree']}
+test "sha256:$(sha256sum "$root/LICENSE" | cut -d' ' -f1)" = {CUROBO_BACKEND_IDENTITY['license_sha256']}
+/isaac-sim/python.sh -m pip install -e "$root" --no-deps --no-build-isolation
+PYTHONPATH="$root" /isaac-sim/python.sh - <<'PY'
+import importlib.metadata
+import curobo
+assert importlib.metadata.version("nvidia-curobo") == "0.8.0"
+assert str(curobo.__version__).lstrip("v") == "0.8.0"
+PY
+printf '%s\n' BLUEPRINT_CUROBO_RUNTIME_READY
+"""
+        result = self._ssh(
+            ["/bin/bash", "-c", script], timeout_seconds=300.0
+        )
+        if "BLUEPRINT_CUROBO_RUNTIME_READY" not in str(result.get("stdout") or ""):
+            raise CollisionAwareCandidateGenerationError(
+                "curobo_remote_runtime_unavailable"
+            )
+        self._remote_curobo_source_root = source_root
 
     def _invoke(self, request: Mapping[str, Any] | None) -> dict[str, Any]:
         key = (
@@ -159,7 +228,12 @@ class RemoteCuroboCandidateGenerator:
             )
         command = [
             "env",
-            f"PYTHONPATH={self._remote_python_package_root}",
+            (
+                "PYTHONPATH="
+                + self._remote_python_package_root
+                + ":"
+                + self._remote_curobo_source_root
+            ),
             (
                 "BLUEPRINT_CUROBO_SOURCE_REVISION="
                 + CUROBO_BACKEND_IDENTITY["source_revision"]
@@ -196,6 +270,92 @@ class RemoteCuroboCandidateGenerator:
                 "curobo_remote_result_invalid"
             )
         return dict(value)
+
+    def _upload_input(self, reference: Mapping[str, Any]) -> dict[str, Any]:
+        local_path = Path(str(reference["path"]))
+        try:
+            payload = local_path.read_bytes()
+        except OSError as exc:
+            raise CollisionAwareCandidateGenerationError(
+                "curobo_remote_input_unavailable"
+            ) from exc
+        digest = str(reference["digest"])
+        if len(payload) != reference["size_bytes"]:
+            raise CollisionAwareCandidateGenerationError(
+                "curobo_remote_input_invalid"
+            )
+        suffix = local_path.suffix if re.fullmatch(r"\.[A-Za-z0-9]{1,8}", local_path.suffix) else ".bin"
+        remote_path = f"/workspace/blueprint-curobo-inputs/{digest[7:]}{suffix}"
+        upload_code = (
+            "import hashlib,os,sys,pathlib;"
+            "p=pathlib.Path(sys.argv[1]);e=sys.argv[2];d=sys.stdin.buffer.read();"
+            "a='sha256:'+hashlib.sha256(d).hexdigest();"
+            "(_ for _ in ()).throw(RuntimeError('digest')) if a!=e else None;"
+            "p.parent.mkdir(parents=True,exist_ok=True);t=p.with_suffix('.tmp');"
+            "t.write_bytes(d);os.chmod(t,0o600);os.replace(t,p)"
+        )
+        self._ssh(
+            [
+                "/isaac-sim/python.sh",
+                "-c",
+                upload_code,
+                remote_path,
+                digest,
+            ],
+            stdin=payload,
+            timeout_seconds=max(30.0, min(300.0, len(payload) / 1_000_000 + 30.0)),
+        )
+        return {**dict(reference), "path": remote_path}
+
+    def _stage_remote_request(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        remote = json.loads(json.dumps(dict(request), allow_nan=False))
+        for role in (
+            "robot_configuration",
+            "world_configuration",
+            "task_trajectory",
+            "analytic_candidate_inventory",
+        ):
+            source_reference = dict(remote[role])
+            remote_attachments = []
+            replacements: dict[str, str] = {}
+            for attachment in source_reference.get("attachments") or []:
+                uploaded = self._upload_input(attachment)
+                replacements[str(attachment["path"])] = str(uploaded["path"])
+                remote_attachments.append(uploaded)
+            if replacements:
+                source_document = json.loads(
+                    Path(str(source_reference["path"])).read_text(encoding="utf-8")
+                )
+
+                def replace(value: Any) -> Any:
+                    if isinstance(value, str):
+                        return replacements.get(value, value)
+                    if isinstance(value, list):
+                        return [replace(row) for row in value]
+                    if isinstance(value, Mapping):
+                        return {str(key): replace(child) for key, child in value.items()}
+                    return value
+
+                transported = (canonical_json(replace(source_document)) + "\n").encode()
+                transported_path = self._root / f"transport-{role}.json"
+                transported_path.write_bytes(transported)
+                import hashlib
+
+                source_reference = {
+                    **source_reference,
+                    "path": str(transported_path),
+                    "size_bytes": len(transported),
+                    "digest": "sha256:" + hashlib.sha256(transported).hexdigest(),
+                    "source_digest": source_reference["digest"],
+                    "attachments": remote_attachments,
+                }
+            remote[role] = self._upload_input(source_reference)
+            if remote_attachments:
+                remote[role]["attachments"] = remote_attachments
+        remote["request_digest"] = canonical_digest(
+            remote, digest_field="request_digest"
+        )
+        return remote
 
     def generate(
         self,
