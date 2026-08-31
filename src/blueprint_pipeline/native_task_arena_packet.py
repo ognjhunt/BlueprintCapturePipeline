@@ -60,7 +60,9 @@ def _has_symlink_component(path: Path, *, root: Path) -> bool:
     return False
 
 
-def _clone_request(value: Mapping[str, Any]) -> dict[str, Any]:
+def _clone_request(
+    value: Mapping[str, Any], *, require_particlefield_quality: bool = True
+) -> dict[str, Any]:
     try:
         request = json.loads(json.dumps(value))
     except (TypeError, ValueError) as exc:
@@ -71,7 +73,8 @@ def _clone_request(value: Mapping[str, Any]) -> dict[str, Any]:
         raise NativeTaskArenaPacketError(["native_task_arena_packet_request_digest_invalid"])
     appearance_variant = request.get("appearance_variant")
     if (
-        isinstance(appearance_variant, Mapping)
+        require_particlefield_quality
+        and isinstance(appearance_variant, Mapping)
         and appearance_variant.get("representation") == "particlefield_3d_gaussian_splat"
         and not gaussian_quality_is_qualified(appearance_variant.get("gaussian_field_quality"))
     ):
@@ -107,7 +110,11 @@ def materialize_native_task_arena_appearance_variant_request(
         raise NativeTaskArenaPacketError(
             ["native_task_arena_appearance_variant_input_invalid"]
         ) from exc
-    request = _clone_request(base)
+    # This materializer is the migration boundary for older packet requests
+    # whose ParticleField binding predates the qualified field receipt.  Keep
+    # digest/schema validation on the source request, but require the fully
+    # qualified receipt on the derived request before it can leave this call.
+    request = _clone_request(base, require_particlefield_quality=False)
     sh_degree = appearance.get("sh_degree")
     sh_element_size = (
         (sh_degree + 1) ** 2
