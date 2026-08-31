@@ -113,6 +113,7 @@ class AgentsSDKAgentSpec:
     max_turns: int
     max_output_tokens: int
     max_input_tokens: int | None = None
+    max_tool_output_bytes: int = 0
     reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     tool_bindings: tuple[RegisteredToolBinding, ...] = ()
     output_type: type[BaseModel] = AgentsSDKCapabilityOutput
@@ -156,6 +157,8 @@ class OpenAIAgentsSDKConfig:
     model: str = DEFAULT_SUPERVISOR_AGENT_MODEL
     max_turns: int = 4
     max_output_tokens: int = 4_000
+    max_input_tokens: int = 120_000
+    max_tool_output_bytes: int = 20_000
     allow_live_invocation: bool = False
     tracing_disabled: bool = False
     max_inference_cost_usd: float = 0.0
@@ -169,6 +172,10 @@ class OpenAIAgentsSDKConfig:
             raise ValueError("agents_sdk_max_turns_out_of_range")
         if self.max_output_tokens < 256 or self.max_output_tokens > 32_000:
             raise ValueError("agents_sdk_max_output_tokens_out_of_range")
+        if self.max_input_tokens < 1 or self.max_input_tokens > 1_000_000:
+            raise ValueError("agents_sdk_max_input_tokens_out_of_range")
+        if self.max_tool_output_bytes < 0 or self.max_tool_output_bytes > 1_000_000:
+            raise ValueError("agents_sdk_max_tool_output_bytes_out_of_range")
         if self.max_inference_cost_usd < 0:
             raise ValueError("agents_sdk_inference_budget_negative")
         if self.allow_live_invocation and self.max_inference_cost_usd <= 0:
@@ -308,11 +315,12 @@ class OpenAIAgentsSDKInvoker:
         # declare an explicit conservative ceiling rather than treating base64
         # transport bytes as tokens or silently under-reserving the call.
         if isinstance(input_value, str):
-            input_token_ceiling = len(input_value.encode("utf-8")) + (
+            initial_input_token_ceiling = len(input_value.encode("utf-8")) + (
                 cache_policy.economics.stable_prefix_tokens
                 if cache_policy.status == "enabled"
                 else 0
             )
+            input_token_ceiling = initial_input_token_ceiling
             input_kind = "text"
             input_digest = canonical_digest({"input_text": input_value})
         elif isinstance(input_value, list) and input_value:
@@ -325,6 +333,30 @@ class OpenAIAgentsSDKInvoker:
             input_digest = canonical_digest({"input": input_value})
         else:
             raise AgentsSDKInvocationBlocked("agents_sdk_input_invalid")
+        if spec.max_turns > 1:
+            if input_kind == "multimodal":
+                raise AgentsSDKInvocationBlocked(
+                    "agents_sdk_multimodal_multi_turn_context_bound_unavailable"
+                )
+            if spec.max_input_tokens is None or not 1 <= spec.max_input_tokens <= 1_000_000:
+                raise AgentsSDKInvocationBlocked(
+                    "agents_sdk_multi_turn_input_token_ceiling_missing"
+                )
+            if spec.tool_bindings and spec.max_tool_output_bytes <= 0:
+                raise AgentsSDKInvocationBlocked(
+                    "agents_sdk_multi_turn_tool_output_ceiling_missing"
+                )
+            maximum_growth_tokens = (spec.max_turns - 1) * (
+                spec.max_output_tokens + spec.max_tool_output_bytes
+            )
+            if initial_input_token_ceiling + maximum_growth_tokens > spec.max_input_tokens:
+                raise AgentsSDKInvocationBlocked(
+                    "agents_sdk_multi_turn_context_growth_exceeds_declared_ceiling"
+                )
+            # Every provider turn is reserved at the caller-declared ceiling. The
+            # initial payload plus the bounded model/tool growth above proves that
+            # later turns cannot exceed this amount without failing locally.
+            input_token_ceiling = spec.max_input_tokens
         projected_per_request_cost = worst_case_reservation_usd(
             model=spec.model,
             input_token_ceiling=input_token_ceiling,
@@ -395,6 +427,7 @@ class OpenAIAgentsSDKInvoker:
             set_default_openai_key(file_api_key, use_for_tracing=False)
 
         tool_observations: list[Mapping[str, Any]] = []
+        cumulative_tool_output_bytes = 0
         sdk_tools: list[Any] = []
         for binding in spec.tool_bindings:
 
@@ -411,8 +444,19 @@ class OpenAIAgentsSDKInvoker:
                 if not isinstance(arguments, Mapping):
                     raise ValueError("agents_sdk_tool_input_must_be_object")
                 observation = dict(selected.invoke(arguments))
+                serialized_observation = json.dumps(observation, sort_keys=True)
+                nonlocal cumulative_tool_output_bytes
+                cumulative_tool_output_bytes += len(serialized_observation.encode("utf-8"))
+                maximum_tool_output_bytes = spec.max_tool_output_bytes * max(
+                    1, spec.max_turns - 1
+                )
+                if (
+                    spec.max_tool_output_bytes > 0
+                    and cumulative_tool_output_bytes > maximum_tool_output_bytes
+                ):
+                    raise ValueError("agents_sdk_tool_output_ceiling_exceeded")
                 tool_observations.append(observation)
-                return json.dumps(observation, sort_keys=True)
+                return serialized_observation
 
             sdk_tools.append(
                 FunctionTool(
@@ -800,6 +844,8 @@ class OpenAIAgentsSDKCapability:
             model=self.config.model,
             max_turns=self.config.max_turns,
             max_output_tokens=self.config.max_output_tokens,
+            max_input_tokens=self.config.max_input_tokens,
+            max_tool_output_bytes=self.config.max_tool_output_bytes,
             tool_bindings=bindings,
         )
         try:

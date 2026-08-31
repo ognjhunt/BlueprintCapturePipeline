@@ -102,6 +102,68 @@ class InferenceReservationAudit:
         reservation_path = self._reservation_path(reservation_id)
         if not reservation_path.is_file():
             raise InferenceReservationError("inference_completion_reservation_missing")
+        reservation = dict(read_json(reservation_path))
+        expected_reservation_digest = canonical_digest(
+            reservation,
+            digest_field="inference_reservation_digest",
+        )
+        if reservation.get("inference_reservation_digest") != expected_reservation_digest:
+            raise InferenceReservationError("inference_reservation_digest_mismatch")
+        for field in ("run_id", "capability", "model"):
+            if completion.get(field) != reservation.get(field):
+                raise InferenceReservationError(
+                    f"inference_completion_{field}_mismatch"
+                )
+        if completion.get("provider") != "openai":
+            raise InferenceReservationError("inference_completion_provider_mismatch")
+        if completion.get("cache_policy") != reservation.get("cache_policy"):
+            raise InferenceReservationError("inference_completion_cache_policy_mismatch")
+        completion_policy = completion.get("cache_policy")
+        if (
+            not isinstance(completion_policy, Mapping)
+            or completion_policy.get("policy_digest")
+            != reservation.get("cache_policy_digest")
+        ):
+            raise InferenceReservationError(
+                "inference_completion_cache_policy_digest_mismatch"
+            )
+        if completion.get("breakpoint_digests") != reservation.get(
+            "breakpoint_digests"
+        ):
+            raise InferenceReservationError(
+                "inference_completion_breakpoint_digests_mismatch"
+            )
+        projected = float(reservation.get("projected_max_cost_usd") or 0.0)
+        completion_projected = completion.get("projected_max_cost_usd")
+        reconciled = completion.get("reconciled_actual_cost_usd")
+        released = completion.get("released_reservation_usd")
+        for label, raw in (
+            ("projected_cost", completion_projected),
+            ("reconciled_cost", reconciled),
+            ("released_reservation", released),
+        ):
+            if (
+                not isinstance(raw, (int, float))
+                or isinstance(raw, bool)
+                or not math.isfinite(float(raw))
+                or float(raw) < 0
+            ):
+                raise InferenceReservationError(
+                    f"inference_completion_{label}_invalid"
+                )
+        if abs(float(completion_projected) - projected) > 1.0e-12:
+            raise InferenceReservationError(
+                "inference_completion_projected_cost_mismatch"
+            )
+        if float(reconciled) > projected + 1.0e-12:
+            raise InferenceReservationError(
+                "inference_completion_reconciled_cost_exceeds_reservation"
+            )
+        expected_released = max(0.0, projected - float(reconciled))
+        if abs(float(released) - expected_released) > 1.0e-12:
+            raise InferenceReservationError(
+                "inference_completion_released_reservation_mismatch"
+            )
         expected_digest = canonical_digest(
             completion,
             digest_field="inference_completion_digest",
