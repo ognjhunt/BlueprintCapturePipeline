@@ -500,6 +500,55 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
             )
 
 
+def test_packet_control_search_authority_is_typed_and_self_digested(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path, articulated=True)
+    authority = {
+        "schema_version": "task_evaluation_control_search_authority.v1",
+        "enabled": True,
+        "claim_ceiling": "development_only_control_search",
+        "provider_allocations_performed": 0,
+        "requested_vector_env_count": 256,
+        "maximum_vector_env_count": 1_024,
+        "seeds_per_candidate": 1,
+        "shortlist_size": 16,
+        "appearance_mode": "omitted",
+        "camera_mode": "disabled",
+        "full_fidelity_replay_required": True,
+        "authority_digest": "",
+    }
+    authority["authority_digest"] = canonical_digest(
+        authority, digest_field="authority_digest"
+    )
+    request["native_construction_feedback"] = {
+        "control_search": authority
+    }
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+
+    assert validate_native_task_arena_packet_request(request) == request
+
+    request["native_construction_feedback"]["control_search"][
+        "camera_mode"
+    ] = "enabled"
+    request["native_construction_feedback"]["control_search"][
+        "authority_digest"
+    ] = canonical_digest(
+        request["native_construction_feedback"]["control_search"],
+        digest_field="authority_digest",
+    )
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    with pytest.raises(
+        NativeTaskArenaPacketError,
+        match="native_task_arena_control_search_authority_invalid",
+    ):
+        validate_native_task_arena_packet_request(request)
+
+
 @pytest.mark.parametrize("articulated", [False, True])
 def test_original_and_second_scene_share_one_packet_materializer(
     tmp_path: Path, articulated: bool

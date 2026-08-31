@@ -515,6 +515,25 @@ def compile_native_arena_episode(
                 reset_state={"root_pose_world": object_pose, "joint_positions": {}},
             )
         packet_assets.append(row)
+    control_search = None
+    if native_candidate_universe is not None:
+        control_search = {
+            "schema_version": "task_evaluation_control_search_authority.v1",
+            "enabled": True,
+            "claim_ceiling": "development_only_control_search",
+            "provider_allocations_performed": 0,
+            "requested_vector_env_count": 256,
+            "maximum_vector_env_count": 1_024,
+            "seeds_per_candidate": 1,
+            "shortlist_size": 16,
+            "appearance_mode": "omitted",
+            "camera_mode": "disabled",
+            "full_fidelity_replay_required": True,
+            "authority_digest": "",
+        }
+        control_search["authority_digest"] = canonical_digest(
+            control_search, digest_field="authority_digest"
+        )
     packet_request: dict[str, Any] = {
         "schema_version": "native_task_arena_packet_request.v1",
         "scene_id": request["scene"]["identity"]["id"],
@@ -555,6 +574,7 @@ def compile_native_arena_episode(
                 "allocator_retry_cap": 0,
                 "maximum_rounds": 4,
                 "native_gates_unchanged": True,
+                "control_search": control_search,
             }
             if native_candidate_universe is not None
             else None
