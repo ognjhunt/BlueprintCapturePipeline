@@ -482,6 +482,25 @@ def lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         "task_id": TASK_ID,
         "request_digest": request["request_digest"],
         "arena_scene_plan_digest": scene_plan["plan_digest"],
+        # Production receipts bind every staged asset here, and the profile has
+        # to declare those bindings or the dispatcher projects a packet
+        # directory holding the documents without the meshes beside them.
+        "source_bindings": [
+            {
+                "semantic_role": row["semantic_role"],
+                "asset_id": None,
+                "source": {
+                    "root": "evidence",
+                    "relative_path": f"configured-scene/{Path(row['usd_path']).name}",
+                    "size_bytes": row["size_bytes"],
+                    "sha256": row["sha256"],
+                },
+                "staged_relative_path": row["usd_path"],
+                "staged_size_bytes": row["size_bytes"],
+                "staged_sha256": row["sha256"],
+            }
+            for row in scene_plan["objects"]
+        ],
         "receipt_digest": "",
     }
     packet_receipt["receipt_digest"] = canonical_digest(
@@ -767,6 +786,30 @@ def _build(lane, link: str, **overrides):
         ]
     arguments.update(overrides)
     return builder.build_native_task_arena_live_profile(**arguments)
+
+
+def test_construction_profile_declares_every_staged_packet_asset(
+    lane: dict,
+) -> None:
+    """The meshes must travel with the documents through the dispatcher."""
+
+    profile = _build(lane, "construction")
+    declared = {
+        Path(row["path"]).resolve(): row["digest"]
+        for row in profile["immutable_inputs"]
+    }
+    receipt = json.loads(
+        (lane["packet"] / builder.PACKET_RECEIPT_NAME).read_text(encoding="utf-8")
+    )
+    bindings = receipt["source_bindings"]
+    assert bindings, "fixture must carry production-shaped source bindings"
+    for binding in bindings:
+        asset = (lane["packet"] / binding["staged_relative_path"]).resolve()
+        # Declared, because the dispatcher projects only declared inputs and a
+        # packet directory without its meshes is not a usable packet.
+        assert asset in declared, binding["semantic_role"]
+        # Bound by exact bytes, so a swapped mesh is refused rather than staged.
+        assert declared[asset] == binding["staged_sha256"]
 
 
 def test_profile_binds_the_explicit_admitted_provider(lane: dict) -> None:

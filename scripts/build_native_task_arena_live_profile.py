@@ -713,6 +713,38 @@ def _immutable_inputs(link: ArenaLink):
                 )
             return path
 
+        # The dispatcher replaces the packet directory argument with a projection
+        # built only from declared immutable inputs, and deliberately leaves
+        # undeclared files behind so a stray secret beside the documents is never
+        # copied into the run. That means an asset the workload actually opens --
+        # the collision mesh the planner loads -- has to be declared too, or the
+        # workload is handed a packet directory with the documents present and the
+        # meshes missing. The packet receipt already binds each asset by its
+        # staged path, size and digest, so declare exactly those bindings and let
+        # the existing identity check verify the bytes.
+        packet_dir = context.extra_paths["packet_dir"]
+        packet_receipt_record = _read_mapping(
+            packet_receipt, error="native_task_arena_packet_receipt_invalid"
+        )
+        for binding in packet_receipt_record.get("source_bindings") or []:
+            if not isinstance(binding, Mapping):
+                continue
+            role = str(binding.get("semantic_role") or "")
+            staged_relative = str(binding.get("staged_relative_path") or "")
+            if not role or not staged_relative:
+                raise TaskEvaluationLaunchError(
+                    "native_task_arena_packet_asset_binding_invalid:"
+                    + (role or "unnamed")
+                )
+            append_bound_record(
+                f"native_task_arena_packet_asset_{role}",
+                {
+                    "path": str(packet_dir / staged_relative),
+                    "sha256": binding.get("staged_sha256"),
+                    "size_bytes": binding.get("staged_size_bytes"),
+                },
+            )
+
         preallocation_zero_seen: set[Path] = set()
 
         def append_preallocation_provider_zero_closure(
