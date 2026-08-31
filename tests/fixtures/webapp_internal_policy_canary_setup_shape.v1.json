@@ -45,6 +45,8 @@
     "recommended"
   ],
   "profile_materialization_input_keys": [
+    "configured_base_profile_digest",
+    "configured_base_profile_id",
     "configured_source_launch_id",
     "internal_policy_canary_execution_plan",
     "internal_policy_canary_setup",

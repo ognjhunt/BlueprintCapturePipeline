@@ -26,11 +26,18 @@ from scripts.attach_internal_policy_canary_setup import (
 
 
 COMMIT = "a" * 40
+CONFIGURED_PROFILE_ID = (
+    "task-evaluation-scene-configuration-a65bc2af-r4-binding-dcb54b7eef91"
+)
+OFFERING_SOURCE_LAUNCH_ID = (
+    "adp-new-scene-simple-relocation-839873-a65bc2af-r1-web-paused-ungraded-20260830T102134Z"
+)
 
 
 def _contracts() -> tuple[dict, dict]:
     legacy = legacy_setup()
     public = public_setup()
+    legacy["source_launch_id"] = OFFERING_SOURCE_LAUNCH_ID
     quick = legacy["presets"][0]
     for index, cell in enumerate(quick["cells"]):
         scenario = {
@@ -82,7 +89,7 @@ def _contracts() -> tuple[dict, dict]:
 def _profile_and_request(tmp_path: Path) -> tuple[dict, dict]:
     public, legacy = _contracts()
     base_profile = launch_profile(tmp_path)
-    base_profile["profile_id"] = public["source_launch_id"]
+    base_profile["profile_id"] = CONFIGURED_PROFILE_ID
     base_profile["profile_digest"] = canonical_digest(
         base_profile, digest_field="profile_digest"
     )
@@ -115,6 +122,8 @@ def _profile_and_request(tmp_path: Path) -> tuple[dict, dict]:
     wrapper = {
         "schema_version": "task_evaluation_policy_canary_profile_materialization_input.v1",
         "profile_id": "scene839873-internal-policy-canary-current",
+        "configured_base_profile_id": base_profile["profile_id"],
+        "configured_base_profile_digest": base_profile["profile_digest"],
         "configured_source_launch_id": public["source_launch_id"],
         "source_commit": COMMIT,
         "internal_policy_canary_setup": public,
@@ -128,6 +137,9 @@ def _profile_and_request(tmp_path: Path) -> tuple[dict, dict]:
         base_configured_profile=base_profile,
         profile_materialization_input=wrapper,
     )
+    assert wrapper["configured_base_profile_id"] == base_profile["profile_id"]
+    assert wrapper["configured_source_launch_id"] != base_profile["profile_id"]
+    assert wrapper["configured_source_launch_id"] == OFFERING_SOURCE_LAUNCH_ID
     descriptor = public_launch_profile_descriptor(profile)
     assert descriptor["internal_policy_canary_setup"] == public
     assert "internal_policy_canary_execution_plan" not in descriptor
