@@ -591,6 +591,8 @@ def test_builder_clones_lightweight_control_search_without_rendering(
     assert _Embodiment.last_enable_cameras is False
     assert built.camera_scene_names == {}
     assert "scene_appearance" not in built.scene_asset_names
+    assert built.scene_asset_names["task_object"] == "task_object"
+    assert built.scene_asset_names["scene_collision"] == "scene_collision"
     assert built.native_configuration_readback["control_search_runtime"] == {
         "num_envs": 256,
         "cameras_enabled": False,
