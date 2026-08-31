@@ -196,8 +196,10 @@ class _CameraCfg:
 
 
 class _Embodiment:
+    last_enable_cameras = None
+
     def __init__(self, *, enable_cameras, initial_pose, initial_joint_pose):
-        assert enable_cameras is True
+        type(self).last_enable_cameras = enable_cameras
         self.initial_pose = initial_pose
         self.initial_joint_pose = initial_joint_pose
         self.event_config = SimpleNamespace(
@@ -233,6 +235,7 @@ class _ArenaEnvironment:
 
 class _ArenaBuilder:
     last = None
+    last_render_mode = None
 
     def __init__(self, arena_env, args):
         self.arena_env = arena_env
@@ -240,7 +243,7 @@ class _ArenaBuilder:
         type(self).last = self
 
     def make_registered_and_return_cfg(self, *, render_mode):
-        assert render_mode == "rgb_array"
+        type(self).last_render_mode = render_mode
         cfg = SimpleNamespace(
             sim=SimpleNamespace(), seed=None, decimation=None, episode_length_s=None
         )
@@ -518,6 +521,9 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
         "wrist": "wrist_camera",
         "overview": "external_camera_2",
     }
+    assert _Embodiment.last_enable_cameras is True
+    assert _ArenaBuilder.last.args.num_envs == 1
+    assert _ArenaBuilder.last_render_mode == "rgb_array"
     arena_env = _ArenaBuilder.last.arena_env
     joint_wrench = next(
         asset
@@ -550,6 +556,57 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
         arena_env.embodiment.camera_config.external_camera_2,
     ):
         assert camera_cfg.renderer_cfg.colorize_semantic_segmentation is False
+
+
+def test_builder_clones_lightweight_control_search_without_rendering(
+    monkeypatch,
+) -> None:
+    _install_fake_native_runtime(monkeypatch)
+    plan = _sealed_scene_plan()
+    plan["objects"].append(
+        {
+            "semantic_role": "scene_appearance",
+            "prim_path": "{ENV_REGEX_NS}/scene_appearance",
+            "object_type": "BASE",
+            "usd_path": "/provider/assets/appearance.usdc",
+            "visible": True,
+            "pose_world": {
+                "position_world_m": [0.0, 0.0, 0.0],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+        }
+    )
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    built = build_native_task_arena_environment(
+        plan,
+        num_envs=256,
+        enable_cameras=False,
+        include_scene_appearance=False,
+        render_mode=None,
+    )
+
+    assert _ArenaBuilder.last.args.num_envs == 256
+    assert _ArenaBuilder.last_render_mode is None
+    assert _Embodiment.last_enable_cameras is False
+    assert built.camera_scene_names == {}
+    assert "scene_appearance" not in built.scene_asset_names
+    assert built.scene_asset_names["task_object"] == "task_object"
+    assert built.scene_asset_names["scene_collision"] == "scene_collision"
+    assert built.native_configuration_readback["control_search_runtime"] == {
+        "num_envs": 256,
+        "cameras_enabled": False,
+        "scene_appearance_included": False,
+        "render_mode": None,
+    }
+
+
+def test_builder_refuses_vector_env_count_above_guardrail() -> None:
+    with pytest.raises(
+        NativeTaskArenaRuntimeError,
+        match="native_task_arena_vector_runtime_configuration_invalid",
+    ):
+        build_native_task_arena_environment(_sealed_scene_plan(), num_envs=1_025)
 
 
 def test_builder_keeps_inactive_articulated_replacement_and_its_reset(
