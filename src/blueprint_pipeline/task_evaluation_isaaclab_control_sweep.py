@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,9 @@ from .task_evaluation_control_search_funnel import (
 
 
 SCHEDULE_SCHEMA_VERSION = "task_evaluation_isaaclab_control_sweep_schedule.v1"
+WAVE_COMMANDS_SCHEMA_VERSION = (
+    "task_evaluation_isaaclab_control_sweep_wave_commands.v1"
+)
 
 
 def _copy(value: Mapping[str, Any], *, blocker: str) -> dict[str, Any]:
@@ -169,6 +173,153 @@ def validate_isaaclab_control_sweep_schedule(
     return schedule
 
 
+def compile_isaaclab_control_sweep_wave_commands(
+    *,
+    plan: Mapping[str, Any],
+    schedule: Mapping[str, Any],
+    candidate_inventory: Mapping[str, Any],
+    wave_index: int,
+    arm_joint_names: Sequence[str],
+) -> dict[str, Any]:
+    """Compile cuRobo waypoints into one clone-indexed symbolic action wave."""
+
+    frozen_plan = validate_control_search_funnel_plan(plan)
+    frozen_schedule = validate_isaaclab_control_sweep_schedule(
+        schedule, plan=frozen_plan
+    )
+    if (
+        not isinstance(wave_index, int)
+        or isinstance(wave_index, bool)
+        or not 0 <= wave_index < frozen_schedule["wave_count"]
+        or not isinstance(arm_joint_names, Sequence)
+        or isinstance(arm_joint_names, (str, bytes))
+        or len(arm_joint_names) != 7
+        or any(not isinstance(name, str) or not name for name in arm_joint_names)
+        or len(set(arm_joint_names)) != 7
+        or candidate_inventory.get("inventory_digest")
+        != frozen_schedule["candidate_inventory_digest"]
+    ):
+        raise ControlSearchFunnelError("control_search_wave_commands_invalid")
+    candidates = {
+        str(row.get("candidate_id") or ""): row
+        for row in candidate_inventory.get("candidates") or []
+        if isinstance(row, Mapping)
+    }
+    wave = frozen_schedule["waves"][wave_index]
+    rows = []
+    maximum_waypoint_count = 0
+    for assignment in wave["assignments"]:
+        candidate = candidates.get(assignment["candidate_id"])
+        if (
+            not isinstance(candidate, Mapping)
+            or candidate.get("candidate_digest")
+            != assignment["candidate_digest"]
+        ):
+            raise ControlSearchFunnelError(
+                "control_search_wave_commands_invalid"
+            )
+        reset = candidate.get("reset_variant")
+        reset_positions = (
+            reset.get("robot_joint_reset_positions_rad")
+            if isinstance(reset, Mapping)
+            else None
+        )
+        variants = (
+            candidate.get("entry_trajectory_variant"),
+            candidate.get("interaction_trajectory_variant"),
+        )
+        waypoints: list[dict[str, Any]] = []
+        if not isinstance(reset_positions, Mapping):
+            raise ControlSearchFunnelError(
+                "control_search_wave_commands_invalid"
+            )
+        try:
+            reset_vector = [float(reset_positions[name]) for name in arm_joint_names]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ControlSearchFunnelError(
+                "control_search_wave_commands_invalid"
+            ) from exc
+        if not all(math.isfinite(value) for value in reset_vector):
+            raise ControlSearchFunnelError(
+                "control_search_wave_commands_invalid"
+            )
+        for variant in variants:
+            if not isinstance(variant, Mapping) or not isinstance(
+                variant.get("waypoints"), list
+            ):
+                raise ControlSearchFunnelError(
+                    "control_search_wave_commands_invalid"
+                )
+            for waypoint in variant["waypoints"]:
+                joints = (
+                    waypoint.get("robot_joint_positions_rad")
+                    if isinstance(waypoint, Mapping)
+                    else None
+                )
+                stage_kind = str(
+                    waypoint.get("stage_kind")
+                    if isinstance(waypoint, Mapping)
+                    else ""
+                )
+                try:
+                    target = [float(joints[name]) for name in arm_joint_names]
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ControlSearchFunnelError(
+                        "control_search_wave_commands_invalid"
+                    ) from exc
+                if (
+                    stage_kind
+                    not in {"entry", "approach", "contact", "release", "retreat"}
+                    or not all(math.isfinite(value) for value in target)
+                ):
+                    raise ControlSearchFunnelError(
+                        "control_search_wave_commands_invalid"
+                    )
+                waypoints.append(
+                    {
+                        "waypoint_index": len(waypoints),
+                        "waypoint_id": str(waypoint.get("waypoint_id") or ""),
+                        "stage_kind": stage_kind,
+                        "arm_joint_positions_rad": target,
+                        "gripper_state": (
+                            "closed" if stage_kind == "contact" else "open"
+                        ),
+                    }
+                )
+        if not waypoints:
+            raise ControlSearchFunnelError(
+                "control_search_wave_commands_invalid"
+            )
+        maximum_waypoint_count = max(maximum_waypoint_count, len(waypoints))
+        rows.append(
+            {
+                **assignment,
+                "robot_joint_reset_positions_rad": reset_vector,
+                "waypoint_count": len(waypoints),
+                "waypoints": waypoints,
+            }
+        )
+    commands: dict[str, Any] = {
+        "schema_version": WAVE_COMMANDS_SCHEMA_VERSION,
+        "status": "compiled",
+        "plan_digest": frozen_plan["plan_digest"],
+        "schedule_digest": frozen_schedule["schedule_digest"],
+        "candidate_inventory_digest": candidate_inventory["inventory_digest"],
+        "wave_index": wave_index,
+        "active_environment_count": wave["active_environment_count"],
+        "vector_env_count": frozen_schedule["vector_env_count"],
+        "arm_joint_names": list(arm_joint_names),
+        "maximum_waypoint_count": maximum_waypoint_count,
+        "inactive_environments_hold_reset_state": True,
+        "assignments": rows,
+        "commands_digest": "",
+    }
+    commands["commands_digest"] = canonical_digest(
+        commands, digest_field="commands_digest"
+    )
+    return commands
+
+
 WaveRunner = Callable[..., Mapping[str, Any]]
 EnvironmentBuilder = Callable[..., Any]
 
@@ -235,7 +386,9 @@ def execute_isaaclab_control_sweep(
 
 __all__ = [
     "SCHEDULE_SCHEMA_VERSION",
+    "WAVE_COMMANDS_SCHEMA_VERSION",
     "build_isaaclab_control_sweep_schedule",
+    "compile_isaaclab_control_sweep_wave_commands",
     "execute_isaaclab_control_sweep",
     "validate_isaaclab_control_sweep_schedule",
 ]

@@ -9,6 +9,7 @@ from blueprint_pipeline.task_evaluation_control_search_funnel import (
 )
 from blueprint_pipeline.task_evaluation_isaaclab_control_sweep import (
     build_isaaclab_control_sweep_schedule,
+    compile_isaaclab_control_sweep_wave_commands,
     execute_isaaclab_control_sweep,
     validate_isaaclab_control_sweep_schedule,
 )
@@ -154,3 +155,68 @@ def test_executor_boots_once_and_resets_each_wave() -> None:
     assert waves == [0, 1]
     assert result["status"] == "completed_development_only"
     assert result["peak_gpu_memory_bytes"] == 18_000_000_001
+
+
+def test_wave_compiler_preserves_curobo_joint_targets_per_clone() -> None:
+    arm_joint_names = [f"panda_joint{index}" for index in range(1, 8)]
+    inventory = _inventory(10)
+    for candidate_index, candidate in enumerate(inventory["candidates"]):
+        reset = {
+            name: 0.01 * (joint_index + candidate_index)
+            for joint_index, name in enumerate(arm_joint_names)
+        }
+        candidate["reset_variant"] = {
+            "robot_joint_reset_positions_rad": reset,
+        }
+        candidate["entry_trajectory_variant"] = {
+            "waypoints": [
+                {
+                    "waypoint_id": "entry-0",
+                    "stage_kind": "entry",
+                    "robot_joint_positions_rad": reset,
+                }
+            ]
+        }
+        candidate["interaction_trajectory_variant"] = {
+            "waypoints": [
+                {
+                    "waypoint_id": "contact-0",
+                    "stage_kind": "contact",
+                    "robot_joint_positions_rad": {
+                        name: value + 0.02 for name, value in reset.items()
+                    },
+                },
+                {
+                    "waypoint_id": "release-0",
+                    "stage_kind": "release",
+                    "robot_joint_positions_rad": reset,
+                },
+            ]
+        }
+        candidate["candidate_digest"] = canonical_digest(
+            candidate, digest_field="candidate_digest"
+        )
+    inventory["inventory_digest"] = canonical_digest(
+        inventory, digest_field="inventory_digest"
+    )
+    plan = _plan(inventory)
+    schedule = build_isaaclab_control_sweep_schedule(
+        plan=plan,
+        candidate_inventory=inventory,
+        base_seed=839873104,
+    )
+
+    commands = compile_isaaclab_control_sweep_wave_commands(
+        plan=plan,
+        schedule=schedule,
+        candidate_inventory=inventory,
+        wave_index=0,
+        arm_joint_names=arm_joint_names,
+    )
+
+    assert commands["active_environment_count"] == 8
+    assert commands["maximum_waypoint_count"] == 3
+    assert commands["assignments"][0]["waypoints"][0]["gripper_state"] == "open"
+    assert commands["assignments"][0]["waypoints"][1]["gripper_state"] == "closed"
+    assert commands["assignments"][0]["waypoints"][2]["gripper_state"] == "open"
+    assert commands["assignments"][7]["environment_index"] == 7
