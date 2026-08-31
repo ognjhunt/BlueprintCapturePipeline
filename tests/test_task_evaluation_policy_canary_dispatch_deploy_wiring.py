@@ -42,3 +42,9 @@ def test_canary_paid_dispatcher_is_installed_but_never_always_armed() -> None:
     assert f"systemctl enable --now {path_name}" not in installer
     assert f"deploy/systemd/{service_name}" in installer
     assert f"deploy/systemd/{path_name}" in installer
+
+
+def test_direct_launch_dispatcher_can_only_queue_canary_preparation() -> None:
+    service = _text("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service")
+    assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT=" in service
+    assert "task-evaluation-launch-preparations" in service

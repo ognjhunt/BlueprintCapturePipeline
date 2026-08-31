@@ -117,7 +117,7 @@ def launch_profile_policy_canary_setup_blockers(
 ) -> list[str]:
     if "internal_policy_canary_setup" not in profile:
         return []
-    return policy_canary_setup_blockers(
+    blockers = policy_canary_setup_blockers(
         profile["internal_policy_canary_setup"],
         prefix=prefix,
         source_launch_id=str(
@@ -126,6 +126,61 @@ def launch_profile_policy_canary_setup_blockers(
             or ""
         ),
     )
+    from .task_evaluation_policy_canary_preparation_dispatch import (
+        policy_canary_execution_plan_blockers,
+    )
+
+    return [*blockers, *policy_canary_execution_plan_blockers(profile)]
+
+
+def maybe_dispatch_policy_canary_preparation(**kwargs: Any) -> dict[str, Any] | None:
+    from .task_evaluation_policy_canary_preparation_dispatch import (
+        maybe_dispatch_policy_canary_preparation as dispatch,
+    )
+
+    return dispatch(preparation_queue_root=None, **kwargs)
+
+
+def bound_policy_canary_required_controls(
+    request: Mapping[str, Any], profile_controls: Mapping[str, Any]
+) -> dict[str, Any]:
+    controls = dict(request.get("required_controls", {}))
+    if request.get("run_kind") != "internal_policy_canary":
+        return controls
+    return {key: controls.get(key) for key in profile_controls}
+
+
+def normalize_policy_canary_launch_request_blockers(
+    request: Mapping[str, Any], blockers: list[str]
+) -> list[str]:
+    if request.get("run_kind") != "internal_policy_canary":
+        return sorted(set(blockers))
+    actor = dict(request.get("authorization", {}).get("actor", {}))
+    spend = dict(request.get("authorization", {}).get("spend", {}))
+    controls = dict(request.get("required_controls", {}))
+    removable = {
+        "rights_authority_missing",
+        "rights_authority_evidence_uri_invalid",
+        "rights_authority_evidence_digest_invalid",
+        "spend_authority_expiry_invalid",
+        "launch_claim_ceiling_invalid",
+    }
+    if actor.get("role") == "team_member" and str(actor.get("id") or ""):
+        removable.add("launch_actor_invalid")
+    normalized = [item for item in blockers if item not in removable]
+    if (
+        request.get("claim_ceiling") != "diagnostic_policy_execution"
+        or not isinstance(spend.get("hard_ttl_seconds"), int)
+        or isinstance(spend.get("hard_ttl_seconds"), bool)
+        or spend["hard_ttl_seconds"] <= 0
+        or controls.get("maximum_provider_allocations") != 1
+        or controls.get("retry_cap") != 0
+        or request.get("controls_qualification_bypassed") is not False
+        or request.get("scene_promotion_permitted") is not False
+        or request.get("official_ranking_permitted") is not False
+    ):
+        normalized.append("policy_canary_typed_authority_invalid")
+    return sorted(set(normalized))
 
 
 __all__ = ["SCHEMA_PATH", "SCHEMA_VERSION", "TaskEvaluationPolicyCanarySetupError", "launch_profile_policy_canary_setup_blockers", "policy_canary_setup_blockers", "policy_canary_setup_schema", "validate_policy_canary_setup"]

@@ -1,0 +1,33 @@
+{
+  "schema_version": "task_evaluation_launch_request.v1",
+  "run_kind": "internal_policy_canary",
+  "claim_ceiling": "diagnostic_policy_execution",
+  "robot_preset_id": "franka_panda_robotiq_2f85_v1",
+  "policy_candidate_ids": ["pi05_droid", "groot_n17_droid"],
+  "preset_id": "quick_10",
+  "episode_plan": {
+    "preset": "quick_10",
+    "episodes_per_policy": 10,
+    "policy_count": 2,
+    "learned_policy_rollout_count": 20,
+    "resolved_cell_count": 10,
+    "resolved_seed_count": 10,
+    "diagnostic_control_rollout_count": 20,
+    "blocking_for_policy_execution": false
+  },
+  "notification": {
+    "notify_on": ["completed", "blocked", "cancelled"]
+  },
+  "authorization": {
+    "actor_role": "team_member",
+    "currency": "USD",
+    "hard_ttl_seconds": 14400
+  },
+  "required_controls": {
+    "maximum_provider_allocations": 1,
+    "retry_cap": 0
+  },
+  "controls_qualification_bypassed": false,
+  "scene_promotion_permitted": false,
+  "official_ranking_permitted": false
+}

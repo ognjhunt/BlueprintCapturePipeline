@@ -144,7 +144,6 @@ def standing_authorization_directory(state_root: str | Path) -> str:
     Defaulting is safe in the direction that matters: a host with no
     authorization on disk is still refused, with no blocker of its own.
     """
-
     configured = str(os.getenv(STANDING_AUTHORIZATION_DIR_ENV) or "").strip()
     if configured:
         return configured
@@ -200,7 +199,6 @@ def _is_uri(value: Any, *, authority: bool = False) -> bool:
 
 def _native_policy_binding_blockers(profile: Mapping[str, Any]) -> list[str]:
     """Validate private identity metadata for the frozen native policy lane."""
-
     raw = profile.get("native_policy_binding")
     if raw is None:
         return []
@@ -403,7 +401,8 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
         blockers.append("launch_request_secret_value_forbidden")
     if request.get("request_digest") != canonical_digest(request, digest_field="request_digest"):
         blockers.append("launch_request_digest_mismatch")
-    return sorted(set(blockers))
+    return policy_canary_setup.normalize_policy_canary_launch_request_blockers(
+        request, blockers)
 
 
 def _validate_launch_profile(
@@ -625,7 +624,7 @@ def _validate_launch_profile(
     if profile.get("claim_ceiling") not in {
         "development_only",
         "partner_run_pending_physical_join",
-    }:
+    } | ({"diagnostic_policy_execution"} if "internal_policy_canary_setup" in profile else set()):
         blockers.append("launch_profile_claim_ceiling_invalid")
     if profile.get("profile_digest") != canonical_digest(profile, digest_field="profile_digest"):
         blockers.append("launch_profile_digest_mismatch")
@@ -634,6 +633,7 @@ def _validate_launch_profile(
     # ``secret-file:...`` references but cannot contain a secret value.
     secret_scan.pop("policy_run_setup", None)
     secret_scan.pop("internal_policy_canary_setup", None)
+    secret_scan.pop("internal_policy_canary_execution_plan", None)
     if _contains_secret_key(secret_scan):
         blockers.append("launch_profile_secret_value_forbidden")
     return sorted(set(blockers))
@@ -646,7 +646,6 @@ def validate_launch_profile_structure(value: Mapping[str, Any]) -> list[str]:
     immutable inputs. Execution, publication, and standing-authority paths use
     :func:`validate_launch_profile`, which still reopens the external lineage.
     """
-
     return _validate_launch_profile(value, reopen_external_lineage=False)
 
 
@@ -672,7 +671,9 @@ def _project_public_launch_profile_descriptor(
 ) -> dict[str, Any]:
     descriptor = {field: profile[field] for field in PUBLIC_PROFILE_DESCRIPTOR_FIELDS}
     for field in PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS:
-        if field in profile:
+        if field in profile and not (
+            field == "policy_run_setup" and "internal_policy_canary_setup" in profile
+        ):
             descriptor[field] = profile[field]
     allocator = _mapping(profile.get("allocator"))
     descriptor["required_authorization"] = {
@@ -802,7 +803,7 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
     if descriptor.get("claim_ceiling") not in {
         "development_only",
         "partner_run_pending_physical_join",
-    }:
+    } | ({"diagnostic_policy_execution"} if "internal_policy_canary_setup" in descriptor else set()):
         blockers.append("launch_profile_public_claim_ceiling_invalid")
     secret_scan = dict(descriptor)
     secret_scan.pop("policy_run_setup", None)
@@ -1423,9 +1424,10 @@ def dispatch_launch_request(
             _mapping(profile.get("evaluation_run_spec"))
         ):
             blockers.append("evaluation_run_spec_profile_binding_mismatch")
-        request_controls = _mapping(request.get("required_controls"))
         profile_controls = _mapping(profile.get("required_controls"))
-        if request_controls != profile_controls:
+        bound_request_controls = policy_canary_setup.bound_policy_canary_required_controls(
+            request, profile_controls)
+        if bound_request_controls != profile_controls:
             blockers.append("launch_required_controls_profile_binding_mismatch")
         if request.get("claim_ceiling") != profile.get("claim_ceiling"):
             blockers.append("launch_claim_ceiling_profile_binding_mismatch")
@@ -1445,6 +1447,10 @@ def dispatch_launch_request(
         if isinstance(approved_spend, (int, float)) and isinstance(profile_spend, (int, float)):
             if profile_spend > approved_spend:
                 blockers.append("launch_profile_exceeds_approved_spend")
+
+    if canary_receipt := policy_canary_setup.maybe_dispatch_policy_canary_preparation(
+        request=request, profile=profile, blockers=blockers, state_root=state_root):
+        return canary_receipt
 
     live_requested = bool(execute)
     execution_scope_launch_id = str(execute_launch_id or "").strip()
@@ -1933,15 +1939,9 @@ def process_launch_queue(
             }
         if receipt.get("retain_processing_for_reconciliation") is True:
             return receipt
+        completed = {"completed", "dry_run_completed", "queued_for_no_spend_preparation"}
         destination_dir = queue / (
-            "completed"
-            if receipt.get("status")
-            in {
-                "completed",
-                "dry_run_completed",
-            }
-            else "blocked"
-        )
+            "completed" if receipt.get("status") in completed else "blocked")
         destination_dir.mkdir(parents=True, exist_ok=True)
         os.replace(claimed, destination_dir / claimed.name)
         return receipt

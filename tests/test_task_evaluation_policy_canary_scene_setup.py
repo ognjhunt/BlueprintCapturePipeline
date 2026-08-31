@@ -428,7 +428,9 @@ def test_controller_and_rights_source_artifacts_are_exact_and_self_digesting() -
     assert controller["retry_cap"] == 0
     assert controller["ranking_permitted"] is False
     quick = _quick_cells(LIVE_SCENE_REVISION)
-    assert controller["quick_10"]["matrix_digest"] == canonical_digest({"ordered_cells": quick})
+    assert controller["quick_10"]["matrix_digest"] == canonical_digest(
+        {"ordered_cells": quick}
+    )
     assert [
         (row["cell_id"], row["seed"], row["cell_digest"]) for row in controller["quick_10"]["cells"]
     ] == [(row["cell_id"], row["seed"], row["cell_spec_digest"]) for row in quick]

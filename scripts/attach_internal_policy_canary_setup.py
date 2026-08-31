@@ -12,6 +12,12 @@ from typing import Any
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_dispatcher import validate_launch_profile
+from blueprint_pipeline.task_evaluation_launch_dispatcher import (
+    public_launch_profile_descriptor,
+)
+from blueprint_pipeline.task_evaluation_policy_canary_preparation_dispatch import (
+    validate_policy_canary_execution_plan,
+)
 from blueprint_pipeline.task_evaluation_policy_canary_setup import (
     validate_policy_canary_setup,
 )
@@ -48,15 +54,86 @@ def attach_internal_policy_canary_setup(
     return output
 
 
+def materialize_policy_canary_launch_profile(
+    *,
+    base_configured_profile: Mapping[str, Any],
+    profile_materialization_input: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Create a new current-main canary profile without editing configured bytes."""
+
+    base = deepcopy(dict(base_configured_profile))
+    blockers = validate_launch_profile(base)
+    if blockers:
+        raise ValueError("policy_canary_source_profile_invalid:" + ",".join(blockers))
+    wrapper = deepcopy(dict(profile_materialization_input))
+    if (
+        wrapper.get("schema_version")
+        != "task_evaluation_policy_canary_profile_materialization_input.v1"
+        or wrapper.get("materialization_digest")
+        != canonical_digest(wrapper, digest_field="materialization_digest")
+        or wrapper.get("configured_source_launch_id") != base.get("profile_id")
+    ):
+        raise ValueError("policy_canary_profile_materialization_input_invalid")
+    setup = validate_policy_canary_setup(wrapper["internal_policy_canary_setup"])
+    plan = validate_policy_canary_execution_plan(
+        wrapper["internal_policy_canary_execution_plan"], public_setup=setup
+    )
+    output = deepcopy(base)
+    output.update(
+        {
+            "profile_id": wrapper["profile_id"],
+            "source_commit": wrapper["source_commit"],
+            "configured_source_launch_id": wrapper["configured_source_launch_id"],
+            "claim_ceiling": "diagnostic_policy_execution",
+            "internal_policy_canary_setup": setup,
+            "internal_policy_canary_execution_plan": plan,
+            "policy_run_setup": plan["legacy_policy_run_setup"],
+        }
+    )
+    resource = plan["resource_authority"]
+    output["allocator"] = {
+        "entrypoint": "python -m blueprint_pipeline.paid_resource_allocator gpu-canary",
+        "subcommand": "gpu-canary",
+        "argv": [
+            "--provider",
+            "vast",
+            "--probe-kind",
+            "native-task-arena-policy-canary-session",
+            "--policy-canary-preparation-authority-required",
+        ],
+        "max_spend_usd": resource["hard_cap_usd"],
+        "hard_ttl_seconds": resource["hard_ttl_seconds"],
+        "retry_cap": 0,
+    }
+    output["profile_digest"] = canonical_digest(output, digest_field="profile_digest")
+    blockers = validate_launch_profile(output)
+    if blockers:
+        raise ValueError("policy_canary_profile_invalid:" + ",".join(blockers))
+    public_launch_profile_descriptor(output)
+    return output
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile", required=True)
-    parser.add_argument("--canary-setup", required=True)
+    parser.add_argument("--canary-setup")
+    parser.add_argument("--profile-materialization-input")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     profile = json.loads(Path(args.profile).read_text(encoding="utf-8"))
-    setup = json.loads(Path(args.canary_setup).read_text(encoding="utf-8"))
-    output = attach_internal_policy_canary_setup(profile=profile, setup=setup)
+    if bool(args.canary_setup) == bool(args.profile_materialization_input):
+        raise ValueError("policy_canary_profile_materialization_mode_invalid")
+    if args.canary_setup:
+        setup = json.loads(Path(args.canary_setup).read_text(encoding="utf-8"))
+        output = attach_internal_policy_canary_setup(profile=profile, setup=setup)
+    else:
+        wrapper = json.loads(
+            Path(args.profile_materialization_input).read_text(encoding="utf-8")
+        )
+        output = materialize_policy_canary_launch_profile(
+            base_configured_profile=profile,
+            profile_materialization_input=wrapper,
+        )
     destination = Path(args.output).expanduser().resolve()
     payload = json.dumps(output, indent=2, sort_keys=True) + "\n"
     try:
