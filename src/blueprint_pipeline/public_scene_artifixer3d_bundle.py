@@ -75,6 +75,16 @@ DUAL_TARGET_PIPELINE_MODE = "dual_target_artifixer3d_only"
 DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE = "dual_target_artifixer3d_render_only"
 CHECKPOINT_REUSE_SCHEMA_VERSION = "public_scene_artifixer3d_checkpoint_reuse.v1"
 DEFAULT_REMOVAL_PIPELINE_POLICY = "candidate_schema_resolved.v1"
+RETAINED_GEOMETRY_POLICY = {
+    "mode": "freeze_retained_source_geometry",
+    "optimize_position": False,
+    "optimize_rotation": False,
+    "optimize_scale": False,
+    "mcmc_relocation_permitted": False,
+    "mcmc_addition_permitted": False,
+    "mcmc_perturbation_permitted": False,
+    "post_training_exact_tensor_match_required": True,
+}
 
 ARTIFIXER_REPOSITORY = "https://github.com/nv-tlabs/ArtiFixer.git"
 ARTIFIXER_COMMIT = "a392c4dfe17459ef9952407accdb9fcdcdddba98"
@@ -796,6 +806,11 @@ def _checkpoint_reuse_source(
                         ["artifixer3d_checkpoint_reuse_checkpoint_invalid"]
                     )
                 checkpoint = task.get("artifixer3d_checkpoint")
+                geometry_protection = (
+                    task.get("native_appearance", {}).get("geometry_protection")
+                    if isinstance(task.get("native_appearance"), Mapping)
+                    else None
+                )
                 provider_path = str(
                     checkpoint.get("path") if isinstance(checkpoint, Mapping) else ""
                 ).replace("\\", "/")
@@ -803,6 +818,14 @@ def _checkpoint_reuse_source(
                 if (
                     task.get("task_id") != task_id
                     or task.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
+                    or not isinstance(geometry_protection, Mapping)
+                    or geometry_protection.get("mode")
+                    != RETAINED_GEOMETRY_POLICY["mode"]
+                    or geometry_protection.get("status") != "qualified"
+                    or geometry_protection.get("blockers") != []
+                    or geometry_protection.get("exact_position_tensor_match") is not True
+                    or geometry_protection.get("exact_rotation_tensor_match") is not True
+                    or geometry_protection.get("exact_scale_tensor_match") is not True
                     or marker not in provider_path
                     or not isinstance(checkpoint, Mapping)
                 ):
@@ -1222,6 +1245,7 @@ def build_artifixer3d_bundle(
                     "loss.lambda_lpips_override": 0.1,
                     "loss.lambda_reconlosses_override": 0.0,
                 },
+                "geometry_policy": RETAINED_GEOMETRY_POLICY,
                 "whole_semantic_teacher_unmasked": True,
                 "anchor_mask_reduction": "full_frame_mean",
                 "direct_artifixer_bypassed": True,

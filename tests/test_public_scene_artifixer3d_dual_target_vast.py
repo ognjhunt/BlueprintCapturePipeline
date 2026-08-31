@@ -85,6 +85,16 @@ def _reuse_source(
                     "size_bytes": len(checkpoint_bytes),
                     "sha256": checkpoint_sha,
                 },
+                "native_appearance": {
+                    "geometry_protection": {
+                        "mode": "freeze_retained_source_geometry",
+                        "status": "qualified",
+                        "exact_position_tensor_match": True,
+                        "exact_rotation_tensor_match": True,
+                        "exact_scale_tensor_match": True,
+                        "blockers": [],
+                    }
+                },
             }
         )
     manifest_digest = "sha256:" + "1" * 64
@@ -484,6 +494,16 @@ def test_dual_target_receipt_selects_paired_target_default(
     assert request["pipeline_mode"] == DUAL_TARGET_PIPELINE_MODE
     assert request["direct_editor_backend"] == "none"
     assert "artifixer3d_plus" not in request
+    assert request["artifixer3d"]["geometry_policy"] == {
+        "mode": "freeze_retained_source_geometry",
+        "optimize_position": False,
+        "optimize_rotation": False,
+        "optimize_scale": False,
+        "mcmc_relocation_permitted": False,
+        "mcmc_addition_permitted": False,
+        "mcmc_perturbation_permitted": False,
+        "post_training_exact_tensor_match_required": True,
+    }
     assert request["phases"] == [
         "dual_target_input_validation",
         "artifixer3d_distillation",

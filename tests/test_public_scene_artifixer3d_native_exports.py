@@ -85,7 +85,7 @@ def _install_exporter_seam(monkeypatch: pytest.MonkeyPatch) -> None:
     torch = ModuleType("torch")
 
     def load(_path: Path, **_kwargs):
-        return {
+        checkpoint = {
             "config": SimpleNamespace(
                 export_usdz=SimpleNamespace(apply_normalizing_transform=True)
             ),
@@ -98,6 +98,8 @@ def _install_exporter_seam(monkeypatch: pytest.MonkeyPatch) -> None:
             "max_n_features": 0,
             "n_active_features": 0,
         }
+        checkpoint["rotation"]._array[:, 0] = 1.0
+        return checkpoint
 
     torch.load = load  # type: ignore[attr-defined]
 
@@ -161,6 +163,7 @@ def _exact_provider_to_host_raw_result(
         checkpoint=checkpoint,
         task_output=task_root,
         reference_gaussian_ply=_reference_ply(tmp_path / "reference.ply", 1),
+        geometry_policy=runner.RETAINED_GEOMETRY_POLICY,
     )
     frames = []
     for index in range(8):
