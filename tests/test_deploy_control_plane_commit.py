@@ -436,6 +436,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-object-discovery.path",
         "blueprint-task-evaluation-configured-controls-progression.service",
         "blueprint-task-evaluation-configured-controls-progression.timer",
+        "blueprint-pipeline-intake.service",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
