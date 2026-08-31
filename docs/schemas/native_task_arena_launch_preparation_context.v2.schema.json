@@ -193,12 +193,18 @@
         "prior_provider_zero": {"type": "string", "minLength": 1},
         "prior_spend_reconciliation": {"type": "string", "minLength": 1},
         "construction_result": {"type": "string", "minLength": 1},
+        "terminal_feedback_adoption": {"type": "string", "minLength": 1},
+        "terminal_feedback_adoption_digest": {"$ref": "#/$defs/digest"},
         "zero_action_result": {"type": "string", "minLength": 1},
         "controls_qualification_manifest": {"type": "string", "minLength": 1},
         "machine_avoidlist": {"type": "string"},
         "python": {"type": "string", "minLength": 1},
         "service_account": {"type": "string", "minLength": 1},
         "service_group": {"type": "string", "minLength": 1}
+      },
+      "dependentRequired": {
+        "terminal_feedback_adoption": ["terminal_feedback_adoption_digest"],
+        "terminal_feedback_adoption_digest": ["terminal_feedback_adoption"]
       },
       "additionalProperties": false
     }
@@ -225,6 +231,26 @@
               "prior_spend_reconciliation",
               "construction_result"
             ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "not": {
+          "properties": {"lane": {"const": "native_task_arena_construction"}},
+          "required": ["lane"]
+        }
+      },
+      "then": {
+        "properties": {
+          "operations": {
+            "not": {
+              "anyOf": [
+                {"required": ["terminal_feedback_adoption"]},
+                {"required": ["terminal_feedback_adoption_digest"]}
+              ]
+            }
           }
         }
       }

@@ -45,6 +45,9 @@ from typing import Any, Callable, Mapping, Sequence
 import jsonschema
 
 from blueprint_pipeline.core.common import redacted_failure_text
+from blueprint_pipeline.native_construction_terminal_feedback_contract import (
+    validate_terminal_feedback_adoption,
+)
 
 PREPARATION_SCHEMA_VERSION = "paid_lane_launch_preparation.v1"
 VALIDATION_SCHEMA_VERSION = "paid_lane_launch_validation.v1"
@@ -65,6 +68,7 @@ class LaneStep:
     produces: str
     exports: tuple[tuple[str, str], ...] = ()
     repeated_argv: tuple[tuple[str, str], ...] = ()
+    conditional_argv: tuple[tuple[str, str], ...] = ()
     #: Context names this step exists to consume. When the context supplies
     #: none of them, the step is not part of this lane run at all: it is
     #: skipped by the validator, the plan, and the executor alike, so an
@@ -338,6 +342,11 @@ def _native_task_arena_steps(
                 "{set_root}/bundle/"
                 "native_task_arena_provider_bundle_receipt.v1.json"
             ),
+            repeated_argv=(
+                ("--terminal-feedback-adoption", "terminal_feedback_adoption"),
+            )
+            if not controls
+            else (),
         ),
         LaneStep(
             step_id="immutable_manifest",
@@ -388,6 +397,9 @@ def _native_task_arena_steps(
             produces=(
                 "{set_root}/native_task_arena_paid_attempt_authority.v1.json"
             ),
+            conditional_argv=(("--retain-warm-session", "terminal_feedback_adoption"),)
+            if not controls
+            else (),
         ),
         LaneStep(
             step_id="allocator_dry_run",
@@ -432,7 +444,25 @@ def _native_task_arena_steps(
             produces="{set_root}/allocator_dry_run.v1.json",
             repeated_argv=(
                 ("--adp-machine-avoidlist", "machine_avoidlist"),
+                *(
+                    (
+                        (
+                            "--native-task-arena-terminal-feedback-adoption",
+                            "terminal_feedback_adoption",
+                        ),
+                    )
+                    if not controls
+                    else ()
+                ),
             ),
+            conditional_argv=(
+                (
+                    "--native-task-arena-retain-warm-session",
+                    "terminal_feedback_adoption",
+                ),
+            )
+            if not controls
+            else (),
         ),
         LaneStep(
             step_id="live_profile",
@@ -473,7 +503,19 @@ def _native_task_arena_steps(
             ),
             produces="{set_root}/live_profile-{revision}.v1.json",
             exports=(("profile_id", "profile_id"),),
-            repeated_argv=(("--machine-avoidlist", "machine_avoidlist"),),
+            repeated_argv=(
+                ("--machine-avoidlist", "machine_avoidlist"),
+                *(
+                    (
+                        (
+                            "--terminal-feedback-adoption",
+                            "terminal_feedback_adoption",
+                        ),
+                    )
+                    if not controls
+                    else ()
+                ),
+            ),
         ),
         LaneStep(
             step_id="terminal_rehearsal",
@@ -923,6 +965,26 @@ def validate_lane_context(lane: str, context: Mapping[str, Any]) -> None:
     steps = LANES.get(lane)
     if steps is None:
         raise PaidLaneLaunchPreparationError(f"paid_lane_unknown:{lane}")
+    adoption_path = str(context.get("terminal_feedback_adoption") or "")
+    adoption_digest = str(
+        context.get("terminal_feedback_adoption_digest") or ""
+    )
+    adoption_binding = (context.get("reference_bindings") or {}).get(
+        "terminal_feedback_adoption"
+    )
+    if bool(adoption_path) != bool(adoption_digest):
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_terminal_feedback_context_incomplete"
+        )
+    if adoption_path and (
+        lane != "native_task_arena_construction"
+        or not isinstance(adoption_binding, Mapping)
+        or adoption_binding.get("path") != adoption_path
+        or adoption_binding.get("checkpoint_digest") != adoption_digest
+    ):
+        raise PaidLaneLaunchPreparationError(
+            "native_task_arena_terminal_feedback_context_invalid"
+        )
     available = {str(key) for key, value in context.items() if str(value) != ""}
     missing: list[str] = []
     for step in steps:
@@ -952,6 +1014,17 @@ def _repeated_values(value: Any) -> tuple[str, ...]:
     if isinstance(value, Sequence):
         return tuple(str(item) for item in value if str(item) != "")
     raise PaidLaneLaunchPreparationError("paid_lane_repeated_argv_invalid")
+
+
+def _step_argv(step: LaneStep, context: Mapping[str, Any]) -> list[str]:
+    argv = [_render(fragment, context) for fragment in step.argv]
+    for flag, context_name in step.repeated_argv:
+        for value in _repeated_values(context.get(context_name)):
+            argv.extend((flag, value))
+    for flag, context_name in step.conditional_argv:
+        if _repeated_values(context.get(context_name)):
+            argv.append(flag)
+    return argv
 
 
 def _sha256_file(path: Path) -> str:
@@ -1124,10 +1197,7 @@ def prepare_paid_lane_launch(
     for step in LANES[lane]:
         if not step_is_active(step, resolved):
             continue
-        argv = [_render(fragment, resolved) for fragment in step.argv]
-        for flag, context_name in step.repeated_argv:
-            for value in _repeated_values(resolved.get(context_name)):
-                argv.extend((flag, value))
+        argv = _step_argv(step, resolved)
         produces = Path(_render(step.produces, resolved))
         if resume_index < len(resumed_rows):
             row = resumed_rows[resume_index]
@@ -1273,10 +1343,7 @@ def validate_paid_lane_launch(
     for step in LANES[lane]:
         if not step_is_active(step, resolved):
             continue
-        argv = [_render(fragment, resolved) for fragment in step.argv]
-        for flag, context_name in step.repeated_argv:
-            for value in _repeated_values(resolved.get(context_name)):
-                argv.extend((flag, value))
+        argv = _step_argv(step, resolved)
         planned.append(
             {
                 "step_id": step.step_id,
@@ -1984,6 +2051,37 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
         if packet_request_path.is_file() and not packet_request_path.is_symlink()
         else {}
     )
+    terminal_feedback_adoption = None
+    if operations.get("terminal_feedback_adoption") is not None:
+        unresolved_adoption = Path(
+            str(operations["terminal_feedback_adoption"])
+        ).expanduser()
+        try:
+            adoption_path = unresolved_adoption.resolve(strict=True)
+            adoption = validate_terminal_feedback_adoption(
+                json.loads(adoption_path.read_text(encoding="utf-8"))
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            raise PaidLaneLaunchPreparationError(
+                "native_task_arena_terminal_feedback_adoption_invalid"
+            ) from exc
+        if (
+            expected_lane != "native_task_arena_construction"
+            or unresolved_adoption.is_symlink()
+            or adoption.get("checkpoint_digest")
+            != operations.get("terminal_feedback_adoption_digest")
+            or adoption.get("packet_request_digest")
+            != packet_request.get("request_digest")
+        ):
+            raise PaidLaneLaunchPreparationError(
+                "native_task_arena_terminal_feedback_adoption_invalid"
+            )
+        operations["terminal_feedback_adoption"] = str(adoption_path)
+        terminal_feedback_adoption = {
+            "path": str(adoption_path),
+            "sha256": _sha256_file(adoption_path),
+            "checkpoint_digest": adoption["checkpoint_digest"],
+        }
     container_image = str(runtime.get("container_image") or "")
     _validate_provider_packet_source_rights(
         packet_receipt=packet_receipt,
@@ -2089,6 +2187,15 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
                 **(
                     {"zero_action_predecessor": zero_action_predecessor}
                     if zero_action_predecessor is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "terminal_feedback_adoption": (
+                            terminal_feedback_adoption
+                        )
+                    }
+                    if terminal_feedback_adoption is not None
                     else {}
                 ),
             },
