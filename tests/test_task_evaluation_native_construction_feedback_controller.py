@@ -37,6 +37,7 @@ from blueprint_pipeline.native_task_arena_feedback_bootstrap_runtime import (
     feedback_bootstrap_result,
 )
 from blueprint_pipeline.native_task_arena_feedback_allocator_adapter import (
+    native_feedback_runtime_blockers,
     terminal_feedback_bootstrap_blockers,
 )
 from blueprint_pipeline.native_task_construction_plan import (
@@ -816,6 +817,31 @@ def test_terminal_result_cli_seals_nontrial_feedback_bootstrap(
             packet_dir=packet,
             output_path=tmp_path / "rejected.json",
         )
+
+
+def test_feedback_runtime_blockers_returns_optuna_evidence(
+    tmp_path, monkeypatch
+) -> None:
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    (packet / "native_task_arena_packet_request.v1.json").write_text(
+        '{"native_construction_feedback": {"maximum_rounds": 4}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_task_arena_feedback_allocator_adapter."
+        "importlib.metadata.version",
+        lambda _package: "4.9.0",
+    )
+    assert native_feedback_runtime_blockers(packet) == []
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_task_arena_feedback_allocator_adapter."
+        "importlib.metadata.version",
+        lambda _package: "4.8.0",
+    )
+    assert native_feedback_runtime_blockers(packet) == [
+        "native_construction_feedback_optuna_4_9_0_missing"
+    ]
 
 
 def test_entry_variant_prepends_motion_without_changing_authored_gates(monkeypatch) -> None:

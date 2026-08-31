@@ -39,6 +39,15 @@ def native_feedback_runtime_blockers(packet_dir: str | Path | None) -> list[str]
     )
     if not isinstance(request.get("native_construction_feedback"), Mapping):
         return []
+    try:
+        version = importlib.metadata.version("optuna")
+    except importlib.metadata.PackageNotFoundError:
+        version = None
+    return (
+        []
+        if version == "4.9.0"
+        else ["native_construction_feedback_optuna_4_9_0_missing"]
+    )
 
 
 def terminal_feedback_bootstrap_blockers(
@@ -78,17 +87,6 @@ def terminal_feedback_bootstrap_blockers(
     except (OSError, ValueError, TypeError):
         return ["native_construction_terminal_feedback_bootstrap_invalid"]
     return []
-    if not isinstance(request.get("native_construction_feedback"), Mapping):
-        return []
-    try:
-        version = importlib.metadata.version("optuna")
-    except importlib.metadata.PackageNotFoundError:
-        version = None
-    return (
-        []
-        if version == "4.9.0"
-        else ["native_construction_feedback_optuna_4_9_0_missing"]
-    )
 
 
 def continue_retained_feedback_if_requested(
