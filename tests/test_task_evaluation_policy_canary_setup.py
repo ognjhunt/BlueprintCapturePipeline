@@ -7,6 +7,7 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_policy_canary_setup import (
     TaskEvaluationPolicyCanarySetupError,
+    policy_canary_setup_digest,
     validate_policy_canary_setup,
 )
 from scripts.attach_internal_policy_canary_setup import (
@@ -174,7 +175,7 @@ def _setup() -> dict[str, object]:
         },
         "setup_digest": "",
     }
-    value["setup_digest"] = canonical_digest(value, digest_field="setup_digest")
+    value["setup_digest"] = policy_canary_setup_digest(value)
     return value
 
 
@@ -194,6 +195,21 @@ def test_setup_and_profile_attachment_are_digest_bound() -> None:
     assert attached["profile_digest"] == canonical_digest(
         attached, digest_field="profile_digest"
     )
+
+
+def test_setup_digest_uses_cross_runtime_number_canonicalization() -> None:
+    setup = _setup()
+    for preset in setup["episode_presets"]:
+        preset["estimate"]["maximum_authorized_cost_usd"] = 4.0
+    setup["setup_digest"] = ""
+    python_digest = canonical_digest(setup, digest_field="setup_digest")
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+
+    assert setup["setup_digest"] != python_digest
+    assert setup["setup_digest"] == (
+        "sha256:7f71891bdb3db9b52d898c4b722afb8636a70ba1df6afc4d732be4b037eb3e30"
+    )
+    assert validate_policy_canary_setup(setup) == setup
 
 
 def test_setup_attaches_to_new_profile_bound_to_configured_scene_launch() -> None:
@@ -224,7 +240,7 @@ def test_setup_rejects_unrunnable_second_policy() -> None:
     readiness["status"] = "unavailable"
     readiness["receipt"] = None
     readiness["reason"] = "checkpoint_not_installed"
-    mutated["setup_digest"] = canonical_digest(mutated, digest_field="setup_digest")
+    mutated["setup_digest"] = policy_canary_setup_digest(mutated)
     with pytest.raises(
         TaskEvaluationPolicyCanarySetupError,
         match="policy_canary_setup_runnable_pair_invalid",

@@ -14,6 +14,9 @@ from blueprint_pipeline.task_evaluation_policy_run_contract import (
     build_policy_campaign_activation_manifest,
     build_policy_run_plan,
 )
+from blueprint_pipeline.task_evaluation_policy_canary_setup import (
+    policy_canary_setup_digest,
+)
 from tests.test_task_evaluation_launch_dispatcher import (
     _profile as launch_profile,
     _request as launch_request,
@@ -82,7 +85,7 @@ def _contracts() -> tuple[dict, dict]:
     )
     public["source_launch_id"] = legacy["source_launch_id"]
     public["offering_digest"] = legacy["offering_digest"]
-    public["setup_digest"] = canonical_digest(public, digest_field="setup_digest")
+    public["setup_digest"] = policy_canary_setup_digest(public)
     return public, legacy
 
 
