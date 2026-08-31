@@ -164,6 +164,10 @@ def test_wave_compiler_preserves_curobo_joint_targets_per_clone() -> None:
     arm_joint_names = [f"panda_joint{index}" for index in range(1, 8)]
     inventory = _inventory(10)
     for candidate_index, candidate in enumerate(inventory["candidates"]):
+        candidate["robot_base_pose_world"] = {
+            "position_world_m": [2.8 + 0.01 * candidate_index, -6.7, 0.75],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        }
         reset = {
             name: 0.01 * (joint_index + candidate_index)
             for joint_index, name in enumerate(arm_joint_names)
@@ -223,6 +227,9 @@ def test_wave_compiler_preserves_curobo_joint_targets_per_clone() -> None:
     assert commands["assignments"][0]["waypoints"][1]["gripper_state"] == "closed"
     assert commands["assignments"][0]["waypoints"][2]["gripper_state"] == "open"
     assert commands["assignments"][7]["environment_index"] == 7
+    assert commands["assignments"][7]["robot_base_pose_world"][
+        "position_world_m"
+    ][0] == pytest.approx(2.87)
 
 
 def test_measurement_reducer_uses_raw_pose_and_contact_traces() -> None:

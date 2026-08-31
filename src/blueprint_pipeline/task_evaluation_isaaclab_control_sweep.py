@@ -219,6 +219,7 @@ def compile_isaaclab_control_sweep_wave_commands(
                 "control_search_wave_commands_invalid"
             )
         reset = candidate.get("reset_variant")
+        base_pose = candidate.get("robot_base_pose_world")
         reset_positions = (
             reset.get("robot_joint_reset_positions_rad")
             if isinstance(reset, Mapping)
@@ -229,17 +230,34 @@ def compile_isaaclab_control_sweep_wave_commands(
             candidate.get("interaction_trajectory_variant"),
         )
         waypoints: list[dict[str, Any]] = []
-        if not isinstance(reset_positions, Mapping):
+        if not isinstance(reset_positions, Mapping) or not isinstance(
+            base_pose, Mapping
+        ):
             raise ControlSearchFunnelError(
                 "control_search_wave_commands_invalid"
             )
         try:
             reset_vector = [float(reset_positions[name]) for name in arm_joint_names]
+            base_position = [float(value) for value in base_pose["position_world_m"]]
+            base_orientation = [float(value) for value in base_pose["orientation_xyzw"]]
         except (KeyError, TypeError, ValueError) as exc:
             raise ControlSearchFunnelError(
                 "control_search_wave_commands_invalid"
             ) from exc
-        if not all(math.isfinite(value) for value in reset_vector):
+        if (
+            len(base_position) != 3
+            or len(base_orientation) != 4
+            or not all(
+                math.isfinite(value)
+                for value in [*reset_vector, *base_position, *base_orientation]
+            )
+            or not math.isclose(
+                math.sqrt(math.fsum(value * value for value in base_orientation)),
+                1.0,
+                rel_tol=0.0,
+                abs_tol=1.0e-4,
+            )
+        ):
             raise ControlSearchFunnelError(
                 "control_search_wave_commands_invalid"
             )
@@ -294,6 +312,10 @@ def compile_isaaclab_control_sweep_wave_commands(
         rows.append(
             {
                 **assignment,
+                "robot_base_pose_world": {
+                    "position_world_m": base_position,
+                    "orientation_xyzw": base_orientation,
+                },
                 "robot_joint_reset_positions_rad": reset_vector,
                 "waypoint_count": len(waypoints),
                 "waypoints": waypoints,
