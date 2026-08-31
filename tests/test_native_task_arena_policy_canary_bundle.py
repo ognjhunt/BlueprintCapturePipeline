@@ -53,6 +53,43 @@ def test_canary_execution_spec_rejects_ranking_permission() -> None:
         bundle._validate_spec(spec, candidate="pi05_droid")
 
 
+def test_bundle_cli_exposes_every_immutable_input(monkeypatch, capsys) -> None:
+    observed = {}
+
+    def build(**kwargs):
+        observed.update(kwargs)
+        return {"status": "ready", "bundle_sha256": "sha256:" + "f" * 64}
+
+    monkeypatch.setattr(bundle, "build_policy_canary_session_bundle", build)
+    args = [
+        "--job-dir",
+        "job",
+        "--packet-dir",
+        "packet",
+        "--runtime-source-packet-receipt",
+        "runtime.json",
+        "--runtime-input-manifest-path",
+        "inputs.json",
+        "--session-authority-path",
+        "authority.json",
+        "--pi05-execution-spec-path",
+        "pi05.json",
+        "--groot-execution-spec-path",
+        "groot.json",
+        "--pi05-checkpoint-inventory-path",
+        "inventory.json",
+        "--implementation-commit",
+        "a" * 40,
+    ]
+
+    assert bundle.main(args) == 0
+
+    assert observed["implementation_commit"] == "a" * 40
+    assert observed["generated_at"] is None
+    assert observed["runtime_input_manifest_path"] == "inputs.json"
+    assert '"status": "ready"' in capsys.readouterr().out
+
+
 def test_provider_entrypoint_provisions_both_servers_once_and_runs_one_worker() -> None:
     script = bundle._entrypoint()
 

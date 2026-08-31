@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Mapping
 import json
 from pathlib import Path
@@ -289,4 +290,37 @@ def build_policy_canary_session_bundle(
     return receipt
 
 
-__all__ = ["EXECUTION_AUTHORITY", "build_policy_canary_session_bundle"]
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--job-dir", required=True)
+    parser.add_argument("--packet-dir", required=True)
+    parser.add_argument("--runtime-source-packet-receipt", required=True)
+    parser.add_argument("--runtime-input-manifest-path", required=True)
+    parser.add_argument("--session-authority-path", required=True)
+    parser.add_argument("--pi05-execution-spec-path", required=True)
+    parser.add_argument("--groot-execution-spec-path", required=True)
+    parser.add_argument("--pi05-checkpoint-inventory-path", required=True)
+    parser.add_argument("--implementation-commit", required=True)
+    parser.add_argument("--generated-at")
+    args = parser.parse_args(argv)
+    receipt = build_policy_canary_session_bundle(
+        job_dir=args.job_dir,
+        packet_dir=args.packet_dir,
+        runtime_source_packet_receipt=args.runtime_source_packet_receipt,
+        runtime_input_manifest_path=args.runtime_input_manifest_path,
+        session_authority_path=args.session_authority_path,
+        pi05_execution_spec_path=args.pi05_execution_spec_path,
+        groot_execution_spec_path=args.groot_execution_spec_path,
+        pi05_checkpoint_inventory_path=args.pi05_checkpoint_inventory_path,
+        implementation_commit=args.implementation_commit,
+        generated_at=args.generated_at,
+    )
+    print(json.dumps(receipt, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
+__all__ = ["EXECUTION_AUTHORITY", "build_policy_canary_session_bundle", "main"]

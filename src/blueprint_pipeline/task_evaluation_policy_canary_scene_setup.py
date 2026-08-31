@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 import hashlib
 import json
@@ -727,6 +728,32 @@ def materialize_scene839873_policy_canary_setup_from_template(
     )
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="operation", required=True)
+    for operation in ("preflight", "presubmission"):
+        command = subparsers.add_parser(operation)
+        command.add_argument(
+            "--parameters",
+            required=True,
+            help="JSON object containing the materializer's exact keyword arguments.",
+        )
+    args = parser.parse_args(argv)
+    parameters = _read(
+        args.parameters, code="policy_canary_cli_parameters_invalid"
+    )
+    if args.operation == "preflight":
+        result = materialize_setup_preflight_decision(**parameters)
+    else:
+        result = materialize_policy_canary_presubmission_setup(**parameters)
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
 __all__ = [
     "CANDIDATE_IDS",
     "PolicyCanarySetupError",
@@ -735,4 +762,5 @@ __all__ = [
     "materialize_policy_canary_presubmission_setup",
     "materialize_scene839873_policy_canary_setup_from_template",
     "materialize_setup_preflight_decision",
+    "main",
 ]
