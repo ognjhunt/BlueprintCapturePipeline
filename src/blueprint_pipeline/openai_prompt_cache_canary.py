@@ -125,6 +125,16 @@ def run_mechanics_canary(
             raise OpenAIPromptCacheCanaryError(
                 "canary_source_commit_does_not_match_checkout_head"
             )
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if status.stdout.strip():
+            raise OpenAIPromptCacheCanaryError("canary_checkout_not_clean")
     key = load_secure_api_key_file(api_key_file)
     try:
         from openai import OpenAI

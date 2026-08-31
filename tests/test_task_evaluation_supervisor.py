@@ -306,6 +306,8 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
             model="gpt-5.6-terra",
             max_turns=2,
             max_output_tokens=1_000,
+            max_input_tokens=100_000,
+            max_tool_output_bytes=10_000,
             reasoning_effort="max",
             tool_bindings=(
                 RegisteredToolBinding(
@@ -376,6 +378,33 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
     )
     assert captured["input"] == multimodal_input
     assert multimodal.usage["projected_max_cost_usd"] == pytest.approx(0.512)
+
+
+def test_live_sdk_refuses_unbounded_multi_turn_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    invoker = OpenAIAgentsSDKInvoker(
+        OpenAIAgentsSDKConfig(
+            model="gpt-5.6-terra",
+            allow_live_invocation=True,
+            max_inference_cost_usd=5.0,
+        )
+    )
+    spec = AgentsSDKAgentSpec(
+        run_id="unbounded-multi-turn",
+        capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
+        name="Unbounded multi-turn",
+        instructions="Return a typed proposal only.",
+        model="gpt-5.6-terra",
+        max_turns=2,
+        max_output_tokens=1_000,
+    )
+    with pytest.raises(
+        AgentsSDKInvocationBlocked,
+        match="agents_sdk_multi_turn_input_token_ceiling_missing",
+    ):
+        invoker.invoke(spec, "{}")
 
 
 def test_multimodal_sdk_invocation_requires_explicit_input_token_ceiling(
@@ -492,6 +521,77 @@ def test_live_sdk_persists_reservation_before_call_and_refuses_ambiguous_resume(
     ):
         resumed.invoke(spec, "{}")
     assert provider_calls == 1
+
+
+def test_inference_completion_is_bound_to_reserved_identity_and_release(
+    tmp_path: Path,
+) -> None:
+    audit = InferenceReservationAudit(run_root=tmp_path, run_id="bound-run")
+    policy_digest = "sha256:" + "a" * 64
+    identity = {
+        "run_id": "bound-run",
+        "capability": "claim_task_interpreter",
+        "model": "gpt-5.6-sol",
+        "input_digest": "sha256:" + "b" * 64,
+        "max_turns": 1,
+        "max_output_tokens": 1_000,
+        "cache_policy_digest": policy_digest,
+    }
+    reservation = {
+        "schema_version": "task_evaluation_inference_reservation.v1",
+        "reservation_id": canonical_digest(identity),
+        **identity,
+        "input_kind": "text",
+        "input_token_ceiling": 10_000,
+        "projected_max_cost_usd": 0.5,
+        "projected_max_cost_per_request_usd": 0.5,
+        "cache_policy": {"policy_digest": policy_digest, "status": "enabled"},
+        "breakpoint_digests": ["sha256:" + "c" * 64],
+        "billing_status": "worst_case_reserved_before_provider_call",
+        "proof_effect": "none",
+    }
+    reservation["inference_reservation_digest"] = canonical_digest(
+        reservation,
+        digest_field="inference_reservation_digest",
+    )
+    audit.record_reservation(reservation)
+    completion = {
+        "schema_version": "task_evaluation_inference_completion.v1",
+        "reservation_id": reservation["reservation_id"],
+        "run_id": "bound-run",
+        "capability": "claim_task_interpreter",
+        "provider": "openai",
+        "model": "gpt-5.6-sol",
+        "cache_policy": reservation["cache_policy"],
+        "breakpoint_digests": reservation["breakpoint_digests"],
+        "projected_max_cost_usd": 0.5,
+        "reconciled_actual_cost_usd": 0.1,
+        "released_reservation_usd": 0.4,
+        "proof_effect": "none",
+    }
+    for field, invalid_value, message in (
+        ("run_id", "other-run", "inference_completion_run_id_mismatch"),
+        ("model", "gpt-5.6-terra", "inference_completion_model_mismatch"),
+        ("projected_max_cost_usd", 0.4, "projected_cost_mismatch"),
+        ("released_reservation_usd", 0.3, "released_reservation_mismatch"),
+        ("cache_policy", {"policy_digest": policy_digest, "status": "disabled"}, "cache_policy_mismatch"),
+    ):
+        invalid = {**completion, field: invalid_value}
+        invalid["inference_completion_digest"] = canonical_digest(
+            invalid,
+            digest_field="inference_completion_digest",
+        )
+        with pytest.raises(InferenceReservationError, match=message):
+            audit.record_completion(invalid)
+
+    completion["inference_completion_digest"] = canonical_digest(
+        completion,
+        digest_field="inference_completion_digest",
+    )
+    audit.record_completion(completion)
+    manifest = audit.manifest()
+    assert manifest["reserved_max_cost_usd"] == pytest.approx(0.1)
+    assert manifest["projected_max_cost_usd_total"] == pytest.approx(0.5)
 
 
 class _MaliciousAgentsSDKInvoker:

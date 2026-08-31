@@ -181,6 +181,16 @@ def run_production_shape_canary(
             raise RobotPlacementCacheCanaryError(
                 "source_commit_does_not_match_checkout_head"
             )
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if status.stdout.strip():
+            raise RobotPlacementCacheCanaryError("checkout_not_clean")
     if not 0 < max_total_cost_usd <= 5.0:
         raise RobotPlacementCacheCanaryError("placement_canary_cost_cap_invalid")
     key_path = Path(
