@@ -14,7 +14,7 @@ from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .task_evaluation_launch_webapp_sync import (
     PipelineSyncTokenError,
     load_pipeline_sync_token,
@@ -170,7 +170,7 @@ def _call_usage(
         "raw_secret_values_recorded": False,
         "usage_receipt_digest": "",
     }
-    call["usage_receipt_digest"] = canonical_digest(
+    call["usage_receipt_digest"] = cross_runtime_canonical_digest(
         call, digest_field="usage_receipt_digest"
     )
     return call
@@ -215,7 +215,9 @@ def build_placement_inference_usage_packet(
         "raw_secret_values_recorded": False,
         "packet_digest": "",
     }
-    packet["packet_digest"] = canonical_digest(packet, digest_field="packet_digest")
+    packet["packet_digest"] = cross_runtime_canonical_digest(
+        packet, digest_field="packet_digest"
+    )
     return packet
 
 
@@ -234,7 +236,7 @@ def sync_inference_usage_to_webapp(
         "packet_digest": packet.get("packet_digest"),
         "call_count": len(packet.get("calls") or []),
     }
-    if packet.get("packet_digest") != canonical_digest(
+    if packet.get("packet_digest") != cross_runtime_canonical_digest(
         packet, digest_field="packet_digest"
     ):
         return {**common, "status": "failed", "reason": "packet_digest_invalid"}
