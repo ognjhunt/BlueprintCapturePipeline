@@ -20,10 +20,11 @@ from .adp009d_droid_observation import (
     DROID_WRIST_VIEW,
 )
 from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
-from .common import write_json
+from .common import utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_policy_bundle import _candidate_runtime_binding
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
+from .task_evaluation_policy_canary_setup import validate_policy_canary_setup
 
 
 SETUP_SCHEMA_VERSION = "task_evaluation_policy_canary_execution_setup.v1"
@@ -31,9 +32,7 @@ SPEC_SCHEMA_VERSION = "native_task_arena_policy_canary_execution_spec.v1"
 DECISION_SCHEMA_VERSION = "task_evaluation_policy_canary_setup_preflight.v1"
 PRESUBMISSION_SETUP_SCHEMA_VERSION = "task_evaluation_policy_canary_setup.v1"
 PROFILE_INPUT_SCHEMA_VERSION = "task_evaluation_policy_canary_profile_materialization_input.v1"
-EXECUTION_TEMPLATE_SCHEMA_VERSION = (
-    "task_evaluation_policy_canary_execution_setup_template.v1"
-)
+EXECUTION_TEMPLATE_SCHEMA_VERSION = "task_evaluation_policy_canary_execution_setup_template.v1"
 RUN_KIND = "internal_policy_canary"
 CLAIM_CEILING = "diagnostic_policy_execution"
 SCENE_ID = "839873"
@@ -401,6 +400,8 @@ def materialize_policy_canary_presubmission_setup(
     profile_id: str,
     source_commit: str,
     configured_source_launch_id: str,
+    configured_source_commit: str | None = None,
+    offering_digest: str,
     scene_revision_digest: str,
     request_digest: str,
     launch_request_path: str | Path,
@@ -420,12 +421,14 @@ def materialize_policy_canary_presubmission_setup(
 
     if not str(profile_id or "").strip():
         raise PolicyCanarySetupError(["policy_canary_profile_id_missing"])
+    if not _DIGEST.fullmatch(str(offering_digest or "")):
+        raise PolicyCanarySetupError(["policy_canary_offering_digest_invalid"])
     # Reuse the complete byte/static preflight without publishing its
     # activation-bound output. The placeholder lineage lives only in a
     # temporary directory and is never returned or persisted as evidence.
     with tempfile.TemporaryDirectory(prefix="policy-canary-presubmission-") as raw:
         verified = materialize_scene839873_policy_canary_setup(
-            source_commit=source_commit,
+            source_commit=configured_source_commit or source_commit,
             configured_source_launch_id=configured_source_launch_id,
             scene_revision_digest=scene_revision_digest,
             activation_digest=canonical_digest(
@@ -450,126 +453,213 @@ def materialize_policy_canary_presubmission_setup(
             hard_cap_usd=hard_cap_usd,
             hard_ttl_seconds=hard_ttl_seconds,
         )
-    launch_profile = _read(launch_profile_path, code="policy_canary_launch_profile_invalid")
     readiness = _read(
         historical_policy_readiness_path,
         code="policy_canary_historical_readiness_invalid",
     )
-    policies = []
     readiness_by_id = {
         row["candidate_id"]: row
         for row in readiness["candidates"]
         if isinstance(row, Mapping) and row.get("candidate_id") in CANDIDATE_IDS
     }
+    observation_schema_id = "droid_two_camera_robot_state_v1"
+    action_schema_id = "droid_absolute_joint_position_v1"
+    simulator_runtime_id = "isaac_native_arena_v1"
+    embodiment_id = "franka_robotiq"
+    task_family_id = "rigid_relocation"
+    policies = []
     for candidate_id in CANDIDATE_IDS:
         row = readiness_by_id[candidate_id]
+        checkpoint = row["checkpoint"]
+        readiness_ref = {
+            "uri": (
+                "blueprint://policy-canary/readiness/"
+                f"{candidate_id}/{readiness['readiness_digest']}"
+            ),
+            "digest": readiness["readiness_digest"],
+        }
         policies.append(
             {
                 "candidate_id": candidate_id,
                 "display_name": row["model_name"],
-                "readiness_status": "verified_runnable",
-                "source": row["source"],
                 "checkpoint": {
-                    key: row["checkpoint"].get(key)
-                    for key in (
-                        "repository",
-                        "revision",
-                        "inventory_digest",
-                        "total_bytes",
-                        "provider_use_status",
-                        "redistribution_status",
-                    )
+                    "uri": checkpoint["repository"],
+                    "digest": checkpoint["inventory_digest"],
+                    "size_bytes": checkpoint["total_bytes"],
                 },
-                "runtime_dependencies": row["runtime_dependencies"],
-                "observation_schema": row["policy_input_schema"],
-                "action_schema": row["policy_output_schema"],
-                "action_adapter": row["action_adapter"],
-                "task_compatibility": ["rigid_relocation", "planar_push"],
-                "unavailable_reason": None,
+                "adapter_id": (
+                    "openpi_droid_to_native_franka_v1"
+                    if candidate_id == "pi05_droid"
+                    else "groot_n17_droid_joint_projection_v1"
+                ),
+                "license_id": (
+                    "apache-2.0-gemma-terms"
+                    if candidate_id == "pi05_droid"
+                    else "nvidia-open-model-license"
+                ),
+                "compatibility": {
+                    "robot_preset_ids": [EMBODIMENT_ID],
+                    "embodiment_ids": [embodiment_id],
+                    "observation_schema_ids": [observation_schema_id],
+                    "action_schema_ids": [action_schema_id],
+                    "simulator_runtime_ids": [simulator_runtime_id],
+                    "task_family_ids": [task_family_id],
+                },
+                "readiness": {
+                    "status": "verified_runnable",
+                    "receipt": readiness_ref,
+                    "reason": None,
+                },
             }
         )
     quick = verified["quick_10"]
+    cells = [
+        {
+            "cell_id": row["cell_id"],
+            "family": row["family"],
+            "seed": row["seed"] % (2**31),
+            "partition": (
+                "canonical"
+                if row["family"] == "canonical_anchor"
+                else "held_out"
+                if row["family"] == "held_out_composition"
+                else "stress"
+            ),
+            "label": f"{row['family'].replace('_', ' ')} {index + 1}",
+            "cell_digest": row["cell_spec_digest"],
+        }
+        for index, row in enumerate(quick["cells"])
+    ]
+    empty_counts = {family: 0 for family in QUICK_FAMILY_COUNTS}
+    as_of = utc_now_iso()
+
+    def estimate(*, minimum: float, maximum: float, preset_id: str) -> dict[str, Any]:
+        basis = {
+            "preset_id": preset_id,
+            "source_commit": source_commit,
+            "runtime_image": NATIVE_TASK_ARENA_IMAGE,
+            "maximum_hourly_rate_usd": maximum_hourly_rate_usd,
+            "hard_cap_usd": hard_cap_usd,
+            "hard_ttl_seconds": hard_ttl_seconds,
+        }
+        return {
+            "duration_minutes": {"minimum": minimum, "maximum": maximum},
+            "maximum_authorized_cost_usd": hard_cap_usd,
+            "hard_ttl_seconds": hard_ttl_seconds,
+            "basis_digest": canonical_digest(basis),
+            "as_of": as_of,
+        }
+
+    empty_matrix_digest = canonical_digest({"ordered_cells": []})
     setup: dict[str, Any] = {
         "schema_version": PRESUBMISSION_SETUP_SCHEMA_VERSION,
-        "status": "selectable",
+        "source_launch_id": configured_source_launch_id,
+        "offering_digest": offering_digest,
+        "scene_revision_digest": scene_revision_digest,
         "run_kind": RUN_KIND,
         "claim_ceiling": CLAIM_CEILING,
-        "unqualified_warning": "Controls pending — results are unqualified.",
-        "configured_source_launch_id": configured_source_launch_id,
-        "configured_profile_lineage": {
-            "profile_id": launch_profile["profile_id"],
-            "profile_digest": launch_profile["profile_digest"],
-            "request_digest": request_digest,
-        },
-        "scene": {
-            "scene_id": SCENE_ID,
-            "scene_revision_digest": scene_revision_digest,
-            "controls_status": "configured_controls_pending",
-            "task_id": "scene-839873-mug-planar-push",
-            "task_kind": "rigid_relocation",
-        },
-        "source_commit": source_commit,
-        "registry": {
-            "candidate_ids": list(CANDIDATE_IDS),
-            "registry_digest": readiness["readiness_digest"],
-            "historical_runtime_smoke_is_input_only": True,
-            "current_runtime_execution_proven": False,
-        },
+        "registry_digest": readiness["readiness_digest"],
         "robot_presets": [
             {
                 "robot_preset_id": EMBODIMENT_ID,
                 "display_name": "Franka Panda + Robotiq 2F-85",
-                "runtime_robot_id": "franka_panda",
-                "runtime_image": NATIVE_TASK_ARENA_IMAGE,
-                "observation_cameras": ["external", "wrist"],
-                "action_schema": "absolute_7_joint_positions_plus_gripper",
-                "compatible_candidate_ids": list(CANDIDATE_IDS),
-                "readiness_status": "verified_runnable",
+                "embodiment_id": embodiment_id,
+                "task_family_id": task_family_id,
+                "simulator_runtime_id": simulator_runtime_id,
+                "runtime_image": {
+                    "uri": NATIVE_TASK_ARENA_IMAGE,
+                    "digest": "sha256:" + NATIVE_TASK_ARENA_IMAGE.rsplit("@sha256:", 1)[1],
+                },
+                "observation_schema": {
+                    "schema_id": observation_schema_id,
+                    "cameras": ["external", "wrist"],
+                    "modalities": [
+                        "rgb_uint8",
+                        "joint_position",
+                        "gripper_position",
+                        "language_instruction",
+                    ],
+                },
+                "action_schema": {
+                    "schema_id": action_schema_id,
+                    "space": "absolute_7_joint_positions_plus_gripper",
+                    "control_hz": 15,
+                },
+                "readiness": {
+                    "status": "verified_runnable",
+                    "receipt": {
+                        "uri": (
+                            "blueprint://policy-canary/readiness/"
+                            f"franka-robotiq/{readiness['readiness_digest']}"
+                        ),
+                        "digest": readiness["readiness_digest"],
+                    },
+                    "reason": None,
+                },
+                "policy_candidates": policies,
             }
         ],
-        "policies": policies,
-        "presets": [
+        "episode_presets": [
             {
                 "preset_id": "quick_10",
-                "label": "Quick — 10 episodes per policy",
-                "availability": "available",
+                "label": "Quick",
+                "episodes_per_policy": 10,
+                "availability": "enabled",
                 "recommended": True,
-                **{
-                    key: quick[key]
-                    for key in (
-                        "policy_count",
-                        "episodes_per_policy",
-                        "learned_policy_rollout_count",
-                        "cells",
-                        "matrix_digest",
-                    )
+                "matrix": {
+                    "matrix_digest": canonical_digest({"ordered_cells": cells}),
+                    "resolver_id": "scene839873_quick10_deterministic",
+                    "resolver_version": "v1",
+                    "deterministic": True,
+                    "cells": cells,
+                    "expected_family_counts": dict(QUICK_FAMILY_COUNTS),
+                    "coverage_gaps": [],
                 },
+                "estimate": estimate(minimum=20, maximum=60, preset_id="quick_10"),
             },
             {
                 "preset_id": "standard_100",
-                "label": "Standard — 100 episodes per policy",
-                "availability": "disabled",
-                "disabled_reason": "standard_runtime_contract_not_qualified",
+                "label": "Standard",
+                "episodes_per_policy": 100,
+                "availability": "coming_later",
+                "recommended": False,
+                "matrix": {
+                    "matrix_digest": empty_matrix_digest,
+                    "resolver_id": "standard_100_not_enabled",
+                    "resolver_version": "v1",
+                    "deterministic": True,
+                    "cells": [],
+                    "expected_family_counts": empty_counts,
+                    "coverage_gaps": [],
+                },
+                "estimate": estimate(minimum=0, maximum=0, preset_id="standard_100"),
             },
             {
                 "preset_id": "deep_500",
-                "label": "Deep — 500 episodes per policy",
-                "availability": "disabled",
-                "disabled_reason": "deep_runtime_contract_not_qualified",
+                "label": "Deep",
+                "episodes_per_policy": 500,
+                "availability": "coming_later",
+                "recommended": False,
+                "matrix": {
+                    "matrix_digest": empty_matrix_digest,
+                    "resolver_id": "deep_500_not_enabled",
+                    "resolver_version": "v1",
+                    "deterministic": True,
+                    "cells": [],
+                    "expected_family_counts": empty_counts,
+                    "coverage_gaps": [],
+                },
+                "estimate": estimate(minimum=0, maximum=0, preset_id="deep_500"),
             },
         ],
-        "estimate": verified["estimate"],
         "diagnostics": {
-            "controls_mode": "nonblocking_diagnostic_pending",
-            "diagnostic_control_rollouts_listed_separately": True,
-            "failed_controls_preserved": True,
-            "uninterpretable_outcomes_not_ranked": True,
-            "scene_promotion_forbidden": True,
-            "official_ranking_forbidden": True,
+            "zero_action": "nonblocking",
+            "deterministic_scripted_positive": "nonblocking",
         },
         "setup_digest": "",
     }
     setup["setup_digest"] = canonical_digest(setup, digest_field="setup_digest")
+    setup = validate_policy_canary_setup(setup)
     wrapper: dict[str, Any] = {
         "schema_version": PROFILE_INPUT_SCHEMA_VERSION,
         "profile_id": profile_id,
@@ -664,13 +754,10 @@ def materialize_scene839873_policy_canary_setup_from_template(
         or _sha256(wrapper_path) != wrapper_record.get("sha256")
     ):
         raise PolicyCanarySetupError(["policy_canary_profile_materialization_input_invalid"])
-    wrapper = _read(
-        wrapper_path, code="policy_canary_profile_materialization_input_invalid"
-    )
+    wrapper = _read(wrapper_path, code="policy_canary_profile_materialization_input_invalid")
     if (
         wrapper.get("schema_version") != PROFILE_INPUT_SCHEMA_VERSION
-        or wrapper.get("configured_source_launch_id")
-        != template.get("configured_source_launch_id")
+        or wrapper.get("configured_source_launch_id") != template.get("configured_source_launch_id")
         or wrapper.get("source_commit") != template.get("source_commit")
         or wrapper.get("materialization_digest")
         != canonical_digest(wrapper, digest_field="materialization_digest")
@@ -697,9 +784,7 @@ def materialize_scene839873_policy_canary_setup_from_template(
         or _sha256(activation_path) != activation_record.get("sha256")
     ):
         raise PolicyCanarySetupError(["policy_canary_activation_result_invalid"])
-    activation = _read(
-        activation_path, code="policy_canary_activation_result_invalid"
-    )
+    activation = _read(activation_path, code="policy_canary_activation_result_invalid")
     return materialize_scene839873_policy_canary_setup(
         source_commit=str(template["source_commit"]),
         configured_source_launch_id=str(template["configured_source_launch_id"]),
@@ -715,12 +800,8 @@ def materialize_scene839873_policy_canary_setup_from_template(
         scene_plan_path=template["scene_plan_path"],
         packet_receipt_path=template["packet_receipt_path"],
         runtime_source_receipt_path=template["runtime_source_receipt_path"],
-        historical_policy_readiness_path=template[
-            "historical_policy_readiness_path"
-        ],
-        pi05_checkpoint_inventory_path=template[
-            "pi05_checkpoint_inventory_path"
-        ],
+        historical_policy_readiness_path=template["historical_policy_readiness_path"],
+        pi05_checkpoint_inventory_path=template["pi05_checkpoint_inventory_path"],
         output_dir=output_dir,
         maximum_hourly_rate_usd=float(template["maximum_hourly_rate_usd"]),
         hard_cap_usd=float(template["hard_cap_usd"]),

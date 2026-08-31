@@ -15,6 +15,12 @@ from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import (
     materialize_scene839873_policy_canary_setup_from_template,
     materialize_setup_preflight_decision,
 )
+from blueprint_pipeline.task_evaluation_policy_canary_setup import (
+    validate_policy_canary_setup,
+)
+from scripts.attach_internal_policy_canary_setup import (
+    attach_internal_policy_canary_setup,
+)
 
 
 COMMIT = "c" * 40
@@ -206,17 +212,19 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     for field in ("activation_digest", "capture_session_id", "intake_id"):
         kwargs.pop(field)
     kwargs["profile_id"] = "scene839873-internal-policy-canary-c412"
+    kwargs["offering_digest"] = "sha256:" + "f" * 64
     emitted = materialize_policy_canary_presubmission_setup(**kwargs)
     setup = emitted["setup"]
     wrapper = emitted["profile_materialization_input"]
 
     assert setup["schema_version"] == "task_evaluation_policy_canary_setup.v1"
-    assert setup["status"] == "selectable"
-    assert setup["configured_source_launch_id"] == "scene839873-configured-source"
-    assert setup["scene"]["controls_status"] == "configured_controls_pending"
-    assert setup["presets"][0]["learned_policy_rollout_count"] == 20
-    assert setup["presets"][1]["availability"] == "disabled"
-    assert setup["presets"][2]["availability"] == "disabled"
+    assert validate_policy_canary_setup(setup) == setup
+    assert setup["source_launch_id"] == "scene839873-configured-source"
+    assert setup["offering_digest"] == "sha256:" + "f" * 64
+    assert setup["episode_presets"][0]["episodes_per_policy"] == 10
+    assert len(setup["episode_presets"][0]["matrix"]["cells"]) == 10
+    assert setup["episode_presets"][1]["availability"] == "coming_later"
+    assert setup["episode_presets"][2]["availability"] == "coming_later"
     assert "activation_digest" not in setup
     assert "capture_session_id" not in setup
     assert "intake_id" not in setup
@@ -227,6 +235,27 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     assert Path(emitted["profile_materialization_input_path"]).is_file()
     assert Path(emitted["execution_setup_template_path"]).is_file()
     assert emitted["execution_setup_template"]["provider_mutation_performed"] is False
+    shape = json.loads(
+        (
+            Path(__file__).resolve().parent
+            / "fixtures/webapp_internal_policy_canary_setup_shape.v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    robot = setup["robot_presets"][0]
+    assert sorted(setup) == shape["top_level_keys"]
+    assert sorted(robot) == shape["robot_keys"]
+    assert sorted(robot["policy_candidates"][0]) == shape["candidate_keys"]
+    assert sorted(setup["episode_presets"][0]) == shape["preset_keys"]
+    attached = attach_internal_policy_canary_setup(
+        profile={
+            "profile_id": wrapper["profile_id"],
+            "configured_source_launch_id": setup["source_launch_id"],
+            "profile_digest": "sha256:" + "1" * 64,
+        },
+        setup=setup,
+        profile_validator=lambda _value: [],
+    )
+    assert attached["internal_policy_canary_setup"] == setup
 
 
 def test_post_activation_template_separates_configured_and_canary_requests(
@@ -236,6 +265,7 @@ def test_post_activation_template_separates_configured_and_canary_requests(
     for field in ("activation_digest", "capture_session_id", "intake_id"):
         kwargs.pop(field)
     kwargs["profile_id"] = "scene839873-internal-policy-canary-current"
+    kwargs["offering_digest"] = "sha256:" + "f" * 64
     emitted = materialize_policy_canary_presubmission_setup(**kwargs)
     activation_result = {
         "schema_version": "task_evaluation_launch_activation_result.v1",
@@ -252,9 +282,8 @@ def test_post_activation_template_separates_configured_and_canary_requests(
         "activation_result": {
             "path": str(activation_path),
             "size_bytes": activation_path.stat().st_size,
-            "sha256": "sha256:" + __import__("hashlib").sha256(
-                activation_path.read_bytes()
-            ).hexdigest(),
+            "sha256": "sha256:"
+            + __import__("hashlib").sha256(activation_path.read_bytes()).hexdigest(),
         },
         "capture_session_id": "capture-new-canary",
         "intake_id": "intake-new-canary",
@@ -266,9 +295,7 @@ def test_post_activation_template_separates_configured_and_canary_requests(
         "paid_execution_requested": False,
         "envelope_digest": "",
     }
-    envelope["envelope_digest"] = canonical_digest(
-        envelope, digest_field="envelope_digest"
-    )
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
 
     setup = materialize_scene839873_policy_canary_setup_from_template(
         template_path=emitted["execution_setup_template_path"],

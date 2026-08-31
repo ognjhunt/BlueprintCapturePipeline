@@ -1,0 +1,47 @@
+{
+  "schema_version": "webapp_internal_policy_canary_setup_shape.v1",
+  "source": "Blueprint-WebApp/server/utils/internalPolicyCanaryContract.ts",
+  "top_level_keys": [
+    "claim_ceiling",
+    "diagnostics",
+    "episode_presets",
+    "offering_digest",
+    "registry_digest",
+    "robot_presets",
+    "run_kind",
+    "scene_revision_digest",
+    "schema_version",
+    "setup_digest",
+    "source_launch_id"
+  ],
+  "robot_keys": [
+    "action_schema",
+    "display_name",
+    "embodiment_id",
+    "observation_schema",
+    "policy_candidates",
+    "readiness",
+    "robot_preset_id",
+    "runtime_image",
+    "simulator_runtime_id",
+    "task_family_id"
+  ],
+  "candidate_keys": [
+    "adapter_id",
+    "candidate_id",
+    "checkpoint",
+    "compatibility",
+    "display_name",
+    "license_id",
+    "readiness"
+  ],
+  "preset_keys": [
+    "availability",
+    "episodes_per_policy",
+    "estimate",
+    "label",
+    "matrix",
+    "preset_id",
+    "recommended"
+  ]
+}
