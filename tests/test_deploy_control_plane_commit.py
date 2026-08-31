@@ -365,6 +365,11 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "[Timer]\nOnUnitInactiveSec=2min\n",
         encoding="utf-8",
     )
+    intake_service = unit_dir / "blueprint-pipeline-intake.service"
+    intake_service.write_text(
+        "[Service]\nExecStart=/usr/bin/blueprint-live-pipeline-intake\n",
+        encoding="utf-8",
+    )
     systemd = tmp_path / "systemd"
     systemd.mkdir()
     (systemd / service.name).write_text(
@@ -396,6 +401,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         discovery_path,
         progression_service,
         progression_timer,
+        intake_service,
     ):
         destination = systemd / source.name
         assert destination.read_bytes() == source.read_bytes()
