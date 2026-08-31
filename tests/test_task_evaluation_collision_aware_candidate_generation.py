@@ -477,6 +477,55 @@ def test_remote_curobo_uses_retained_worker_without_allocating(
     assert all("provider" not in path for path in remote)
 
 
+def test_remote_curobo_refusal_names_the_transport_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal has to say why, or a GPU is rented to rediscover it."""
+
+    monkeypatch.setattr(
+        curobo_adapter,
+        "_enroll_warm_host_key",
+        lambda *_args, **_kwargs: {
+            "status": "enrolled",
+            "known_hosts_file": str(tmp_path / "known_hosts"),
+        },
+    )
+    observed: dict[str, float] = {}
+
+    def ssh(*, remote_argv, stdin=None, **kwargs):
+        observed["timeout_seconds"] = kwargs.get("timeout_seconds", 0.0)
+        observed["maximum_timeout_seconds"] = kwargs.get(
+            "maximum_timeout_seconds", 0.0
+        )
+        return {
+            "status": "blocked",
+            "blockers": ["native_task_arena_warm_ssh_timeout"],
+            "returncode": 81,
+        }
+
+    monkeypatch.setattr(curobo_adapter, "_run_warm_ssh", ssh)
+    with pytest.raises(
+        curobo_adapter.CollisionAwareCandidateGenerationError
+    ) as excinfo:
+        RemoteCuroboCandidateGenerator(
+            context=_context(tmp_path),
+            warm_session={
+                "ssh_host": "worker.example",
+                "ssh_port": 22022,
+                "remote_work_dir": "/workspace",
+            },
+            local_transport_root=tmp_path / "transport",
+        )
+
+    message = str(excinfo.value)
+    assert message.startswith("curobo_remote_process_failed")
+    assert "native_task_arena_warm_ssh_timeout" in message
+    assert "exit_81" in message
+    # Building curobo CUDA extensions does not fit in a five minute probe budget.
+    assert observed["timeout_seconds"] > 300.0
+    assert observed["maximum_timeout_seconds"] > 300.0
+
+
 def test_context_materializer_binds_packet_mesh_and_five_native_stages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
