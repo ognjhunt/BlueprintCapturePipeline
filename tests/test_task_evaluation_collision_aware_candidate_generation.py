@@ -331,7 +331,7 @@ def test_remote_curobo_uses_retained_worker_without_allocating(
 
     monkeypatch.setattr(
         curobo_adapter,
-        "enroll_vast_ssh_host_key",
+        "_enroll_warm_host_key",
         lambda *_args, **_kwargs: {
             "status": "enrolled",
             "known_hosts_file": str(tmp_path / "known_hosts"),
@@ -402,7 +402,7 @@ def test_remote_curobo_uses_retained_worker_without_allocating(
             }
         return {"status": "completed", "stdout": ""}
 
-    monkeypatch.setattr(curobo_adapter, "_run_pinned_ssh", ssh)
+    monkeypatch.setattr(curobo_adapter, "_run_warm_ssh", ssh)
     generator = RemoteCuroboCandidateGenerator(
         context=_context(tmp_path),
         warm_session={

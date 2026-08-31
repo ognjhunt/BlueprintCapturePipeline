@@ -10,8 +10,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
-from .gpu_render_providers import enroll_vast_ssh_host_key
-from .native_task_arena_warm_vast import _run_pinned_ssh
 from .task_evaluation_collision_aware_candidate_generation import (
     CandidateGeneratorContext,
     CollisionAwareCandidateGenerationError,
@@ -39,6 +37,21 @@ CUROBO_BACKEND_IDENTITY: dict[str, Any] = {
     "runtime_kind": "isaac_gpu_python",
     "api_generation": "v2",
 }
+
+
+def _enroll_warm_host_key(*args: Any, **kwargs: Any) -> Mapping[str, Any]:
+    # Control-plane-only transport dependency: keep the provider runtime's
+    # import closure free of spend/provider modules.  The bundled cuRobo service
+    # imports this file only for the immutable backend identity above.
+    from .gpu_render_providers import enroll_vast_ssh_host_key
+
+    return enroll_vast_ssh_host_key(*args, **kwargs)
+
+
+def _run_warm_ssh(*args: Any, **kwargs: Any) -> Mapping[str, Any]:
+    from .native_task_arena_warm_vast import _run_pinned_ssh
+
+    return _run_pinned_ssh(*args, **kwargs)
 
 
 class CuroboCandidateGenerator(JsonProcessCandidateGenerator):
@@ -128,7 +141,7 @@ class RemoteCuroboCandidateGenerator:
         self._root.mkdir(parents=True, exist_ok=True)
         self._remote_python_package_root = package_root.rstrip("/")
         self._identity_file = identity_file
-        enrollment = enroll_vast_ssh_host_key(
+        enrollment = _enroll_warm_host_key(
             self._session,
             attempt_dir=self._root / "ssh-trust",
             timeout_seconds=15.0,
@@ -147,7 +160,7 @@ class RemoteCuroboCandidateGenerator:
         stdin: bytes | None = None,
         timeout_seconds: float,
     ) -> dict[str, Any]:
-        result = _run_pinned_ssh(
+        result = _run_warm_ssh(
             session=self._session,
             known_hosts_file=self._known_hosts,
             identity_file=self._identity_file,
