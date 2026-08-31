@@ -127,11 +127,11 @@ def test_canary_sync_requires_website_notification_receipt(monkeypatch) -> None:
                     "policy_canary_projection_digest": result["projection_digest"],
                     "notification_delivery": {
                         "terminal_state": "blocked",
-                        "status": "delivered",
+                        "status": "accepted",
                         "attempts": 1,
                         "provider": "resend",
                         "message_id": "message-1",
-                        "delivered_at": "2026-08-31T14:00:00Z",
+                        "delivered_at": None,
                         "run_result_digest": result["projection_digest"],
                     },
                 }
@@ -157,7 +157,7 @@ def test_canary_sync_requires_website_notification_receipt(monkeypatch) -> None:
     )
 
     assert synced["status"] == "succeeded"
-    assert synced["notification_delivery"]["status"] == "delivered"
+    assert synced["notification_delivery"]["status"] == "accepted"
     assert "sync-secret" not in json.dumps(synced)
 
 
@@ -183,11 +183,11 @@ def test_preprovider_blocked_sync_requires_terminal_email_readback(monkeypatch) 
                     "payload_digest": payload["payload_digest"],
                     "notification_delivery": {
                         "terminal_state": "blocked",
-                        "status": "delivered",
+                        "status": "accepted",
                         "attempts": 1,
                         "provider": "resend",
                         "message_id": "message-blocked-1",
-                        "delivered_at": "2026-08-31T14:00:00Z",
+                        "delivered_at": None,
                         "run_result_digest": payload["payload_digest"],
                     },
                 }
@@ -214,4 +214,4 @@ def test_preprovider_blocked_sync_requires_terminal_email_readback(monkeypatch) 
     )
 
     assert synced["status"] == "succeeded"
-    assert synced["notification_delivery"]["status"] == "delivered"
+    assert synced["notification_delivery"]["status"] == "accepted"
