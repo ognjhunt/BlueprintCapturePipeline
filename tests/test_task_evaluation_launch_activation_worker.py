@@ -221,6 +221,7 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
     setup_value = policy_setup()
     quick = setup_value["presets"][0]
     for index, cell in enumerate(quick["cells"]):
+        cell["seed"] = 1000 + index
         cell["resolved_scenario"] = {"family": cell["family"], "ordinal": index}
         cell["cell_spec_digest"] = canonical_digest(cell["resolved_scenario"])
     quick["scenario_set_digest"] = canonical_digest(
