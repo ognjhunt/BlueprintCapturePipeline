@@ -93,6 +93,26 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
             raise TaskEvaluationPolicyCanaryResultError(
                 "policy_canary_result_action_delivery_interpretability_invalid"
             )
+        evidence = episode["evidence"]
+        artifact_roles = (
+            "reset_state",
+            "frame_manifest",
+            "review_video",
+            "policy_query_receipt",
+            "action_sequence",
+            "action_delivery_readback",
+            "state_trace",
+            "contact_force_trace",
+            "task_object_trajectory",
+            "score_receipt",
+        )
+        if episode["terminal_state"] == "completed" and (
+            evidence["evidence_gaps"]
+            or any(evidence[role] is None for role in artifact_roles)
+        ):
+            raise TaskEvaluationPolicyCanaryResultError(
+                "policy_canary_result_completed_episode_evidence_incomplete"
+            )
     notification = result["notification_delivery"]
     if notification["status"] == "pending":
         if (

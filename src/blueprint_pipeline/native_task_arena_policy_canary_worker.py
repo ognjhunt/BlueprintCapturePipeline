@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
@@ -44,6 +44,50 @@ def _sha256(path: Path) -> str:
     import hashlib
 
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_episode_json_artifact(
+    output_root: Path, *, episode_id: str, role: str, value: Any
+) -> dict[str, Any]:
+    path = output_root / "episodes" / f"{episode_id}.{role}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "role": role,
+        "relative_path": path.relative_to(output_root).as_posix(),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
+
+
+def _bound_media_artifact(
+    output_root: Path,
+    *,
+    artifacts: Any,
+    role: str,
+    role_match: Callable[[str], bool],
+) -> dict[str, Any] | None:
+    matches = [
+        row
+        for row in artifacts or []
+        if isinstance(row, Mapping) and role_match(str(row.get("role") or ""))
+    ]
+    if not matches:
+        return None
+    row = matches[0]
+    path = (output_root / str(row.get("relative_path") or "")).resolve()
+    try:
+        path.relative_to(output_root)
+    except ValueError:
+        return None
+    if path.is_symlink() or not path.is_file():
+        return None
+    return {
+        "role": role,
+        "relative_path": path.relative_to(output_root).as_posix(),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
 
 
 def _write_indexed_telemetry(
@@ -156,6 +200,23 @@ def _write_indexed_telemetry(
             continue
         seen.add(relative)
         lowered = relative.lower()
+        typed_evidence_role = next(
+            (
+                evidence_role
+                for evidence_role in (
+                    "reset_state",
+                    "policy_query_receipt",
+                    "action_sequence",
+                    "action_delivery_readback",
+                    "state_trace",
+                    "contact_force_trace",
+                    "task_object_trajectory",
+                    "score_receipt",
+                )
+                if f".{evidence_role}.json" in lowered
+            ),
+            None,
+        )
         role = (
             "indexed_episode_telemetry"
             if path in {primary_path, telemetry_path}
@@ -167,6 +228,8 @@ def _write_indexed_telemetry(
             if path.suffix.lower() in {".mp4", ".mov", ".webm"}
             else "lossless_frame_manifest"
             if "frame" in lowered and "manifest" in lowered
+            else typed_evidence_role
+            if typed_evidence_role is not None
             else "episode_evidence"
             if "episode" in lowered
             else "runtime_supporting_evidence"
@@ -415,6 +478,73 @@ def main() -> int:
                 else "mcap_library_or_runtime_capture_unavailable"
             ),
         }
+        media_artifacts = episode.get("media_artifacts") or []
+        evidence_artifacts = {
+            "frame_manifest": _bound_media_artifact(
+                output_root,
+                artifacts=media_artifacts,
+                role="lossless_frame_manifest",
+                role_match=lambda name: "frame_manifest" in name,
+            ),
+            "review_video": _bound_media_artifact(
+                output_root,
+                artifacts=media_artifacts,
+                role="review_video",
+                role_match=lambda name: "video" in name,
+            ),
+            "reset_state": _write_episode_json_artifact(
+                output_root,
+                episode_id=episode_id,
+                role="reset_state",
+                value=environment_receipt,
+            ),
+            "policy_query_receipt": _write_episode_json_artifact(
+                output_root,
+                episode_id=episode_id,
+                role="policy_query_receipt",
+                value={
+                    "candidate_policy_queried": tracker.candidate_policy_queried,
+                    "policy_queries": episode.get("policy_queries"),
+                    "policy_query_latency": episode.get("policy_query_latency"),
+                },
+            ),
+            "action_sequence": _write_episode_json_artifact(
+                output_root,
+                episode_id=episode_id,
+                role="action_sequence",
+                value=episode.get("commanded_actions"),
+            ),
+            "action_delivery_readback": _write_episode_json_artifact(
+                output_root,
+                episode_id=episode_id,
+                role="action_delivery_readback",
+                value=motion,
+            ),
+            "state_trace": _write_episode_json_artifact(
+                output_root,
+                episode_id=episode_id,
+                role="state_trace",
+                value=episode.get("state_trace"),
+            ),
+            "contact_force_trace": _write_episode_json_artifact(
+                output_root,
+                episode_id=episode_id,
+                role="contact_force_trace",
+                value=episode.get("contact_force_evidence"),
+            ),
+            "task_object_trajectory": _write_episode_json_artifact(
+                output_root,
+                episode_id=episode_id,
+                role="task_object_trajectory",
+                value=episode.get("task_object_trajectory"),
+            ),
+            "score_receipt": _write_episode_json_artifact(
+                output_root,
+                episode_id=episode_id,
+                role="score_receipt",
+                value=episode.get("score"),
+            ),
+        }
         return {
             "status": "completed",
             "candidate_policy_queried": tracker.candidate_policy_queried,
@@ -445,6 +575,7 @@ def main() -> int:
             "scene_revision_digest": inputs.get("scene_revision_digest")
             or inputs["configuration_digest"],
             "scoring_version_digest": _digest("deterministic_simulator_state"),
+            "evidence_artifacts": evidence_artifacts,
         }
 
     def close_policy(policy: Mapping[str, Any]) -> None:

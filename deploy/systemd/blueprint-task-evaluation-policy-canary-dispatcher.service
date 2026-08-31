@@ -1,0 +1,51 @@
+[Unit]
+Description=Dispatch one activated Blueprint internal policy canary
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target blueprint-gpu-spend-guard.service
+After=network-online.target blueprint-gpu-spend-guard.service
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+KillMode=process
+Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint
+ReadOnlyPaths=/etc/blueprint/provider-secrets
+TasksMax=512
+LimitNOFILE=65536
+MemoryMax=8G
+CPUQuota=200%
+TimeoutStartSec=5h
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches
+Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_EXECUTION_SETUP_ROOT=/var/lib/blueprint/task-evaluation-inputs/policy-canary-execution-setups
+Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries
+Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
+Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
+Environment=VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock
+Environment=HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_policy_canary_dispatcher --dispatch-queue-root "$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_QUEUE_ROOT}" --execution-setup-root "$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_EXECUTION_SETUP_ROOT}" --dispatch-root "$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT}" --implementation-commit "$$(git rev-parse HEAD)" --execute'

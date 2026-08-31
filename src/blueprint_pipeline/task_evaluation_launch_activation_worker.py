@@ -117,6 +117,9 @@ STANDING_AUTHORIZATION_DIR_ENV = (
 CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT"
 )
+POLICY_CANARY_DISPATCH_QUEUE_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_QUEUE_ROOT"
+)
 
 ReferenceFetcher = Callable[[str, Path, int], None]
 ActivationPreparer = Callable[..., dict[str, Any]]
@@ -1449,6 +1452,9 @@ def _policy_campaign_activation_result(
                     runtime_inputs_path
                 ),
                 "policy_canary_runtime_inputs_path": str(runtime_inputs_path),
+                "capture_session_id": request["capture_session_id"],
+                "intake_id": request["intake_id"],
+                "request_digest": request["preparation"]["request_digest"],
             }
             if runtime_inputs is not None and runtime_inputs_path is not None
             else {}
@@ -1489,6 +1495,7 @@ def process_launch_activation_queue(
     scene_construction_queue_root: str | Path | None = None,
     scene_configuration_toolchain_root: str | Path | None = None,
     configured_controls_autostart_intent_root: str | Path | None = None,
+    policy_canary_dispatch_queue_root: str | Path | None = None,
     source_commit: str | None = None,
     max_messages: int = 1,
     fetcher: ReferenceFetcher = default_reference_fetcher,
@@ -1771,6 +1778,50 @@ def process_launch_activation_queue(
                 result = conflict
             else:
                 result = existing
+        if (
+            terminal_state == "prepared"
+            and result.get("run_kind") == "internal_policy_canary"
+            and result.get("status") == "policy_campaign_queue_materialized_no_execution"
+        ):
+            if policy_canary_dispatch_queue_root is None:
+                raise TaskEvaluationLaunchActivationWorkerError(
+                    "policy_canary_dispatch_queue_root_missing"
+                )
+            dispatch_root = Path(policy_canary_dispatch_queue_root).expanduser().resolve()
+            for name in ("pending", "processing", "completed", "blocked"):
+                (dispatch_root / name).mkdir(parents=True, exist_ok=True, mode=0o750)
+            dispatch_envelope = {
+                "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
+                "activation_id": result["activation_id"],
+                "run_kind": "internal_policy_canary",
+                "claim_ceiling": "diagnostic_policy_execution",
+                "source_commit": result["source_commit"],
+                "activation_result": {
+                    "path": str(result_path),
+                    "size_bytes": result_path.stat().st_size,
+                    "sha256": _sha256_file(result_path),
+                },
+                "capture_session_id": result["capture_session_id"],
+                "intake_id": result["intake_id"],
+                "request_digest": result["request_digest"],
+                "maximum_provider_allocations": 1,
+                "retry_cap": 0,
+                "automatic_retry_authorized": False,
+                "provider_mutation_performed": False,
+                "paid_execution_requested": False,
+                "envelope_digest": "",
+            }
+            dispatch_envelope["envelope_digest"] = canonical_digest(
+                dispatch_envelope, digest_field="envelope_digest"
+            )
+            dispatch_path = (
+                dispatch_root
+                / "pending"
+                / f"{result['activation_id']}-{dispatch_envelope['envelope_digest'][7:]}.json"
+            )
+            write_launch_preparation_record_exclusive(
+                dispatch_path, dispatch_envelope
+            )
         os.replace(claimed, root / terminal_state / source.name)
         processed.append(result)
     for lease in processing_leases:
@@ -1814,6 +1865,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--configured-controls-autostart-intent-root",
         default=os.getenv(CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT_ENV, ""),
     )
+    parser.add_argument(
+        "--policy-canary-dispatch-queue-root",
+        default=os.getenv(POLICY_CANARY_DISPATCH_QUEUE_ROOT_ENV, ""),
+    )
     parser.add_argument("--activation-root", default=os.getenv(ACTIVATION_ROOT_ENV, ""))
     parser.add_argument(
         "--allowed-uri-prefixes-json", default=os.getenv(ALLOWED_URI_PREFIXES_ENV, "")
@@ -1846,6 +1901,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.scene_construction_queue_root,
         args.scene_configuration_toolchain_root,
         args.configured_controls_autostart_intent_root,
+        args.policy_canary_dispatch_queue_root,
         args.activation_root,
         args.repository_root,
         args.destination_prefix,
@@ -1880,6 +1936,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             configured_controls_autostart_intent_root=(
                 args.configured_controls_autostart_intent_root
+            ),
+            policy_canary_dispatch_queue_root=(
+                args.policy_canary_dispatch_queue_root
             ),
             activation_root=args.activation_root,
             allowed_uri_prefixes=prefixes,

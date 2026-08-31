@@ -257,6 +257,8 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
     plan = build_policy_run_plan(configuration, setup=setup_value)
     request = activation_request(lane="native_task_arena_policy_evaluation")
     request["run_kind"] = "internal_policy_canary"
+    request["capture_session_id"] = "capture-839873"
+    request["intake_id"] = "intake-839873"
     request["preparation"] = {
         "preparation_id": "policy-canary-preparation-1",
         "request_digest": "sha256:" + "1" * 64,
@@ -320,6 +322,9 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
         "hard_ttl_seconds": 14_400,
         "user_confirmed": True,
     }
+    assert result["capture_session_id"] == "capture-839873"
+    assert result["intake_id"] == "intake-839873"
+    assert result["request_digest"] == request["preparation"]["request_digest"]
     assert len(runtime_inputs["cells"]) == 10
     assert runtime_inputs["cells"][0]["resolved_scenario_digest"] == canonical_digest(
         runtime_inputs["cells"][0]["resolved_scenario"]

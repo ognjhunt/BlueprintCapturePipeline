@@ -23,6 +23,8 @@
     "activation_id": {"$ref": "#/$defs/identifier"},
     "team_namespace": {"$ref": "#/$defs/identifier"},
     "run_kind": {"enum": ["qualified_evaluation", "internal_policy_canary"]},
+    "capture_session_id": {"$ref": "#/$defs/identifier"},
+    "intake_id": {"$ref": "#/$defs/identifier"},
     "lane": {
       "enum": [
         "task_evaluation_scene_configuration",
@@ -162,7 +164,10 @@
     },
     {
       "if": {"properties": {"run_kind": {"const": "internal_policy_canary"}}, "required": ["run_kind"]},
-      "then": {"properties": {"lane": {"const": "native_task_arena_policy_evaluation"}}}
+      "then": {
+        "required": ["capture_session_id", "intake_id"],
+        "properties": {"lane": {"const": "native_task_arena_policy_evaluation"}}
+      }
     }
   ],
   "$defs": {
