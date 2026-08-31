@@ -577,6 +577,27 @@ def project_spend_dependency_records(
             dependencies.append(
                 (f"posted_entry_{entry_index}_{role}", source["record"])
             )
+            source_path = Path(str(source["record"].get("path") or ""))
+            source_value = _read(
+                source_path, code="project_spend_dependency_invalid"
+            )[1]
+            if (
+                role == "terminal_result"
+                and source_value.get("schema_version")
+                == "task_evaluation_native_direct_execution_adoption.v1"
+            ):
+                nested = source_value.get("source_receipts")
+                if not isinstance(nested, Mapping):
+                    raise ValueError("project_spend_dependency_invalid")
+                for nested_role, nested_record in nested.items():
+                    if not isinstance(nested_record, Mapping):
+                        raise ValueError("project_spend_dependency_invalid")
+                    dependencies.append(
+                        (
+                            f"posted_entry_{entry_index}_adoption_{nested_role}",
+                            nested_record,
+                        )
+                    )
     for index, record in enumerate(value.get("unposted_authorities") or []):
         if not isinstance(record, Mapping):
             raise ValueError("project_spend_dependency_invalid")
