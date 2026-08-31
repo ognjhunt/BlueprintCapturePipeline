@@ -31,6 +31,9 @@ from .task_evaluation_native_arena_preparation_adapter import (
 from .task_evaluation_rigid_relocation_native_adapter import (
     adapt_rigid_relocation_task_template,
 )
+from .task_evaluation_native_construction_feedback_controller import (
+    validate_native_construction_inventory,
+)
 
 
 OUTPUT_SCHEMA_VERSION = "task_evaluation_episode_compiler_output.v1"
@@ -425,6 +428,26 @@ def compile_native_arena_episode(
     task_spec["manipulation_strategy"] = request["task"]["strategy"]
     task_spec["success_criteria"] = success.get("criteria")
     task_spec = _runtime_subject_task_spec(task_spec)
+    native_candidate_universe = robot.get(
+        "native_construction_candidate_universe"
+    )
+    if native_candidate_universe is not None:
+        if not isinstance(native_candidate_universe, Mapping):
+            raise TaskEvaluationNativeArenaEpisodeCompilerError(
+                "episode_compiler_native_candidate_universe_invalid"
+            )
+        try:
+            native_candidate_universe = validate_native_construction_inventory(
+                native_candidate_universe,
+                expected_run_id=str(native_candidate_universe.get("run_id") or ""),
+                expected_round_index=0,
+                expected_feedback_digest=None,
+                maximum_candidates=64,
+            )
+        except ValueError as exc:
+            raise TaskEvaluationNativeArenaEpisodeCompilerError(
+                "episode_compiler_native_candidate_universe_invalid"
+            ) from exc
     source_subject_asset_id = task_spec["source_subject_identity"]
     runtime_subject_asset_id = task_spec["subject_asset_id"]
     configured_assets = _extract_configured_assets(
@@ -514,6 +537,29 @@ def compile_native_arena_episode(
             ],
             "exact_learned_arrays_preserved": True,
         },
+        "native_construction_feedback": (
+            {
+                "selected_placement_candidate_id": robot.get(
+                    "selected_placement_candidate_id"
+                ),
+                "candidate_universe": native_candidate_universe,
+                "candidate_generator_authority": {
+                    "generator": "remote_curobo_v2_motion_generation",
+                    "package_version": "0.8.0",
+                    "source_revision": (
+                        "4ea77366ca48ee453e7df139e39fa6532af49f3b"
+                    ),
+                    "required_on_retained_gpu": True,
+                    "deterministic_cpu_prefilter_required": True,
+                    "silent_fallback_permitted": False,
+                },
+                "allocator_retry_cap": 0,
+                "maximum_rounds": 4,
+                "native_gates_unchanged": True,
+            }
+            if native_candidate_universe is not None
+            else None
+        ),
         "request_digest": "",
     }
     packet_request["request_digest"] = canonical_digest(

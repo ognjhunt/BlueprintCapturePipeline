@@ -30,8 +30,17 @@ from blueprint_pipeline.native_franka_grasp_geometry import (
 from blueprint_pipeline.native_task_arena_dependency_contract import (
     NATIVE_TASK_ARENA_DEPENDENCY_IMPORTS as DEPENDENCY_IMPORTS,
 )
+from blueprint_pipeline.native_task_curobo_path_execution import (
+    advance_solver_waypoint,
+    solver_command_target,
+    solver_path_result_fields,
+    validated_solver_joint_sequence,
+)
 from blueprint_pipeline.native_task_nurec_render_setup import (
     prepare_site_appearance_renderer as _prepare_site_appearance_renderer,
+)
+from blueprint_pipeline.native_task_servo_command_limits import (
+    servo_command_limits as _servo_command_limits,
 )
 from blueprint_pipeline.rigid_frame_transforms import (
     quaternion_conjugate_xyzw,
@@ -523,50 +532,6 @@ def _phase_target_orientation(
     if is_unauthored_identity_quaternion_xyzw(orientation):
         return [float(value) for value in reset_body_orientation_xyzw]
     return [float(value) for value in orientation]
-
-
-def _servo_command_limits(
-    execution_parameters: Mapping[str, Any],
-) -> dict[str, float]:
-    """Resolve the joint-command bounds this construction run must execute.
-
-    These two numbers decide how much torque the position actuators can ever
-    develop: the command is clamped to ``max_joint_setpoint_lead_rad`` of the
-    *measured* joint state, so the position error - and therefore the stiffness
-    torque - can never exceed that bound.  They are sealed into the phase plan,
-    so they are read from it rather than defaulted here; a construction run that
-    silently substitutes the servo's own defaults produces travel that is
-    invariant to the sealed configuration and cannot be interpreted.
-    """
-
-    limits: dict[str, float] = {}
-    for field in (
-        "max_joint_delta_rad",
-        "max_joint_setpoint_lead_rad",
-        "velocity_feedforward_scale",
-    ):
-        try:
-            value = float(execution_parameters[field])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError(
-                f"native_task_construction_servo_command_limit_missing:{field}"
-            ) from exc
-        floor = 0.0 if field == "velocity_feedforward_scale" else None
-        if (
-            not math.isfinite(value)
-            or (floor is None and value <= 0.0)
-            or (floor is not None and not 0.0 <= value <= 1.0)
-        ):
-            raise RuntimeError(
-                f"native_task_construction_servo_command_limit_invalid:{field}"
-            )
-        limits[field] = value
-    if limits["max_joint_setpoint_lead_rad"] < limits["max_joint_delta_rad"]:
-        raise RuntimeError(
-            "native_task_construction_servo_command_limit_invalid:"
-            "max_joint_setpoint_lead_rad"
-        )
-    return limits
 
 
 # What the pinned Arena embodiment actually applies to the 7 arm joints, read
@@ -1670,12 +1635,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ]
             )
             task_samples = []
+            solver_sequence = validated_solver_joint_sequence(
+                phase, arm_joint_names=servo.binding["arm_joint_names"]
+            )
+            solver_waypoint_index = 0
             while (
                 total_steps < max_total_steps
                 and len(diagnostics) < maximum_steps_per_phase
             ):
-                global_target = global_ik_solutions.get(
-                    str(phase["phase_id"])
+                global_target = solver_command_target(
+                    solver_sequence,
+                    waypoint_index=solver_waypoint_index,
+                    fallback=global_ik_solutions.get(str(phase["phase_id"])),
                 )
                 if global_target is not None:
                     action, diagnostic = servo.action_for_joint_target(
@@ -1691,7 +1662,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "velocity_feedforward_scale"
                         ],
                     )
-                    diagnostic["pink_global_ik_phase_solution_used"] = True
+                    diagnostic["pink_global_ik_phase_solution_used"] = not bool(
+                        solver_sequence
+                    )
+                    diagnostic["curobo_solver_path_waypoint_used"] = bool(
+                        solver_sequence
+                    )
                 else:
                     action, diagnostic = servo.action_for_grasp_target(
                         target_position_world_m=phase["position_world_m"],
@@ -1710,6 +1686,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         ],
                     )
                     diagnostic["pink_global_ik_phase_solution_used"] = False
+                    diagnostic["curobo_solver_path_waypoint_used"] = False
                 env.step(
                     torch.tensor(
                         [action],
@@ -1734,7 +1711,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                 )
                 orientation_error = arrival["orientation_error_rad"]
-                stable = stable + 1 if arrival["reached"] else 0
+                solver_waypoint_index = advance_solver_waypoint(
+                    solver_sequence,
+                    waypoint_index=solver_waypoint_index,
+                    measured_joint_positions_rad=servo.read_arm_joint_positions(),
+                    tolerance_rad=servo_command_limits["max_joint_delta_rad"],
+                    diagnostic=diagnostic,
+                )
+                stable = (
+                    stable + 1
+                    if solver_waypoint_index >= len(solver_sequence)
+                    and arrival["reached"]
+                    else 0
+                )
                 diagnostic["step_index"] = total_steps
                 diagnostic["position_error_m"] = error
                 diagnostic["orientation_error_rad"] = orientation_error
@@ -1806,6 +1795,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "gripper_command": gripper_command,
                 "gate_ids": list(phase.get("gate_ids") or []),
                 "steps": len(diagnostics),
+                **solver_path_result_fields(
+                    solver_sequence, waypoint_index=solver_waypoint_index
+                ),
                 "diagnostics": diagnostics[:4] + diagnostics[-2:],
                 "task_sample": sample,
                 "task_samples": task_samples,

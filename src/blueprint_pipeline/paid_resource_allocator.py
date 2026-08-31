@@ -212,6 +212,10 @@ from .native_task_arena_warm_vast import (
     run_native_task_arena_warm_controls_vast,
     validate_native_task_arena_warm_ssh_identity_file,
 )
+from .native_task_arena_feedback_allocator_adapter import (
+    continue_retained_feedback_if_requested,
+    native_feedback_runtime_blockers,
+)
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
@@ -5134,6 +5138,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if not getattr(args, name, None)
             ]
+            missing.extend(
+                native_feedback_runtime_blockers(args.native_task_arena_packet)
+            )
             if (controls_requested or any_policy_requested) and not (
                 args.native_task_arena_construction_result
             ):
@@ -5640,6 +5647,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                         return 2
                     run_kwargs["retain_warm_instance"] = True
                 result = run_native(**run_kwargs)
+                result = continue_retained_feedback_if_requested(
+                    execute=args.execute,
+                    construction_requested=not (
+                        preflight_requested or controls_requested or any_policy_requested
+                    ),
+                    retain_warm_session=args.native_task_arena_retain_warm_session,
+                    result=result,
+                    packet_dir=args.native_task_arena_packet,
+                    runtime_source_packet_receipt_path=(
+                        args.native_task_arena_runtime_source_packet
+                    ),
+                    prepared_bundle=prepared_bundle,
+                    native_authority=native_authority,
+                    job_dir=args.adp_job_dir,
+                    max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                    hard_cap_usd=args.adp_max_spend_usd,
+                    hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                )
             result = _write_native_task_arena_adapter_output(
                 args.adapter_output, result
             )

@@ -67,6 +67,10 @@ from .vast_offer_selection_helpers import (
     regex_match_rank as _regex_match_rank,
     version_at_least as _version_at_least,
 )
+from .vast_provider_runtime_identity import (
+    provider_remote_work_dir,
+    runtime_dependency_cache_ready,
+)
 from .provider_attempt_classification import classify_provider_attempt
 from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
 from .provider_runtime_bundle_contract import (
@@ -316,35 +320,6 @@ VAST_BILLING_HOURS_PER_MONTH = 720.0
 
 def _string(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
-
-
-def _runtime_dependency_cache_ready(
-    *, startup_log_text: str, isaac_smoke: Mapping[str, Any]
-) -> bool:
-    """Read cache proof from both transient logs and their durable receipt.
-
-    Vast's SSH proxy can flood the bounded local log tail after execution and
-    evict an earlier cache marker.  The Isaac smoke receipt independently
-    seals every observed Blueprint marker line, so retention must accept that
-    durable observation rather than tear down a healthy requested worker.
-    """
-
-    container_log = isaac_smoke.get("container_log_result")
-    durable_lines = (
-        container_log.get("observed_blueprint_marker_lines")
-        if isinstance(container_log, Mapping)
-        else []
-    )
-    durable_lines = durable_lines if isinstance(durable_lines, list) else []
-    markers = (
-        "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_HIT:",
-        "BLUEPRINT_VAST_RUNTIME_DEPENDENCY_CACHE_FILLED:",
-    )
-    return any(
-        marker in startup_log_text
-        or any(isinstance(line, str) and marker in line for line in durable_lines)
-        for marker in markers
-    )
 
 
 def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
@@ -9828,10 +9803,11 @@ def run_vast_provider_adapter(
                 }
         warm_worker_evidence = {
             "provider_bundle_kind": provider_bundle_kind,
-            "runtime_dependency_cache_ready": _runtime_dependency_cache_ready(
+            "runtime_dependency_cache_ready": runtime_dependency_cache_ready(
                 startup_log_text=startup_log_text,
                 isaac_smoke=isaac_smoke,
             ),
+            "remote_work_dir": provider_remote_work_dir(startup_log_text),
             "instance_running": (
                 str(startup_probe.get("instance_final_status") or "").lower()
                 == "running"

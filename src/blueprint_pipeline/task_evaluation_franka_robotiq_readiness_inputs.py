@@ -200,6 +200,17 @@ def _base_pose_candidate_matches(
         )
     if schema_version != "task_evaluation_robot_placement_readiness_candidate.v1":
         return False
+    universe_reference = candidate.get(
+        "native_construction_candidate_universe_reference"
+    )
+    if universe_reference is not None and (
+        not isinstance(universe_reference, Mapping)
+        or not _digest(universe_reference.get("inventory_digest"))
+        or not _digest(universe_reference.get("file_sha256"))
+        or not Path(str(universe_reference.get("path") or "")).is_absolute()
+        or not 1 <= int(universe_reference.get("candidate_count") or 0) <= 64
+    ):
+        return False
     trajectory_digest = candidate.get("task_trajectory_digest")
     manipulability = candidate.get("trajectory_minimum_manipulability")
     task_aware_reset = candidate.get("task_aware_reset")
@@ -395,6 +406,36 @@ def materialize_franka_robotiq_readiness_inputs(
                 for index, value in enumerate(reset_joints, start=1)
             }
         )
+    native_candidate_universe = None
+    universe_reference = base_pose_candidate.get(
+        "native_construction_candidate_universe_reference"
+    )
+    if isinstance(universe_reference, Mapping):
+        universe_path = Path(str(universe_reference["path"])).expanduser()
+        try:
+            universe_payload = universe_path.read_bytes()
+            native_candidate_universe = json.loads(universe_payload)
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise TaskEvaluationFrankaRobotiqReadinessInputsError(
+                "franka_readiness_native_candidate_universe_invalid"
+            ) from exc
+        if (
+            universe_path.is_symlink()
+            or not isinstance(native_candidate_universe, Mapping)
+            or "sha256:" + hashlib.sha256(universe_payload).hexdigest()
+            != universe_reference["file_sha256"]
+            or native_candidate_universe.get("inventory_digest")
+            != universe_reference["inventory_digest"]
+            or len(native_candidate_universe.get("candidates") or [])
+            != universe_reference["candidate_count"]
+            or native_candidate_universe.get("inventory_digest")
+            != canonical_digest(
+                native_candidate_universe, digest_field="inventory_digest"
+            )
+        ):
+            raise TaskEvaluationFrankaRobotiqReadinessInputsError(
+                "franka_readiness_native_candidate_universe_invalid"
+            )
 
     source = {
         "isaac_lab_asset_symbol": "FRANKA_ROBOTIQ_GRIPPER_CFG",
@@ -414,6 +455,14 @@ def materialize_franka_robotiq_readiness_inputs(
                 "task_aware_reset": (
                     json.loads(json.dumps(dict(task_aware_reset)))
                     if isinstance(task_aware_reset, Mapping)
+                    else None
+                ),
+                "selected_placement_candidate_id": base_pose_candidate.get(
+                    "selected_candidate_id"
+                ),
+                "native_construction_candidate_universe": (
+                    json.loads(json.dumps(native_candidate_universe))
+                    if isinstance(native_candidate_universe, Mapping)
                     else None
                 ),
                 "candidate_policy_queried": False,

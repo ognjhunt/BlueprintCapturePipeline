@@ -13,7 +13,7 @@ import hashlib
 import json
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import (
@@ -46,6 +46,7 @@ def build_native_task_arena_construction_bundle(
     implementation_commit: str,
     container_image: str = NATIVE_TASK_ARENA_IMAGE,
     generated_at: str | None = None,
+    construction_phase_plan_override: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Package one sealed task packet for the native Panda construction worker."""
 
@@ -71,7 +72,25 @@ def build_native_task_arena_construction_bundle(
             container_image=container_image,
             generated_at=generated_at,
         )
-    frozen = materialize_native_task_construction_phase_plan(scene_plan)
+    frozen = (
+        json.loads(json.dumps(dict(construction_phase_plan_override), allow_nan=False))
+        if construction_phase_plan_override is not None
+        else materialize_native_task_construction_phase_plan(scene_plan)
+    )
+    if construction_phase_plan_override is not None and (
+        frozen.get("schema_version")
+        not in {
+            "native_rigid_construction_phase_plan.v1",
+            "native_articulated_graph_construction_phase_plan.v1",
+            "native_task_construction_phase_plan.v1",
+        }
+        or frozen.get("scene_plan_digest") != scene_plan.get("plan_digest")
+        or frozen.get("plan_digest")
+        != canonical_digest(frozen, digest_field="plan_digest")
+        or not isinstance(frozen.get("phases"), list)
+        or frozen.get("phase_count", len(frozen["phases"])) != len(frozen["phases"])
+    ):
+        raise ValueError("native_task_arena_construction_phase_plan_override_invalid")
     with tempfile.TemporaryDirectory(prefix="blueprint-native-construction-plan-") as raw:
         phase_path = Path(raw) / "native_task_construction_phase_plan.v1.json"
         phase_path.write_text(
@@ -193,6 +212,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--implementation-commit", dest="implementation_commit", required=True)
     parser.add_argument("--container-image", default=NATIVE_TASK_ARENA_IMAGE)
     parser.add_argument("--generated-at", dest="generated_at")
+    parser.add_argument(
+        "--construction-phase-plan-override",
+        dest="construction_phase_plan_override",
+        help=(
+            "Exact self-digested candidate-bound construction phase plan. "
+            "Native gates and thresholds remain unchanged."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -203,6 +230,14 @@ def main(argv: list[str] | None = None) -> int:
             implementation_commit=args.implementation_commit,
             container_image=args.container_image,
             **({"generated_at": args.generated_at} if args.generated_at else {}),
+            construction_phase_plan_override=(
+                _read_mapping(
+                    Path(args.construction_phase_plan_override),
+                    error="native_task_arena_construction_phase_plan_override_invalid",
+                )
+                if args.construction_phase_plan_override
+                else None
+            ),
         )
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(

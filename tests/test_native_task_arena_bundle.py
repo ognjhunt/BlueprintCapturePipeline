@@ -11,6 +11,9 @@ import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import (
+    native_task_arena_feedback_allocator_adapter as feedback_adapter,
+)
+from blueprint_pipeline import (
     native_task_arena_construction_bundle as construction_bundle_module,
 )
 from blueprint_pipeline import native_task_arena_controls_bundle as controls_bundle_module
@@ -3090,6 +3093,43 @@ def test_dry_run_bundle_receipt_reloads_exact_bytes_and_rejects_tamper(
         )
 
 
+def test_construction_bundle_cli_supplies_exact_phase_plan_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    override = {
+        "schema_version": "native_rigid_construction_phase_plan.v1",
+        "plan_digest": "sha256:" + "1" * 64,
+    }
+    path = tmp_path / "phase-plan.json"
+    write_json(path, override)
+    observed = {}
+
+    def build(**kwargs):
+        observed.update(kwargs)
+        return {"status": "ready"}
+
+    monkeypatch.setattr(
+        construction_bundle_module,
+        "build_native_task_arena_construction_bundle",
+        build,
+    )
+    assert construction_bundle_module.main(
+        [
+            "--job-dir",
+            str(tmp_path / "job"),
+            "--packet-dir",
+            str(tmp_path / "packet"),
+            "--runtime-source-packet-receipt",
+            str(tmp_path / "runtime.json"),
+            "--implementation-commit",
+            "a" * 40,
+            "--construction-phase-plan-override",
+            str(path),
+        ]
+    ) == 0
+    assert observed["construction_phase_plan_override"] == override
+
+
 @pytest.mark.parametrize("execute", [False, True])
 def test_canonical_allocator_routes_sealed_native_task_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
@@ -3188,6 +3228,135 @@ def test_canonical_allocator_routes_sealed_native_task_bundle(
         assert observed["paid_attempt_authority"]["authorization_digest"].startswith(
             "sha256:"
         )
+
+
+def test_construction_allocator_automatically_enters_retained_feedback_and_controls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packet = _packet(tmp_path, scene_id="839873")
+    build_native_task_arena_construction_bundle(
+        job_dir=tmp_path / "frozen-bundle",
+        packet_dir=packet,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        implementation_commit="a" * 40,
+        generated_at="fixed",
+    )
+    monkeypatch.setattr(
+        allocator,
+        "_control_plane_checkout_blockers",
+        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
+    )
+    authority_path = tmp_path / "native-task-arena-authority.json"
+    authority = {
+        "authorization_digest": "sha256:" + "9" * 64,
+        "authority_reference": "always continue bounded native construction",
+        "authorized_by": "task-evaluation-owner",
+        "authorized_on": "2026-08-30T00:00:00Z",
+    }
+    write_json(authority_path, authority)
+    monkeypatch.setattr(
+        allocator,
+        "validate_native_task_arena_paid_attempt_authority",
+        lambda _authority, **_kwargs: authority,
+    )
+    cold_calls = []
+
+    def cold(**kwargs):
+        cold_calls.append(kwargs)
+        return {
+            "schema_version": "native_task_arena_vast_run.v1",
+            "status": "blocked",
+            "retry_cap": 0,
+            "native_control_result_path": str(tmp_path / "cold-native.json"),
+            "warm_session": {"instance_id": 49322931},
+            "warm_session_receipt_path": str(tmp_path / "warm-session.json"),
+            "continuing_spend_from_this_run": True,
+            "blockers": ["native_rigid_construction_gate_failed:push_contact"],
+        }
+
+    monkeypatch.setattr(allocator, "run_native_task_arena_vast", cold)
+    monkeypatch.setattr(allocator, "native_feedback_runtime_blockers", lambda _path: [])
+    monkeypatch.setattr(
+        feedback_adapter,
+        "_mapping",
+        lambda _path, **_kwargs: {
+            "native_construction_feedback": {"maximum_rounds": 4}
+        },
+    )
+    final_native = {
+        "schema_version": "native_task_arena_construction_result.v1",
+        "status": "completed",
+        "construction_gate_qualified": True,
+        "blockers": [],
+        "result_digest": "",
+    }
+    final_native["result_digest"] = canonical_digest(
+        final_native, digest_field="result_digest"
+    )
+    control_path = tmp_path / "native-controls.json"
+    write_json(control_path, {"result_digest": "sha256:" + "7" * 64})
+    controller_calls = []
+
+    def feedback_controller(**kwargs):
+        controller_calls.append(kwargs)
+        return {
+            "status": "controls_completed",
+            "history": [{"execution": {"native_result": final_native}}],
+            "controls_continuation": {
+                "native_control_result_path": str(control_path),
+                "native_control_result_digest": "sha256:" + "7" * 64,
+            },
+        }
+
+    monkeypatch.setattr(
+        feedback_adapter,
+        "run_retained_native_construction_feedback",
+        feedback_controller,
+    )
+    adapter_path = tmp_path / "adapter.json"
+    args = [
+        "gpu-canary",
+        "--probe-kind",
+        PROBE_KIND,
+        "--provider",
+        "vast",
+        "--admission-out",
+        str(tmp_path / "admission.json"),
+        "--adapter-output",
+        str(adapter_path),
+        "--native-task-arena-packet",
+        str(packet),
+        "--native-task-arena-runtime-source-packet",
+        str(_runtime_source_packet(tmp_path)),
+        "--native-task-arena-bundle-receipt",
+        str(
+            tmp_path
+            / "frozen-bundle/native_task_arena_provider_bundle_receipt.v1.json"
+        ),
+        "--native-task-arena-attempt-authority",
+        str(authority_path),
+        "--native-task-arena-retain-warm-session",
+        "--adp-job-dir",
+        str(tmp_path / "job"),
+        "--adp-max-hourly-rate-usd",
+        "0.8",
+        "--adp-max-spend-usd",
+        "1.2",
+        "--adp-hard-ttl-seconds",
+        "5400",
+        "--execute",
+    ]
+
+    assert allocator.main(args) == 0
+    assert len(cold_calls) == 1
+    assert len(controller_calls) == 1
+    assert controller_calls[0]["cold_allocator_result"]["retry_cap"] == 0
+    result = json.loads(adapter_path.read_text())
+    assert result["status"] == "completed"
+    assert result["retry_cap"] == 0
+    assert result["continuing_spend_from_this_run"] is False
+    assert result["native_control_result_digest"] == final_native["result_digest"]
+    assert result["native_controls_result_digest"] == "sha256:" + "7" * 64
     admission = json.loads((tmp_path / "admission.json").read_text())
     assert admission["private_data_uploaded"] is True
     assert admission["raw_dataset_bytes_uploaded"] is False

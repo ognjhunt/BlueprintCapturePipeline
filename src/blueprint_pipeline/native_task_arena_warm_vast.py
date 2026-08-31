@@ -732,6 +732,27 @@ def run_native_task_arena_warm_vast(
         return _run_native_task_arena_warm_vast(**kwargs)
 
 
+def close_native_task_arena_warm_instance(
+    *, warm_session: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Destroy one exact retained worker after bounded search exhaustion."""
+
+    session = dict(warm_session)
+    instance_id = session.get("instance_id")
+    if (
+        session.get("schema_version") != "native_task_arena_warm_session.v1"
+        or session.get("status") != "ready"
+        or not isinstance(instance_id, int)
+        or session.get("continuing_spend") is not True
+    ):
+        raise ValueError("native_task_arena_warm_close_session_invalid")
+    with _vast_authority_environment():
+        return _close_warm_instance(
+            instance_id=instance_id,
+            api_key=_read_api_key(),
+        )
+
+
 def _run_native_task_arena_warm_vast(
     *,
     job_dir: str | Path,
@@ -1012,6 +1033,7 @@ def _run_native_task_arena_warm_vast(
 __all__ = [
     "RESULT_SCHEMA_VERSION",
     "run_native_task_arena_warm_vast",
+    "close_native_task_arena_warm_instance",
     "run_native_task_arena_warm_controls_vast",
     "validate_native_task_arena_warm_ssh_identity_file",
 ]
