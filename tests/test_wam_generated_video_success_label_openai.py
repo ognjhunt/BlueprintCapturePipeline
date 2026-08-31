@@ -157,14 +157,16 @@ def test_openai_wam_success_labeler_uses_responses_without_writing_secret(
     )
 
     class FakeResponses:
-        def create(self, *, model, input, max_output_tokens, reasoning):
+        def create(self, *, model, input, max_output_tokens, reasoning, store):
             assert model == "gpt-test-vision"
             assert max_output_tokens == 900
             assert reasoning == {"effort": "xhigh"}
-            content = input[0]["content"]
+            assert store is False
+            content = next(item["content"] for item in input if item["role"] == "user")
+            developer = next(item["content"] for item in input if item["role"] == "developer")
             prompt = content[0]["text"]
             assert "Turn the faucet handle on" in prompt
-            assert "robot_caused_target_motion" in prompt
+            assert "robot_caused_target_motion" in developer[0]["text"]
             assert "target_moves_without_visible_robot_contact" in prompt
             assert "end_effector_does_not_reach_target" in prompt
             assert len([item for item in content if item["type"] == "input_image"]) == 2

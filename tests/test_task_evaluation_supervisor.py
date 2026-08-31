@@ -344,6 +344,9 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
     assert result.sdk_version == importlib.metadata.version("openai-agents")
     assert result.usage["total_tokens"] == 12
     assert result.usage["projected_max_cost_usd"] > 0
+    assert result.usage["projected_max_cost_usd"] == pytest.approx(
+        2 * result.usage["projected_max_cost_per_request_usd"]
+    )
 
     multimodal_input = [
         {
@@ -372,7 +375,7 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
         multimodal_input,
     )
     assert captured["input"] == multimodal_input
-    assert multimodal.usage["projected_max_cost_usd"] == pytest.approx(0.64)
+    assert multimodal.usage["projected_max_cost_usd"] == pytest.approx(0.512)
 
 
 def test_multimodal_sdk_invocation_requires_explicit_input_token_ceiling(

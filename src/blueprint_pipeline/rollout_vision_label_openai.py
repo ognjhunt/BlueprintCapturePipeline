@@ -22,6 +22,12 @@ from typing import Any, Dict, List, Mapping, Sequence
 from .arena_result_ingest import COMMAND_VISION_LABELS_SCHEMA_VERSION
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
+from .openai_prompt_cache import (
+    cache_policy_evidence,
+    direct_prompt_cache_request,
+    stable_judge_developer_prefix,
+    usage_and_cost_receipt,
+)
 
 
 OUTPUT_FILENAME = "rollout_vision_labels.command.json"
@@ -136,17 +142,27 @@ def _openai_label(
     label: Mapping[str, Any],
     clip: Mapping[str, Any],
     keyframe_path: Path,
+    expected_reuse_count: int = 0,
+    provider_calls: List[Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     try:
         from openai import OpenAI
     except ImportError as exc:  # pragma: no cover - depends on optional env
         raise RuntimeError("missing_openai_package") from exc
 
+    output_contract = {
+        "object_state": "short visible-state description",
+        "contact": "visible contact evidence or unknown",
+        "occlusion": "visible occlusion evidence",
+        "threshold_miss": "boolean",
+        "failure_evidence": ["short visible evidence"],
+        "confidence": "number from 0 to 1",
+    }
+    purpose = (
+        "Inspect one rollout keyframe for visible robotics-evaluation failure evidence. "
+        "The result is review-required evidence, not proof."
+    )
     prompt = {
-        "instruction": (
-            "Inspect this rollout keyframe for a robotics evaluation failure. "
-            "Return compact JSON only. The result is review-required evidence, not proof."
-        ),
         "required_json_keys": [
             "object_state",
             "contact",
@@ -165,10 +181,19 @@ def _openai_label(
         },
     }
     client = OpenAI()
-    response = client.responses.create(
+    stable_prefix = stable_judge_developer_prefix(
+        purpose=purpose,
+        output_contract=output_contract,
+        claim_boundary="review_required_visual_label_not_physical_or_controls_proof",
+        contract_version="rollout-vision-label-v2",
+    )
+    policy, cache_request = direct_prompt_cache_request(
         model=model,
-        reasoning={"effort": OPENAI_REASONING_EFFORT},
-        input=[
+        family="rollout_vision_label",
+        contract_version="rollout-vision-label-v2",
+        stable_developer_prefix=stable_prefix,
+        output_schema=output_contract,
+        dynamic_input=[
             {
                 "role": "user",
                 "content": [
@@ -177,7 +202,23 @@ def _openai_label(
                 ],
             }
         ],
+        reasoning_effort=OPENAI_REASONING_EFFORT,
+        expected_reuse_count=expected_reuse_count,
+        expected_reuse_probability=1.0 if expected_reuse_count > 0 else 0.0,
+        dynamic_suffix_fields=("label_context", "keyframe_image"),
     )
+    response = client.responses.create(
+        model=model,
+        reasoning={"effort": OPENAI_REASONING_EFFORT},
+        **cache_request,
+    )
+    if provider_calls is not None:
+        provider_calls.append(
+            {
+                "cache_policy": cache_policy_evidence(policy),
+                "usage": usage_and_cost_receipt(response, model=model),
+            }
+        )
     payload = _parse_json_text(getattr(response, "output_text", "") or "{}")
     return payload
 
@@ -244,6 +285,7 @@ def build_openai_rollout_vision_labels(
     ][:max_labels]
     blockers: List[str] = []
     labels: List[Dict[str, Any]] = []
+    provider_calls: List[Dict[str, Any]] = []
     keyframes: List[Dict[str, Any]] = []
     if not _truthy(os.getenv(GATE_ENV)):
         blockers.append(f"missing_env_{GATE_ENV}")
@@ -268,6 +310,8 @@ def build_openai_rollout_vision_labels(
                 label=raw_label,
                 clip=clip,
                 keyframe_path=Path(str(keyframe["path"])),
+                expected_reuse_count=max(0, len(raw_labels) - 1),
+                provider_calls=provider_calls,
             )
         except Exception as exc:  # pragma: no cover - live provider behavior
             blockers.append(f"openai_labeling_failed:{type(exc).__name__}")
@@ -297,6 +341,7 @@ def build_openai_rollout_vision_labels(
         "blockers": sorted(set(blockers)),
         "label_count": len(labels),
         "labels": labels,
+        "provider_calls": provider_calls,
         "keyframes": keyframes,
         "visual_evidence_used": any(item.get("visual_evidence_used") for item in labels),
         "human_review_required": bool(labels or raw_labels),

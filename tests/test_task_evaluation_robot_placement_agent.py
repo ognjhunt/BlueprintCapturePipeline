@@ -299,6 +299,11 @@ def test_loop_revises_geometry_failure_and_freezes_only_dual_pass() -> None:
         spec.max_output_tokens == ROBOT_PLACEMENT_AGENT_MAX_OUTPUT_TOKENS
         for spec, _ in invoker.specs
     )
+    assert all(spec.stable_prefix_tokens >= 1_024 for spec, _ in invoker.specs)
+    assert all(spec.stable_developer_prefix for spec, _ in invoker.specs)
+    assert all(spec.scene_static_prefix for spec, _ in invoker.specs)
+    assert all("placement-test" not in spec.stable_developer_prefix for spec, _ in invoker.specs)
+    assert all("placement-test" not in spec.scene_static_prefix for spec, _ in invoker.specs)
     assert validate_robot_placement_receipt(receipt) == receipt
 
 
@@ -370,7 +375,11 @@ def test_agent_creates_next_pose_from_native_failure_until_controls_pass() -> No
     second_prompt = next(
         item["text"] for item in second_proposal_input if item["type"] == "input_text"
     )
-    assert '"phase_id": "precontact"' in second_prompt
+    assert '"phase_id": "precontact"' not in second_prompt
+    assert (
+        '"phase_id":"precontact"'
+        in str(invoker.specs[2][0].scene_static_prefix)
+    )
     assert "native_reset_collision" in second_prompt
     assert validate_robot_placement_receipt(receipt) == receipt
 

@@ -120,6 +120,10 @@ def run_robot_placement_cli(
     candidate_inventory_checkpoint: Mapping[str, Any] | None = None,
     deterministic_selection: bool = False,
     record_inference_reservations: bool = False,
+    expected_proposal_reuse_probability: float = 0.0,
+    expected_visual_review_reuse_probability: float = 0.0,
+    expected_proposal_reuse_count: int | None = None,
+    expected_visual_review_reuse_count: int | None = None,
 ) -> dict[str, Any]:
     root = output_dir.expanduser().resolve()
     if root.exists() and any(root.iterdir()):
@@ -398,6 +402,16 @@ def run_robot_placement_cli(
             prior_native_attempts=prior_native_attempts,
             max_rounds=max_rounds,
             max_input_tokens=max_input_tokens,
+            expected_proposal_reuse_probability=(
+                expected_proposal_reuse_probability
+            ),
+            expected_visual_review_reuse_probability=(
+                expected_visual_review_reuse_probability
+            ),
+            expected_proposal_reuse_count=expected_proposal_reuse_count,
+            expected_visual_review_reuse_count=(
+                expected_visual_review_reuse_count
+            ),
         )
     except Exception:
         if audit is not None:
@@ -436,6 +450,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--allow-live-invocation", action="store_true")
     parser.add_argument("--disable-tracing", action="store_true")
     parser.add_argument("--record-inference-reservations", action="store_true")
+    parser.add_argument(
+        "--expected-proposal-reuse-probability",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--expected-visual-review-reuse-probability",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument("--expected-proposal-reuse-count", type=int)
+    parser.add_argument("--expected-visual-review-reuse-count", type=int)
     trajectory_source = parser.add_mutually_exclusive_group()
     trajectory_source.add_argument(
         "--native-trajectory-plan",
@@ -558,6 +584,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             else None
         ),
         record_inference_reservations=args.record_inference_reservations,
+        expected_proposal_reuse_probability=(
+            args.expected_proposal_reuse_probability
+        ),
+        expected_visual_review_reuse_probability=(
+            args.expected_visual_review_reuse_probability
+        ),
+        expected_proposal_reuse_count=args.expected_proposal_reuse_count,
+        expected_visual_review_reuse_count=args.expected_visual_review_reuse_count,
     )
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt["status"] == "accepted" else 2

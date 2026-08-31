@@ -16,6 +16,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..agent_operator_runtime import LIVE_AGENTS_SDK_ENV, env_truthy
 from ..common import read_json, write_json
 from ..decision_evidence_contracts import canonical_digest
+from ..openai_prompt_cache import (
+    PROMPT_CACHE_CONTRACT_VERSION,
+    PromptCachePolicy,
+    cache_policy_evidence,
+    create_prompt_cache_policy,
+    explicit_cache_input,
+    explicit_cache_request_kwargs,
+    pricing_for_model,
+    usage_and_cost_receipt,
+    worst_case_reservation_usd,
+)
 from .contracts import ActionProposal, CapabilityKind, CapabilityResult, ProposalDisposition
 from .inference_reservations import (
     INFERENCE_COMPLETION_SCHEMA_VERSION,
@@ -105,6 +116,17 @@ class AgentsSDKAgentSpec:
     reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     tool_bindings: tuple[RegisteredToolBinding, ...] = ()
     output_type: type[BaseModel] = AgentsSDKCapabilityOutput
+    cache_policy: PromptCachePolicy | None = None
+    stable_developer_prefix: str | None = None
+    scene_static_prefix: str | None = None
+    cache_scene_static_prefix: bool = False
+    prompt_contract_version: str = PROMPT_CACHE_CONTRACT_VERSION
+    stable_prefix_tokens: int = 0
+    expected_reuse_count: int = 0
+    expected_reuse_probability: float = 0.0
+    privacy_scope: str = "blueprint_internal"
+    processing_region: str = "default"
+    dynamic_suffix_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -153,6 +175,84 @@ class OpenAIAgentsSDKConfig:
             raise ValueError("live_agents_sdk_inference_budget_missing")
 
 
+def _cache_family(capability: str) -> str:
+    normalized = "".join(
+        character if character.isalnum() else "_" for character in capability.lower()
+    ).strip("_")
+    if not normalized or not normalized[0].isalpha():
+        normalized = f"agent_{normalized}"
+    return normalized[:80]
+
+
+def _resolve_cache_policy(spec: AgentsSDKAgentSpec) -> PromptCachePolicy:
+    if spec.cache_policy is not None:
+        return spec.cache_policy
+    stable_prefix = spec.stable_developer_prefix or (
+        "Prompt caching is disabled for this one-off request. No content block carries a "
+        "breakpoint, so GPT-5.6 explicit-only mode cannot create a cache write."
+    )
+    tool_schema = [
+        {
+            "name": binding.tool_id,
+            "description": binding.description,
+            "schema": dict(binding.input_schema),
+        }
+        for binding in spec.tool_bindings
+    ]
+    return create_prompt_cache_policy(
+        model=spec.model,
+        family=_cache_family(str(getattr(spec.capability, "value", spec.capability))),
+        contract_version=spec.prompt_contract_version,
+        stable_prefix=stable_prefix,
+        stable_prefix_tokens=spec.stable_prefix_tokens,
+        tool_schema=tool_schema,
+        output_schema=spec.output_type.model_json_schema(),
+        reasoning_effort=spec.reasoning_effort or "default",
+        verbosity="low",
+        privacy_scope=spec.privacy_scope,
+        processing_region=spec.processing_region,
+        expected_reuse_count=spec.expected_reuse_count,
+        expected_reuse_probability=spec.expected_reuse_probability,
+        explicit_breakpoint_available=spec.stable_developer_prefix is not None,
+        explicit_breakpoints=(
+            ("stable_developer_prefix", "scene_static_prefix")
+            if spec.scene_static_prefix is not None
+            and spec.cache_scene_static_prefix
+            else ("stable_developer_prefix",)
+        ),
+        dynamic_suffix_fields=spec.dynamic_suffix_fields,
+    )
+
+
+def _usage_mapping(usage_value: Any) -> dict[str, Any]:
+    if usage_value is None:
+        return {}
+    if hasattr(usage_value, "model_dump"):
+        return dict(usage_value.model_dump(mode="json"))
+    serializer = getattr(usage_value, "__pydantic_serializer__", None)
+    if serializer is not None:
+        value = serializer.to_python(usage_value, mode="json")
+        return dict(value) if isinstance(value, Mapping) else {}
+    return dict(usage_value) if isinstance(usage_value, Mapping) else {}
+
+
+def _breakpoint_digests(
+    spec: AgentsSDKAgentSpec,
+    policy: PromptCachePolicy,
+) -> list[str]:
+    if policy.status != "enabled":
+        return []
+    digests = [policy.stable_prefix_digest]
+    if (
+        spec.scene_static_prefix is not None
+        and "scene_static_prefix" in policy.explicit_breakpoints
+    ):
+        digests.append(
+            canonical_digest({"input_text": spec.scene_static_prefix})
+        )
+    return digests
+
+
 class OpenAIAgentsSDKInvoker:
     """Production adapter around ``agents.Agent`` and ``agents.Runner``."""
 
@@ -190,12 +290,29 @@ class OpenAIAgentsSDKInvoker:
         if not env_truthy(LIVE_AGENTS_SDK_ENV):
             raise AgentsSDKInvocationBlocked(f"missing_env_{LIVE_AGENTS_SDK_ENV}")
         file_api_key = _file_based_openai_api_key()
+        capability_id = (
+            spec.capability.value
+            if isinstance(spec.capability, CapabilityKind)
+            else str(spec.capability)
+        )
+        cache_policy = _resolve_cache_policy(spec)
+        breakpoint_digests = _breakpoint_digests(spec, cache_policy)
+        pricing = pricing_for_model(spec.model)
+        expected_model_family = (
+            pricing.model_family if pricing is not None else spec.model.strip().lower()
+        )
+        if cache_policy.model_family != expected_model_family:
+            raise AgentsSDKInvocationBlocked("agents_sdk_cache_policy_model_mismatch")
         # One UTF-8 byte per token is deliberately conservative for text. Image
         # tokenization is provider/model dependent, so multimodal callers must
         # declare an explicit conservative ceiling rather than treating base64
         # transport bytes as tokens or silently under-reserving the call.
         if isinstance(input_value, str):
-            input_token_ceiling = len(input_value.encode("utf-8"))
+            input_token_ceiling = len(input_value.encode("utf-8")) + (
+                cache_policy.economics.stable_prefix_tokens
+                if cache_policy.status == "enabled"
+                else 0
+            )
             input_kind = "text"
             input_digest = canonical_digest({"input_text": input_value})
         elif isinstance(input_value, list) and input_value:
@@ -208,17 +325,21 @@ class OpenAIAgentsSDKInvoker:
             input_digest = canonical_digest({"input": input_value})
         else:
             raise AgentsSDKInvocationBlocked("agents_sdk_input_invalid")
-        projected_max_cost = (
-            input_token_ceiling * self.config.input_cost_per_million_tokens_usd
-            + spec.max_output_tokens * self.config.output_cost_per_million_tokens_usd
-        ) / 1_000_000
-        if self._reserved_cost_usd + projected_max_cost > self.config.max_inference_cost_usd:
-            raise AgentsSDKInvocationBlocked("agents_sdk_inference_budget_ceiling_exceeded")
-        capability_id = (
-            spec.capability.value
-            if isinstance(spec.capability, CapabilityKind)
-            else str(spec.capability)
+        projected_per_request_cost = worst_case_reservation_usd(
+            model=spec.model,
+            input_token_ceiling=input_token_ceiling,
+            max_output_tokens=spec.max_output_tokens,
+            cache_policy=cache_policy,
         )
+        if projected_per_request_cost is None:
+            projected_per_request_cost = (
+                input_token_ceiling * self.config.input_cost_per_million_tokens_usd
+                + spec.max_output_tokens * self.config.output_cost_per_million_tokens_usd
+            ) / 1_000_000
+        projected_max_cost = projected_per_request_cost * spec.max_turns
+        reserved_before_call = self._reserved_cost_usd
+        if reserved_before_call + projected_max_cost > self.config.max_inference_cost_usd:
+            raise AgentsSDKInvocationBlocked("agents_sdk_inference_budget_ceiling_exceeded")
         reservation_identity = {
             "run_id": spec.run_id,
             "capability": capability_id,
@@ -226,6 +347,7 @@ class OpenAIAgentsSDKInvoker:
             "input_digest": input_digest,
             "max_turns": spec.max_turns,
             "max_output_tokens": spec.max_output_tokens,
+            "cache_policy_digest": cache_policy.policy_digest,
         }
         if spec.reasoning_effort is not None:
             reservation_identity["reasoning_effort"] = spec.reasoning_effort
@@ -242,6 +364,10 @@ class OpenAIAgentsSDKInvoker:
             "max_turns": spec.max_turns,
             "max_output_tokens": spec.max_output_tokens,
             "projected_max_cost_usd": projected_max_cost,
+            "projected_max_cost_per_request_usd": projected_per_request_cost,
+            "cache_policy_digest": cache_policy.policy_digest,
+            "cache_policy": cache_policy_evidence(cache_policy),
+            "breakpoint_digests": breakpoint_digests,
             "billing_status": "worst_case_reserved_before_provider_call",
             "proof_effect": "none",
         }
@@ -253,7 +379,7 @@ class OpenAIAgentsSDKInvoker:
         )
         if self._record_reservation is not None:
             self._record_reservation(reservation)
-        self._reserved_cost_usd += projected_max_cost
+        self._reserved_cost_usd = reserved_before_call + projected_max_cost
         try:
             from agents import (
                 Agent,
@@ -301,6 +427,7 @@ class OpenAIAgentsSDKInvoker:
                 )
             )
 
+        cache_request_kwargs = explicit_cache_request_kwargs(cache_policy)
         agent = Agent(
             name=spec.name,
             instructions=spec.instructions,
@@ -315,6 +442,12 @@ class OpenAIAgentsSDKInvoker:
                 store=False,
                 include_usage=True,
                 verbosity="low",
+                prompt_cache_options=cache_request_kwargs.get("prompt_cache_options"),
+                extra_args=(
+                    {"prompt_cache_key": cache_request_kwargs["prompt_cache_key"]}
+                    if "prompt_cache_key" in cache_request_kwargs
+                    else None
+                ),
             ),
             output_type=spec.output_type,
             tools=sdk_tools,
@@ -323,9 +456,15 @@ class OpenAIAgentsSDKInvoker:
             {"run_id": spec.run_id, "capability": capability_id, "model": spec.model}
         ).removeprefix("sha256:")
         started = time.monotonic()
+        rendered_input = explicit_cache_input(
+            policy=cache_policy,
+            stable_developer_prefix=spec.stable_developer_prefix or "",
+            scene_static_prefix=spec.scene_static_prefix,
+            dynamic_input=input_value,
+        )
         result = Runner.run_sync(
             agent,
-            input_value,
+            rendered_input,
             max_turns=spec.max_turns,
             run_config=RunConfig(
                 workflow_name="Blueprint Task Evaluation Supervisor",
@@ -342,6 +481,26 @@ class OpenAIAgentsSDKInvoker:
         latency = max(0.0, time.monotonic() - started)
         output = spec.output_type.model_validate(result.final_output)
         sdk_version = metadata.version("openai-agents")
+        usage_value = getattr(getattr(result, "context_wrapper", None), "usage", None)
+        usage = _usage_mapping(usage_value)
+        raw_responses = list(getattr(result, "raw_responses", ()) or ())
+        last_raw_response = raw_responses[-1] if raw_responses else None
+        usage_receipt = usage_and_cost_receipt(usage_value or {}, model=spec.model)
+        usage_receipt["provider_response_id"] = (
+            str(getattr(last_raw_response, "response_id", "") or "") or None
+        )
+        usage_receipt["provider_request_id"] = (
+            str(getattr(last_raw_response, "request_id", "") or "") or None
+        )
+        usage_receipt["usage_receipt_digest"] = canonical_digest(
+            usage_receipt,
+            digest_field="usage_receipt_digest",
+        )
+        estimated_cost = usage_receipt.get("estimated_total_cost_usd")
+        reconciled_cost = (
+            float(estimated_cost) if estimated_cost is not None else projected_max_cost
+        )
+        cost_overrun = reconciled_cost > projected_max_cost + 1.0e-12
         if self._record_completion is not None:
             completion: dict[str, Any] = {
                 "schema_version": INFERENCE_COMPLETION_SCHEMA_VERSION,
@@ -352,6 +511,15 @@ class OpenAIAgentsSDKInvoker:
                 "model": spec.model,
                 "agents_sdk_version": sdk_version,
                 "structured_output_digest": canonical_digest(output.model_dump(mode="json")),
+                "cache_policy": cache_policy_evidence(cache_policy),
+                "breakpoint_digests": breakpoint_digests,
+                "usage": usage_receipt,
+                "projected_max_cost_usd": projected_max_cost,
+                "reconciled_actual_cost_usd": reconciled_cost,
+                "released_reservation_usd": max(
+                    0.0, projected_max_cost - reconciled_cost
+                ),
+                "actual_cost_exceeded_reservation": cost_overrun,
                 "proof_effect": "none",
             }
             completion["inference_completion_digest"] = canonical_digest(
@@ -359,12 +527,11 @@ class OpenAIAgentsSDKInvoker:
                 digest_field="inference_completion_digest",
             )
             self._record_completion(completion)
-        usage_value = getattr(getattr(result, "context_wrapper", None), "usage", None)
-        usage = (
-            usage_value.model_dump(mode="json")
-            if usage_value is not None and hasattr(usage_value, "model_dump")
-            else {}
-        )
+        self._reserved_cost_usd = reserved_before_call + reconciled_cost
+        if cost_overrun:
+            raise AgentsSDKInvocationBlocked(
+                "agents_sdk_actual_cost_exceeds_reserved_maximum"
+            )
         return AgentsSDKInvocationResult(
             output=output,
             provider="openai",
@@ -373,11 +540,15 @@ class OpenAIAgentsSDKInvoker:
             latency_seconds=latency,
             usage={
                 **usage,
+                **usage_receipt,
+                "cache_policy": cache_policy_evidence(cache_policy),
+                "breakpoint_digests": breakpoint_digests,
+                "projected_max_cost_per_request_usd": projected_per_request_cost,
                 "projected_max_cost_usd": projected_max_cost,
                 "cumulative_reserved_cost_usd": self._reserved_cost_usd,
             },
-            cost_usd=None,
-            cost_status="provider_billing_not_available_at_response_time",
+            cost_usd=(float(estimated_cost) if estimated_cost is not None else None),
+            cost_status=str(usage_receipt["cost_status"]),
             trace_id=None if self.config.tracing_disabled else f"trace_{trace_id[:32]}",
             tool_observations=tuple(tool_observations),
         )

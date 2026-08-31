@@ -98,13 +98,15 @@ def test_openai_wam_episode_consistency_uses_responses_without_writing_secret(
     openai_module = types.ModuleType("openai")
 
     class FakeResponses:
-        def create(self, *, model, input, max_output_tokens, reasoning):
+        def create(self, *, model, input, max_output_tokens, reasoning, store):
             assert model == "openai-test-model"
             assert max_output_tokens == 800
             assert reasoning == {"effort": "xhigh"}
-            content = input[0]["content"]
+            assert store is False
+            content = next(item["content"] for item in input if item["role"] == "user")
+            developer = next(item["content"] for item in input if item["role"] == "developer")
             assert content[0]["type"] == "input_text"
-            assert "forward/inverse consistent" in content[0]["text"]
+            assert "forward/inverse consistent" in developer[0]["text"]
             assert "Approach the target" in content[0]["text"]
             assert [item["type"] for item in content[1:]] == ["input_image", "input_image"]
             return types.SimpleNamespace(

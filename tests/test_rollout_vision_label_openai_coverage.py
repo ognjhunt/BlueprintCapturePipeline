@@ -6,6 +6,7 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 
 from blueprint_pipeline import rollout_vision_label_openai as vision
 
@@ -96,7 +97,9 @@ def test_rollout_vision_openai_and_fallback_label(monkeypatch, tmp_path: Path) -
         def create(self, **kwargs):
             assert kwargs["model"] == "vision-model"
             assert kwargs["reasoning"] == {"effort": "xhigh"}
-            content = kwargs["input"][0]["content"]
+            content = next(
+                item["content"] for item in kwargs["input"] if item["role"] == "user"
+            )
             assert content[0]["type"] == "input_text"
             assert content[1]["image_url"].startswith("data:image/jpeg;base64,")
             return types.SimpleNamespace(output_text='{"object_state": "open", "threshold_miss": true}')
@@ -135,6 +138,49 @@ def test_rollout_vision_openai_and_fallback_label(monkeypatch, tmp_path: Path) -
     assert fallback["confidence"] == 0.8
     assert fallback["evidence_refs"] == ["clips/attempt.mov", "vision_keyframes/attempt.jpg"]
     assert fallback["visual_evidence_used"] is True
+
+
+def test_rollout_vision_retains_usage_before_malformed_output(
+    monkeypatch, tmp_path: Path
+) -> None:
+    keyframe = tmp_path / "frame.jpg"
+    keyframe.write_bytes(b"jpg")
+    openai_module = types.ModuleType("openai")
+
+    class FakeResponses:
+        def create(self, **_kwargs):
+            return types.SimpleNamespace(
+                id="resp_malformed",
+                status="completed",
+                output_text="not-json",
+                usage=types.SimpleNamespace(
+                    input_tokens=1_500,
+                    output_tokens=5,
+                    input_tokens_details=types.SimpleNamespace(
+                        cached_tokens=0,
+                        cache_write_tokens=0,
+                    ),
+                    output_tokens_details=types.SimpleNamespace(reasoning_tokens=0),
+                ),
+            )
+
+    class FakeOpenAI:
+        def __init__(self) -> None:
+            self.responses = FakeResponses()
+
+    openai_module.OpenAI = FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", openai_module)
+    calls: list[dict] = []
+    with pytest.raises(json.JSONDecodeError):
+        vision._openai_label(
+            model="gpt-5.6-luna",
+            label={"label_id": "l1", "attempt_id": "a1"},
+            clip={"clip_id": "c1", "scenario_id": "s1"},
+            keyframe_path=keyframe,
+            provider_calls=calls,
+        )
+    assert calls[0]["usage"]["provider_response_id"] == "resp_malformed"
+    assert calls[0]["usage"]["input_tokens"] == 1_500
 
 
 def test_build_openai_rollout_vision_labels_blocked_and_completed(monkeypatch, tmp_path: Path) -> None:

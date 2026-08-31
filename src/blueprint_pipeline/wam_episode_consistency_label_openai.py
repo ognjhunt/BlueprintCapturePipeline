@@ -18,6 +18,12 @@ from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
 from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
+from .openai_prompt_cache import (
+    cache_policy_evidence,
+    direct_prompt_cache_request,
+    stable_judge_developer_prefix,
+    usage_and_cost_receipt,
+)
 
 
 GATE_ENV = "BLUEPRINT_ALLOW_OPENAI_WAM_EPISODE_CONSISTENCY"
@@ -235,28 +241,30 @@ def _openai_score_one(
     request: Mapping[str, Any],
     rollout: Mapping[str, Any],
     frames: Sequence[Mapping[str, Any]],
+    expected_reuse_count: int = 0,
+    provider_calls: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     try:
         from openai import OpenAI
     except ImportError as exc:  # pragma: no cover - depends on optional env
         raise RuntimeError("missing_openai_package") from exc
 
-    prompt = {
-        "instruction": (
+    purpose = (
             "You are an external evaluator, not the WAM. Judge whether sampled "
             "frames from a generated world-model rollout are forward/inverse "
             "consistent with the provided task prompt and trace summary. Return "
             "compact JSON only. Do not judge generated-world rank fidelity, robot "
             "deployment safety, or physical task success."
-        ),
-        "required_json": {
+    )
+    output_contract = {
             "forward_consistent": "boolean or null",
             "inverse_consistent": "boolean or null",
             "confidence": "number from 0 to 1",
             "rationale": "one short sentence",
             "visible_action_alignment_evidence": ["short evidence"],
             "inconsistency_evidence": ["short evidence or empty list"],
-        },
+    }
+    prompt = {
         "task_prompt": _rollout_task_prompt(request, rollout),
         "rollout": {
             "rollout_id": rollout.get("rollout_id"),
@@ -281,12 +289,36 @@ def _openai_score_one(
             content.append({"type": "input_image", "image_url": image_url})
 
     client = OpenAI(api_key=api_key)
+    stable_prefix = stable_judge_developer_prefix(
+        purpose=purpose,
+        output_contract=output_contract,
+        claim_boundary="generated_video_trace_consistency_not_physical_or_rank_fidelity_proof",
+        contract_version="wam-episode-consistency-v2",
+    )
+    policy, cache_request = direct_prompt_cache_request(
+        model=model,
+        family="wam_episode_consistency_label",
+        contract_version="wam-episode-consistency-v2",
+        stable_developer_prefix=stable_prefix,
+        output_schema=output_contract,
+        dynamic_input=[{"role": "user", "content": content}],
+        reasoning_effort=OPENAI_REASONING_EFFORT,
+        expected_reuse_count=expected_reuse_count,
+        expected_reuse_probability=1.0 if expected_reuse_count > 0 else 0.0,
+        dynamic_suffix_fields=("task", "rollout", "trace", "sampled_video_frames"),
+    )
     response = client.responses.create(
         model=model,
-        input=[{"role": "user", "content": content}],
         max_output_tokens=800,
         reasoning={"effort": OPENAI_REASONING_EFFORT},
+        **cache_request,
     )
+    provider_call = {
+        "cache_policy": cache_policy_evidence(policy),
+        "usage": usage_and_cost_receipt(response, model=model),
+    }
+    if provider_calls is not None:
+        provider_calls.append(provider_call)
     payload = _parse_json_text(_string(getattr(response, "output_text", "")) or "{}")
     if isinstance(payload.get("rollout_checks"), list) and payload["rollout_checks"]:
         first = payload["rollout_checks"][0]
@@ -309,6 +341,7 @@ def _openai_score_one(
         "evidence_refs": [
             ref for ref in (frame.get("evidence_ref") for frame in frames) if ref
         ],
+        "provider_call": provider_call,
         "label_source": "openai_wam_episode_consistency_judge",
         "model": model,
         "reasoning_effort": OPENAI_REASONING_EFFORT,
@@ -354,6 +387,7 @@ def build_openai_wam_episode_consistency_labels(
     blockers: list[str] = []
     checks: list[dict[str, Any]] = []
     sampled_rollouts: list[dict[str, Any]] = []
+    provider_calls: list[dict[str, Any]] = []
     if not _truthy(os.getenv(GATE_ENV)):
         blockers.append(f"missing_env_{GATE_ENV}")
     api_key, api_key_source = _api_key()
@@ -401,6 +435,8 @@ def build_openai_wam_episode_consistency_labels(
                         request=request,
                         rollout=rollout,
                         frames=frames,
+                        expected_reuse_count=max(0, len(rollouts) - 1),
+                        provider_calls=provider_calls,
                     )
                 )
             except Exception as exc:  # pragma: no cover - live provider behavior
@@ -419,6 +455,7 @@ def build_openai_wam_episode_consistency_labels(
         "rollout_check_count": len(checks),
         "sampled_rollouts": sampled_rollouts,
         "rollout_checks": checks,
+        "provider_calls": provider_calls,
         "raw_credentials_written_to_artifacts": False,
         "secret_hashes_written_to_artifacts": False,
         "claim_boundary": _consistency_support_claim_boundary(),

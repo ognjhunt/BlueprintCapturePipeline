@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Sequence
 
 from .common import utc_now_iso
+from .openai_prompt_cache import supports_explicit_prompt_caching
 
 
 LIVE_AGENTS_SDK_ENV = "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS"
@@ -177,12 +178,23 @@ def run_agents_sdk_operator(config: OperatorRunConfig) -> Dict[str, Any]:
         raise RuntimeError("missing_openai_agents_sdk") from exc
 
     model_settings = None
-    if config.reasoning_effort:
+    if config.reasoning_effort or supports_explicit_prompt_caching(config.model):
         from agents import ModelSettings
         from openai.types.shared import Reasoning
 
         model_settings = ModelSettings(
-            reasoning=Reasoning(effort=config.reasoning_effort)
+            reasoning=(
+                Reasoning(effort=config.reasoning_effort)
+                if config.reasoning_effort
+                else None
+            ),
+            store=False,
+            include_usage=True,
+            prompt_cache_options=(
+                {"mode": "explicit", "ttl": "30m"}
+                if supports_explicit_prompt_caching(config.model)
+                else None
+            ),
         )
     agent = Agent(
         name=config.adapter,

@@ -867,6 +867,45 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
         "accepted_pose": accepted_pose,
         "candidate_inventory_digest": candidate_inventory_digest,
         "receipt_digest": "sha256:" + "9" * 64,
+        "rounds": [
+            {
+                "proposal_usage": {
+                    "model": "gpt-5.6-sol",
+                    "input_tokens": 2_000,
+                    "cached_tokens": 0,
+                    "cache_write_tokens": 1_200,
+                    "uncached_input_tokens": 800,
+                    "output_tokens": 20,
+                    "reasoning_tokens": 5,
+                    "cache_hit_ratio": 0.0,
+                    "uncached_input_cost_usd": 0.0032,
+                    "cache_write_cost_usd": 0.006,
+                    "cached_read_cost_usd": 0.0,
+                    "output_cost_usd": 0.0004,
+                    "estimated_total_cost_usd": 0.0096,
+                    "estimated_cost_without_caching_usd": 0.0084,
+                    "estimated_savings_usd": -0.0012,
+                    "cost_status": "model_pricing_estimate_not_official_billing",
+                    "provider_response_id": "resp_fixture",
+                    "provider_request_id": "req_fixture",
+                    "usage_receipt_digest": "sha256:" + "b" * 64,
+                    "breakpoint_digests": ["sha256:" + "c" * 64],
+                    "cache_policy": {
+                        "status": "enabled",
+                        "model_family": "gpt-5.6-sol",
+                        "family": "task_aware_robot_placement_proposal",
+                        "contract_version": "robot-placement-proposal-v2",
+                        "stable_prefix_digest": "sha256:" + "c" * 64,
+                        "policy_digest": "sha256:" + "d" * 64,
+                        "privacy_scope": "task_evaluation_rights_admitted",
+                        "processing_region": "default",
+                        "decision_reason": "expected_cached_cost_lower",
+                        "cache_key": "blueprint:cache:v1:" + "e" * 40,
+                        "economics": {"stable_prefix_tokens": 1_200},
+                    },
+                }
+            }
+        ],
     }
     inventory = {
         "candidate_inventory_digest": candidate_inventory_digest,
@@ -1015,6 +1054,7 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
         environment={},
         openai_gate_builder=lambda **_kwargs: FakeOfficialCostGate(),
         openai_scope_lock=lambda **_kwargs: nullcontext({}),
+        require_inference_usage_webapp_sync=False,
     )
 
     assert result["intent_digest"] == intent["intent_digest"]

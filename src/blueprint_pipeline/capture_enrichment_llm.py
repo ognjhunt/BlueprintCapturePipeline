@@ -15,6 +15,11 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from .core.optional_dependencies import log_missing_optional_dependency
+from .openai_prompt_cache import (
+    cache_policy_evidence,
+    direct_prompt_cache_request,
+    usage_and_cost_receipt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +248,15 @@ class _CodexRunner:
 class _OpenAISDKRunner:
     def __init__(self, *, config: CaptureEnrichmentConfig) -> None:
         self._config = config
+        self._last_provider_call: Dict[str, Any] | None = None
+
+    def runtime_metadata(self) -> Dict[str, Any]:
+        return {
+            "provider": "openai",
+            "model": self._config.model,
+            "mode": "sdk",
+            "last_provider_call": self._last_provider_call,
+        }
 
     def __call__(self, skill_name: str, payload: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
         api_key = _string_env("OPENAI_API_KEY")
@@ -262,13 +276,29 @@ class _OpenAISDKRunner:
             return None
         client = OpenAI(api_key=api_key)
         prompt = _prompt_for_skill(skill_name, payload)
+        policy, cache_request = direct_prompt_cache_request(
+            model=self._config.model,
+            family="capture_enrichment_one_off",
+            contract_version="capture-enrichment-one-off-v1",
+            stable_developer_prefix=None,
+            dynamic_input=prompt,
+            output_schema=_skill_schema(skill_name),
+            reasoning_effort=self._config.reasoning_effort,
+            expected_reuse_count=0,
+            expected_reuse_probability=0.0,
+            dynamic_suffix_fields=("skill_name", "capture_payload"),
+        )
         try:
             response = client.responses.create(
                 model=self._config.model,
-                input=prompt,
+                **cache_request,
             )
         except Exception:
             return None
+        self._last_provider_call = {
+            "cache_policy": cache_policy_evidence(policy),
+            "usage": usage_and_cost_receipt(response, model=self._config.model),
+        }
         text = _extract_openai_text(response)
         if not text:
             return None
@@ -276,7 +306,9 @@ class _OpenAISDKRunner:
             parsed = json.loads(text)
         except Exception:
             return None
-        return parsed if isinstance(parsed, Mapping) else None
+        if not isinstance(parsed, Mapping):
+            return None
+        return dict(parsed)
 
 
 class _ClaudeHTTPRunner:
