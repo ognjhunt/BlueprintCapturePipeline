@@ -79,6 +79,191 @@ class WarmRobotPlacementExecutorError(RuntimeError):
     """A warm native round could not produce authoritative scientific feedback."""
 
 
+def _asset_digest(
+    request: Mapping[str, Any], *, semantic_role: str
+) -> str:
+    rows = [
+        row
+        for row in request.get("assets") or []
+        if isinstance(row, Mapping)
+        and row.get("semantic_role") == semantic_role
+    ]
+    digest = (
+        (rows[0].get("source") or {}).get("sha256")
+        if len(rows) == 1 and isinstance(rows[0].get("source"), Mapping)
+        else None
+    )
+    if (
+        not isinstance(digest, str)
+        or not digest.startswith("sha256:")
+        or len(digest) != 71
+    ):
+        raise WarmRobotPlacementExecutorError(
+            "native_construction_feedback_control_search_binding_invalid"
+        )
+    return digest
+
+
+def _run_control_search_on_warm_session(
+    *,
+    request: Mapping[str, Any],
+    authority: Mapping[str, Any],
+    candidate_inventory: Mapping[str, Any],
+    candidate_generator_context: Any,
+    warm_session: Mapping[str, Any],
+    runtime_source_packet_receipt_path: str | Path,
+    implementation_commit: str,
+    output_root: str | Path,
+    remote_python_package_root: str,
+    sweep_runner_factory: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Run the development-only vector funnel on the retained worker.
+
+    This seam never allocates a provider. It consumes the cuRobo-filtered
+    inventory already produced on the one retained worker, executes the
+    lightweight Isaac Lab clones there, and returns only the deterministically
+    ranked shortlist to the existing full-fidelity native controller.
+    """
+
+    from .task_evaluation_control_search_funnel import (
+        build_control_search_funnel_plan,
+    )
+    from .task_evaluation_isaaclab_control_sweep import (
+        build_isaaclab_control_sweep_schedule,
+    )
+
+    runtime_receipt = _read_mapping(
+        runtime_source_packet_receipt_path,
+        blocker="native_construction_feedback_control_search_binding_invalid",
+    )
+    runtime_digest = runtime_receipt.get("receipt_digest")
+    robot_digest = candidate_generator_context.robot_configuration.get("digest")
+    task_digest = candidate_generator_context.task_trajectory.get("digest")
+    scenario = request.get("scenario")
+    seed = scenario.get("seed") if isinstance(scenario, Mapping) else None
+    if (
+        authority.get("schema_version")
+        != "task_evaluation_control_search_authority.v1"
+        or authority.get("enabled") is not True
+        or authority.get("provider_allocations_performed") != 0
+        or authority.get("claim_ceiling")
+        != "development_only_control_search"
+        or authority.get("authority_digest")
+        != canonical_digest(authority, digest_field="authority_digest")
+        or not isinstance(runtime_digest, str)
+        or len(runtime_digest) != 71
+        or not isinstance(robot_digest, str)
+        or len(robot_digest) != 71
+        or not isinstance(task_digest, str)
+        or len(task_digest) != 71
+        or not isinstance(seed, int)
+        or isinstance(seed, bool)
+        or seed < 0
+    ):
+        raise WarmRobotPlacementExecutorError(
+            "native_construction_feedback_control_search_binding_invalid"
+        )
+    root = Path(output_root).expanduser().resolve() / "control-search"
+    root.mkdir(parents=True, exist_ok=False)
+    plan = build_control_search_funnel_plan(
+        run_id=str(candidate_inventory["run_id"]),
+        source_commit=implementation_commit,
+        packet_request_digest=str(request["request_digest"]),
+        candidate_inventory=candidate_inventory,
+        runtime_source_packet_digest=runtime_digest,
+        scene_collision_digest=_asset_digest(
+            request, semantic_role="scene_collision"
+        ),
+        task_object_asset_digest=_asset_digest(
+            request, semantic_role="task_object"
+        ),
+        robot_configuration_digest=robot_digest,
+        task_scoring_digest=task_digest,
+        requested_vector_env_count=int(
+            authority["requested_vector_env_count"]
+        ),
+        maximum_vector_env_count=int(
+            authority["maximum_vector_env_count"]
+        ),
+        seeds_per_candidate=int(authority["seeds_per_candidate"]),
+        shortlist_size=int(authority["shortlist_size"]),
+    )
+    schedule = build_isaaclab_control_sweep_schedule(
+        plan=plan,
+        candidate_inventory=candidate_inventory,
+        base_seed=seed,
+    )
+    plan_path = root / "control-search-plan.v1.json"
+    schedule_path = root / "isaaclab-control-sweep-schedule.v1.json"
+    result_path = root / "isaaclab-control-sweep-result.v1.json"
+    write_json(plan_path, plan)
+    write_json(schedule_path, schedule)
+    if sweep_runner_factory is None:
+        from .task_evaluation_remote_isaaclab_control_sweep import (
+            RemoteIsaacLabControlSweepRunner,
+        )
+
+        sweep_runner_factory = RemoteIsaacLabControlSweepRunner
+    runner = sweep_runner_factory(
+        warm_session=warm_session,
+        local_transport_root=root / "transport",
+        remote_python_package_root=remote_python_package_root,
+    )
+    sweep = runner.execute(
+        plan=plan,
+        schedule=schedule,
+        candidate_inventory=candidate_inventory,
+    )
+    write_json(result_path, sweep)
+    by_id = {
+        str(row["candidate_id"]): row
+        for row in candidate_inventory["candidates"]
+    }
+    shortlisted = []
+    for selected in sweep["shortlist"]:
+        candidate = by_id.get(str(selected.get("candidate_id") or ""))
+        if (
+            not isinstance(candidate, Mapping)
+            or candidate.get("candidate_digest")
+            != selected.get("candidate_digest")
+        ):
+            raise WarmRobotPlacementExecutorError(
+                "native_construction_feedback_control_search_shortlist_invalid"
+            )
+        shortlisted.append(dict(candidate))
+    restricted_inventory = json.loads(
+        json.dumps(dict(candidate_inventory), allow_nan=False)
+    )
+    restricted_inventory["candidates"] = shortlisted
+    restricted_inventory["inventory_digest"] = ""
+    restricted_inventory["inventory_digest"] = canonical_digest(
+        restricted_inventory, digest_field="inventory_digest"
+    )
+    restricted_inventory = validate_native_construction_inventory(
+        restricted_inventory,
+        expected_run_id=str(candidate_inventory["run_id"]),
+        expected_round_index=int(candidate_inventory["round_index"]),
+        expected_feedback_digest=candidate_inventory.get(
+            "source_native_feedback_digest"
+        ),
+        maximum_candidates=32,
+    )
+    return {
+        "schema_version": "task_evaluation_control_search_warm_execution.v1",
+        "status": "completed_development_only",
+        "claim_ceiling": "development_only_control_search",
+        "qualification_effect": "none_until_full_fidelity_replay",
+        "provider_allocations_performed": 0,
+        "plan_path": str(plan_path),
+        "plan_digest": plan["plan_digest"],
+        "schedule_path": str(schedule_path),
+        "schedule_digest": schedule["schedule_digest"],
+        "result_path": str(result_path),
+        "result_digest": sweep["result_digest"],
+        "candidate_inventory": restricted_inventory,
+    }
+
+
 def _trajectory_content_matches(
     expected: Mapping[str, Any], observed_plan: Mapping[str, Any]
 ) -> bool:
@@ -889,10 +1074,11 @@ def _run_retained_native_construction_feedback(
     hard_cap_usd: float,
     hard_ttl_seconds: int,
     max_inference_cost_usd: float = 0.64,
-    maximum_rounds: int = 4,
+    maximum_rounds: int = 8,
     invoker: Any | None = None,
     allocator_main: Callable[[Sequence[str] | None], int] | None = None,
     candidate_generator: Any | None = None,
+    control_sweep_runner_factory: Callable[..., Any] | None = None,
     search_ledger: Any | None = None,
     terminal_feedback_adoption_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -1053,6 +1239,10 @@ def _run_retained_native_construction_feedback(
         output_root=output_root,
         allocator_main=allocator_main,
     )
+    candidate_generator_context = getattr(candidate_generator, "_context", None)
+    remote_package_root = str(
+        getattr(candidate_generator, "_remote_python_package_root", "")
+    )
     if candidate_generator is None:
         context, remote_package_root = materialize_remote_curobo_context(
             packet_dir=packet,
@@ -1075,6 +1265,7 @@ def _run_retained_native_construction_feedback(
             ),
             remote_python_package_root=remote_package_root,
         )
+        candidate_generator_context = context
     initial_inventory = validate_native_construction_inventory(
         candidate_generator.generate(
             source_native_feedback=feedback,
@@ -1094,6 +1285,35 @@ def _run_retained_native_construction_feedback(
     authority["authority_digest"] = canonical_digest(
         authority, digest_field="authority_digest"
     )
+    control_search_execution = None
+    control_search_authority = embedded.get("control_search")
+    if isinstance(control_search_authority, Mapping):
+        if candidate_generator_context is None or not remote_package_root:
+            raise WarmRobotPlacementExecutorError(
+                "native_construction_feedback_control_search_context_missing"
+            )
+        control_search_execution = _run_control_search_on_warm_session(
+            request=request,
+            authority=control_search_authority,
+            candidate_inventory=initial_inventory,
+            candidate_generator_context=candidate_generator_context,
+            warm_session=warm_session,
+            runtime_source_packet_receipt_path=(
+                runtime_source_packet_receipt_path
+            ),
+            implementation_commit=implementation_commit,
+            output_root=output_root,
+            remote_python_package_root=remote_package_root,
+            sweep_runner_factory=control_sweep_runner_factory,
+        )
+        initial_inventory = control_search_execution["candidate_inventory"]
+        authority["maximum_candidates_per_round"] = len(
+            initial_inventory["candidates"]
+        )
+        authority["authority_digest"] = ""
+        authority["authority_digest"] = canonical_digest(
+            authority, digest_field="authority_digest"
+        )
     if search_ledger is None:
         from .task_evaluation_native_construction_optuna_ledger import (
             NativeConstructionOptunaSearchLedger,
@@ -1138,23 +1358,74 @@ def _run_retained_native_construction_feedback(
                 ),
             )
 
-    composite_generator = CompositeCandidateGenerator(
-        generators=(() if candidate_generator is None else (candidate_generator,)),
-        deterministic_fallback=DeterministicUniverseGenerator(),
-        fallback_on_generator_unavailable=False,
-    )
+    if control_search_execution is None:
+        controller_candidate_generator: Any = CompositeCandidateGenerator(
+            generators=(candidate_generator,),
+            deterministic_fallback=DeterministicUniverseGenerator(),
+            fallback_on_generator_unavailable=False,
+        )
+    else:
+
+        class ShortlistedCandidateGenerator:
+            def generate(
+                self,
+                *,
+                source_native_feedback,
+                prior_history,
+                round_index,
+                maximum_candidates,
+            ):
+                attempted = {
+                    str((row.get("candidate") or {}).get("candidate_digest") or "")
+                    for row in prior_history
+                    if isinstance(row, Mapping)
+                }
+                remaining = [
+                    row
+                    for row in initial_inventory["candidates"]
+                    if row["candidate_digest"] not in attempted
+                ][:maximum_candidates]
+                if not remaining:
+                    raise WarmRobotPlacementExecutorError(
+                        "native_construction_feedback_control_search_shortlist_exhausted"
+                    )
+                next_inventory = json.loads(
+                    json.dumps(dict(initial_inventory), allow_nan=False)
+                )
+                next_inventory["round_index"] = int(round_index)
+                next_inventory["source_native_feedback_digest"] = (
+                    source_native_feedback["feedback_digest"]
+                )
+                next_inventory["candidates"] = remaining
+                next_inventory["inventory_digest"] = ""
+                next_inventory["inventory_digest"] = canonical_digest(
+                    next_inventory, digest_field="inventory_digest"
+                )
+                return next_inventory
+
+        controller_candidate_generator = ShortlistedCandidateGenerator()
 
     controller_result = run_native_construction_feedback_controller(
         invoker=invoker,
         authority=authority,
         initial_inventory=initial_inventory,
         produce_next_inventory=None,
-        candidate_generator=composite_generator,
+        candidate_generator=controller_candidate_generator,
         search_ledger=search_ledger,
         execute_candidate=executor,
         continue_to_controls=executor.continue_to_controls,
         initial_native_feedback=feedback,
     )
+    if control_search_execution is not None:
+        controller_result["control_search"] = {
+            key: value
+            for key, value in control_search_execution.items()
+            if key != "candidate_inventory"
+        }
+        controller_result["receipt_digest"] = ""
+        controller_result["receipt_digest"] = canonical_digest(
+            controller_result, digest_field="receipt_digest"
+        )
     if controller_result.get("status") != "controls_completed":
         closeout = close_native_task_arena_warm_instance(
             warm_session=warm_session

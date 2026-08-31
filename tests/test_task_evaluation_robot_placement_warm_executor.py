@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_robot_placement_trajectory import (
@@ -11,6 +12,11 @@ from blueprint_pipeline.task_evaluation_robot_placement_trajectory import (
 from blueprint_pipeline.task_evaluation_robot_placement_warm_executor import (
     CONFIG_SCHEMA_VERSION,
     WarmNativePlacementExecutor,
+    _run_control_search_on_warm_session,
+)
+from blueprint_pipeline.task_evaluation_control_search_funnel import (
+    OUTCOME_SCHEMA_VERSION,
+    build_control_search_sweep_result,
 )
 
 
@@ -23,6 +29,88 @@ def _write(path: Path, value: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _sealed(value: dict, field: str) -> dict:
+    value[field] = canonical_digest(value, digest_field=field)
+    return value
+
+
+def _sweep_candidate(index: int) -> dict:
+    reset = _sealed(
+        {
+            "schema_version": "task_evaluation_native_robot_reset_variant.v1",
+            "robot_joint_reset_positions_rad": {
+                f"joint_{joint}": float(joint) * 0.01 for joint in range(7)
+            },
+            "reset_variant_digest": "",
+        },
+        "reset_variant_digest",
+    )
+    entry = _sealed(
+        {
+            "schema_version": "task_evaluation_native_entry_trajectory_variant.v1",
+            "joins_authored_phase_id": "precontact",
+            "waypoints": [
+                {
+                    "waypoint_id": "entry-00",
+                    "position_world_m": [2.8, -6.7, 1.0],
+                    "orientation_world_xyzw": [0.0, 0.70710678, 0.0, 0.70710678],
+                }
+            ],
+            "entry_trajectory_variant_digest": "",
+        },
+        "entry_trajectory_variant_digest",
+    )
+    camera = _sealed(
+        {
+            "schema_version": "task_evaluation_native_camera_variant.v1",
+            "cameras": [
+                {"role": "external"},
+                {"role": "wrist"},
+                {"role": "overview"},
+            ],
+            "camera_variant_digest": "",
+        },
+        "camera_variant_digest",
+    )
+    return _sealed(
+        {
+            "schema_version": "task_evaluation_native_construction_candidate.v1",
+            "candidate_id": f"curobo-{index:02d}",
+            "deterministic_rank": index,
+            "robot_base_pose_world": {
+                "position_world_m": [2.8 + index * 0.01, -6.13, 0.752958],
+                "orientation_xyzw": [0.0, 0.0, 0.608761429, -0.79335334],
+            },
+            "support_surface_id": "/Site/counter",
+            "reset_variant": reset,
+            "entry_trajectory_variant": entry,
+            "camera_variant": camera,
+            "maximum_incremental_cost_usd": 0.1,
+            "maximum_runtime_seconds": 120.0,
+            "addressed_feedback_codes": [],
+            "candidate_digest": "",
+        },
+        "candidate_digest",
+    )
+
+
+def _sweep_inventory(count: int = 10) -> dict:
+    return _sealed(
+        {
+            "schema_version": (
+                "task_evaluation_native_construction_candidate_inventory.v1"
+            ),
+            "run_id": "scene-839873-control-search",
+            "round_index": 0,
+            "source_native_feedback_digest": "sha256:" + "0" * 64,
+            "model_authored_candidates": False,
+            "candidates": [_sweep_candidate(index) for index in range(count)],
+            "inventory_digest": "",
+        },
+        "inventory_digest",
+    )
 
 
 def _native_plan() -> dict:
@@ -97,6 +185,126 @@ def test_trajectory_binding_rejects_changed_phase_position() -> None:
     changed["plan_digest"] = canonical_digest(changed, digest_field="plan_digest")
 
     assert not module._trajectory_content_matches(trajectory, changed)
+
+
+def test_warm_control_search_runs_once_and_returns_only_ranked_shortlist(
+    tmp_path: Path,
+) -> None:
+    inventory = _sweep_inventory()
+    runtime_receipt = _write(
+        tmp_path / "runtime-source.json",
+        {"receipt_digest": "sha256:" + "3" * 64},
+    )
+    authority = {
+        "schema_version": "task_evaluation_control_search_authority.v1",
+        "enabled": True,
+        "claim_ceiling": "development_only_control_search",
+        "provider_allocations_performed": 0,
+        "requested_vector_env_count": 8,
+        "maximum_vector_env_count": 1_024,
+        "seeds_per_candidate": 1,
+        "shortlist_size": 8,
+        "appearance_mode": "omitted",
+        "camera_mode": "disabled",
+        "full_fidelity_replay_required": True,
+        "authority_digest": "",
+    }
+    authority["authority_digest"] = canonical_digest(
+        authority, digest_field="authority_digest"
+    )
+    request = {
+        "request_digest": "sha256:" + "2" * 64,
+        "scenario": {"seed": 839873104},
+        "assets": [
+            {
+                "semantic_role": "scene_collision",
+                "source": {"sha256": "sha256:" + "4" * 64},
+            },
+            {
+                "semantic_role": "task_object",
+                "source": {"sha256": "sha256:" + "5" * 64},
+            },
+        ],
+    }
+    calls = []
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+        def execute(self, *, plan, schedule, candidate_inventory):
+            outcomes = []
+            for wave in schedule["waves"]:
+                for assignment in wave["assignments"]:
+                    # Lower deterministic ranks are deliberately worse here;
+                    # this proves the native replay inventory follows measured
+                    # physics ranking, not source order.
+                    rank = next(
+                        row["deterministic_rank"]
+                        for row in candidate_inventory["candidates"]
+                        if row["candidate_id"] == assignment["candidate_id"]
+                    )
+                    outcome = {
+                        "schema_version": OUTCOME_SCHEMA_VERSION,
+                        **assignment,
+                        "reset_readback_passed": True,
+                        "forbidden_collision_peak_force_n": float(10 - rank),
+                        "required_task_contact_coverage_fraction": 1.0,
+                        "push_path_tracking_error_m": 0.01,
+                        "destination_error_m": 0.02,
+                        "support_stability_error_m": 0.001,
+                        "task_displacement_m": 0.12,
+                        "physics_steps": 220,
+                        "measurement_authority": (
+                            "isaac_lab_simulator_state_and_contact_sensors"
+                        ),
+                        "learned_grader_used": False,
+                        "outcome_digest": "",
+                    }
+                    outcome.pop("assignment_index")
+                    outcome["outcome_digest"] = canonical_digest(
+                        outcome, digest_field="outcome_digest"
+                    )
+                    outcomes.append(outcome)
+            return build_control_search_sweep_result(
+                plan=plan,
+                outcomes=outcomes,
+                actual_vector_env_count=schedule["vector_env_count"],
+                peak_gpu_memory_bytes=18_000_000_000,
+            )
+
+    execution = _run_control_search_on_warm_session(
+        request=request,
+        authority=authority,
+        candidate_inventory=inventory,
+        candidate_generator_context=SimpleNamespace(
+            robot_configuration={"digest": "sha256:" + "6" * 64},
+            task_trajectory={"digest": "sha256:" + "7" * 64},
+        ),
+        warm_session={
+            "status": "ready",
+            "continuing_spend": True,
+            "remote_work_dir": "/workspace",
+        },
+        runtime_source_packet_receipt_path=runtime_receipt,
+        implementation_commit="a" * 40,
+        output_root=tmp_path / "feedback",
+        remote_python_package_root=(
+            "/workspace/adp_arena_provider_bundle/provider_runtime"
+        ),
+        sweep_runner_factory=FakeRunner,
+    )
+
+    assert len(calls) == 1
+    assert execution["status"] == "completed_development_only"
+    assert execution["provider_allocations_performed"] == 0
+    assert len(execution["candidate_inventory"]["candidates"]) == 8
+    assert execution["candidate_inventory"]["candidates"][0][
+        "candidate_id"
+    ] == "curobo-09"
+    assert Path(execution["plan_path"]).is_file()
+    assert Path(execution["schedule_path"]).is_file()
+    assert Path(execution["result_path"]).is_file()
 
 
 def test_one_agent_run_revises_multiple_poses_on_same_warm_instance(

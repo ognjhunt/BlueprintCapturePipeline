@@ -81,6 +81,41 @@ def _clone_request(
         raise NativeTaskArenaPacketError(
             ["native_task_arena_particlefield_quality_missing_or_invalid"]
         )
+    feedback = request.get("native_construction_feedback")
+    control_search = (
+        feedback.get("control_search") if isinstance(feedback, Mapping) else None
+    )
+    if control_search is not None and (
+        not isinstance(control_search, Mapping)
+        or control_search.get("schema_version")
+        != "task_evaluation_control_search_authority.v1"
+        or control_search.get("enabled") is not True
+        or control_search.get("claim_ceiling")
+        != "development_only_control_search"
+        or control_search.get("provider_allocations_performed") != 0
+        or not isinstance(control_search.get("requested_vector_env_count"), int)
+        or isinstance(control_search.get("requested_vector_env_count"), bool)
+        or not 1 <= control_search["requested_vector_env_count"] <= 1_024
+        or not isinstance(control_search.get("maximum_vector_env_count"), int)
+        or isinstance(control_search.get("maximum_vector_env_count"), bool)
+        or not control_search["requested_vector_env_count"]
+        <= control_search["maximum_vector_env_count"]
+        <= 1_024
+        or not isinstance(control_search.get("seeds_per_candidate"), int)
+        or isinstance(control_search.get("seeds_per_candidate"), bool)
+        or not 1 <= control_search["seeds_per_candidate"] <= 16
+        or not isinstance(control_search.get("shortlist_size"), int)
+        or isinstance(control_search.get("shortlist_size"), bool)
+        or not 8 <= control_search["shortlist_size"] <= 32
+        or control_search.get("appearance_mode") != "omitted"
+        or control_search.get("camera_mode") != "disabled"
+        or control_search.get("full_fidelity_replay_required") is not True
+        or control_search.get("authority_digest")
+        != canonical_digest(control_search, digest_field="authority_digest")
+    ):
+        raise NativeTaskArenaPacketError(
+            ["native_task_arena_control_search_authority_invalid"]
+        )
     return request
 
 
