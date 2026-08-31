@@ -205,7 +205,9 @@ def _build_adoption(
         direct_root / "arena-construction-job" / "adp_arena_vast_result.json",
         code="direct_execution_allocator_result_invalid",
     )
-    if job_result != direct or job_result_path.read_bytes() != direct_path.read_bytes():
+    expected_job_result = dict(direct)
+    expected_job_result.pop("result_digest")
+    if job_result != expected_job_result or "result_digest" in job_result:
         raise ValueError("direct_execution_allocator_result_invalid")
 
     authority_path, authority = _identity(
