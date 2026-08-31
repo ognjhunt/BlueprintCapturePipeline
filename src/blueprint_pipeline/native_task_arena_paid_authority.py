@@ -1359,7 +1359,9 @@ def validate_native_task_arena_paid_attempt_authority(
             )
             actual_after = round(float(project_spend["total_cost_usd"]), 6)
             if (
-                project_record != observed_project_record
+                not _bound_record_matches_observed(
+                    project_record, observed_project_record
+                )
                 or zero_record.get("provider_zero_digest")
                 != initial_zero.get("provider_zero_digest")
                 or zero_time > authorized_time

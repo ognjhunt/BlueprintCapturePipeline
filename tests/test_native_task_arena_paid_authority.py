@@ -323,6 +323,39 @@ def test_new_lane_genesis_binds_project_spend_and_fresh_provider_zero(
             retain_warm_session=True,
         )
 
+    staged_project = tmp_path / "staged" / "project-spend.input"
+    staged_project.parent.mkdir()
+    staged_project.write_bytes(reconciliation_path.read_bytes())
+    original_resolver = paid.resolve_immutable_input
+
+    def resolve_staged_project(
+        original_path: str | Path,
+        *,
+        expected_digest: str,
+        expected_size_bytes: int,
+    ) -> Path:
+        if Path(original_path).resolve() == reconciliation_path.resolve():
+            return staged_project
+        return original_resolver(
+            original_path,
+            expected_digest=expected_digest,
+            expected_size_bytes=expected_size_bytes,
+        )
+
+    monkeypatch.setattr(paid, "resolve_immutable_input", resolve_staged_project)
+    monkeypatch.setattr(
+        paid,
+        "validate_project_spend_reconciliation",
+        lambda path, **_kwargs: (project_spend, _record(Path(path))),
+    )
+    assert paid.validate_native_task_arena_paid_attempt_authority(
+        authority,
+        prepared_bundle=prepared,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+    )["authorization_digest"] == authority["authorization_digest"]
+
 
 def test_terminal_continuation_uses_newer_conservative_project_spend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
