@@ -180,12 +180,12 @@ class RemoteCuroboCandidateGenerator:
             + CUROBO_BACKEND_IDENTITY["source_revision"]
         )
         script = f"""set -euo pipefail
+mkdir -p /workspace/blueprint-curobo-v080
 exec 9>/workspace/blueprint-curobo-v080/provision.lock
 flock 9
 test -f {self._remote_python_package_root}/blueprint_pipeline/task_evaluation_curobo_candidate_service.py || exit 81
 root={source_root}
 if [ ! -d "$root/.git" ]; then
-  mkdir -p /workspace/blueprint-curobo-v080
   stage="$(mktemp -d /workspace/blueprint-curobo-v080/stage.XXXXXXXX)"
   git clone --filter=blob:none --no-checkout {CUROBO_BACKEND_IDENTITY['source_url']} "$stage"
   git -C "$stage" fetch --depth 1 origin {CUROBO_BACKEND_IDENTITY['source_revision']}
