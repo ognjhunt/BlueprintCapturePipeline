@@ -28,7 +28,7 @@ import json
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -107,6 +107,106 @@ CandidateInventoryProducer = Callable[
 ]
 CandidateExecutor = Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]]
 ControlsContinuation = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+
+
+class CandidateGenerator(Protocol):
+    """Swappable deterministic/collision-planner candidate source."""
+
+    def generate(
+        self,
+        *,
+        source_native_feedback: Mapping[str, Any] | None,
+        prior_history: Sequence[Mapping[str, Any]],
+        round_index: int,
+        maximum_candidates: int,
+    ) -> Mapping[str, Any]: ...
+
+
+class SearchLedger(Protocol):
+    """Persistent ask/tell evidence without candidate-authoring authority."""
+
+    def record_inventory(
+        self, *, inventory: Mapping[str, Any]
+    ) -> Mapping[str, Any]: ...
+
+    def record_attempt(
+        self, *, round_record: Mapping[str, Any]
+    ) -> Mapping[str, Any]: ...
+
+
+class CompositeCandidateGenerator:
+    """Try configured collision planners, then the deterministic baseline.
+
+    Planner unavailability is recorded rather than hidden.  The fallback is
+    still a full digest-bound CPU inventory and native execution remains the
+    only grader, so losing an optional planner changes search quality, not a
+    gate or claim.
+    """
+
+    def __init__(
+        self,
+        *,
+        generators: Sequence[CandidateGenerator],
+        deterministic_fallback: CandidateGenerator,
+        fallback_on_generator_unavailable: bool = True,
+    ) -> None:
+        self._generators = tuple(generators)
+        self._fallback = deterministic_fallback
+        self._fallback_on_generator_unavailable = bool(
+            fallback_on_generator_unavailable
+        )
+
+    def generate(
+        self,
+        *,
+        source_native_feedback: Mapping[str, Any] | None,
+        prior_history: Sequence[Mapping[str, Any]],
+        round_index: int,
+        maximum_candidates: int,
+    ) -> Mapping[str, Any]:
+        attempts: list[dict[str, Any]] = []
+        selected: Mapping[str, Any] | None = None
+        for generator in self._generators:
+            identity = type(generator).__name__
+            try:
+                selected = generator.generate(
+                    source_native_feedback=source_native_feedback,
+                    prior_history=prior_history,
+                    round_index=round_index,
+                    maximum_candidates=maximum_candidates,
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                if not self._fallback_on_generator_unavailable:
+                    raise
+                attempts.append(
+                    {
+                        "generator": identity,
+                        "status_code": f"unavailable:{type(exc).__name__}",
+                    }
+                )
+                continue
+            attempts.append({"generator": identity, "status_code": "selected"})
+            break
+        if selected is None:
+            selected = self._fallback.generate(
+                source_native_feedback=source_native_feedback,
+                prior_history=prior_history,
+                round_index=round_index,
+                maximum_candidates=maximum_candidates,
+            )
+            attempts.append(
+                {
+                    "generator": type(self._fallback).__name__,
+                    "status_code": "selected_deterministic_baseline",
+                }
+            )
+        inventory = _copy(selected)
+        inventory["candidate_generator_chain"] = attempts
+        inventory["inventory_digest"] = ""
+        inventory["inventory_digest"] = canonical_digest(
+            inventory, digest_field="inventory_digest"
+        )
+        return inventory
 
 
 def _copy(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -721,6 +821,91 @@ def build_next_native_construction_inventory(
     return inventory
 
 
+def construction_phase_plan_for_candidate(
+    *,
+    scene_plan: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Prepend one candidate's CPU-checked entry to the authored task plan.
+
+    The authored phases, gate ids, thresholds, and task criteria are copied
+    unchanged.  Entry phases carry no success gate; they merely move from the
+    candidate reset to the original first phase and remain subject to native
+    IK/collision readback.  The shared total action budget is adjusted, never
+    widened beyond the scene plan's existing maximum.
+    """
+
+    from .native_task_construction_plan import (
+        materialize_native_task_construction_phase_plan,
+    )
+
+    selected = validate_native_construction_candidate(candidate)
+    plan = materialize_native_task_construction_phase_plan(scene_plan)
+    variant = selected["entry_trajectory_variant"]
+    entry_phases: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(variant["waypoints"]):
+        if not isinstance(raw, Mapping):
+            raise NativeConstructionFeedbackControllerError(
+                "native_construction_candidate_entry_trajectory_invalid"
+            )
+        phase_id = f"feedback_entry_{index:02d}_{str(raw.get('waypoint_id') or index)}"
+        if phase_id in seen or any(
+            row.get("phase_id") == phase_id for row in plan["phases"]
+        ):
+            raise NativeConstructionFeedbackControllerError(
+                "native_construction_candidate_entry_trajectory_invalid"
+            )
+        seen.add(phase_id)
+        position = _finite_vector(
+            raw.get("position_world_m"),
+            3,
+            blocker="native_construction_candidate_entry_trajectory_invalid",
+        )
+        orientation = _finite_vector(
+            raw.get("orientation_world_xyzw"),
+            4,
+            blocker="native_construction_candidate_entry_trajectory_invalid",
+        )
+        entry_phases.append(
+            {
+                "phase_id": phase_id,
+                "position_world_m": position,
+                "orientation_world_xyzw": orientation,
+                "gripper_state": "open",
+                "gate_ids": [],
+                "feedback_entry_only": True,
+            }
+        )
+    execution = plan.get("execution_parameters")
+    cadence = scene_plan.get("cadence")
+    if not isinstance(execution, Mapping) or not isinstance(cadence, Mapping):
+        raise NativeConstructionFeedbackControllerError(
+            "native_construction_candidate_entry_trajectory_invalid"
+        )
+    added_steps = len(entry_phases) * int(execution.get("stable_samples") or 0)
+    existing_budget = int(execution.get("maximum_construction_total_steps") or 0)
+    action_cap = int(cadence.get("maximum_action_steps") or 0)
+    if added_steps <= 0 or existing_budget + added_steps > action_cap:
+        raise NativeConstructionFeedbackControllerError(
+            "native_construction_candidate_entry_budget_invalid"
+        )
+    plan["phases"] = [*entry_phases, *plan["phases"]]
+    plan["phase_count"] = len(plan["phases"])
+    plan["execution_parameters"] = {
+        **dict(execution),
+        "maximum_construction_total_steps": existing_budget + added_steps,
+    }
+    plan["construction_feedback_candidate_digest"] = selected["candidate_digest"]
+    plan["entry_trajectory_variant_digest"] = variant[
+        "entry_trajectory_variant_digest"
+    ]
+    plan["authored_gate_contract_unchanged"] = True
+    plan["plan_digest"] = ""
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return plan
+
+
 def _validate_authority(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
     authority = _copy(value)
     try:
@@ -800,6 +985,38 @@ def _selection_input(
             "native_worker_is_sole_construction_grader": True,
         },
     }
+
+
+def _validated_ledger_receipt(
+    value: Mapping[str, Any],
+    *,
+    event: str,
+    run_id: str,
+    round_index: int,
+    inventory_digest: str,
+    candidate_digest: str | None = None,
+    execution_result_digest: str | None = None,
+    feedback_digest: str | None = None,
+) -> dict[str, Any]:
+    receipt = _copy(value)
+    if (
+        not str(receipt.get("schema_version") or "").endswith(".v1")
+        or receipt.get("event") != event
+        or receipt.get("run_id") != run_id
+        or receipt.get("round_index") != round_index
+        or receipt.get("inventory_digest") != inventory_digest
+        or receipt.get("candidate_digest") != candidate_digest
+        or receipt.get("execution_result_digest") != execution_result_digest
+        or receipt.get("native_feedback_digest") != feedback_digest
+        or receipt.get("candidate_authoring_performed") is not False
+        or receipt.get("grading_performed") is not False
+        or receipt.get("ledger_receipt_digest")
+        != canonical_digest(receipt, digest_field="ledger_receipt_digest")
+    ):
+        raise NativeConstructionFeedbackControllerError(
+            "native_construction_search_ledger_receipt_invalid"
+        )
+    return receipt
 
 
 def _select_candidate(
@@ -952,9 +1169,13 @@ def run_native_construction_feedback_controller(
     invoker: AgentsSDKInvoker,
     authority: Mapping[str, Any],
     initial_inventory: Mapping[str, Any],
-    produce_next_inventory: CandidateInventoryProducer,
+    produce_next_inventory: CandidateInventoryProducer | None,
     execute_candidate: CandidateExecutor,
     continue_to_controls: ControlsContinuation,
+    candidate_generator: CandidateGenerator | None = None,
+    search_ledger: SearchLedger | None = None,
+    initial_native_feedback: Mapping[str, Any] | None = None,
+    prior_attempted_candidate_digests: Sequence[str] = (),
     clock: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
     """Execute bounded native candidates on one worker and continue on pass."""
@@ -963,18 +1184,44 @@ def run_native_construction_feedback_controller(
     admitted = _validate_authority(authority, now=now)
     maximum_rounds = int(admitted["maximum_rounds"])
     maximum_candidates = int(admitted["maximum_candidates_per_round"])
+    starting_feedback = (
+        _copy(initial_native_feedback)
+        if initial_native_feedback is not None
+        else None
+    )
+    if starting_feedback is not None and (
+        starting_feedback.get("schema_version") != FEEDBACK_SCHEMA_VERSION
+        or starting_feedback.get("feedback_digest")
+        != canonical_digest(starting_feedback, digest_field="feedback_digest")
+        or starting_feedback.get("passed") is not False
+    ):
+        raise NativeConstructionFeedbackControllerError(
+            "native_construction_feedback_initial_feedback_invalid"
+        )
     inventory = validate_native_construction_inventory(
         initial_inventory,
         expected_run_id=str(admitted["run_id"]),
         expected_round_index=0,
-        expected_feedback_digest=None,
+        expected_feedback_digest=(
+            str(starting_feedback["feedback_digest"])
+            if starting_feedback is not None
+            else None
+        ),
         maximum_candidates=maximum_candidates,
     )
-    attempted_digests: list[str] = []
+    attempted_digests: list[str] = [
+        str(value) for value in prior_attempted_candidate_digests
+    ]
+    if any(not _sha256(value) for value in attempted_digests) or len(
+        set(attempted_digests)
+    ) != len(attempted_digests):
+        raise NativeConstructionFeedbackControllerError(
+            "native_construction_feedback_prior_attempts_invalid"
+        )
     candidate_id_bindings: dict[str, str] = {}
     history: list[dict[str, Any]] = []
     total_cost = 0.0
-    final_feedback: dict[str, Any] | None = None
+    final_feedback: dict[str, Any] | None = starting_feedback
     qualified_candidate: dict[str, Any] | None = None
 
     for round_index in range(maximum_rounds):
@@ -996,6 +1243,15 @@ def run_native_construction_feedback_controller(
                 "native_construction_candidate_repeated"
             )
         active_inventory = inventory
+        inventory_ledger_receipt = None
+        if search_ledger is not None:
+            inventory_ledger_receipt = _validated_ledger_receipt(
+                search_ledger.record_inventory(inventory=active_inventory),
+                event="inventory_recorded",
+                run_id=str(admitted["run_id"]),
+                round_index=round_index,
+                inventory_digest=str(active_inventory["inventory_digest"]),
+            )
         candidate, selection = _select_candidate(
             invoker=invoker,
             authority=admitted,
@@ -1043,27 +1299,61 @@ def run_native_construction_feedback_controller(
             raise NativeConstructionFeedbackControllerError(
                 "native_construction_feedback_cost_cap_exceeded"
             )
-        history.append(
-            {
+        round_record = {
                 "round_index": round_index,
                 "inventory_digest": active_inventory["inventory_digest"],
                 "source_native_feedback_digest": active_inventory[
                     "source_native_feedback_digest"
                 ],
                 "selection": selection,
+                "inventory_ledger_receipt": inventory_ledger_receipt,
                 "candidate": candidate,
                 "execution": execution,
                 "native_feedback": feedback,
+                "controller_search_state": (
+                    "qualified"
+                    if feedback["passed"]
+                    else "exhausted_round_cap"
+                    if round_index + 1 >= maximum_rounds
+                    else "continuing"
+                ),
+                "attempt_ledger_receipt": None,
             }
-        )
+        if search_ledger is not None:
+            round_record["attempt_ledger_receipt"] = _validated_ledger_receipt(
+                search_ledger.record_attempt(round_record=round_record),
+                event="attempt_recorded",
+                run_id=str(admitted["run_id"]),
+                round_index=round_index,
+                inventory_digest=str(active_inventory["inventory_digest"]),
+                candidate_digest=str(candidate["candidate_digest"]),
+                execution_result_digest=str(execution["execution_result_digest"]),
+                feedback_digest=str(feedback["feedback_digest"]),
+            )
+        history.append(round_record)
         final_feedback = feedback
         if feedback["passed"]:
             qualified_candidate = candidate
             break
         if round_index + 1 >= maximum_rounds:
             break
+        if candidate_generator is not None:
+            next_inventory = candidate_generator.generate(
+                source_native_feedback=feedback,
+                prior_history=tuple(history),
+                round_index=round_index + 1,
+                maximum_candidates=maximum_candidates,
+            )
+        elif produce_next_inventory is not None:
+            next_inventory = produce_next_inventory(
+                feedback, tuple(history), round_index + 1
+            )
+        else:
+            raise NativeConstructionFeedbackControllerError(
+                "native_construction_candidate_generator_missing"
+            )
         inventory = validate_native_construction_inventory(
-            produce_next_inventory(feedback, tuple(history), round_index + 1),
+            next_inventory,
             expected_run_id=str(admitted["run_id"]),
             expected_round_index=round_index + 1,
             expected_feedback_digest=str(feedback["feedback_digest"]),
@@ -1147,7 +1437,11 @@ def run_native_construction_feedback_controller(
         )
         receipt["controls_continuation"] = continuation
         receipt["controls_continuation_required"] = False
-        receipt["status"] = "controls_continuation_queued"
+        receipt["status"] = (
+            "controls_completed"
+            if continuation["status"] == "completed"
+            else "controls_continuation_queued"
+        )
         receipt["receipt_digest"] = ""
         receipt["receipt_digest"] = canonical_digest(
             receipt, digest_field="receipt_digest"
@@ -1165,8 +1459,12 @@ __all__ = [
     "INVENTORY_SCHEMA_VERSION",
     "NativeConstructionCandidateSelection",
     "NativeConstructionFeedbackControllerError",
+    "CandidateGenerator",
+    "CompositeCandidateGenerator",
+    "SearchLedger",
     "bind_warm_native_construction_execution",
     "build_next_native_construction_inventory",
+    "construction_phase_plan_for_candidate",
     "native_construction_feedback_codes",
     "run_native_construction_feedback_controller",
     "summarize_native_construction_feedback",

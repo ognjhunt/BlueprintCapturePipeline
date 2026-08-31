@@ -91,6 +91,7 @@ def materialize_robot_placement_readiness_candidate(
     placement_receipt: Mapping[str, Any],
     candidate_inventory: Mapping[str, Any],
     output_path: str | Path,
+    native_construction_candidate_universe_reference: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write one exact-inventory readiness candidate without native claims."""
 
@@ -230,6 +231,22 @@ def materialize_robot_placement_readiness_candidate(
         raise TaskEvaluationRobotPlacementReadinessCandidateError(
             "robot_placement_readiness_candidate_evidence_invalid"
         )
+    universe_reference = (
+        _copy(
+            native_construction_candidate_universe_reference,
+            blocker="robot_placement_readiness_native_candidate_universe_invalid",
+        )
+        if native_construction_candidate_universe_reference is not None
+        else None
+    )
+    if universe_reference is not None and (
+        not _digest(universe_reference.get("inventory_digest"))
+        or not _digest(universe_reference.get("file_sha256"))
+        or not Path(str(universe_reference.get("path") or "")).is_absolute()
+    ):
+        raise TaskEvaluationRobotPlacementReadinessCandidateError(
+            "robot_placement_readiness_native_candidate_universe_invalid"
+        )
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "candidate_pending_native_construction_readback",
@@ -280,6 +297,7 @@ def materialize_robot_placement_readiness_candidate(
         "learned_policy_outcomes_consulted": False,
         "native_construction_readback_completed": False,
         "native_orientation_collision_contact_and_camera_gates_required": True,
+        "native_construction_candidate_universe_reference": universe_reference,
         "base_pose_candidate_digest": "",
     }
     result["base_pose_candidate_digest"] = canonical_digest(

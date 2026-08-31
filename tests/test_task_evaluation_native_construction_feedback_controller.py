@@ -12,13 +12,19 @@ from blueprint_pipeline.task_evaluation_native_construction_feedback_controller 
     EXECUTION_SCHEMA_VERSION,
     INVENTORY_SCHEMA_VERSION,
     NativeConstructionFeedbackControllerError,
+    CompositeCandidateGenerator,
     build_next_native_construction_inventory,
+    construction_phase_plan_for_candidate,
     run_native_construction_feedback_controller,
     summarize_native_construction_feedback,
     validate_native_construction_candidate,
 )
 from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import (
     AgentsSDKInvocationResult,
+)
+from blueprint_pipeline.task_evaluation_robot_placement_warm_executor import (
+    FEEDBACK_EXECUTOR_CONFIG_SCHEMA_VERSION,
+    WarmNativeConstructionFeedbackExecutor,
 )
 
 
@@ -282,6 +288,7 @@ def _execution(candidate: dict, inventory_digest: str, *, passed: bool) -> dict:
             "inventory_digest": inventory_digest,
             "provider_instance_id": 49322931,
             "provider_allocations_performed": 0,
+            "runtime_seconds": 10.0,
             "incremental_cost_upper_bound_usd": 0.04,
             "native_result": _native(
                 passed=passed, collision_force=0.6 if not passed else 0.0
@@ -415,6 +422,42 @@ def test_candidate_cannot_carry_a_gate_change() -> None:
         validate_native_construction_candidate(candidate)
 
 
+def test_composite_generator_records_planner_unavailability_and_uses_cpu_baseline() -> None:
+    run_id = "scene-839873-composite-generator"
+    baseline_inventory = _inventory(
+        run_id, 1, [_candidate("baseline", 0, x=2.92)], feedback_digest=None
+    )
+
+    class MissingCurobo:
+        def generate(self, **_kwargs):
+            raise RuntimeError("runtime unavailable")
+
+    class DeterministicBaseline:
+        def generate(self, **_kwargs):
+            return baseline_inventory
+
+    generated = CompositeCandidateGenerator(
+        generators=(MissingCurobo(),),
+        deterministic_fallback=DeterministicBaseline(),
+    ).generate(
+        source_native_feedback=None,
+        prior_history=(),
+        round_index=1,
+        maximum_candidates=8,
+    )
+
+    assert generated["candidate_generator_chain"] == [
+        {"generator": "MissingCurobo", "status_code": "unavailable:RuntimeError"},
+        {
+            "generator": "DeterministicBaseline",
+            "status_code": "selected_deterministic_baseline",
+        },
+    ]
+    assert generated["inventory_digest"] == canonical_digest(
+        generated, digest_field="inventory_digest"
+    )
+
+
 def test_next_inventory_deterministically_prefers_feedback_coverage_and_excludes_attempted() -> None:
     run_id = "scene-839873-deterministic-refresh"
     attempted = _candidate("attempted", 0, x=2.92)
@@ -480,3 +523,275 @@ def test_execution_must_echo_the_exact_candidate_and_allocate_nothing() -> None:
             continue_to_controls=lambda _: pytest.fail("must not continue"),
             clock=lambda: 1_000.0,
         )
+
+
+def test_entry_variant_prepends_motion_without_changing_authored_gates(monkeypatch) -> None:
+    import blueprint_pipeline.native_task_construction_plan as plans
+
+    authored = {
+        "schema_version": "native_rigid_construction_phase_plan.v1",
+        "scene_plan_digest": "sha256:" + "1" * 64,
+        "execution_parameters": {
+            "stable_samples": 2,
+            "maximum_construction_total_steps": 220,
+        },
+        "thresholds": {"collision_failure_minimum_force_n": 1.0},
+        "gate_contract": {"push_contact": "native_contact"},
+        "required_gate_ids": ["push_contact"],
+        "phases": [
+            {
+                "phase_id": "precontact",
+                "position_world_m": [2.79, -6.76, 0.818],
+                "orientation_world_xyzw": [0.0, 0.70710678, 0.0, 0.70710678],
+                "gripper_state": "open",
+                "gate_ids": ["push_contact"],
+            }
+        ],
+        "phase_count": 1,
+        "plan_digest": "",
+    }
+    authored["plan_digest"] = canonical_digest(
+        authored, digest_field="plan_digest"
+    )
+    monkeypatch.setattr(
+        plans,
+        "materialize_native_task_construction_phase_plan",
+        lambda _scene: __import__("copy").deepcopy(authored),
+    )
+    scene = {
+        "plan_digest": authored["scene_plan_digest"],
+        "cadence": {"maximum_action_steps": 240},
+    }
+
+    result = construction_phase_plan_for_candidate(
+        scene_plan=scene,
+        candidate=_candidate("entry-a", 0, x=2.92),
+    )
+
+    assert [row["phase_id"] for row in result["phases"]] == [
+        "feedback_entry_00_entry-00",
+        "precontact",
+    ]
+    assert result["phases"][0]["gate_ids"] == []
+    assert result["phases"][1] == authored["phases"][0]
+    assert result["thresholds"] == authored["thresholds"]
+    assert result["gate_contract"] == authored["gate_contract"]
+    assert result["execution_parameters"]["maximum_construction_total_steps"] == 222
+    assert result["authored_gate_contract_unchanged"] is True
+    assert result["plan_digest"] == canonical_digest(
+        result, digest_field="plan_digest"
+    )
+
+
+def test_live_warm_executor_callsite_retries_exact_candidate_then_runs_controls(
+    tmp_path, monkeypatch
+) -> None:
+    import blueprint_pipeline.task_evaluation_robot_placement_warm_executor as warm
+
+    run_id = "scene-839873-live-construction-feedback"
+    first = _candidate("first", 0, x=2.92)
+    second = _candidate("second", 1, x=3.04)
+    base_request = _sealed(
+        {
+            "schema_version": "native_task_arena_packet_request.v1",
+            "request_digest": "",
+        },
+        "request_digest",
+    )
+    def _write(path, value):
+        path.write_text(
+            __import__("json").dumps(value) + "\n", encoding="utf-8"
+        )
+    request_path = tmp_path / "base-request.json"
+    _write(request_path, base_request)
+    runtime_path = tmp_path / "runtime-source.json"
+    _write(runtime_path, {"schema_version": "fixture.v1"})
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    session = {
+        "schema_version": "native_task_arena_warm_session.v1",
+        "instance_id": 49322931,
+        "session_digest": "sha256:" + "a" * 64,
+    }
+    session_path = tmp_path / "warm-session.json"
+    _write(session_path, session)
+    config = {
+        "schema_version": FEEDBACK_EXECUTOR_CONFIG_SCHEMA_VERSION,
+        "base_packet_request_path": str(request_path),
+        "evidence_root": str(evidence_root),
+        "runtime_source_packet_receipt_path": str(runtime_path),
+        "warm_session_path": str(session_path),
+        "implementation_commit": "b" * 40,
+        "authorization_reference": "bounded same-allocation feedback controller",
+        "authorized_by": "task-evaluation-owner",
+        "authorized_on": "2026-08-30T00:00:00Z",
+        "max_hourly_rate_usd": 0.8,
+        "hard_cap_usd": 2.0,
+        "hard_ttl_seconds": 3600,
+    }
+
+    def packet(*, request, output_dir, **_kwargs):
+        output_dir.mkdir(parents=True)
+        _write(
+            output_dir / "native_task_arena_scene_plan.v1.json",
+            {
+                "schema_version": "native_task_arena_scene_plan.v1",
+                "plan_digest": "sha256:" + "c" * 64,
+            },
+        )
+        _write(
+            output_dir / "native_task_arena_packet_receipt.v1.json",
+            {"receipt_digest": request["request_digest"]},
+        )
+        return {"receipt_digest": request["request_digest"]}
+
+    def bundle(*, job_dir, **_kwargs):
+        job_dir.mkdir(parents=True)
+        _write(
+            job_dir / "native_task_arena_provider_bundle_receipt.v1.json",
+            {"receipt_digest": "sha256:" + "d" * 64},
+        )
+        return {
+            "schema_version": "native_task_arena_provider_bundle.v1",
+            "execution_mode": "construction_canary",
+            "implementation_commit": "b" * 40,
+            "bundle_sha256": "sha256:" + "e" * 64,
+            "input_digest": "sha256:" + "f" * 64,
+        }
+
+    def controls_bundle(*, job_dir, **_kwargs):
+        job_dir.mkdir(parents=True)
+        _write(
+            job_dir / "native_task_arena_provider_bundle_receipt.v1.json",
+            {"receipt_digest": "sha256:" + "1" * 64},
+        )
+        return {
+            "schema_version": "native_task_arena_provider_bundle.v1",
+            "execution_mode": "controls",
+            "implementation_commit": "b" * 40,
+            "bundle_sha256": "sha256:" + "2" * 64,
+            "input_digest": "sha256:" + "3" * 64,
+        }
+
+    monkeypatch.setattr(warm, "materialize_native_task_arena_packet", packet)
+    monkeypatch.setattr(
+        warm,
+        "construction_phase_plan_for_candidate",
+        lambda **_kwargs: {
+            "schema_version": "native_rigid_construction_phase_plan.v1",
+            "plan_digest": "sha256:" + "4" * 64,
+        },
+    )
+    monkeypatch.setattr(warm, "build_native_task_arena_construction_bundle", bundle)
+    monkeypatch.setattr(warm, "build_native_task_arena_controls_bundle", controls_bundle)
+    monkeypatch.setattr(
+        warm,
+        "materialize_native_task_arena_warm_attempt_authority",
+        lambda *, output_path, **_kwargs: _write(
+            output_path, {"schema_version": "fixture-authority.v1"}
+        ),
+    )
+    allocator_calls = []
+
+    def allocator(argv):
+        argv = list(argv or [])
+        allocator_calls.append(argv)
+        adapter = __import__("pathlib").Path(argv[argv.index("--adapter-output") + 1])
+        adapter.parent.mkdir(parents=True, exist_ok=True)
+        probe = argv[argv.index("--probe-kind") + 1]
+        if probe == "native-task-arena-controls":
+            control = _sealed(
+                {
+                    "schema_version": "native_task_arena_control_result.v1",
+                    "status": "completed",
+                    "controls_qualified": True,
+                    "blockers": [],
+                    "result_digest": "",
+                },
+                "result_digest",
+            )
+            path = adapter.parent / "native-control.json"
+            _write(path, control)
+            _write(
+                adapter,
+                {
+                    "status": "completed",
+                    "provider_instance_id": 49322931,
+                    "provider_allocations_performed": 0,
+                    "continuing_spend_from_this_run": False,
+                    "native_control_result_path": str(path),
+                },
+            )
+            return 0
+        passed = sum(
+            1
+            for call in allocator_calls
+            if "native-task-arena-construction" in call
+        ) == 2
+        native = _native(
+            passed=passed, collision_force=0.0 if passed else 0.602
+        )
+        path = adapter.parent / "native-construction.json"
+        _write(path, native)
+        _write(
+            adapter,
+            {
+                "status": "completed" if passed else "blocked",
+                "provider_instance_id": 49322931,
+                "provider_allocations_performed": 0,
+                "runtime_seconds": 10.0,
+                "incremental_cost_upper_bound_usd": 0.02,
+                "native_construction_result_path": str(path),
+            },
+        )
+        return 0 if passed else 2
+
+    executor = WarmNativeConstructionFeedbackExecutor(
+        config=config,
+        output_root=tmp_path / "warm-rounds",
+        allocator_main=allocator,
+    )
+    first_feedback = summarize_native_construction_feedback(
+        _native(passed=False, collision_force=0.602)
+    )
+    invoker = _Invoker(
+        selections=[
+            (first["candidate_id"], None),
+            (second["candidate_id"], first_feedback["feedback_digest"]),
+        ]
+    )
+
+    def next_inventory(feedback, _history, round_index):
+        assert feedback["feedback_digest"] == first_feedback["feedback_digest"]
+        return _inventory(
+            run_id,
+            round_index,
+            [second],
+            feedback_digest=feedback["feedback_digest"],
+        )
+
+    receipt = run_native_construction_feedback_controller(
+        invoker=invoker,
+        authority=_authority(run_id),
+        initial_inventory=_inventory(run_id, 0, [first]),
+        produce_next_inventory=next_inventory,
+        execute_candidate=executor,
+        continue_to_controls=executor.continue_to_controls,
+        clock=lambda: 1_000.0,
+    )
+
+    assert receipt["status"] == "controls_completed"
+    assert receipt["controls_continuation"][
+        "zero_action_and_scripted_positive_qualified"
+    ] is True
+    assert len(allocator_calls) == 3
+    assert [
+        call[call.index("--probe-kind") + 1] for call in allocator_calls
+    ] == [
+        "native-task-arena-construction",
+        "native-task-arena-construction",
+        "native-task-arena-controls",
+    ]
+    assert all("49322931" in call for call in allocator_calls)
+    assert receipt["allocator_retry_cap"] == 0
+    assert receipt["provider_allocations_performed"] == 0

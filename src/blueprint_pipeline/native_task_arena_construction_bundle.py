@@ -13,7 +13,7 @@ import hashlib
 import json
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import (
@@ -46,6 +46,7 @@ def build_native_task_arena_construction_bundle(
     implementation_commit: str,
     container_image: str = NATIVE_TASK_ARENA_IMAGE,
     generated_at: str | None = None,
+    construction_phase_plan_override: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Package one sealed task packet for the native Panda construction worker."""
 
@@ -71,7 +72,25 @@ def build_native_task_arena_construction_bundle(
             container_image=container_image,
             generated_at=generated_at,
         )
-    frozen = materialize_native_task_construction_phase_plan(scene_plan)
+    frozen = (
+        json.loads(json.dumps(dict(construction_phase_plan_override), allow_nan=False))
+        if construction_phase_plan_override is not None
+        else materialize_native_task_construction_phase_plan(scene_plan)
+    )
+    if construction_phase_plan_override is not None and (
+        frozen.get("schema_version")
+        not in {
+            "native_rigid_construction_phase_plan.v1",
+            "native_articulated_graph_construction_phase_plan.v1",
+            "native_task_construction_phase_plan.v1",
+        }
+        or frozen.get("scene_plan_digest") != scene_plan.get("plan_digest")
+        or frozen.get("plan_digest")
+        != canonical_digest(frozen, digest_field="plan_digest")
+        or not isinstance(frozen.get("phases"), list)
+        or frozen.get("phase_count", len(frozen["phases"])) != len(frozen["phases"])
+    ):
+        raise ValueError("native_task_arena_construction_phase_plan_override_invalid")
     with tempfile.TemporaryDirectory(prefix="blueprint-native-construction-plan-") as raw:
         phase_path = Path(raw) / "native_task_construction_phase_plan.v1.json"
         phase_path.write_text(

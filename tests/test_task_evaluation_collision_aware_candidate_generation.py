@@ -488,6 +488,20 @@ def test_context_materializer_binds_packet_mesh_and_five_native_stages(
                 f"panda_joint{index}": 0.01 * index for index in range(1, 8)
             }
         },
+        "entry_trajectory_variant": {
+            "waypoints": [
+                {
+                    "waypoint_id": "entry-clearance",
+                    "position_world_m": [2.8, -6.7, 0.94],
+                    "orientation_world_xyzw": [
+                        0.0,
+                        0.70710678,
+                        0.0,
+                        0.70710678,
+                    ],
+                }
+            ]
+        },
         "camera_variant": {
             "cameras": [
                 {"role": "external"},

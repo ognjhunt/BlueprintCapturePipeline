@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -211,6 +212,9 @@ from .native_task_arena_warm_authority import (
 from .native_task_arena_warm_vast import (
     run_native_task_arena_warm_controls_vast,
     validate_native_task_arena_warm_ssh_identity_file,
+)
+from .task_evaluation_robot_placement_warm_executor import (
+    run_retained_native_construction_feedback,
 )
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
@@ -5134,6 +5138,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if not getattr(args, name, None)
             ]
+            if args.native_task_arena_packet:
+                packet_request_path = (
+                    Path(args.native_task_arena_packet)
+                    / "native_task_arena_packet_request.v1.json"
+                )
+                if packet_request_path.is_file():
+                    packet_request_value = _load(packet_request_path)
+                    candidate = packet_request_value.get(
+                        "native_construction_feedback"
+                    )
+                    if isinstance(candidate, Mapping):
+                        try:
+                            optuna_version = importlib.metadata.version("optuna")
+                        except importlib.metadata.PackageNotFoundError:
+                            optuna_version = None
+                        if optuna_version != "4.9.0":
+                            missing.append(
+                                "native_construction_feedback_optuna_4_9_0_missing"
+                            )
             if (controls_requested or any_policy_requested) and not (
                 args.native_task_arena_construction_result
             ):
@@ -5640,6 +5663,97 @@ def main(argv: Sequence[str] | None = None) -> int:
                         return 2
                     run_kwargs["retain_warm_instance"] = True
                 result = run_native(**run_kwargs)
+                # A configured-scene construction packet may carry a
+                # CPU-built, digest-bound feedback universe.  When the one
+                # cold attempt is scientifically rejected but its explicitly
+                # authorized worker is retained, continue bounded candidates
+                # and the canonical control pair before terminal teardown.
+                # This is one allocation with retry_cap=0; every follow-up is
+                # a canonical warm attachment to the exact same instance.
+                if (
+                    args.execute
+                    and not preflight_requested
+                    and not controls_requested
+                    and not any_policy_requested
+                    and args.native_task_arena_retain_warm_session
+                    and isinstance(result.get("warm_session"), Mapping)
+                    and result.get("native_control_result_path")
+                ):
+                    packet_request_path = (
+                        Path(args.native_task_arena_packet)
+                        / "native_task_arena_packet_request.v1.json"
+                    )
+                    packet_request = _load(packet_request_path)
+                    feedback_config = packet_request.get(
+                        "native_construction_feedback"
+                    )
+                    if isinstance(feedback_config, Mapping):
+                        controller_result = run_retained_native_construction_feedback(
+                            cold_allocator_result=result,
+                            packet_dir=args.native_task_arena_packet,
+                            runtime_source_packet_receipt_path=(
+                                args.native_task_arena_runtime_source_packet
+                            ),
+                            implementation_commit=str(
+                                prepared_bundle["implementation_commit"]
+                            ),
+                            output_root=(
+                                Path(args.adp_job_dir)
+                                / "native-construction-feedback"
+                            ),
+                            authorization_reference=str(
+                                native_authority.get("authority_reference") or ""
+                            ),
+                            authorized_by=str(
+                                native_authority.get("authorized_by") or ""
+                            ),
+                            authorized_on=str(
+                                native_authority.get("authorized_on") or ""
+                            ),
+                            max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                            hard_cap_usd=args.adp_max_spend_usd,
+                            hard_ttl_seconds=args.adp_hard_ttl_seconds,
+                            maximum_rounds=min(
+                                int(feedback_config.get("maximum_rounds") or 4),
+                                8,
+                            ),
+                        )
+                        result["native_construction_feedback_controller"] = (
+                            controller_result
+                        )
+                        if controller_result.get("status") == "controls_completed":
+                            final_native = controller_result["history"][-1][
+                                "execution"
+                            ]["native_result"]
+                            qualified_path = (
+                                Path(args.adp_job_dir)
+                                / "native-construction-feedback"
+                                / "qualified-native-construction-result.v1.json"
+                            )
+                            write_json(qualified_path, final_native)
+                            continuation = controller_result[
+                                "controls_continuation"
+                            ]
+                            result.update(
+                                {
+                                    "status": "completed",
+                                    "blockers": [],
+                                    "native_control_result_path": str(
+                                        qualified_path
+                                    ),
+                                    "native_control_result_digest": final_native[
+                                        "result_digest"
+                                    ],
+                                    "native_controls_result_path": continuation[
+                                        "native_control_result_path"
+                                    ],
+                                    "native_controls_result_digest": continuation[
+                                        "native_control_result_digest"
+                                    ],
+                                    "continuing_spend_from_this_run": False,
+                                    "retry_cap": 0,
+                                }
+                            )
             result = _write_native_task_arena_adapter_output(
                 args.adapter_output, result
             )

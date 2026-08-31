@@ -36,13 +36,19 @@ from .task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
 from .task_evaluation_robot_placement_agent_cli import run_robot_placement_cli
-from .task_evaluation_robot_placement_agent import validate_robot_placement_receipt
+from .task_evaluation_robot_placement_agent import (
+    _reject_infeasible_orientation_slew,
+    validate_robot_placement_receipt,
+)
 from .task_evaluation_robot_placement_agent import (
     ROBOT_PLACEMENT_AGENT_MODEL,
     ROBOT_PLACEMENT_AGENT_REASONING_EFFORT,
 )
 from .task_evaluation_robot_placement_readiness_candidate import (
     materialize_robot_placement_readiness_candidate,
+)
+from .task_evaluation_robot_placement_geometry import (
+    validate_robot_placement_trajectory_position_ik,
 )
 from .task_evaluation_robot_placement_trajectory import (
     placement_trajectory_from_native_plan,
@@ -57,6 +63,10 @@ from .task_evaluation_configured_controls_openai_placement import (
     VISUAL_REVIEW_CREDENTIAL_ROLE,
     configured_controls_robot_placement_openai_gate,
     exclusive_visual_review_cost_scope,
+)
+from .task_evaluation_native_construction_feedback_controller import (
+    CANDIDATE_SCHEMA_VERSION as NATIVE_FEEDBACK_CANDIDATE_SCHEMA_VERSION,
+    build_next_native_construction_inventory,
 )
 
 
@@ -392,6 +402,274 @@ def _materialize_placement_aware_cameras(
                 "configured_controls_autostart_camera_candidate_conflict"
             ) from None
     return destination
+
+
+def _native_feedback_candidate_universe(
+    *,
+    run_id: str,
+    inventory: Mapping[str, Any],
+    trajectory: Mapping[str, Any],
+    camera_template: Mapping[str, Any],
+    source_commit: str,
+    maximum_candidates: int,
+) -> dict[str, Any]:
+    """Compile bounded base/reset/entry/camera variants before GPU spend."""
+
+    validated_trajectory = validate_robot_placement_trajectory(trajectory)
+    phases = list(validated_trajectory["phases"])
+    first = phases[0]
+    authored_positions = [list(row["position_world_m"]) for row in phases]
+    authored_ids = [str(row["phase_id"]) for row in phases]
+    authored_orientations = [
+        list(row["orientation_world_xyzw"]) for row in phases
+    ]
+    candidates: list[dict[str, Any]] = []
+    for base_rank, raw in enumerate(inventory.get("candidates") or []):
+        if not isinstance(raw, Mapping):
+            continue
+        proposal = {
+            "candidate_id": str(raw.get("candidate_id") or ""),
+            "pose": json.loads(json.dumps(raw.get("pose"))),
+            "support_surface_id": str(raw.get("support_surface_id") or ""),
+        }
+        gate = _reject_infeasible_orientation_slew(
+            gate=raw,
+            proposal=proposal,
+            trajectory=validated_trajectory,
+            robot_id="franka_panda",
+            maximum_steps_per_phase=int(
+                validated_trajectory["maximum_steps_per_phase"]
+            ),
+        )
+        orientation_gate = gate.get("orientation_slew_feasibility")
+        reset = (
+            orientation_gate.get("task_aware_reset")
+            if isinstance(orientation_gate, Mapping)
+            else None
+        )
+        joints = (
+            reset.get("joint_positions_rad")
+            if isinstance(reset, Mapping)
+            else None
+        )
+        if (
+            gate.get("status") != "passed"
+            or not isinstance(joints, list)
+            or len(joints) != 7
+        ):
+            continue
+        reset_variant: dict[str, Any] = {
+            "schema_version": "task_evaluation_native_robot_reset_variant.v1",
+            "robot_joint_reset_positions_rad": {
+                f"panda_joint{index}": float(value)
+                for index, value in enumerate(joints, start=1)
+            },
+            "source_orientation_slew_feasibility_digest": canonical_digest(
+                orientation_gate
+            ),
+            "reset_variant_digest": "",
+        }
+        reset_variant["reset_variant_digest"] = canonical_digest(
+            reset_variant, digest_field="reset_variant_digest"
+        )
+        camera_document = _placement_aware_camera_candidates(
+            camera_template=camera_template,
+            accepted_pose=proposal["pose"],
+            selected_candidate_id=proposal["candidate_id"],
+            trajectory=validated_trajectory,
+            source_commit=source_commit,
+        )
+        camera_variant: dict[str, Any] = {
+            "schema_version": "task_evaluation_native_camera_variant.v1",
+            "cameras": camera_document["cameras"],
+            "source_camera_document_digest": camera_document["document_digest"],
+            "camera_variant_digest": "",
+        }
+        camera_variant["camera_variant_digest"] = canonical_digest(
+            camera_variant, digest_field="camera_variant_digest"
+        )
+        base = list(proposal["pose"]["position_world_m"])
+        precontact = list(first["position_world_m"])
+        vector = [base[index] - precontact[index] for index in range(3)]
+        planar_norm = math.hypot(vector[0], vector[1])
+        radial = (
+            [vector[0] / planar_norm, vector[1] / planar_norm, 0.0]
+            if planar_norm > 1.0e-9
+            else [0.0, 0.0, 0.0]
+        )
+        entry_options = (
+            (
+                "direct",
+                [
+                    {
+                        "waypoint_id": "direct-precontact",
+                        "position_world_m": precontact,
+                        "orientation_world_xyzw": list(
+                            first["orientation_world_xyzw"]
+                        ),
+                    }
+                ],
+                [],
+            ),
+            (
+                "overhead",
+                [
+                    {
+                        "waypoint_id": "overhead-clearance",
+                        "position_world_m": [
+                            precontact[0], precontact[1], precontact[2] + 0.12
+                        ],
+                        "orientation_world_xyzw": list(
+                            first["orientation_world_xyzw"]
+                        ),
+                    },
+                    {
+                        "waypoint_id": "overhead-precontact",
+                        "position_world_m": precontact,
+                        "orientation_world_xyzw": list(
+                            first["orientation_world_xyzw"]
+                        ),
+                    },
+                ],
+                [
+                    "collision:precontact:robot_task_forbidden_collision",
+                    "collision:precontact:robot_scene_contact",
+                ],
+            ),
+            (
+                "radial_standoff",
+                [
+                    {
+                        "waypoint_id": "radial-standoff",
+                        "position_world_m": [
+                            precontact[0] + 0.10 * radial[0],
+                            precontact[1] + 0.10 * radial[1],
+                            precontact[2] + 0.08,
+                        ],
+                        "orientation_world_xyzw": list(
+                            first["orientation_world_xyzw"]
+                        ),
+                    },
+                    {
+                        "waypoint_id": "radial-precontact",
+                        "position_world_m": precontact,
+                        "orientation_world_xyzw": list(
+                            first["orientation_world_xyzw"]
+                        ),
+                    },
+                ],
+                [
+                    "collision:precontact:robot_task_forbidden_collision",
+                    f"phase_unreached:{first['phase_id']}",
+                ],
+            ),
+        )
+        for option_index, (option_id, entry_waypoints, feedback_codes) in enumerate(
+            entry_options
+        ):
+            combined_positions = [
+                *[list(row["position_world_m"]) for row in entry_waypoints],
+                *authored_positions,
+            ]
+            combined_ids = [
+                *[f"feedback_{row['waypoint_id']}" for row in entry_waypoints],
+                *authored_ids,
+            ]
+            combined_orientations = [
+                *[list(row["orientation_world_xyzw"]) for row in entry_waypoints],
+                *authored_orientations,
+            ]
+            entry_gate = validate_robot_placement_trajectory_position_ik(
+                proposal=proposal,
+                trajectory_waypoints_world_m=combined_positions,
+                trajectory_phase_ids=combined_ids,
+                trajectory_orientations_world_xyzw=combined_orientations,
+            )
+            if entry_gate.get("status") != "passed":
+                continue
+            entry_variant: dict[str, Any] = {
+                "schema_version": "task_evaluation_native_entry_trajectory_variant.v1",
+                "entry_strategy": option_id,
+                "joins_authored_phase_id": str(first["phase_id"]),
+                "waypoints": entry_waypoints,
+                "cpu_position_ik_gate_digest": entry_gate[
+                    "trajectory_position_ik_gate_digest"
+                ],
+                "native_swept_collision_and_orientation_required": True,
+                "entry_trajectory_variant_digest": "",
+            }
+            entry_variant["entry_trajectory_variant_digest"] = canonical_digest(
+                entry_variant, digest_field="entry_trajectory_variant_digest"
+            )
+            candidate: dict[str, Any] = {
+                "schema_version": NATIVE_FEEDBACK_CANDIDATE_SCHEMA_VERSION,
+                "candidate_id": f"{proposal['candidate_id']}--{option_id}",
+                "deterministic_rank": base_rank * len(entry_options) + option_index,
+                "robot_base_pose_world": proposal["pose"],
+                "support_surface_id": proposal["support_surface_id"],
+                "reset_variant": reset_variant,
+                "entry_trajectory_variant": entry_variant,
+                "camera_variant": camera_variant,
+                "source_placement_candidate_id": proposal["candidate_id"],
+                "source_placement_geometry_gate_digest": raw.get(
+                    "geometry_gate_digest"
+                ),
+                "addressed_feedback_codes": feedback_codes,
+                "maximum_incremental_cost_usd": 0.12,
+                "maximum_runtime_seconds": 360.0,
+                "candidate_digest": "",
+            }
+            candidate["candidate_digest"] = canonical_digest(
+                candidate, digest_field="candidate_digest"
+            )
+            candidates.append(candidate)
+    return build_next_native_construction_inventory(
+        run_id=run_id,
+        round_index=0,
+        source_native_feedback=None,
+        prior_history=(),
+        candidate_universe=candidates,
+        maximum_candidates=min(int(maximum_candidates), 64),
+    )
+
+
+def _materialize_native_feedback_candidate_universe(
+    *,
+    root: Path,
+    run_id: str,
+    inventory: Mapping[str, Any],
+    trajectory: Mapping[str, Any],
+    camera_template_path: Path,
+    source_commit: str,
+    maximum_candidates: int,
+) -> tuple[Path, dict[str, Any]]:
+    value = _native_feedback_candidate_universe(
+        run_id=run_id,
+        inventory=inventory,
+        trajectory=trajectory,
+        camera_template=_read(
+            camera_template_path,
+            blocker="configured_controls_autostart_camera_template_invalid",
+        ),
+        source_commit=source_commit,
+        maximum_candidates=maximum_candidates,
+    )
+    destination = root / (
+        f"native-construction-feedback-candidates-{source_commit[:12]}.v1.json"
+    )
+    payload = (
+        json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    try:
+        with destination.open("xb") as stream:
+            stream.write(payload)
+        destination.chmod(0o440)
+    except FileExistsError:
+        if destination.is_symlink() or destination.read_bytes() != payload:
+            raise TaskEvaluationConfiguredControlsAutostartError(
+                "configured_controls_autostart_native_candidate_universe_conflict"
+            ) from None
+    return destination, value
 
 
 def _artifact(path: Path) -> dict[str, Any]:
@@ -882,6 +1160,12 @@ def _validate_result(
 ) -> dict[str, Any]:
     result = json.loads(json.dumps(dict(value), allow_nan=False))
     openai_evidence = result.get("official_openai_cost_evidence")
+    native_universe = result.get("native_construction_candidate_universe")
+    native_universe_path = (
+        Path(str(native_universe.get("path") or ""))
+        if isinstance(native_universe, Mapping)
+        else Path()
+    )
     if (
         result.get("schema_version") != RESULT_SCHEMA_VERSION
         or result.get("status") != "agent_binding_accepted_plan_materialized"
@@ -926,6 +1210,16 @@ def _validate_result(
         }
         or not all(_artifact_record_valid(row) for row in openai_evidence.values())
         or not Path(str(result.get("base_pose_candidate_path") or "")).is_absolute()
+        or not isinstance(native_universe, Mapping)
+        or not Path(str(native_universe.get("path") or "")).is_absolute()
+        or native_universe_path.is_symlink()
+        or not native_universe_path.is_file()
+        or _sha256(native_universe_path) != native_universe.get("file_sha256")
+        or _DIGEST.fullmatch(str(native_universe.get("file_sha256") or ""))
+        is None
+        or _DIGEST.fullmatch(str(native_universe.get("inventory_digest") or ""))
+        is None
+        or not 1 <= int(native_universe.get("candidate_count") or 0) <= 64
         or not Path(str(result.get("plan_path") or "")).is_absolute()
         or _DIGEST.fullmatch(str(result.get("plan_digest") or "")) is None
         or result.get("cpu_position_ik_qualified") is not True
@@ -1535,6 +1829,23 @@ def materialize_configured_controls_autostart(
         receipt=placement_receipt,
         inventory=inventory,
     )
+    native_universe_path, native_universe = (
+        _materialize_native_feedback_candidate_universe(
+            root=root,
+            run_id=f"{terminal['run_id']}-native-construction-feedback",
+            inventory=inventory,
+            trajectory=trajectory,
+            camera_template_path=Path(paths["cameras_path"]),
+            source_commit=intent["expected_production_commit"],
+            maximum_candidates=min(placement["candidate_inventory_cap"] * 3, 64),
+        )
+    )
+    native_universe_reference = {
+        "path": str(native_universe_path.resolve()),
+        "file_sha256": _sha256(native_universe_path),
+        "inventory_digest": native_universe["inventory_digest"],
+        "candidate_count": len(native_universe["candidates"]),
+    }
     camera_candidates_path = _materialize_placement_aware_cameras(
         root=root,
         camera_template_path=Path(paths["cameras_path"]),
@@ -1556,6 +1867,9 @@ def materialize_configured_controls_autostart(
             placement_receipt=placement_receipt,
             candidate_inventory=inventory,
             output_path=base_path,
+            native_construction_candidate_universe_reference=(
+                native_universe_reference
+            ),
         )
     bindings = {
         "robot_mount_interface_path": paths["robot_mount_interface_path"],
@@ -1600,6 +1914,7 @@ def materialize_configured_controls_autostart(
         "placement_agent_visual_review_completed": True,
         "official_openai_cost_evidence": openai_evidence,
         "base_pose_candidate_path": str(base_path),
+        "native_construction_candidate_universe": native_universe_reference,
         "plan_path": plan["plan_path"],
         "plan_digest": plan["plan_digest"],
         "cpu_position_ik_qualified": True,

@@ -383,9 +383,10 @@ printf '%s\n' BLUEPRINT_CUROBO_RUNTIME_READY
             round_index=round_index,
             maximum_candidates=maximum_candidates,
         )
+        remote_request = self._stage_remote_request(request)
         return build_native_candidate_inventory(
-            result=self._invoke(request),
-            request=request,
+            result=self._invoke(remote_request),
+            request=remote_request,
             backend_identity=CUROBO_BACKEND_IDENTITY,
         )
 

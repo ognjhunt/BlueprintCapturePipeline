@@ -904,6 +904,7 @@ def run_arena_native_control_vast(
             "runtime_dependency_cache_ready": warm_evidence.get(
                 "runtime_dependency_cache_ready"
             ),
+            "remote_work_dir": warm_evidence.get("remote_work_dir"),
             "ssh_host": warm_evidence.get("ssh_host"),
             "ssh_port": warm_evidence.get("ssh_port"),
             "watchdog_pid": retention.get("watchdog_pid"),

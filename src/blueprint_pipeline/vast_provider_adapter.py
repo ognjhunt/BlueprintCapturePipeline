@@ -347,6 +347,21 @@ def _runtime_dependency_cache_ready(
     )
 
 
+def _provider_remote_work_dir(startup_log_text: str) -> str | None:
+    """Retain the exact provider workspace selected by the entrypoint."""
+
+    matches = re.findall(
+        r"(?m)^BLUEPRINT_VAST_WORK_DIR:(/[^\r\n]+)$", startup_log_text
+    )
+    unique = sorted(set(matches))
+    if len(unique) != 1 or unique[0] not in {
+        "/workspace",
+        "/tmp/blueprint_vast_work",
+    }:
+        return None
+    return unique[0]
+
+
 def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
     """Return whether a bundle must use the Isaac image/runtime safety path."""
 
@@ -9832,6 +9847,7 @@ def run_vast_provider_adapter(
                 startup_log_text=startup_log_text,
                 isaac_smoke=isaac_smoke,
             ),
+            "remote_work_dir": _provider_remote_work_dir(startup_log_text),
             "instance_running": (
                 str(startup_probe.get("instance_final_status") or "").lower()
                 == "running"

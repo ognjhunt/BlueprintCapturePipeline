@@ -257,7 +257,27 @@ def materialize_remote_curobo_context(
                 ),
             }
         )
-        candidate_phases[candidate_id] = _five_stages(plan["phases"])
+        stages = _five_stages(plan["phases"])
+        entry_variant = dict(candidate.get("entry_trajectory_variant") or {})
+        entry_rows = entry_variant.get("waypoints")
+        if not isinstance(entry_rows, list) or not entry_rows:
+            raise CuroboContextError("curobo_candidate_entry_trajectory_invalid")
+        stages[0]["waypoints"] = [
+            {
+                "waypoint_id": str(row.get("waypoint_id") or f"entry-{index:02d}"),
+                "position_world_m": [
+                    float(value) for value in row["position_world_m"]
+                ],
+                "orientation_world_xyzw": [
+                    float(value) for value in row["orientation_world_xyzw"]
+                ],
+            }
+            for index, row in enumerate(entry_rows)
+            if isinstance(row, Mapping)
+        ]
+        if len(stages[0]["waypoints"]) != len(entry_rows):
+            raise CuroboContextError("curobo_candidate_entry_trajectory_invalid")
+        candidate_phases[candidate_id] = stages
 
     world_doc = {
         "schema_version": "task_evaluation_curobo_world_configuration.v1",

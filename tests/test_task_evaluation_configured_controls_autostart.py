@@ -709,6 +709,76 @@ def test_camera_candidates_are_scoped_to_the_source_commit(tmp_path: Path) -> No
     assert successor[:12] in second.name
 
 
+def test_native_feedback_universe_expands_cpu_inventory_into_bounded_exact_variants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset = {
+        "joint_positions_rad": [0.0, -0.62, 0.1, -1.36, 1.35, 1.75, -0.72]
+    }
+
+    def orientation_gate(*, gate, **_kwargs):
+        return {
+            **dict(gate),
+            "status": "passed",
+            "orientation_slew_feasibility": {
+                "feasible": True,
+                "task_aware_reset": reset,
+            },
+        }
+
+    monkeypatch.setattr(
+        autostart, "_reject_infeasible_orientation_slew", orientation_gate
+    )
+    monkeypatch.setattr(
+        autostart,
+        "validate_robot_placement_trajectory_position_ik",
+        lambda **_kwargs: {
+            "status": "passed",
+            "trajectory_position_ik_gate_digest": "sha256:" + "e" * 64,
+        },
+    )
+    inventory = {
+        "candidates": [
+            {
+                "schema_version": "task_evaluation_robot_placement_geometry_gate.v1",
+                "status": "passed",
+                "blockers": [],
+                "candidate_id": "candidate-42",
+                "pose": {
+                    "position_world_m": [3.54, -6.76, 0.753],
+                    "orientation_xyzw": [0.0, 0.0, 1.0, 0.0],
+                },
+                "support_surface_id": "/Site/counter",
+                "geometry_gate_digest": "sha256:" + "f" * 64,
+            }
+        ]
+    }
+
+    universe = autostart._native_feedback_candidate_universe(
+        run_id="scene-839873-native-feedback",
+        inventory=inventory,
+        trajectory=_trajectory(),
+        camera_template=_camera_template(),
+        source_commit=COMMIT,
+        maximum_candidates=8,
+    )
+
+    assert [row["candidate_id"] for row in universe["candidates"]] == [
+        "candidate-42--direct",
+        "candidate-42--overhead",
+        "candidate-42--radial_standoff",
+    ]
+    assert all(
+        row["reset_variant"]["robot_joint_reset_positions_rad"]["panda_joint4"]
+        == pytest.approx(-1.36)
+        for row in universe["candidates"]
+    )
+    assert all(len(row["camera_variant"]["cameras"]) == 3 for row in universe["candidates"])
+    assert universe["inventory_digest"] == autostart.canonical_digest(
+        universe, digest_field="inventory_digest"
+    )
+
+
 def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -882,6 +952,18 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
         autostart,
         "_validated_agent_openai_evidence",
         lambda **_kwargs: openai_evidence,
+    )
+    native_universe_path = _write(
+        tmp_path / "native-construction-universe.json", b"{}\n"
+    )
+    native_universe = {
+        "inventory_digest": "sha256:" + "d" * 64,
+        "candidates": [{"candidate_id": "candidate-42--direct"}],
+    }
+    monkeypatch.setattr(
+        autostart,
+        "_materialize_native_feedback_candidate_universe",
+        lambda **_kwargs: (native_universe_path, native_universe),
     )
 
     def readiness_materializer(**kwargs):
