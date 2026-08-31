@@ -86,6 +86,15 @@ class CuroboCandidateGenerator(JsonProcessCandidateGenerator):
         )
 
 
+def _last_meaningful_line(value: Any) -> str:
+    """The last non-empty redacted stderr line, bounded for a predicate."""
+
+    lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return re.sub(r"[^A-Za-z0-9_.:/ +-]", "_", lines[-1])[:160]
+
+
 class RemoteCuroboCandidateGenerator:
     """Run the exact cuRobo service on an already-owned warm Vast worker.
 
@@ -178,7 +187,9 @@ class RemoteCuroboCandidateGenerator:
             # The transport already reports why -- a timeout, or an exit code --
             # and redacts the output before returning it. Collapsing that into
             # one generic word costs a GPU allocation to rediscover, so the
-            # predicate carries the transport blocker and the exit status.
+            # predicate carries the transport blocker and the exit status, and
+            # the redacted transcript is retained next to the run's evidence.
+            self._retain_ssh_failure(result)
             raise CollisionAwareCandidateGenerationError(
                 ":".join(
                     [
@@ -189,10 +200,30 @@ class RemoteCuroboCandidateGenerator:
                             if result.get("returncode") is not None
                             else []
                         ),
+                        *(
+                            [_last_meaningful_line(result.get("stderr"))]
+                            if _last_meaningful_line(result.get("stderr"))
+                            else []
+                        ),
                     ]
                 )
             )
         return result
+
+    def _retain_ssh_failure(self, result: Mapping[str, Any]) -> None:
+        """Keep the redacted remote transcript; a torn-down GPU cannot be asked again."""
+
+        directory = self._root / "warm-ssh-failures"
+        try:
+            directory.mkdir(mode=0o750, parents=True, exist_ok=True)
+            path = directory / f"failure-{len(list(directory.glob('failure-*.json'))):03d}.json"
+            path.write_text(
+                json.dumps(dict(result), indent=1, sort_keys=True, default=str),
+                encoding="utf-8",
+            )
+        except OSError:
+            # Evidence retention must never mask the failure it documents.
+            return
 
     def _provision_runtime(self) -> None:
         source_root = (
