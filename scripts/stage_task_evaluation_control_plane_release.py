@@ -151,7 +151,9 @@ def _is_ancestor(repo: Path, commit: str, ref: str) -> bool:
     return completed.returncode == 0
 
 
-def _assert_source(repo: Path, source_commit: str) -> tuple[str, str]:
+def _assert_source(
+    repo: Path, source_commit: str, *, allow_unmerged_remote_commit: bool = False
+) -> tuple[str, str]:
     commit = source_commit.strip().lower()
     if not _valid_commit(commit):
         raise ControlPlaneReleaseError(
@@ -171,7 +173,18 @@ def _assert_source(repo: Path, source_commit: str) -> tuple[str, str]:
             "task_evaluation_control_plane_release_source_commit_unavailable"
         )
     origin_main = _run_git(repo, "rev-parse", "--verify", "origin/main^{commit}").lower()
-    if not _valid_commit(origin_main) or not _is_ancestor(repo, commit, "origin/main"):
+    remote_refs = _run_git(
+        repo,
+        "for-each-ref",
+        "--format=%(refname)",
+        "--contains",
+        commit,
+        "refs/remotes/origin",
+    ).splitlines()
+    admitted_unmerged = allow_unmerged_remote_commit and bool(remote_refs)
+    if not _valid_commit(origin_main) or not (
+        _is_ancestor(repo, commit, "origin/main") or admitted_unmerged
+    ):
         raise ControlPlaneReleaseError(
             "task_evaluation_control_plane_release_source_not_protected_main"
         )
@@ -304,6 +317,7 @@ def stage_task_evaluation_control_plane_release(
     state_root: str | Path,
     active_link: str | Path,
     activate: bool = False,
+    allow_unmerged_remote_commit: bool = False,
 ) -> dict[str, Any]:
     """Create (or prove) one detached source tree and optionally activate it."""
 
@@ -324,7 +338,11 @@ def stage_task_evaluation_control_plane_release(
             "task_evaluation_control_plane_release_state_root_overlaps_checkout"
         )
 
-    commit, origin_main = _assert_source(source, source_commit)
+    commit, origin_main = _assert_source(
+        source,
+        source_commit,
+        allow_unmerged_remote_commit=allow_unmerged_remote_commit,
+    )
     release_path = releases / commit
     created = _create_release_checkout(
         source_repo=source, release_path=release_path, source_commit=commit

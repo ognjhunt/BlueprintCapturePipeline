@@ -1293,6 +1293,12 @@ def _restore_installed_path_units(
                 check=False,
             )
             if result.returncode != 0:
+                observed = _systemd_unit_state(unit)
+                already_restored = (
+                    verb == "disable" and observed["enabled"] == "disabled"
+                ) or (verb == "stop" and observed["state"] == "inactive")
+                if already_restored:
+                    continue
                 raise ControlPlaneDeployError(
                     f"deploy_path_unit_state_restore_failed:{unit}:{verb}"
                 )
@@ -1754,6 +1760,7 @@ def deploy_control_plane_commit(
             state_root=state_root,
             active_link=active,
             activate=False,
+            allow_unmerged_remote_commit=canary,
         )
         try:
             prerequisite = validate_splat_render_prerequisites(
