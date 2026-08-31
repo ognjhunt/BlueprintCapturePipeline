@@ -501,6 +501,7 @@ def test_remote_curobo_refusal_names_the_transport_failure(
             "status": "blocked",
             "blockers": ["native_task_arena_warm_ssh_timeout"],
             "returncode": 81,
+            "stderr": "cloning curobo\nERROR: pip install failed\n",
         }
 
     monkeypatch.setattr(curobo_adapter, "_run_warm_ssh", ssh)
@@ -521,6 +522,13 @@ def test_remote_curobo_refusal_names_the_transport_failure(
     assert message.startswith("curobo_remote_process_failed")
     assert "native_task_arena_warm_ssh_timeout" in message
     assert "exit_81" in message
+    # The remote transcript is the only witness once the GPU is torn down.
+    assert "pip install failed" in message
+    retained = sorted((tmp_path / "transport" / "warm-ssh-failures").glob("*.json"))
+    assert retained, "redacted transcript must survive the torn-down worker"
+    kept = json.loads(retained[0].read_text(encoding="utf-8"))
+    assert kept["returncode"] == 81
+    assert "pip install failed" in kept["stderr"]
     # Building curobo CUDA extensions does not fit in a five minute probe budget.
     assert observed["timeout_seconds"] > 300.0
     assert observed["maximum_timeout_seconds"] > 300.0
