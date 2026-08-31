@@ -223,7 +223,11 @@ def materialize_remote_curobo_context(
             "store_debug": False,
         },
         "warmup_iterations": 5,
-        "maximum_emitted_waypoints_per_stage": 64,
+        # The native phase plan reserves at most twenty pre-task steps in the
+        # configured controls cadence. Two eight-waypoint stages plus their
+        # stable samples fit that exact headroom; a larger solver trace would
+        # be truthful cuRobo output but not executable by this sealed episode.
+        "maximum_emitted_waypoints_per_stage": 8,
     }
     world_models = {}
     analytic_rows = []

@@ -1670,12 +1670,44 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ]
             )
             task_samples = []
+            solver_sequence_raw = phase.get(
+                "solver_joint_waypoint_sequence_rad"
+            )
+            solver_sequence: list[list[float]] = []
+            if solver_sequence_raw is not None:
+                if (
+                    phase.get("solver_path_execution_required") is not True
+                    or not isinstance(solver_sequence_raw, list)
+                    or not solver_sequence_raw
+                ):
+                    raise RuntimeError(
+                        "native_task_curobo_entry_sequence_invalid"
+                    )
+                arm_names = list(servo.binding["arm_joint_names"])
+                for waypoint in solver_sequence_raw:
+                    if not isinstance(waypoint, Mapping) or set(waypoint) != set(
+                        arm_names
+                    ):
+                        raise RuntimeError(
+                            "native_task_curobo_entry_sequence_invalid"
+                        )
+                    values = [float(waypoint[name]) for name in arm_names]
+                    if not all(math.isfinite(value) for value in values):
+                        raise RuntimeError(
+                            "native_task_curobo_entry_sequence_invalid"
+                        )
+                    solver_sequence.append(values)
+            solver_waypoint_index = 0
             while (
                 total_steps < max_total_steps
                 and len(diagnostics) < maximum_steps_per_phase
             ):
-                global_target = global_ik_solutions.get(
-                    str(phase["phase_id"])
+                global_target = (
+                    solver_sequence[
+                        min(solver_waypoint_index, len(solver_sequence) - 1)
+                    ]
+                    if solver_sequence
+                    else global_ik_solutions.get(str(phase["phase_id"]))
                 )
                 if global_target is not None:
                     action, diagnostic = servo.action_for_joint_target(
@@ -1691,7 +1723,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "velocity_feedforward_scale"
                         ],
                     )
-                    diagnostic["pink_global_ik_phase_solution_used"] = True
+                    diagnostic["pink_global_ik_phase_solution_used"] = not bool(
+                        solver_sequence
+                    )
+                    diagnostic["curobo_solver_path_waypoint_used"] = bool(
+                        solver_sequence
+                    )
                 else:
                     action, diagnostic = servo.action_for_grasp_target(
                         target_position_world_m=phase["position_world_m"],
@@ -1710,6 +1747,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         ],
                     )
                     diagnostic["pink_global_ik_phase_solution_used"] = False
+                    diagnostic["curobo_solver_path_waypoint_used"] = False
                 env.step(
                     torch.tensor(
                         [action],
@@ -1734,7 +1772,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ),
                 )
                 orientation_error = arrival["orientation_error_rad"]
-                stable = stable + 1 if arrival["reached"] else 0
+                if solver_waypoint_index < len(solver_sequence):
+                    measured_joints = servo.read_arm_joint_positions()
+                    joint_error = max(
+                        abs(actual - expected)
+                        for actual, expected in zip(
+                            measured_joints,
+                            solver_sequence[solver_waypoint_index],
+                            strict=True,
+                        )
+                    )
+                    diagnostic["curobo_solver_waypoint_index"] = (
+                        solver_waypoint_index
+                    )
+                    diagnostic["curobo_solver_waypoint_joint_error_rad"] = (
+                        joint_error
+                    )
+                    if joint_error <= servo_command_limits["max_joint_delta_rad"]:
+                        solver_waypoint_index += 1
+                solver_sequence_complete = (
+                    solver_waypoint_index >= len(solver_sequence)
+                )
+                stable = (
+                    stable + 1
+                    if solver_sequence_complete and arrival["reached"]
+                    else 0
+                )
                 diagnostic["step_index"] = total_steps
                 diagnostic["position_error_m"] = error
                 diagnostic["orientation_error_rad"] = orientation_error
@@ -1806,6 +1869,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "gripper_command": gripper_command,
                 "gate_ids": list(phase.get("gate_ids") or []),
                 "steps": len(diagnostics),
+                "curobo_solver_path_waypoint_count": len(solver_sequence),
+                "curobo_solver_path_waypoint_count_reached": (
+                    solver_waypoint_index
+                ),
+                "curobo_solver_path_completed": (
+                    solver_waypoint_index >= len(solver_sequence)
+                ),
                 "diagnostics": diagnostics[:4] + diagnostics[-2:],
                 "task_sample": sample,
                 "task_samples": task_samples,

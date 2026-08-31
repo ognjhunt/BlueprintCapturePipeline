@@ -315,6 +315,9 @@ def _generate(request: Mapping[str, Any]) -> dict[str, Any]:
                     maximum=int(robot.get("maximum_emitted_waypoints_per_stage", 96)),
                 )
                 for waypoint in sampled:
+                    waypoint["source_native_phase_id"] = str(
+                        goal["waypoint_id"]
+                    )
                     waypoint["target_position_world_m"] = [
                         float(value) for value in goal["position_world_m"]
                     ]

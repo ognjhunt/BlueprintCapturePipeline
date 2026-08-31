@@ -189,14 +189,31 @@ def _feedback_codes(value: Mapping[str, Any] | None) -> list[str]:
         return []
     raw = value.get("feedback_codes")
     if raw is None:
-        raw = value.get("blockers")
+        raw = value.get("native_blockers") or value.get("blockers")
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
-        return []
+        raw = []
+    codes = {
+        str(row)
+        for row in raw
+        if isinstance(row, str) and 0 < len(row) <= 240
+    }
+    failed = str(value.get("first_failed_phase") or "")
+    if failed:
+        codes.add(f"phase_unreached:{failed}")
+    collision = value.get("first_collision")
+    if isinstance(collision, Mapping):
+        phase_id = str(collision.get("phase_id") or "")
+        channel = str(collision.get("channel") or "")
+        if phase_id and channel:
+            codes.add(f"collision:{phase_id}:{channel}")
+    for role, camera in (value.get("camera_measurements") or {}).items():
+        if isinstance(camera, Mapping) and camera.get("passed") is not True:
+            codes.add(f"camera_failed:{role}")
+            if camera.get("site_rendered") is False:
+                codes.add(f"site_not_rendered:{role}")
     return sorted(
         {
-            str(row)
-            for row in raw
-            if isinstance(row, str) and 0 < len(row) <= 240
+            row for row in codes if 0 < len(row) <= 240
         }
     )
 
@@ -231,7 +248,22 @@ def build_candidate_generation_request(
             )
     history_digests: list[str] = []
     for row in prior_history:
-        digest = row.get("execution_digest") or row.get("candidate_digest")
+        execution = row.get("execution")
+        candidate = row.get("candidate")
+        digest = (
+            row.get("execution_digest")
+            or row.get("candidate_digest")
+            or (
+                execution.get("execution_result_digest")
+                if isinstance(execution, Mapping)
+                else None
+            )
+            or (
+                candidate.get("candidate_digest")
+                if isinstance(candidate, Mapping)
+                else None
+            )
+        )
         if not _SHA256.fullmatch(str(digest or "")):
             raise CollisionAwareCandidateGenerationError(
                 "candidate_generation_history_digest_invalid"

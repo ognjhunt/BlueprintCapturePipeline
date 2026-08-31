@@ -844,7 +844,49 @@ def construction_phase_plan_for_candidate(
     variant = selected["entry_trajectory_variant"]
     entry_phases: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for index, raw in enumerate(variant["waypoints"]):
+    raw_waypoints = list(variant["waypoints"])
+    solver_path = any(
+        isinstance(row, Mapping)
+        and isinstance(row.get("robot_joint_positions_rad"), Mapping)
+        for row in raw_waypoints
+    )
+    rows_to_materialize: list[Mapping[str, Any]] = []
+    if solver_path:
+        for stage_kind in ("entry", "approach"):
+            stage_rows = [
+                row
+                for row in raw_waypoints
+                if isinstance(row, Mapping)
+                and row.get("stage_kind") == stage_kind
+            ]
+            if not stage_rows:
+                raise NativeConstructionFeedbackControllerError(
+                    "native_construction_candidate_entry_trajectory_invalid"
+                )
+            terminal = stage_rows[-1]
+            rows_to_materialize.append(
+                {
+                    "waypoint_id": f"curobo-{stage_kind}",
+                    "position_world_m": terminal.get("target_position_world_m"),
+                    "orientation_world_xyzw": terminal.get(
+                        "target_orientation_world_xyzw"
+                    ),
+                    "solver_stage_kind": stage_kind,
+                    "solver_joint_waypoint_sequence_rad": [
+                        dict(row["robot_joint_positions_rad"])
+                        for row in stage_rows
+                    ],
+                }
+            )
+    else:
+        rows_to_materialize = [
+            row for row in raw_waypoints if isinstance(row, Mapping)
+        ]
+        if len(rows_to_materialize) != len(raw_waypoints):
+            raise NativeConstructionFeedbackControllerError(
+                "native_construction_candidate_entry_trajectory_invalid"
+            )
+    for index, raw in enumerate(rows_to_materialize):
         if not isinstance(raw, Mapping):
             raise NativeConstructionFeedbackControllerError(
                 "native_construction_candidate_entry_trajectory_invalid"
@@ -867,8 +909,7 @@ def construction_phase_plan_for_candidate(
             4,
             blocker="native_construction_candidate_entry_trajectory_invalid",
         )
-        entry_phases.append(
-            {
+        phase = {
                 "phase_id": phase_id,
                 "position_world_m": position,
                 "orientation_world_xyzw": orientation,
@@ -876,14 +917,93 @@ def construction_phase_plan_for_candidate(
                 "gate_ids": [],
                 "feedback_entry_only": True,
             }
-        )
+        if solver_path:
+            sequence = raw.get("solver_joint_waypoint_sequence_rad")
+            if not isinstance(sequence, list) or not sequence:
+                raise NativeConstructionFeedbackControllerError(
+                    "native_construction_candidate_entry_trajectory_invalid"
+                )
+            try:
+                normalized_sequence = [
+                    {str(name): float(value) for name, value in row.items()}
+                    for row in sequence
+                    if isinstance(row, Mapping)
+                ]
+            except (TypeError, ValueError) as exc:
+                raise NativeConstructionFeedbackControllerError(
+                    "native_construction_candidate_entry_trajectory_invalid"
+                ) from exc
+            if len(normalized_sequence) != len(sequence) or any(
+                not row or not all(math.isfinite(value) for value in row.values())
+                for row in normalized_sequence
+            ):
+                raise NativeConstructionFeedbackControllerError(
+                    "native_construction_candidate_entry_trajectory_invalid"
+                )
+            phase["solver_stage_kind"] = raw["solver_stage_kind"]
+            phase["solver_joint_waypoint_sequence_rad"] = normalized_sequence
+            phase["solver_path_execution_required"] = True
+        entry_phases.append(phase)
+    if solver_path:
+        task_solver_rows = [
+            row
+            for row in raw_waypoints
+            if isinstance(row, Mapping)
+            and row.get("stage_kind") in {"contact", "release", "retreat"}
+        ]
+        assigned: set[int] = set()
+        for authored_phase in plan["phases"]:
+            matches = [
+                (index, row)
+                for index, row in enumerate(task_solver_rows)
+                if row.get("source_native_phase_id")
+                == authored_phase.get("phase_id")
+            ]
+            if not matches:
+                continue
+            try:
+                sequence = [
+                    {
+                        str(name): float(value)
+                        for name, value in row[
+                            "robot_joint_positions_rad"
+                        ].items()
+                    }
+                    for _index, row in matches
+                ]
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                raise NativeConstructionFeedbackControllerError(
+                    "native_construction_candidate_entry_trajectory_invalid"
+                ) from exc
+            if any(
+                not values
+                or not all(math.isfinite(value) for value in values.values())
+                for values in sequence
+            ):
+                raise NativeConstructionFeedbackControllerError(
+                    "native_construction_candidate_entry_trajectory_invalid"
+                )
+            assigned.update(index for index, _row in matches)
+            authored_phase["solver_stage_kind"] = matches[0][1]["stage_kind"]
+            authored_phase["solver_joint_waypoint_sequence_rad"] = sequence
+            authored_phase["solver_path_execution_required"] = True
+        if len(assigned) != len(task_solver_rows):
+            raise NativeConstructionFeedbackControllerError(
+                "native_construction_candidate_task_solver_path_unbound"
+            )
     execution = plan.get("execution_parameters")
     cadence = scene_plan.get("cadence")
     if not isinstance(execution, Mapping) or not isinstance(cadence, Mapping):
         raise NativeConstructionFeedbackControllerError(
             "native_construction_candidate_entry_trajectory_invalid"
         )
-    added_steps = len(entry_phases) * int(execution.get("stable_samples") or 0)
+    stable_samples = int(execution.get("stable_samples") or 0)
+    added_steps = len(entry_phases) * stable_samples
+    if solver_path:
+        added_steps += sum(
+            len(row["solver_joint_waypoint_sequence_rad"])
+            for row in entry_phases
+        )
     existing_budget = int(execution.get("maximum_construction_total_steps") or 0)
     action_cap = int(cadence.get("maximum_action_steps") or 0)
     if added_steps <= 0 or existing_budget + added_steps > action_cap:
@@ -1294,7 +1414,14 @@ def run_native_construction_feedback_controller(
             authority=admitted,
         )
         attempted_digests.append(str(candidate["candidate_digest"]))
-        total_cost += float(execution["incremental_cost_upper_bound_usd"])
+        # Candidate ceiling covers both remote candidate generation and native
+        # execution on the continuously billed warm worker. The allocator
+        # result measures execution only, so charging merely that value would
+        # make cuRobo planning time disappear from the controller budget.
+        total_cost += max(
+            float(execution["incremental_cost_upper_bound_usd"]),
+            float(candidate["maximum_incremental_cost_usd"]),
+        )
         if total_cost > float(admitted["maximum_incremental_cost_usd"]):
             raise NativeConstructionFeedbackControllerError(
                 "native_construction_feedback_cost_cap_exceeded"

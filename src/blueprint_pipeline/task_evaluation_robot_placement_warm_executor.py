@@ -55,6 +55,7 @@ from .task_evaluation_native_construction_feedback_controller import (
     run_native_construction_feedback_controller,
     summarize_native_construction_feedback,
     validate_native_construction_candidate,
+    validate_native_construction_inventory,
 )
 from .task_evaluation_robot_placement_agent import (
     robot_placement_agents_sdk_config,
@@ -1043,6 +1044,25 @@ def _run_retained_native_construction_feedback(
             ),
             remote_python_package_root=remote_package_root,
         )
+    initial_inventory = validate_native_construction_inventory(
+        candidate_generator.generate(
+            source_native_feedback=feedback,
+            prior_history=(),
+            round_index=0,
+            maximum_candidates=min(len(universe["candidates"]), 64),
+        ),
+        expected_run_id=run_id,
+        expected_round_index=0,
+        expected_feedback_digest=str(feedback["feedback_digest"]),
+        maximum_candidates=64,
+    )
+    authority["maximum_candidates_per_round"] = len(
+        initial_inventory["candidates"]
+    )
+    authority["authority_digest"] = ""
+    authority["authority_digest"] = canonical_digest(
+        authority, digest_field="authority_digest"
+    )
     if search_ledger is None:
         from .task_evaluation_native_construction_optuna_ledger import (
             NativeConstructionOptunaSearchLedger,

@@ -11,6 +11,7 @@ from blueprint_pipeline.task_evaluation_collision_aware_candidate_generation imp
     CandidateGeneratorContext,
     CollisionAwareCandidateGenerationError,
     RESULT_SCHEMA_VERSION,
+    build_candidate_generation_request,
 )
 from blueprint_pipeline.task_evaluation_curobo_candidate_generator import (
     CUROBO_BACKEND_IDENTITY,
@@ -123,6 +124,48 @@ def _solution(request: dict) -> dict:
         },
         "solution_digest",
     )
+
+
+def test_request_consumes_controller_feedback_and_nested_execution_history(
+    tmp_path: Path,
+) -> None:
+    feedback = {
+        "feedback_digest": "sha256:" + "1" * 64,
+        "native_blockers": ["native_rigid_construction_gate_failed:push_contact"],
+        "first_failed_phase": "push_contact",
+        "first_collision": {
+            "phase_id": "precontact",
+            "channel": "robot_task_forbidden_collision",
+        },
+        "camera_measurements": {
+            "external": {"passed": False, "site_rendered": False}
+        },
+    }
+    request = build_candidate_generation_request(
+        context=_context(tmp_path),
+        backend_identity=CUROBO_BACKEND_IDENTITY,
+        source_native_feedback=feedback,
+        prior_history=[
+            {
+                "execution": {
+                    "execution_result_digest": "sha256:" + "2" * 64
+                },
+                "candidate": {"candidate_digest": "sha256:" + "3" * 64},
+            }
+        ],
+        round_index=1,
+        maximum_candidates=4,
+    )
+
+    assert request["prior_execution_digests"] == ["sha256:" + "2" * 64]
+    assert "phase_unreached:push_contact" in request[
+        "addressable_feedback_codes"
+    ]
+    assert (
+        "collision:precontact:robot_task_forbidden_collision"
+        in request["addressable_feedback_codes"]
+    )
+    assert "site_not_rendered:external" in request["addressable_feedback_codes"]
 
 
 class _Process:
@@ -525,4 +568,7 @@ def test_context_materializer_binds_packet_mesh_and_five_native_stages(
     assert [
         row["stage_kind"] for row in task["candidate_phases"]["analytic-00"]
     ] == ["entry", "approach", "contact", "release", "retreat"]
+    assert task["candidate_phases"]["analytic-00"][0]["waypoints"][0][
+        "position_world_m"
+    ] == [2.8, -6.7, 0.94]
     assert remote_root == "/workspace/adp_arena_provider_bundle/provider_runtime"
