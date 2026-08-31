@@ -30,6 +30,10 @@ from blueprint_pipeline.native_franka_grasp_geometry import (
 from blueprint_pipeline.native_task_arena_dependency_contract import (
     NATIVE_TASK_ARENA_DEPENDENCY_IMPORTS as DEPENDENCY_IMPORTS,
 )
+from blueprint_pipeline.native_task_arena_feedback_bootstrap_runtime import (
+    feedback_bootstrap_result,
+    verified_construction_phase_plan_path,
+)
 from blueprint_pipeline.native_task_curobo_path_execution import (
     advance_solver_waypoint,
     solver_command_target,
@@ -348,27 +352,6 @@ def _load_and_verify_manifest(
     ):
         raise RuntimeError("native_task_construction_manifest_invalid")
     return manifest
-
-
-def _verified_construction_phase_plan_path(
-    runtime: Path, manifest: Mapping[str, Any]
-) -> Path:
-    rows = manifest.get("bound_runtime_inputs")
-    if not isinstance(rows, list) or len(rows) != 1:
-        raise RuntimeError("native_task_construction_runtime_inputs_invalid")
-    row = rows[0]
-    if not isinstance(row, Mapping):
-        raise RuntimeError("native_task_construction_runtime_inputs_invalid")
-    relative = str(row.get("relative_path") or "")
-    path = runtime / relative
-    if (
-        relative != "runtime_inputs/native_task_construction_phase_plan.v1.json"
-        or not path.is_file()
-        or path.stat().st_size != row.get("size_bytes")
-        or _sha256(path) != row.get("sha256")
-    ):
-        raise RuntimeError("native_task_construction_phase_plan_identity_mismatch")
-    return path
 
 
 def _body_pose_world(
@@ -1261,7 +1244,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             materialize_native_task_construction_phase_plan,
         )
 
-        frozen_phase_path = _verified_construction_phase_plan_path(runtime, manifest)
+        frozen_phase_path = verified_construction_phase_plan_path(runtime, manifest)
         frozen_phase_plan = json.loads(
             frozen_phase_path.read_text(encoding="utf-8")
         )
@@ -1270,6 +1253,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("native_task_construction_phase_plan_binding_mismatch")
         phase_plan = frozen_phase_plan
         result["construction_phase_plan"] = phase_plan
+        bootstrap = feedback_bootstrap_result(
+            runtime=runtime, manifest=manifest, packet=packet
+        )
+        if bootstrap is not None:
+            result.update(bootstrap)
+            _announce("feedback_bootstrap", "completed")
+            return 1
         result["phase_reached"] = "packet_verified"
         _announce("packet_verification", "completed")
 

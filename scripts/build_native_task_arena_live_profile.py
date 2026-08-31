@@ -63,6 +63,9 @@ from blueprint_pipeline.native_task_arena_warm_authority import (
     validate_native_task_arena_warm_attempt_authority,
     validate_native_task_arena_warm_session,
 )
+from blueprint_pipeline.native_construction_terminal_feedback_contract import (
+    validate_terminal_feedback_adoption,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_runtime import (
     NativeTaskArenaRuntimeError,
@@ -522,6 +525,31 @@ def _lane_blockers(
                         raise ValueError(
                             "native_task_arena_warm_session_requires_construction_or_controls"
                         )
+                    adoption_path = context.extra_paths.get(
+                        "terminal_feedback_adoption"
+                    )
+                    if adoption_path is not None:
+                        if (
+                            link.probe_kind != CONSTRUCTION_PROBE_KIND
+                            or not retain_warm_session
+                        ):
+                            raise ValueError(
+                                "native_task_arena_feedback_bootstrap_mode_invalid"
+                            )
+                        adoption = validate_terminal_feedback_adoption(
+                            _read_mapping(
+                                adoption_path,
+                                error="native_task_arena_terminal_feedback_adoption_invalid",
+                            )
+                        )
+                        if adoption.get("packet_request_digest") != request.get(
+                            "request_digest"
+                        ) or bound_inputs.get(
+                            "native_construction_terminal_feedback_adoption.v1.json"
+                        ) != file_digest(adoption_path):
+                            raise ValueError(
+                                "native_task_arena_terminal_feedback_adoption_invalid"
+                            )
                     validate_native_task_arena_paid_attempt_authority(
                         authority,
                         prepared_bundle=prepared_bundle,
@@ -588,6 +616,12 @@ def _lane_argv(link: ArenaLink, *, authorize_gated_backbone: bool = False):
         )
         if authority.get("retain_warm_session") is True:
             built += ["--native-task-arena-retain-warm-session"]
+        adoption = context.extra_paths.get("terminal_feedback_adoption")
+        if adoption is not None:
+            built += [
+                "--native-task-arena-terminal-feedback-adoption",
+                str(adoption),
+            ]
         for instance_id in (
             (authority.get("active_instance_allowlist") or {}).get(
                 "external_provider_owned", []
@@ -860,6 +894,15 @@ def _immutable_inputs(link: ArenaLink):
                     "digest": file_digest(warm_session),
                 }
             )
+        adoption = context.extra_paths.get("terminal_feedback_adoption")
+        if adoption is not None:
+            rows.append(
+                {
+                    "name": "native_task_arena_terminal_feedback_adoption",
+                    "path": str(adoption),
+                    "digest": file_digest(adoption),
+                }
+            )
         # Each predecessor result is pinned by digest: this link's verdict is
         # only about the packet it actually consumed.
         for name in link.predecessors:
@@ -978,6 +1021,7 @@ def _spec(
     expected_task_id: str = "contract_probe_task",
     with_avoidlist: bool = False,
     with_warm_session: bool = False,
+    with_terminal_feedback_adoption: bool = False,
     authorize_gated_backbone: bool = False,
     provider: str = "vast",
 ) -> LaneLiveProfileSpec:
@@ -1020,6 +1064,11 @@ def _spec(
             "attempt_authority",
             *(("machine_avoidlist",) if with_avoidlist else ()),
             *(("warm_session",) if with_warm_session else ()),
+            *(
+                ("terminal_feedback_adoption",)
+                if with_terminal_feedback_adoption
+                else ()
+            ),
             *link.predecessors,
         ),
         required_providers=(provider,),
@@ -1044,6 +1093,7 @@ def build_native_task_arena_live_profile(
     authorize_gated_backbone: bool = False,
     machine_avoidlist_path: str | Path | None = None,
     warm_session_path: str | Path | None = None,
+    terminal_feedback_adoption_path: str | Path | None = None,
     revision: str | None = None,
     max_hourly_rate_usd: float = 1.0,
     max_spend_usd: float = 2.0,
@@ -1073,6 +1123,7 @@ def build_native_task_arena_live_profile(
         "policy_execution_spec": policy_execution_spec_path,
         "machine_avoidlist": machine_avoidlist_path,
         "warm_session": warm_session_path,
+        "terminal_feedback_adoption": terminal_feedback_adoption_path,
     }
     missing = [name for name in entry.predecessors if supplied.get(name) is None]
     if missing:
@@ -1109,6 +1160,7 @@ def build_native_task_arena_live_profile(
                 "attempt_authority",
                 "machine_avoidlist",
                 "warm_session",
+                "terminal_feedback_adoption",
             }
         )
     }
@@ -1139,6 +1191,9 @@ def build_native_task_arena_live_profile(
             expected_task_id=task_id,
             with_avoidlist=machine_avoidlist_path is not None,
             with_warm_session=warm_session_path is not None,
+            with_terminal_feedback_adoption=(
+                terminal_feedback_adoption_path is not None
+            ),
             authorize_gated_backbone=authorize_gated_backbone,
             provider=provider,
         ),
@@ -1186,6 +1241,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         )
         target.add_argument("--warm-session")
+        if name == "construction":
+            target.add_argument("--terminal-feedback-adoption")
         target.add_argument(
             "--revision",
             help="Distinguish a rebuilt profile whose inputs changed at the same commit.",
@@ -1242,6 +1299,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             machine_avoidlist_path=args.machine_avoidlist,
             warm_session_path=args.warm_session,
+            terminal_feedback_adoption_path=getattr(
+                args, "terminal_feedback_adoption", None
+            ),
             revision=args.revision,
             max_hourly_rate_usd=args.max_hourly_rate_usd,
             max_spend_usd=args.max_spend_usd,

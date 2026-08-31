@@ -652,6 +652,61 @@ def test_native_lane_prepares_rehearses_then_publishes_once(lane: str) -> None:
             )
 
 
+def test_feedback_construction_graph_routes_checkpoint_and_retains_one_worker() -> None:
+    lane = "native_task_arena_construction"
+    context = {
+        name: f"value-{name}"
+        for step in prep.LANES[lane]
+        for name in prep.step_placeholders(step)
+    }
+    adoption_path = "/evidence/terminal-feedback-adoption.v1.json"
+    context.update(
+        {
+            "source_commit": "a" * 40,
+            "terminal_feedback_adoption": adoption_path,
+            "terminal_feedback_adoption_digest": "sha256:" + "b" * 64,
+            "reference_bindings": {
+                "terminal_feedback_adoption": {
+                    "path": adoption_path,
+                    "checkpoint_digest": "sha256:" + "b" * 64,
+                }
+            },
+        }
+    )
+
+    result = prep.validate_paid_lane_launch(lane, context)
+    steps = {row["step_id"]: row["argv"] for row in result["planned_steps"]}
+
+    assert steps["provider_bundle"][-2:] == [
+        "--terminal-feedback-adoption",
+        adoption_path,
+    ]
+    assert "--retain-warm-session" in steps["paid_authority"]
+    assert steps["allocator_dry_run"][-3:] == [
+        "--native-task-arena-terminal-feedback-adoption",
+        adoption_path,
+        "--native-task-arena-retain-warm-session",
+    ]
+    assert steps["live_profile"][-2:] == [
+        "--terminal-feedback-adoption",
+        adoption_path,
+    ]
+
+    context.pop("terminal_feedback_adoption")
+    context.pop("terminal_feedback_adoption_digest")
+    context.pop("reference_bindings")
+    ordinary = prep.validate_paid_lane_launch(lane, context)
+    ordinary_argv = [
+        fragment
+        for row in ordinary["planned_steps"]
+        for fragment in row["argv"]
+    ]
+    assert "--retain-warm-session" not in ordinary_argv
+    assert "--native-task-arena-retain-warm-session" not in ordinary_argv
+    assert "--terminal-feedback-adoption" not in ordinary_argv
+    assert "--native-task-arena-terminal-feedback-adoption" not in ordinary_argv
+
+
 def test_native_context_reopens_independent_versioned_references(
     tmp_path: Path,
 ) -> None:
@@ -690,6 +745,43 @@ def test_native_context_reopens_independent_versioned_references(
         ),
         encoding="utf-8",
     )
+    packet_request = {"request_digest": "sha256:" + "6" * 64}
+    (packet / "native_task_arena_packet_request.v1.json").write_text(
+        json.dumps(packet_request), encoding="utf-8"
+    )
+    feedback = {"passed": False, "feedback_digest": ""}
+    feedback["feedback_digest"] = prep._canonical_artifact_digest(
+        feedback, digest_field="feedback_digest"
+    )
+    baseline = {
+        "schema_version": "task_evaluation_native_construction_adopted_baseline.v1",
+        "optuna_trial_recorded": False,
+        "candidate_digest": None,
+        "native_feedback_digest": feedback["feedback_digest"],
+        "binding_digest": "",
+    }
+    baseline["binding_digest"] = prep._canonical_artifact_digest(
+        baseline, digest_field="binding_digest"
+    )
+    adoption_value = {
+        "schema_version": (
+            "task_evaluation_native_construction_terminal_feedback_adoption.v1"
+        ),
+        "status": "accepted_for_feedback_bootstrap",
+        "feedback_bootstrap_required": True,
+        "baseline_physics_replay_required": False,
+        "native_gates_or_thresholds_modified": False,
+        "prior_attempted_candidate_digests": [],
+        "packet_request_digest": packet_request["request_digest"],
+        "initial_native_feedback": feedback,
+        "prior_attempted_baseline_binding": baseline,
+        "checkpoint_digest": "",
+    }
+    adoption_value["checkpoint_digest"] = prep._canonical_artifact_digest(
+        adoption_value, digest_field="checkpoint_digest"
+    )
+    adoption_path = tmp_path / "terminal-feedback-adoption.json"
+    adoption_path.write_text(json.dumps(adoption_value), encoding="utf-8")
     runtime_source = tmp_path / "runtime-source.json"
     runtime_source.write_text(
         json.dumps({"receipt_digest": "sha256:" + "3" * 64}),
@@ -809,6 +901,10 @@ def test_native_context_reopens_independent_versioned_references(
                         tmp_path / "project-spend.json"
                     ),
                     "initial_provider_zero": str(tmp_path / "provider-zero.json"),
+                    "terminal_feedback_adoption": str(adoption_path),
+                    "terminal_feedback_adoption_digest": adoption_value[
+                        "checkpoint_digest"
+                    ],
                 },
             }
         ),
@@ -831,6 +927,12 @@ def test_native_context_reopens_independent_versioned_references(
     assert context["reference_bindings"]["rights_admission_path"] == str(
         rights_admission.resolve()
     )
+    assert context["terminal_feedback_adoption"] == str(adoption_path.resolve())
+    assert context["reference_bindings"]["terminal_feedback_adoption"] == {
+        "path": str(adoption_path.resolve()),
+        "sha256": prep._sha256_file(adoption_path),
+        "checkpoint_digest": adoption_value["checkpoint_digest"],
+    }
     assert [
         row["role"] for row in context["reference_bindings"]["rights_evidence"]
     ] == ["publisher_terms", "human_authority_record"]

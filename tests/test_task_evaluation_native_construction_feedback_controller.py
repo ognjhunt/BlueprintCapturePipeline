@@ -28,6 +28,17 @@ from blueprint_pipeline.task_evaluation_robot_placement_warm_executor import (
     WarmNativeConstructionFeedbackExecutor,
     run_retained_native_construction_feedback,
 )
+from blueprint_pipeline.task_evaluation_native_construction_terminal_feedback import (
+    main as terminal_feedback_main,
+    materialize_native_construction_terminal_feedback_adoption,
+    validate_native_construction_terminal_feedback_adoption,
+)
+from blueprint_pipeline.native_task_arena_feedback_bootstrap_runtime import (
+    feedback_bootstrap_result,
+)
+from blueprint_pipeline.native_task_arena_feedback_allocator_adapter import (
+    terminal_feedback_bootstrap_blockers,
+)
 from blueprint_pipeline.native_task_construction_plan import (
     native_task_construction_authored_contract_digest,
 )
@@ -351,6 +362,8 @@ def test_feedback_names_first_collision_contact_displacement_and_camera() -> Non
     assert feedback["first_failed_phase"] == "push_contact"
     assert feedback["first_collision"] == {
         "phase_id": "precontact",
+        "sample_index": 0,
+        "sample_kind": "terminal",
         "channel": "robot_task_forbidden_collision",
         "peak_force_n": pytest.approx(0.602),
         "link_or_sensor_id": "forbidden__link7",
@@ -362,6 +375,76 @@ def test_feedback_names_first_collision_contact_displacement_and_camera() -> Non
     assert feedback["camera_measurements"]["external"]["site_rendered"] is False
     assert feedback["feedback_digest"] == canonical_digest(
         feedback, digest_field="feedback_digest"
+    )
+
+
+def test_feedback_scans_all_samples_and_maps_native_gate_objectives() -> None:
+    native = _native(passed=False, collision_force=0.0)
+    precontact = native["phase_results"][0]
+    samples = []
+    for index in range(44):
+        samples.append(
+            {
+                "task_scoring_pose_world": [
+                    2.97,
+                    -6.76,
+                    0.818,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ],
+                "robot_scene_contact_peak_force_n": (
+                    59.564 if index == 43 else 0.0
+                ),
+                "robot_task_forbidden_collision_peak_force_n": 0.0,
+                "task_scene_collision_peak_force_n": 0.0,
+                "task_robot_contact_peak_force_n": 0.0,
+                "task_support_contact_peak_force_n": 4.9,
+            }
+        )
+    precontact["task_samples"] = samples
+    precontact["task_sample"]["robot_scene_contact_peak_force_n"] = 0.0
+    native["blockers"] = [
+        "native_rigid_construction_gate_failed:base_collision_clearance",
+        "native_rigid_construction_gate_failed:destination_containment",
+        "native_rigid_construction_gate_failed:push_contact_maintained",
+        "native_rigid_construction_gate_failed:push_path",
+    ]
+    native["construction_phase_plan"] = {
+        "task_kind": "rigid_pick_place",
+        "thresholds": {"task_contact_minimum_force_n": 1.0},
+        "phases": [
+            {
+                "phase_id": "precontact",
+                "expected_scoring_position_world_m": [2.97, -6.76, 0.818],
+            },
+            {
+                "phase_id": "push_contact",
+                "expected_scoring_position_world_m": [3.0, -6.76, 0.818],
+            },
+        ],
+        "destination_position_world_m": [3.1, -6.76, 0.818],
+    }
+    native["result_digest"] = canonical_digest(native, digest_field="result_digest")
+
+    feedback = summarize_native_construction_feedback(native)
+
+    assert feedback["first_collision"]["sample_index"] == 43
+    assert feedback["first_collision"]["peak_force_n"] == pytest.approx(59.564)
+    assert feedback["peak_collision"]["peak_force_n"] == pytest.approx(59.564)
+    assert feedback["feedback_codes"] == [
+        "gate_failed:base_collision_clearance",
+        "gate_failed:destination_containment",
+        "gate_failed:push_contact_maintained",
+        "gate_failed:push_path",
+    ]
+    objectives = feedback["physics_objective_measurements"]
+    assert objectives["forbidden_robot_scene_collision_peak_force_n"] == pytest.approx(
+        59.564
+    )
+    assert objectives["measurement_digest"] == canonical_digest(
+        objectives, digest_field="measurement_digest"
     )
 
 
@@ -589,6 +672,149 @@ def test_execution_must_echo_the_exact_candidate_and_allocate_nothing() -> None:
             execute_candidate=execute,
             continue_to_controls=lambda _: pytest.fail("must not continue"),
             clock=lambda: 1_000.0,
+        )
+
+
+def test_terminal_result_cli_seals_nontrial_feedback_bootstrap(
+    tmp_path, capsys
+) -> None:
+    run_id = "scene-839873-terminal-adoption"
+    universe = _inventory(run_id, 0, [_candidate("baseline-family", 0, x=2.92)])
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    request = _sealed(
+        {
+            "schema_version": "native_task_arena_packet_request.v1",
+            "robot_base_pose_world": {
+                "position_world_m": [2.92, -6.13, 0.752958],
+                "orientation_xyzw": [0.0, 0.0, 0.6, -0.8],
+            },
+            "robot_joint_reset_positions_rad": {
+                f"panda_joint{index}": 0.01 * index for index in range(1, 8)
+            },
+            "cameras": [{"role": role} for role in ("external", "overview", "wrist")],
+            "native_construction_feedback": {
+                "selected_placement_candidate_id": "geometry-selected",
+                "candidate_universe": universe,
+            },
+            "request_digest": "",
+        },
+        "request_digest",
+    )
+    (packet / "native_task_arena_packet_request.v1.json").write_text(
+        __import__("json").dumps(request) + "\n", encoding="utf-8"
+    )
+    native = _native(passed=False, collision_force=0.6)
+    native_path = tmp_path / "native.json"
+    native_path.write_text(
+        __import__("json").dumps(native) + "\n", encoding="utf-8"
+    )
+    allocator = {
+        "schema_version": "native_task_arena_vast_run.v1",
+        "status": "blocked",
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": False,
+        "warm_session": None,
+        "warm_session_receipt_path": None,
+        "native_control_result_path": str(native_path),
+        "native_control_result_digest": native["result_digest"],
+        "estimated_cost_usd": 0.095,
+        "result_digest": "",
+    }
+    allocator["result_digest"] = canonical_digest(
+        allocator, digest_field="result_digest"
+    )
+    allocator_path = tmp_path / "allocator.json"
+    allocator_path.write_text(
+        __import__("json").dumps(allocator) + "\n", encoding="utf-8"
+    )
+    output = tmp_path / "adoption.json"
+
+    assert terminal_feedback_main(
+        [
+            "--allocator-result",
+            str(allocator_path),
+            "--native-result",
+            str(native_path),
+            "--packet-dir",
+            str(packet),
+            "--output",
+            str(output),
+        ]
+    ) == 0
+    checkpoint = validate_native_construction_terminal_feedback_adoption(
+        __import__("json").loads(output.read_text())
+    )
+    assert checkpoint["initial_native_feedback"]["passed"] is False
+    assert checkpoint["prior_attempted_baseline_binding"][
+        "optuna_trial_recorded"
+    ] is False
+    assert checkpoint["prior_attempted_baseline_binding"]["candidate_digest"] is None
+    assert checkpoint["prior_attempted_candidate_digests"] == []
+    assert checkpoint["baseline_physics_replay_required"] is False
+    assert __import__("json").loads(capsys.readouterr().out)["status"] == (
+        "accepted_for_feedback_bootstrap"
+    )
+    runtime = tmp_path / "runtime"
+    runtime_input = runtime / "runtime_inputs"
+    runtime_input.mkdir(parents=True)
+    staged_adoption = (
+        runtime_input
+        / "native_construction_terminal_feedback_adoption.v1.json"
+    )
+    staged_adoption.write_bytes(output.read_bytes())
+    manifest = {
+        "bound_runtime_inputs": [
+            {
+                "relative_path": "runtime_inputs/" + staged_adoption.name,
+                "size_bytes": staged_adoption.stat().st_size,
+                "sha256": "sha256:"
+                + __import__("hashlib").sha256(staged_adoption.read_bytes()).hexdigest(),
+            }
+        ]
+    }
+    bootstrap = feedback_bootstrap_result(
+        runtime=runtime, manifest=manifest, packet=packet
+    )
+    assert bootstrap["feedback_bootstrap_only"] is True
+    assert bootstrap["baseline_physics_replayed"] is False
+    assert bootstrap["terminal_feedback_adoption_digest"] == checkpoint[
+        "checkpoint_digest"
+    ]
+    adoption_sha = "sha256:" + __import__("hashlib").sha256(
+        output.read_bytes()
+    ).hexdigest()
+    prepared = {
+        "bound_runtime_inputs": [
+            {
+                "relative_path": (
+                    "runtime_inputs/"
+                    "native_construction_terminal_feedback_adoption.v1.json"
+                ),
+                "sha256": adoption_sha,
+            }
+        ]
+    }
+    assert terminal_feedback_bootstrap_blockers(
+        packet_dir=packet,
+        prepared_bundle=prepared,
+        adoption_path=output,
+    ) == []
+    prepared["bound_runtime_inputs"][0]["sha256"] = "sha256:" + "0" * 64
+    assert terminal_feedback_bootstrap_blockers(
+        packet_dir=packet,
+        prepared_bundle=prepared,
+        adoption_path=output,
+    ) == ["native_construction_terminal_feedback_bootstrap_invalid"]
+
+    changed = dict(native)
+    changed["blockers"] = ["mutated"]
+    with pytest.raises(ValueError, match="terminal_feedback_evidence_invalid"):
+        materialize_native_construction_terminal_feedback_adoption(
+            allocator_result=allocator,
+            native_result=changed,
+            packet_dir=packet,
+            output_path=tmp_path / "rejected.json",
         )
 
 
@@ -1075,7 +1301,13 @@ def test_retained_production_callsite_requires_remote_curobo_by_default(
     request = _sealed(
         {
             "schema_version": "native_task_arena_packet_request.v1",
+            "robot_base_pose_world": candidate["robot_base_pose_world"],
+            "robot_joint_reset_positions_rad": candidate["reset_variant"][
+                "robot_joint_reset_positions_rad"
+            ],
+            "cameras": candidate["camera_variant"]["cameras"],
             "native_construction_feedback": {
+                "selected_placement_candidate_id": "geometry-selected",
                 "candidate_universe": universe,
                 "candidate_generator_authority": {
                     "generator": "remote_curobo_v2_motion_generation",
@@ -1103,8 +1335,46 @@ def test_retained_production_callsite_requires_remote_curobo_by_default(
         packet / "native_task_arena_scene_plan.v1.json",
         {"schema_version": "native_task_arena_scene_plan.v1"},
     )
+    terminal_native = _native(passed=False, collision_force=0.602)
+    terminal_native_path = tmp_path / "terminal-native.json"
+    _write(terminal_native_path, terminal_native)
+    terminal_allocator = {
+        "schema_version": "native_task_arena_vast_run.v1",
+        "status": "blocked",
+        "retry_cap": 0,
+        "continuing_spend_from_this_run": False,
+        "warm_session": None,
+        "warm_session_receipt_path": None,
+        "native_control_result_path": str(terminal_native_path),
+        "native_control_result_digest": terminal_native["result_digest"],
+        "estimated_cost_usd": 0.08,
+        "result_digest": "",
+    }
+    terminal_allocator["result_digest"] = canonical_digest(
+        terminal_allocator, digest_field="result_digest"
+    )
+    adoption_path = tmp_path / "terminal-adoption.json"
+    adoption = materialize_native_construction_terminal_feedback_adoption(
+        allocator_result=terminal_allocator,
+        native_result=terminal_native,
+        packet_dir=packet,
+        output_path=adoption_path,
+    )
     native_path = tmp_path / "cold-native.json"
-    _write(native_path, _native(passed=False, collision_force=0.602))
+    bootstrap_native = {
+        "schema_version": "native_task_arena_construction_result.v1",
+        "status": "blocked",
+        "construction_gate_qualified": False,
+        "blockers": ["native_construction_feedback_bootstrap_ready"],
+        "feedback_bootstrap_only": True,
+        "baseline_physics_replayed": False,
+        "terminal_feedback_adoption_digest": adoption["checkpoint_digest"],
+        "result_digest": "",
+    }
+    bootstrap_native["result_digest"] = canonical_digest(
+        bootstrap_native, digest_field="result_digest"
+    )
+    _write(native_path, bootstrap_native)
     warm_session = {
         "schema_version": "native_task_arena_warm_session.v1",
         "status": "ready",
@@ -1158,6 +1428,11 @@ def test_retained_production_callsite_requires_remote_curobo_by_default(
         def continue_to_controls(self, *_args, **_kwargs):
             raise AssertionError("controller mock should not continue")
 
+    class Ledger:
+        def record_adopted_baseline(self, *, baseline_record):
+            observed["adopted_baseline"] = baseline_record
+            return {"status": "recorded"}
+
     def controller(**kwargs):
         composite = kwargs["candidate_generator"]
         assert isinstance(composite, warm.CompositeCandidateGenerator)
@@ -1183,13 +1458,20 @@ def test_retained_production_callsite_requires_remote_curobo_by_default(
         hard_cap_usd=1.2,
         hard_ttl_seconds=3600,
         invoker=object(),
-        search_ledger=object(),
+        search_ledger=Ledger(),
+        terminal_feedback_adoption_path=adoption_path,
     )
 
     assert result["status"] == "controls_completed"
     assert observed["context"]["warm_session"]["remote_work_dir"] == "/workspace"
     assert observed["remote"]["context"] is fake_context
     assert observed["remote_generate"]["round_index"] == 0
+    assert observed["adopted_baseline"]["checkpoint_digest"] == adoption[
+        "checkpoint_digest"
+    ]
+    assert observed["remote_generate"]["source_native_feedback"][
+        "feedback_digest"
+    ] == adoption["initial_native_feedback"]["feedback_digest"]
     assert observed["remote"]["remote_python_package_root"] == (
         "/workspace/adp_arena_provider_bundle/provider_runtime"
     )

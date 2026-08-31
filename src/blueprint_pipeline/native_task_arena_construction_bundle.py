@@ -26,12 +26,25 @@ from .native_task_arena_execution_contract import (
 from .native_task_construction_plan import (
     materialize_native_task_construction_phase_plan,
 )
+from .task_evaluation_native_construction_terminal_feedback import (
+    validate_native_construction_terminal_feedback_adoption,
+)
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 
 
 PROBE_KIND = "native-task-arena-construction"
 PROVIDER_BUNDLE_KIND = "native_task_arena"
 RESULT_SCHEMA_VERSION = "native_task_arena_construction_result.v1"
+
+
+def _read_mapping(path: Path, *, error: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(error) from exc
+    if path.is_symlink() or not isinstance(value, dict):
+        raise ValueError(error)
+    return value
 
 def construction_runtime_sources() -> tuple[Path, ...]:
     package = Path(__file__).resolve().parent
@@ -47,6 +60,7 @@ def build_native_task_arena_construction_bundle(
     container_image: str = NATIVE_TASK_ARENA_IMAGE,
     generated_at: str | None = None,
     construction_phase_plan_override: Mapping[str, Any] | None = None,
+    terminal_feedback_adoption_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Package one sealed task packet for the native Panda construction worker."""
 
@@ -61,6 +75,10 @@ def build_native_task_arena_construction_bundle(
     # scene-plan schema. Every real native packet must freeze this local plan
     # before a provider can be allocated.
     if scene_plan.get("schema_version") != "native_task_arena_scene_plan.v1":
+        if terminal_feedback_adoption_path is not None:
+            raise ValueError(
+                "native_task_arena_terminal_feedback_requires_executable_packet"
+            )
         return build_native_task_arena_bundle(
             job_dir=job_dir,
             packet_dir=packet,
@@ -97,6 +115,32 @@ def build_native_task_arena_construction_bundle(
             json.dumps(frozen, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        bound_runtime_inputs = {phase_path.name: phase_path}
+        if terminal_feedback_adoption_path is not None:
+            adoption_path = Path(terminal_feedback_adoption_path).expanduser().resolve()
+            adoption = validate_native_construction_terminal_feedback_adoption(
+                json.loads(adoption_path.read_text(encoding="utf-8"))
+            )
+            packet_request = json.loads(
+                (packet / "native_task_arena_packet_request.v1.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            feedback = packet_request.get("native_construction_feedback") or {}
+            universe = feedback.get("candidate_universe") or {}
+            if (
+                adoption_path.is_symlink()
+                or adoption.get("packet_request_digest")
+                != packet_request.get("request_digest")
+                or adoption.get("candidate_universe_digest")
+                != universe.get("inventory_digest")
+            ):
+                raise ValueError(
+                    "native_task_arena_terminal_feedback_adoption_binding_invalid"
+                )
+            bound_runtime_inputs[
+                "native_construction_terminal_feedback_adoption.v1.json"
+            ] = adoption_path
         return build_native_task_arena_bundle(
             job_dir=job_dir,
             packet_dir=packet,
@@ -106,7 +150,7 @@ def build_native_task_arena_construction_bundle(
             implementation_commit=implementation_commit,
             execution_mode="construction_canary",
             container_image=container_image,
-            bound_runtime_inputs={phase_path.name: phase_path},
+            bound_runtime_inputs=bound_runtime_inputs,
             generated_at=generated_at,
         )
 
@@ -220,6 +264,10 @@ def main(argv: list[str] | None = None) -> int:
             "Native gates and thresholds remain unchanged."
         ),
     )
+    parser.add_argument(
+        "--terminal-feedback-adoption",
+        dest="terminal_feedback_adoption_path",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -238,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.construction_phase_plan_override
                 else None
             ),
+            terminal_feedback_adoption_path=args.terminal_feedback_adoption_path,
         )
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(
