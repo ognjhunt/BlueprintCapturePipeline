@@ -15,9 +15,12 @@ import pytest
 from blueprint_pipeline.gaussian_splat_decode import SplatData
 from blueprint_pipeline.common import sha256_file
 from blueprint_pipeline import particlefield_usd
+from blueprint_pipeline.aura_nurec_usdz import write_aura_nurec_usdz
+from blueprint_pipeline.nurec_volume_codec import build_state_dict
 from blueprint_pipeline.particlefield_usd import (
     build_particlefield_arrays,
     write_particlefield_usd,
+    write_particlefield_usd_from_nurec,
 )
 
 _HAS_PXR = importlib.util.find_spec("pxr") is not None
@@ -222,3 +225,77 @@ def test_path_source_digest_mismatch_fails_before_authoring(
     assert result["status"] == "blocked"
     assert result["blockers"] == ["particlefield_3dgs_source_sha256_mismatch"]
     assert not out.exists()
+
+
+@pytest.mark.skipif(not _HAS_PXR, reason="usd-core unavailable")
+def test_nurec_is_represented_as_particlefield_without_changing_gaussians(
+    tmp_path: Path,
+) -> None:
+    from blueprint_pipeline.native_task_appearance_frame_alignment import (
+        measure_native_task_appearance_frame,
+    )
+
+    splat, rest = _splat(8, with_rest=True)
+    document = {
+        "version": "0.2.576",
+        "model": "nre",
+        "config": {
+            "layers": {
+                "gaussians": {
+                    "precision": 32,
+                    "density_activation": "sigmoid",
+                    "scale_activation": "exp",
+                    "rotation_activation": "normalize",
+                    "particle": {
+                        "density_kernel_planar": False,
+                        "radiance_sph_degree": 3,
+                    },
+                }
+            },
+            "renderer": {"name": "3dgut-nrend"},
+        },
+        "state_dict": build_state_dict(
+            {
+                "positions": splat.xyz,
+                "rotations": splat.quats,
+                "scales": splat.scales,
+                "densities": splat.opacity[:, None],
+                "features_albedo": splat.f_dc,
+                "features_specular": rest,
+            },
+            precision=32,
+        ),
+    }
+    source = tmp_path / "configured_appearance.usdz"
+    write_aura_nurec_usdz(document, source)
+    source_sha256 = f"sha256:{sha256_file(source)}"
+    output = tmp_path / "scene_appearance.usdc"
+    receipt_path = tmp_path / "particlefield_authoring_receipt.v1.json"
+
+    result = write_particlefield_usd_from_nurec(
+        source,
+        output,
+        expected_source_sha256=source_sha256,
+        receipt_path=receipt_path,
+    )
+
+    assert result["status"] == "completed"
+    assert result["source_kind"] == "nurec_usdz"
+    assert result["source_sha256"] == source_sha256
+    assert result["exact_learned_arrays_preserved"] is True
+    assert result["representation_conversion_only"] is True
+    assert result["splat_count"] == splat.count
+    assert json.loads(receipt_path.read_text(encoding="utf-8")) == result
+    before = measure_native_task_appearance_frame(source)
+    after = measure_native_task_appearance_frame(output)
+    assert before["representation"] == "nurec_volume"
+    assert after["representation"] == "particlefield_3d_gaussian_splat"
+    assert after["gaussian_count"] == before["gaussian_count"]
+    np.testing.assert_allclose(
+        after["stored_tensor_occupied_bounds_m"]["minimum"],
+        before["stored_tensor_occupied_bounds_m"]["minimum"],
+    )
+    np.testing.assert_allclose(
+        after["stored_tensor_occupied_bounds_m"]["maximum"],
+        before["stored_tensor_occupied_bounds_m"]["maximum"],
+    )

@@ -19,7 +19,10 @@ fail-closed when pxr is unavailable. This module claims authoring only — not r
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
+from typing import Any, Sequence
+import zipfile
 
 import numpy as np
 
@@ -30,6 +33,12 @@ from .gaussian_splat_decode import (
     SplatData,
     read_aura_2dgs_surfel_ply,
     read_standard_3dgs_ply,
+)
+from .nurec_volume_codec import (
+    NuRecCodecError,
+    decode_nurec_bytes,
+    describe_volume,
+    gaussian_arrays,
 )
 
 PARTICLEFIELD_SCHEMA = "ParticleField3DGaussianSplat"
@@ -68,6 +77,7 @@ SH_C0 = 0.28209479177387814
 # Flat has to be relative: a constant epsilon would be thicker than wide for the
 # smallest surfels in this field, which is the bug it replaces at a new scale.
 STRUCTURAL_Z_SCALE_FRACTION = 0.01
+NUREC_VOLUME_MARKER = "omni:nurec:isNuRecVolume"
 
 
 def gaussian_surflet_schema_available(usd_vol: object) -> bool:
@@ -461,6 +471,7 @@ def write_particlefield_usd(
     sorting_mode: str = "zDepth",
     expected_source_sha256: str | None = None,
     receipt_path: str | Path | None = None,
+    layer_transform_row_major: Sequence[Sequence[float]] | None = None,
 ) -> dict:
     """Author a ParticleField3DGaussianSplat USD from a standard 3DGS PLY (or SplatData).
 
@@ -526,6 +537,19 @@ def write_particlefield_usd(
     if not prim or not prim.IsValid():
         return {"status": "blocked", "blockers": ["particlefield_schema_unavailable"],
                 "remediation": "usd-core build lacks ParticleField3DGaussianSplat (need a recent UsdVol)"}
+
+    transform = np.asarray(
+        layer_transform_row_major if layer_transform_row_major is not None else np.eye(4),
+        dtype=np.float64,
+    )
+    if transform.shape != (4, 4) or not np.isfinite(transform).all():
+        return {
+            "status": "blocked",
+            "blockers": ["particlefield_layer_transform_invalid"],
+        }
+    if not np.allclose(transform, np.eye(4)):
+        matrix = Gf.Matrix4d(*[float(value) for value in transform.reshape(-1)])
+        UsdGeom.Xformable(prim).AddTransformOp().Set(matrix)
 
     def vec3f(a: np.ndarray):
         return Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(a, dtype=np.float32))
@@ -651,8 +675,159 @@ def write_particlefield_usd(
             "negative_infinite_opacity_logit_count"
         ],
         "sealed_source_mutated": False,
+        "layer_transform_row_major": transform.tolist(),
         "proof_boundary": "ParticleField USD authoring only; Isaac RTX render is the GPU step.",
     }
+    result["receipt_digest"] = canonical_digest(
+        result, digest_field="receipt_digest"
+    )
+    if receipt_path is not None:
+        write_json(Path(receipt_path), result)
+    return result
+
+
+def _sha256_bytes(payload: bytes) -> str:
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _nurec_payload_and_transform(
+    source_path: Path,
+) -> tuple[dict[str, Any], list[list[float]], str, bytes]:
+    """Read one self-contained NuRec volume without changing its learned arrays."""
+
+    try:
+        from pxr import Usd, UsdGeom
+    except Exception as exc:  # noqa: BLE001
+        raise NuRecCodecError(["nurec_particlefield_usd_runtime_unavailable"]) from exc
+    try:
+        stage = Usd.Stage.Open(str(source_path))
+    except Exception as exc:  # noqa: BLE001
+        raise NuRecCodecError(["nurec_particlefield_source_unreadable"]) from exc
+    if stage is None or not stage.GetDefaultPrim():
+        raise NuRecCodecError(["nurec_particlefield_source_unreadable"])
+    volumes = [
+        prim
+        for prim in stage.Traverse()
+        if bool(prim.GetAttribute(NUREC_VOLUME_MARKER).Get())
+    ]
+    if len(volumes) != 1:
+        raise NuRecCodecError(["nurec_particlefield_volume_not_exact"])
+    volume = volumes[0]
+    payloads = {
+        str(child.GetAttribute("filePath").Get().path)
+        for child in volume.GetChildren()
+        if child.GetAttribute("filePath").IsValid()
+        and child.GetAttribute("filePath").Get() is not None
+    }
+    if len(payloads) != 1:
+        raise NuRecCodecError(["nurec_particlefield_payload_not_exact"])
+    payload_name = Path(payloads.pop().replace("\\", "/")).name
+    try:
+        with zipfile.ZipFile(source_path) as archive:
+            members = [
+                info
+                for info in archive.infolist()
+                if not info.is_dir() and Path(info.filename).name == payload_name
+            ]
+            if len(members) != 1:
+                raise NuRecCodecError(["nurec_particlefield_payload_not_exact"])
+            payload = archive.read(members[0])
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise NuRecCodecError(["nurec_particlefield_source_unreadable"]) from exc
+    document = decode_nurec_bytes(payload)
+    matrix = UsdGeom.Xformable(volume).ComputeLocalToWorldTransform(
+        Usd.TimeCode.Default()
+    )
+    transform = [
+        [float(matrix[row][column]) for column in range(4)] for row in range(4)
+    ]
+    return document, transform, str(volume.GetPath()), payload
+
+
+def write_particlefield_usd_from_nurec(
+    source_path: str | Path,
+    out_path: str | Path,
+    *,
+    expected_source_sha256: str,
+    receipt_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Convert one sealed NuRec USDZ to the Isaac 6 native ParticleField schema.
+
+    NuRec remains the configured-scene appearance truth. This produces a derived,
+    digest-bound runtime representation from the same learned Gaussian arrays.
+    """
+
+    source = Path(source_path)
+    observed_source_sha256 = (
+        f"sha256:{sha256_file(source)}" if source.is_file() else None
+    )
+    if (
+        source.is_symlink()
+        or not source.is_file()
+        or observed_source_sha256 != expected_source_sha256
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["nurec_particlefield_source_identity_mismatch"],
+            "expected_source_sha256": expected_source_sha256,
+            "observed_source_sha256": observed_source_sha256,
+        }
+    try:
+        document, transform, source_prim_path, payload = (
+            _nurec_payload_and_transform(source)
+        )
+        description = describe_volume(document)
+        arrays = gaussian_arrays(document)
+    except (NuRecCodecError, KeyError, ValueError) as exc:
+        return {
+            "status": "blocked",
+            "blockers": ["nurec_particlefield_source_invalid"],
+            "detail_codes": list(getattr(exc, "errors", (str(exc),))),
+        }
+    if (
+        description.get("density_activation") != "sigmoid"
+        or description.get("scale_activation") != "exp"
+        or description.get("rotation_activation") != "normalize"
+        or description.get("radiance_sph_degree") != 3
+        or description.get("density_kernel_planar") is not False
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["nurec_particlefield_activation_contract_unsupported"],
+            "nurec_description": description,
+        }
+    count = int(arrays["positions"].shape[0])
+    splat = SplatData(
+        count=count,
+        xyz=np.asarray(arrays["positions"], dtype=np.float32),
+        opacity=np.asarray(arrays["densities"], dtype=np.float32).reshape(count),
+        f_dc=np.asarray(arrays["features_albedo"], dtype=np.float32),
+        scales=np.asarray(arrays["scales"], dtype=np.float32),
+        quats=np.asarray(arrays["rotations"], dtype=np.float32),
+        properties=(),
+        sh_rest=np.asarray(arrays["features_specular"], dtype=np.float32),
+    )
+    result = write_particlefield_usd(
+        splat,
+        out_path,
+        sh_rest=splat.sh_rest,
+        layer_transform_row_major=transform,
+    )
+    if result.get("status") != "completed":
+        return result
+    result.update(
+        source_sha256=observed_source_sha256,
+        source_kind="nurec_usdz",
+        source_nurec_payload_sha256=_sha256_bytes(payload),
+        source_nurec_prim_path=source_prim_path,
+        source_nurec_description=description,
+        exact_learned_arrays_preserved=True,
+        representation_conversion_only=True,
+        proof_boundary=(
+            "Deterministic NuRec-to-ParticleField representation conversion only; "
+            "Isaac RTX render remains the GPU gate."
+        ),
+    )
     result["receipt_digest"] = canonical_digest(
         result, digest_field="receipt_digest"
     )

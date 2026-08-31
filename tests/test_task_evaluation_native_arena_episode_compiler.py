@@ -378,6 +378,26 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
         )
         return result
 
+    def fake_native_appearance(*, source_path, output_root):
+        output_root.mkdir()
+        output = output_root / "scene_appearance.usdc"
+        output.write_bytes(Path(source_path).read_bytes())
+        digest, size = (
+            "sha256:" + hashlib.sha256(output.read_bytes()).hexdigest(),
+            output.stat().st_size,
+        )
+        return {
+            "status": "nurec_converted_to_particlefield",
+            "path": str(output),
+            "representation": "particlefield_3d_gaussian_splat",
+            "source_configured_appearance_digest": digest,
+            "source_configured_appearance_size_bytes": size,
+            "particlefield_digest": digest,
+            "particlefield_size_bytes": size,
+            "representation_conversion_performed": True,
+            "exact_learned_arrays_preserved": True,
+        }
+
     monkeypatch.setattr(
         "blueprint_pipeline.task_evaluation_native_arena_episode_compiler."
         "materialize_native_task_arena_packet",
@@ -404,6 +424,7 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
         envelope=envelope,
         materialized_references=references,
         output_root=output_root,
+        native_appearance_materializer=fake_native_appearance,
     )
 
     assert result["schema_version"] == OUTPUT_SCHEMA_VERSION
@@ -413,6 +434,26 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     assert result["adapter_result"]["packet_receipt_digest"] == (
         "sha256:" + "b" * 64
     )
+    assert result["native_scene_appearance"]["representation"] == (
+        "particlefield_3d_gaussian_splat"
+    )
+    assert result["native_scene_appearance"][
+        "representation_conversion_performed"
+    ] is True
+    appearance = next(
+        row
+        for row in observed["packet_request"]["assets"]
+        if row["semantic_role"] == "scene_appearance"
+    )
+    assert appearance["filename"] == "scene_appearance.usdc"
+    assert observed["packet_request"]["appearance_variant"] == {
+        "representation": "particlefield_3d_gaussian_splat",
+        "source_configured_appearance_digest": result[
+            "native_scene_appearance"
+        ]["source_configured_appearance_digest"],
+        "representation_conversion_performed": True,
+        "exact_learned_arrays_preserved": True,
+    }
     source_subject_id = configured["replacement"]["identity"]["id"]
     runtime_subject_id = source_subject_id.replace("-", "_")
     assert observed["packet_request"]["task_spec"]["subject_asset_id"] == (
