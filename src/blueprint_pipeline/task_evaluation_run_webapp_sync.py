@@ -319,10 +319,144 @@ def sync_task_evaluation_run_to_webapp(
     return {**common, "status": "failed", "reason": last_reason, "attempts": attempts}
 
 
+def sync_task_evaluation_policy_canary_to_webapp(
+    *,
+    capture_session_id: str,
+    intake_id: str,
+    run_id: str,
+    request_digest: str,
+    configuration_digest: str,
+    result_status: str,
+    result_delivery: Mapping[str, Any],
+    policy_canary_result: Mapping[str, Any],
+    endpoint_url: str | None = None,
+    token: str | None = None,
+    max_attempts: int = 3,
+    retry_delay_seconds: float = 0.0,
+    timeout_seconds: float = 10.0,
+) -> dict[str, Any]:
+    """Publish a canary once and require Website-owned email delivery readback."""
+
+    payload = build_task_evaluation_policy_canary_webapp_publication(
+        capture_session_id=capture_session_id,
+        intake_id=intake_id,
+        run_id=run_id,
+        request_digest=request_digest,
+        configuration_digest=configuration_digest,
+        result_status=result_status,
+        result_delivery=result_delivery,
+        policy_canary_result=policy_canary_result,
+    )
+    resolved_url = _text(endpoint_url) or _text(
+        os.getenv(TASK_EVALUATION_RUN_WEBAPP_URL_ENV)
+    )
+    resolved_token = _text(token) or _text(os.getenv("PIPELINE_SYNC_TOKEN"))
+    common = {
+        "schema_version": "task_evaluation_policy_canary_webapp_sync_result.v1",
+        "capture_session_id": payload["capture_session_id"],
+        "intake_id": payload["intake_id"],
+        "run_id": payload["run_id"],
+        "request_digest": payload["request_digest"],
+        "configuration_digest": payload["configuration_digest"],
+        "result_status": payload["result_status"],
+        "result_delivery_digest": payload["result_delivery"]["delivery_digest"],
+        "policy_canary_projection_digest": payload["policy_canary_result"][
+            "projection_digest"
+        ],
+    }
+    if not resolved_url or not resolved_token:
+        return {
+            **common,
+            "status": "skipped",
+            "reason": "sync_not_configured",
+            "attempts": 0,
+        }
+    resolved_url = validated_https_sync_url(resolved_url)
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    attempts = max(1, min(int(max_attempts), 10))
+    last_reason = "sync_unknown_failure"
+    for attempt in range(1, attempts + 1):
+        outbound = urllib_request.Request(
+            resolved_url,
+            data=body,
+            headers=_pipeline_sync_headers(resolved_token, body),
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(  # nosec B310 - URL validated above
+                outbound, timeout=max(0.1, timeout_seconds)
+            ) as response:
+                raw = response.read().decode("utf-8")
+        except urllib_error.HTTPError as exc:
+            last_reason = f"http_error:{exc.code}"
+        except urllib_error.URLError as exc:
+            last_reason = f"url_error:{exc.reason}"
+        except (TimeoutError, ValueError) as exc:
+            last_reason = exc.__class__.__name__.lower()
+        else:
+            try:
+                receipt = _mapping(json.loads(raw) if raw else {})
+            except json.JSONDecodeError:
+                last_reason = "invalid_json"
+            else:
+                notification = _mapping(receipt.get("notification_delivery"))
+                expected_terminal = {
+                    "completed_unqualified": "completed",
+                    "blocked": "blocked",
+                    "cancelled": "cancelled",
+                }[result_status]
+                matches = (
+                    receipt.get("schema_version")
+                    in {
+                        "capture_task_evaluation_policy_canary_publication_receipt.v1",
+                        "capture_task_evaluation_run_publication_receipt.v1",
+                    }
+                    and receipt.get("status") == result_status
+                    and isinstance(receipt.get("already_exists"), bool)
+                    and all(
+                        receipt.get(field) == common[field]
+                        for field in (
+                            "capture_session_id",
+                            "intake_id",
+                            "run_id",
+                            "request_digest",
+                            "configuration_digest",
+                            "result_delivery_digest",
+                            "policy_canary_projection_digest",
+                        )
+                    )
+                    and notification.get("terminal_state") == expected_terminal
+                    and notification.get("status") in {"delivered", "failed"}
+                    and isinstance(notification.get("attempts"), int)
+                    and not isinstance(notification.get("attempts"), bool)
+                    and notification["attempts"] >= 1
+                    and notification.get("run_result_digest")
+                    == common["policy_canary_projection_digest"]
+                )
+                if matches:
+                    return {
+                        **common,
+                        "status": "succeeded",
+                        "attempts": attempt,
+                        "notification_delivery": notification,
+                        "response": receipt,
+                    }
+                last_reason = "response_binding_mismatch"
+        if attempt < attempts and retry_delay_seconds > 0:
+            time.sleep(min(float(retry_delay_seconds), 5.0))
+    return {
+        **common,
+        "status": "failed",
+        "reason": last_reason,
+        "attempts": attempts,
+    }
+
+
 __all__ = [
     "TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV",
     "TASK_EVALUATION_RUN_WEBAPP_URL_ENV",
     "build_task_evaluation_run_webapp_publication",
     "build_task_evaluation_policy_canary_webapp_publication",
+    "sync_task_evaluation_policy_canary_to_webapp",
     "sync_task_evaluation_run_to_webapp",
 ]

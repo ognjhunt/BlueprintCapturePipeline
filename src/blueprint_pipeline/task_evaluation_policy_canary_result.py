@@ -93,6 +93,20 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
             raise TaskEvaluationPolicyCanaryResultError(
                 "policy_canary_result_action_delivery_interpretability_invalid"
             )
+    notification = result["notification_delivery"]
+    if notification["status"] == "pending":
+        if (
+            notification["attempts"] != 0
+            or notification["message_id"] is not None
+            or notification["delivered_at"] is not None
+        ):
+            raise TaskEvaluationPolicyCanaryResultError(
+                "policy_canary_result_notification_pending_invalid"
+            )
+    elif notification["attempts"] < 1:
+        raise TaskEvaluationPolicyCanaryResultError(
+            "policy_canary_result_notification_attempts_invalid"
+        )
     return result
 
 
