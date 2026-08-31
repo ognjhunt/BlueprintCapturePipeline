@@ -16,6 +16,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_task_construction_plan import (
     materialize_native_task_construction_phase_plan,
+    native_task_construction_authored_contract_digest,
 )
 from .scene_placement.robot_profile import get_robot_profile
 from .task_evaluation_collision_aware_candidate_generation import (
@@ -107,6 +108,7 @@ def _candidate_rows(universe: Mapping[str, Any] | Sequence[Mapping[str, Any]]) -
 def _world_goal(phase: Mapping[str, Any], *, waypoint_id: str) -> dict[str, Any]:
     return {
         "waypoint_id": waypoint_id,
+        "authored_phase_id": str(phase["phase_id"]),
         "position_world_m": [float(value) for value in phase["position_world_m"]],
         "orientation_world_xyzw": [
             float(value) for value in phase["orientation_world_xyzw"]
@@ -155,6 +157,131 @@ def _five_stages(phases: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         }
         for kind, selected in grouped
     ]
+
+
+INTERACTION_BRANCHES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "uniform_seed",
+        (
+            "gate_failed:base_collision_clearance",
+            "gate_failed:push_contact_maintained",
+        ),
+    ),
+    (
+        "contact_ramp",
+        (
+            "gate_failed:base_collision_clearance",
+            "gate_failed:push_contact_maintained",
+        ),
+    ),
+    (
+        "push_contact_dense",
+        (
+            "gate_failed:push_contact_maintained",
+            "gate_failed:push_path",
+        ),
+    ),
+    (
+        "release_retreat_dense",
+        (
+            "gate_failed:destination_containment",
+            "gate_failed:push_path",
+        ),
+    ),
+)
+
+
+def _interpolated_goal(
+    start: Mapping[str, Any],
+    end: Mapping[str, Any],
+    *,
+    fraction: float,
+    waypoint_id: str,
+) -> dict[str, Any]:
+    # Orientations remain the authored terminal orientation. The deterministic
+    # branch adds only Cartesian approach samples; every authored phase endpoint
+    # is retained byte-for-byte as the final goal for that phase.
+    return {
+        "waypoint_id": waypoint_id,
+        "authored_phase_id": end["authored_phase_id"],
+        "position_world_m": [
+            float(start["position_world_m"][index])
+            + fraction
+            * (
+                float(end["position_world_m"][index])
+                - float(start["position_world_m"][index])
+            )
+            for index in range(3)
+        ],
+        "orientation_world_xyzw": list(end["orientation_world_xyzw"]),
+        "deterministic_intermediate_only": True,
+    }
+
+
+def _interaction_branch_stages(
+    stages: Sequence[Mapping[str, Any]], *, branch_id: str
+) -> list[dict[str, Any]]:
+    result = json.loads(json.dumps(list(stages), allow_nan=False))
+    by_kind = {row["stage_kind"]: row for row in result}
+    contact = by_kind["contact"]["waypoints"]
+    release = by_kind["release"]["waypoints"]
+    retreat = by_kind["retreat"]["waypoints"]
+    approach_terminal = by_kind["approach"]["waypoints"][-1]
+    if branch_id == "contact_ramp":
+        terminal = contact[0]
+        contact[:1] = [
+            _interpolated_goal(
+                approach_terminal,
+                terminal,
+                fraction=fraction,
+                waypoint_id=f"{terminal['waypoint_id']}--ramp-{index}",
+            )
+            for index, fraction in enumerate((0.35, 0.7), start=1)
+        ] + [terminal]
+    elif branch_id == "push_contact_dense":
+        dense = []
+        previous = approach_terminal
+        for index, terminal in enumerate(contact):
+            dense.append(
+                _interpolated_goal(
+                    previous,
+                    terminal,
+                    fraction=0.5,
+                    waypoint_id=f"{terminal['waypoint_id']}--maintain-{index}",
+                )
+            )
+            dense.append(terminal)
+            previous = terminal
+        by_kind["contact"]["waypoints"] = dense
+    elif branch_id == "release_retreat_dense":
+        previous = contact[-1]
+        release_terminal = release[-1]
+        by_kind["release"]["waypoints"] = [
+            _interpolated_goal(
+                previous,
+                release_terminal,
+                fraction=0.5,
+                waypoint_id=f"{release_terminal['waypoint_id']}--release-mid",
+            ),
+            release_terminal,
+        ]
+        previous = release_terminal
+        dense_retreat = []
+        for index, terminal in enumerate(retreat):
+            dense_retreat.append(
+                _interpolated_goal(
+                    previous,
+                    terminal,
+                    fraction=0.5,
+                    waypoint_id=f"{terminal['waypoint_id']}--retreat-{index}",
+                )
+            )
+            dense_retreat.append(terminal)
+            previous = terminal
+        by_kind["retreat"]["waypoints"] = dense_retreat
+    elif branch_id != "uniform_seed":
+        raise CuroboContextError("curobo_interaction_branch_invalid")
+    return result
 
 
 def materialize_remote_curobo_context(
@@ -230,59 +357,104 @@ def materialize_remote_curobo_context(
         # be truthful cuRobo output but not executable by this sealed episode.
         "maximum_emitted_waypoints_per_stage": 8,
     }
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        source_id = str(
+            candidate.get("source_placement_candidate_id")
+            or candidate["candidate_id"]
+        )
+        grouped.setdefault(source_id, []).append(candidate)
+    for rows in grouped.values():
+        rows.sort(
+            key=lambda row: (
+                int(row.get("deterministic_rank", 0)), str(row["candidate_id"])
+            )
+        )
+    # Four interaction branches across sixteen distinct base/reset members make
+    # the exact 64-member ceiling. This prevents the old entry-major ordering
+    # from consuming the whole inventory on one or two base poses.
+    selected_groups = sorted(
+        grouped.items(),
+        key=lambda item: (
+            int(item[1][0].get("deterministic_rank", 0)), item[0]
+        ),
+    )[:16]
     world_models = {}
     analytic_rows = []
     candidate_phases = {}
-    for rank, candidate in enumerate(candidates):
-        candidate_id = str(candidate["candidate_id"])
-        pose = dict(candidate["robot_base_pose_world"])
-        world_models[candidate_id] = {
-            "mesh": {
-                "configured_site_collision": {
-                    "file_path": str(mesh_path),
-                    "pose": _inverse_pose_wxyz(pose),
+    for base_rank, (_source_id, source_rows) in enumerate(selected_groups):
+        for branch_index, (branch_id, branch_codes) in enumerate(
+            INTERACTION_BRANCHES
+        ):
+            candidate = source_rows[branch_index % len(source_rows)]
+            source_candidate_id = str(candidate["candidate_id"])
+            candidate_id = f"{source_candidate_id}--interaction-{branch_id}"
+            rank = base_rank * len(INTERACTION_BRANCHES) + branch_index
+            pose = dict(candidate["robot_base_pose_world"])
+            world_models[candidate_id] = {
+                "mesh": {
+                    "configured_site_collision": {
+                        "file_path": str(mesh_path),
+                        "pose": _inverse_pose_wxyz(pose),
+                    }
                 }
             }
-        }
-        reset = dict(candidate.get("reset_variant") or {})
-        cameras = dict(candidate.get("camera_variant") or {})
-        reset_positions = dict(reset.get("robot_joint_reset_positions_rad") or {})
-        arm_reset = {name: reset_positions[name] for name in profile.arm_joint_names}
-        analytic_rows.append(
-            {
-                "candidate_id": candidate_id,
-                "deterministic_rank": int(candidate.get("deterministic_rank", rank)),
-                "solver_seed": rank,
-                "robot_base_pose_world": pose,
-                "support_surface_id": str(candidate["support_surface_id"]),
-                "robot_joint_reset_positions_rad": arm_reset,
-                "cameras": list(cameras.get("cameras") or []),
-                "addressed_feedback_codes": list(
-                    candidate.get("addressed_feedback_codes") or []
-                ),
+            reset = dict(candidate.get("reset_variant") or {})
+            cameras = dict(candidate.get("camera_variant") or {})
+            reset_positions = dict(
+                reset.get("robot_joint_reset_positions_rad") or {}
+            )
+            arm_reset = {
+                name: reset_positions[name] for name in profile.arm_joint_names
             }
-        )
-        stages = _five_stages(plan["phases"])
-        entry_variant = dict(candidate.get("entry_trajectory_variant") or {})
-        entry_rows = entry_variant.get("waypoints")
-        if not isinstance(entry_rows, list) or not entry_rows:
-            raise CuroboContextError("curobo_candidate_entry_trajectory_invalid")
-        stages[0]["waypoints"] = [
-            {
-                "waypoint_id": str(row.get("waypoint_id") or f"entry-{index:02d}"),
-                "position_world_m": [
-                    float(value) for value in row["position_world_m"]
-                ],
-                "orientation_world_xyzw": [
-                    float(value) for value in row["orientation_world_xyzw"]
-                ],
-            }
-            for index, row in enumerate(entry_rows)
-            if isinstance(row, Mapping)
-        ]
-        if len(stages[0]["waypoints"]) != len(entry_rows):
-            raise CuroboContextError("curobo_candidate_entry_trajectory_invalid")
-        candidate_phases[candidate_id] = stages
+            solver_seed = (base_rank + 1) * 1009 + branch_index * 7919
+            analytic_rows.append(
+                {
+                    "candidate_id": candidate_id,
+                    "source_candidate_id": source_candidate_id,
+                    "interaction_branch_id": branch_id,
+                    "deterministic_rank": rank,
+                    "solver_seed": solver_seed,
+                    "robot_base_pose_world": pose,
+                    "support_surface_id": str(candidate["support_surface_id"]),
+                    "robot_joint_reset_positions_rad": arm_reset,
+                    "cameras": list(cameras.get("cameras") or []),
+                    "addressed_feedback_codes": sorted(
+                        set(candidate.get("addressed_feedback_codes") or [])
+                        | set(branch_codes)
+                    ),
+                }
+            )
+            stages = _five_stages(plan["phases"])
+            entry_variant = dict(candidate.get("entry_trajectory_variant") or {})
+            entry_rows = entry_variant.get("waypoints")
+            if not isinstance(entry_rows, list) or not entry_rows:
+                raise CuroboContextError(
+                    "curobo_candidate_entry_trajectory_invalid"
+                )
+            stages[0]["waypoints"] = [
+                {
+                    "waypoint_id": str(
+                        row.get("waypoint_id") or f"entry-{index:02d}"
+                    ),
+                    "authored_phase_id": str(plan["phases"][0]["phase_id"]),
+                    "position_world_m": [
+                        float(value) for value in row["position_world_m"]
+                    ],
+                    "orientation_world_xyzw": [
+                        float(value) for value in row["orientation_world_xyzw"]
+                    ],
+                }
+                for index, row in enumerate(entry_rows)
+                if isinstance(row, Mapping)
+            ]
+            if len(stages[0]["waypoints"]) != len(entry_rows):
+                raise CuroboContextError(
+                    "curobo_candidate_entry_trajectory_invalid"
+                )
+            candidate_phases[candidate_id] = _interaction_branch_stages(
+                stages, branch_id=branch_id
+            )
 
     world_doc = {
         "schema_version": "task_evaluation_curobo_world_configuration.v1",
@@ -292,7 +464,9 @@ def materialize_remote_curobo_context(
     }
     task_doc = {
         "schema_version": "task_evaluation_curobo_normalized_task_trajectory.v1",
-        "source_native_phase_plan_digest": plan["plan_digest"],
+        "source_native_phase_contract_digest": (
+            native_task_construction_authored_contract_digest(plan)
+        ),
         "joins_authored_phase_id": str(plan["phases"][0]["phase_id"]),
         "candidate_phases": candidate_phases,
     }

@@ -625,6 +625,9 @@ class WarmNativeConstructionFeedbackExecutor:
             "entry_trajectory_variant_digest": selected[
                 "entry_trajectory_variant"
             ]["entry_trajectory_variant_digest"],
+            "interaction_trajectory_variant_digest": (
+                selected.get("interaction_trajectory_variant") or {}
+            ).get("interaction_trajectory_variant_digest"),
             "camera_variant_digest": selected["camera_variant"][
                 "camera_variant_digest"
             ],

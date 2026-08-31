@@ -571,9 +571,50 @@ def _native_feedback_candidate_universe(
                 ],
             ),
         )
-        for option_index, (option_id, entry_waypoints, feedback_codes) in enumerate(
-            entry_options
-        ):
+        interaction_options = (
+            (
+                "uniform_seed",
+                1009,
+                (
+                    "gate_failed:base_collision_clearance",
+                    "gate_failed:push_contact_maintained",
+                ),
+            ),
+            (
+                "contact_ramp",
+                8928,
+                (
+                    "gate_failed:base_collision_clearance",
+                    "gate_failed:push_contact_maintained",
+                ),
+            ),
+            (
+                "push_contact_dense",
+                16847,
+                (
+                    "gate_failed:push_contact_maintained",
+                    "gate_failed:push_path",
+                ),
+            ),
+            (
+                "release_retreat_dense",
+                24766,
+                (
+                    "gate_failed:destination_containment",
+                    "gate_failed:push_path",
+                ),
+            ),
+        )
+        paired_options = (
+            entry_options[0],
+            entry_options[1],
+            entry_options[2],
+            entry_options[0],
+        )
+        for option_index, (
+            (option_id, entry_waypoints, entry_feedback_codes),
+            (interaction_id, solver_seed_offset, interaction_feedback_codes),
+        ) in enumerate(zip(paired_options, interaction_options, strict=True)):
             combined_positions = [
                 *[list(row["position_world_m"]) for row in entry_waypoints],
                 *authored_positions,
@@ -608,20 +649,67 @@ def _native_feedback_candidate_universe(
             entry_variant["entry_trajectory_variant_digest"] = canonical_digest(
                 entry_variant, digest_field="entry_trajectory_variant_digest"
             )
+            interaction_waypoints = []
+            for phase in phases:
+                phase_id = str(phase["phase_id"])
+                if "release" in phase_id:
+                    stage_kind = "release"
+                elif any(token in phase_id for token in ("retreat", "recovery")):
+                    stage_kind = "retreat"
+                elif phase_id != str(first["phase_id"]):
+                    stage_kind = "contact"
+                else:
+                    continue
+                interaction_waypoints.append(
+                    {
+                        "source_native_phase_id": phase_id,
+                        "stage_kind": stage_kind,
+                        "target_position_world_m": list(phase["position_world_m"]),
+                        "target_orientation_world_xyzw": list(
+                            phase["orientation_world_xyzw"]
+                        ),
+                        "authored_tcp_endpoint": True,
+                    }
+                )
+            interaction_variant: dict[str, Any] = {
+                "schema_version": (
+                    "task_evaluation_native_interaction_trajectory_variant.v1"
+                ),
+                "interaction_branch_id": interaction_id,
+                "solver_seed": base_rank * 65537 + solver_seed_offset,
+                "source_normalized_trajectory_digest": validated_trajectory[
+                    "trajectory_digest"
+                ],
+                "preserves_authored_tcp_endpoints": True,
+                "acceptance_criteria_immutable": True,
+                "waypoints": interaction_waypoints,
+                "interaction_trajectory_variant_digest": "",
+            }
+            interaction_variant[
+                "interaction_trajectory_variant_digest"
+            ] = canonical_digest(
+                interaction_variant,
+                digest_field="interaction_trajectory_variant_digest",
+            )
             candidate: dict[str, Any] = {
                 "schema_version": NATIVE_FEEDBACK_CANDIDATE_SCHEMA_VERSION,
-                "candidate_id": f"{proposal['candidate_id']}--{option_id}",
-                "deterministic_rank": base_rank * len(entry_options) + option_index,
+                "candidate_id": (
+                    f"{proposal['candidate_id']}--{option_id}--{interaction_id}"
+                ),
+                "deterministic_rank": base_rank * len(interaction_options) + option_index,
                 "robot_base_pose_world": proposal["pose"],
                 "support_surface_id": proposal["support_surface_id"],
                 "reset_variant": reset_variant,
                 "entry_trajectory_variant": entry_variant,
+                "interaction_trajectory_variant": interaction_variant,
                 "camera_variant": camera_variant,
                 "source_placement_candidate_id": proposal["candidate_id"],
                 "source_placement_geometry_gate_digest": raw.get(
                     "geometry_gate_digest"
                 ),
-                "addressed_feedback_codes": feedback_codes,
+                "addressed_feedback_codes": sorted(
+                    set(entry_feedback_codes) | set(interaction_feedback_codes)
+                ),
                 "maximum_incremental_cost_usd": 0.12,
                 "maximum_runtime_seconds": 360.0,
                 "candidate_digest": "",
@@ -1844,7 +1932,7 @@ def materialize_configured_controls_autostart(
             trajectory=trajectory,
             camera_template_path=Path(paths["cameras_path"]),
             source_commit=intent["expected_production_commit"],
-            maximum_candidates=min(placement["candidate_inventory_cap"] * 3, 64),
+            maximum_candidates=min(placement["candidate_inventory_cap"] * 4, 64),
         )
     )
     native_universe_reference = {

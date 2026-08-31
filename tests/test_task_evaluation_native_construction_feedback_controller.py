@@ -15,6 +15,7 @@ from blueprint_pipeline.task_evaluation_native_construction_feedback_controller 
     CompositeCandidateGenerator,
     build_next_native_construction_inventory,
     construction_phase_plan_for_candidate,
+    native_construction_feedback_codes,
     run_native_construction_feedback_controller,
     summarize_native_construction_feedback,
     validate_native_construction_candidate,
@@ -27,11 +28,52 @@ from blueprint_pipeline.task_evaluation_robot_placement_warm_executor import (
     WarmNativeConstructionFeedbackExecutor,
     run_retained_native_construction_feedback,
 )
+from blueprint_pipeline.native_task_construction_plan import (
+    native_task_construction_authored_contract_digest,
+)
 
 
 def _sealed(value: dict, field: str) -> dict:
     value[field] = canonical_digest(value, digest_field=field)
     return value
+
+
+def test_authored_interaction_digest_ignores_only_scene_envelope() -> None:
+    plan = {
+        "scene_plan_digest": "sha256:" + "1" * 64,
+        "phases": [
+            {
+                "phase_id": "push_contact",
+                "position_world_m": [2.9, -6.76, 0.818],
+                "orientation_world_xyzw": [0.0, 0.70710678, 0.0, 0.70710678],
+                "gate_ids": ["push_contact", "push_contact_maintained"],
+            }
+        ],
+        "destination_position_world_m": [3.1, -6.76, 0.818],
+        "execution_parameters": {
+            "arrival_tolerance_m": 0.02,
+            "maximum_steps_per_phase": 64,
+        },
+        "plan_digest": "sha256:" + "2" * 64,
+    }
+    rebound = __import__("copy").deepcopy(plan)
+    rebound["scene_plan_digest"] = "sha256:" + "3" * 64
+    rebound["plan_digest"] = "sha256:" + "4" * 64
+
+    expected = native_task_construction_authored_contract_digest(plan)
+
+    assert native_task_construction_authored_contract_digest(rebound) == expected
+    for mutation in ("endpoint", "gate", "destination", "tolerance"):
+        changed = __import__("copy").deepcopy(rebound)
+        if mutation == "endpoint":
+            changed["phases"][0]["position_world_m"][0] += 0.001
+        elif mutation == "gate":
+            changed["phases"][0]["gate_ids"].pop()
+        elif mutation == "destination":
+            changed["destination_position_world_m"][0] += 0.001
+        else:
+            changed["execution_parameters"]["arrival_tolerance_m"] = 0.5
+        assert native_task_construction_authored_contract_digest(changed) != expected
 
 
 def _candidate(
@@ -497,6 +539,30 @@ def test_next_inventory_deterministically_prefers_feedback_coverage_and_excludes
     )
 
 
+def test_native_gate_failures_become_exact_physics_branch_codes() -> None:
+    feedback = summarize_native_construction_feedback(
+        _native(passed=False, collision_force=0.602)
+    )
+    feedback["native_blockers"] = [
+        "native_rigid_construction_gate_failed:base_collision_clearance",
+        "native_rigid_construction_gate_failed:destination_containment",
+        "native_rigid_construction_gate_failed:push_contact_maintained",
+        "native_rigid_construction_gate_failed:push_path",
+    ]
+    feedback["feedback_digest"] = canonical_digest(
+        feedback, digest_field="feedback_digest"
+    )
+
+    codes = set(native_construction_feedback_codes(feedback))
+
+    assert {
+        "gate_failed:base_collision_clearance",
+        "gate_failed:destination_containment",
+        "gate_failed:push_contact_maintained",
+        "gate_failed:push_path",
+    }.issubset(codes)
+
+
 def test_execution_must_echo_the_exact_candidate_and_allocate_nothing() -> None:
     run_id = "scene-839873-mutation-refusal"
     candidate = _candidate("exact-a", 0, x=2.92)
@@ -689,14 +755,40 @@ def test_curobo_entry_and_approach_joint_paths_are_bound_into_native_plan(
                 ],
             }
         )
+    entry_waypoints = [
+        row for row in waypoints if row["stage_kind"] in {"entry", "approach"}
+    ]
+    interaction_waypoints = [
+        row for row in waypoints if row["stage_kind"] in {"contact", "release", "retreat"}
+    ]
     candidate["entry_trajectory_variant"] = _sealed(
         {
             "schema_version": "task_evaluation_native_entry_trajectory_variant.v1",
             "joins_authored_phase_id": "precontact",
-            "waypoints": waypoints,
+            "waypoints": entry_waypoints,
             "entry_trajectory_variant_digest": "",
         },
         "entry_trajectory_variant_digest",
+    )
+    candidate["interaction_trajectory_variant"] = _sealed(
+        {
+            "schema_version": (
+                "task_evaluation_native_interaction_trajectory_variant.v1"
+            ),
+            "interaction_branch_id": "push_contact_dense",
+            "solver_seed": 8928,
+            "source_native_phase_contract_digest": canonical_digest(
+                {
+                    key: value
+                    for key, value in authored.items()
+                    if key not in {"scene_plan_digest", "plan_digest"}
+                }
+            ),
+            "preserves_authored_tcp_endpoints": True,
+            "waypoints": interaction_waypoints,
+            "interaction_trajectory_variant_digest": "",
+        },
+        "interaction_trajectory_variant_digest",
     )
     candidate["candidate_digest"] = canonical_digest(
         candidate, digest_field="candidate_digest"
@@ -729,6 +821,31 @@ def test_curobo_entry_and_approach_joint_paths_are_bound_into_native_plan(
         row["solver_path_execution_required"] is True
         for row in result["phases"][3:]
     )
+    assert result["interaction_trajectory_variant_digest"] == candidate[
+        "interaction_trajectory_variant"
+    ]["interaction_trajectory_variant_digest"]
+
+    mutated = __import__("copy").deepcopy(candidate)
+    mutated_interaction = mutated["interaction_trajectory_variant"]
+    mutated_interaction["waypoints"][0]["target_position_world_m"][0] += 0.01
+    mutated_interaction["interaction_trajectory_variant_digest"] = canonical_digest(
+        mutated_interaction,
+        digest_field="interaction_trajectory_variant_digest",
+    )
+    mutated["candidate_digest"] = canonical_digest(
+        mutated, digest_field="candidate_digest"
+    )
+    with pytest.raises(
+        NativeConstructionFeedbackControllerError,
+        match="native_construction_candidate_authored_tcp_endpoint_mismatch",
+    ):
+        construction_phase_plan_for_candidate(
+            scene_plan={
+                "plan_digest": authored["scene_plan_digest"],
+                "cadence": {"maximum_action_steps": 240},
+            },
+            candidate=mutated,
+        )
 
 
 def test_live_warm_executor_callsite_retries_exact_candidate_then_runs_controls(

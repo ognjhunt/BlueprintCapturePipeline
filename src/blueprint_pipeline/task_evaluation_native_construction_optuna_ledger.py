@@ -246,6 +246,7 @@ def _candidate_dimensions(candidate: Mapping[str, Any]) -> dict[str, Any]:
     pose = candidate.get("robot_base_pose_world")
     reset = candidate.get("reset_variant")
     entry = candidate.get("entry_trajectory_variant")
+    interaction = candidate.get("interaction_trajectory_variant")
     camera = candidate.get("camera_variant")
     dimensions: dict[str, Any] = {
         "candidate_id": candidate["candidate_id"],
@@ -259,6 +260,21 @@ def _candidate_dimensions(candidate: Mapping[str, Any]) -> dict[str, Any]:
         "entry_trajectory_variant_digest": (
             entry.get("entry_trajectory_variant_digest")
             if isinstance(entry, Mapping)
+            else None
+        ),
+        "interaction_trajectory_variant_digest": (
+            interaction.get("interaction_trajectory_variant_digest")
+            if isinstance(interaction, Mapping)
+            else None
+        ),
+        "interaction_branch_id": (
+            interaction.get("interaction_branch_id")
+            if isinstance(interaction, Mapping)
+            else None
+        ),
+        "interaction_solver_seed": (
+            interaction.get("solver_seed")
+            if isinstance(interaction, Mapping)
             else None
         ),
         "camera_variant_digest": (

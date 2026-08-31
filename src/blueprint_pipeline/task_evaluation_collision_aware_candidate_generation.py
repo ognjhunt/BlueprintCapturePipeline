@@ -197,6 +197,11 @@ def _feedback_codes(value: Mapping[str, Any] | None) -> list[str]:
         for row in raw
         if isinstance(row, str) and 0 < len(row) <= 240
     }
+    for blocker in value.get("native_blockers") or []:
+        text = str(blocker)
+        prefix = "native_rigid_construction_gate_failed:"
+        if text.startswith(prefix) and len(text) > len(prefix):
+            codes.add("gate_failed:" + text[len(prefix) :])
     failed = str(value.get("first_failed_phase") or "")
     if failed:
         codes.add(f"phase_unreached:{failed}")
@@ -216,6 +221,27 @@ def _feedback_codes(value: Mapping[str, Any] | None) -> list[str]:
             row for row in codes if 0 < len(row) <= 240
         }
     )
+
+
+def _measured_feedback(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Copy only measured, secret-free native fields into the solver request."""
+
+    if value is None:
+        return None
+    result = {
+        key: _copy({"value": value[key]})["value"]
+        for key in (
+            "native_result_digest",
+            "native_blockers",
+            "initial_robot_root_pose_world",
+            "first_failed_phase",
+            "first_collision",
+            "phase_measurements",
+            "camera_measurements",
+        )
+        if key in value
+    }
+    return result
 
 
 def build_candidate_generation_request(
@@ -277,6 +303,7 @@ def build_candidate_generation_request(
         "backend_identity": _copy(backend_identity),
         "source_native_feedback_digest": feedback_digest,
         "addressable_feedback_codes": _feedback_codes(feedback),
+        "measured_native_feedback": _measured_feedback(feedback),
         "prior_execution_digests": history_digests,
         "maximum_candidates": maximum_candidates,
         "maximum_incremental_cost_usd": _finite(
@@ -402,6 +429,11 @@ def validate_candidate_generation_result(
             or any(code not in request["addressable_feedback_codes"] for code in addressed)
             or not str(row.get("support_surface_id") or "")
             or not str(row.get("joins_authored_phase_id") or "")
+            or not str(row.get("interaction_branch_id") or "")
+            or not isinstance(row.get("solver_seed"), int)
+            or not _SHA256.fullmatch(
+                str(row.get("source_native_phase_contract_digest") or "")
+            )
             or row.get("joint_limit_compliance_observed") is not True
             or row.get("collision_aware_motion_generated") is not True
         ):
@@ -472,21 +504,39 @@ def _candidate_from_solution(
         },
         field="reset_variant_digest",
     )
-    waypoints = []
+    entry_waypoints = []
+    interaction_waypoints = []
     for stage in solution["stages"]:
         for waypoint in stage["waypoints"]:
             row = _copy(waypoint)
             row["stage_id"] = str(stage["stage_id"])
             row["stage_kind"] = str(stage["stage_kind"])
-            waypoints.append(row)
+            if stage["stage_kind"] in {"entry", "approach"}:
+                entry_waypoints.append(row)
+            else:
+                interaction_waypoints.append(row)
     entry = _sealed(
         {
             "schema_version": "task_evaluation_native_entry_trajectory_variant.v1",
             "joins_authored_phase_id": str(solution["joins_authored_phase_id"]),
-            "waypoints": waypoints,
+            "waypoints": entry_waypoints,
             "entry_trajectory_variant_digest": "",
         },
         field="entry_trajectory_variant_digest",
+    )
+    interaction = _sealed(
+        {
+            "schema_version": "task_evaluation_native_interaction_trajectory_variant.v1",
+            "interaction_branch_id": str(solution["interaction_branch_id"]),
+            "solver_seed": int(solution["solver_seed"]),
+            "source_native_phase_contract_digest": str(
+                solution["source_native_phase_contract_digest"]
+            ),
+            "preserves_authored_tcp_endpoints": True,
+            "waypoints": interaction_waypoints,
+            "interaction_trajectory_variant_digest": "",
+        },
+        field="interaction_trajectory_variant_digest",
     )
     camera = _sealed(
         {
@@ -536,6 +586,7 @@ def _candidate_from_solution(
         "support_surface_id": str(solution["support_surface_id"]),
         "reset_variant": reset,
         "entry_trajectory_variant": entry,
+        "interaction_trajectory_variant": interaction,
         "camera_variant": camera,
         "generation_evidence": evidence,
         "maximum_incremental_cost_usd": request["maximum_incremental_cost_usd"],

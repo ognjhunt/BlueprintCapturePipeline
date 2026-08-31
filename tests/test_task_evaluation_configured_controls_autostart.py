@@ -764,10 +764,27 @@ def test_native_feedback_universe_expands_cpu_inventory_into_bounded_exact_varia
     )
 
     assert [row["candidate_id"] for row in universe["candidates"]] == [
-        "candidate-42--direct",
-        "candidate-42--overhead",
-        "candidate-42--radial_standoff",
+        "candidate-42--direct--uniform_seed",
+        "candidate-42--overhead--contact_ramp",
+        "candidate-42--radial_standoff--push_contact_dense",
+        "candidate-42--direct--release_retreat_dense",
     ]
+    assert {
+        row["interaction_trajectory_variant"]["interaction_branch_id"]
+        for row in universe["candidates"]
+    } == {
+        "uniform_seed",
+        "contact_ramp",
+        "push_contact_dense",
+        "release_retreat_dense",
+    }
+    assert all(
+        row["interaction_trajectory_variant"][
+            "preserves_authored_tcp_endpoints"
+        ]
+        is True
+        for row in universe["candidates"]
+    )
     assert all(
         row["reset_variant"]["robot_joint_reset_positions_rad"]["panda_joint4"]
         == pytest.approx(-1.36)
