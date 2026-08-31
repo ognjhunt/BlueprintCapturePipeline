@@ -10,7 +10,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import (
+    canonical_digest,
+    cross_runtime_canonical_digest,
+)
 from .task_evaluation_policy_run_contract import QUICK_FAMILY_COUNTS
 
 
@@ -49,7 +52,7 @@ def validate_policy_canary_setup(value: Mapping[str, Any]) -> dict[str, Any]:
         raise TaskEvaluationPolicyCanarySetupError(
             f"policy_canary_setup_invalid:{path}"
         )
-    if setup["setup_digest"] != canonical_digest(setup, digest_field="setup_digest"):
+    if setup["setup_digest"] != policy_canary_setup_digest(setup):
         raise TaskEvaluationPolicyCanarySetupError("policy_canary_setup_digest_mismatch")
     presets = setup["episode_presets"]
     if [row["preset_id"] for row in presets] != ["quick_10", "standard_100", "deep_500"]:
@@ -98,6 +101,10 @@ def validate_policy_canary_setup(value: Mapping[str, Any]) -> dict[str, Any]:
     if runnable != ["pi05_droid", "groot_n17_droid"]:
         raise TaskEvaluationPolicyCanarySetupError("policy_canary_setup_runnable_pair_invalid")
     return setup
+
+
+def policy_canary_setup_digest(value: Mapping[str, Any]) -> str:
+    return cross_runtime_canonical_digest(value, digest_field="setup_digest")
 
 
 def policy_canary_setup_blockers(
@@ -183,4 +190,4 @@ def normalize_policy_canary_launch_request_blockers(
     return sorted(set(normalized))
 
 
-__all__ = ["SCHEMA_PATH", "SCHEMA_VERSION", "TaskEvaluationPolicyCanarySetupError", "launch_profile_policy_canary_setup_blockers", "policy_canary_setup_blockers", "policy_canary_setup_schema", "validate_policy_canary_setup"]
+__all__ = ["SCHEMA_PATH", "SCHEMA_VERSION", "TaskEvaluationPolicyCanarySetupError", "launch_profile_policy_canary_setup_blockers", "policy_canary_setup_blockers", "policy_canary_setup_digest", "policy_canary_setup_schema", "validate_policy_canary_setup"]

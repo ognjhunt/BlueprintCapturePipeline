@@ -28,7 +28,10 @@ from .decision_evidence_contracts import (
 )
 from .native_task_arena_policy_bundle import _candidate_runtime_binding
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
-from .task_evaluation_policy_canary_setup import validate_policy_canary_setup
+from .task_evaluation_policy_canary_setup import (
+    policy_canary_setup_digest,
+    validate_policy_canary_setup,
+)
 from .task_evaluation_policy_run_contract import (
     policy_run_setup_digest,
     validate_policy_run_setup,
@@ -690,7 +693,7 @@ def materialize_policy_canary_presubmission_setup(
         },
         "setup_digest": "",
     }
-    setup["setup_digest"] = canonical_digest(setup, digest_field="setup_digest")
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
     setup = validate_policy_canary_setup(setup)
     controller_ref = _immutable_ref(
         policy_controller_configuration,
