@@ -88,9 +88,7 @@ def _template() -> dict[str, object]:
         "publication": {"service_account_readback_required": True},
         "template_digest": "",
     }
-    template["template_digest"] = canonical_digest(
-        template, digest_field="template_digest"
-    )
+    template["template_digest"] = canonical_digest(template, digest_field="template_digest")
     return template
 
 
@@ -111,9 +109,7 @@ def setup() -> dict[str, object]:
         {
             "cell_id": f"quick-cell-{index}-{family}",
             "family": family,
-            "partition": (
-                "held_out" if family == "held_out_composition" else "qualification"
-            ),
+            "partition": ("held_out" if family == "held_out_composition" else "qualification"),
             "scored": True,
             "cell_spec_digest": f"sha256:{100 + index:064x}",
         }
@@ -236,9 +232,7 @@ def configuration(setup_value: dict[str, object]) -> dict[str, object]:
     return compile_policy_run_configuration(selection(setup_value), setup=setup_value)
 
 
-def controls_qualification(
-    config: dict[str, object], plan: dict[str, object]
-) -> dict[str, object]:
+def controls_qualification(config: dict[str, object], plan: dict[str, object]) -> dict[str, object]:
     cells = []
     for index, cell in enumerate(config["matrix"]["cells"]):
         pair = {
@@ -275,9 +269,7 @@ def controls_qualification(
             "control_pair": pair,
             "result_digest": "",
         }
-        result["result_digest"] = canonical_digest(
-            result, digest_field="result_digest"
-        )
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
         cells.append(
             {
                 "cell_id": cell["cell_id"],
@@ -294,9 +286,7 @@ def controls_qualification(
         "blockers": [],
         "qualification_digest": "",
     }
-    value["qualification_digest"] = canonical_digest(
-        value, digest_field="qualification_digest"
-    )
+    value["qualification_digest"] = canonical_digest(value, digest_field="qualification_digest")
     return value
 
 
@@ -391,14 +381,13 @@ def test_internal_canary_compiles_resolved_quick_10_without_controls_gate() -> N
     setup_value = setup()
     quick = setup_value["presets"][0]
     for index, cell in enumerate(quick["cells"]):
+        cell["seed"] = 1000 + index
         cell["resolved_scenario"] = {
             "variation_family": cell["family"],
             "deterministic_ordinal": index,
         }
         cell["cell_spec_digest"] = canonical_digest(cell["resolved_scenario"])
-    quick["scenario_set_digest"] = canonical_digest(
-        {"ordered_cells": quick["cells"]}
-    )
+    quick["scenario_set_digest"] = canonical_digest({"ordered_cells": quick["cells"]})
     quick["nesting_proof_digest"] = canonical_digest(
         {
             "preset_id": quick["preset_id"],
@@ -408,9 +397,7 @@ def test_internal_canary_compiles_resolved_quick_10_without_controls_gate() -> N
             "selection_rule": "published_ordered_prefix",
         }
     )
-    setup_value["setup_digest"] = canonical_digest(
-        setup_value, digest_field="setup_digest"
-    )
+    setup_value["setup_digest"] = canonical_digest(setup_value, digest_field="setup_digest")
     selected = selection(setup_value)
     selected.update(
         {
@@ -436,6 +423,17 @@ def test_internal_canary_compiles_resolved_quick_10_without_controls_gate() -> N
     assert config["run_kind"] == "internal_policy_canary"
     assert config["claim_ceiling"] == "diagnostic_policy_execution"
     assert config["counts"]["learned_policy_rollout_count"] == 20
+    assert [row["seed"] for row in config["matrix"]["cells"]] == [
+        row["seed"] for row in quick["cells"]
+    ]
+    different_run = copy.deepcopy(selected)
+    different_run["run_id"] = "policy-run-with-different-id"
+    different_config = compile_policy_run_configuration(
+        different_run, setup=setup_value
+    )
+    assert [row["seed"] for row in different_config["matrix"]["cells"]] == [
+        row["seed"] for row in config["matrix"]["cells"]
+    ]
     assert plan["status"] == "prepared_awaiting_policy_canary_activation"
     assert plan["blockers"] == []
     assert activation["controls_qualification_digest"] is None
@@ -493,9 +491,7 @@ def test_fail_without_fix_activation_rejects_missing_scored_cell_controls() -> N
     controls_result = unqualified["cells"][0]["controls_result"]
     control_pair = controls_result["control_pair"]
     control_pair["controls"][1]["control_passed"] = False
-    control_pair["pair_digest"] = canonical_digest(
-        control_pair, digest_field="pair_digest"
-    )
+    control_pair["pair_digest"] = canonical_digest(control_pair, digest_field="pair_digest")
     controls_result["result_digest"] = canonical_digest(
         controls_result, digest_field="result_digest"
     )
@@ -521,9 +517,7 @@ def test_fail_without_fix_rejects_candidate_family_and_seed_drift() -> None:
 
     swapped = copy.deepcopy(config)
     swapped["candidate_ids"].reverse()
-    swapped["configuration_digest"] = canonical_digest(
-        swapped, digest_field="configuration_digest"
-    )
+    swapped["configuration_digest"] = canonical_digest(swapped, digest_field="configuration_digest")
     with pytest.raises(
         TaskEvaluationPolicyRunContractError,
         match="policy_run_configuration_invalid:candidate_ids",
@@ -532,9 +526,7 @@ def test_fail_without_fix_rejects_candidate_family_and_seed_drift() -> None:
 
     missing_family = copy.deepcopy(setup_value)
     missing_family["presets"][0]["cells"][-1]["family"] = "pairwise"
-    missing_family["setup_digest"] = canonical_digest(
-        missing_family, digest_field="setup_digest"
-    )
+    missing_family["setup_digest"] = canonical_digest(missing_family, digest_field="setup_digest")
     with pytest.raises(
         TaskEvaluationPolicyRunContractError,
         match="policy_run_setup_(?:invalid|preset_cells_invalid)",
@@ -577,16 +569,12 @@ def test_catalog_template_expands_into_existing_authenticated_preparation() -> N
 def test_launch_catalog_projects_validated_setup_for_webapp_server(tmp_path) -> None:
     profile = launch_profile(tmp_path)
     profile["policy_run_setup"] = setup()
-    profile["profile_digest"] = launch_profile_digest(
-        profile, digest_field="profile_digest"
-    )
+    profile["profile_digest"] = launch_profile_digest(profile, digest_field="profile_digest")
 
     descriptor = public_launch_profile_descriptor(profile)
 
     assert descriptor["policy_run_setup"]["embodiment_id"] == EMBODIMENT_ID
-    assert descriptor["policy_run_setup"]["candidate_ids"] == list(
-        FROZEN_CANDIDATE_IDS
-    )
+    assert descriptor["policy_run_setup"]["candidate_ids"] == list(FROZEN_CANDIDATE_IDS)
     assert validate_public_launch_profile_descriptor(descriptor) == []
 
 
@@ -618,17 +606,13 @@ def test_worker_seals_policy_plan_into_existing_preparation_queue(tmp_path) -> N
     inline_setup["preparation_template"]["template_digest"] = canonical_digest(
         inline_setup["preparation_template"], digest_field="template_digest"
     )
-    inline_setup["setup_digest"] = canonical_digest(
-        inline_setup, digest_field="setup_digest"
-    )
+    inline_setup["setup_digest"] = canonical_digest(inline_setup, digest_field="setup_digest")
     value["policy_run_selection"]["setup_digest"] = inline_setup["setup_digest"]
     value["policy_run_configuration"] = compile_policy_run_configuration(
         value["policy_run_selection"], setup=inline_setup
     )
     queue = tmp_path / "queue"
-    stage_launch_preparation_request(
-        value=value, queue_root=queue, submitted_by="blueprint-webapp"
-    )
+    stage_launch_preparation_request(value=value, queue_root=queue, submitted_by="blueprint-webapp")
 
     run = process_launch_preparation_queue(
         queue_root=queue,
@@ -643,9 +627,10 @@ def test_worker_seals_policy_plan_into_existing_preparation_queue(tmp_path) -> N
 
     result = run["results"][0]
     assert result["status"] == "queued_for_production_episode_compilation", result
-    assert result["policy_run_plan"]["configuration_digest"] == value[
-        "policy_run_configuration"
-    ]["configuration_digest"]
+    assert (
+        result["policy_run_plan"]["configuration_digest"]
+        == value["policy_run_configuration"]["configuration_digest"]
+    )
     assert result["policy_run_plan"]["provider_mutation_performed"] is False
     assert result["paid_execution_requested"] is False
 
@@ -655,12 +640,8 @@ def test_terminal_projection_requires_complete_lossless_evidence_for_decision() 
     assert validate_policy_run_result_projection(valid) == valid
 
     missing_media = copy.deepcopy(valid)
-    missing_media["candidate_results"][0]["evidence"][
-        "lossless_frame_manifest_count"
-    ] -= 1
-    missing_media["projection_digest"] = policy_run_result_projection_digest(
-        missing_media
-    )
+    missing_media["candidate_results"][0]["evidence"]["lossless_frame_manifest_count"] -= 1
+    missing_media["projection_digest"] = policy_run_result_projection_digest(missing_media)
     with pytest.raises(
         TaskEvaluationPolicyRunContractError,
         match="policy_run_result_projection_decision_evidence_incomplete",
@@ -685,9 +666,7 @@ def test_terminal_projection_digest_uses_cross_runtime_number_semantics() -> Non
 
 def test_terminal_abstention_retains_typed_blocker() -> None:
     value = result_projection(state="abstained")
-    assert validate_policy_run_result_projection(value)["blockers"] == [
-        "incomplete_episode_matrix"
-    ]
+    assert validate_policy_run_result_projection(value)["blockers"] == ["incomplete_episode_matrix"]
 
 
 def test_terminal_sync_binds_policy_projection_to_existing_delivery() -> None:
@@ -751,14 +730,10 @@ def test_terminal_sync_binds_policy_projection_to_existing_delivery() -> None:
         "decision_envelope_digest": envelope["decision_envelope_digest"],
         "delivery_digest": "",
     }
-    delivery["delivery_digest"] = canonical_digest(
-        delivery, digest_field="delivery_digest"
-    )
+    delivery["delivery_digest"] = canonical_digest(delivery, digest_field="delivery_digest")
     policy_result = result_projection()
     policy_result["result_delivery_digest"] = delivery["delivery_digest"]
-    policy_result["projection_digest"] = policy_run_result_projection_digest(
-        policy_result
-    )
+    policy_result["projection_digest"] = policy_run_result_projection_digest(policy_result)
 
     publication = build_task_evaluation_run_webapp_publication(
         capture_session_id="capture-policy-run-1",
@@ -772,6 +747,4 @@ def test_terminal_sync_binds_policy_projection_to_existing_delivery() -> None:
     )
 
     assert publication["schema_version"] == "task_evaluation_run_publication.v3"
-    assert publication["policy_run_result"]["result_delivery_digest"] == delivery[
-        "delivery_digest"
-    ]
+    assert publication["policy_run_result"]["result_delivery_digest"] == delivery["delivery_digest"]

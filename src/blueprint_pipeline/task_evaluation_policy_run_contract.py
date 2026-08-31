@@ -23,15 +23,9 @@ SETUP_SCHEMA_VERSION = "task_evaluation_policy_run_setup.v1"
 SELECTION_SCHEMA_VERSION = "task_evaluation_policy_run_selection.v1"
 CONFIGURATION_SCHEMA_VERSION = "task_evaluation_policy_run_configuration.v1"
 PLAN_SCHEMA_VERSION = "task_evaluation_policy_run_plan.v1"
-RESULT_PROJECTION_SCHEMA_VERSION = (
-    "task_evaluation_policy_run_result_projection.v1"
-)
-CONTROLS_QUALIFICATION_SCHEMA_VERSION = (
-    "task_evaluation_policy_controls_qualification.v1"
-)
-ACTIVATION_MANIFEST_SCHEMA_VERSION = (
-    "task_evaluation_policy_campaign_activation.v1"
-)
+RESULT_PROJECTION_SCHEMA_VERSION = "task_evaluation_policy_run_result_projection.v1"
+CONTROLS_QUALIFICATION_SCHEMA_VERSION = "task_evaluation_policy_controls_qualification.v1"
+ACTIVATION_MANIFEST_SCHEMA_VERSION = "task_evaluation_policy_campaign_activation.v1"
 EMBODIMENT_ID = "franka_panda_robotiq_2f85_v1"
 FROZEN_CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
 RUN_KIND_QUALIFIED_EVALUATION = "qualified_evaluation"
@@ -68,12 +62,8 @@ MAX_TOTAL_EPISODES = 2000
 _SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "docs" / "schemas"
 SETUP_SCHEMA_PATH = _SCHEMA_ROOT / f"{SETUP_SCHEMA_VERSION}.schema.json"
 SELECTION_SCHEMA_PATH = _SCHEMA_ROOT / f"{SELECTION_SCHEMA_VERSION}.schema.json"
-CONFIGURATION_SCHEMA_PATH = (
-    _SCHEMA_ROOT / f"{CONFIGURATION_SCHEMA_VERSION}.schema.json"
-)
-RESULT_PROJECTION_SCHEMA_PATH = (
-    _SCHEMA_ROOT / f"{RESULT_PROJECTION_SCHEMA_VERSION}.schema.json"
-)
+CONFIGURATION_SCHEMA_PATH = _SCHEMA_ROOT / f"{CONFIGURATION_SCHEMA_VERSION}.schema.json"
+RESULT_PROJECTION_SCHEMA_PATH = _SCHEMA_ROOT / f"{RESULT_PROJECTION_SCHEMA_VERSION}.schema.json"
 CONTROLS_QUALIFICATION_SCHEMA_PATH = (
     _SCHEMA_ROOT / f"{CONTROLS_QUALIFICATION_SCHEMA_VERSION}.schema.json"
 )
@@ -92,9 +82,7 @@ def _schema(path: Path) -> dict[str, Any]:
             f"policy_run_schema_unavailable:{path.name}"
         ) from exc
     if not isinstance(value, Mapping):
-        raise TaskEvaluationPolicyRunContractError(
-            f"policy_run_schema_invalid:{path.name}"
-        )
+        raise TaskEvaluationPolicyRunContractError(f"policy_run_schema_invalid:{path.name}")
     import jsonschema
 
     try:
@@ -132,9 +120,7 @@ def _validate_schema(
     import jsonschema
 
     copied = deepcopy(dict(value))
-    validator = jsonschema.Draft202012Validator(
-        schema, format_checker=jsonschema.FormatChecker()
-    )
+    validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
     errors = sorted(validator.iter_errors(copied), key=lambda row: list(row.path))
     if errors:
         path = ".".join(str(part) for part in errors[0].path) or "$"
@@ -152,9 +138,7 @@ def _cell_projection(cell: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _cross_runtime_digest(
-    value: Mapping[str, Any], *, digest_field: str | None = None
-) -> str:
+def _cross_runtime_digest(value: Mapping[str, Any], *, digest_field: str | None = None) -> str:
     normalized = dict(value)
     if digest_field:
         normalized.pop(digest_field, None)
@@ -186,9 +170,7 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
     if [row["preset_id"] for row in presets] != list(PRESET_IDS) or [
         row["scenario_count_per_policy"] for row in presets
     ] != list(PRESET_COUNTS):
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_run_setup_preset_order_invalid"
-        )
+        raise TaskEvaluationPolicyRunContractError("policy_run_setup_preset_order_invalid")
     for index, preset in enumerate(presets):
         expected_parent = None if index == 0 else PRESET_IDS[index - 1]
         expected_prefix = 0 if index == 0 else PRESET_COUNTS[index - 1]
@@ -196,12 +178,9 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
             preset["parent_preset_id"] != expected_parent
             or preset["parent_prefix_count"] != expected_prefix
             or preset["nesting_proof_digest"] != _nesting_proof(preset)
-            or sum(preset["family_counts"].values())
-            != preset["scenario_count_per_policy"]
+            or sum(preset["family_counts"].values()) != preset["scenario_count_per_policy"]
         ):
-            raise TaskEvaluationPolicyRunContractError(
-                "policy_run_setup_preset_nesting_invalid"
-            )
+            raise TaskEvaluationPolicyRunContractError("policy_run_setup_preset_nesting_invalid")
         enabled = preset["availability"] == "enabled"
         cells = preset.get("cells")
         if (
@@ -213,48 +192,31 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
                 or not isinstance(cells, list)
                 or len(cells) != 10
             )
-        ) or (
-            index > 0
-            and (
-                enabled
-                or preset["default"] is not False
-                or cells is not None
-            )
-        ):
+        ) or (index > 0 and (enabled or preset["default"] is not False or cells is not None)):
             raise TaskEvaluationPolicyRunContractError(
                 "policy_run_setup_preset_availability_invalid"
             )
         estimate = preset["estimate"]
         if estimate["status"] == "estimated" and (
-            estimate["duration_minutes"]["minimum"]
-            > estimate["duration_minutes"]["maximum"]
-            or estimate["cost_usd"]["minimum"]
-            > estimate["cost_usd"]["maximum"]
+            estimate["duration_minutes"]["minimum"] > estimate["duration_minutes"]["maximum"]
+            or estimate["cost_usd"]["minimum"] > estimate["cost_usd"]["maximum"]
         ):
-            raise TaskEvaluationPolicyRunContractError(
-                "policy_run_setup_estimate_range_invalid"
-            )
+            raise TaskEvaluationPolicyRunContractError("policy_run_setup_estimate_range_invalid")
         if cells is None:
             continue
         cell_ids = [cell["cell_id"] for cell in cells]
         family_counts = {
-            family: sum(cell["family"] == family for cell in cells)
-            for family in REQUIRED_FAMILIES
+            family: sum(cell["family"] == family for cell in cells) for family in REQUIRED_FAMILIES
         }
         if (
             len(cell_ids) != len(set(cell_ids))
             or family_counts != preset["family_counts"]
-            or preset["scenario_set_digest"]
-            != _cross_runtime_digest({"ordered_cells": cells})
+            or preset["scenario_set_digest"] != _cross_runtime_digest({"ordered_cells": cells})
         ):
-            raise TaskEvaluationPolicyRunContractError(
-                "policy_run_setup_preset_cells_invalid"
-            )
+            raise TaskEvaluationPolicyRunContractError("policy_run_setup_preset_cells_invalid")
         for cell in cells:
             expected_partition = (
-                "held_out"
-                if cell["family"] == "held_out_composition"
-                else "qualification"
+                "held_out" if cell["family"] == "held_out_composition" else "qualification"
             )
             if cell["partition"] != expected_partition:
                 raise TaskEvaluationPolicyRunContractError(
@@ -311,9 +273,7 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
         raise TaskEvaluationPolicyRunContractError(
             f"policy_run_preparation_template_invalid:{exc}"
         ) from exc
-    if setup["setup_digest"] != _cross_runtime_digest(
-        setup, digest_field="setup_digest"
-    ):
+    if setup["setup_digest"] != _cross_runtime_digest(setup, digest_field="setup_digest"):
         raise TaskEvaluationPolicyRunContractError("policy_run_setup_digest_mismatch")
     return setup
 
@@ -321,9 +281,7 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
 def policy_run_setup_digest(value: Mapping[str, Any]) -> str:
     setup = dict(value)
     setup["setup_digest"] = ""
-    setup["setup_digest"] = _cross_runtime_digest(
-        setup, digest_field="setup_digest"
-    )
+    setup["setup_digest"] = _cross_runtime_digest(setup, digest_field="setup_digest")
     return validate_policy_run_setup(setup)["setup_digest"]
 
 
@@ -358,9 +316,7 @@ def validate_policy_run_selection(value: Mapping[str, Any]) -> dict[str, Any]:
                 "policy_run_selection_canary_notification_invalid"
             )
     elif run_kind != RUN_KIND_QUALIFIED_EVALUATION:
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_run_selection_run_kind_invalid"
-        )
+        raise TaskEvaluationPolicyRunContractError("policy_run_selection_run_kind_invalid")
     return selection
 
 
@@ -381,36 +337,37 @@ def compile_policy_run_configuration(
         or selection["source_launch_id"] != bound_setup["source_launch_id"]
         or selection["offering_digest"] != bound_setup["offering_digest"]
     ):
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_run_selection_setup_binding_mismatch"
-        )
+        raise TaskEvaluationPolicyRunContractError("policy_run_selection_setup_binding_mismatch")
     matches = [
-        preset
-        for preset in bound_setup["presets"]
-        if preset["preset_id"] == selection["preset_id"]
+        preset for preset in bound_setup["presets"] if preset["preset_id"] == selection["preset_id"]
     ]
     if len(matches) != 1 or matches[0]["availability"] != "enabled":
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_run_selection_preset_not_enabled"
-        )
+        raise TaskEvaluationPolicyRunContractError("policy_run_selection_preset_not_enabled")
     preset = matches[0]
-    cells = [
-        {
-            **deepcopy(cell),
-            "seed": _seed_for_cell(
-                setup_digest=bound_setup["setup_digest"],
-                run_id=selection["run_id"],
-                preset_id=preset["preset_id"],
-                cell_id=cell["cell_id"],
-            ),
-        }
-        for cell in preset["cells"]
-    ]
+    run_kind = selection.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION)
+    if run_kind == RUN_KIND_INTERNAL_POLICY_CANARY:
+        if any(
+            isinstance(cell.get("seed"), bool) or not isinstance(cell.get("seed"), int)
+            for cell in preset["cells"]
+        ):
+            raise TaskEvaluationPolicyRunContractError("policy_run_canary_fixed_seed_missing")
+        cells = [deepcopy(cell) for cell in preset["cells"]]
+    else:
+        cells = [
+            {
+                **deepcopy(cell),
+                "seed": _seed_for_cell(
+                    setup_digest=bound_setup["setup_digest"],
+                    run_id=selection["run_id"],
+                    preset_id=preset["preset_id"],
+                    cell_id=cell["cell_id"],
+                ),
+            }
+            for cell in preset["cells"]
+        ]
     seeds = [cell["seed"] for cell in cells]
     if len(seeds) != len(set(seeds)):
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_run_configuration_seed_collision"
-        )
+        raise TaskEvaluationPolicyRunContractError("policy_run_configuration_seed_collision")
     scenario_count = preset["scenario_count_per_policy"]
     configuration: dict[str, Any] = {
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
@@ -418,7 +375,7 @@ def compile_policy_run_configuration(
         "source_launch_id": selection["source_launch_id"],
         "offering_digest": selection["offering_digest"],
         "setup_digest": selection["setup_digest"],
-        "run_kind": selection.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION),
+        "run_kind": run_kind,
         "embodiment_id": EMBODIMENT_ID,
         "candidate_ids": list(FROZEN_CANDIDATE_IDS),
         "preset_id": preset["preset_id"],
@@ -507,9 +464,7 @@ def validate_policy_run_configuration(
     if configuration["configuration_digest"] != _cross_runtime_digest(
         configuration, digest_field="configuration_digest"
     ):
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_run_configuration_digest_mismatch"
-        )
+        raise TaskEvaluationPolicyRunContractError("policy_run_configuration_digest_mismatch")
     cells = configuration["matrix"]["cells"]
     scenario_count = configuration["scenario_count_per_policy"]
     counts = configuration["counts"]
@@ -533,31 +488,23 @@ def validate_policy_run_configuration(
     run_kind = configuration.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION)
     if run_kind == RUN_KIND_INTERNAL_POLICY_CANARY:
         if (
-            configuration.get("claim_ceiling")
-            != CLAIM_CEILING_DIAGNOSTIC_POLICY_EXECUTION
+            configuration.get("claim_ceiling") != CLAIM_CEILING_DIAGNOSTIC_POLICY_EXECUTION
             or configuration.get("scene_controls_status_at_submission")
             != CANARY_SCENE_CONTROLS_STATUS
             or configuration.get("robot_preset_id") != EMBODIMENT_ID
-            or tuple(configuration.get("policy_candidate_ids") or ())
-            != FROZEN_CANDIDATE_IDS
+            or tuple(configuration.get("policy_candidate_ids") or ()) != FROZEN_CANDIDATE_IDS
             or configuration.get("unqualified_warning")
             != "Controls pending — results are unqualified."
-            or configuration["execution_guards"].get("controls_gate_policy_execution")
-            is not False
-            or configuration["execution_guards"].get("scene_promotion_forbidden")
-            is not True
+            or configuration["execution_guards"].get("controls_gate_policy_execution") is not False
+            or configuration["execution_guards"].get("scene_promotion_forbidden") is not True
         ):
             raise TaskEvaluationPolicyRunContractError(
                 "policy_run_configuration_canary_boundary_invalid"
             )
     elif run_kind != RUN_KIND_QUALIFIED_EVALUATION:
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_run_configuration_run_kind_invalid"
-        )
+        raise TaskEvaluationPolicyRunContractError("policy_run_configuration_run_kind_invalid")
     if len({cell["seed"] for cell in cells}) != len(cells):
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_run_configuration_seeds_not_unique"
-        )
+        raise TaskEvaluationPolicyRunContractError("policy_run_configuration_seeds_not_unique")
     if setup is not None:
         selection = {
             "schema_version": SELECTION_SCHEMA_VERSION,
@@ -599,9 +546,7 @@ def policy_run_configuration_digest(value: Mapping[str, Any]) -> str:
     return validate_policy_run_configuration(configuration)["configuration_digest"]
 
 
-def build_policy_run_plan(
-    value: Mapping[str, Any], *, setup: Mapping[str, Any]
-) -> dict[str, Any]:
+def build_policy_run_plan(value: Mapping[str, Any], *, setup: Mapping[str, Any]) -> dict[str, Any]:
     """Compile one no-spend, no-execution queue plan from exact setup bytes."""
 
     configuration = validate_policy_run_configuration(value, setup=setup)
@@ -621,15 +566,9 @@ def build_policy_run_plan(
         "counts": {
             "scored_cell_count": len(cells),
             "scenarios_per_policy": configuration["scenario_count_per_policy"],
-            "candidate_episode_count": configuration["counts"][
-                "learned_episode_count"
-            ],
-            "control_episode_count": configuration["counts"][
-                "control_episode_count"
-            ],
-            "total_episode_count": configuration["counts"][
-                "total_episode_count"
-            ],
+            "candidate_episode_count": configuration["counts"]["learned_episode_count"],
+            "control_episode_count": configuration["counts"]["control_episode_count"],
+            "total_episode_count": configuration["counts"]["total_episode_count"],
         },
         "campaign_units": [
             {
@@ -678,25 +617,17 @@ def validate_policy_controls_qualification(
     if qualification["qualification_digest"] != canonical_digest(
         qualification, digest_field="qualification_digest"
     ):
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_controls_qualification_digest_mismatch"
-        )
+        raise TaskEvaluationPolicyRunContractError("policy_controls_qualification_digest_mismatch")
     if (
-        qualification["configuration_digest"]
-        != configuration["configuration_digest"]
+        qualification["configuration_digest"] != configuration["configuration_digest"]
         or qualification["plan_digest"] != plan["plan_digest"]
-        or [
-            {"cell_id": row["cell_id"], "seed": row["seed"]}
-            for row in qualification["cells"]
-        ]
+        or [{"cell_id": row["cell_id"], "seed": row["seed"]} for row in qualification["cells"]]
         != [
             {"cell_id": row["cell_id"], "seed": row["seed"]}
             for row in configuration["matrix"]["cells"]
         ]
     ):
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_controls_qualification_matrix_mismatch"
-        )
+        raise TaskEvaluationPolicyRunContractError("policy_controls_qualification_matrix_mismatch")
     from .adp009d_control_episode import REQUIRED_CONTROLS
 
     for row in qualification["cells"]:
@@ -704,8 +635,7 @@ def validate_policy_controls_qualification(
         pair = controls.get("control_pair")
         pair_controls = pair.get("controls") if isinstance(pair, Mapping) else None
         if (
-            controls.get("schema_version")
-            != "native_task_arena_control_result.v1"
+            controls.get("schema_version") != "native_task_arena_control_result.v1"
             or controls.get("status") != "completed"
             or controls.get("controls_qualified") is not True
             or controls.get("blockers") != []
@@ -719,8 +649,7 @@ def validate_policy_controls_qualification(
             or pair.get("cell_admitted_for_policy_execution") is not True
             or pair.get("policy_execution_blockers") != []
             or pair.get("candidate_policy_queried") is not False
-            or pair.get("pair_digest")
-            != canonical_digest(pair, digest_field="pair_digest")
+            or pair.get("pair_digest") != canonical_digest(pair, digest_field="pair_digest")
             or not isinstance(pair_controls, list)
             or len(pair_controls) != len(REQUIRED_CONTROLS)
             or any(
@@ -730,9 +659,7 @@ def validate_policy_controls_qualification(
                 or not isinstance(control.get("receipt_digest"), str)
                 or not str(control["receipt_digest"]).startswith("sha256:")
                 or len(str(control["receipt_digest"])) != 71
-                for control, control_id in zip(
-                    pair_controls, REQUIRED_CONTROLS, strict=True
-                )
+                for control, control_id in zip(pair_controls, REQUIRED_CONTROLS, strict=True)
             )
         ):
             raise TaskEvaluationPolicyRunContractError(
@@ -753,13 +680,10 @@ def build_policy_campaign_activation_manifest(
     if (
         plan.get("schema_version") != PLAN_SCHEMA_VERSION
         or plan.get("configuration_digest") != configuration["configuration_digest"]
-        or plan.get("plan_digest")
-        != canonical_digest(plan, digest_field="plan_digest")
+        or plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest")
         or plan.get("campaign_units") is None
     ):
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_campaign_activation_plan_invalid"
-        )
+        raise TaskEvaluationPolicyRunContractError("policy_campaign_activation_plan_invalid")
     run_kind = configuration.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION)
     if run_kind == RUN_KIND_QUALIFIED_EVALUATION:
         if controls_qualification is None:
@@ -772,13 +696,9 @@ def build_policy_campaign_activation_manifest(
     else:
         qualification = None
     if tuple(configuration["candidate_ids"]) != FROZEN_CANDIDATE_IDS:
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_campaign_activation_member_pair_invalid"
-        )
+        raise TaskEvaluationPolicyRunContractError("policy_campaign_activation_member_pair_invalid")
     controls = (
-        {row["cell_id"]: row for row in qualification["cells"]}
-        if qualification is not None
-        else {}
+        {row["cell_id"]: row for row in qualification["cells"]} if qualification is not None else {}
     )
     units = []
     for plan_unit in plan["campaign_units"]:
@@ -826,16 +746,11 @@ def build_policy_campaign_activation_manifest(
             "candidate_ids": list(FROZEN_CANDIDATE_IDS),
             "policy_count": 2,
             "episodes_per_policy": configuration["scenario_count_per_policy"],
-            "learned_policy_rollout_count": configuration["counts"][
-                "learned_policy_rollout_count"
-            ],
+            "learned_policy_rollout_count": configuration["counts"]["learned_policy_rollout_count"],
             "maximum_provider_allocations": 1,
             "retry_cap": 0,
             "cells": [
-                {
-                    key: unit[key]
-                    for key in ("cell_id", "seed", "cell_spec_digest", "family")
-                }
+                {key: unit[key] for key in ("cell_id", "seed", "cell_spec_digest", "family")}
                 for unit in units
             ],
         },
@@ -846,9 +761,7 @@ def build_policy_campaign_activation_manifest(
         "paid_execution_requested": False,
         "activation_digest": "",
     }
-    manifest["activation_digest"] = canonical_digest(
-        manifest, digest_field="activation_digest"
-    )
+    manifest["activation_digest"] = canonical_digest(manifest, digest_field="activation_digest")
     return manifest
 
 
@@ -871,22 +784,16 @@ def expand_policy_run_preparation_request(
     bound_setup = validate_policy_run_setup(setup)
     bound_selection = validate_policy_run_selection(selection)
     if bound_selection["run_id"] != run_id:
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_run_selection_run_id_mismatch"
-        )
-    bound_configuration = compile_policy_run_configuration(
-        bound_selection, setup=bound_setup
-    )
+        raise TaskEvaluationPolicyRunContractError("policy_run_selection_run_id_mismatch")
+    bound_configuration = compile_policy_run_configuration(bound_selection, setup=bound_setup)
     template = deepcopy(bound_setup["preparation_template"])
     template.pop("schema_version")
     template.pop("template_digest")
-    namespace_suffix = hashlib.sha256(
-        f"{team_namespace}\0{run_id}".encode("utf-8")
-    ).hexdigest()[:16]
+    namespace_suffix = hashlib.sha256(f"{team_namespace}\0{run_id}".encode("utf-8")).hexdigest()[
+        :16
+    ]
     publication = dict(template["publication"])
-    publication["input_namespace"] = (
-        f"{team_namespace[:64]}-{run_id[:96]}-{namespace_suffix}"
-    )
+    publication["input_namespace"] = f"{team_namespace[:64]}-{run_id[:96]}-{namespace_suffix}"
     request = {
         "schema_version": "task_evaluation_launch_preparation_request.v1",
         "run_mode": "episode_evaluation",
@@ -918,29 +825,21 @@ def validate_policy_run_result_projection(
         code="policy_run_result_projection_invalid",
     )
     if result["projection_digest"] != policy_run_result_projection_digest(result):
-        raise TaskEvaluationPolicyRunContractError(
-            "policy_run_result_projection_digest_mismatch"
-        )
+        raise TaskEvaluationPolicyRunContractError("policy_run_result_projection_digest_mismatch")
     candidate_results = result["candidate_results"]
-    if [row["candidate_id"] for row in candidate_results] != list(
-        FROZEN_CANDIDATE_IDS
-    ):
+    if [row["candidate_id"] for row in candidate_results] != list(FROZEN_CANDIDATE_IDS):
         raise TaskEvaluationPolicyRunContractError(
             "policy_run_result_projection_candidate_order_invalid"
         )
     matrix = result["matrix"]
-    expected_total = (
-        matrix["candidate_episode_count"] + matrix["control_episode_count"]
-    )
+    expected_total = matrix["candidate_episode_count"] + matrix["control_episode_count"]
     if matrix["expected_episode_count"] != expected_total:
         raise TaskEvaluationPolicyRunContractError(
             "policy_run_result_projection_episode_count_invalid"
         )
-    if (
-        matrix["control_episode_count"] != matrix["scored_cell_count"] * 2
-        or matrix["candidate_episode_count"]
-        != matrix["scored_cell_count"] * len(FROZEN_CANDIDATE_IDS)
-    ):
+    if matrix["control_episode_count"] != matrix["scored_cell_count"] * 2 or matrix[
+        "candidate_episode_count"
+    ] != matrix["scored_cell_count"] * len(FROZEN_CANDIDATE_IDS):
         raise TaskEvaluationPolicyRunContractError(
             "policy_run_result_projection_matrix_count_invalid"
         )
@@ -954,15 +853,15 @@ def validate_policy_run_result_projection(
             attempted = metric["attempted"]
             succeeded = metric["succeeded"]
             if succeeded > attempted or (
-                attempted > 0
-                and abs(metric["success_rate"] - succeeded / attempted) > 1e-9
+                attempted > 0 and abs(metric["success_rate"] - succeeded / attempted) > 1e-9
             ):
                 raise TaskEvaluationPolicyRunContractError(
                     "policy_run_result_projection_family_metric_invalid"
                 )
-        if sum(
-            metric["attempted"] for metric in candidate["family_metrics"].values()
-        ) != per_candidate:
+        if (
+            sum(metric["attempted"] for metric in candidate["family_metrics"].values())
+            != per_candidate
+        ):
             raise TaskEvaluationPolicyRunContractError(
                 "policy_run_result_projection_family_attempt_count_invalid"
             )
@@ -972,8 +871,7 @@ def validate_policy_run_result_projection(
             )
         evidence = candidate["evidence"]
         if (
-            evidence["lossless_frame_manifest_count"]
-            > candidate["episodes_completed"]
+            evidence["lossless_frame_manifest_count"] > candidate["episodes_completed"]
             or evidence["review_video_count"] > candidate["episodes_completed"]
         ):
             raise TaskEvaluationPolicyRunContractError(
@@ -991,8 +889,7 @@ def validate_policy_run_result_projection(
                 or row["evidence"]["typed_media_gap_count"] != 0
                 for row in candidate_results
             )
-            or result["paired_comparison"]["matched_episode_pairs"]
-            != per_candidate
+            or result["paired_comparison"]["matched_episode_pairs"] != per_candidate
         ):
             raise TaskEvaluationPolicyRunContractError(
                 "policy_run_result_projection_decision_evidence_incomplete"

@@ -1,0 +1,74 @@
+{
+  "schema_version": "scene839873_policy_canary_model_rights.v1",
+  "scene_id": "839873",
+  "task_id": "scene-839873-mug-planar-push",
+  "provider_disclosure_scope": "revision_pinned_model_fetch_and_internal_inference_only",
+  "candidates": [
+    {
+      "candidate_id": "pi05_droid",
+      "source": {
+        "repository": "https://github.com/Physical-Intelligence/openpi",
+        "revision": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+        "tree": "a7f18af2745255b5fa98c86d6031f858bf73d1be",
+        "license": "Apache-2.0 with embedded Gemma components subject to LICENSE_GEMMA.txt"
+      },
+      "checkpoint": {
+        "repository": "gs://openpi-assets/checkpoints/polaris/pi05_droid_jointpos_polaris",
+        "revision": "gcs-generation-inventory:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+        "inventory_digest": "sha256:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+        "license": "Apache-2.0 and Gemma terms",
+        "provider_use_status": "inference_and_remote_provider_use_allowed_subject_to_Gemma_terms_and_prohibited_use_policy",
+        "redistribution_status": "permitted_subject_to_Apache-2.0_and_Gemma_terms_not_required_by_Blueprint_provider_bundle"
+      },
+      "adapter_id": "openpi_droid_to_native_franka_v1"
+    },
+    {
+      "candidate_id": "groot_n17_droid",
+      "source": {
+        "repository": "https://github.com/NVIDIA/Isaac-GR00T",
+        "revision": "b9955401d50c92a29258732e3ad6ccd579f1bdc0",
+        "tree": "09c80a5529da315117ed962d5d6b794c981d5e72",
+        "license": "Apache-2.0"
+      },
+      "checkpoint": {
+        "repository": "https://huggingface.co/nvidia/GR00T-N1.7-DROID",
+        "revision": "05e7cc97e40dbd33b0890c35cc0214fcb0547ab5",
+        "inventory_digest": "sha256:5d1d83ab34215da2dcaa049d70e93ccec18687591ad5760c5183fc1fd6e035fd",
+        "license": "NVIDIA Open Model License",
+        "provider_use_status": "commercial_and_noncommercial_use_allowed_by_publisher_terms",
+        "redistribution_status": "do_not_redistribute_in_Blueprint_artifacts_without_separate_terms_review"
+      },
+      "gated_backbone": {
+        "model_id": "nvidia/Cosmos-Reason2-2B",
+        "revision": "9ce19a195e423419c349abfc86fd07178b230561",
+        "listing_digest": "sha256:4d7a4a9695431fba3a158d34897a80bb9d21350a4f08279945ce09473f9ed8cf",
+        "access_authority_required_at_runtime": true,
+        "secret_material_recorded": false
+      },
+      "adapter_id": "groot_n17_droid_joint_projection_v1"
+    }
+  ],
+  "blueprint_adapter_code": {
+    "license": "Blueprint internal proprietary service code",
+    "provider_use_status": "internal service execution only",
+    "redistribution_status": "do_not_redistribute",
+    "modules": [
+      {"path": "src/blueprint_pipeline/openpi_droid_policy_runtime.py", "sha256": "sha256:6f607ca30e8c81e2546e7d9a86c8bdc49f1de48d5b93bd36f036770b7b5e36d3"},
+      {"path": "src/blueprint_pipeline/groot_n17_droid_policy_runtime.py", "sha256": "sha256:5c8fca6f0048a646e970dde38c9336b28974a6578866b33df512feb5f979a17d"},
+      {"path": "src/blueprint_pipeline/adp009d_droid_action_execution.py", "sha256": "sha256:ab32144814d442cab20397e9e6b9d26ce68395deaf436a2d9bf6ce4721e75eec"},
+      {"path": "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py", "sha256": "sha256:eccdbc24b203aecfe05eda794c72403308b49c52fd607cffe0814334fb6d49ab"}
+    ]
+  },
+  "historical_runtime_smoke": {
+    "readiness_digest": "sha256:c3f76892f80514ef81ddbb48b14ebf3c9e39cbbfaf82d516dbcb70f4d8989ffc",
+    "source_scene_id": "840920",
+    "input_evidence_only": true,
+    "current_scene_runtime_proof": false,
+    "qualification_effect": "none"
+  },
+  "policy_self_grading_permitted": false,
+  "official_ranking_permitted": false,
+  "scene_promotion_permitted": false,
+  "secret_material_recorded": false,
+  "rights_digest": "sha256:b8b5b18666f01f29eda490ced04cd3364f0a15c980b6b6a3da2feff6a894e178"
+}
