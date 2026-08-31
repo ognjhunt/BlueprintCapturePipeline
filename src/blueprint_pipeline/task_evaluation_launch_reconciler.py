@@ -29,6 +29,11 @@ from .task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
     canonical_digest,
 )
+from .native_task_arena_direct_execution_closeout import (
+    FILENAME as DIRECT_EXECUTION_ADOPTION_FILENAME,
+    SCHEMA_VERSION as DIRECT_EXECUTION_ADOPTION_SCHEMA_VERSION,
+    validate_native_direct_execution_adoption,
+)
 
 
 RECONCILIATION_SCHEMA_VERSION = "task_evaluation_launch_reconciliation.v1"
@@ -45,6 +50,12 @@ WEBAPP_SYNC_TERMINAL_UNMATCHED_SCHEMA_VERSION = (
 )
 WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME = "webapp_sync_terminal_unmatched.json"
 WEBAPP_SYNC_SUCCEEDED_FILENAME = "webapp_sync_succeeded.json"
+DIRECT_EXECUTION_WEBAPP_SYNC_SUCCEEDED_FILENAME = (
+    "native_direct_execution_adoption_webapp_sync_succeeded.json"
+)
+DIRECT_EXECUTION_WEBAPP_SYNC_ATTEMPTS_DIRECTORY = (
+    "native_direct_execution_adoption_webapp_sync_attempts"
+)
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -673,6 +684,27 @@ def validated_succeeded_webapp_sync_row(
         or response.get("configured_scene_offering_digest") != offering_digest
         or response.get("configured_scene_offering_status") != offering_status
     )
+    direct_projection = receipt.get("website_projection")
+    direct_projection = (
+        direct_projection if isinstance(direct_projection, Mapping) else {}
+    )
+    direct_projection_invalid = (
+        receipt.get("schema_version") == DIRECT_EXECUTION_ADOPTION_SCHEMA_VERSION
+        and (
+            direct_projection.get("configured_scene_offering_status")
+            != "configured_controls_pending"
+            or direct_projection.get("native_construction_status") != "blocked"
+            or direct_projection.get("native_construction_blockers")
+            != receipt.get("blockers")
+            or direct_projection.get("qualification_upgrade_performed") is not False
+            or attempt.get("configured_scene_offering_status")
+            != "configured_controls_pending"
+            or attempt.get("native_construction_status") != "blocked"
+            or attempt.get("native_construction_blockers")
+            != receipt.get("blockers")
+            or attempt.get("qualification_upgrade_performed") is not False
+        )
+    )
     if (
         attempt.get("schema_version")
         != "task_evaluation_launch_webapp_sync_result.v1"
@@ -697,6 +729,7 @@ def validated_succeeded_webapp_sync_row(
         or response.get("status") != receipt.get("status")
         or not isinstance(response.get("already_exists"), bool)
         or offering_ack_invalid
+        or direct_projection_invalid
     ):
         raise TaskEvaluationLaunchError("webapp_sync_succeeded_invalid")
     committed_receipt = {
@@ -714,6 +747,17 @@ def validated_succeeded_webapp_sync_row(
             {
                 "configured_scene_offering_digest": offering_digest,
                 "configured_scene_offering_status": offering_status,
+            }
+        )
+    if receipt.get("schema_version") == DIRECT_EXECUTION_ADOPTION_SCHEMA_VERSION:
+        committed_receipt.update(
+            {
+                "configured_scene_offering_status": (
+                    "configured_controls_pending"
+                ),
+                "native_construction_status": "blocked",
+                "native_construction_blockers": list(receipt["blockers"]),
+                "qualification_upgrade_performed": False,
             }
         )
     return {
@@ -1012,8 +1056,18 @@ def reconcile_launches(
     for receipt_path in receipt_paths:
         run_root = receipt_path.parent
         try:
-            receipt = _read(receipt_path)
-            succeeded_path = run_root / WEBAPP_SYNC_SUCCEEDED_FILENAME
+            adoption_path = run_root / DIRECT_EXECUTION_ADOPTION_FILENAME
+            direct_adoption = adoption_path.is_file()
+            receipt = (
+                validate_native_direct_execution_adoption(adoption_path)
+                if direct_adoption
+                else _read(receipt_path)
+            )
+            succeeded_path = run_root / (
+                DIRECT_EXECUTION_WEBAPP_SYNC_SUCCEEDED_FILENAME
+                if direct_adoption
+                else WEBAPP_SYNC_SUCCEEDED_FILENAME
+            )
             if succeeded_path.is_file():
                 sync_rows.append(
                     validated_succeeded_webapp_sync_row(
@@ -1022,7 +1076,11 @@ def reconcile_launches(
                     )
                 )
                 continue
-            terminal_unmatched_path = run_root / WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME
+            terminal_unmatched_path = run_root / (
+                f"native_direct_execution_adoption_{WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME}"
+                if direct_adoption
+                else WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME
+            )
             if terminal_unmatched_path.is_file():
                 sync_rows.append(
                     _validated_terminal_unmatched_webapp_sync_row(
@@ -1036,7 +1094,11 @@ def reconcile_launches(
             sync_policy = profile.get("webapp_sync")
             sync_policy = sync_policy if isinstance(sync_policy, Mapping) else {}
             max_attempts = int(sync_policy.get("max_attempts") or 0)
-            attempt_dir = run_root / "webapp_sync_attempts"
+            attempt_dir = run_root / (
+                DIRECT_EXECUTION_WEBAPP_SYNC_ATTEMPTS_DIRECTORY
+                if direct_adoption
+                else "webapp_sync_attempts"
+            )
             prior_attempts = []
             for path in sorted(attempt_dir.glob("*.json")):
                 value = _read(path)
@@ -1072,7 +1134,7 @@ def reconcile_launches(
                 attempt_dir / f"{attempt['sync_result_digest'][7:]}.json", attempt
             )
             if sync_result.get("status") == "succeeded":
-                _write_immutable(run_root / WEBAPP_SYNC_SUCCEEDED_FILENAME, attempt)
+                _write_immutable(succeeded_path, attempt)
             if (
                 sync_result.get("status") == "failed"
                 and sync_result.get("reason") == "http_error:404"
@@ -1081,7 +1143,7 @@ def reconcile_launches(
                     receipt=receipt,
                     attempt=attempt,
                 )
-                _write_immutable(run_root / WEBAPP_SYNC_TERMINAL_UNMATCHED_FILENAME, unmatched)
+                _write_immutable(terminal_unmatched_path, unmatched)
                 sync_rows.append(
                     _validated_terminal_unmatched_webapp_sync_row(
                         run_root=run_root,

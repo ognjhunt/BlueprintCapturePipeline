@@ -1,10 +1,4 @@
-"""Seal exact posted Vast instance charges from retained official billing bytes.
-
-The provider billing reconciler intentionally exports only cohort totals.  This
-module reopens its digest-bound raw Vast responses and extracts named instance
-charges without making a provider request or accepting an operator-entered
-cost.  Reconciliations can be extended from one previously sealed result.
-"""
+"""Seal exact posted Vast instance charges from retained official billing."""
 
 from __future__ import annotations
 
@@ -26,8 +20,6 @@ from .provider_billing_reconciler import (
     MAX_RESPONSE_BYTES,
     VAST_CHARGES_URL,
 )
-
-
 RECONCILIATION_SCHEMA_VERSION = "blueprint.vast_official_same_goal_reconciliation.v1"
 ENTRY_SCHEMA_VERSION = "blueprint.vast_official_instance_charge.v1"
 RECONCILIATION_STATUS = "reconciled_official_posted_charges"
@@ -916,19 +908,7 @@ def _scene_configuration_terminal_records(
 def _native_task_arena_closure_paths(
     *, result: Mapping[str, Any], result_path: Path, run_root: Path
 ) -> tuple[Path, Path]:
-    """Resolve the Arena lane's attempt-scoped closure artifacts.
-
-    The Arena transport seals under a numbered attempt, so its closure files
-    hang off ``attempt_root`` rather than the job directory that every other
-    reconcilable lane uses.  Reading them from the result's own fields and then
-    pinning each against the canonical layout keeps a result from naming a file
-    outside the attempt it describes.
-
-    This exists so a result already written to disk stays reconcilable: a lane
-    that can only be reconciled by a field added later cannot account for the
-    attempts it has already paid for, and an unaccounted attempt blocks every
-    authority chained after it.
-    """
+    """Resolve the Arena lane's exact attempt-scoped closure artifacts."""
 
     attempt_root = Path(str(result.get("attempt_root") or ""))
     job_dir = result_path.parent
@@ -967,6 +947,20 @@ def _terminal_evidence(
     result_path, result, result_bytes = _json_file(
         terminal_result_path, code="vast_official_terminal_result_invalid"
     )
+    if result.get("schema_version") == (
+        "task_evaluation_native_direct_execution_adoption.v1"
+    ):
+        try:
+            from .native_task_arena_direct_execution_closeout import (  # noqa: PLC0415
+                direct_execution_terminal_evidence,
+            )
+            return direct_execution_terminal_evidence(
+                result_path, instance_id=instance_id
+            )
+        except ValueError as exc:
+            raise VastOfficialBillingExtractionError(
+                "vast_official_terminal_result_invalid"
+            ) from exc
     artifixer_layout = (
         result_path.name == "public_scene_artifixer3d_vast_result.json"
         and result_path.parent.name == "artifixer3d-job"

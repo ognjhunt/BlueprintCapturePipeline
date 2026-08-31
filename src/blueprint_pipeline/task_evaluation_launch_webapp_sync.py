@@ -13,6 +13,10 @@ from urllib import request as urllib_request
 from .task_evaluation_scene_evaluation_readiness import (
     CONFIGURATION_COMPLETE_OFFERING_STATUSES,
 )
+from .decision_evidence_contracts import canonical_digest
+from .native_task_arena_direct_execution_closeout import (
+    SCHEMA_VERSION as DIRECT_EXECUTION_ADOPTION_SCHEMA_VERSION,
+)
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 
 
@@ -185,6 +189,37 @@ def sync_launch_receipt_to_webapp(
         "request_digest": payload.get("request_digest"),
         "receipt_digest": payload.get("receipt_digest"),
     }
+    if payload.get("schema_version") == DIRECT_EXECUTION_ADOPTION_SCHEMA_VERSION:
+        projection = payload.get("website_projection")
+        projection = projection if isinstance(projection, Mapping) else {}
+        if (
+            payload.get("status") != "blocked"
+            or payload.get("receipt_digest")
+            != canonical_digest(payload, digest_field="receipt_digest")
+            or projection.get("configured_scene_offering_status")
+            != "configured_controls_pending"
+            or projection.get("native_construction_status") != "blocked"
+            or projection.get("native_construction_blockers")
+            != payload.get("blockers")
+            or projection.get("controls_qualified") is not False
+            or projection.get("evaluation_ready") is not False
+            or projection.get("qualification_upgrade_performed") is not False
+        ):
+            return {
+                **common,
+                "status": "failed",
+                "reason": "direct_execution_adoption_projection_invalid",
+            }
+        common.update(
+            {
+                "configured_scene_offering_status": (
+                    "configured_controls_pending"
+                ),
+                "native_construction_status": "blocked",
+                "native_construction_blockers": list(payload["blockers"]),
+                "qualification_upgrade_performed": False,
+            }
+        )
     terminal = payload.get("terminal_evidence")
     terminal = terminal if isinstance(terminal, Mapping) else {}
     scene_configuration = terminal.get("scene_configuration")

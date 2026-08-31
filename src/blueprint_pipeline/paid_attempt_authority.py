@@ -226,6 +226,18 @@ def validate_same_goal_spend_reconciliation(
                 source_path, code="same_goal_spend_source_invalid"
             )
             if (
+                entry.get("lane") == "native_task_arena"
+                and role == "terminal_result"
+                and source_value.get("schema_version")
+                == "task_evaluation_native_direct_execution_adoption.v1"
+            ):
+                from .native_task_arena_direct_execution_closeout import (  # noqa: PLC0415
+                    validate_native_direct_execution_adoption,
+                )
+
+                if validate_native_direct_execution_adoption(source_path) != source_value:
+                    raise ValueError("same_goal_spend_source_invalid")
+            if (
                 entry.get("lane")
                 == "task_evaluation_scene_configuration_diagnostic"
                 and role == "terminal_result"
