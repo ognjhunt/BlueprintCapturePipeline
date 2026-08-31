@@ -344,6 +344,36 @@ def validate_native_construction_candidate(
         raise NativeConstructionFeedbackControllerError(
             "native_construction_candidate_entry_trajectory_invalid"
         )
+    interaction_value = candidate.get("interaction_trajectory_variant")
+    if interaction_value is not None:
+        interaction = _validate_variant(
+            interaction_value,
+            schema_version=(
+                "task_evaluation_native_interaction_trajectory_variant.v1"
+            ),
+            digest_field="interaction_trajectory_variant_digest",
+            blocker="native_construction_candidate_interaction_trajectory_invalid",
+        )
+        interaction_waypoints = interaction.get("waypoints")
+        if (
+            not str(interaction.get("interaction_branch_id") or "")
+            or not isinstance(interaction.get("solver_seed"), int)
+            or not (
+                _sha256(
+                    interaction.get("source_native_phase_contract_digest")
+                )
+                or _sha256(
+                    interaction.get("source_normalized_trajectory_digest")
+                )
+            )
+            or interaction.get("preserves_authored_tcp_endpoints") is not True
+            or not isinstance(interaction_waypoints, list)
+            or not interaction_waypoints
+            or any(not isinstance(row, Mapping) for row in interaction_waypoints)
+        ):
+            raise NativeConstructionFeedbackControllerError(
+                "native_construction_candidate_interaction_trajectory_invalid"
+            )
     camera = _validate_variant(
         candidate.get("camera_variant"),
         schema_version="task_evaluation_native_camera_variant.v1",
@@ -881,6 +911,14 @@ def native_construction_feedback_codes(
     codes: set[str] = {
         str(code) for code in value.get("feedback_codes") or [] if str(code)
     }
+    for blocker in value.get("native_blockers") or []:
+        text = str(blocker)
+        for prefix in (
+            "native_rigid_construction_gate_failed:",
+            "native_articulated_construction_gate_failed:",
+        ):
+            if text.startswith(prefix) and len(text) > len(prefix):
+                codes.add("gate_failed:" + text[len(prefix) :])
     failed = str(value.get("first_failed_phase") or "")
     if failed:
         codes.add(f"phase_unreached:{failed}")
@@ -994,10 +1032,14 @@ def construction_phase_plan_for_candidate(
 
     from .native_task_construction_plan import (
         materialize_native_task_construction_phase_plan,
+        native_task_construction_authored_contract_digest,
     )
 
     selected = validate_native_construction_candidate(candidate)
     plan = materialize_native_task_construction_phase_plan(scene_plan)
+    authored_contract_digest = native_task_construction_authored_contract_digest(
+        plan
+    )
     variant = selected["entry_trajectory_variant"]
     entry_phases: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1102,9 +1144,15 @@ def construction_phase_plan_for_candidate(
             phase["solver_path_execution_required"] = True
         entry_phases.append(phase)
     if solver_path:
+        interaction_variant = selected.get("interaction_trajectory_variant")
+        task_solver_source = (
+            interaction_variant.get("waypoints")
+            if isinstance(interaction_variant, Mapping)
+            else raw_waypoints
+        )
         task_solver_rows = [
             row
-            for row in raw_waypoints
+            for row in task_solver_source
             if isinstance(row, Mapping)
             and row.get("stage_kind") in {"contact", "release", "retreat"}
         ]
@@ -1118,6 +1166,16 @@ def construction_phase_plan_for_candidate(
             ]
             if not matches:
                 continue
+            terminal = matches[-1][1]
+            if (
+                terminal.get("target_position_world_m")
+                != authored_phase.get("position_world_m")
+                or terminal.get("target_orientation_world_xyzw")
+                != authored_phase.get("orientation_world_xyzw")
+            ):
+                raise NativeConstructionFeedbackControllerError(
+                    "native_construction_candidate_authored_tcp_endpoint_mismatch"
+                )
             try:
                 sequence = [
                     {
@@ -1177,6 +1235,18 @@ def construction_phase_plan_for_candidate(
     plan["entry_trajectory_variant_digest"] = variant[
         "entry_trajectory_variant_digest"
     ]
+    interaction_variant = selected.get("interaction_trajectory_variant")
+    if isinstance(interaction_variant, Mapping) and solver_path:
+        if (
+            interaction_variant.get("source_native_phase_contract_digest")
+            != authored_contract_digest
+        ):
+            raise NativeConstructionFeedbackControllerError(
+                "native_construction_candidate_phase_plan_digest_mismatch"
+            )
+        plan["interaction_trajectory_variant_digest"] = interaction_variant[
+            "interaction_trajectory_variant_digest"
+        ]
     plan["authored_gate_contract_unchanged"] = True
     plan["plan_digest"] = ""
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
@@ -1236,6 +1306,9 @@ def _selection_input(
             "entry_trajectory_variant_digest": row["entry_trajectory_variant"][
                 "entry_trajectory_variant_digest"
             ],
+            "interaction_trajectory_variant_digest": (
+                row.get("interaction_trajectory_variant") or {}
+            ).get("interaction_trajectory_variant_digest"),
             "camera_variant_digest": row["camera_variant"][
                 "camera_variant_digest"
             ],
@@ -1257,7 +1330,7 @@ def _selection_input(
         "authority_boundary": {
             "select_exact_inventory_member_only": True,
             "candidate_content_not_model_authored": True,
-            "model_may_not_mutate_base_reset_entry_or_cameras": True,
+            "model_may_not_mutate_base_reset_entry_interaction_or_cameras": True,
             "model_may_not_change_gates_or_thresholds": True,
             "native_worker_is_sole_construction_grader": True,
         },

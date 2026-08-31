@@ -41,6 +41,25 @@ def _candidate(candidate_id: str, rank: int) -> dict:
         },
         "entry_trajectory_variant_digest",
     )
+    interaction = _sealed(
+        {
+            "schema_version": (
+                "task_evaluation_native_interaction_trajectory_variant.v1"
+            ),
+            "interaction_branch_id": "push_contact_dense",
+            "solver_seed": 8928 + rank,
+            "source_native_phase_contract_digest": "sha256:" + "8" * 64,
+            "preserves_authored_tcp_endpoints": True,
+            "waypoints": [
+                {
+                    "source_native_phase_id": "push_contact",
+                    "stage_kind": "contact",
+                    "robot_joint_positions_rad": {"panda_joint1": 0.2 + rank},
+                }
+            ],
+        },
+        "interaction_trajectory_variant_digest",
+    )
     camera = _sealed(
         {
             "schema_version": "task_evaluation_native_camera_variant.v1",
@@ -60,6 +79,7 @@ def _candidate(candidate_id: str, rank: int) -> dict:
             },
             "reset_variant": reset,
             "entry_trajectory_variant": entry,
+            "interaction_trajectory_variant": interaction,
             "camera_variant": camera,
             "addressed_feedback_codes": ["collision:precontact:robot_task"],
             "maximum_incremental_cost_usd": 0.2,

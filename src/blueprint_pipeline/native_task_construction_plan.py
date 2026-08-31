@@ -2255,6 +2255,24 @@ def materialize_native_task_construction_phase_plan(
     )
 
 
+def native_task_construction_authored_contract_digest(
+    phase_plan: Mapping[str, Any],
+) -> str:
+    """Digest task phases and criteria independently of the scene envelope."""
+
+    value = json.loads(json.dumps(dict(phase_plan), allow_nan=False))
+    if not isinstance(value.get("phases"), list) or not value["phases"]:
+        raise NativeTaskConstructionPlanError(
+            ["native_task_construction_authored_contract_invalid"]
+        )
+    # Base/reset/camera variants legitimately rebind the containing scene plan.
+    # Every other byte—including TCP endpoints, gate ids, destination,
+    # tolerances, and execution parameters—remains in this digest.
+    value.pop("scene_plan_digest", None)
+    value.pop("plan_digest", None)
+    return canonical_digest(value)
+
+
 __all__ = [
     "GRAPH_ARTICULATED_AFFORDANCE_SCHEMA_VERSION",
     "GRAPH_ARTICULATED_SCHEMA_VERSION",
@@ -2271,4 +2289,5 @@ __all__ = [
     "materialize_graph_articulated_construction_phase_plan",
     "materialize_native_task_construction_phase_plan",
     "materialize_rigid_construction_phase_plan",
+    "native_task_construction_authored_contract_digest",
 ]
