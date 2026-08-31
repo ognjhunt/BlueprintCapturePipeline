@@ -95,6 +95,9 @@ def _solution(request: dict) -> dict:
                 f"panda_joint{joint}": 0.01 * joint for joint in range(1, 8)
             },
             "joins_authored_phase_id": "precontact",
+            "interaction_branch_id": "push_contact_dense",
+            "solver_seed": 8928,
+            "source_native_phase_contract_digest": "sha256:" + "9" * 64,
             "stages": stages,
             "cameras": [
                 {
@@ -131,7 +134,12 @@ def test_request_consumes_controller_feedback_and_nested_execution_history(
 ) -> None:
     feedback = {
         "feedback_digest": "sha256:" + "1" * 64,
-        "native_blockers": ["native_rigid_construction_gate_failed:push_contact"],
+        "native_blockers": [
+            "native_rigid_construction_gate_failed:base_collision_clearance",
+            "native_rigid_construction_gate_failed:destination_containment",
+            "native_rigid_construction_gate_failed:push_contact_maintained",
+            "native_rigid_construction_gate_failed:push_path",
+        ],
         "first_failed_phase": "push_contact",
         "first_collision": {
             "phase_id": "precontact",
@@ -166,6 +174,18 @@ def test_request_consumes_controller_feedback_and_nested_execution_history(
         in request["addressable_feedback_codes"]
     )
     assert "site_not_rendered:external" in request["addressable_feedback_codes"]
+    assert {
+        "gate_failed:base_collision_clearance",
+        "gate_failed:destination_containment",
+        "gate_failed:push_contact_maintained",
+        "gate_failed:push_path",
+    }.issubset(request["addressable_feedback_codes"])
+    assert request["measured_native_feedback"]["first_collision"] == feedback[
+        "first_collision"
+    ]
+    assert request["measured_native_feedback"]["native_blockers"] == feedback[
+        "native_blockers"
+    ]
 
 
 class _Process:
@@ -247,10 +267,14 @@ def test_curobo_emits_controller_inventory_without_native_claims(tmp_path: Path)
     assert [row["stage_kind"] for row in candidate["entry_trajectory_variant"]["waypoints"]] == [
         "entry",
         "approach",
-        "contact",
-        "release",
-        "retreat",
     ]
+    assert [
+        row["stage_kind"]
+        for row in candidate["interaction_trajectory_variant"]["waypoints"]
+    ] == ["contact", "release", "retreat"]
+    assert candidate["interaction_trajectory_variant"]["interaction_branch_id"] == (
+        "push_contact_dense"
+    )
     assert candidate["generation_evidence"]["native_requirements_unresolved"] == [
         "orientation_execution",
         "collision_and_contact_readback",
@@ -519,7 +543,8 @@ def test_context_materializer_binds_packet_mesh_and_five_native_stages(
         ),
     )
     candidate = {
-        "candidate_id": "analytic-00",
+        "candidate_id": "analytic-00--direct",
+        "source_placement_candidate_id": "placement-00",
         "deterministic_rank": 0,
         "robot_base_pose_world": {
             "position_world_m": [2.925996, -6.132664, 0.752958],
@@ -554,23 +579,64 @@ def test_context_materializer_binds_packet_mesh_and_five_native_stages(
         },
         "addressed_feedback_codes": [],
     }
+    source_candidates = []
+    for index in range(16):
+        row = json.loads(json.dumps(candidate))
+        row["candidate_id"] = f"analytic-{index:02d}--direct"
+        row["source_placement_candidate_id"] = f"placement-{index:02d}"
+        row["deterministic_rank"] = index
+        row["robot_base_pose_world"]["position_world_m"][0] += index * 0.01
+        source_candidates.append(row)
     context, remote_root = materialize_remote_curobo_context(
         packet_dir=packet,
-        universe={"inventory_digest": "sha256:" + "c" * 64, "candidates": [candidate]},
+        universe={
+            "inventory_digest": "sha256:" + "c" * 64,
+            "candidates": source_candidates,
+        },
         output_root=tmp_path / "context",
         commit="a" * 40,
         warm_session={"remote_work_dir": "/workspace"},
     )
     world = json.loads(Path(context.world_configuration["path"]).read_text())
     task = json.loads(Path(context.task_trajectory["path"]).read_text())
+    analytic = json.loads(
+        Path(context.analytic_candidate_inventory["path"]).read_text()
+    )
     assert context.world_configuration["attachments"][0]["role"] == "world_collision_mesh"
     assert world["source_scene_collision_digest"] == collision_digest
+    assert len(analytic["candidates"]) == 64
+    assert len(
+        {row["source_candidate_id"] for row in analytic["candidates"]}
+    ) == 16
+    assert {
+        row["interaction_branch_id"] for row in analytic["candidates"]
+    } == {
+        "uniform_seed",
+        "contact_ramp",
+        "push_contact_dense",
+        "release_retreat_dense",
+    }
+    assert len({row["solver_seed"] for row in analytic["candidates"]}) == 64
+    branch_key = "analytic-00--direct--interaction-uniform_seed"
     assert [
-        row["stage_kind"] for row in task["candidate_phases"]["analytic-00"]
+        row["stage_kind"] for row in task["candidate_phases"][branch_key]
     ] == ["entry", "approach", "contact", "release", "retreat"]
-    assert task["candidate_phases"]["analytic-00"][0]["waypoints"][0][
+    assert task["candidate_phases"][branch_key][0]["waypoints"][0][
         "position_world_m"
     ] == [2.8, -6.7, 0.94]
+    authored_by_id = {row["phase_id"]: row for row in phases}
+    for branch_stages in task["candidate_phases"].values():
+        terminal_by_phase = {}
+        for stage in branch_stages[2:]:
+            for waypoint in stage["waypoints"]:
+                terminal_by_phase[waypoint["authored_phase_id"]] = waypoint
+        for phase_id, waypoint in terminal_by_phase.items():
+            assert waypoint["position_world_m"] == authored_by_id[phase_id][
+                "position_world_m"
+            ]
+            assert waypoint["orientation_world_xyzw"] == authored_by_id[phase_id][
+                "orientation_world_xyzw"
+            ]
     assert remote_root == "/workspace/adp_arena_provider_bundle/provider_runtime"
 
 

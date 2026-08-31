@@ -316,7 +316,7 @@ def _generate(request: Mapping[str, Any]) -> dict[str, Any]:
                 )
                 for waypoint in sampled:
                     waypoint["source_native_phase_id"] = str(
-                        goal["waypoint_id"]
+                        goal.get("authored_phase_id") or goal["waypoint_id"]
                     )
                     waypoint["target_position_world_m"] = [
                         float(value) for value in goal["position_world_m"]
@@ -353,6 +353,11 @@ def _generate(request: Mapping[str, Any]) -> dict[str, Any]:
             "support_surface_id": str(seed["support_surface_id"]),
             "robot_joint_reset_positions_rad": reset_map,
             "joins_authored_phase_id": str(task["joins_authored_phase_id"]),
+            "interaction_branch_id": str(seed["interaction_branch_id"]),
+            "solver_seed": int(seed["solver_seed"]),
+            "source_native_phase_contract_digest": str(
+                task["source_native_phase_contract_digest"]
+            ),
             "stages": stages,
             "cameras": [dict(row) for row in seed["cameras"]],
             "addressed_feedback_codes": addressed,
