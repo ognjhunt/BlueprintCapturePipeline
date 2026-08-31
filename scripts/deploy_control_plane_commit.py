@@ -84,6 +84,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-launch-activation.service",
     "blueprint-task-evaluation-launch-activation.path",
+    "blueprint-task-evaluation-policy-canary-dispatcher.service",
+    "blueprint-task-evaluation-policy-canary-dispatcher.path",
     "blueprint-scene-object-discovery.service",
     "blueprint-scene-object-discovery.path",
     "blueprint-task-evaluation-configured-controls-progression.service",

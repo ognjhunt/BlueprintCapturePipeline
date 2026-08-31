@@ -20,6 +20,7 @@ from .provider_billing_reconciler import (
     MAX_RESPONSE_BYTES,
     VAST_CHARGES_URL,
 )
+from .policy_canary_official_billing import policy_canary_terminal_evidence
 RECONCILIATION_SCHEMA_VERSION = "blueprint.vast_official_same_goal_reconciliation.v1"
 ENTRY_SCHEMA_VERSION = "blueprint.vast_official_instance_charge.v1"
 RECONCILIATION_STATUS = "reconciled_official_posted_charges"
@@ -365,7 +366,6 @@ def _paired_native_terminal_records(
     result_status: str,
 ) -> dict[str, dict[str, Any]]:
     """Reopen the paired-native lane's direct terminal artifact pointers."""
-
     expected_job = run_root / "allocator" / _PAIRED_NATIVE_JOB_DIR
     if result_path.parent != expected_job:
         raise VastOfficialBillingExtractionError(
@@ -500,7 +500,6 @@ def _content_agents_terminal_records(
     result_status: str,
 ) -> dict[str, dict[str, Any]]:
     """Reopen the Content Agents lane's exact terminal closure graph."""
-
     expected_job = run_root / "allocator" / _CONTENT_AGENTS_JOB_DIR
     if result_path.parent != expected_job:
         raise VastOfficialBillingExtractionError(
@@ -961,6 +960,13 @@ def _terminal_evidence(
             raise VastOfficialBillingExtractionError(
                 "vast_official_terminal_result_invalid"
             ) from exc
+    canary = policy_canary_terminal_evidence(
+        instance_id=instance_id, result_path=result_path, result=result,
+        result_bytes=result_bytes, json_file=_json_file, record=_record,
+        error_factory=VastOfficialBillingExtractionError,
+    )
+    if canary is not None:
+        return canary
     artifixer_layout = (
         result_path.name == "public_scene_artifixer3d_vast_result.json"
         and result_path.parent.name == "artifixer3d-job"

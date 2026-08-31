@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch explicitly authorized internal policy canary dispatches
+
+[Path]
+PathChanged=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches/pending
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches/pending/*.json
+PathChanged=/var/lib/blueprint/task-evaluation-inputs/policy-canary-execution-setups
+PathChanged=/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit
+Unit=blueprint-task-evaluation-policy-canary-dispatcher.service
+
+[Install]
+WantedBy=multi-user.target

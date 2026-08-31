@@ -42,8 +42,8 @@
           "episodes_completed": {"type": "integer", "minimum": 0, "maximum": 500},
           "family_metrics": {
             "type": "object",
-            "minProperties": 7,
-            "maxProperties": 7,
+            "minProperties": 8,
+            "maxProperties": 8,
             "additionalProperties": {"$ref": "#/$defs/familyMetric"}
           },
           "failures": {"type": "array", "maxItems": 500, "items": {"type": "object", "required": ["code", "count"], "additionalProperties": false, "properties": {"code": {"$ref": "#/$defs/identifier"}, "count": {"type": "integer", "minimum": 1}}}},

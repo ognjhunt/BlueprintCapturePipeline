@@ -34,19 +34,25 @@ ACTIVATION_MANIFEST_SCHEMA_VERSION = (
 )
 EMBODIMENT_ID = "franka_panda_robotiq_2f85_v1"
 FROZEN_CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
+RUN_KIND_QUALIFIED_EVALUATION = "qualified_evaluation"
+RUN_KIND_INTERNAL_POLICY_CANARY = "internal_policy_canary"
+CLAIM_CEILING_DIAGNOSTIC_POLICY_EXECUTION = "diagnostic_policy_execution"
+CANARY_SCENE_CONTROLS_STATUS = "configured_controls_pending"
+CANARY_NOTIFY_ON = ("completed", "blocked", "cancelled")
 MATRIX_PROFILE_ID = "franka_rigid_relocation_nested_v1"
 SCENARIO_COMPILER_ID = "franka_rigid_relocation_nested_prefix"
 SCENARIO_COMPILER_VERSION = "v1"
 PRESET_IDS = ("quick_10", "standard_100", "deep_500")
 PRESET_COUNTS = (10, 100, 500)
 QUICK_FAMILY_COUNTS = {
-    "canonical_anchor": 1,
+    "canonical_anchor": 2,
     "placement_approach": 2,
     "illumination": 1,
     "camera_sensor": 1,
     "bounded_physics": 1,
-    "pairwise": 2,
-    "held_out": 2,
+    "admitted_object_material_cousin": 1,
+    "pairwise_stress": 1,
+    "held_out_composition": 1,
 }
 REQUIRED_FAMILIES = (
     "canonical_anchor",
@@ -54,8 +60,9 @@ REQUIRED_FAMILIES = (
     "illumination",
     "camera_sensor",
     "bounded_physics",
-    "pairwise",
-    "held_out",
+    "admitted_object_material_cousin",
+    "pairwise_stress",
+    "held_out_composition",
 )
 MAX_TOTAL_EPISODES = 2000
 _SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "docs" / "schemas"
@@ -245,11 +252,20 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
             )
         for cell in cells:
             expected_partition = (
-                "held_out" if cell["family"] == "held_out" else "qualification"
+                "held_out"
+                if cell["family"] == "held_out_composition"
+                else "qualification"
             )
             if cell["partition"] != expected_partition:
                 raise TaskEvaluationPolicyRunContractError(
                     "policy_run_setup_family_partition_invalid"
+                )
+            resolved_scenario = cell.get("resolved_scenario")
+            if resolved_scenario is not None and cell["cell_spec_digest"] != _cross_runtime_digest(
+                resolved_scenario
+            ):
+                raise TaskEvaluationPolicyRunContractError(
+                    "policy_run_setup_resolved_scenario_digest_mismatch"
                 )
     template = setup["preparation_template"]
     if template["template_digest"] != _cross_runtime_digest(
@@ -317,6 +333,34 @@ def validate_policy_run_selection(value: Mapping[str, Any]) -> dict[str, Any]:
         schema=policy_run_selection_schema(),
         code="policy_run_selection_invalid",
     )
+    run_kind = selection.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION)
+    if run_kind == RUN_KIND_INTERNAL_POLICY_CANARY:
+        required = {
+            "claim_ceiling": CLAIM_CEILING_DIAGNOSTIC_POLICY_EXECUTION,
+            "scene_controls_status_at_submission": CANARY_SCENE_CONTROLS_STATUS,
+            "robot_preset_id": EMBODIMENT_ID,
+            "policy_candidate_ids": list(FROZEN_CANDIDATE_IDS),
+        }
+        if any(selection.get(field) != expected for field, expected in required.items()):
+            raise TaskEvaluationPolicyRunContractError(
+                "policy_run_selection_canary_identity_invalid"
+            )
+        if not isinstance(selection.get("scene_revision_digest"), str):
+            raise TaskEvaluationPolicyRunContractError(
+                "policy_run_selection_canary_scene_revision_missing"
+            )
+        notification = selection.get("notification")
+        if (
+            not isinstance(notification, Mapping)
+            or tuple(notification.get("notify_on") or ()) != CANARY_NOTIFY_ON
+        ):
+            raise TaskEvaluationPolicyRunContractError(
+                "policy_run_selection_canary_notification_invalid"
+            )
+    elif run_kind != RUN_KIND_QUALIFIED_EVALUATION:
+        raise TaskEvaluationPolicyRunContractError(
+            "policy_run_selection_run_kind_invalid"
+        )
     return selection
 
 
@@ -374,6 +418,7 @@ def compile_policy_run_configuration(
         "source_launch_id": selection["source_launch_id"],
         "offering_digest": selection["offering_digest"],
         "setup_digest": selection["setup_digest"],
+        "run_kind": selection.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION),
         "embodiment_id": EMBODIMENT_ID,
         "candidate_ids": list(FROZEN_CANDIDATE_IDS),
         "preset_id": preset["preset_id"],
@@ -389,6 +434,10 @@ def compile_policy_run_configuration(
             "learned_episode_count": scenario_count * 2,
             "control_episode_count": scenario_count * 2,
             "total_episode_count": scenario_count * 4,
+            "policy_count": 2,
+            "episodes_per_policy": scenario_count,
+            "learned_policy_rollout_count": scenario_count * 2,
+            "diagnostic_control_rollout_count": scenario_count * 2,
         },
         "execution_guards": {
             "candidate_cells_and_seeds_must_match": True,
@@ -396,6 +445,7 @@ def compile_policy_run_configuration(
             "zero_action_negative_every_scored_cell": True,
             "deterministic_scripted_positive_every_scored_cell": True,
             "retry_cap": 0,
+            "maximum_provider_allocations": 1,
         },
         "evidence_requirements": {
             "lossless_policy_input_frames_required": True,
@@ -404,9 +454,40 @@ def compile_policy_run_configuration(
             "typed_media_gap_before_first_observation_required": True,
             "grader_authority": "deterministic_simulator_state",
             "policy_self_grading_forbidden": True,
+            "policy_query_receipt_required": True,
+            "action_sequence_required": True,
+            "action_delivery_readback_required": True,
+            "joint_pose_state_trace_required": True,
+            "contact_force_evidence_required": True,
+            "task_object_trajectory_required": True,
         },
         "configuration_digest": "",
     }
+    if configuration["run_kind"] == RUN_KIND_INTERNAL_POLICY_CANARY:
+        if any(not isinstance(cell.get("resolved_scenario"), Mapping) for cell in cells):
+            raise TaskEvaluationPolicyRunContractError(
+                "policy_run_configuration_canary_resolved_scenario_missing"
+            )
+        configuration.update(
+            {
+                "claim_ceiling": CLAIM_CEILING_DIAGNOSTIC_POLICY_EXECUTION,
+                "scene_revision_digest": selection["scene_revision_digest"],
+                "scene_controls_status_at_submission": CANARY_SCENE_CONTROLS_STATUS,
+                "robot_preset_id": selection["robot_preset_id"],
+                "policy_candidate_ids": list(selection["policy_candidate_ids"]),
+                "notification": deepcopy(selection["notification"]),
+                "unqualified_warning": "Controls pending — results are unqualified.",
+            }
+        )
+        configuration["execution_guards"].update(
+            {
+                "controls_gate_policy_execution": False,
+                "failed_controls_preserved": True,
+                "scene_promotion_forbidden": True,
+                "official_ranking_forbidden": True,
+                "winner_selection_forbidden": True,
+            }
+        )
     configuration["configuration_digest"] = _cross_runtime_digest(
         configuration, digest_field="configuration_digest"
     )
@@ -431,35 +512,77 @@ def validate_policy_run_configuration(
         )
     cells = configuration["matrix"]["cells"]
     scenario_count = configuration["scenario_count_per_policy"]
+    counts = configuration["counts"]
+    expected_counts = {
+        "learned_episode_count": scenario_count * 2,
+        "control_episode_count": scenario_count * 2,
+        "total_episode_count": scenario_count * 4,
+        "policy_count": 2,
+        "episodes_per_policy": scenario_count,
+        "learned_policy_rollout_count": scenario_count * 2,
+        "diagnostic_control_rollout_count": scenario_count * 2,
+    }
     if (
         len(cells) != scenario_count
-        or configuration["counts"]
-        != {
-            "learned_episode_count": scenario_count * 2,
-            "control_episode_count": scenario_count * 2,
-            "total_episode_count": scenario_count * 4,
-        }
+        or any(counts.get(key) != expected for key, expected in expected_counts.items())
         or scenario_count * 4 > MAX_TOTAL_EPISODES
     ):
         raise TaskEvaluationPolicyRunContractError(
             "policy_run_configuration_episode_counts_invalid"
+        )
+    run_kind = configuration.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION)
+    if run_kind == RUN_KIND_INTERNAL_POLICY_CANARY:
+        if (
+            configuration.get("claim_ceiling")
+            != CLAIM_CEILING_DIAGNOSTIC_POLICY_EXECUTION
+            or configuration.get("scene_controls_status_at_submission")
+            != CANARY_SCENE_CONTROLS_STATUS
+            or configuration.get("robot_preset_id") != EMBODIMENT_ID
+            or tuple(configuration.get("policy_candidate_ids") or ())
+            != FROZEN_CANDIDATE_IDS
+            or configuration.get("unqualified_warning")
+            != "Controls pending — results are unqualified."
+            or configuration["execution_guards"].get("controls_gate_policy_execution")
+            is not False
+            or configuration["execution_guards"].get("scene_promotion_forbidden")
+            is not True
+        ):
+            raise TaskEvaluationPolicyRunContractError(
+                "policy_run_configuration_canary_boundary_invalid"
+            )
+    elif run_kind != RUN_KIND_QUALIFIED_EVALUATION:
+        raise TaskEvaluationPolicyRunContractError(
+            "policy_run_configuration_run_kind_invalid"
         )
     if len({cell["seed"] for cell in cells}) != len(cells):
         raise TaskEvaluationPolicyRunContractError(
             "policy_run_configuration_seeds_not_unique"
         )
     if setup is not None:
-        expected = compile_policy_run_configuration(
-            {
-                "schema_version": SELECTION_SCHEMA_VERSION,
-                "run_id": configuration["run_id"],
-                "source_launch_id": configuration["source_launch_id"],
-                "offering_digest": configuration["offering_digest"],
-                "setup_digest": configuration["setup_digest"],
-                "preset_id": configuration["preset_id"],
-            },
-            setup=setup,
-        )
+        selection = {
+            "schema_version": SELECTION_SCHEMA_VERSION,
+            "run_id": configuration["run_id"],
+            "source_launch_id": configuration["source_launch_id"],
+            "offering_digest": configuration["offering_digest"],
+            "setup_digest": configuration["setup_digest"],
+            "preset_id": configuration["preset_id"],
+            "run_kind": run_kind,
+        }
+        if run_kind == RUN_KIND_INTERNAL_POLICY_CANARY:
+            selection.update(
+                {
+                    field: deepcopy(configuration[field])
+                    for field in (
+                        "claim_ceiling",
+                        "scene_revision_digest",
+                        "scene_controls_status_at_submission",
+                        "robot_preset_id",
+                        "policy_candidate_ids",
+                        "notification",
+                    )
+                }
+            )
+        expected = compile_policy_run_configuration(selection, setup=setup)
         if configuration != expected:
             raise TaskEvaluationPolicyRunContractError(
                 "policy_run_configuration_not_compiler_output"
@@ -489,6 +612,7 @@ def build_policy_run_plan(
         "offering_digest": configuration["offering_digest"],
         "configuration_digest": configuration["configuration_digest"],
         "setup_digest": configuration["setup_digest"],
+        "run_kind": configuration.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION),
         "embodiment_id": EMBODIMENT_ID,
         "candidate_ids": list(FROZEN_CANDIDATE_IDS),
         "matrix_profile_id": MATRIX_PROFILE_ID,
@@ -512,6 +636,8 @@ def build_policy_run_plan(
                 "campaign_unit_id": f"{configuration['run_id']}-{cell['cell_id']}",
                 "cell_id": cell["cell_id"],
                 "seed": cell["seed"],
+                "cell_spec_digest": cell["cell_spec_digest"],
+                "family": cell["family"],
                 "candidate_ids": list(FROZEN_CANDIDATE_IDS),
                 "runtime_contract": "native_task_arena_policy_campaign.v1",
             }
@@ -519,12 +645,20 @@ def build_policy_run_plan(
         ],
         "execution_guards": deepcopy(configuration["execution_guards"]),
         "evidence_requirements": deepcopy(configuration["evidence_requirements"]),
-        "status": "prepared_awaiting_controls_qualified_activation",
+        "status": (
+            "prepared_awaiting_policy_canary_activation"
+            if configuration.get("run_kind") == RUN_KIND_INTERNAL_POLICY_CANARY
+            else "prepared_awaiting_controls_qualified_activation"
+        ),
         "execution_performed": False,
         "provider_mutation_performed": False,
         "paid_execution_requested": False,
         "spend_usd": 0,
-        "blockers": ["controls_qualified_activation_required"],
+        "blockers": (
+            []
+            if configuration.get("run_kind") == RUN_KIND_INTERNAL_POLICY_CANARY
+            else ["controls_qualified_activation_required"]
+        ),
         "plan_digest": "",
     }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
@@ -611,7 +745,7 @@ def build_policy_campaign_activation_manifest(
     *,
     configuration: Mapping[str, Any],
     plan: Mapping[str, Any],
-    controls_qualification: Mapping[str, Any],
+    controls_qualification: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Materialize N exact two-member campaign units without executing them."""
 
@@ -626,32 +760,48 @@ def build_policy_campaign_activation_manifest(
         raise TaskEvaluationPolicyRunContractError(
             "policy_campaign_activation_plan_invalid"
         )
-    qualification = validate_policy_controls_qualification(
-        controls_qualification, configuration=configuration, plan=plan
-    )
+    run_kind = configuration.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION)
+    if run_kind == RUN_KIND_QUALIFIED_EVALUATION:
+        if controls_qualification is None:
+            raise TaskEvaluationPolicyRunContractError(
+                "policy_campaign_activation_controls_required"
+            )
+        qualification = validate_policy_controls_qualification(
+            controls_qualification, configuration=configuration, plan=plan
+        )
+    else:
+        qualification = None
     if tuple(configuration["candidate_ids"]) != FROZEN_CANDIDATE_IDS:
         raise TaskEvaluationPolicyRunContractError(
             "policy_campaign_activation_member_pair_invalid"
         )
-    controls = {row["cell_id"]: row for row in qualification["cells"]}
+    controls = (
+        {row["cell_id"]: row for row in qualification["cells"]}
+        if qualification is not None
+        else {}
+    )
     units = []
     for plan_unit in plan["campaign_units"]:
-        control = controls[plan_unit["cell_id"]]
-        pair_controls = control["controls_result"]["control_pair"]["controls"]
+        control = controls.get(plan_unit["cell_id"])
+        controls_binding: dict[str, Any] = {
+            "mode": "nonblocking_diagnostic_pending",
+            "policy_execution_blocked": False,
+        }
+        if control is not None:
+            pair_controls = control["controls_result"]["control_pair"]["controls"]
+            controls_binding = {
+                "mode": "qualified_gate",
+                "zero_action_result_digest": pair_controls[0]["receipt_digest"],
+                "scripted_positive_result_digest": pair_controls[1]["receipt_digest"],
+                "controls_result_digest": control["controls_result"]["result_digest"],
+                "policy_execution_blocked": False,
+            }
         units.append(
             {
                 **deepcopy(plan_unit),
-                "controls": {
-                    "zero_action_result_digest": pair_controls[0][
-                        "receipt_digest"
-                    ],
-                    "scripted_positive_result_digest": pair_controls[1][
-                        "receipt_digest"
-                    ],
-                    "controls_result_digest": control["controls_result"][
-                        "result_digest"
-                    ],
-                },
+                "run_kind": run_kind,
+                "claim_ceiling": configuration.get("claim_ceiling"),
+                "controls": controls_binding,
                 "maximum_automatic_retries": 0,
                 "provider_allocation_authorized": False,
             }
@@ -661,11 +811,37 @@ def build_policy_campaign_activation_manifest(
         "run_id": configuration["run_id"],
         "configuration_digest": configuration["configuration_digest"],
         "plan_digest": plan["plan_digest"],
-        "controls_qualification_digest": qualification["qualification_digest"],
+        "run_kind": run_kind,
+        "claim_ceiling": configuration.get("claim_ceiling"),
+        "controls_qualification_digest": (
+            qualification["qualification_digest"] if qualification else None
+        ),
         "candidate_ids": list(FROZEN_CANDIDATE_IDS),
         "campaign_unit_count": len(units),
         "campaign_units": units,
+        "paired_session_request": {
+            "configuration_digest": configuration["configuration_digest"],
+            "plan_digest": plan["plan_digest"],
+            "matrix_digest": configuration["matrix"]["scenario_set_digest"],
+            "candidate_ids": list(FROZEN_CANDIDATE_IDS),
+            "policy_count": 2,
+            "episodes_per_policy": configuration["scenario_count_per_policy"],
+            "learned_policy_rollout_count": configuration["counts"][
+                "learned_policy_rollout_count"
+            ],
+            "maximum_provider_allocations": 1,
+            "retry_cap": 0,
+            "cells": [
+                {
+                    key: unit[key]
+                    for key in ("cell_id", "seed", "cell_spec_digest", "family")
+                }
+                for unit in units
+            ],
+        },
         "status": "paired_campaign_queue_materialized_no_execution",
+        "scene_promotion_authorized": False,
+        "official_ranking_authorized": run_kind == RUN_KIND_QUALIFIED_EVALUATION,
         "provider_mutation_performed": False,
         "paid_execution_requested": False,
         "activation_digest": "",

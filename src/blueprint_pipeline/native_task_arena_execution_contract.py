@@ -191,6 +191,9 @@ NATIVE_TASK_ARENA_POLICY_CANDIDATES = frozenset(
 )
 
 CONTROLS_RESULT_FILENAME = "native_task_arena_control_result.v1.json"
+POLICY_CANARY_RESULT_FILENAME = (
+    "native_task_arena_policy_canary_session_result.v1.json"
+)
 CONTROLS_RESULT_SCHEMA_VERSION = "native_task_arena_control_result.v1"
 DOWNSTREAM_DIAGNOSTIC_RESULT_SCHEMA_VERSION = (
     "adp_task_synthetic_post_phase5_downstream_diagnostic.v1"
@@ -225,6 +228,19 @@ def native_task_arena_execution_transport_completed(
 
     if result.get("status") == "completed":
         return True
+    if expected_output_filename == POLICY_CANARY_RESULT_FILENAME:
+        return (
+            result.get("status")
+            == "runtime_completed_unqualified_pending_closeout"
+            and result.get("schema_version")
+            == "native_task_arena_policy_canary_session_result.v1"
+            and result.get("run_kind") == "internal_policy_canary"
+            and result.get("claim_ceiling") == "diagnostic_policy_execution"
+            and result.get("learned_policy_rollout_count") == 20
+            and result.get("candidate_policy_queried") is True
+            and result.get("scene_promotion_performed") is False
+            and result.get("official_ranking_performed") is False
+        )
     if (
         expected_output_filename != CONTROLS_RESULT_FILENAME
         or result.get("status") != "diagnostic_completed"

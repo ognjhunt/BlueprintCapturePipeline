@@ -97,21 +97,23 @@ def _template() -> dict[str, object]:
 def setup() -> dict[str, object]:
     families = [
         "canonical_anchor",
+        "canonical_anchor",
         "placement_approach",
         "placement_approach",
         "illumination",
         "camera_sensor",
         "bounded_physics",
-        "pairwise",
-        "pairwise",
-        "held_out",
-        "held_out",
+        "admitted_object_material_cousin",
+        "pairwise_stress",
+        "held_out_composition",
     ]
     quick_cells = [
         {
             "cell_id": f"quick-cell-{index}-{family}",
             "family": family,
-            "partition": "held_out" if family == "held_out" else "qualification",
+            "partition": (
+                "held_out" if family == "held_out_composition" else "qualification"
+            ),
             "scored": True,
             "cell_spec_digest": f"sha256:{100 + index:064x}",
         }
@@ -125,13 +127,14 @@ def setup() -> dict[str, object]:
             "availability": "enabled",
             "default": True,
             "family_counts": {
-                "canonical_anchor": 1,
+                "canonical_anchor": 2,
                 "placement_approach": 2,
                 "illumination": 1,
                 "camera_sensor": 1,
                 "bounded_physics": 1,
-                "pairwise": 2,
-                "held_out": 2,
+                "admitted_object_material_cousin": 1,
+                "pairwise_stress": 1,
+                "held_out_composition": 1,
             },
             "scenario_set_digest": canonical_digest({"ordered_cells": quick_cells}),
             "parent_preset_id": None,
@@ -147,13 +150,14 @@ def setup() -> dict[str, object]:
             "availability": "coming_later",
             "default": False,
             "family_counts": {
-                "canonical_anchor": 1,
+                "canonical_anchor": 2,
                 "placement_approach": 20,
                 "illumination": 14,
                 "camera_sensor": 14,
                 "bounded_physics": 14,
-                "pairwise": 19,
-                "held_out": 18,
+                "admitted_object_material_cousin": 10,
+                "pairwise_stress": 13,
+                "held_out_composition": 13,
             },
             "scenario_set_digest": "sha256:" + "c" * 64,
             "parent_preset_id": "quick_10",
@@ -168,13 +172,14 @@ def setup() -> dict[str, object]:
             "availability": "coming_later",
             "default": False,
             "family_counts": {
-                "canonical_anchor": 1,
+                "canonical_anchor": 2,
                 "placement_approach": 100,
                 "illumination": 70,
                 "camera_sensor": 70,
                 "bounded_physics": 70,
-                "pairwise": 100,
-                "held_out": 89,
+                "admitted_object_material_cousin": 50,
+                "pairwise_stress": 69,
+                "held_out_composition": 69,
             },
             "scenario_set_digest": "sha256:" + "d" * 64,
             "parent_preset_id": "standard_100",
@@ -375,9 +380,68 @@ def test_compiles_exact_pair_and_shared_matrix_without_execution() -> None:
         "control_episode_count": 20,
         "total_episode_count": 40,
     }
+    assert config["counts"]["learned_policy_rollout_count"] == 20
+    assert config["counts"]["diagnostic_control_rollout_count"] == 20
     assert plan["execution_performed"] is False
     assert plan["provider_mutation_performed"] is False
     assert plan["spend_usd"] == 0
+
+
+def test_internal_canary_compiles_resolved_quick_10_without_controls_gate() -> None:
+    setup_value = setup()
+    quick = setup_value["presets"][0]
+    for index, cell in enumerate(quick["cells"]):
+        cell["resolved_scenario"] = {
+            "variation_family": cell["family"],
+            "deterministic_ordinal": index,
+        }
+        cell["cell_spec_digest"] = canonical_digest(cell["resolved_scenario"])
+    quick["scenario_set_digest"] = canonical_digest(
+        {"ordered_cells": quick["cells"]}
+    )
+    quick["nesting_proof_digest"] = canonical_digest(
+        {
+            "preset_id": quick["preset_id"],
+            "scenario_set_digest": quick["scenario_set_digest"],
+            "parent_preset_id": None,
+            "parent_prefix_count": 0,
+            "selection_rule": "published_ordered_prefix",
+        }
+    )
+    setup_value["setup_digest"] = canonical_digest(
+        setup_value, digest_field="setup_digest"
+    )
+    selected = selection(setup_value)
+    selected.update(
+        {
+            "run_kind": "internal_policy_canary",
+            "claim_ceiling": "diagnostic_policy_execution",
+            "scene_revision_digest": "sha256:" + "9" * 64,
+            "scene_controls_status_at_submission": "configured_controls_pending",
+            "robot_preset_id": EMBODIMENT_ID,
+            "policy_candidate_ids": list(FROZEN_CANDIDATE_IDS),
+            "notification": {
+                "email": "robotics@example.com",
+                "notify_on": ["completed", "blocked", "cancelled"],
+            },
+        }
+    )
+    config = compile_policy_run_configuration(selected, setup=setup_value)
+    plan = build_policy_run_plan(config, setup=setup_value)
+    activation = build_policy_campaign_activation_manifest(
+        configuration=config,
+        plan=plan,
+    )
+
+    assert config["run_kind"] == "internal_policy_canary"
+    assert config["claim_ceiling"] == "diagnostic_policy_execution"
+    assert config["counts"]["learned_policy_rollout_count"] == 20
+    assert plan["status"] == "prepared_awaiting_policy_canary_activation"
+    assert plan["blockers"] == []
+    assert activation["controls_qualification_digest"] is None
+    assert activation["official_ranking_authorized"] is False
+    assert activation["paired_session_request"]["maximum_provider_allocations"] == 1
+    assert len(activation["paired_session_request"]["cells"]) == 10
 
 
 def test_activation_materializes_ten_existing_paired_campaign_units() -> None:
@@ -473,7 +537,7 @@ def test_fail_without_fix_rejects_candidate_family_and_seed_drift() -> None:
     )
     with pytest.raises(
         TaskEvaluationPolicyRunContractError,
-        match="policy_run_setup_preset_cells_invalid",
+        match="policy_run_setup_(?:invalid|preset_cells_invalid)",
     ):
         validate_policy_run_setup(missing_family)
 

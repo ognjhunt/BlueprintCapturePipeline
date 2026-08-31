@@ -186,6 +186,7 @@ from .native_task_arena_policy_diagnostic_bundle import (
     build_native_task_arena_policy_diagnostic_bundle,
     load_verified_native_task_arena_policy_diagnostic_bundle,
 )
+from . import policy_canary_allocator_lane as policy_canary_lane
 from .native_task_arena_runtime_preflight_bundle import (
     PROBE_KIND as NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
     build_native_task_arena_runtime_preflight_bundle,
@@ -363,7 +364,6 @@ _TYPED_AUTHORITY_ERROR = re.compile(r"^[a-z0-9_]+(?::[a-z0-9_,]+)?$")
 
 def _native_authority_validation_diagnostic(exc: BaseException) -> dict[str, Any]:
     """Retain a typed authority failure without leaking paths or payloads."""
-
     if isinstance(exc, json.JSONDecodeError):
         error_code = "json_decode_error"
     elif isinstance(exc, PermissionError):
@@ -389,7 +389,6 @@ def _write_native_task_arena_adapter_output(
     path: str | Path, result: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Seal the exact terminal mapping at the allocator's adapter output."""
-
     sealed = json.loads(json.dumps(dict(result), allow_nan=False))
     sealed["result_digest"] = canonical_digest(
         sealed, digest_field="result_digest"
@@ -475,13 +474,11 @@ CHECKOUT_IDENTITY_PROBE_BACKOFF_SECONDS = 2.0
 
 def _checkout_git_command(*arguments: str) -> list[str]:
     """Trust only the physical immutable checkout used by this allocator."""
-
     return ["git", "-c", f"safe.directory={ROOT}", "-C", str(ROOT), *arguments]
 
 
 def _run_checkout_probe(argv: Sequence[str]) -> subprocess.CompletedProcess | None:
     """Probe immutable checkout identity, retrying a transient Git lock."""
-
     result: subprocess.CompletedProcess | None = None
     for attempt in range(CHECKOUT_IDENTITY_PROBE_ATTEMPTS):
         try:
@@ -1659,6 +1656,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
+            policy_canary_lane.PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
@@ -1808,6 +1806,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--native-task-arena-control-result")
     gpu.add_argument("--native-task-arena-policy-execution-spec")
+    policy_canary_lane.add_policy_canary_allocator_arguments(gpu)
     gpu.add_argument(
         "--native-task-arena-retain-warm-session",
         action="store_true",
@@ -3389,6 +3388,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
+        if args.probe_kind == policy_canary_lane.PROBE_KIND:
+            return policy_canary_lane.run_policy_canary_allocator_lane(args, _control_plane_checkout_blockers())
         if args.probe_kind in {
             ADP_AURA_SMOKE_PROBE_KIND,
             ADP_AURA_INTERIORGS_PROBE_KIND,

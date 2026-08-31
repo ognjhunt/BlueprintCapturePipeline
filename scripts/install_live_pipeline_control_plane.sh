@@ -175,11 +175,18 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${STATE_DIR}/task-evaluation-launch-activations/blocked" \
   "${STATE_DIR}/task-evaluation-launch-activations/identities" \
   "${STATE_DIR}/task-evaluation-launch-activations/results" \
+  "${STATE_DIR}/task-evaluation-policy-canary-dispatches" \
+  "${STATE_DIR}/task-evaluation-policy-canary-dispatches/pending" \
+  "${STATE_DIR}/task-evaluation-policy-canary-dispatches/processing" \
+  "${STATE_DIR}/task-evaluation-policy-canary-dispatches/completed" \
+  "${STATE_DIR}/task-evaluation-policy-canary-dispatches/blocked" \
+  "${STATE_DIR}/task-evaluation-policy-canaries" \
   "${STATE_DIR}/standing-authorizations" \
   "${TASK_EVALUATION_INPUT_ROOT}" \
   "${TASK_EVALUATION_INPUT_ROOT}/prepared-references" \
   "${TASK_EVALUATION_INPUT_ROOT}/compiled-episodes" \
   "${TASK_EVALUATION_INPUT_ROOT}/launch-activations" \
+  "${TASK_EVALUATION_INPUT_ROOT}/policy-canary-execution-setups" \
   "${TASK_EVALUATION_INPUT_ROOT}/system-runtimes"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${TASK_EVALUATION_INPUT_ROOT}/scene-object-discoveries" \
@@ -309,6 +316,12 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-activation.path" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-activation.path"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-policy-canary-dispatcher.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-policy-canary-dispatcher.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-policy-canary-dispatcher.path" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-policy-canary-dispatcher.path"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-terminal-resource-release.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-terminal-resource-release.service"

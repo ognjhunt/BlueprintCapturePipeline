@@ -26,6 +26,7 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 
 
 DELIVERY_SCHEMA_VERSION = "task_evaluation_result_delivery.v1"
+POLICY_CANARY_DELIVERY_SCHEMA_VERSION = "task_evaluation_result_delivery.v2"
 REGISTRY_SCHEMA_VERSION = "task_evaluation_result_artifact_registry.v1"
 _FIXED_ZIP_TIME = (2020, 1, 1, 0, 0, 0)
 
@@ -594,9 +595,289 @@ def resolve_task_evaluation_result_artifact(
     return path, record
 
 
+def materialize_policy_canary_result_delivery(
+    *,
+    run_root: str | Path,
+    run_id: str,
+    result_status: str,
+    session_result: Mapping[str, Any],
+    evidence_root: str | Path,
+    closure_records: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Seal a private, artifact-complete internal policy-canary delivery.
+
+    The provider result remains the source of episode truth.  This function
+    verifies every exported byte, adds deterministic CSV/JSON downloads, and
+    refuses a completed result unless official billing, teardown, and a fresh
+    authenticated provider-zero receipt are all explicitly bound.
+    """
+
+    run = strict_identifier(run_id, field="run_id", max_length=192)
+    if result_status not in {"completed_unqualified", "blocked", "cancelled"}:
+        raise TaskEvaluationResultDeliveryError(
+            "policy_canary_result_delivery_status_invalid"
+        )
+    result = json.loads(json.dumps(dict(session_result), allow_nan=False))
+    if (
+        result.get("run_kind") != "internal_policy_canary"
+        or result.get("claim_ceiling") != "diagnostic_policy_execution"
+        or result.get("result_digest")
+        != canonical_digest(result, digest_field="result_digest")
+    ):
+        raise TaskEvaluationResultDeliveryError(
+            "policy_canary_result_delivery_result_invalid"
+        )
+    episodes = result.get("episodes")
+    if not isinstance(episodes, list) or len(episodes) > 20:
+        raise TaskEvaluationResultDeliveryError(
+            "policy_canary_result_delivery_episodes_invalid"
+        )
+
+    root = Path(run_root).expanduser().resolve()
+    evidence = Path(evidence_root).expanduser().resolve()
+    if not evidence.is_dir() or evidence.is_symlink():
+        raise TaskEvaluationResultDeliveryError(
+            "policy_canary_result_delivery_evidence_root_invalid"
+        )
+    delivery_root = root / "artifacts" / "result_delivery"
+    delivery_root.mkdir(parents=True, exist_ok=True)
+    registry_artifacts: list[dict[str, Any]] = []
+    public_artifacts: list[dict[str, Any]] = []
+
+    def add_artifact(*, role: str, path: Path, artifact_root: Path) -> dict[str, Any]:
+        resolved = path.resolve()
+        try:
+            relative = resolved.relative_to(artifact_root.resolve()).as_posix()
+        except ValueError as exc:
+            raise TaskEvaluationResultDeliveryError(
+                f"policy_canary_artifact_outside_root:{role}"
+            ) from exc
+        if path.is_symlink() or not resolved.is_file():
+            raise TaskEvaluationResultDeliveryError(
+                f"policy_canary_artifact_invalid:{role}"
+            )
+        digest = _sha256(resolved)
+        artifact_id = _artifact_id(role, relative, digest)
+        public = {
+            "artifact_id": artifact_id,
+            "role": role,
+            "digest": digest,
+            "size_bytes": resolved.stat().st_size,
+            "content_type": _content_type(resolved),
+        }
+        public_artifacts.append(public)
+        registry_artifacts.append(
+            {
+                **public,
+                "sha256": digest,
+                "relative_path": relative,
+                "evidence_root": str(artifact_root.resolve()),
+            }
+        )
+        return {
+            "artifact_id": artifact_id,
+            "digest": digest,
+            "size_bytes": resolved.stat().st_size,
+        }
+
+    seen_paths: set[str] = set()
+    inventory = result.get("artifact_inventory")
+    if not isinstance(inventory, list):
+        raise TaskEvaluationResultDeliveryError(
+            "policy_canary_artifact_inventory_missing"
+        )
+    for position, row in enumerate(inventory):
+        if not isinstance(row, Mapping):
+            raise TaskEvaluationResultDeliveryError(
+                "policy_canary_artifact_inventory_invalid"
+            )
+        relative = str(row.get("relative_path") or "")
+        role = str(row.get("role") or f"provider_artifact_{position}")
+        path = _inside(evidence, relative, role=role)
+        if (
+            relative in seen_paths
+            or _sha256(path) != row.get("sha256")
+            or path.stat().st_size != row.get("size_bytes")
+        ):
+            raise TaskEvaluationResultDeliveryError(
+                "policy_canary_artifact_inventory_invalid"
+            )
+        seen_paths.add(relative)
+        add_artifact(role=role, path=path, artifact_root=evidence)
+
+    closure: dict[str, dict[str, Any]] = {}
+    required_flags = {
+        "billing": "official_billing_sealed",
+        "teardown": "teardown_completed",
+        "provider_zero": "provider_zero_verified",
+    }
+    for role, flag in required_flags.items():
+        record = closure_records.get(role)
+        if not isinstance(record, Mapping) or record.get(flag) is not True:
+            raise TaskEvaluationResultDeliveryError(
+                f"policy_canary_{role}_receipt_missing"
+            )
+        path = Path(str(record.get("path") or "")).expanduser().resolve()
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or _sha256(path) != record.get("sha256")
+            or path.stat().st_size != record.get("size_bytes")
+        ):
+            raise TaskEvaluationResultDeliveryError(
+                f"policy_canary_{role}_receipt_invalid"
+            )
+        descriptor = add_artifact(
+            role=f"closure_{role}", path=path, artifact_root=path.parent
+        )
+        if role == "provider_zero":
+            descriptor["provider_zero_verified"] = True
+        closure[role] = descriptor
+
+    report_path = delivery_root / "policy_canary_full_report.json"
+    _write_immutable(
+        report_path, (canonical_json(result) + "\n").encode("utf-8")
+    )
+    report_artifact = add_artifact(
+        role="machine_readable_report",
+        path=report_path,
+        artifact_root=delivery_root,
+    )
+    episode_csv = io.StringIO(newline="")
+    episode_writer = csv.writer(episode_csv, lineterminator="\n")
+    episode_writer.writerow(
+        [
+            "candidate_id",
+            "cell_id",
+            "seed",
+            "status",
+            "candidate_policy_queried",
+            "actions_reached_robot",
+            "arm_moved",
+            "policy_outcome_interpretable",
+            "typed_harness_failure",
+        ]
+    )
+    for row in episodes:
+        episode_writer.writerow(
+            [
+                row.get("candidate_id"),
+                row.get("cell_id"),
+                row.get("seed"),
+                row.get("status"),
+                row.get("candidate_policy_queried"),
+                row.get("actions_reached_robot"),
+                row.get("arm_moved"),
+                row.get("policy_outcome_interpretable"),
+                row.get("typed_harness_failure"),
+            ]
+        )
+    episode_csv_path = delivery_root / "policy_canary_episodes.csv"
+    _write_immutable(episode_csv_path, episode_csv.getvalue().encode("utf-8"))
+    add_artifact(
+        role="episode_csv", path=episode_csv_path, artifact_root=delivery_root
+    )
+
+    evidence_manifest = {
+        "schema_version": "task_evaluation_policy_canary_evidence_manifest.v1",
+        "run_id": run,
+        "result_digest": result["result_digest"],
+        "artifacts": sorted(
+            public_artifacts, key=lambda row: (row["role"], row["artifact_id"])
+        ),
+        "manifest_digest": "",
+    }
+    evidence_manifest["manifest_digest"] = canonical_digest(
+        evidence_manifest, digest_field="manifest_digest"
+    )
+    evidence_manifest_path = delivery_root / "policy_canary_evidence_manifest.json"
+    _write_immutable(
+        evidence_manifest_path,
+        (canonical_json(evidence_manifest) + "\n").encode("utf-8"),
+    )
+    evidence_manifest_artifact = add_artifact(
+        role="evidence_manifest",
+        path=evidence_manifest_path,
+        artifact_root=delivery_root,
+    )
+
+    completed = sum(row.get("status") == "completed" for row in episodes)
+    delivery: dict[str, Any] = {
+        "schema_version": POLICY_CANARY_DELIVERY_SCHEMA_VERSION,
+        "run_id": run,
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "result_status": result_status,
+        "status": "ready",
+        "summary": {
+            "policy_count": 2,
+            "episodes_per_policy": 10,
+            "learned_policy_rollout_count": 20,
+            "completed_learned_policy_rollout_count": completed,
+        },
+        "episodes": [
+            {
+                key: row.get(key)
+                for key in (
+                    "candidate_id",
+                    "cell_id",
+                    "seed",
+                    "status",
+                    "candidate_policy_queried",
+                    "actions_reached_robot",
+                    "arm_moved",
+                    "policy_outcome_interpretable",
+                    "typed_harness_failure",
+                )
+            }
+            for row in episodes
+        ],
+        "artifacts": sorted(
+            public_artifacts, key=lambda row: (row["role"], row["artifact_id"])
+        ),
+        "report": {
+            "machine_readable_report": report_artifact,
+            "evidence_manifest": evidence_manifest_artifact,
+        },
+        "closure": closure,
+        "proof_boundary": {
+            "controls_pending_results_unqualified": True,
+            "scene_promotion_authorized": False,
+            "official_policy_ranking_authorized": False,
+            "winner_selection_authorized": False,
+            "simulation_is_physical_success": False,
+        },
+        "delivery_digest": "",
+    }
+    delivery["delivery_digest"] = canonical_digest(
+        delivery, digest_field="delivery_digest"
+    )
+    registry: dict[str, Any] = {
+        "schema_version": REGISTRY_SCHEMA_VERSION,
+        "run_id": run,
+        "delivery_digest": delivery["delivery_digest"],
+        "artifacts": registry_artifacts,
+        "registry_digest": "",
+    }
+    registry["registry_digest"] = canonical_digest(
+        registry, digest_field="registry_digest"
+    )
+    _write_immutable(
+        delivery_root / "delivery.json",
+        (canonical_json(delivery) + "\n").encode("utf-8"),
+    )
+    _write_immutable(
+        delivery_root / "artifact_registry.json",
+        (canonical_json(registry) + "\n").encode("utf-8"),
+    )
+    return delivery
+
+
 __all__ = [
     "DELIVERY_SCHEMA_VERSION",
+    "POLICY_CANARY_DELIVERY_SCHEMA_VERSION",
     "TaskEvaluationResultDeliveryError",
+    "materialize_policy_canary_result_delivery",
     "materialize_task_evaluation_result_delivery",
     "resolve_task_evaluation_result_artifact",
 ]
