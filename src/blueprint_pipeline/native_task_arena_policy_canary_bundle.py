@@ -39,6 +39,11 @@ from .native_task_arena_policy_canary_session import (
     validate_session_authority,
 )
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
+from .task_evaluation_canary_hotfix_overlay import (
+    apply_canary_hotfix_overlay,
+    canary_hotfix_execution_release,
+    verify_canary_hotfix_overlay,
+)
 
 
 EXECUTION_AUTHORITY = "internal_policy_canary_unqualified"
@@ -159,12 +164,25 @@ def build_policy_canary_session_bundle(
     groot_execution_spec_path: str | Path,
     pi05_checkpoint_inventory_path: str | Path,
     implementation_commit: str,
+    hotfix_overlay_path: str | Path | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """Package both frozen policy servers and the warm 20-episode worker."""
 
     inputs = validate_runtime_input_manifest(_read(runtime_input_manifest_path))
     authority = validate_session_authority(_read(session_authority_path))
+    hotfix_manifest = (
+        verify_canary_hotfix_overlay(hotfix_overlay_path)
+        if hotfix_overlay_path is not None
+        else None
+    )
+    execution_release = (
+        canary_hotfix_execution_release(hotfix_manifest)
+        if hotfix_manifest is not None
+        else None
+    )
+    if authority.get("execution_release") != execution_release:
+        raise ValueError("policy_canary_bundle_execution_release_mismatch")
     if authority["runtime_inputs_digest"] != inputs["runtime_inputs_digest"]:
         raise ValueError("policy_canary_bundle_authority_input_mismatch")
     packet_receipt_path = (
@@ -231,6 +249,14 @@ def build_policy_canary_session_bundle(
             script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         for name in POLICY_RUNTIME_ROOT_MODULE_NAMES:
             shutil.copy2(package / name, runtime / name)
+        hotfix_application = (
+            apply_canary_hotfix_overlay(
+                archive_path=hotfix_overlay_path,
+                provider_runtime_root=runtime,
+            )
+            if hotfix_overlay_path is not None
+            else None
+        )
         shutil.copy2(
             pi05_checkpoint_inventory_path,
             runtime / CHECKPOINT_INVENTORY_STAGED_NAME,
@@ -257,6 +283,8 @@ def build_policy_canary_session_bundle(
                 "expected_output_filename": PROVIDER_RESULT_FILENAME,
                 "scene_promotion_authorized": False,
                 "official_ranking_authorized": False,
+                "execution_release": execution_release,
+                "hotfix_application": hotfix_application,
                 "execution_spec_digests": {
                     candidate: spec["execution_spec_digest"]
                     for candidate, spec in specs.items()
@@ -301,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--groot-execution-spec-path", required=True)
     parser.add_argument("--pi05-checkpoint-inventory-path", required=True)
     parser.add_argument("--implementation-commit", required=True)
+    parser.add_argument("--hotfix-overlay")
     parser.add_argument("--generated-at")
     args = parser.parse_args(argv)
     receipt = build_policy_canary_session_bundle(
@@ -313,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
         groot_execution_spec_path=args.groot_execution_spec_path,
         pi05_checkpoint_inventory_path=args.pi05_checkpoint_inventory_path,
         implementation_commit=args.implementation_commit,
+        hotfix_overlay_path=args.hotfix_overlay,
         generated_at=args.generated_at,
     )
     print(json.dumps(receipt, sort_keys=True))

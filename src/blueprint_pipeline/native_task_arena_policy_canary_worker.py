@@ -608,6 +608,8 @@ def main() -> int:
         output_root, result["episodes"]
     )
     result["telemetry"] = telemetry_index
+    if authority.get("execution_release") is not None:
+        result["execution_release"] = authority["execution_release"]
     result["artifact_inventory"] = telemetry_artifacts
     result["artifact_inventory_digest"] = _digest(telemetry_artifacts)
     result["matrix_digest"] = inputs.get("matrix_digest") or _digest(inputs["cells"])
