@@ -344,7 +344,20 @@ def _projection(
     *, setup: Mapping[str, Any], result: Mapping[str, Any], delivery: Mapping[str, Any]
 ) -> dict[str, Any]:
     episodes = list(result.get("episodes") or [])
-    report = delivery["report"]
+    def compact_artifact(record: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: record[key]
+            for key in ("artifact_id", "digest", "size_bytes")
+        }
+
+    report = {
+        "machine_readable_report": compact_artifact(
+            delivery["report"]["machine_readable_report"]
+        ),
+        "evidence_manifest": compact_artifact(
+            delivery["report"]["evidence_manifest"]
+        ),
+    }
     public_artifacts = delivery.get("artifacts") or []
 
     def bound_artifact(record: Any) -> dict[str, Any] | None:
@@ -454,6 +467,9 @@ def _projection(
             }
         )
     candidate_results = []
+    delivered_candidate_results = {
+        row["candidate_id"]: row for row in delivery.get("candidate_results") or []
+    }
     for candidate in CANDIDATE_IDS:
         rows = [row for row in projected_episodes if row["candidate_id"] == candidate]
         failures: dict[str, int] = {}
@@ -461,6 +477,7 @@ def _projection(
             if row["terminal_state"] != "completed":
                 name = str(row.get("failure_taxonomy") or "unclassified")
                 failures[name] = failures.get(name, 0) + 1
+        delivered_metrics = dict(delivered_candidate_results.get(candidate) or {})
         candidate_results.append(
             {
                 "candidate_id": candidate,
@@ -473,7 +490,11 @@ def _projection(
                 "actions_delivered_episode_count": sum(
                     row["actions_reached_robot"] for row in rows
                 ),
-                "metrics": {},
+                "metrics": {
+                    key: value
+                    for key, value in delivered_metrics.items()
+                    if key != "candidate_id"
+                },
                 "failure_counts": failures,
             }
         )
@@ -516,7 +537,14 @@ def _projection(
             "permanent_result_path": f"/internal/task-evaluation-runs/{delivery['run_id']}",
             **report,
         },
-        "closure": delivery["closure"],
+        "closure": {
+            "billing": compact_artifact(delivery["closure"]["billing"]),
+            "teardown": compact_artifact(delivery["closure"]["teardown"]),
+            "provider_zero": {
+                **compact_artifact(delivery["closure"]["provider_zero"]),
+                "provider_zero_verified": True,
+            },
+        },
         "notification_delivery": {
             "terminal_state": (
                 "completed" if result_status == "completed_unqualified" else result_status

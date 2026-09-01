@@ -34,18 +34,18 @@
     "episodes_per_policy": 10,
     "policy_count": 2,
     "learned_policy_rollout_count": 20,
-    "matrix_digest": "sha256:9f7e11803a1e5c5c6f8d99e4bf64a67daa425666b8acfb1e4d385362d1280c20",
+    "matrix_digest": "sha256:4529929decea377eacc7a806771f7e0b1ceeadb71a59ad25810840cabd27621d",
     "cells": [
-      {"cell_id": "scene839873.quick10.00.canonical_anchor", "family": "canonical_anchor", "seed": 1110864352, "cell_digest": "sha256:87564bcb8f5e8891c3a9121e896f7fb2855ccddcb070afdb7f1fe7131fdf5b70"},
-      {"cell_id": "scene839873.quick10.01.canonical_anchor", "family": "canonical_anchor", "seed": 1154487970, "cell_digest": "sha256:a97daf915c61295cfbc9e62c2210151a535e7db0b133751d2abc400e21941f4a"},
-      {"cell_id": "scene839873.quick10.02.placement_approach", "family": "placement_approach", "seed": 1532135673, "cell_digest": "sha256:7ccbad3464941e9eeac6f7214cb213f68b720e28804f16faaa58ac8240108a08"},
-      {"cell_id": "scene839873.quick10.03.placement_approach", "family": "placement_approach", "seed": 1272810007, "cell_digest": "sha256:4dbb092aeeca52b3d5c98e92debecdf3a4412811f02dd802b448732a081d8447"},
-      {"cell_id": "scene839873.quick10.04.illumination", "family": "illumination", "seed": 1657687708, "cell_digest": "sha256:ccd360ade9be2f29f0385b2b4e79e3705b11ff25e7f7b91d66f009986b1eea62"},
-      {"cell_id": "scene839873.quick10.05.camera_sensor", "family": "camera_sensor", "seed": 1084276004, "cell_digest": "sha256:170da22d35f13e30e0960adfe1b676fa73690d0a581cc94f93ad290405c90ea2"},
-      {"cell_id": "scene839873.quick10.06.bounded_physics", "family": "bounded_physics", "seed": 1494875239, "cell_digest": "sha256:741926db2c1f6fb9b5c9f3ccdd7d76db93c78148000176d100b38afa4f865c81"},
-      {"cell_id": "scene839873.quick10.07.admitted_object_material_cousin", "family": "admitted_object_material_cousin", "seed": 995301867, "cell_digest": "sha256:2f6b7798dc68f99ecec1c65a314fcec5cd7b6b6b3ff0813b32c36cd66ca252f7"},
-      {"cell_id": "scene839873.quick10.08.pairwise_stress", "family": "pairwise_stress", "seed": 1411639622, "cell_digest": "sha256:8aeecf788c9d5ec0e88a724910887082fe482114ae323c909d7f777eb89b7c62"},
-      {"cell_id": "scene839873.quick10.09.held_out_composition", "family": "held_out_composition", "seed": 199329357, "cell_digest": "sha256:5747b2f01bda4ebb53e302b87fc0ed72b895008bcf46d9c6c8e237347ff7c82d"}
+      {"cell_id": "scene839873.quick10.00.canonical_anchor", "family": "canonical_anchor", "seed": 1631165126, "cell_digest": "sha256:87564bcb8f5e8891c3a9121e896f7fb2855ccddcb070afdb7f1fe7131fdf5b70"},
+      {"cell_id": "scene839873.quick10.01.canonical_anchor", "family": "canonical_anchor", "seed": 641681250, "cell_digest": "sha256:a97daf915c61295cfbc9e62c2210151a535e7db0b133751d2abc400e21941f4a"},
+      {"cell_id": "scene839873.quick10.02.placement_approach", "family": "placement_approach", "seed": 2035426405, "cell_digest": "sha256:7ccbad3464941e9eeac6f7214cb213f68b720e28804f16faaa58ac8240108a08"},
+      {"cell_id": "scene839873.quick10.03.placement_approach", "family": "placement_approach", "seed": 262654127, "cell_digest": "sha256:4dbb092aeeca52b3d5c98e92debecdf3a4412811f02dd802b448732a081d8447"},
+      {"cell_id": "scene839873.quick10.04.illumination", "family": "illumination", "seed": 1656404842, "cell_digest": "sha256:ccd360ade9be2f29f0385b2b4e79e3705b11ff25e7f7b91d66f009986b1eea62"},
+      {"cell_id": "scene839873.quick10.05.camera_sensor", "family": "camera_sensor", "seed": 1292876101, "cell_digest": "sha256:170da22d35f13e30e0960adfe1b676fa73690d0a581cc94f93ad290405c90ea2"},
+      {"cell_id": "scene839873.quick10.06.bounded_physics", "family": "bounded_physics", "seed": 644357938, "cell_digest": "sha256:741926db2c1f6fb9b5c9f3ccdd7d76db93c78148000176d100b38afa4f865c81"},
+      {"cell_id": "scene839873.quick10.07.admitted_object_material_cousin", "family": "admitted_object_material_cousin", "seed": 152945545, "cell_digest": "sha256:2f6b7798dc68f99ecec1c65a314fcec5cd7b6b6b3ff0813b32c36cd66ca252f7"},
+      {"cell_id": "scene839873.quick10.08.pairwise_stress", "family": "pairwise_stress", "seed": 1647386432, "cell_digest": "sha256:8aeecf788c9d5ec0e88a724910887082fe482114ae323c909d7f777eb89b7c62"},
+      {"cell_id": "scene839873.quick10.09.held_out_composition", "family": "held_out_composition", "seed": 85423482, "cell_digest": "sha256:5747b2f01bda4ebb53e302b87fc0ed72b895008bcf46d9c6c8e237347ff7c82d"}
     ]
   },
   "maximum_provider_allocations": 1,
@@ -55,5 +55,5 @@
   "ranking_permitted": false,
   "winner_selection_permitted": false,
   "scene_promotion_permitted": false,
-  "configuration_digest": "sha256:fcb2a2993bdc9f608be11715b3a970cc1bc48f6ff9d2e35161ea51e737ee2156"
+  "configuration_digest": "sha256:688d5b06c7063e9cbd84e6e65cef8bbfd00991aadab0fcc0ba6b60ae90eb4327"
 }

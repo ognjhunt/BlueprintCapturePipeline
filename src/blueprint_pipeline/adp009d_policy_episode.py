@@ -170,14 +170,15 @@ except ModuleNotFoundError:  # repository package
         persist_multicamera_observation,
         persist_observation_frame,
     )
+try:  # flat provider-bundle layout
+    from policy_episode_trace_evidence import episode_trace_evidence
+except ModuleNotFoundError:  # repository package
+    from .policy_episode_trace_evidence import episode_trace_evidence
 
 EPISODE_SCHEMA_VERSION = "adp009d_policy_episode.v4"
 
-# A policy that has not moved the can within this many queries has failed the
-# episode; the cap bounds paid GPU time and is recorded rather than implicit.
 DEFAULT_MAX_POLICY_QUERIES = 60
 EVALUATION_REVIEW_FRAME_STRIDE_STEPS = 8
-
 BLOCKER_NO_SETTLE_WINDOW = "policy_episode_settle_window_not_reached"
 BLOCKER_GRIPPER_PRESENT_IN_SETTLE = "policy_episode_gripper_present_during_settle"
 BLOCKER_STEP_INDEX_NOT_INCREASING = "policy_episode_step_index_not_increasing"
@@ -190,7 +191,6 @@ BLOCKER_PRESTART_READINESS = "policy_episode_prestart_readiness_failed"
 BLOCKER_POST_START_INFRASTRUCTURE = (
     "policy_episode_post_start_infrastructure_invariant_violation"
 )
-
 # Provider workers reserve space before they cross the scientific start
 # boundary.  The raw-frame projection below is deliberately padded by this
 # fixed floor for PNG/container overhead and atomic-write headroom.
@@ -1249,6 +1249,13 @@ def run_policy_episode(
                 "success, ranking, or superiority claim"
             ),
         }
+        state_trace, contact_force_evidence, task_object_trajectory = (
+            episode_trace_evidence(
+                joint_trace=joint_trace,
+                task_samples=samples,
+                task_pose_field=rigid_pose_field,
+            )
+        )
         lifecycle = build_lifecycle(
             readiness=prestart_readiness,
             terminal_class=terminal_class,
@@ -1290,6 +1297,9 @@ def run_policy_episode(
             "candidate_policy_action_queries": candidate_policy_action_queries,
             "commanded_actions": commanded_actions,
             "motion_evidence": motion_evidence,
+            "state_trace": state_trace,
+            "contact_force_evidence": contact_force_evidence,
+            "task_object_trajectory": task_object_trajectory,
             "commanded_action_magnitudes": action_magnitudes,
             "score": score,
             "candidate_policy_queried": bool(
@@ -1819,6 +1829,13 @@ def run_policy_episode(
         commanded_actions=commanded_actions,
         command_response_rows=command_response_rows,
     )
+    state_trace, contact_force_evidence, task_object_trajectory = (
+        episode_trace_evidence(
+            joint_trace=joint_trace,
+            task_samples=samples,
+            task_pose_field=rigid_pose_field,
+        )
+    )
 
     visual_evidence, media_artifacts = _seal_terminal_visual_evidence()
     if require_complete_multicamera_media:
@@ -1928,6 +1945,9 @@ def run_policy_episode(
         "candidate_policy_action_queries": candidate_policy_action_queries,
         "commanded_actions": commanded_actions,
         "motion_evidence": motion_evidence,
+        "state_trace": state_trace,
+        "contact_force_evidence": contact_force_evidence,
+        "task_object_trajectory": task_object_trajectory,
         "commanded_action_magnitudes": commanded_action_magnitudes,
         "score": score,
         "candidate_policy_queried": True,

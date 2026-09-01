@@ -49,6 +49,7 @@ CLAIM_CEILING = "diagnostic_policy_execution"
 SCENE_ID = "839873"
 CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
 EMBODIMENT_ID = "franka_panda_robotiq_2f85_v1"
+FORBIDDEN_SCENE_DIGEST_PREFIXES = ("d6c3cd3e",)
 QUICK_FAMILY_COUNTS = {
     "canonical_anchor": 2,
     "placement_approach": 2,
@@ -92,6 +93,27 @@ def _record(path: str | Path) -> dict[str, Any]:
     if source.is_symlink() or not source.is_file():
         raise PolicyCanarySetupError(["policy_canary_setup_record_missing"])
     return {"path": str(source), "size_bytes": source.stat().st_size, "sha256": _sha256(source)}
+
+
+def _forbidden_scene_digest_blockers(
+    records: Mapping[str, str | Path],
+) -> list[str]:
+    """Refuse known-corrupt scene lineage before emitting launch material."""
+
+    blockers: list[str] = []
+    for role, raw_path in records.items():
+        source = Path(raw_path).expanduser().resolve()
+        try:
+            payload = source.read_bytes().lower()
+        except OSError:
+            # The typed record reader owns missing/unreadable-file reporting.
+            continue
+        for prefix in FORBIDDEN_SCENE_DIGEST_PREFIXES:
+            if prefix.encode("ascii") in payload:
+                blockers.append(
+                    f"policy_canary_forbidden_scene_digest_present:{role}:{prefix}"
+                )
+    return blockers
 
 
 def _immutable_ref(value: Mapping[str, Any], *, code: str) -> dict[str, Any]:
@@ -251,6 +273,17 @@ def materialize_scene839873_policy_canary_setup(
     runtime = _read(runtime_source_receipt_path, code="policy_canary_runtime_source_invalid")
     readiness = _read(
         historical_policy_readiness_path, code="policy_canary_historical_readiness_invalid"
+    )
+    blockers.extend(
+        _forbidden_scene_digest_blockers(
+            {
+                "launch_request": launch_request_path,
+                "launch_profile": launch_profile_path,
+                "configured_progression": configured_progression_path,
+                "scene_plan": scene_plan_path,
+                "packet_receipt": packet_receipt_path,
+            }
+        )
     )
     if (
         launch_request.get("source_commit") != source_commit

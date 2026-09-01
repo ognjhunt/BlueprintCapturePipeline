@@ -610,6 +610,7 @@ def main() -> int:
     result["telemetry"] = telemetry_index
     result["artifact_inventory"] = telemetry_artifacts
     result["artifact_inventory_digest"] = _digest(telemetry_artifacts)
+    result["matrix_digest"] = inputs.get("matrix_digest") or _digest(inputs["cells"])
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     result_path.write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"

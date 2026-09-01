@@ -18,6 +18,7 @@ import shutil
 import tempfile
 import zipfile
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +109,9 @@ def _content_type(path: Path) -> str:
         ".html": "text/html",
         ".mp4": "video/mp4",
         ".png": "image/png",
+        ".parquet": "application/vnd.apache.parquet",
+        ".mcap": "application/octet-stream",
+        ".bag": "application/octet-stream",
         ".zip": "application/zip",
     }.get(path.suffix.lower(), "application/octet-stream")
 
@@ -683,6 +687,7 @@ def materialize_policy_canary_result_delivery(
     delivery_root.mkdir(parents=True, exist_ok=True)
     registry_artifacts: list[dict[str, Any]] = []
     public_artifacts: list[dict[str, Any]] = []
+    public_artifacts_by_binding: dict[tuple[str, str, int], dict[str, Any]] = {}
 
     def add_artifact(*, role: str, path: Path, artifact_root: Path) -> dict[str, Any]:
         resolved = path.resolve()
@@ -702,10 +707,17 @@ def materialize_policy_canary_result_delivery(
             "artifact_id": artifact_id,
             "role": role,
             "digest": digest,
+            "sha256": digest,
             "size_bytes": resolved.stat().st_size,
             "content_type": _content_type(resolved),
+            "media_type": _content_type(resolved),
+            "relative_path": relative,
+            "retention_status": "retained",
+            "retention_expires_at_iso": None,
+            "access_mode": "authenticated_ticket",
         }
         public_artifacts.append(public)
+        public_artifacts_by_binding[(role, digest, resolved.stat().st_size)] = public
         registry_artifacts.append(
             {
                 **public,
@@ -719,6 +731,30 @@ def materialize_policy_canary_result_delivery(
             "digest": digest,
             "size_bytes": resolved.stat().st_size,
         }
+
+    def bound_artifact(record: Any, *, role: str | None = None) -> dict[str, Any] | None:
+        if not isinstance(record, Mapping):
+            return None
+        source_role = str(role or record.get("role") or "")
+        digest = str(record.get("sha256") or record.get("digest") or "")
+        size = record.get("size_bytes")
+        if not source_role or not isinstance(size, int):
+            return None
+        return public_artifacts_by_binding.get((source_role, digest, size))
+
+    def bound_artifact_by_digest(record: Any, *, role: str) -> dict[str, Any] | None:
+        if not isinstance(record, Mapping):
+            return None
+        digest = str(record.get("sha256") or record.get("digest") or "")
+        size = record.get("size_bytes")
+        matches = [
+            artifact
+            for artifact in public_artifacts
+            if artifact["role"] == role
+            and artifact["sha256"] == digest
+            and artifact["size_bytes"] == size
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     seen_paths: set[str] = set()
     inventory = result.get("artifact_inventory")
@@ -744,6 +780,14 @@ def materialize_policy_canary_result_delivery(
             )
         seen_paths.add(relative)
         add_artifact(role=role, path=path, artifact_root=evidence)
+        if role == "lossless_frame_manifest":
+            add_artifact(
+                role="lossless_policy_inputs", path=path, artifact_root=evidence
+            )
+        elif role == "action_sequence":
+            add_artifact(
+                role="returned_action_sequence", path=path, artifact_root=evidence
+            )
 
     closure: dict[str, dict[str, Any]] = {}
     required_flags = {
@@ -779,7 +823,7 @@ def materialize_policy_canary_result_delivery(
         report_path, (canonical_json(result) + "\n").encode("utf-8")
     )
     report_artifact = add_artifact(
-        role="machine_readable_report",
+        role="full_json_report",
         path=report_path,
         artifact_root=delivery_root,
     )
@@ -814,9 +858,337 @@ def materialize_policy_canary_result_delivery(
         )
     episode_csv_path = delivery_root / "policy_canary_episodes.csv"
     _write_immutable(episode_csv_path, episode_csv.getvalue().encode("utf-8"))
-    add_artifact(
+    episode_csv_artifact = add_artifact(
         role="episode_csv", path=episode_csv_path, artifact_root=delivery_root
     )
+
+    candidate_rows: list[dict[str, Any]] = []
+    for candidate_id in ("pi05_droid", "groot_n17_droid"):
+        rows = [row for row in episodes if row.get("candidate_id") == candidate_id]
+        completed_rows = [row for row in rows if row.get("status") == "completed"]
+        interpretable = [
+            row for row in completed_rows if row.get("policy_outcome_interpretable") is True
+        ]
+        successes = [
+            row
+            for row in interpretable
+            if (row.get("episode") or {}).get("score", {}).get("task_succeeded") is True
+        ]
+        delivered = [row for row in rows if row.get("actions_reached_robot") is True]
+        destination_errors = [
+            (row.get("episode") or {})
+            .get("score", {})
+            .get("measurements", {})
+            .get("final_horizontal_distance_to_destination_m")
+            for row in interpretable
+        ]
+        destination_errors = [
+            float(value)
+            for value in destination_errors
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        ]
+        outcome_ranks = [
+            (row.get("episode") or {}).get("score", {}).get("outcome_rank")
+            for row in interpretable
+        ]
+        outcome_ranks = [
+            float(value)
+            for value in outcome_ranks
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        ]
+        collision_count = sum(
+            any(
+                sample.get(key) is True
+                for sample in (
+                    (row.get("episode") or {})
+                    .get("contact_force_evidence", {})
+                    .get("samples", [])
+                )
+                for key in ("robot_collision_failure", "scene_collision_failure")
+            )
+            for row in interpretable
+        )
+        candidate_rows.append(
+            {
+                "candidate_id": candidate_id,
+                "episodes_completed": len(completed_rows),
+                "interpretable_episode_count": len(interpretable),
+                "success_count": len(successes),
+                "success_rate": (
+                    len(successes) / len(interpretable) if interpretable else None
+                ),
+                "progress_score": (
+                    sum(outcome_ranks) / (len(outcome_ranks) * 5)
+                    if outcome_ranks
+                    else None
+                ),
+                "mean_destination_error": (
+                    sum(destination_errors) / len(destination_errors)
+                    if destination_errors
+                    else None
+                ),
+                "contact_maintenance_rate": None,
+                "collision_rate": (
+                    collision_count / len(interpretable) if interpretable else None
+                ),
+                "action_delivery_rate": len(delivered) / len(rows) if rows else 0.0,
+            }
+        )
+    summary_csv = io.StringIO(newline="")
+    summary_writer = csv.DictWriter(
+        summary_csv,
+        fieldnames=list(candidate_rows[0]),
+        lineterminator="\n",
+    )
+    summary_writer.writeheader()
+    summary_writer.writerows(candidate_rows)
+    summary_csv_path = delivery_root / "policy_canary_summary.csv"
+    _write_immutable(summary_csv_path, summary_csv.getvalue().encode("utf-8"))
+    summary_csv_artifact = add_artifact(
+        role="summary_csv", path=summary_csv_path, artifact_root=delivery_root
+    )
+
+    def iso_from_ns(value: Any) -> str | None:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        return datetime.fromtimestamp(value / 1_000_000_000, timezone.utc).isoformat()
+
+    rich_episodes: list[dict[str, Any]] = []
+    for row in episodes:
+        candidate_id = str(row.get("candidate_id") or "")
+        cell_id = str(row.get("cell_id") or "")
+        raw_episode = (
+            dict(row.get("episode")) if isinstance(row.get("episode"), Mapping) else {}
+        )
+        raw_score = (
+            dict(raw_episode.get("score"))
+            if isinstance(raw_episode.get("score"), Mapping)
+            else {}
+        )
+        source_artifacts = (
+            dict(row.get("evidence_artifacts"))
+            if isinstance(row.get("evidence_artifacts"), Mapping)
+            else {}
+        )
+        episode_id = str(
+            raw_episode.get("episode_id")
+            or f"{run}--{cell_id}--{candidate_id}"
+        )
+        episode_json_path = delivery_root / "episodes" / f"{episode_id}.json"
+        _write_immutable(
+            episode_json_path,
+            (canonical_json(row) + "\n").encode("utf-8"),
+        )
+        episode_json = add_artifact(
+            role="episode_json", path=episode_json_path, artifact_root=delivery_root
+        )
+        frame_manifest = bound_artifact(source_artifacts.get("frame_manifest"))
+        lossless_inputs = bound_artifact_by_digest(
+            source_artifacts.get("frame_manifest"), role="lossless_policy_inputs"
+        )
+        videos: dict[str, dict[str, Any]] = {}
+        for camera_id, video in (
+            (raw_episode.get("visual_evidence") or {}).get("videos") or {}
+        ).items():
+            bound = bound_artifact_by_digest(video, role="review_video")
+            if bound is not None:
+                videos[str(camera_id)] = bound
+        telemetry = (
+            dict(row.get("telemetry"))
+            if isinstance(row.get("telemetry"), Mapping)
+            else {}
+        )
+        state = raw_episode.get("state_trace") or {}
+        contact = raw_episode.get("contact_force_evidence") or {}
+        trajectory = raw_episode.get("task_object_trajectory") or {}
+        joint_by_step = {
+            int(item["step_index"]): item.get("joint_positions_rad")
+            for item in state.get("joint_states") or []
+            if isinstance(item, Mapping) and isinstance(item.get("step_index"), int)
+        }
+        action_by_step = {
+            int(item["step_index"]): item
+            for item in raw_episode.get("commanded_actions") or []
+            if isinstance(item, Mapping) and isinstance(item.get("step_index"), int)
+        }
+        object_by_step = {
+            int(item["step_index"]): item.get("task_object_pose_world")
+            for item in trajectory.get("samples") or []
+            if isinstance(item, Mapping) and isinstance(item.get("step_index"), int)
+        }
+        contact_by_step = {
+            int(item["step_index"]): item
+            for item in contact.get("samples") or []
+            if isinstance(item, Mapping) and isinstance(item.get("step_index"), int)
+        }
+        timeline = []
+        all_steps = sorted(
+            set(joint_by_step) | set(action_by_step) | set(object_by_step) | set(contact_by_step)
+        )
+        for step in all_steps:
+            contact_row = contact_by_step.get(step) or {}
+            force_values = contact_row.get("finger_contact_forces_n")
+            force = (
+                max(float(value) for value in force_values)
+                if isinstance(force_values, list) and force_values
+                else contact_row.get("contact_force_n")
+            )
+            timeline.append(
+                {
+                    "time_seconds": step / 15.0,
+                    "action": (
+                        json.dumps(action_by_step[step], sort_keys=True, separators=(",", ":"))
+                        if step in action_by_step
+                        else None
+                    ),
+                    "joint_pose": (
+                        json.dumps(joint_by_step[step], separators=(",", ":"))
+                        if step in joint_by_step
+                        else None
+                    ),
+                    "task_object_pose": (
+                        json.dumps(object_by_step[step], separators=(",", ":"))
+                        if step in object_by_step
+                        else None
+                    ),
+                    "contact_state": (
+                        json.dumps(contact_row, sort_keys=True, separators=(",", ":"))
+                        if contact_row
+                        else None
+                    ),
+                    "force_newtons": force,
+                    "scoring_state": (
+                        str(raw_score.get("outcome"))
+                        if step == all_steps[-1] and raw_score.get("outcome") is not None
+                        else None
+                    ),
+                }
+            )
+        typed_gap = (raw_episode.get("visual_evidence") or {}).get("media_gap")
+        started_at = iso_from_ns(telemetry.get("started_at_unix_ns"))
+        completed_at = iso_from_ns(telemetry.get("completed_at_unix_ns"))
+        duration_seconds = (
+            float(telemetry["wall_time_ns"]) / 1_000_000_000
+            if isinstance(telemetry.get("wall_time_ns"), int)
+            else float(
+                (raw_episode.get("performance_diagnostics") or {})
+                .get("timings_seconds", {})
+                .get("total", 0.0)
+            )
+        )
+        failure_code = str(row.get("typed_harness_failure") or "unclassified")
+        rich_episodes.append(
+            {
+                "episode_id": episode_id,
+                "episode_kind": "learned_candidate",
+                "subject_id": candidate_id,
+                "policy_candidate_id": candidate_id,
+                "policy_checkpoint_digest": row.get("checkpoint_digest"),
+                "robot_preset_id": "franka_panda_robotiq_2f85_v1",
+                "runtime_identity": str(row.get("runtime_identity_digest") or "unreported"),
+                "variation": {
+                    "cell_id": cell_id,
+                    "family_id": str(row.get("family") or "unreported"),
+                    "seed": row.get("seed"),
+                    "partition": (
+                        "canonical"
+                        if row.get("family") == "canonical_anchor"
+                        else "held_out"
+                        if row.get("family") == "held_out_composition"
+                        else "stress"
+                    ),
+                },
+                "reset_state_digest": row.get("reset_state_digest"),
+                "policy_query": {
+                    "candidate_policy_queried": row.get("candidate_policy_queried") is True,
+                    "receipt": bound_artifact(source_artifacts.get("policy_query_receipt")),
+                },
+                "action_delivery": {
+                    "actions_reached_robot": row.get("actions_reached_robot") is True,
+                    "arm_moved": row.get("arm_moved") is True,
+                    "returned_action_sequence": bound_artifact(
+                        source_artifacts.get("action_sequence"), role="returned_action_sequence"
+                    ),
+                    "delivery_readback": bound_artifact(
+                        source_artifacts.get("action_delivery_readback")
+                    ),
+                    "harness_failure_code": row.get("typed_harness_failure"),
+                },
+                "traces": {
+                    "state": bound_artifact(source_artifacts.get("state_trace")),
+                    "contact_force": bound_artifact(
+                        source_artifacts.get("contact_force_trace")
+                    ),
+                    "task_object_trajectory": bound_artifact(
+                        source_artifacts.get("task_object_trajectory")
+                    ),
+                },
+                "score": {
+                    "status": str(raw_score.get("status") or "not_scored"),
+                    "task_succeeded": raw_score.get("task_succeeded"),
+                    "progress_score": (
+                        float(raw_score["outcome_rank"]) / 5
+                        if isinstance(raw_score.get("outcome_rank"), (int, float))
+                        else None
+                    ),
+                    "destination_error": (
+                        raw_score.get("measurements", {}).get(
+                            "final_horizontal_distance_to_destination_m"
+                        )
+                    ),
+                    "contact_maintenance_rate": None,
+                    "collision": any(
+                        sample.get(key) is True
+                        for sample in contact.get("samples") or []
+                        for key in ("robot_collision_failure", "scene_collision_failure")
+                    ),
+                    "grader_authority": "deterministic_simulator_state",
+                    "policy_outcome_interpretable": row.get(
+                        "policy_outcome_interpretable"
+                    )
+                    is True,
+                },
+                "failure": (
+                    None
+                    if row.get("status") == "completed"
+                    else {
+                        "code": failure_code,
+                        "phase": None,
+                        "summary": failure_code.replace("_", " "),
+                    }
+                ),
+                "evidence": {
+                    "complete": row.get("status") == "completed",
+                    "lossless_policy_inputs": lossless_inputs,
+                    "frame_manifest": frame_manifest,
+                    "videos": videos,
+                    "typed_media_gap": (
+                        {
+                            "code": "before_first_observation",
+                            "explanation": str(typed_gap.get("reason") or "media unavailable"),
+                        }
+                        if isinstance(typed_gap, Mapping)
+                        else None
+                    ),
+                    "episode_json": episode_json,
+                    "indexed_mcap_rosbag": None,
+                },
+                "wall_time_seconds": duration_seconds,
+                "provider_attribution": "vast",
+                **(
+                    {
+                        "timing": {
+                            "started_at_iso": started_at,
+                            "completed_at_iso": completed_at,
+                            "duration_seconds": duration_seconds,
+                        }
+                    }
+                    if started_at and completed_at
+                    else {}
+                ),
+                "timeline": timeline,
+            }
+        )
 
     evidence_manifest = {
         "schema_version": "task_evaluation_policy_canary_evidence_manifest.v1",
@@ -842,6 +1214,8 @@ def materialize_policy_canary_result_delivery(
     )
 
     completed = sum(row.get("status") == "completed" for row in episodes)
+    first_episode = episodes[0] if episodes else {}
+    first_raw_episode = first_episode.get("episode") or {}
     delivery: dict[str, Any] = {
         "schema_version": POLICY_CANARY_DELIVERY_SCHEMA_VERSION,
         "run_id": run,
@@ -849,38 +1223,61 @@ def materialize_policy_canary_result_delivery(
         "claim_ceiling": "diagnostic_policy_execution",
         "result_status": result_status,
         "status": "ready",
+        "stages": [
+            {"stage": stage, "status": "complete"}
+            for stage in ("validate", "seal", "project", "package", "publish")
+        ],
+        "blockers": list(result.get("blockers") or []),
         "summary": {
+            "episode_count": len(rich_episodes),
+            "learned_candidate_episode_count": len(rich_episodes),
+            "control_episode_count": int(result.get("completed_control_episode_count") or 0),
+            "successful_episode_count": sum(
+                episode["score"]["task_succeeded"] is True for episode in rich_episodes
+            ),
+            "interpretable_episode_count": sum(
+                episode["score"]["policy_outcome_interpretable"] is True
+                for episode in rich_episodes
+            ),
             "policy_count": 2,
             "episodes_per_policy": 10,
             "learned_policy_rollout_count": 20,
             "completed_learned_policy_rollout_count": completed,
         },
-        "episodes": [
-            {
-                key: row.get(key)
-                for key in (
-                    "candidate_id",
-                    "cell_id",
-                    "seed",
-                    "status",
-                    "candidate_policy_queried",
-                    "actions_reached_robot",
-                    "arm_moved",
-                    "policy_outcome_interpretable",
-                    "typed_harness_failure",
-                )
-            }
-            for row in episodes
-        ],
+        "episodes": rich_episodes,
         "artifacts": sorted(
             public_artifacts, key=lambda row: (row["role"], row["artifact_id"])
         ),
         "report": {
             "machine_readable_report": report_artifact,
             "evidence_manifest": evidence_manifest_artifact,
+            "summary_csv": summary_csv_artifact,
+            "episode_csv": episode_csv_artifact,
+        },
+        "candidate_results": candidate_rows,
+        "matrix_digest": result.get("matrix_digest"),
+        "reproducibility": {
+            "scene_revision_digest": first_episode.get("scene_revision_digest"),
+            "runtime_container_digest": first_episode.get("container_identity_digest"),
+            "scoring_version": str(
+                first_episode.get("scoring_version_digest")
+                or "deterministic_simulator_state"
+            ),
+            "observation_schema_id": first_raw_episode.get(
+                "observation_adapter_schema_version"
+            ),
+            "action_schema_id": first_raw_episode.get("action_space"),
+            "evidence_manifest": evidence_manifest_artifact,
+            "billing_receipt": closure["billing"],
+            "teardown_receipt": closure["teardown"],
+            "provider_zero_receipt": closure["provider_zero"],
         },
         "closure": closure,
         "proof_boundary": {
+            "review_video_is_authoritative_evidence": False,
+            "cross_team_leaderboard_authorized": False,
+            "result_is_unqualified": True,
+            "official_ranking_contribution": False,
             "controls_pending_results_unqualified": True,
             "scene_promotion_authorized": False,
             "official_policy_ranking_authorized": False,
