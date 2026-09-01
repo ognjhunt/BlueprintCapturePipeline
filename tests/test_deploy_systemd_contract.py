@@ -80,7 +80,20 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
         text = _read(unit)
 
         assert re.search(r"/Users/[^/]+/", text) is None
-        assert "BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline" in text
+        if unit == "blueprint-pipeline-control-plane.service":
+            assert (
+                "BLUEPRINT_PIPELINE_REPO="
+                "/opt/blueprint/task-evaluation-control-plane"
+            ) in text
+            assert (
+                "BLUEPRINT_PIPELINE_PYTHON="
+                "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
+            ) in text
+        else:
+            assert (
+                "BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline"
+                in text
+            )
         assert "BLUEPRINT_LAUNCH_PROOF_MODE=production" in text
         assert "PRIVACY_PIPELINE_ENABLED=true" in text
         assert "PRIVACY_FAIL_CLOSED=true" in text

@@ -370,6 +370,11 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "[Service]\nExecStart=/usr/bin/blueprint-live-pipeline-intake\n",
         encoding="utf-8",
     )
+    control_plane_service = unit_dir / "blueprint-pipeline-control-plane.service"
+    control_plane_service.write_text(
+        "[Service]\nExecStart=/usr/bin/blueprint-live-pipeline-control-plane\n",
+        encoding="utf-8",
+    )
     systemd = tmp_path / "systemd"
     systemd.mkdir()
     (systemd / service.name).write_text(
@@ -401,6 +406,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         discovery_path,
         progression_service,
         progression_timer,
+        control_plane_service,
         intake_service,
     ):
         destination = systemd / source.name
@@ -442,6 +448,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-object-discovery.path",
         "blueprint-task-evaluation-configured-controls-progression.service",
         "blueprint-task-evaluation-configured-controls-progression.timer",
+        "blueprint-pipeline-control-plane.service",
         "blueprint-pipeline-intake.service",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
