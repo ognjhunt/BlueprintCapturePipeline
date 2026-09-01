@@ -317,6 +317,7 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
         "digest": "sha256:" + "5" * 64,
         "size_bytes": 4_272_421_731,
     }
+    kwargs["runtime_source_implementation_commit"] = "b" * 40
     kwargs["model_rights"] = {
         "uri": "s3://blueprint/policy-canary/model-rights.json",
         "digest": "sha256:" + "3" * 64,
@@ -343,6 +344,9 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     assert wrapper["configured_base_profile_id"] != wrapper[
         "configured_source_launch_id"
     ]
+    assert wrapper["internal_policy_canary_execution_plan"][
+        "preparation_template"
+    ]["execution_adapter"]["runtime_source_implementation_commit"] == "b" * 40
     assert wrapper["configured_source_launch_id"] != wrapper["profile_id"]
     assert wrapper["internal_policy_canary_setup"] == setup
     plan = wrapper["internal_policy_canary_execution_plan"]
@@ -393,6 +397,7 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
                 "email": "robotics@example.com",
                 "notify_on": ["completed", "blocked", "cancelled"],
             },
+            "website_request_digest": "sha256:" + "7" * 64,
         },
         setup=legacy_setup,
     )

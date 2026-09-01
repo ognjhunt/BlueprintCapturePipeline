@@ -293,6 +293,9 @@ def test_direct_website_canary_launch_diverts_to_preparation_without_allocator(
     envelope_path = next((preparation_queue / "pending").glob("*.json"))
     envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
     preparation = envelope["request"]
+    assert preparation["policy_run_selection"]["website_request_digest"] == request[
+        "request_digest"
+    ]
     assert preparation["policy_run_configuration"]["counts"][
         "learned_policy_rollout_count"
     ] == 20

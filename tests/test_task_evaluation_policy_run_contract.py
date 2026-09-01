@@ -411,6 +411,7 @@ def test_internal_canary_compiles_resolved_quick_10_without_controls_gate() -> N
                 "email": "robotics@example.com",
                 "notify_on": ["completed", "blocked", "cancelled"],
             },
+            "website_request_digest": "sha256:" + "8" * 64,
         }
     )
     config = compile_policy_run_configuration(selected, setup=setup_value)

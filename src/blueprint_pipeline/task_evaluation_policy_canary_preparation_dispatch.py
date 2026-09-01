@@ -291,6 +291,7 @@ def maybe_dispatch_policy_canary_preparation(
             "robot_preset_id": ROBOT_PRESET,
             "policy_candidate_ids": list(CANDIDATES),
             "notification": selection["notification"],
+            "website_request_digest": request["request_digest"],
         }
         preparation = expand_policy_run_preparation_request(
             setup=legacy_setup,

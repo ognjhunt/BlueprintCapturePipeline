@@ -481,6 +481,7 @@ def materialize_policy_canary_presubmission_setup(
     policy_controller_configuration: Mapping[str, Any],
     native_controller_configuration: Mapping[str, Any],
     runtime_source_bundle: Mapping[str, Any],
+    runtime_source_implementation_commit: str | None = None,
     model_rights: Mapping[str, Any],
     output_dir: str | Path,
     maximum_hourly_rate_usd: float = 0.8,
@@ -746,6 +747,11 @@ def materialize_policy_canary_presubmission_setup(
         runtime_source_bundle,
         code="policy_canary_runtime_source_bundle_invalid",
     )
+    runtime_source_commit = runtime_source_implementation_commit or source_commit
+    if not _SHA.fullmatch(runtime_source_commit):
+        raise PolicyCanarySetupError(
+            ["policy_canary_runtime_source_implementation_commit_invalid"]
+        )
     rights_ref = _immutable_ref(
         model_rights,
         code="policy_canary_model_rights_invalid",
@@ -774,6 +780,7 @@ def materialize_policy_canary_presubmission_setup(
         "execution_adapter": {
             **deepcopy(configured_preparation["execution_adapter"]),
             "runtime_source_bundle": runtime_source_ref,
+            "runtime_source_implementation_commit": runtime_source_commit,
         },
         "controller": {
             "identity": {"id": "paired-policy-canary", "version": "v1"},

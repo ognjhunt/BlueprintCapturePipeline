@@ -87,7 +87,10 @@ def _runtime_source_identity_bindings(request: Mapping[str, Any]) -> dict[str, A
     """
 
     return {
-        "expected_production_commit": request["expected_production_commit"],
+        "expected_production_commit": request["execution_adapter"].get(
+            "runtime_source_implementation_commit",
+            request["expected_production_commit"],
+        ),
         "runtime": dict(request["runtime"]["identity"]),
     }
 

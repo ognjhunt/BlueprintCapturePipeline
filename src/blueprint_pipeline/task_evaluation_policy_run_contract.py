@@ -433,6 +433,7 @@ def compile_policy_run_configuration(
                 "robot_preset_id": selection["robot_preset_id"],
                 "policy_candidate_ids": list(selection["policy_candidate_ids"]),
                 "notification": deepcopy(selection["notification"]),
+                "website_request_digest": selection["website_request_digest"],
                 "unqualified_warning": "Controls pending — results are unqualified.",
             }
         )
@@ -526,6 +527,7 @@ def validate_policy_run_configuration(
                         "robot_preset_id",
                         "policy_candidate_ids",
                         "notification",
+                        "website_request_digest",
                     )
                 }
             )

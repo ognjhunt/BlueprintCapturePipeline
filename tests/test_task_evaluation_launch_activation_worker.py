@@ -298,6 +298,7 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
                 "email": "robotics@example.com",
                 "notify_on": ["completed", "blocked", "cancelled"],
             },
+            "website_request_digest": "sha256:" + "4" * 64,
         }
     )
     configuration = compile_policy_run_configuration(selected, setup=setup_value)
@@ -372,6 +373,7 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
     assert result["capture_session_id"] == "capture-839873"
     assert result["intake_id"] == "intake-839873"
     assert result["request_digest"] == request["preparation"]["request_digest"]
+    assert result["website_request_digest"] == "sha256:" + "4" * 64
     assert len(runtime_inputs["cells"]) == 10
     assert runtime_inputs["cells"][0]["resolved_scenario_digest"] == canonical_digest(
         runtime_inputs["cells"][0]["resolved_scenario"]

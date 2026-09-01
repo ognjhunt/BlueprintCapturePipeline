@@ -358,7 +358,8 @@
       "properties": {
         "kind": {"$ref": "#/$defs/identifier"},
         "version": {"$ref": "#/$defs/identifier"},
-        "runtime_source_bundle": {"$ref": "#/$defs/reference"}
+        "runtime_source_bundle": {"$ref": "#/$defs/reference"},
+        "runtime_source_implementation_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
       }
     },
     "publication": {
