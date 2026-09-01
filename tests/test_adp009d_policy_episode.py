@@ -251,6 +251,18 @@ def test_a_full_episode_composes_all_five_adapters_and_reaches_placed() -> None:
     # And the episode scored on deterministic object state.
     assert receipt["score"]["status"] in {"scored", "undetermined"}
     assert receipt["score"]["outcome"] == "placed"
+    assert receipt["state_trace"]["trace_digest"] == canonical_digest(
+        receipt["state_trace"], digest_field="trace_digest"
+    )
+    assert len(receipt["state_trace"]["joint_states"]) == (
+        receipt["environment_steps"] + 1
+    )
+    assert receipt["contact_force_evidence"]["typed_gap"] is None
+    assert receipt["contact_force_evidence"]["samples"]
+    assert receipt["task_object_trajectory"]["typed_gap"] is None
+    assert len(receipt["task_object_trajectory"]["samples"]) == (
+        receipt["environment_steps"] + 1
+    )
     timings = receipt["performance_diagnostics"]["timings_seconds"]
     assert timings["policy_inference"] >= 0.0
     assert timings["environment_step_including_render"] >= 0.0
@@ -268,8 +280,6 @@ def test_a_full_episode_composes_all_five_adapters_and_reaches_placed() -> None:
         ]
         is True
     )
-
-    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"
