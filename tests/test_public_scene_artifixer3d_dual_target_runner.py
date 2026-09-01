@@ -114,6 +114,7 @@ def test_retained_geometry_policy_disables_optimizer_and_mcmc_mutation() -> None
         steps=30_000,
         geometry_policy=runner.RETAINED_GEOMETRY_POLICY,
     ) == [
+        "initialization.method=point_cloud",
         "model.optimize_position=false",
         "model.optimize_rotation=false",
         "model.optimize_scale=false",
@@ -131,6 +132,50 @@ def test_retained_geometry_policy_disables_optimizer_and_mcmc_mutation() -> None
             steps=30_000,
             geometry_policy={"mode": "source_relative_limits_only"},
         )
+
+
+def test_full_retained_ply_is_staged_for_3dgrut_geometry_initialization(
+    tmp_path: Path,
+) -> None:
+    runner = _runner_module()
+    input_root = tmp_path / "input"
+    shared = input_root / "shared_initialization"
+    shared.mkdir(parents=True)
+    source = write_standard_3dgs_ply(
+        SplatData(
+            count=2,
+            xyz=numpy.asarray(
+                [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=numpy.float32
+            ),
+            opacity=numpy.zeros(2, dtype=numpy.float32),
+            f_dc=numpy.zeros((2, 3), dtype=numpy.float32),
+            scales=numpy.asarray(
+                [[-2.0, -3.0, -4.0], [-5.0, -6.0, -7.0]],
+                dtype=numpy.float32,
+            ),
+            quats=numpy.asarray(
+                [[0.9, 0.1, 0.2, 0.3], [0.8, -0.2, 0.4, -0.1]],
+                dtype=numpy.float32,
+            ),
+            properties=(),
+        ),
+        shared / "retained_scene.ply",
+    )
+    distillation = tmp_path / "distillation"
+    distillation.mkdir()
+
+    receipt = runner._stage_retained_geometry_initialization(
+        input_root=input_root,
+        distillation_input_dir=distillation,
+    )
+
+    staged = distillation / "point_cloud.ply"
+    assert staged.read_bytes() == Path(source).read_bytes()
+    assert receipt["initialization_method"] == "point_cloud"
+    assert receipt["complete_standard_3dgs_ply_used"] is True
+    assert receipt["colmap_points3d_used_for_gaussian_geometry"] is False
+    assert receipt["byte_exact"] is True
+    assert receipt["source"]["sha256"] == receipt["staged"]["sha256"]
 
 
 def test_native_review_layout_is_byte_copied_to_provider_retained_directory(

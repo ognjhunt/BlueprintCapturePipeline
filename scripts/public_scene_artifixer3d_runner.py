@@ -1182,6 +1182,10 @@ def _retained_geometry_training_overrides(
         raise ValueError("artifixer3d_geometry_policy_invalid")
     disabled_strategy_iteration = steps + 1
     return [
+        # COLMAP points3D carries centers and colors only. Initializing from
+        # it silently invents rotations and scales before an optimizer freeze
+        # can help. The standard 3DGS PLY carries the complete retained field.
+        "initialization.method=point_cloud",
         "model.optimize_position=false",
         "model.optimize_rotation=false",
         "model.optimize_scale=false",
@@ -1193,6 +1197,34 @@ def _retained_geometry_training_overrides(
         f"strategy.perturb.end_iteration={disabled_strategy_iteration}",
         "strategy.perturb.noise_lr=0.0",
     ]
+
+
+def _stage_retained_geometry_initialization(
+    *, input_root: Path, distillation_input_dir: Path
+) -> dict[str, Any]:
+    """Stage the full retained 3DGS PLY where 3DGRUT point-cloud init reads it."""
+
+    source = _retained_reference_gaussian_ply(input_root)
+    destination = distillation_input_dir / "point_cloud.ply"
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("artifixer3d_retained_initialization_destination_exists")
+    shutil.copyfile(source, destination)
+    source_record = _file_record(source)
+    staged_record = _file_record(destination)
+    if (
+        destination.is_symlink()
+        or source_record["size_bytes"] != staged_record["size_bytes"]
+        or source_record["sha256"] != staged_record["sha256"]
+    ):
+        raise ValueError("artifixer3d_retained_initialization_copy_mismatch")
+    return {
+        "initialization_method": "point_cloud",
+        "complete_standard_3dgs_ply_used": True,
+        "colmap_points3d_used_for_gaussian_geometry": False,
+        "byte_exact": True,
+        "source": source_record,
+        "staged": staged_record,
+    }
 
 
 def _prepare_dual_target_teacher_frames(
@@ -1462,6 +1494,10 @@ def _prepare_dual_target_distillation_replay(
     with log.open("w", encoding="utf-8") as stream:
         with redirect_stdout(stream), redirect_stderr(stream):
             artifixer3d.materialize_distillation_input(scene, paths, teacher_root)
+    retained_initialization = _stage_retained_geometry_initialization(
+        input_root=input_root,
+        distillation_input_dir=paths.distillation_input_dir,
+    )
     anchor_mask_rows = _stage_dual_target_anchor_masks(
         task=task,
         staged_task=staged_task,
@@ -1475,6 +1511,7 @@ def _prepare_dual_target_distillation_replay(
         "scene": scene,
         "steps": steps,
         "paths": paths,
+        "retained_initialization": retained_initialization,
         "anchor_mask_rows": anchor_mask_rows,
     }
 
@@ -1573,6 +1610,7 @@ def _dual_target_task_runtime(
         "anchor_mask_reduction": request["artifixer3d"]["anchor_mask_reduction"],
         "loss_overrides": request["artifixer3d"]["loss_overrides"],
         "geometry_policy": geometry_policy,
+        "retained_geometry_initialization": prepared["retained_initialization"],
         "artifixer3d_checkpoint": _file_record(checkpoint),
         "artifixer3d_log_sha256": _sha256(log),
         "artifixer3d_plus_log_sha256": None,
