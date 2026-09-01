@@ -9024,10 +9024,19 @@ def run_vast_provider_adapter(
         )
         if observed_marker_text:
             heartbeat_text = "\n".join((heartbeat_text, observed_marker_text))
-        if not _log_text_has_success_marker(
-            heartbeat_text, log_success_markers
-        ) and _log_result_saw_container_missing(onstart_logs):
-            if _env_truthy(VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV):
+        request_logs_unavailable = bool(
+            _log_result_saw_container_missing(onstart_logs)
+            or onstart_logs.get("break_reason") == "log_transport_unavailable"
+        )
+        command_execute_fallback_allowed = bool(
+            provider_bundle_kind == "native_task_arena"
+            or _env_truthy(VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV)
+        )
+        if (
+            not _log_text_has_success_marker(heartbeat_text, log_success_markers)
+            and request_logs_unavailable
+        ):
+            if command_execute_fallback_allowed:
                 execute_logs = _execute_and_fetch(
                     instance_id=instance_id,
                     api_key=api_key,
