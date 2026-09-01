@@ -147,6 +147,7 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "droid_policy_bridge.py",
     "groot_n17_wire_client.py",
     "openpi_droid_policy_runtime.py",
+    "policy_episode_trace_evidence.py",
     "policy_episode_lifecycle.py",
 )
 

@@ -34,7 +34,7 @@ from tests.test_task_evaluation_policy_run_contract import _template as policy_t
 
 COMMIT = "c" * 40
 REVISION = "sha256:" + "9" * 64
-LIVE_SCENE_REVISION = "sha256:9bd46da8b103a0ba5faa8a5c910652a3f35787c4bb0ebf8c5afa5cb2352d267d"
+LIVE_SCENE_REVISION = "sha256:20d8e011291d8ba31d20a502ef4800e9260e83a686df7770c331b94af3b6b3f4"
 ACTIVATION = "sha256:" + "a" * 64
 REQUEST = "sha256:" + "b" * 64
 
