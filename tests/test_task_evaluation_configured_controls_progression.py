@@ -568,3 +568,51 @@ def test_activation_only_submits_paid_launch_through_webapp(tmp_path: Path) -> N
     assert receipt["status"] == "construction_launch_queued"
     assert receipt["submitted_through_webapp"] is True
     assert "progression" not in seen
+
+
+def test_long_activation_uses_stable_bounded_webapp_launch_id(
+    tmp_path: Path,
+) -> None:
+    progression = _episode_progression(tmp_path)
+    state = {
+        "schema_version": "task_evaluation_configured_controls_progression.v1",
+        "status": "construction_activation_queued",
+        "configured_scene_revision_digest": progression[
+            "configured_scene_revision_digest"
+        ],
+        "expected_production_commit": "b" * 40,
+        "lane": "native_task_arena_construction",
+        "activation_request": {
+            "activation_id": "corrective-scene-" + "x" * 220,
+        },
+        "progression_digest": "",
+    }
+    state["progression_digest"] = canonical_digest(
+        state, digest_field="progression_digest"
+    )
+    profile = _profile(state)
+    activation = _activation_result(state, profile)
+    authority = {
+        "rights_scope": "configured-scene native controls qualification",
+        "rights_evidence": _ref(70),
+        "max_spend_usd": 2.25,
+        "expires_at": "2026-08-28T22:30:00.000Z",
+    }
+
+    first = build_authorized_webapp_launch_request(
+        activation_progression=state,
+        activation_result=activation,
+        profile=profile,
+        launch_authority=authority,
+    )
+    second = build_authorized_webapp_launch_request(
+        activation_progression=state,
+        activation_result=activation,
+        profile=profile,
+        launch_authority=authority,
+    )
+
+    assert first["launch_id"] == second["launch_id"]
+    assert first["run_id"] == first["launch_id"]
+    assert first["launch_id"].endswith("-launch")
+    assert len(first["launch_id"]) <= 192

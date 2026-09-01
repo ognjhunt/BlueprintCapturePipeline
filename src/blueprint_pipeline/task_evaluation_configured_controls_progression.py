@@ -52,6 +52,20 @@ class TaskEvaluationConfiguredControlsProgressionError(RuntimeError):
     """The configured-scene controls progression could not advance safely."""
 
 
+def _bounded_launch_id(activation_id: str) -> str:
+    readable = activation_id + "-launch"
+    if _IDENTIFIER.fullmatch(readable) is not None:
+        return readable
+    prefix = activation_id[:150].rstrip("._-")
+    token = hashlib.sha256(activation_id.encode("utf-8")).hexdigest()[:24]
+    bounded = f"{prefix}-{token}-launch"
+    if _IDENTIFIER.fullmatch(bounded) is None:
+        raise TaskEvaluationConfiguredControlsProgressionError(
+            "configured_controls_progression_launch_id_invalid"
+        )
+    return bounded
+
+
 def _copy(value: Mapping[str, Any], *, blocker: str) -> dict[str, Any]:
     try:
         return json.loads(json.dumps(dict(value), allow_nan=False))
@@ -826,7 +840,9 @@ def build_authorized_webapp_launch_request(
             "configured_controls_progression_launch_authority_invalid"
         )
     lane = state["lane"]
-    launch_id = state["activation_request"]["activation_id"] + "-launch"
+    launch_id = _bounded_launch_id(
+        str(state["activation_request"]["activation_id"])
+    )
     return {
         "confirm_execution": True,
         "launch_id": launch_id,
