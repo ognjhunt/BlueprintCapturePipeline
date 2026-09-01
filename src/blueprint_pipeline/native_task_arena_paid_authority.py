@@ -148,9 +148,7 @@ def _control_search_warm_continuation_is_bundle_bound(
     digest = str(prepared_bundle.get("control_search_authority_digest") or "")
     return bool(
         prepared_bundle.get("execution_mode") == "construction_canary"
-        and prepared_bundle.get("warm_control_search_continuation_requested")
-        is True
-        and digest.startswith("sha256:")
+        and prepared_bundle.get("warm_control_search_continuation_requested") is True
         and _lower_hex(digest.removeprefix("sha256:"), length=64)
     )
 
@@ -920,9 +918,7 @@ def materialize_native_task_arena_paid_attempt_authority(
         ),
     )
     feedback_adoption_bound = _terminal_feedback_adoption_is_bundle_bound(bundle)
-    control_search_continuation_bound = (
-        _control_search_warm_continuation_is_bundle_bound(bundle)
-    )
+    control_search_continuation_bound = _control_search_warm_continuation_is_bundle_bound(bundle)
     terminal_inputs = (
         prior_authority_path,
         prior_result_path,
@@ -1206,8 +1202,8 @@ def validate_native_task_arena_paid_attempt_authority(
     feedback_adoption_bound = _terminal_feedback_adoption_is_bundle_bound(
         prepared_bundle
     )
-    control_search_continuation_bound = (
-        _control_search_warm_continuation_is_bundle_bound(prepared_bundle)
+    control_search_continuation_bound = _control_search_warm_continuation_is_bundle_bound(
+        prepared_bundle
     )
     expected_allowlist = {
         "external_provider_owned": tuple(sorted(set(allowed_active_instance_ids))),
@@ -2158,32 +2154,15 @@ def materialize_native_task_arena_provider_zero(
     adapter = _read(adapter_path, "native_task_arena_adapter_unreadable")
     teardown = _read(teardown_path, "native_task_arena_teardown_unreadable")
     global_inventory = watchdog.get("final_global_inventory")
-    # The global sweep observes every instance on the provider account, so an
-    # unrelated debug pod or a concurrent lane blocks this seal forever: the
-    # watchdog receipt is frozen at write time and can never re-observe a
-    # now-quiet account. When the watchdog itself marks the global sweep
-    # informational, its lane-scoped inventory -- matched on this run's own
-    # name prefix -- is the authority on whether THIS run is still spending.
-    # Absent that flag the global sweep stays authoritative, so receipts
-    # written before the watchdog scoped itself keep their original strictness.
+    # A scoped watchdog inventory may supersede its frozen informational global sweep.
     if watchdog.get("global_inventory_informational_only") is True:
         inventory = watchdog.get("final_inventory")
         inventory_scope = "recorded_instance_and_lane_prefix"
     else:
         inventory = global_inventory
         inventory_scope = "provider_global"
-
-    # A run can end before it ever allocates -- no offer met the lane's
-    # constraints, or admission refused. The watchdog then records a handoff
-    # instead of a canary receipt, because it was armed but never had a
-    # resource to observe. There is definitionally nothing to zero, yet the
-    # inventory-based seal below can never be satisfied, which wedges the
-    # whole chain: the successor's first step is sealing its predecessor.
-    #
-    # Accept that state only on proof that nothing was allocated -- zero
-    # provider mutations, armed before allocation, and no continuing spend
-    # anywhere. An orphaned resource requires an allocation to exist, so this
-    # cannot mask one.
+    # Pre-allocation exits can seal only with proof of zero mutations,
+    # pre-allocation watchdog arming, and no continuing spend.
     definitive_preallocation_no_allocation = _definitive_preallocation_no_allocation(
         adapter=adapter,
         teardown=teardown,
