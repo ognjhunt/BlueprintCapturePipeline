@@ -191,6 +191,30 @@ def test_setup_binds_current_scene_pair_quick10_and_unqualified_boundary(
         assert record["sha256"].startswith("sha256:")
 
 
+def test_setup_keeps_execution_commit_distinct_from_configured_scene_commit(
+    tmp_path: Path,
+) -> None:
+    kwargs = _kwargs(tmp_path)
+    configured_commit = "d" * 40
+    launch_request_path = Path(kwargs["launch_request_path"])
+    launch_request = json.loads(launch_request_path.read_text(encoding="utf-8"))
+    launch_request["source_commit"] = configured_commit
+    _write(launch_request_path, launch_request)
+    launch_profile_path = Path(kwargs["launch_profile_path"])
+    launch_profile = json.loads(launch_profile_path.read_text(encoding="utf-8"))
+    launch_profile["source_commit"] = configured_commit
+    launch_profile["profile_digest"] = canonical_digest(
+        launch_profile, digest_field="profile_digest"
+    )
+    _write(launch_profile_path, launch_profile)
+    kwargs["configured_source_commit"] = configured_commit
+
+    setup = materialize_scene839873_policy_canary_setup(**kwargs)
+
+    assert setup["source_commit"] == COMMIT
+    assert setup["records"]["pi05_execution_spec"]["path"]
+
+
 def test_missing_activation_and_terminal_lineage_emit_typed_blockers(
     tmp_path: Path,
 ) -> None:
@@ -416,6 +440,7 @@ def test_post_activation_template_separates_configured_and_canary_requests(
     for field in ("activation_digest", "capture_session_id", "intake_id"):
         kwargs.pop(field)
     kwargs["profile_id"] = "scene839873-internal-policy-canary-current"
+    kwargs["configured_source_commit"] = COMMIT
     kwargs["configured_offering_configuration_run_id"] = "scene839873-configuration"
     kwargs["offering_digest"] = "sha256:" + "f" * 64
     kwargs["policy_controller_configuration"] = {
@@ -439,6 +464,7 @@ def test_post_activation_template_separates_configured_and_canary_requests(
         "size_bytes": 768,
     }
     emitted = materialize_policy_canary_presubmission_setup(**kwargs)
+    assert emitted["execution_setup_template"]["configured_source_commit"] == COMMIT
     activation_result = {
         "schema_version": "task_evaluation_launch_activation_result.v1",
         "status": "policy_campaign_queue_materialized_no_execution",

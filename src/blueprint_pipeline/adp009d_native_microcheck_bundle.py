@@ -1103,6 +1103,7 @@ def build_native_microcheck_bundle(
         "adp009d_policy_episode.py",
         "adp009d_policy_episode_evidence.py",
         "policy_episode_lifecycle.py",
+        "policy_episode_trace_evidence.py",
         "adp009d_control_episode.py",
         "task_control_diagnostic_boundary.py",
         # Wired into the runtime but never shipped, so a live run reached the

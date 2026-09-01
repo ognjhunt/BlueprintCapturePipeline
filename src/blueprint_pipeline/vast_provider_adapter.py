@@ -333,6 +333,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "native_task_arena_policy_canary_session",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }
@@ -345,6 +346,7 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "native_task_arena_policy_canary_session",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }:
@@ -2441,6 +2443,40 @@ def _session_budget_guard(
     return guard
 
 
+def _validate_policy_canary_provider_manifest(
+    payload: object,
+) -> dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        raise TypeError("native_task_arena_policy_canary_manifest_not_mapping")
+    if (
+        payload.get("schema_version")
+        != "native_task_arena_policy_canary_provider_bundle.v1"
+        or payload.get("status") != "ready"
+        or payload.get("blockers") != []
+        or payload.get("input_digest")
+        != canonical_digest(payload, digest_field="input_digest")
+        or payload.get("execution_mode")
+        != "internal_policy_canary_paired_session"
+        or payload.get("run_kind") != "internal_policy_canary"
+        or payload.get("claim_ceiling") != "diagnostic_policy_execution"
+        or payload.get("candidate_ids") != ["pi05_droid", "groot_n17_droid"]
+        or payload.get("episodes_per_policy") != 10
+        or payload.get("learned_policy_rollout_count") != 20
+        or payload.get("maximum_provider_allocations") != 1
+        or payload.get("retry_cap") != 0
+        or payload.get("expected_output_filename")
+        != "native_task_arena_policy_canary_session_result.v1.json"
+        or payload.get("runtime_entrypoint")
+        != "provider_runtime/run_adp_arena_provider_runtime.sh"
+        or payload.get("candidate_policy_queried") is not False
+        or payload.get("provider_zero_required_after_return") is not True
+    ):
+        raise ValueError("native_task_arena_policy_canary_manifest_invalid")
+    readiness = dict(payload)
+    readiness["local_bundle_ready_for_remote_staging"] = True
+    return readiness
+
+
 def _blueprint_bundle_preflight(
     *,
     job_dir: Path,
@@ -2552,6 +2588,20 @@ def _blueprint_bundle_preflight(
         "provider_runtime/blueprint_pipeline/native_task_arena_readback.py",
         "provider_runtime/blueprint_pipeline/native_task_arena_runtime.py",
         "provider_runtime/blueprint_pipeline/native_task_camera_observability.py",
+    }
+    policy_canary_session_required_entries = native_task_arena_required_entries | {
+        "provider_runtime/runtime_inputs/policy_canary_runtime_inputs.json",
+        "provider_runtime/runtime_inputs/policy_canary_session_authority.json",
+        "provider_runtime/runtime_inputs/policy_execution_spec.pi05_droid.json",
+        "provider_runtime/runtime_inputs/policy_execution_spec.groot_n17_droid.json",
+        "provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json",
+        "provider_runtime/blueprint_pipeline/native_task_arena_policy_canary_session.py",
+        "provider_runtime/blueprint_pipeline/native_task_arena_policy_worker.py",
+        "provider_runtime/blueprint_pipeline/openpi_droid_policy_runtime.py",
+        "provider_runtime/blueprint_pipeline/groot_n17_droid_policy_runtime.py",
+        "provider_runtime/blueprint_pipeline/policy_episode_trace_evidence.py",
+        "provider_runtime/blueprint_pipeline/episode_visual_evidence.py",
+        "provider_runtime/adp009d_policy_server_worker.py",
     }
     paired_target_native_import_required_entries = {
         "provider_runtime/run_paired_target_native_import_probe.sh",
@@ -2703,6 +2753,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/articulated_native_diagnostic_runtime.py"
         readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "native_task_arena_policy_canary_session":
+        required_entries = policy_canary_session_required_entries
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/adp_arena_provider_runner.py"
+        readiness_name = "adp_arena_provider_manifest.json"
     elif provider_bundle_kind == "native_task_arena":
         required_entries = native_task_arena_required_entries
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
@@ -2827,6 +2882,7 @@ def _blueprint_bundle_preflight(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
             "paired_target_native_import",
             "adp009d_ovrtx",
             "adp009d_aura_native",
@@ -2889,6 +2945,27 @@ def _blueprint_bundle_preflight(
                         )
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
+                    if provider_bundle_kind == "native_task_arena_policy_canary_session":
+                        readiness_member = (
+                            "provider_runtime/adp_arena_provider_manifest.json"
+                        )
+                        readiness_source = "immutable_bundle_member"
+                        try:
+                            native_manifest = json.loads(
+                                archive.read(readiness_member).decode("utf-8")
+                            )
+                            readiness = _validate_policy_canary_provider_manifest(
+                                native_manifest
+                            )
+                        except (
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                            json.JSONDecodeError,
+                        ):
+                            blockers.append(
+                                "native_task_arena_policy_canary_provider_manifest_invalid"
+                            )
                     if provider_bundle_kind == "native_task_arena":
                         readiness_member = (
                             "provider_runtime/adp_arena_provider_manifest.json"
@@ -3421,6 +3498,7 @@ def _blueprint_bundle_preflight(
                         )
         if provider_bundle_kind in {
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
             "task_evaluation_scene_configuration",
         }:
             # The native readiness manifest is a required, JSON-validated member
@@ -3825,6 +3903,7 @@ def _resolve_launch_mode(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
             "paired_target_native_import",
             "paired_target_native_import",
             "adp009d_ovrtx",
@@ -3891,6 +3970,7 @@ def _probe_env(
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "native_task_arena_policy_canary_session",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }:
@@ -4639,6 +4719,7 @@ def _probe_shell_script(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
             "paired_target_native_import",
         }:
             script += (
@@ -6568,6 +6649,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -7492,6 +7574,7 @@ def run_vast_provider_adapter(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
             "adp009d_ovrtx",
             "adp009d_aura_native",
         }
@@ -9029,7 +9112,8 @@ def run_vast_provider_adapter(
             or onstart_logs.get("break_reason") == "log_transport_unavailable"
         )
         command_execute_fallback_allowed = bool(
-            provider_bundle_kind == "native_task_arena"
+            provider_bundle_kind
+            in {"native_task_arena", "native_task_arena_policy_canary_session"}
             or _env_truthy(VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV)
         )
         if (

@@ -1311,7 +1311,7 @@ def _policy_campaign_activation_result(
             )
         resource_name = (
             "blueprint-native-task-policy-canary-"
-            + manifest["activation_digest"].removeprefix("sha256:")[:16]
+            + manifest["activation_digest"].removeprefix("sha256:")[:32]
         )
         runtime_inputs = {
             "schema_version": "task_evaluation_policy_canary_runtime_inputs.v1",
