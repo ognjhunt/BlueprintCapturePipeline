@@ -190,7 +190,7 @@ def test_transport_accepts_only_exact_nonqualifying_downstream_diagnostic() -> N
     }
 
 
-def _packet(root: Path, *, scene_id: str) -> Path:
+def _packet(root: Path, *, scene_id: str, control_search: bool = False) -> Path:
     packet = root / f"packet-{scene_id}"
     assets = packet / "assets"
     assets.mkdir(parents=True)
@@ -209,8 +209,24 @@ def _packet(root: Path, *, scene_id: str) -> Path:
             binding["asset_id"] = "admitted-can"
         source_bindings.append(binding)
     task_object = assets / "task_object.usd"
+    packet_request: dict[str, object] = {"scene_id": scene_id}
+    if control_search:
+        authority = {
+            "schema_version": "task_evaluation_control_search_authority.v1",
+            "enabled": True,
+            "claim_ceiling": "development_only_control_search",
+            "provider_allocations_performed": 0,
+            "full_fidelity_replay_required": True,
+            "authority_digest": "",
+        }
+        authority["authority_digest"] = canonical_digest(
+            authority, digest_field="authority_digest"
+        )
+        packet_request["native_construction_feedback"] = {
+            "control_search": authority
+        }
     documents = {
-        "native_task_arena_packet_request.v1.json": {"scene_id": scene_id},
+        "native_task_arena_packet_request.v1.json": packet_request,
         "native_task_runtime_contract.v1.json": {
             "contract_digest": "sha256:" + "c" * 64,
             "task_kind": "rigid_pick_place",
@@ -421,6 +437,27 @@ def test_rigid_and_articulated_packets_use_the_same_bundle_contract(
         assert archive.read(
             "provider_runtime/adp_arena_provider_runner.py"
         ) == worker.read_bytes()
+
+
+def test_construction_bundle_binds_initial_warm_control_search_request(
+    tmp_path: Path,
+) -> None:
+    packet = _packet(tmp_path, scene_id="839873", control_search=True)
+    worker = tmp_path / "worker.py"
+    worker.write_text("VALUE = 1\n", encoding="utf-8")
+
+    receipt = build_native_task_arena_bundle(
+        job_dir=tmp_path / "job",
+        packet_dir=packet,
+        worker_source=worker,
+        runtime_module_sources=[],
+        implementation_commit="a" * 40,
+        execution_mode="construction_canary",
+        generated_at="fixed",
+    )
+
+    assert receipt["warm_control_search_continuation_requested"] is True
+    assert receipt["control_search_authority_digest"].startswith("sha256:")
 
 
 @pytest.mark.parametrize("scene_id", ["840313", "840796"])

@@ -73,6 +73,30 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
 
 
+def test_control_search_requests_initial_warm_retention() -> None:
+    authority = {
+        "schema_version": "task_evaluation_control_search_authority.v1",
+        "enabled": True,
+        "claim_ceiling": "development_only_control_search",
+        "provider_allocations_performed": 0,
+        "full_fidelity_replay_required": True,
+        "authority_digest": "",
+    }
+    authority["authority_digest"] = canonical_digest(
+        authority, digest_field="authority_digest"
+    )
+    packet = {"native_construction_feedback": {"control_search": authority}}
+
+    assert worker._control_search_warm_retention_requested(
+        packet_request=packet,
+        lane="native_task_arena_construction",
+    )
+    assert not worker._control_search_warm_retention_requested(
+        packet_request=packet,
+        lane="native_task_arena_controls",
+    )
+
+
 def test_preparation_graph_blocker_retains_typed_step_failure() -> None:
     with pytest.raises(
         TaskEvaluationLaunchActivationWorkerError,

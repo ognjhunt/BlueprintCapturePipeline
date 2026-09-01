@@ -491,6 +491,37 @@ def build_native_task_arena_bundle(
         )
 
     packet_root, packet_receipt, packet_rows = _verified_packet(packet_dir)
+    try:
+        packet_request = json.loads(
+            (packet_root / "native_task_arena_packet_request.v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise NativeTaskArenaBundleError(
+            ["native_task_arena_bundle_packet_request_invalid"]
+        ) from exc
+    feedback = packet_request.get("native_construction_feedback")
+    control_search = (
+        feedback.get("control_search") if isinstance(feedback, Mapping) else None
+    )
+    control_search_digest = (
+        control_search.get("authority_digest")
+        if isinstance(control_search, Mapping)
+        else None
+    )
+    if control_search is not None and (
+        control_search.get("enabled") is not True
+        or control_search.get("claim_ceiling")
+        != "development_only_control_search"
+        or control_search.get("provider_allocations_performed") != 0
+        or control_search.get("full_fidelity_replay_required") is not True
+        or control_search_digest
+        != canonical_digest(control_search, digest_field="authority_digest")
+    ):
+        raise NativeTaskArenaBundleError(
+            ["native_task_arena_bundle_control_search_invalid"]
+        )
     runtime_source_receipt: dict[str, Any] | None = None
     if runtime_source_packet_receipt is not None:
         runtime_source_receipt = verify_native_task_runtime_source_packet(
@@ -703,6 +734,11 @@ def build_native_task_arena_bundle(
         "arena_scene_plan_digest": packet_receipt["arena_scene_plan_digest"],
         "runtime_contract_digest": packet_receipt["runtime_contract_digest"],
         "scenario_instance_digest": packet_receipt["scenario_instance_digest"],
+        "control_search_authority_digest": control_search_digest,
+        "warm_control_search_continuation_requested": (
+            execution_mode == "construction_canary"
+            and control_search_digest is not None
+        ),
         "packet_files": packet_rows,
         "packet_file_count": len(packet_rows),
         "worker_source_sha256": _sha256(worker),

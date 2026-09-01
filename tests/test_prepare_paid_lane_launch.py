@@ -693,6 +693,7 @@ def test_feedback_construction_graph_routes_checkpoint_and_retains_one_worker() 
         for step in prep.LANES[lane]
         for name in prep.step_placeholders(step)
     }
+    context.pop("retain_warm_control_search", None)
     adoption_path = "/evidence/terminal-feedback-adoption.v1.json"
     context.update(
         {
@@ -739,6 +740,34 @@ def test_feedback_construction_graph_routes_checkpoint_and_retains_one_worker() 
     assert "--native-task-arena-retain-warm-session" not in ordinary_argv
     assert "--terminal-feedback-adoption" not in ordinary_argv
     assert "--native-task-arena-terminal-feedback-adoption" not in ordinary_argv
+
+
+def test_initial_control_search_graph_retains_one_worker_without_adoption() -> None:
+    lane = "native_task_arena_construction"
+    context = {
+        name: f"value-{name}"
+        for step in prep.LANES[lane]
+        for name in prep.step_placeholders(step)
+    }
+    context.update(
+        {
+            "source_commit": "a" * 40,
+            "retain_warm_control_search": True,
+        }
+    )
+    context.pop("terminal_feedback_adoption", None)
+
+    result = prep.validate_paid_lane_launch(lane, context)
+    steps = {row["step_id"]: row["argv"] for row in result["planned_steps"]}
+
+    assert steps["paid_authority"].count("--retain-warm-session") == 1
+    assert (
+        steps["allocator_dry_run"].count(
+            "--native-task-arena-retain-warm-session"
+        )
+        == 1
+    )
+    assert "--terminal-feedback-adoption" not in steps["provider_bundle"]
 
 
 def test_native_context_reopens_independent_versioned_references(
@@ -939,6 +968,7 @@ def test_native_context_reopens_independent_versioned_references(
                     "terminal_feedback_adoption_digest": adoption_value[
                         "checkpoint_digest"
                     ],
+                    "retain_warm_control_search": True,
                 },
             }
         ),
@@ -962,6 +992,7 @@ def test_native_context_reopens_independent_versioned_references(
         rights_admission.resolve()
     )
     assert context["terminal_feedback_adoption"] == str(adoption_path.resolve())
+    assert context["retain_warm_control_search"] is True
     assert context["reference_bindings"]["terminal_feedback_adoption"] == {
         "path": str(adoption_path.resolve()),
         "sha256": prep._sha256_file(adoption_path),
