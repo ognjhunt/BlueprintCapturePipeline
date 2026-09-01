@@ -83,6 +83,37 @@ def test_unsupported_surface_falls_back_to_exact_main_deploy(tmp_path: Path) -> 
     assert "canary_hotfix_unsupported_surface_changed" in routed["blockers"]
 
 
+def test_canary_worker_overlay_targets_the_executed_provider_runner(tmp_path: Path) -> None:
+    root, base, _patch = _repo(tmp_path)
+    worker = root / "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py"
+    worker.write_text("HOTFIX = True\n", encoding="utf-8")
+    _git(root, "add", str(worker.relative_to(root)))
+    _git(root, "commit", "-m", "worker hotfix")
+    patch = _git(root, "rev-parse", "HEAD")
+    _git(root, "push", "origin", "hotfix")
+    failure = tmp_path / "worker-failure.json"
+    failure.write_text("{}\n", encoding="utf-8")
+    tests = run_focused_hotfix_tests(
+        repo_root=root,
+        base_commit=base,
+        patch_commit=patch,
+        commands=[[sys.executable, "-c", "assert True"]],
+        exact_failure_input=failure,
+    )
+    plan = prepare_canary_hotfix_overlay(
+        repo_root=root,
+        output_dir=tmp_path / "worker-overlay",
+        base_commit=base,
+        patch_commit=patch,
+        test_receipt=tests,
+    )
+
+    destinations = {
+        row["destination"] for row in plan["manifest"]["source_inventory"]
+    }
+    assert "adp_arena_provider_runner.py" in destinations
+
+
 def test_overlay_seals_exact_failure_test_and_applies_only_to_staging(
     tmp_path: Path,
 ) -> None:

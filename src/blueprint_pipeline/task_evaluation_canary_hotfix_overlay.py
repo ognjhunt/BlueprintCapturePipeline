@@ -37,18 +37,21 @@ TARGET_SCOPE = "policy_canary_provider_runtime"
 EVIDENCE_GRADE_CEILING = "development_only"
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-_ALLOWED_RUNTIME_MODULES = frozenset(
-    {
-        "adp009d_policy_provisioning.py",
-        "adp009d_policy_server_worker.py",
-        "groot_n17_droid_policy_runtime.py",
-        "groot_n17_wire_client.py",
-        "native_task_arena_policy_canary_session.py",
-        "native_task_arena_policy_canary_worker.py",
-        "native_task_arena_policy_worker.py",
-        "openpi_droid_policy_runtime.py",
-    }
-)
+_PROVIDER_DESTINATION_BY_MODULE = {
+    "adp009d_policy_server_worker.py": "adp009d_policy_server_worker.py",
+    "groot_n17_droid_policy_runtime.py": "groot_n17_droid_policy_runtime.py",
+    "groot_n17_wire_client.py": "groot_n17_wire_client.py",
+    "openpi_droid_policy_runtime.py": "openpi_droid_policy_runtime.py",
+    "native_task_arena_policy_canary_session.py": (
+        "blueprint_pipeline/native_task_arena_policy_canary_session.py"
+    ),
+    "native_task_arena_policy_canary_worker.py": "adp_arena_provider_runner.py",
+    "native_task_arena_policy_worker.py": (
+        "blueprint_pipeline/native_task_arena_policy_worker.py"
+    ),
+}
+_ALLOWED_RUNTIME_MODULES = frozenset(_PROVIDER_DESTINATION_BY_MODULE)
+_ALLOWED_PROVIDER_DESTINATIONS = frozenset(_PROVIDER_DESTINATION_BY_MODULE.values())
 
 
 class CanaryHotfixOverlayError(ValueError):
@@ -271,7 +274,7 @@ def prepare_canary_hotfix_overlay(
     payloads: dict[str, bytes] = {}
     for source_path in strategy["runtime_paths"]:
         payload = _git(root, "show", f"{patch_commit}:{source_path}")
-        destination = PurePosixPath(source_path).name
+        destination = _PROVIDER_DESTINATION_BY_MODULE[PurePosixPath(source_path).name]
         payloads[destination] = payload
         inventory.append(
             {
@@ -356,7 +359,7 @@ def verify_canary_hotfix_overlay(path: str | Path) -> dict[str, Any]:
                 name = f"provider_runtime/{row['destination']}"
                 payload = archive.read(name)
                 if (
-                    row.get("destination") not in _ALLOWED_RUNTIME_MODULES
+                    row.get("destination") not in _ALLOWED_PROVIDER_DESTINATIONS
                     or row.get("sha256") != _sha256_bytes(payload)
                     or row.get("size_bytes") != len(payload)
                 ):
