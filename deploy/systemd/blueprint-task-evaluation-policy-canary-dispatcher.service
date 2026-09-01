@@ -50,7 +50,7 @@ Environment=VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/prov
 Environment=HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token
 # Keep terminal report and notification publication reachable after a clean
 # production rebuild; EnvironmentFile remains the operator override.
-Environment=PIPELINE_TASK_EVALUATION_RUN_WEBAPP_URL=https://tryblueprint.io/api/internal/pipeline/task-evaluation-runs
+Environment=PIPELINE_TASK_EVALUATION_RUN_WEBAPP_URL=https://tryblueprint.io/api/internal/pipeline/capture-task-evaluation-runs
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_policy_canary_dispatcher --dispatch-queue-root "$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_QUEUE_ROOT}" --execution-setup-root "$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_EXECUTION_SETUP_ROOT}" --execution-setup-template "$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_EXECUTION_SETUP_TEMPLATE}" --dispatch-root "$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT}" --billing-audit-root "$${BLUEPRINT_PROVIDER_BILLING_AUDIT_ROOT}" --implementation-commit "$$(git rev-parse HEAD)" --execute'

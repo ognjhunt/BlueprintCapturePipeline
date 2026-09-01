@@ -295,6 +295,19 @@ def test_runtime_source_bundle_rejects_different_production_commit(
             output_root=tmp_path / "changed-adapter-output",
         )
 
+    changed["execution_adapter"]["runtime_source_implementation_commit"] = value[
+        "expected_production_commit"
+    ]
+    compatible = materialize_native_arena_adapter(
+        request=changed,
+        compiled_episode_packet_path=changed_construction,
+        compiled_episode_packet_reference=_identity(changed_construction),
+        configured_revision=changed_revision,
+        runtime_source_bundle_path=runtime_bundle,
+        output_root=tmp_path / "compatible-adapter-output",
+    )
+    assert compatible["status"] == "native_arena_adapter_materialized"
+
 
 def test_adapter_refuses_bundle_bytes_that_do_not_match_website_request(
     tmp_path: Path,

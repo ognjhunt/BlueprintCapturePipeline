@@ -1441,6 +1441,19 @@ def _policy_campaign_activation_result(
             activation_root / "task_evaluation_policy_canary_runtime_inputs.v1.json"
         )
         write_launch_preparation_record_exclusive(runtime_inputs_path, runtime_inputs)
+        website_request_digest_value = preparation_request[
+            "policy_run_configuration"
+        ].get("website_request_digest")
+        if not re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(website_request_digest_value or ""),
+        ):
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_policy_canary_website_request_digest_invalid"
+            )
+        website_request_digest = str(website_request_digest_value)
+    else:
+        website_request_digest = None
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "policy_campaign_queue_materialized_no_execution",
@@ -1468,6 +1481,7 @@ def _policy_campaign_activation_result(
                 "capture_session_id": request["capture_session_id"],
                 "intake_id": request["intake_id"],
                 "request_digest": request["preparation"]["request_digest"],
+                "website_request_digest": website_request_digest,
             }
             if runtime_inputs is not None and runtime_inputs_path is not None
             else {}
@@ -1821,7 +1835,7 @@ def process_launch_activation_queue(
                 },
                 "capture_session_id": result["capture_session_id"],
                 "intake_id": result["intake_id"],
-                "request_digest": result["request_digest"],
+                "request_digest": result["website_request_digest"],
                 "maximum_provider_allocations": 1,
                 "retry_cap": 0,
                 "automatic_retry_authorized": False,
