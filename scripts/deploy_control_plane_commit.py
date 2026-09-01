@@ -90,6 +90,7 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-scene-object-discovery.path",
     "blueprint-task-evaluation-configured-controls-progression.service",
     "blueprint-task-evaluation-configured-controls-progression.timer",
+    "blueprint-pipeline-control-plane.service",
     "blueprint-pipeline-intake.service",
 )
 #: Watchers whose execution surface is provably no-spend and may be armed on a

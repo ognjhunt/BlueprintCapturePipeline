@@ -19,6 +19,9 @@ def _shell_script(unit: str, directive: str) -> str:
 
 def test_shell_wrapped_production_unit_commands_parse_before_deploy() -> None:
     units_and_directives = (
+        ("deploy/systemd/blueprint-pipeline-control-plane.service", "ExecStartPre"),
+        ("deploy/systemd/blueprint-pipeline-control-plane.service", "ExecStart"),
+        ("deploy/systemd/blueprint-pipeline-control-plane.service", "ExecStartPost"),
         ("deploy/systemd/blueprint-capture-reconstruction-dispatcher.service", "ExecStart"),
         ("deploy/systemd/blueprint-capture-reconstruction-dispatcher.service", "ExecStartPre"),
         ("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service", "ExecStart"),
@@ -330,6 +333,27 @@ def test_provider_zero_inputs_share_the_immutable_task_evaluation_release() -> N
     assert "BLUEPRINT_GPU_SPEND_GUARD_OUTPUT_ROOT=/var/lib/blueprint/pipeline-control-plane" in guard
     assert '--output-root "$${BLUEPRINT_GPU_SPEND_GUARD_OUTPUT_ROOT}"' in guard
     assert "blueprint_pipeline.provider_billing_reconciler" in billing
+
+
+def test_core_control_plane_uses_the_active_immutable_release() -> None:
+    unit = _text("deploy/systemd/blueprint-pipeline-control-plane.service")
+
+    assert (
+        "BLUEPRINT_PIPELINE_REPO=/opt/blueprint/task-evaluation-control-plane"
+        in unit
+    )
+    assert (
+        "BLUEPRINT_PIPELINE_PYTHON="
+        "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
+        in unit
+    )
+    assert 'cd -P "$${BLUEPRINT_PIPELINE_REPO}"' in unit
+    assert "GIT_CONFIG_KEY_0=safe.directory" in unit
+    assert 'PYTHONPATH=src "$${BLUEPRINT_PIPELINE_PYTHON}"' in unit
+    assert ".venv/bin/python -m blueprint_pipeline.production_runtime_env_guard" not in unit
+
+    deployer = _text("scripts/deploy_control_plane_commit.py")
+    assert '"blueprint-pipeline-control-plane.service",' in deployer
 
 
 def test_installer_and_environment_enable_durable_queue_and_independent_recovery() -> None:
