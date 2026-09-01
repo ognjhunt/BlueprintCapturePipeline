@@ -206,7 +206,10 @@ def test_preprovider_blocked_sync_requires_terminal_email_readback(monkeypatch) 
     synced = sync_policy_canary_preprovider_blocked_to_webapp(
         activation_id="activation-839873",
         capture_session_id="capture-839873",
-        intake_id="intake-839873",
+        intake_id=(
+            "adp-new-scene-simple-relocation-839873-a65bc2af-20260830t094104z-"
+            "paused-ungraded-scene-configuration-revision-corrective-r13-b0868d285d0c"
+        ),
         request_digest="sha256:" + "1" * 64,
         blockers=["policy_canary_setup_invalid"],
         endpoint_url="https://webapp.example/api/internal/pipeline/task-evaluation-runs",

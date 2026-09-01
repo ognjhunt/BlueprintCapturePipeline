@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence, cast
 
 
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _GCS_BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$")
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _DNS_LOOKUP_SLOTS = threading.BoundedSemaphore(value=16)

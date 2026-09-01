@@ -58,6 +58,24 @@ def _runtime_store(tmp_path: Path) -> NativeWorldModelRuntimeStore:
     )
 
 
+def test_strict_identifier_honors_explicit_length_limit() -> None:
+    long_identifier = "policy-canary-" + "a" * 140
+
+    assert security.strict_identifier(
+        long_identifier,
+        field="intake_id",
+        max_length=192,
+    ) == long_identifier
+    with pytest.raises(security.SecurityValidationError):
+        security.strict_identifier(long_identifier, field="intake_id")
+    with pytest.raises(security.SecurityValidationError):
+        security.strict_identifier(
+            "policy/canary",
+            field="intake_id",
+            max_length=192,
+        )
+
+
 def test_runtime_api_requires_auth_enforces_tenants_and_rejects_unsafe_flags(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
