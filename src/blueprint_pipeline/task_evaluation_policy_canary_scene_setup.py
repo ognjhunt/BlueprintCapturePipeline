@@ -228,6 +228,7 @@ def _candidate_spec(
 def materialize_scene839873_policy_canary_setup(
     *,
     source_commit: str,
+    configured_source_commit: str | None = None,
     configured_source_launch_id: str,
     scene_revision_digest: str,
     activation_digest: str,
@@ -251,6 +252,9 @@ def materialize_scene839873_policy_canary_setup(
     blockers: list[str] = []
     if not _SHA.fullmatch(source_commit):
         blockers.append("policy_canary_source_commit_invalid")
+    configured_commit = configured_source_commit or source_commit
+    if not _SHA.fullmatch(configured_commit):
+        blockers.append("policy_canary_configured_source_commit_invalid")
     for name, value in (
         ("activation", activation_digest),
         ("scene_revision", scene_revision_digest),
@@ -286,8 +290,8 @@ def materialize_scene839873_policy_canary_setup(
         )
     )
     if (
-        launch_request.get("source_commit") != source_commit
-        or profile.get("source_commit") != source_commit
+        launch_request.get("source_commit") != configured_commit
+        or profile.get("source_commit") != configured_commit
     ):
         blockers.append("policy_canary_current_commit_binding_mismatch")
     source_request_digest = configured_request_digest or request_digest
@@ -1005,6 +1009,7 @@ def materialize_policy_canary_presubmission_setup(
     execution_template: dict[str, Any] = {
         "schema_version": EXECUTION_TEMPLATE_SCHEMA_VERSION,
         "source_commit": source_commit,
+        "configured_source_commit": configured_source_commit or source_commit,
         "configured_source_launch_id": configured_source_launch_id,
         "scene_revision_digest": scene_revision_digest,
         "configured_request_digest": request_digest,
@@ -1110,6 +1115,9 @@ def materialize_scene839873_policy_canary_setup_from_template(
     activation = _read(activation_path, code="policy_canary_activation_result_invalid")
     return materialize_scene839873_policy_canary_setup(
         source_commit=str(template["source_commit"]),
+        configured_source_commit=str(
+            template.get("configured_source_commit") or template["source_commit"]
+        ),
         configured_source_launch_id=str(template["configured_source_launch_id"]),
         scene_revision_digest=str(template["scene_revision_digest"]),
         activation_digest=str(activation["policy_campaign_activation_digest"]),
