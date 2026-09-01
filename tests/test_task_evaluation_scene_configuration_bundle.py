@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import warnings
 import zipfile
 from pathlib import Path
@@ -790,7 +791,7 @@ def test_provider_render_bundle_requires_and_ships_its_exact_runtime(
     assert required_renderer in missing_renderer_preflight["missing_zip_entries"]
 
 
-def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
+def test_diagnostic_and_production_semantic_reuse_bundle_executes_six_stages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     commit = "a" * 40
@@ -1161,6 +1162,85 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
         os.environ.pop(
             "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT", None
         )
+
+    observed_stages: list[str] = []
+    real_execute_stage_chain = runner_module.execute_scene_configuration_stage_chain
+
+    class HermeticAdapterRegistry:
+        def execute(
+            self,
+            *,
+            stage,
+            configuration_path,
+            dependency_results,
+            **_kwargs,
+        ):
+            assert len(dependency_results) == len(observed_stages)
+            observed_stages.append(stage["stage_id"])
+            result = {
+                "schema_version": "task_evaluation_scene_configuration_stage_result.v1",
+                "status": "completed",
+                "stage_id": stage["stage_id"],
+                "capability": stage["capability"],
+                "execution_class": stage["execution_class"],
+                "configuration_digest": _sha256(configuration_path),
+                "canonical_allocator": None,
+                "provider_mutations_performed": 0,
+                "paid_execution_requested": False,
+                "executed_inside_parent_configuration_run": True,
+                "retry_cap": 0,
+                "raw_secret_values_recorded": False,
+                "output_artifacts": [],
+                "stage_result_digest": "",
+            }
+            result["stage_result_digest"] = canonical_digest(
+                result, digest_field="stage_result_digest"
+            )
+            return result
+
+    class HermeticProducerRegistry:
+        def execute(self, **_kwargs):
+            raise AssertionError("fixture stage unexpectedly requested a GPU producer")
+
+    def execute_hermetic_stage_chain(**kwargs):
+        return real_execute_stage_chain(
+            **kwargs,
+            registry=HermeticAdapterRegistry(),
+            producer_registry=HermeticProducerRegistry(),
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "execute_scene_configuration_stage_chain",
+        execute_hermetic_stage_chain,
+    )
+    production_output = tmp_path / "production-semantic-reuse-provider-output"
+    production_result = (
+        production_output
+        / "task_evaluation_scene_configuration_provider_result.v1.json"
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT", str(production_runtime)
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT", str(production_output)
+    )
+    monkeypatch.setenv(
+        "BLUEPRINT_SCENE_CONFIGURATION_PROVIDER_RESULT", str(production_result)
+    )
+    monkeypatch.setenv(
+        PARENT_DEADLINE_EPOCH_ENV,
+        str(time.time() + REQUIRED_PARENT_TTL_SECONDS),
+    )
+
+    exit_code = runner_module.main()
+    completed = json.loads(production_result.read_text(encoding="utf-8"))
+    assert exit_code == 0, "\n".join(completed["blockers"])
+    assert completed["status"] == "completed"
+    assert completed["blockers"] == []
+    assert completed["first_stage_started"] is True
+    assert completed["stage_chain"]["stage_count"] == 6
+    assert observed_stages == [f"stage-{index}" for index in range(1, 7)]
 
     unsafe = dict(advanced_reference)
     unsafe["manifest_path"] = str(tmp_path / "outside.json")
