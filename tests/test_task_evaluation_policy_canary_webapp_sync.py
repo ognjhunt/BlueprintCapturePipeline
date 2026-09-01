@@ -28,6 +28,9 @@ def _projection() -> tuple[dict[str, object], dict[str, object]]:
         "run_id": "scene-839873-canary-1",
         "result_status": "blocked",
         "claim_ceiling": "diagnostic_policy_execution",
+        # JSON.parse normalizes this to the integer-valued JavaScript number
+        # representation. The signed publication must retain digest parity.
+        "posted_cost_usd": 1.0,
         "delivery_digest": "",
     }
     delivery["delivery_digest"] = cross_runtime_canonical_digest(

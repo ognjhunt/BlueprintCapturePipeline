@@ -10,7 +10,12 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from .core.security_controls import strict_identifier
-from .decision_evidence_contracts import DecisionEnvelope, EvidencePlan, canonical_digest
+from .decision_evidence_contracts import (
+    DecisionEnvelope,
+    EvidencePlan,
+    canonical_digest,
+    cross_runtime_canonical_digest,
+)
 from .task_evaluation_result_delivery import DELIVERY_SCHEMA_VERSION
 from .task_evaluation_launch_webapp_sync import (
     PipelineSyncTokenError,
@@ -166,7 +171,7 @@ def build_task_evaluation_policy_canary_webapp_publication(
         or delivery.get("result_status") != result_status
         or delivery.get("claim_ceiling") != "diagnostic_policy_execution"
         or delivery.get("delivery_digest")
-        != canonical_digest(delivery, digest_field="delivery_digest")
+        != cross_runtime_canonical_digest(delivery, digest_field="delivery_digest")
     ):
         raise ValueError("task_evaluation_policy_canary_result_delivery_invalid")
     try:
