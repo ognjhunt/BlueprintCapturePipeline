@@ -585,7 +585,7 @@ def _physics_objective_measurements(
         if phase_id == "push_contact"
         or (
             phase_id.startswith("push_")
-            and phase_id not in {"push_release"}
+            and phase_id not in {"push_detach", "push_release"}
         )
     ]
     contact_samples = [

@@ -72,6 +72,29 @@ SOURCE_SCHEMAS = {
     ),
 }
 NATIVE_PHYSICS_FREQUENCY_HZ = 120
+# Closed-hand geometry of the fixed DROID Robotiq 2F-85 embodiment, measured
+# from paid-run readbacks rather than assumed from the vendor model.  Scene
+# 839873 franka-controls attempt 001 (instance 49506537) established both
+# numbers: object contact began when the commanded pinch centre was still
+# 39 mm short of the pushed face (the closed fingertips protrude that far
+# along the approach), and the 59.6 N robot-scene graze at the bottom of the
+# precontact descent puts the hand's collision envelope ~55 mm below the
+# pinch centre.  Both stay bracketed by measurements on every subsequent run:
+# ``push_contact_standoff`` refuses an understated forward offset,
+# ``push_contact`` refuses an overstated one, and ``base_collision_clearance``
+# refuses an understated support envelope.
+ROBOTIQ_2F85_CLOSED_FINGERTIP_FORWARD_OFFSET_M = 0.040
+CLOSED_HAND_SUPPORT_ENVELOPE_BELOW_GRASP_FRAME_M = 0.055
+# Commanded interference held through the push so the contact normal stays
+# measurable at equilibrium; position control cannot hold force at exact
+# tangency, and ``push_contact_maintained`` requires force on every sample.
+PUSH_CONTACT_INTERFERENCE_M = 0.005
+# Margin over the authored support clearance covering descent-tolerance sag
+# (the 2 cm arrival tolerance let attempt 001 settle 8 mm low).
+PUSH_SUPPORT_CLEARANCE_MARGIN_M = 0.02
+# Object displacement allowed while push_contact establishes the commanded
+# interference; attempt 001 measured 31.5 mm from the uncorrected frame.
+PUSH_CONTACT_MAX_DISPLACEMENT_M = 0.02
 DIAGNOSTIC_SOURCE_ALIASES = {
     DEFINITION_CONTRACT_PATH: "task.definition",
     SUCCESS_CONTRACT_PATH: "task.success_criteria",
@@ -313,6 +336,23 @@ def _runtime_geometry(
         else 0.0
         for index in range(3)
     ]
+    # Author the push height so the closed hand's collision envelope clears
+    # the support.  ``contact`` is in the scoring frame, so the pinch centre's
+    # world height is ``start_z + contact[2]``; at the object's centre height
+    # attempt 001 measured a 59.6 N robot-scene graze at the bottom of the
+    # precontact descent.  Raise the contact point up the pushed face until
+    # the envelope clears, and refuse the task when the face is too short to
+    # push at a clearing height.
+    required_contact_z_world = (
+        support_top
+        + CLOSED_HAND_SUPPORT_ENVELOPE_BELOW_GRASP_FRAME_M
+        + PUSH_SUPPORT_CLEARANCE_MARGIN_M
+    )
+    contact[2] = max(contact[2], required_contact_z_world - float(start[2]))
+    if contact[2] > float(upper[2]) - 0.005:
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_push_support_clearance_unauthorable"
+        )
     root_position = [float(start[index]) - center[index] for index in range(3)]
     # The task start is a scoring-frame center, while Isaac spawns the rigid
     # asset at its authored root.  Those frames are normally related by the
@@ -699,6 +739,10 @@ def adapt_rigid_relocation_task_template(
         "lift_unit_world": [0.0, 0.0, 1.0],
         "gripper_orientation_scoring_frame_xyzw": [],
         "pregrasp_clearance_m": 0.12,
+        "closed_fingertip_forward_offset_m": (
+            ROBOTIQ_2F85_CLOSED_FINGERTIP_FORWARD_OFFSET_M
+        ),
+        "push_contact_interference_m": PUSH_CONTACT_INTERFERENCE_M,
         "arrival_orientation_tolerance_rad": 0.08,
         "allowed_contact_prim_paths": geometry["allowed_contact_prim_paths"],
         "intended_support_prim_paths": geometry[
@@ -771,6 +815,7 @@ def adapt_rigid_relocation_task_template(
         "settle_position_tolerance_m": 0.005,
         "settle_orientation_tolerance_rad": 0.03,
         "relocation_tracking_tolerance_m": target_tolerance,
+        "push_contact_max_displacement_m": PUSH_CONTACT_MAX_DISPLACEMENT_M,
         "workspace_position_bounds_world_m": {
             "minimum": [support_minimum[0], support_minimum[1], start[2] - 0.25],
             "maximum": [support_maximum[0], support_maximum[1], start[2] + 0.25],

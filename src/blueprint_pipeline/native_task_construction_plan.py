@@ -1548,10 +1548,56 @@ def materialize_rigid_construction_phase_plan(
         affordance["gripper_orientation_scoring_frame_xyzw"],
     )
     if manipulation_strategy == "planar_push":
+        # The gripper is closed for the whole push, so the commanded frame is
+        # the pinch centre while the surface that meets the object is the
+        # closed fingertip, ``closed_fingertip_forward_offset_m`` farther
+        # along the approach.  Every contact-frame target therefore backs off
+        # by that offset, minus ``push_contact_interference_m`` of commanded
+        # bias -- position control cannot hold a measurable contact normal at
+        # exact tangency, so the bias is what keeps
+        # ``push_contact_maintained`` a real force measurement instead of a
+        # sample-order lottery.  Scene-839873 franka-controls attempt 001 paid
+        # to show the uncorrected frame: fingertips struck 39 mm early at
+        # approach speed, punted the object 93 mm past its first waypoint, and
+        # every push waypoint then measured 0 N.
+        fingertip_offset = _positive(
+            affordance.get("closed_fingertip_forward_offset_m"),
+            error="native_rigid_construction_push_fingertip_offset_invalid",
+        )
+        contact_interference = _positive(
+            affordance.get("push_contact_interference_m"),
+            error="native_rigid_construction_push_contact_interference_invalid",
+        )
+        push_contact_max_displacement = _positive(
+            task_spec.get("push_contact_max_displacement_m"),
+            error=(
+                "native_rigid_construction_push_contact_displacement_bound_invalid"
+            ),
+        )
+        if (
+            contact_interference >= fingertip_offset
+            or fingertip_offset >= pregrasp_clearance
+            or push_contact_max_displacement <= contact_interference
+        ):
+            raise NativeTaskConstructionPlanError(
+                ["native_rigid_construction_push_standoff_geometry_infeasible"]
+            )
+        push_standoff = fingertip_offset - contact_interference
+        push_threshold_extra = {
+            "push_contact_max_displacement_m": push_contact_max_displacement,
+        }
+        contact_start_ee = [
+            contact_start[index] + approach_world[index] * push_standoff
+            for index in range(3)
+        ]
+        pregrasp_push = [
+            contact_start_ee[index] + approach_world[index] * pregrasp_clearance
+            for index in range(3)
+        ]
         phases = [
             _phase(
                 "precontact",
-                pregrasp,
+                pregrasp_push,
                 gripper_state="open",
                 gate_ids=("precontact_reachability", "base_collision_clearance"),
                 orientation_world_xyzw=start_gripper_orientation,
@@ -1560,9 +1606,13 @@ def materialize_rigid_construction_phase_plan(
             ),
             _phase(
                 "push_contact",
-                contact_start,
+                contact_start_ee,
                 gripper_state="closed",
-                gate_ids=("push_contact", "support_contact"),
+                gate_ids=(
+                    "push_contact",
+                    "push_contact_standoff",
+                    "support_contact",
+                ),
                 orientation_world_xyzw=start_gripper_orientation,
                 expected_scoring_position_world_m=start,
                 expected_scoring_orientation_world_xyzw=start_orientation,
@@ -1582,11 +1632,16 @@ def materialize_rigid_construction_phase_plan(
             contact_offset = _quaternion_rotate_xyzw(
                 scoring_orientation, contact_local
             )
+            waypoint_approach = _quaternion_rotate_xyzw(
+                scoring_orientation, affordance["approach_unit_scoring_frame"]
+            )
             phases.append(
                 _phase(
                     f"push_{index:02d}",
                     [
-                        scoring_position[axis] + contact_offset[axis]
+                        scoring_position[axis]
+                        + contact_offset[axis]
+                        + waypoint_approach[axis] * push_standoff
                         for axis in range(3)
                     ],
                     gripper_state="closed",
@@ -1604,13 +1659,31 @@ def materialize_rigid_construction_phase_plan(
                     expected_scoring_orientation_world_xyzw=scoring_orientation,
                 )
             )
-        destination_retreat = [
+        contact_destination_ee = [
             contact_destination[index]
+            + destination_approach_world[index] * push_standoff
+            for index in range(3)
+        ]
+        destination_retreat = [
+            contact_destination_ee[index]
             + destination_approach_world[index] * pregrasp_clearance
             for index in range(3)
         ]
         phases.extend(
             [
+                # Break contact by retreating with the fingers still closed;
+                # opening them while the fingertips are engaged sweeps the
+                # linkage through the object (attempt 001 dragged it 93 mm
+                # back out of the destination and spun it 25 degrees).
+                _phase(
+                    "push_detach",
+                    destination_retreat,
+                    gripper_state="closed",
+                    gate_ids=("workspace_containment",),
+                    orientation_world_xyzw=destination_gripper_orientation,
+                    expected_scoring_position_world_m=destination,
+                    expected_scoring_orientation_world_xyzw=destination_orientation,
+                ),
                 _phase(
                     "push_release",
                     destination_retreat,
@@ -1640,7 +1713,7 @@ def materialize_rigid_construction_phase_plan(
                 ),
                 _phase(
                     "recovery",
-                    pregrasp,
+                    pregrasp_push,
                     gripper_state="open",
                     gate_ids=("recovery", "reset_readback"),
                     orientation_world_xyzw=start_gripper_orientation,
@@ -1653,6 +1726,7 @@ def materialize_rigid_construction_phase_plan(
             "precontact_reachability": "native_end_effector_pose_readback",
             "base_collision_clearance": "native_robot_scene_contact_readback",
             "push_contact": "native_task_robot_contact_force_readback",
+            "push_contact_standoff": "native_task_root_pose_readback",
             "push_contact_maintained": "native_task_robot_contact_force_readback",
             "push_path": "native_task_root_pose_path_readback",
             "release": "native_gripper_and_task_contact_readback",
@@ -1665,6 +1739,7 @@ def materialize_rigid_construction_phase_plan(
             "reset_readback": "native_robot_and_object_reset_replay",
         }
     else:
+        push_threshold_extra = {}
         phases = [
             _phase(
                 "pregrasp",
@@ -1858,6 +1933,7 @@ def materialize_rigid_construction_phase_plan(
             "relocation_tracking_tolerance_m": relocation_tracking,
             "destination_orientation_tolerance_rad": destination_orientation_tolerance,
             "settle_orientation_tolerance_rad": settle_orientation,
+            **push_threshold_extra,
         },
         "phases": phases,
         "phase_count": len(phases),
@@ -1966,11 +2042,24 @@ def evaluate_rigid_construction_gates(
         float(row.get("task_robot_contact_peak_force_n", 0.0))
         for row in contact_rows
     ) >= contact_threshold
+    # Contact must be established where the plan authored it.  Object motion
+    # during push_contact beyond the commanded interference bound means the
+    # fingertips met the object before the commanded frame arrived -- an
+    # understated ``closed_fingertip_forward_offset_m`` -- which is exactly
+    # how attempt 001 punted the object 93 mm.  The force gate above brackets
+    # the opposite error: an overstated offset never develops contact at all.
+    push_contact_standoff = True
+    if push and "push_contact_standoff" in phase_plan["gate_contract"]:
+        push_contact_standoff = all(
+            math.dist(position(sample), start)
+            <= float(thresholds["push_contact_max_displacement_m"])
+            for sample in contact_rows
+        )
     if push:
         support_clearance = True
         relocation_ids = [
             phase_id for phase_id in expected_ids if phase_id.startswith("push_")
-            and phase_id not in {"push_contact", "push_release"}
+            and phase_id not in {"push_contact", "push_detach", "push_release"}
         ]
     else:
         lift_position = position(samples("lift_clearance")[-1])
@@ -2126,6 +2215,7 @@ def evaluate_rigid_construction_gates(
                 )
                 is True,
                 "push_contact": initial_contact,
+                "push_contact_standoff": push_contact_standoff,
                 "push_contact_maintained": contact_maintained,
                 "push_path": relocation_path,
             }
