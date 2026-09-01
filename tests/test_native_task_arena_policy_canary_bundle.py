@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -9,6 +10,7 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import native_task_arena_policy_canary_bundle as bundle
+from blueprint_pipeline import native_task_arena_policy_canary_worker as worker
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import policy_canary_allocator_lane as allocator_lane
 
@@ -135,6 +137,54 @@ def test_provider_worker_has_one_simulation_launch_outside_episode_loop() -> Non
     assert "policy_canary_telemetry.jsonl" in source
     assert "from mcap.writer import Writer" in source
     assert "mcap_unavailable:" in source
+
+
+def test_provider_result_is_durable_before_isaac_close_can_exit(
+    tmp_path: Path,
+) -> None:
+    class ExitOnClose:
+        def close(self) -> None:
+            raise SystemExit(0)
+
+    result = {
+        "schema_version": "native_task_arena_policy_canary_session_result.v1",
+        "status": "runtime_completed_unqualified_pending_closeout",
+        "episodes": [],
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    result_path = tmp_path / "provider-result.json"
+
+    with pytest.raises(SystemExit) as exited:
+        worker._seal_result_before_simulation_close(
+            result_path=result_path,
+            result=result,
+            simulation_app=ExitOnClose(),
+        )
+
+    assert exited.value.code == 0
+    sealed = json.loads(result_path.read_text(encoding="utf-8"))
+    assert sealed == result
+    assert sealed["result_digest"] == canonical_digest(
+        sealed, digest_field="result_digest"
+    )
+
+
+def test_episode_failure_gap_retains_safe_diagnostic_without_host_path(
+    tmp_path: Path,
+) -> None:
+    path = worker._write_episode_failure_gap(
+        output_root=tmp_path,
+        run_id="run-1",
+        context={"candidate_id": "pi05_droid", "cell_id": "anchor-1", "seed": 7},
+        failure=RuntimeError("camera failed at /workspace/private/runtime.py"),
+    )
+
+    gap = json.loads(path.read_text(encoding="utf-8"))
+    assert gap["failure_type"] == "RuntimeError"
+    assert gap["failure_message"] == "camera failed at <path>"
+    assert "/workspace" not in json.dumps(gap)
+    assert gap["gap_digest"] == canonical_digest(gap, digest_field="gap_digest")
 
 
 def test_provider_canary_package_imports_from_its_shipped_module_closure(

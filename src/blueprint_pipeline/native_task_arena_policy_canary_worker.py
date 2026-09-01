@@ -6,6 +6,7 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import re
 import time
 from typing import Any, Callable, Mapping
 
@@ -84,6 +85,101 @@ def _sha256(path: Path) -> str:
     import hashlib
 
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _seal_result_before_simulation_close(
+    *, result_path: Path, result: Mapping[str, Any], simulation_app: Any
+) -> None:
+    """Durably seal the provider result before Isaac can terminate the process.
+
+    Isaac ``SimulationApp.close()`` may terminate the interpreter directly. A
+    result written after that call is therefore not reliable even when the
+    worker exits with status zero. Replace the provisional session result with
+    the final evidence-bearing value, fsync the file and directory, and only
+    then allow Isaac to close.
+    """
+
+    close = getattr(simulation_app, "close", None)
+    if not callable(close):
+        raise RuntimeError("policy_canary_simulation_close_unavailable")
+    value = dict(result)
+    if value.get("result_digest") != canonical_digest(
+        value, digest_field="result_digest"
+    ):
+        raise RuntimeError("policy_canary_result_digest_invalid_before_close")
+    payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temporary = result_path.with_name(f".{result_path.name}.{os.getpid()}.sealing")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_CREAT
+            | os.O_EXCL
+            | os.O_WRONLY
+            | getattr(os, "O_CLOEXEC", 0),
+            0o440,
+        )
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(temporary, result_path)
+        directory = os.open(
+            result_path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+    close()
+
+
+def _write_episode_failure_gap(
+    *,
+    output_root: Path,
+    run_id: str,
+    context: Mapping[str, Any],
+    failure: Exception,
+) -> Path:
+    """Retain one safe per-episode diagnostic if execution fails before evidence."""
+
+    raw_message = str(failure).strip().replace("\n", " ").replace("\r", " ")
+    safe_message = re.sub(r"(?<![A-Za-z0-9])/(?:[^\s/:]+/)*[^\s:]+", "<path>", raw_message)
+    safe_message = safe_message[:512]
+    episode_id = (
+        f"{run_id}--{context.get('cell_id')}--{context.get('candidate_id')}"
+    )
+    path = output_root / "episodes" / f"{episode_id}.failure_gap.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    value = {
+        "schema_version": "policy_canary_episode_failure_gap.v1",
+        "status": "unavailable_before_first_observation",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "candidate_id": context.get("candidate_id"),
+        "cell_id": context.get("cell_id"),
+        "seed": context.get("seed"),
+        "candidate_policy_queried": False,
+        "actions_reached_robot": False,
+        "failure_type": type(failure).__name__,
+        "failure_message": safe_message or None,
+        "failure_message_digest": _digest(raw_message),
+        "media_gap": {
+            "type": "before_first_observation",
+            "reason": "policy_canary_episode_runner_failed",
+        },
+        "gap_digest": "",
+    }
+    value["gap_digest"] = canonical_digest(value, digest_field="gap_digest")
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
 
 
 def _write_episode_json_artifact(
@@ -323,6 +419,7 @@ def main() -> int:
         for candidate in CANDIDATE_IDS
     }
     current_env: dict[str, Any] = {}
+    current_session: dict[str, Any] = {}
 
     def open_session(_inputs: Mapping[str, Any]) -> dict[str, Any]:
         from blueprint_pipeline.native_task_isaaclab_launch import (
@@ -334,6 +431,7 @@ def main() -> int:
             output_root / "native_task_runtime_source_provisioning.v1.json",
             device=NATIVE_TASK_ARENA_DEVICE,
         )
+        current_session["simulation_app"] = simulation_app
         return {
             "simulation_app": simulation_app,
             "launch": launch,
@@ -365,7 +463,7 @@ def main() -> int:
             or _digest(runtime_identity),
         }
 
-    def run_episode(
+    def _run_episode_impl(
         _session: Mapping[str, Any],
         policy: Mapping[str, Any],
         context: Mapping[str, Any],
@@ -615,6 +713,22 @@ def main() -> int:
             "evidence_artifacts": evidence_artifacts,
         }
 
+    def run_episode(
+        session: Mapping[str, Any],
+        policy: Mapping[str, Any],
+        context: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return _run_episode_impl(session, policy, context)
+        except Exception as exc:
+            _write_episode_failure_gap(
+                output_root=output_root,
+                run_id=str(authority["run_id"]),
+                context=context,
+                failure=exc,
+            )
+            raise
+
     def close_policy(policy: Mapping[str, Any]) -> None:
         close = getattr(policy.get("client"), "close", None)
         if callable(close):
@@ -622,11 +736,14 @@ def main() -> int:
 
     def close_session(session: Mapping[str, Any]) -> dict[str, Any]:
         close = getattr(session.get("simulation_app"), "close", None)
-        if callable(close):
-            close()
+        if not callable(close) or session.get("simulation_app") is not current_session.get(
+            "simulation_app"
+        ):
+            raise RuntimeError("policy_canary_simulation_close_unavailable")
         return {
-            "status": "runtime_closed_pending_provider_teardown",
+            "status": "runtime_close_committed_after_result_seal",
             "runtime_closed": True,
+            "runtime_close_deferred_until_result_sealed": True,
             "provider_closeout_pending": True,
         }
 
@@ -652,8 +769,10 @@ def main() -> int:
     result["artifact_inventory_digest"] = _digest(telemetry_artifacts)
     result["matrix_digest"] = inputs.get("matrix_digest") or _digest(inputs["cells"])
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
-    result_path.write_text(
-        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    _seal_result_before_simulation_close(
+        result_path=result_path,
+        result=result,
+        simulation_app=current_session.get("simulation_app"),
     )
     return 0 if result["status"] == "runtime_completed_unqualified_pending_closeout" else 1
 
