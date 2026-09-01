@@ -63,6 +63,9 @@ def scene_configuration_bundle_contract(
     toolchain = dict(toolchain)
     source_commit = _string(manifest.get("source_commit"))
     diagnostic_only = manifest.get("diagnostic_only") is True
+    production_semantic_reuse = (
+        manifest.get("production_semantic_input_reuse") is True
+    )
     diagnostic_bootstrap_mode = manifest.get("diagnostic_bootstrap_mode")
     fresh_diagnostic_bootstrap = (
         diagnostic_bootstrap_mode == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
@@ -73,7 +76,7 @@ def scene_configuration_bundle_contract(
         and renders_on_provider(render.get("disclosure_decision") or {})
     )
     provider_renderer_required = manifest.get("provider_renderer_required") is True
-    expected_provider_renderer = renders_at_provider and (
+    expected_provider_renderer = renders_at_provider and not production_semantic_reuse and (
         not diagnostic_only or fresh_diagnostic_bootstrap
     )
     if provider_renderer_required:
@@ -152,6 +155,17 @@ def scene_configuration_bundle_contract(
                 )
             )
         )
+        or (
+            production_semantic_reuse
+            and (
+                diagnostic_only
+                or manifest.get("provider_render_outputs_reused") is not True
+                or manifest.get("semantic_teacher_outputs_reused") is not True
+                or manifest.get("semantic_reuse_completed_stage_prefix_count") != 0
+                or manifest.get("full_downstream_stage_chain_required") is not True
+                or manifest.get("normal_production_runner_used") is not True
+            )
+        )
         or manifest.get("single_parent_allocation") is not True
         or manifest.get("nested_provider_mutations_performed") != 0
         or manifest.get("evaluation_episode_executed") is not False
@@ -204,6 +218,13 @@ def scene_configuration_bundle_contract(
             and not fresh_diagnostic_bootstrap
             and (
                 render.get("diagnostic_checkpoint_reused") is not True
+                or render.get("provider_render_skipped") is not True
+            )
+        )
+        or (
+            production_semantic_reuse
+            and (
+                render.get("production_semantic_input_reuse") is not True
                 or render.get("provider_render_skipped") is not True
             )
         )
