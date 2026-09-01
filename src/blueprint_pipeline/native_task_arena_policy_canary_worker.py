@@ -30,6 +30,46 @@ def _read(path: Path) -> dict[str, Any]:
     return value
 
 
+def _construction_lineage_mode(
+    *,
+    inputs: Mapping[str, Any],
+    base_scene_plan: Mapping[str, Any],
+    construction: Mapping[str, Any],
+) -> str:
+    """Accept strict construction or typed compiled-scene diagnostic lineage."""
+
+    if (
+        base_scene_plan.get("plan_digest")
+        != canonical_digest(base_scene_plan, digest_field="plan_digest")
+    ):
+        raise RuntimeError("policy_canary_scene_plan_invalid")
+    if construction.get("schema_version") == "native_task_arena_construction_result.v1":
+        if (
+            construction.get("status") != "completed"
+            or construction.get("construction_gate_qualified") is not True
+            or construction.get("scene_plan_digest")
+            != base_scene_plan.get("plan_digest")
+            or construction.get("result_digest")
+            != canonical_digest(construction, digest_field="result_digest")
+        ):
+            raise RuntimeError("policy_canary_construction_result_invalid")
+        return "qualified_native_construction_result"
+    if construction.get("schema_version") == "task_evaluation_episode_compilation_result.v1":
+        if (
+            construction.get("status") != "compiled_for_production_launch"
+            or construction.get("blockers") != []
+            or construction.get("configured_scene_revision_digest")
+            != inputs.get("scene_revision_digest")
+            or construction.get("provider_mutation_performed") is not False
+            or construction.get("paid_execution_requested") is not False
+            or construction.get("result_digest")
+            != canonical_digest(construction, digest_field="result_digest")
+        ):
+            raise RuntimeError("policy_canary_compiled_scene_lineage_invalid")
+        return "compiled_configured_scene_diagnostic"
+    raise RuntimeError("policy_canary_construction_lineage_schema_invalid")
+
+
 def _resolved_scene_plan(base: Mapping[str, Any], cell: Mapping[str, Any]) -> dict[str, Any]:
     plan = deepcopy(dict(base))
     scenario = deepcopy(dict(cell["resolved_scenario"]))
@@ -269,14 +309,11 @@ def main() -> int:
         / "runtime_inputs"
         / "native_task_arena_construction_result.v1.json"
     )
-    if (
-        construction.get("status") != "completed"
-        or construction.get("construction_gate_qualified") is not True
-        or construction.get("scene_plan_digest") != base_scene_plan.get("plan_digest")
-        or construction.get("result_digest")
-        != canonical_digest(construction, digest_field="result_digest")
-    ):
-        raise RuntimeError("policy_canary_construction_result_invalid")
+    construction_lineage_mode = _construction_lineage_mode(
+        inputs=inputs,
+        base_scene_plan=base_scene_plan,
+        construction=construction,
+    )
     specs = {
         candidate: _read(
             runtime
@@ -608,6 +645,7 @@ def main() -> int:
         output_root, result["episodes"]
     )
     result["telemetry"] = telemetry_index
+    result["construction_lineage_mode"] = construction_lineage_mode
     if authority.get("execution_release") is not None:
         result["execution_release"] = authority["execution_release"]
     result["artifact_inventory"] = telemetry_artifacts
