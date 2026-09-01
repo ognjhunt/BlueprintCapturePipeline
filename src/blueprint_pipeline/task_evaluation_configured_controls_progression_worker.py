@@ -449,16 +449,28 @@ def _queue_result(queue_root: Path, preparation_id: str) -> dict[str, Any] | Non
 def _activation_authority(
     *, activation_queue_root: Path, profile_dir: Path, activation_id: str
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    matches = list((activation_queue_root / "results").glob(f"{activation_id}-*.json"))
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    for path in (activation_queue_root / "results").glob("*.json"):
+        try:
+            value = _load(
+                path,
+                blocker="configured_controls_worker_activation_result_invalid",
+            )
+        except TaskEvaluationConfiguredControlsProgressionWorkerError:
+            continue
+        if (
+            value.get("activation_id") == activation_id
+            and value.get("status")
+            == "profile_authority_materialized_no_execution"
+        ):
+            matches.append((path, value))
     if not matches:
         return None
     if len(matches) != 1:
         raise TaskEvaluationConfiguredControlsProgressionWorkerError(
             "configured_controls_worker_activation_result_ambiguous"
         )
-    activation = _load(
-        matches[0], blocker="configured_controls_worker_activation_result_invalid"
-    )
+    _path, activation = matches[0]
     profile_id = str(activation.get("profile_id") or "")
     profile_path = profile_dir / f"{profile_id}.json"
     if (

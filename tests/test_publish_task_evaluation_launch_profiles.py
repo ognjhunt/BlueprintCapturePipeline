@@ -496,17 +496,17 @@ def test_lineage_parents_another_operator_owns_are_verified_not_rechowned(
         directory.chmod(0o710)
 
     foreign = {set_root.resolve(), lineage_dir.resolve()}
-    real_chown = os.chown
+    real_chmod = Path.chmod
 
-    def refuse_foreign_chown(path, uid, chown_gid, *args, **kwargs):
-        if Path(path).resolve() in foreign:
+    def refuse_foreign_chmod(path, mode, *args, **kwargs):
+        if path.resolve() in foreign:
             raise PermissionError(1, "Operation not permitted", str(path))
-        return real_chown(path, uid, chown_gid, *args, **kwargs)
+        return real_chmod(path, mode, *args, **kwargs)
 
     monkeypatch.setattr(
         publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(control_root),)
     )
-    monkeypatch.setattr(publisher.os, "chown", refuse_foreign_chown)
+    monkeypatch.setattr(Path, "chmod", refuse_foreign_chmod)
 
     publisher.publish_profiles(
         profile_paths=[fixture["path"]],
@@ -554,17 +554,17 @@ def test_unreachable_lineage_parent_this_service_cannot_fix_still_blocks(
         directory.chmod(0o700)
 
     foreign = {set_root.resolve(), lineage_dir.resolve()}
-    real_chown = os.chown
+    real_chmod = Path.chmod
 
-    def refuse_foreign_chown(path, uid, chown_gid, *args, **kwargs):
-        if Path(path).resolve() in foreign:
+    def refuse_foreign_chmod(path, mode, *args, **kwargs):
+        if path.resolve() in foreign:
             raise PermissionError(1, "Operation not permitted", str(path))
-        return real_chown(path, uid, chown_gid, *args, **kwargs)
+        return real_chmod(path, mode, *args, **kwargs)
 
     monkeypatch.setattr(
         publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(control_root),)
     )
-    monkeypatch.setattr(publisher.os, "chown", refuse_foreign_chown)
+    monkeypatch.setattr(Path, "chmod", refuse_foreign_chmod)
 
     with pytest.raises(publisher.TaskEvaluationLaunchError) as excinfo:
         publisher.publish_profiles(
@@ -576,6 +576,54 @@ def test_unreachable_lineage_parent_this_service_cannot_fix_still_blocks(
         )
 
     assert "immutable_input_parent_permission_install_failed" in str(excinfo.value)
+
+
+def test_matching_group_parent_adds_traversal_without_rechown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    control_root = tmp_path / "var" / "lib" / "blueprint"
+    lineage_dir = control_root / "task-evaluation-inputs" / "same-group" / "prior"
+    lineage_dir.mkdir(parents=True)
+    fixture = _profile(tmp_path, "profile-same-group-parent")
+    source = Path(fixture["profile"]["immutable_inputs"][0]["path"])
+    immutable = lineage_dir / "provider_zero.v1.json"
+    immutable.write_bytes(source.read_bytes())
+    for item in fixture["profile"]["immutable_inputs"]:
+        item["path"] = str(immutable)
+    fixture["profile"]["profile_digest"] = canonical_digest(
+        fixture["profile"], digest_field="profile_digest"
+    )
+    fixture["path"].write_text(
+        json.dumps(fixture["profile"], indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = pwd.getpwnam(account).pw_gid
+    group = grp.getgrgid(gid).gr_name
+    for directory in (lineage_dir.parent, lineage_dir):
+        os.chown(directory, -1, gid)
+        directory.chmod(0o700)
+
+    protected = {lineage_dir.parent.resolve(), lineage_dir.resolve()}
+    real_chown = os.chown
+
+    def refuse_chown(path, uid, chown_gid, *args, **kwargs):
+        if Path(path).resolve() in protected:
+            raise AssertionError("matching group must not be rechowned")
+        return real_chown(path, uid, chown_gid, *args, **kwargs)
+
+    monkeypatch.setattr(
+        publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(control_root),)
+    )
+    monkeypatch.setattr(publisher.os, "chown", refuse_chown)
+    publisher.publish_profiles(
+        profile_paths=[fixture["path"]],
+        profile_dir=control_root / "etc" / "task-evaluation-launch-profiles",
+        webapp_catalog_out=control_root / "state" / "catalog.json",
+        service_account=account,
+        service_group=group,
+    )
+    assert stat.S_IMODE(lineage_dir.stat().st_mode) == 0o710
 
 
 def test_lineage_input_another_operator_owns_is_verified_not_rechowned(

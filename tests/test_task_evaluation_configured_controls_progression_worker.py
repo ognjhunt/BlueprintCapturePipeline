@@ -120,6 +120,40 @@ def _digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def test_activation_authority_finds_hashed_success_and_ignores_blocked(
+    tmp_path: Path,
+) -> None:
+    activation_id = "corrective-scene-" + "x" * 170
+    profile_id = "corrective-construction-profile"
+    profile_digest = "sha256:" + "9" * 64
+    results = tmp_path / "activations" / "results"
+    _write(
+        results / "activation-blocked.json",
+        {"activation_id": activation_id, "status": "blocked"},
+    )
+    success = {
+        "activation_id": activation_id,
+        "status": "profile_authority_materialized_no_execution",
+        "profile_id": profile_id,
+        "profile_digest": profile_digest,
+    }
+    _write(results / "activation-recovered.json", success)
+    profiles = tmp_path / "profiles"
+    _write(
+        profiles / f"{profile_id}.json",
+        {"profile_id": profile_id, "profile_digest": profile_digest},
+    )
+
+    activation, profile = worker._activation_authority(
+        activation_queue_root=tmp_path / "activations",
+        profile_dir=profiles,
+        activation_id=activation_id,
+    )
+
+    assert activation == success
+    assert profile["profile_id"] == profile_id
+
+
 def test_dynamic_window_retry_reopens_same_bytes_after_publish_failure(
     tmp_path: Path,
 ) -> None:
@@ -701,6 +735,7 @@ def test_paid_transition_uses_only_injected_webapp_submitter(
         tmp_path / "activations" / "results" / f"{activation_id}-digest.json",
         {
             "activation_id": activation_id,
+            "status": "profile_authority_materialized_no_execution",
             "profile_id": profile_id,
             "profile_digest": profile_digest,
         },
