@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import (
+    canonical_digest,
+    cross_runtime_canonical_digest,
+)
 from blueprint_pipeline.task_evaluation_result_delivery import (
     TaskEvaluationResultDeliveryError,
     materialize_policy_canary_result_delivery,
@@ -140,9 +143,7 @@ def _result(evidence: Path) -> dict[str, object]:
                         "task_succeeded": True,
                         "outcome": "placed",
                         "outcome_rank": 5,
-                        "measurements": {
-                            "final_horizontal_distance_to_destination_m": 0.01
-                        },
+                        "measurements": {"final_horizontal_distance_to_destination_m": 0.01},
                     },
                     "visual_evidence": {
                         "videos": {
@@ -168,15 +169,9 @@ def test_canary_delivery_seals_downloads_and_terminal_closure(tmp_path: Path) ->
     evidence.mkdir()
     result = _result(evidence)
     closure = {
-        "billing": _closure(
-            tmp_path / "billing.json", flag="official_billing_sealed"
-        ),
-        "teardown": _closure(
-            tmp_path / "teardown.json", flag="teardown_completed"
-        ),
-        "provider_zero": _closure(
-            tmp_path / "provider-zero.json", flag="provider_zero_verified"
-        ),
+        "billing": _closure(tmp_path / "billing.json", flag="official_billing_sealed"),
+        "teardown": _closure(tmp_path / "teardown.json", flag="teardown_completed"),
+        "provider_zero": _closure(tmp_path / "provider-zero.json", flag="provider_zero_verified"),
     }
 
     delivery = materialize_policy_canary_result_delivery(
@@ -194,11 +189,13 @@ def test_canary_delivery_seals_downloads_and_terminal_closure(tmp_path: Path) ->
     assert delivery["candidate_results"][0]["success_rate"] == 1.0
     assert delivery["matrix_digest"] == "sha256:" + "6" * 64
     assert delivery["closure"]["provider_zero"]["provider_zero_verified"] is True
+    assert delivery["delivery_digest"] == cross_runtime_canonical_digest(
+        delivery, digest_field="delivery_digest"
+    )
+    assert delivery["delivery_digest"] != canonical_digest(delivery, digest_field="delivery_digest")
     episode = delivery["episodes"][0]
     assert episode["episode_kind"] == "learned_candidate"
-    assert episode["evidence"]["lossless_policy_inputs"]["access_mode"] == (
-        "authenticated_ticket"
-    )
+    assert episode["evidence"]["lossless_policy_inputs"]["access_mode"] == ("authenticated_ticket")
     assert episode["evidence"]["videos"]["external"]["content_type"] == "video/mp4"
     assert episode["traces"]["state"]["role"] == "state_trace"
     assert episode["timeline"][-1]["scoring_state"] == "placed"
@@ -246,9 +243,7 @@ def test_canary_delivery_refuses_estimated_cost_as_official_billing(
             evidence_root=evidence,
             closure_records={
                 "billing": billing,
-                "teardown": _closure(
-                    tmp_path / "teardown.json", flag="teardown_completed"
-                ),
+                "teardown": _closure(tmp_path / "teardown.json", flag="teardown_completed"),
                 "provider_zero": _closure(
                     tmp_path / "provider-zero.json",
                     flag="provider_zero_verified",

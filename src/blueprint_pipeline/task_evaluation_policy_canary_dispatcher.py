@@ -20,7 +20,7 @@ import sys
 from typing import Any, Callable, Mapping, Sequence
 
 from .common import write_json
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .native_task_arena_policy_canary_bundle import (
     build_policy_canary_session_bundle,
 )
@@ -96,9 +96,7 @@ def _read(path: str | Path, *, code: str) -> dict[str, Any]:
 def _record(path: str | Path) -> dict[str, Any]:
     source = Path(path).expanduser().resolve()
     if source.is_symlink() or not source.is_file():
-        raise TaskEvaluationPolicyCanaryDispatchError(
-            "policy_canary_dispatch_record_invalid"
-        )
+        raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_dispatch_record_invalid")
     return {
         "path": str(source),
         "size_bytes": source.stat().st_size,
@@ -139,12 +137,9 @@ def validate_policy_canary_execution_setup(
         or not str(setup.get("intake_id") or "")
         or not _is_digest(setup.get("request_digest"))
         or not isinstance(records, Mapping)
-        or setup.get("setup_digest")
-        != canonical_digest(setup, digest_field="setup_digest")
+        or setup.get("setup_digest") != canonical_digest(setup, digest_field="setup_digest")
     ):
-        raise TaskEvaluationPolicyCanaryDispatchError(
-            "policy_canary_scene839873_setup_invalid"
-        )
+        raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_scene839873_setup_invalid")
     expected = {
         "pi05_execution_spec",
         "groot_execution_spec",
@@ -263,8 +258,7 @@ def _join_session_closeout(
         and adapter.get("continuing_spend_from_this_run") is False
     )
     global_zero = (
-        provider_zero.get("schema_version")
-        == "task_evaluation_policy_canary_vast_provider_zero.v1"
+        provider_zero.get("schema_version") == "task_evaluation_policy_canary_vast_provider_zero.v1"
         and provider_zero.get("provider_zero_verified") is True
         and provider_zero.get("live_instance_count") == 0
         and provider_zero.get("blockers") == []
@@ -329,9 +323,7 @@ def _materialize_official_billing_if_posted(
         try:
             materialize_vast_official_same_goal_reconciliation(
                 provider_billing_source_receipt_path=source,
-                expected_instances=[
-                    (int(instance_ids[0]), launch_label, adapter_result_path)
-                ],
+                expected_instances=[(int(instance_ids[0]), launch_label, adapter_result_path)],
                 output_path=output_path,
             )
         except (OSError, VastOfficialBillingExtractionError):
@@ -344,19 +336,13 @@ def _projection(
     *, setup: Mapping[str, Any], result: Mapping[str, Any], delivery: Mapping[str, Any]
 ) -> dict[str, Any]:
     episodes = list(result.get("episodes") or [])
+
     def compact_artifact(record: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            key: record[key]
-            for key in ("artifact_id", "digest", "size_bytes")
-        }
+        return {key: record[key] for key in ("artifact_id", "digest", "size_bytes")}
 
     report = {
-        "machine_readable_report": compact_artifact(
-            delivery["report"]["machine_readable_report"]
-        ),
-        "evidence_manifest": compact_artifact(
-            delivery["report"]["evidence_manifest"]
-        ),
+        "machine_readable_report": compact_artifact(delivery["report"]["machine_readable_report"]),
+        "evidence_manifest": compact_artifact(delivery["report"]["evidence_manifest"]),
     }
     public_artifacts = delivery.get("artifacts") or []
 
@@ -372,23 +358,19 @@ def _projection(
         ]
         if len(matches) != 1:
             return None
-        return {
-            key: matches[0][key]
-            for key in ("artifact_id", "digest", "size_bytes")
-        }
+        return {key: matches[0][key] for key in ("artifact_id", "digest", "size_bytes")}
+
     projected_episodes: list[dict[str, Any]] = []
     for row in episodes:
         candidate = str(row.get("candidate_id") or "")
         cell_id = str(row.get("cell_id") or "")
         episode_id = f"{result.get('run_id') or setup['scene_id']}--{cell_id}--{candidate}"
         if len(episode_id) > 192:
-            episode_id = episode_id[:150] + "-" + hashlib.sha256(
-                episode_id.encode()
-            ).hexdigest()[:32]
+            episode_id = (
+                episode_id[:150] + "-" + hashlib.sha256(episode_id.encode()).hexdigest()[:32]
+            )
         source_artifacts = row.get("evidence_artifacts")
-        source_artifacts = (
-            dict(source_artifacts) if isinstance(source_artifacts, Mapping) else {}
-        )
+        source_artifacts = dict(source_artifacts) if isinstance(source_artifacts, Mapping) else {}
         evidence_roles = {
             "reset_state": "reset_state",
             "frame_manifest": "frame_manifest",
@@ -405,9 +387,7 @@ def _projection(
             target: bound_artifact(source_artifacts.get(source))
             for target, source in evidence_roles.items()
         }
-        evidence_gaps = sorted(
-            target for target, artifact in bound.items() if artifact is None
-        )
+        evidence_gaps = sorted(target for target, artifact in bound.items() if artifact is None)
         if row.get("status") == "completed" and evidence_gaps:
             raise TaskEvaluationPolicyCanaryDispatchError(
                 "policy_canary_completed_episode_evidence_missing:"
@@ -440,9 +420,7 @@ def _projection(
             **bound,
             "evidence_gaps": evidence_gaps,
         }
-        gap = ((row.get("visual_evidence") or {}).get("media_gap") or {}).get(
-            "reason"
-        )
+        gap = ((row.get("visual_evidence") or {}).get("media_gap") or {}).get("reason")
         if gap:
             evidence["typed_media_gap"] = str(gap)
         projected_episodes.append(
@@ -451,17 +429,11 @@ def _projection(
                 "candidate_id": candidate,
                 "cell_id": cell_id,
                 "seed": row.get("seed"),
-                "terminal_state": (
-                    "completed" if row.get("status") == "completed" else "blocked"
-                ),
-                "candidate_policy_queried": row.get("candidate_policy_queried")
-                is True,
+                "terminal_state": ("completed" if row.get("status") == "completed" else "blocked"),
+                "candidate_policy_queried": row.get("candidate_policy_queried") is True,
                 "actions_reached_robot": row.get("actions_reached_robot") is True,
                 "arm_moved": row.get("arm_moved") is True,
-                "policy_outcome_interpretable": row.get(
-                    "policy_outcome_interpretable"
-                )
-                is True,
+                "policy_outcome_interpretable": row.get("policy_outcome_interpretable") is True,
                 "failure_taxonomy": row.get("typed_harness_failure"),
                 "evidence": evidence,
             }
@@ -481,9 +453,7 @@ def _projection(
         candidate_results.append(
             {
                 "candidate_id": candidate,
-                "episodes_completed": sum(
-                    row["terminal_state"] == "completed" for row in rows
-                ),
+                "episodes_completed": sum(row["terminal_state"] == "completed" for row in rows),
                 "interpretable_episode_count": sum(
                     row["policy_outcome_interpretable"] for row in rows
                 ),
@@ -491,9 +461,7 @@ def _projection(
                     row["actions_reached_robot"] for row in rows
                 ),
                 "metrics": {
-                    key: value
-                    for key, value in delivered_metrics.items()
-                    if key != "candidate_id"
+                    key: value for key, value in delivered_metrics.items() if key != "candidate_id"
                 },
                 "failure_counts": failures,
             }
@@ -559,7 +527,7 @@ def _projection(
         "blockers": list(result.get("blockers") or []),
         "projection_digest": "",
     }
-    value["projection_digest"] = canonical_digest(
+    value["projection_digest"] = cross_runtime_canonical_digest(
         value, digest_field="projection_digest"
     )
     return validate_policy_canary_result(value)
@@ -596,8 +564,7 @@ def dispatch_policy_canary_activation(
     )
     if (
         activation_result.get("schema_version") != ACTIVATION_SCHEMA_VERSION
-        or activation_result.get("status")
-        != "policy_campaign_queue_materialized_no_execution"
+        or activation_result.get("status") != "policy_campaign_queue_materialized_no_execution"
         or activation_result.get("run_kind") != RUN_KIND
         or activation_result.get("claim_ceiling") != CLAIM_CEILING
         or activation_result.get("provider_mutation_performed") is not False
@@ -605,12 +572,12 @@ def dispatch_policy_canary_activation(
         or activation_result.get("result_digest")
         != canonical_digest(activation_result, digest_field="result_digest")
     ):
-        raise TaskEvaluationPolicyCanaryDispatchError(
-            "policy_canary_activation_result_invalid"
-        )
-    runtime_path = Path(
-        str(activation_result.get("policy_canary_runtime_inputs_path") or "")
-    ).expanduser().resolve()
+        raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_activation_result_invalid")
+    runtime_path = (
+        Path(str(activation_result.get("policy_canary_runtime_inputs_path") or ""))
+        .expanduser()
+        .resolve()
+    )
     runtime_inputs = validate_runtime_input_manifest(
         _read(runtime_path, code="policy_canary_runtime_inputs_invalid")
     )
@@ -648,9 +615,7 @@ def dispatch_policy_canary_activation(
     records = setup["records"]
     _event(root, stage="preparing", status="running")
     bundle_receipt_path = (
-        root
-        / "bundle"
-        / "native_task_arena_policy_canary_session_bundle_receipt.v1.json"
+        root / "bundle" / "native_task_arena_policy_canary_session_bundle_receipt.v1.json"
     )
     if bundle_receipt_path.is_file():
         bundle = validate_provider_bundle(
@@ -734,9 +699,7 @@ def dispatch_policy_canary_activation(
             "status": "finished",
             "run_id": activation["run_id"],
             "execute": execute,
-            "allocator_argv_digest": invocation_started[
-                "allocator_argv_digest"
-            ],
+            "allocator_argv_digest": invocation_started["allocator_argv_digest"],
             "exit_code": exit_code,
             "adapter_result_present": adapter_path.is_file(),
             "allocator_invoked": True,
@@ -768,9 +731,7 @@ def dispatch_policy_canary_activation(
             "retry_cap": 0,
             "receipt_digest": "",
         }
-        receipt["receipt_digest"] = canonical_digest(
-            receipt, digest_field="receipt_digest"
-        )
+        receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
         _write_exclusive(root / "dispatch_receipt.json", receipt)
         return receipt
 
@@ -794,9 +755,7 @@ def dispatch_policy_canary_activation(
         specs = {
             candidate: _read(
                 records[
-                    "pi05_execution_spec"
-                    if candidate == "pi05_droid"
-                    else "groot_execution_spec"
+                    "pi05_execution_spec" if candidate == "pi05_droid" else "groot_execution_spec"
                 ]["path"],
                 code="policy_canary_execution_spec_invalid",
             )
@@ -819,9 +778,7 @@ def dispatch_policy_canary_activation(
                     "policy_outcome_interpretable": False,
                     "typed_harness_failure": "before_first_observation",
                     "checkpoint_digest": specs[candidate]["checkpoint_digest"],
-                    "runtime_identity_digest": specs[candidate][
-                        "runtime_identity_digest"
-                    ],
+                    "runtime_identity_digest": specs[candidate]["runtime_identity_digest"],
                     "reset_state_digest": canonical_digest(
                         {
                             "resolved_scenario": cell["resolved_scenario"],
@@ -852,14 +809,10 @@ def dispatch_policy_canary_activation(
             "blockers": list(adapter.get("blockers") or ["provider_result_missing"]),
             "result_digest": "",
         }
-        inner["result_digest"] = canonical_digest(
-            inner, digest_field="result_digest"
-        )
+        inner["result_digest"] = canonical_digest(inner, digest_field="result_digest")
         native_path = gap_root / "policy_canary_provider_gap_result.json"
         write_json(native_path, inner)
-    joined = _join_session_closeout(
-        inner=inner, adapter=adapter, provider_zero=provider_zero
-    )
+    joined = _join_session_closeout(inner=inner, adapter=adapter, provider_zero=provider_zero)
     joined["run_id"] = activation["run_id"]
     joined["configuration_digest"] = runtime_inputs["configuration_digest"]
     joined["result_digest"] = canonical_digest(joined, digest_field="result_digest")
@@ -891,10 +844,11 @@ def dispatch_policy_canary_activation(
         }
         write_json(root / "dispatch_pending.json", pending)
         return pending
-    billing_path = Path(
-        official_billing_receipt_path
-        or root / "official_billing_reconciliation.json"
-    ).expanduser().resolve()
+    billing_path = (
+        Path(official_billing_receipt_path or root / "official_billing_reconciliation.json")
+        .expanduser()
+        .resolve()
+    )
     if not billing_path.is_file():
         _materialize_official_billing_if_posted(
             billing_audit_root=(
@@ -925,8 +879,7 @@ def dispatch_policy_canary_activation(
         "teardown": {**_record(teardown_path), "teardown_completed": True},
         "provider_zero": {
             **_record(provider_zero_path),
-            "provider_zero_verified": provider_zero.get("provider_zero_verified")
-            is True,
+            "provider_zero_verified": provider_zero.get("provider_zero_verified") is True,
         },
     }
     _event(root, stage="artifacts_syncing", status="running")
@@ -990,9 +943,7 @@ def dispatch_policy_canary_activation(
         "retry_cap": 0,
         "receipt_digest": "",
     }
-    receipt["receipt_digest"] = canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     _write_exclusive(root / "dispatch_receipt.json", receipt)
     _event(root, stage="billing_teardown", status="completed")
     _event(root, stage=joined["status"], status="completed")
@@ -1010,17 +961,17 @@ def process_policy_canary_activation_results(
 ) -> dict[str, Any]:
     """Consume activation results automatically; never re-run an allocator output."""
 
-    if not isinstance(max_messages, int) or isinstance(max_messages, bool) or not 1 <= max_messages <= 8:
-        raise TaskEvaluationPolicyCanaryDispatchError(
-            "policy_canary_dispatch_max_messages_invalid"
-        )
+    if (
+        not isinstance(max_messages, int)
+        or isinstance(max_messages, bool)
+        or not 1 <= max_messages <= 8
+    ):
+        raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_dispatch_max_messages_invalid")
     results = Path(activation_results_root).expanduser().resolve()
     setups = Path(execution_setup_root).expanduser().resolve()
     outputs = Path(dispatch_root).expanduser().resolve()
     if not results.is_dir() or not setups.is_dir():
-        raise TaskEvaluationPolicyCanaryDispatchError(
-            "policy_canary_dispatch_queue_roots_invalid"
-        )
+        raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_dispatch_queue_roots_invalid")
     outputs.mkdir(parents=True, exist_ok=True)
     processed: list[dict[str, Any]] = []
     for path in sorted(results.glob("*.json")):
@@ -1061,9 +1012,7 @@ def process_policy_canary_activation_results(
                 output_root=output,
                 implementation_commit=implementation_commit,
                 execute=execute,
-                official_billing_receipt_path=(
-                    output / "official_billing_reconciliation.json"
-                ),
+                official_billing_receipt_path=(output / "official_billing_reconciliation.json"),
             )
         )
     return {
@@ -1194,9 +1143,7 @@ def process_policy_canary_dispatch_queue(
         activation_id = str(envelope["activation_id"])
         setup_candidates = (
             setups / f"{activation_id}.json",
-            setups
-            / activation_id
-            / "task_evaluation_policy_canary_execution_setup.v1.json",
+            setups / activation_id / "task_evaluation_policy_canary_execution_setup.v1.json",
         )
         setup_path = next((path for path in setup_candidates if path.is_file()), None)
         if setup_path is None and execution_setup_template_path is not None:
@@ -1215,10 +1162,7 @@ def process_policy_canary_dispatch_queue(
                     blockers=exc.blockers,
                 )
                 continue
-            setup_path = (
-                setup_directory
-                / "task_evaluation_policy_canary_execution_setup.v1.json"
-            )
+            setup_path = setup_directory / "task_evaluation_policy_canary_execution_setup.v1.json"
         if setup_path is None:
             waiting = {
                 "schema_version": "task_evaluation_policy_canary_preprovider_wait.v1",
@@ -1229,9 +1173,7 @@ def process_policy_canary_dispatch_queue(
                 "automatic_retry_performed": False,
                 "waiting_digest": "",
             }
-            waiting["waiting_digest"] = canonical_digest(
-                waiting, digest_field="waiting_digest"
-            )
+            waiting["waiting_digest"] = canonical_digest(waiting, digest_field="waiting_digest")
             wait_root = outputs / activation_id
             wait_root.mkdir(parents=True, exist_ok=True)
             _write_exclusive(wait_root / "preprovider_waiting.json", waiting)
@@ -1245,9 +1187,7 @@ def process_policy_canary_dispatch_queue(
                 output_root=output,
                 implementation_commit=implementation_commit,
                 execute=execute,
-                official_billing_receipt_path=(
-                    output / "official_billing_reconciliation.json"
-                ),
+                official_billing_receipt_path=(output / "official_billing_reconciliation.json"),
                 billing_audit_root=billing_audit_root,
             )
         except TaskEvaluationPolicyCanaryDispatchError as exc:
@@ -1262,9 +1202,7 @@ def process_policy_canary_dispatch_queue(
                         "blockers": [type(zero_exc).__name__],
                     }
                 after_allocator = {
-                    "schema_version": (
-                        "task_evaluation_policy_canary_post_allocator_blocked.v1"
-                    ),
+                    "schema_version": ("task_evaluation_policy_canary_post_allocator_blocked.v1"),
                     "status": (
                         "blocked_after_allocator_invocation_provider_zero"
                         if provider_zero.get("provider_zero_verified") is True
@@ -1274,9 +1212,7 @@ def process_policy_canary_dispatch_queue(
                     "run_kind": RUN_KIND,
                     "claim_ceiling": CLAIM_CEILING,
                     "allocator_invoked": True,
-                    "provider_mutation_status": (
-                        "unknown_after_allocator_invocation"
-                    ),
+                    "provider_mutation_status": ("unknown_after_allocator_invocation"),
                     "automatic_retry_performed": False,
                     "blockers": [str(exc)],
                     "allocator_invocation": _record(invocation_started),
@@ -1332,16 +1268,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         legacy_queue_mode = all(
             (args.activation_results_root, args.execution_setup_root, args.dispatch_root)
         )
-        queue_mode = all(
-            (args.dispatch_queue_root, args.execution_setup_root, args.dispatch_root)
-        )
-        direct_mode = all(
-            (args.activation_result, args.execution_setup, args.output_root)
-        )
+        queue_mode = all((args.dispatch_queue_root, args.execution_setup_root, args.dispatch_root))
+        direct_mode = all((args.activation_result, args.execution_setup, args.output_root))
         if sum((legacy_queue_mode, queue_mode, direct_mode)) != 1:
-            raise TaskEvaluationPolicyCanaryDispatchError(
-                "policy_canary_dispatch_cli_mode_invalid"
-            )
+            raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_dispatch_cli_mode_invalid")
         result = (
             process_policy_canary_dispatch_queue(
                 dispatch_queue_root=args.dispatch_queue_root,
@@ -1375,12 +1305,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"status": "blocked", "blockers": [str(exc)]}, sort_keys=True))
         return 2
     print(json.dumps(result, sort_keys=True))
-    return 0 if result["status"] in {
-        "prepared_no_execution",
-        "completed_unqualified",
-        "processed",
-        "idle",
-    } else 2
+    return (
+        0
+        if result["status"]
+        in {
+            "prepared_no_execution",
+            "completed_unqualified",
+            "processed",
+            "idle",
+        }
+        else 2
+    )
 
 
 __all__ = [
