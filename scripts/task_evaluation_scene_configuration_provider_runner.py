@@ -110,11 +110,18 @@ def _hydrate_envelope(runtime: Path, portable: dict) -> dict:
         )
         mask["path"] = str(mask_path)
     cutout = render.get("derived_gaussian_cutout") or {}
-    for key in (
-        "source_object_candidate",
-        "retained_scene_without_source_object",
-    ):
-        row = cutout.get(key) or {}
+    # A production semantic-reuse checkpoint deliberately omits the removed
+    # source-object candidate when that optional inventory role was not
+    # retained.  The retained scene is still mandatory and is the geometry
+    # protected input for the corrective Artifixer run.  Hydrate every bound
+    # cutout row that is actually present instead of turning an intentional
+    # omission into an empty relative path at provider runtime.
+    for key in ("retained_scene_without_source_object", "source_object_candidate"):
+        row = cutout.get(key)
+        if key == "source_object_candidate" and row is None:
+            continue
+        if not isinstance(row, dict):
+            raise ValueError("scene_configuration_provider_cutout_invalid")
         path = _runtime_file(
             runtime,
             row.get("path"),

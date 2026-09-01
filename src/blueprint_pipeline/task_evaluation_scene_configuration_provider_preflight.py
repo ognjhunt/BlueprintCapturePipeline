@@ -258,11 +258,31 @@ def scene_configuration_bundle_contract(
             row = render.get(key)
             if isinstance(row, Mapping):
                 bound_rows.append((str(row.get("path") or ""), row))
-        bound_rows.extend(
-            (str(row.get("path") or ""), row)
-            for row in render.get("derived_frames") or []
-            if isinstance(row, Mapping)
-        )
+        for row in render.get("derived_frames") or []:
+            if not isinstance(row, Mapping):
+                blockers.append("scene_configuration_provider_input_path_invalid")
+                continue
+            bound_rows.append((str(row.get("path") or ""), row))
+            mask = row.get("source_object_mask")
+            if not isinstance(mask, Mapping):
+                blockers.append("scene_configuration_provider_input_path_invalid")
+            else:
+                bound_rows.append((str(mask.get("path") or ""), mask))
+        cutout = render.get("derived_gaussian_cutout")
+        if not isinstance(cutout, Mapping):
+            blockers.append("scene_configuration_provider_input_path_invalid")
+        else:
+            retained = cutout.get("retained_scene_without_source_object")
+            if not isinstance(retained, Mapping):
+                blockers.append("scene_configuration_provider_input_path_invalid")
+            else:
+                bound_rows.append((str(retained.get("path") or ""), retained))
+            candidate = cutout.get("source_object_candidate")
+            if candidate is not None:
+                if not isinstance(candidate, Mapping):
+                    blockers.append("scene_configuration_provider_input_path_invalid")
+                else:
+                    bound_rows.append((str(candidate.get("path") or ""), candidate))
     seen: set[str] = set()
     for relative, row in bound_rows:
         if (
