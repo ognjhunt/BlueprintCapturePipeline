@@ -11,6 +11,9 @@ from blueprint_pipeline.task_evaluation_episode_compilation_worker import (
 from blueprint_pipeline.task_evaluation_launch_preparation_queue import (
     write_launch_preparation_record_exclusive,
 )
+from blueprint_pipeline.task_evaluation_native_arena_preparation_adapter import (
+    TaskEvaluationNativeArenaAdapterError,
+)
 from blueprint_pipeline.task_evaluation_scene_construction_queue import (
     ensure_scene_construction_queue_root,
 )
@@ -213,4 +216,28 @@ def test_compilation_blocks_before_compiler_on_changed_materialized_bytes(
     assert run["results"][0]["status"] == "blocked"
     assert run["results"][0]["blockers"] == [
         "episode_compilation_materialized_reference_invalid"
+    ]
+
+
+def test_compilation_preserves_typed_native_adapter_blocker(
+    tmp_path: Path,
+) -> None:
+    queue, inputs, envelope = _stage(tmp_path)
+
+    def blocked_adapter(**_kwargs):
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_bundle_identity_mismatch"
+        )
+
+    run = process_episode_compilation_queue(
+        queue_root=queue,
+        input_root=inputs,
+        output_root=tmp_path / "outputs",
+        source_commit=envelope["expected_production_commit"],
+        episode_compiler=blocked_adapter,
+    )
+
+    assert run["results"][0]["status"] == "blocked"
+    assert run["results"][0]["blockers"] == [
+        "task_evaluation_adapter_bundle_identity_mismatch"
     ]
