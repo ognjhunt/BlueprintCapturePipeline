@@ -97,6 +97,11 @@ def _profile_and_request(tmp_path: Path) -> tuple[dict, dict]:
         base_profile, digest_field="profile_digest"
     )
     controller = copy.deepcopy(legacy["preparation_template"]["controller"])
+    policy_registry = {
+        "uri": "s3://blueprint/policy-canary/policy-registry.json",
+        "digest": "sha256:" + "9" * 64,
+        "size_bytes": 3_821,
+    }
     plan = {
         "schema_version": "task_evaluation_policy_canary_execution_plan.v1",
         "source_commit": COMMIT,
@@ -105,7 +110,7 @@ def _profile_and_request(tmp_path: Path) -> tuple[dict, dict]:
         "scene_revision_digest": public["scene_revision_digest"],
         "public_setup_digest": public["setup_digest"],
         "configured_preparation_request_digest": "sha256:" + "3" * 64,
-        "policy_controller_configuration": controller["configuration"],
+        "policy_controller_configuration": policy_registry,
         "model_rights": controller["model_or_asset_rights"],
         "resolved_scenarios": copy.deepcopy(legacy["presets"][0]["cells"]),
         "legacy_policy_run_setup": legacy,

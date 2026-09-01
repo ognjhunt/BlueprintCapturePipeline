@@ -66,6 +66,7 @@ def validate_policy_canary_execution_plan(
         ) from exc
     resolved = plan.get("resolved_scenarios")
     template = _mapping(plan.get("preparation_template"))
+    template_controller = _mapping(template.get("controller"))
     resource = _mapping(plan.get("resource_authority"))
     if (
         plan.get("schema_version") != PLAN_SCHEMA_VERSION
@@ -78,9 +79,11 @@ def validate_policy_canary_execution_plan(
         or not _reference(plan.get("policy_controller_configuration"))
         or not _reference(plan.get("model_rights"))
         or template != legacy["preparation_template"]
-        or template.get("controller", {}).get("configuration")
-        != plan.get("policy_controller_configuration")
-        or template.get("controller", {}).get("model_or_asset_rights")
+        or template_controller.get("kind") != "policy_container"
+        or not _reference(template_controller.get("configuration"))
+        or template_controller.get("configuration")
+        == plan.get("policy_controller_configuration")
+        or template_controller.get("model_or_asset_rights")
         != plan.get("model_rights")
         or not isinstance(resolved, list)
         or len(resolved) != 10
