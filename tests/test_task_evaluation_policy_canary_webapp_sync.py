@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import (
+    cross_runtime_canonical_digest,
+)
 from blueprint_pipeline.task_evaluation_policy_canary_result import (
     validate_policy_canary_result,
 )
@@ -28,7 +30,7 @@ def _projection() -> tuple[dict[str, object], dict[str, object]]:
         "claim_ceiling": "diagnostic_policy_execution",
         "delivery_digest": "",
     }
-    delivery["delivery_digest"] = canonical_digest(
+    delivery["delivery_digest"] = cross_runtime_canonical_digest(
         delivery, digest_field="delivery_digest"
     )
     result: dict[str, object] = {
@@ -94,7 +96,7 @@ def _projection() -> tuple[dict[str, object], dict[str, object]]:
         "blockers": ["provider_capacity_unavailable"],
         "projection_digest": "",
     }
-    result["projection_digest"] = canonical_digest(
+    result["projection_digest"] = cross_runtime_canonical_digest(
         result, digest_field="projection_digest"
     )
     return delivery, validate_policy_canary_result(result)
@@ -177,9 +179,7 @@ def test_preprovider_blocked_sync_requires_terminal_email_readback(
             payload = json.loads(request.data)
             return json.dumps(
                 {
-                    "schema_version": (
-                        "capture_task_evaluation_policy_canary_blocked_receipt.v1"
-                    ),
+                    "schema_version": ("capture_task_evaluation_policy_canary_blocked_receipt.v1"),
                     "status": "blocked",
                     "activation_id": payload["activation_id"],
                     "request_digest": payload["request_digest"],

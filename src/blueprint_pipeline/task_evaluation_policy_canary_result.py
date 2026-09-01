@@ -9,15 +9,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import cross_runtime_canonical_digest
 
 
 SCHEMA_VERSION = "task_evaluation_policy_canary_result_projection.v1"
 SCHEMA_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "docs"
-    / "schemas"
-    / f"{SCHEMA_VERSION}.schema.json"
+    Path(__file__).resolve().parents[2] / "docs" / "schemas" / f"{SCHEMA_VERSION}.schema.json"
 )
 
 
@@ -33,9 +30,7 @@ def policy_canary_result_schema() -> dict[str, Any]:
         value = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
         jsonschema.Draft202012Validator.check_schema(value)
     except (OSError, json.JSONDecodeError, jsonschema.SchemaError) as exc:
-        raise TaskEvaluationPolicyCanaryResultError(
-            "policy_canary_result_schema_invalid"
-        ) from exc
+        raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_schema_invalid") from exc
     return deepcopy(value)
 
 
@@ -52,15 +47,11 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
     )
     if errors:
         path = ".".join(str(part) for part in errors[0].path) or "$"
-        raise TaskEvaluationPolicyCanaryResultError(
-            f"policy_canary_result_invalid:{path}"
-        )
-    if result["projection_digest"] != canonical_digest(
+        raise TaskEvaluationPolicyCanaryResultError(f"policy_canary_result_invalid:{path}")
+    if result["projection_digest"] != cross_runtime_canonical_digest(
         result, digest_field="projection_digest"
     ):
-        raise TaskEvaluationPolicyCanaryResultError(
-            "policy_canary_result_digest_mismatch"
-        )
+        raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_digest_mismatch")
     counts = result["counts"]
     if (
         counts["completed_learned_policy_rollout_count"] != len(result["episodes"])
@@ -69,22 +60,15 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
         or [row["candidate_id"] for row in result["candidate_results"]]
         != ["pi05_droid", "groot_n17_droid"]
     ):
-        raise TaskEvaluationPolicyCanaryResultError(
-            "policy_canary_result_episode_counts_invalid"
-        )
+        raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_episode_counts_invalid")
     if result["result_status"] == "completed_unqualified":
         if counts["completed_learned_policy_rollout_count"] != 20 or result["blockers"]:
-            raise TaskEvaluationPolicyCanaryResultError(
-                "policy_canary_result_completion_invalid"
-            )
+            raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_completion_invalid")
     elif not result["blockers"]:
-        raise TaskEvaluationPolicyCanaryResultError(
-            "policy_canary_result_terminal_blocker_missing"
-        )
+        raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_terminal_blocker_missing")
     for episode in result["episodes"]:
         if episode["terminal_state"] == "completed" and not (
-            episode["candidate_policy_queried"]
-            and episode["actions_reached_robot"]
+            episode["candidate_policy_queried"] and episode["actions_reached_robot"]
         ):
             raise TaskEvaluationPolicyCanaryResultError(
                 "policy_canary_result_completed_episode_execution_unproven"
@@ -107,8 +91,7 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
             "score_receipt",
         )
         if episode["terminal_state"] == "completed" and (
-            evidence["evidence_gaps"]
-            or any(evidence[role] is None for role in artifact_roles)
+            evidence["evidence_gaps"] or any(evidence[role] is None for role in artifact_roles)
         ):
             raise TaskEvaluationPolicyCanaryResultError(
                 "policy_canary_result_completed_episode_evidence_incomplete"

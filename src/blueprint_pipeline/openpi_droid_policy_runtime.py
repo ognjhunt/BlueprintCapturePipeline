@@ -36,12 +36,11 @@ except ImportError:  # flat provider runtime
 
 SCHEMA_VERSION = "openpi_droid_policy_runtime.v1"
 EXECUTION_SPEC_SCHEMA_VERSION = "native_task_arena_policy_execution_spec.v1"
+CANARY_EXECUTION_SPEC_SCHEMA_VERSION = "native_task_arena_policy_canary_execution_spec.v1"
 SERVER_METADATA_SCHEMA_VERSION = "openpi_droid_policy_server_metadata.v1"
 SUPPORTED_ACTION_SPACES = frozenset({"joint_position"})
 SUPPORTED_ACTION_CHUNK_ROWS = frozenset({10, 15})
-OPENPI_INFERENCE_RESPONSE_KEYS = frozenset(
-    {"actions", "policy_timing", "server_timing"}
-)
+OPENPI_INFERENCE_RESPONSE_KEYS = frozenset({"actions", "policy_timing", "server_timing"})
 LOCAL_VERIFICATION_FIELDS = frozenset(
     {
         "local_checkpoint_verified",
@@ -80,19 +79,14 @@ def _json_safe_vendor_response(value: Any) -> Any:
     import math
 
     if isinstance(value, Mapping):
-        return {
-            str(key): _json_safe_vendor_response(item)
-            for key, item in value.items()
-        }
+        return {str(key): _json_safe_vendor_response(item) for key, item in value.items()}
     if isinstance(value, (str, bool, int)) or value is None:
         return value
     if isinstance(value, float):
         if math.isfinite(value):
             return value
         return {"nonfinite_float": repr(value)}
-    if isinstance(value, Sequence) and not isinstance(
-        value, (str, bytes, bytearray)
-    ):
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_json_safe_vendor_response(item) for item in value]
     tolist = getattr(value, "tolist", None)
     if callable(tolist):
@@ -247,11 +241,21 @@ def load_policy_spec_from_execution_spec(
     artifact makes agreement structural rather than coincidental.
     """
 
-    payload = json.loads(
-        Path(execution_spec_path).expanduser().read_text(encoding="utf-8")
-    )
-    if payload.get("schema_version") != EXECUTION_SPEC_SCHEMA_VERSION:
+    payload = json.loads(Path(execution_spec_path).expanduser().read_text(encoding="utf-8"))
+    schema_version = payload.get("schema_version")
+    if schema_version not in {
+        EXECUTION_SPEC_SCHEMA_VERSION,
+        CANARY_EXECUTION_SPEC_SCHEMA_VERSION,
+    }:
         raise ValueError("unsupported_policy_execution_spec_schema")
+    if schema_version == CANARY_EXECUTION_SPEC_SCHEMA_VERSION and (
+        payload.get("execution_authority") != "internal_policy_canary_unqualified"
+        or payload.get("claim_ceiling") != "diagnostic_policy_execution"
+        or payload.get("ranking_permitted") is not False
+        or payload.get("qualification_permitted") is not False
+        or payload.get("scene_promotion_permitted") is not False
+    ):
+        raise ValueError("policy_canary_execution_spec_boundary_invalid")
     policy_spec = payload.get("policy_spec")
     if not isinstance(policy_spec, Mapping):
         raise ValueError("policy_execution_spec_policy_spec_invalid")
@@ -259,9 +263,7 @@ def load_policy_spec_from_execution_spec(
     spec.validate()
     candidate = payload.get("candidate_id")
     if candidate is not None:
-        validate_arena_candidate_policy_binding(
-            candidate_id=str(candidate), spec=spec
-        )
+        validate_arena_candidate_policy_binding(candidate_id=str(candidate), spec=spec)
     return spec
 
 
@@ -284,8 +286,10 @@ def validate_server_metadata(
     if actual.get("local_checkpoint_verified") is not True:
         raise ValueError("policy_server_local_checkpoint_not_verified")
     local_digest = actual.get("local_checkpoint_verification_sha256")
-    if not isinstance(local_digest, str) or len(local_digest) != 64 or any(
-        character not in "0123456789abcdef" for character in local_digest
+    if (
+        not isinstance(local_digest, str)
+        or len(local_digest) != 64
+        or any(character not in "0123456789abcdef" for character in local_digest)
     ):
         raise ValueError("policy_server_local_checkpoint_verification_invalid")
     if actual.get("local_checkpoint_object_count") != expected.checkpoint_object_count:
@@ -445,9 +449,7 @@ class OpenPIWebsocketDroidPolicyClient:
         raw_response = self._client.infer(dict(observation))
         retained_response = _json_safe_vendor_response(raw_response)
         response_keys = (
-            sorted(str(key) for key in raw_response)
-            if isinstance(raw_response, Mapping)
-            else []
+            sorted(str(key) for key in raw_response) if isinstance(raw_response, Mapping) else []
         )
         self._last_inference_evidence = {
             "server_response_received": True,
@@ -455,10 +457,7 @@ class OpenPIWebsocketDroidPolicyClient:
             "wire_response_keys": response_keys,
             "raw_vendor_action_response": retained_response,
             "raw_vendor_action_response_digest": (
-                "sha256:"
-                + canonical_sha256(
-                    {"raw_vendor_action_response": retained_response}
-                )
+                "sha256:" + canonical_sha256({"raw_vendor_action_response": retained_response})
             ),
             "raw_vendor_action_response_role": (
                 "genuine_decoded_vendor_wire_response_before_candidate_normalization"
@@ -539,16 +538,12 @@ def normalize_openpi_inference_response(response: Any) -> Any:
         raise ValueError("openpi_inference_response_keys_not_strings")
     unexpected = sorted(keys - OPENPI_INFERENCE_RESPONSE_KEYS)
     if unexpected:
-        raise ValueError(
-            "openpi_inference_response_unexpected_keys:" + ",".join(unexpected)
-        )
+        raise ValueError("openpi_inference_response_unexpected_keys:" + ",".join(unexpected))
     if "actions" not in response:
         raise ValueError("openpi_inference_response_actions_missing")
     for timing_key in ("policy_timing", "server_timing"):
         if timing_key in response and not isinstance(response[timing_key], Mapping):
-            raise ValueError(
-                f"openpi_inference_response_{timing_key}_not_object"
-            )
+            raise ValueError(f"openpi_inference_response_{timing_key}_not_object")
     return response["actions"]
 
 

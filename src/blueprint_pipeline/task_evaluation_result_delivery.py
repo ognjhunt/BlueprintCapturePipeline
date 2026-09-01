@@ -24,7 +24,11 @@ from typing import Any
 
 from .adp_episode_evidence_index import INDEX_FILENAME, INDEX_SCHEMA_VERSION
 from .core.security_controls import strict_identifier
-from .decision_evidence_contracts import canonical_digest, canonical_json
+from .decision_evidence_contracts import (
+    canonical_digest,
+    canonical_json,
+    cross_runtime_canonical_digest,
+)
 
 
 DELIVERY_SCHEMA_VERSION = "task_evaluation_result_delivery.v1"
@@ -260,9 +264,7 @@ def main(argv: list[str] | None = None) -> int:
             "result_delivery_decision_envelope_unreadable"
         ) from exc
     if not isinstance(decision_envelope, Mapping):
-        raise TaskEvaluationResultDeliveryError(
-            "result_delivery_decision_envelope_invalid"
-        )
+        raise TaskEvaluationResultDeliveryError("result_delivery_decision_envelope_invalid")
     result = materialize_task_evaluation_result_delivery(
         run_root=args.run_root,
         run_id=args.run_id,
@@ -658,24 +660,17 @@ def materialize_policy_canary_result_delivery(
 
     run = strict_identifier(run_id, field="run_id", max_length=192)
     if result_status not in {"completed_unqualified", "blocked", "cancelled"}:
-        raise TaskEvaluationResultDeliveryError(
-            "policy_canary_result_delivery_status_invalid"
-        )
+        raise TaskEvaluationResultDeliveryError("policy_canary_result_delivery_status_invalid")
     result = json.loads(json.dumps(dict(session_result), allow_nan=False))
     if (
         result.get("run_kind") != "internal_policy_canary"
         or result.get("claim_ceiling") != "diagnostic_policy_execution"
-        or result.get("result_digest")
-        != canonical_digest(result, digest_field="result_digest")
+        or result.get("result_digest") != canonical_digest(result, digest_field="result_digest")
     ):
-        raise TaskEvaluationResultDeliveryError(
-            "policy_canary_result_delivery_result_invalid"
-        )
+        raise TaskEvaluationResultDeliveryError("policy_canary_result_delivery_result_invalid")
     episodes = result.get("episodes")
     if not isinstance(episodes, list) or len(episodes) > 20:
-        raise TaskEvaluationResultDeliveryError(
-            "policy_canary_result_delivery_episodes_invalid"
-        )
+        raise TaskEvaluationResultDeliveryError("policy_canary_result_delivery_episodes_invalid")
 
     root = Path(run_root).expanduser().resolve()
     evidence = Path(evidence_root).expanduser().resolve()
@@ -698,9 +693,7 @@ def materialize_policy_canary_result_delivery(
                 f"policy_canary_artifact_outside_root:{role}"
             ) from exc
         if path.is_symlink() or not resolved.is_file():
-            raise TaskEvaluationResultDeliveryError(
-                f"policy_canary_artifact_invalid:{role}"
-            )
+            raise TaskEvaluationResultDeliveryError(f"policy_canary_artifact_invalid:{role}")
         digest = _sha256(resolved)
         artifact_id = _artifact_id(role, relative, digest)
         public = {
@@ -759,14 +752,10 @@ def materialize_policy_canary_result_delivery(
     seen_paths: set[str] = set()
     inventory = result.get("artifact_inventory")
     if not isinstance(inventory, list):
-        raise TaskEvaluationResultDeliveryError(
-            "policy_canary_artifact_inventory_missing"
-        )
+        raise TaskEvaluationResultDeliveryError("policy_canary_artifact_inventory_missing")
     for position, row in enumerate(inventory):
         if not isinstance(row, Mapping):
-            raise TaskEvaluationResultDeliveryError(
-                "policy_canary_artifact_inventory_invalid"
-            )
+            raise TaskEvaluationResultDeliveryError("policy_canary_artifact_inventory_invalid")
         relative = str(row.get("relative_path") or "")
         role = str(row.get("role") or f"provider_artifact_{position}")
         path = _inside(evidence, relative, role=role)
@@ -775,19 +764,13 @@ def materialize_policy_canary_result_delivery(
             or _sha256(path) != row.get("sha256")
             or path.stat().st_size != row.get("size_bytes")
         ):
-            raise TaskEvaluationResultDeliveryError(
-                "policy_canary_artifact_inventory_invalid"
-            )
+            raise TaskEvaluationResultDeliveryError("policy_canary_artifact_inventory_invalid")
         seen_paths.add(relative)
         add_artifact(role=role, path=path, artifact_root=evidence)
         if role == "lossless_frame_manifest":
-            add_artifact(
-                role="lossless_policy_inputs", path=path, artifact_root=evidence
-            )
+            add_artifact(role="lossless_policy_inputs", path=path, artifact_root=evidence)
         elif role == "action_sequence":
-            add_artifact(
-                role="returned_action_sequence", path=path, artifact_root=evidence
-            )
+            add_artifact(role="returned_action_sequence", path=path, artifact_root=evidence)
 
     closure: dict[str, dict[str, Any]] = {}
     required_flags = {
@@ -798,9 +781,7 @@ def materialize_policy_canary_result_delivery(
     for role, flag in required_flags.items():
         record = closure_records.get(role)
         if not isinstance(record, Mapping) or record.get(flag) is not True:
-            raise TaskEvaluationResultDeliveryError(
-                f"policy_canary_{role}_receipt_missing"
-            )
+            raise TaskEvaluationResultDeliveryError(f"policy_canary_{role}_receipt_missing")
         path = Path(str(record.get("path") or "")).expanduser().resolve()
         if (
             path.is_symlink()
@@ -808,20 +789,14 @@ def materialize_policy_canary_result_delivery(
             or _sha256(path) != record.get("sha256")
             or path.stat().st_size != record.get("size_bytes")
         ):
-            raise TaskEvaluationResultDeliveryError(
-                f"policy_canary_{role}_receipt_invalid"
-            )
-        descriptor = add_artifact(
-            role=f"closure_{role}", path=path, artifact_root=path.parent
-        )
+            raise TaskEvaluationResultDeliveryError(f"policy_canary_{role}_receipt_invalid")
+        descriptor = add_artifact(role=f"closure_{role}", path=path, artifact_root=path.parent)
         if role == "provider_zero":
             descriptor["provider_zero_verified"] = True
         closure[role] = descriptor
 
     report_path = delivery_root / "policy_canary_full_report.json"
-    _write_immutable(
-        report_path, (canonical_json(result) + "\n").encode("utf-8")
-    )
+    _write_immutable(report_path, (canonical_json(result) + "\n").encode("utf-8"))
     report_artifact = add_artifact(
         role="full_json_report",
         path=report_path,
@@ -888,8 +863,7 @@ def materialize_policy_canary_result_delivery(
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         ]
         outcome_ranks = [
-            (row.get("episode") or {}).get("score", {}).get("outcome_rank")
-            for row in interpretable
+            (row.get("episode") or {}).get("score", {}).get("outcome_rank") for row in interpretable
         ]
         outcome_ranks = [
             float(value)
@@ -900,9 +874,7 @@ def materialize_policy_canary_result_delivery(
             any(
                 sample.get(key) is True
                 for sample in (
-                    (row.get("episode") or {})
-                    .get("contact_force_evidence", {})
-                    .get("samples", [])
+                    (row.get("episode") or {}).get("contact_force_evidence", {}).get("samples", [])
                 )
                 for key in ("robot_collision_failure", "scene_collision_failure")
             )
@@ -914,13 +886,9 @@ def materialize_policy_canary_result_delivery(
                 "episodes_completed": len(completed_rows),
                 "interpretable_episode_count": len(interpretable),
                 "success_count": len(successes),
-                "success_rate": (
-                    len(successes) / len(interpretable) if interpretable else None
-                ),
+                "success_rate": (len(successes) / len(interpretable) if interpretable else None),
                 "progress_score": (
-                    sum(outcome_ranks) / (len(outcome_ranks) * 5)
-                    if outcome_ranks
-                    else None
+                    sum(outcome_ranks) / (len(outcome_ranks) * 5) if outcome_ranks else None
                 ),
                 "mean_destination_error": (
                     sum(destination_errors) / len(destination_errors)
@@ -928,9 +896,7 @@ def materialize_policy_canary_result_delivery(
                     else None
                 ),
                 "contact_maintenance_rate": None,
-                "collision_rate": (
-                    collision_count / len(interpretable) if interpretable else None
-                ),
+                "collision_rate": (collision_count / len(interpretable) if interpretable else None),
                 "action_delivery_rate": len(delivered) / len(rows) if rows else 0.0,
             }
         )
@@ -957,23 +923,16 @@ def materialize_policy_canary_result_delivery(
     for row in episodes:
         candidate_id = str(row.get("candidate_id") or "")
         cell_id = str(row.get("cell_id") or "")
-        raw_episode = (
-            dict(row.get("episode")) if isinstance(row.get("episode"), Mapping) else {}
-        )
+        raw_episode = dict(row.get("episode")) if isinstance(row.get("episode"), Mapping) else {}
         raw_score = (
-            dict(raw_episode.get("score"))
-            if isinstance(raw_episode.get("score"), Mapping)
-            else {}
+            dict(raw_episode.get("score")) if isinstance(raw_episode.get("score"), Mapping) else {}
         )
         source_artifacts = (
             dict(row.get("evidence_artifacts"))
             if isinstance(row.get("evidence_artifacts"), Mapping)
             else {}
         )
-        episode_id = str(
-            raw_episode.get("episode_id")
-            or f"{run}--{cell_id}--{candidate_id}"
-        )
+        episode_id = str(raw_episode.get("episode_id") or f"{run}--{cell_id}--{candidate_id}")
         episode_json_path = delivery_root / "episodes" / f"{episode_id}.json"
         _write_immutable(
             episode_json_path,
@@ -993,11 +952,7 @@ def materialize_policy_canary_result_delivery(
             bound = bound_artifact_by_digest(video, role="review_video")
             if bound is not None:
                 videos[str(camera_id)] = bound
-        telemetry = (
-            dict(row.get("telemetry"))
-            if isinstance(row.get("telemetry"), Mapping)
-            else {}
-        )
+        telemetry = dict(row.get("telemetry")) if isinstance(row.get("telemetry"), Mapping) else {}
         state = raw_episode.get("state_trace") or {}
         contact = raw_episode.get("contact_force_evidence") or {}
         trajectory = raw_episode.get("task_object_trajectory") or {}
@@ -1116,9 +1071,7 @@ def materialize_policy_canary_result_delivery(
                 },
                 "traces": {
                     "state": bound_artifact(source_artifacts.get("state_trace")),
-                    "contact_force": bound_artifact(
-                        source_artifacts.get("contact_force_trace")
-                    ),
+                    "contact_force": bound_artifact(source_artifacts.get("contact_force_trace")),
                     "task_object_trajectory": bound_artifact(
                         source_artifacts.get("task_object_trajectory")
                     ),
@@ -1143,10 +1096,7 @@ def materialize_policy_canary_result_delivery(
                         for key in ("robot_collision_failure", "scene_collision_failure")
                     ),
                     "grader_authority": "deterministic_simulator_state",
-                    "policy_outcome_interpretable": row.get(
-                        "policy_outcome_interpretable"
-                    )
-                    is True,
+                    "policy_outcome_interpretable": row.get("policy_outcome_interpretable") is True,
                 },
                 "failure": (
                     None
@@ -1194,9 +1144,7 @@ def materialize_policy_canary_result_delivery(
         "schema_version": "task_evaluation_policy_canary_evidence_manifest.v1",
         "run_id": run,
         "result_digest": result["result_digest"],
-        "artifacts": sorted(
-            public_artifacts, key=lambda row: (row["role"], row["artifact_id"])
-        ),
+        "artifacts": sorted(public_artifacts, key=lambda row: (row["role"], row["artifact_id"])),
         "manifest_digest": "",
     }
     evidence_manifest["manifest_digest"] = canonical_digest(
@@ -1245,9 +1193,7 @@ def materialize_policy_canary_result_delivery(
             "completed_learned_policy_rollout_count": completed,
         },
         "episodes": rich_episodes,
-        "artifacts": sorted(
-            public_artifacts, key=lambda row: (row["role"], row["artifact_id"])
-        ),
+        "artifacts": sorted(public_artifacts, key=lambda row: (row["role"], row["artifact_id"])),
         "report": {
             "machine_readable_report": report_artifact,
             "evidence_manifest": evidence_manifest_artifact,
@@ -1260,12 +1206,9 @@ def materialize_policy_canary_result_delivery(
             "scene_revision_digest": first_episode.get("scene_revision_digest"),
             "runtime_container_digest": first_episode.get("container_identity_digest"),
             "scoring_version": str(
-                first_episode.get("scoring_version_digest")
-                or "deterministic_simulator_state"
+                first_episode.get("scoring_version_digest") or "deterministic_simulator_state"
             ),
-            "observation_schema_id": first_raw_episode.get(
-                "observation_adapter_schema_version"
-            ),
+            "observation_schema_id": first_raw_episode.get("observation_adapter_schema_version"),
             "action_schema_id": first_raw_episode.get("action_space"),
             "evidence_manifest": evidence_manifest_artifact,
             "billing_receipt": closure["billing"],
@@ -1286,7 +1229,10 @@ def materialize_policy_canary_result_delivery(
         },
         "delivery_digest": "",
     }
-    delivery["delivery_digest"] = canonical_digest(
+    # This digest is verified by the Website's JavaScript runtime.  Use the
+    # cross-runtime number encoding so integral-valued floats (for example a
+    # posted provider cost of 1.0) cannot hash differently after JSON.parse.
+    delivery["delivery_digest"] = cross_runtime_canonical_digest(
         delivery, digest_field="delivery_digest"
     )
     registry: dict[str, Any] = {
@@ -1296,9 +1242,7 @@ def materialize_policy_canary_result_delivery(
         "artifacts": registry_artifacts,
         "registry_digest": "",
     }
-    registry["registry_digest"] = canonical_digest(
-        registry, digest_field="registry_digest"
-    )
+    registry["registry_digest"] = canonical_digest(registry, digest_field="registry_digest")
     _write_immutable(
         delivery_root / "delivery.json",
         (canonical_json(delivery) + "\n").encode("utf-8"),
