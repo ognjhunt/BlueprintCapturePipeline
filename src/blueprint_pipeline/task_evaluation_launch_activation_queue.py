@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -26,10 +27,33 @@ INTAKE_RECEIPT_SCHEMA_VERSION = (
 STATUS_SCHEMA_VERSION = "task_evaluation_launch_activation_status.v1"
 RESULT_SCHEMA_VERSION = "task_evaluation_launch_activation_result.v1"
 QUEUE_STATES = ("pending", "processing", "prepared", "blocked")
+_MAX_COMPONENT_BYTES = 255
 
 
 class TaskEvaluationLaunchActivationQueueError(ValueError):
     """One immutable activation could not be queued or reopened safely."""
+
+
+def _queue_filename(*, activation_id: str, request_digest: str) -> str:
+    digest = request_digest.removeprefix("sha256:")
+    readable = f"{activation_id}-{digest}.json"
+    if len(readable.encode("utf-8")) <= _MAX_COMPONENT_BYTES:
+        return readable
+    identity = hashlib.sha256(activation_id.encode("utf-8")).hexdigest()
+    return f"activation-{identity}-{digest}.json"
+
+
+def _queue_matches(
+    *, root: Path, activation_id: str, request_digest: str
+) -> list[Path]:
+    filename = _queue_filename(
+        activation_id=activation_id, request_digest=request_digest
+    )
+    return [
+        candidate
+        for state in QUEUE_STATES
+        if (candidate := root / state / filename).is_file()
+    ]
 
 
 def ensure_launch_activation_queue_root(queue_root: str | Path) -> Path:
@@ -109,12 +133,14 @@ def stage_launch_activation_request(
             raise TaskEvaluationLaunchActivationQueueError(
                 "launch_activation_id_immutable_conflict"
             )
-    filename = f"{activation_id}-{request_digest.removeprefix('sha256:')}.json"
-    matches = [
-        path
-        for state in QUEUE_STATES
-        for path in (root / state).glob(f"{activation_id}-*.json")
-    ]
+    filename = _queue_filename(
+        activation_id=activation_id, request_digest=request_digest
+    )
+    matches = _queue_matches(
+        root=root,
+        activation_id=activation_id,
+        request_digest=request_digest,
+    )
     if matches:
         exact = [path for path in matches if path.name == filename]
         if len(matches) != 1 or len(exact) != 1:
@@ -184,18 +210,39 @@ def launch_activation_status(
     """Read a safe activation state without exposing request bytes or host paths."""
 
     root = ensure_launch_activation_queue_root(queue_root)
-    matches = [
-        (state, path)
-        for state in QUEUE_STATES
-        for path in (root / state).glob(f"{activation_id}-*.json")
-    ]
-    if not matches:
+    identity_path = root / "identities" / f"{activation_id}.json"
+    if not identity_path.is_file():
         return {
             "schema_version": STATUS_SCHEMA_VERSION,
             "status": "not_found",
             "activation_id": activation_id,
             "provider_mutation_performed_by_status_read": False,
         }
+    identity = _load_sealed(
+        identity_path,
+        schema_version=IDENTITY_SCHEMA_VERSION,
+        digest_field="identity_digest",
+    )
+    if identity.get("activation_id") != activation_id:
+        raise TaskEvaluationLaunchActivationQueueError(
+            "launch_activation_queue_record_invalid"
+        )
+    request_digest = str(identity.get("request_digest") or "")
+    paths = _queue_matches(
+        root=root,
+        activation_id=activation_id,
+        request_digest=request_digest,
+    )
+    matches = [
+        (state, path)
+        for state in QUEUE_STATES
+        for path in paths
+        if path.parent.name == state
+    ]
+    if not matches:
+        raise TaskEvaluationLaunchActivationQueueError(
+            "launch_activation_queue_record_invalid"
+        )
     if len(matches) != 1:
         raise TaskEvaluationLaunchActivationQueueError(
             "launch_activation_queue_identity_ambiguous"

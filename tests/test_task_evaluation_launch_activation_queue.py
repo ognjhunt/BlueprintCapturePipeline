@@ -79,3 +79,22 @@ def test_concurrent_different_writers_leave_one_activation_identity(tmp_path) ->
     assert outcomes.count("launch_activation_id_immutable_conflict") == 1
     assert len(list((queue / "pending").glob("*.json"))) == 1
     assert list(queue.rglob("*.tmp")) == []
+
+
+def test_long_activation_id_uses_bounded_hashed_queue_filename(tmp_path) -> None:
+    queue = tmp_path / "queue"
+    value = request()
+    value["activation_id"] = "corrective-scene-" + "x" * 170
+
+    receipt = stage_launch_activation_request(
+        value=value, queue_root=queue, submitted_by="blueprint-webapp"
+    )
+
+    queued = list((queue / "pending").glob("*.json"))
+    assert len(queued) == 1
+    assert queued[0].name.startswith("activation-")
+    assert len(queued[0].name.encode("utf-8")) <= 255
+    assert receipt["activation_id"] == value["activation_id"]
+    assert launch_activation_status(
+        activation_id=value["activation_id"], queue_root=queue
+    )["status"] == "pending"
