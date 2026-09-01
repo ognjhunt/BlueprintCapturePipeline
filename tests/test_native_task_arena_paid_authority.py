@@ -323,6 +323,42 @@ def test_new_lane_genesis_binds_project_spend_and_fresh_provider_zero(
             retain_warm_session=True,
         )
 
+    prepared.update(
+        {
+            "control_search_authority_digest": "sha256:" + "7" * 64,
+            "warm_control_search_continuation_requested": True,
+        }
+    )
+    control_search_authority = (
+        paid.materialize_native_task_arena_paid_attempt_authority(
+            bundle_receipt_path=receipt_path,
+            project_spend_reconciliation_path=reconciliation_path,
+            initial_provider_zero_path=zero_path,
+            authorization_reference="user-authorized initial control search",
+            authorized_by="user",
+            authorized_on="2026-08-25T14:30:00+00:00",
+            blueprint_commit=COMMIT,
+            max_hourly_rate_usd=0.8,
+            hard_cap_usd=0.75,
+            hard_ttl_seconds=3_300,
+            output_path=tmp_path / "control-search-authority.json",
+            retain_warm_session=True,
+        )
+    )
+    assert control_search_authority["lineage_kind"] == (
+        "project_spend_control_search_continuation"
+    )
+    assert paid.validate_native_task_arena_paid_attempt_authority(
+        control_search_authority,
+        prepared_bundle=prepared,
+        max_hourly_rate_usd=0.8,
+        hard_cap_usd=0.75,
+        hard_ttl_seconds=3_300,
+        retain_warm_session=True,
+    )["authorization_digest"] == control_search_authority[
+        "authorization_digest"
+    ]
+
     staged_project = tmp_path / "staged" / "project-spend.input"
     staged_project.parent.mkdir()
     staged_project.write_bytes(reconciliation_path.read_bytes())

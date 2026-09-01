@@ -142,6 +142,19 @@ def _terminal_feedback_adoption_is_bundle_bound(
     )
 
 
+def _control_search_warm_continuation_is_bundle_bound(
+    prepared_bundle: Mapping[str, Any],
+) -> bool:
+    digest = str(prepared_bundle.get("control_search_authority_digest") or "")
+    return bool(
+        prepared_bundle.get("execution_mode") == "construction_canary"
+        and prepared_bundle.get("warm_control_search_continuation_requested")
+        is True
+        and digest.startswith("sha256:")
+        and _lower_hex(digest.removeprefix("sha256:"), length=64)
+    )
+
+
 def _bound_record(value: Any, code: str) -> tuple[Path, dict[str, Any]]:
     """Resolve through this module's compatibility-patchable resolver."""
 
@@ -907,6 +920,9 @@ def materialize_native_task_arena_paid_attempt_authority(
         ),
     )
     feedback_adoption_bound = _terminal_feedback_adoption_is_bundle_bound(bundle)
+    control_search_continuation_bound = (
+        _control_search_warm_continuation_is_bundle_bound(bundle)
+    )
     terminal_inputs = (
         prior_authority_path,
         prior_result_path,
@@ -1013,7 +1029,13 @@ def materialize_native_task_arena_paid_attempt_authority(
             or (authorized_time - zero_time).total_seconds()
             > MAX_INITIAL_PROVIDER_ZERO_AGE_SECONDS
             or allowed_active_instance_ids
-            or (retain_warm_session and not feedback_adoption_bound)
+            or (
+                retain_warm_session
+                and not (
+                    feedback_adoption_bound
+                    or control_search_continuation_bound
+                )
+            )
             or policy_campaign_path is not None
             or campaign_member_id is not None
         ):
@@ -1102,8 +1124,12 @@ def materialize_native_task_arena_paid_attempt_authority(
             "terminal_predecessor"
             if terminal_mode
             else (
-                "project_spend_feedback_continuation"
-                if feedback_adoption_bound
+                (
+                    "project_spend_feedback_continuation"
+                    if feedback_adoption_bound
+                    else "project_spend_control_search_continuation"
+                )
+                if retain_warm_session
                 else "project_spend_genesis"
             )
         ),
@@ -1180,6 +1206,9 @@ def validate_native_task_arena_paid_attempt_authority(
     feedback_adoption_bound = _terminal_feedback_adoption_is_bundle_bound(
         prepared_bundle
     )
+    control_search_continuation_bound = (
+        _control_search_warm_continuation_is_bundle_bound(prepared_bundle)
+    )
     expected_allowlist = {
         "external_provider_owned": tuple(sorted(set(allowed_active_instance_ids))),
         "same_goal_concurrent": (),
@@ -1249,6 +1278,7 @@ def validate_native_task_arena_paid_attempt_authority(
         if lineage_kind in {
             "project_spend_genesis",
             "project_spend_feedback_continuation",
+            "project_spend_control_search_continuation",
         }:
             if (
                 value.get("prior_terminal_attempt") is not None
@@ -1257,8 +1287,17 @@ def validate_native_task_arena_paid_attempt_authority(
                 or (
                     retain_warm_session
                     and (
-                        lineage_kind != "project_spend_feedback_continuation"
-                        or not feedback_adoption_bound
+                        (
+                            lineage_kind
+                            == "project_spend_feedback_continuation"
+                            and not feedback_adoption_bound
+                        )
+                        or (
+                            lineage_kind
+                            == "project_spend_control_search_continuation"
+                            and not control_search_continuation_bound
+                        )
+                        or lineage_kind == "project_spend_genesis"
                     )
                 )
                 or allowed_active_instance_ids
@@ -1301,6 +1340,11 @@ def validate_native_task_arena_paid_attempt_authority(
                 or (
                     lineage_kind == "project_spend_feedback_continuation"
                     and not feedback_adoption_bound
+                )
+                or (
+                    lineage_kind
+                    == "project_spend_control_search_continuation"
+                    and not control_search_continuation_bound
                 )
             ):
                 errors.append("project_spend_genesis_mismatch")

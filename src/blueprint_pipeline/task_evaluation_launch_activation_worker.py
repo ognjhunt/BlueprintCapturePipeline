@@ -655,6 +655,26 @@ def _read_json(path: Path, *, blocker: str) -> dict[str, Any]:
     return dict(value)
 
 
+def _control_search_warm_retention_requested(
+    *, packet_request: Mapping[str, Any], lane: str
+) -> bool:
+    feedback = packet_request.get("native_construction_feedback")
+    control_search = (
+        feedback.get("control_search") if isinstance(feedback, Mapping) else None
+    )
+    return bool(
+        lane == "native_task_arena_construction"
+        and isinstance(control_search, Mapping)
+        and control_search.get("enabled") is True
+        and control_search.get("claim_ceiling")
+        == "development_only_control_search"
+        and control_search.get("provider_allocations_performed") == 0
+        and control_search.get("full_fidelity_replay_required") is True
+        and control_search.get("authority_digest")
+        == canonical_digest(control_search, digest_field="authority_digest")
+    )
+
+
 def _build_native_context(
     *,
     activation_request: Mapping[str, Any],
@@ -720,6 +740,15 @@ def _build_native_context(
         rights_admission_path, blocker="launch_activation_rights_admission_invalid"
     )
     packet_root = Path(str(adapter["packet_root"])).resolve()
+    packet_request_path = packet_root / "native_task_arena_packet_request.v1.json"
+    packet_request = (
+        _read_json(
+            packet_request_path,
+            blocker="launch_activation_packet_request_invalid",
+        )
+        if packet_request_path.exists()
+        else {}
+    )
     runtime_contract = _read_json(
         packet_root / "native_task_runtime_contract.v1.json",
         blocker="launch_activation_runtime_contract_invalid",
@@ -769,6 +798,11 @@ def _build_native_context(
         "service_account": service_account,
         "service_group": service_group,
     }
+    if _control_search_warm_retention_requested(
+        packet_request=packet_request,
+        lane=str(activation_request["lane"]),
+    ):
+        operations["retain_warm_control_search"] = True
     if lineage["kind"] == "initial_project":
         operations.update(
             {

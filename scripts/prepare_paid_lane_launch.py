@@ -398,7 +398,10 @@ def _native_task_arena_steps(
             produces=(
                 "{set_root}/native_task_arena_paid_attempt_authority.v1.json"
             ),
-            conditional_argv=(("--retain-warm-session", "terminal_feedback_adoption"),)
+            conditional_argv=(
+                ("--retain-warm-session", "terminal_feedback_adoption"),
+                ("--retain-warm-session", "retain_warm_control_search"),
+            )
             if not controls
             else (),
         ),
@@ -460,6 +463,10 @@ def _native_task_arena_steps(
                 (
                     "--native-task-arena-retain-warm-session",
                     "terminal_feedback_adoption",
+                ),
+                (
+                    "--native-task-arena-retain-warm-session",
+                    "retain_warm_control_search",
                 ),
             )
             if not controls
@@ -1043,7 +1050,7 @@ def _step_argv(step: LaneStep, context: Mapping[str, Any]) -> list[str]:
         for value in _repeated_values(context.get(context_name)):
             argv.extend((flag, value))
     for flag, context_name in step.conditional_argv:
-        if _repeated_values(context.get(context_name)):
+        if _repeated_values(context.get(context_name)) and flag not in argv:
             argv.append(flag)
     return argv
 

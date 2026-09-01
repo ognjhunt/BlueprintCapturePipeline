@@ -195,6 +195,7 @@
         "construction_result": {"type": "string", "minLength": 1},
         "terminal_feedback_adoption": {"type": "string", "minLength": 1},
         "terminal_feedback_adoption_digest": {"$ref": "#/$defs/digest"},
+        "retain_warm_control_search": {"type": "boolean", "const": true},
         "zero_action_result": {"type": "string", "minLength": 1},
         "controls_qualification_manifest": {"type": "string", "minLength": 1},
         "machine_avoidlist": {"type": "string"},
@@ -248,7 +249,8 @@
             "not": {
               "anyOf": [
                 {"required": ["terminal_feedback_adoption"]},
-                {"required": ["terminal_feedback_adoption_digest"]}
+                {"required": ["terminal_feedback_adoption_digest"]},
+                {"required": ["retain_warm_control_search"]}
               ]
             }
           }
