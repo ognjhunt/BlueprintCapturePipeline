@@ -362,7 +362,7 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
     assert runtime_inputs["resource_authority"] == {
         "resource_name": (
             "blueprint-native-task-policy-canary-"
-            + runtime_inputs["activation_digest"].removeprefix("sha256:")[:16]
+            + runtime_inputs["activation_digest"].removeprefix("sha256:")[:32]
         ),
         "maximum_hourly_rate_usd": 0.8,
         "hard_cap_usd": 4.0,
