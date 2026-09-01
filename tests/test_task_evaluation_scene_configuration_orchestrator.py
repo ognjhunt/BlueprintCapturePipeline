@@ -26,6 +26,7 @@ from blueprint_pipeline.task_evaluation_scene_construction_queue import (
     TaskEvaluationSceneConstructionQueueError,
     finalize_scene_construction,
     preflight_scene_construction_finalization,
+    recover_scene_construction_publication,
     stage_scene_configuration_revision,
 )
 from tests.test_task_evaluation_configured_scene_revision import revision
@@ -307,6 +308,119 @@ def test_paid_lane_refuses_to_finalize_a_different_envelope(tmp_path) -> None:
     assert pending.is_file()
     assert not list((queue / "completed").glob("*.json"))
     assert not list((queue / "blocked").glob("*.json"))
+
+
+def test_publication_only_recovery_preserves_blocked_result_and_promotes_queue(
+    tmp_path: Path,
+) -> None:
+    value, queue, _inputs = staged_configuration(tmp_path)
+    pending = next((queue / "pending").glob("*.json"))
+    envelope = json.loads(pending.read_text(encoding="utf-8"))
+    portable = {
+        **envelope,
+        "control_plane_envelope_digest": envelope["envelope_digest"],
+    }
+    blocked_terminal = {
+        "status": "blocked",
+        "run_id": envelope["run_id"],
+        "source_commit": value["expected_production_commit"],
+        "configuration_completed": True,
+        "configured_scene_published": False,
+        "full_byte_service_account_readback_passed": False,
+        "continuing_spend_from_this_run": False,
+        "blockers": ["scene_configuration_configured_revision_not_published"],
+    }
+    prior = finalize_scene_construction(
+        queue_root=queue,
+        envelope=portable,
+        terminal_result=blocked_terminal,
+    )
+    original_path = Path(prior["result_path"])
+    original_bytes = original_path.read_bytes()
+    completed_terminal = {
+        **blocked_terminal,
+        "status": "completed",
+        "configured_scene_published": True,
+        "configured_scene_revision_digest": "sha256:" + "a" * 64,
+        "publication_result_digest": "sha256:" + "b" * 64,
+        "full_byte_service_account_readback_passed": True,
+        "blockers": [],
+    }
+
+    recovered = recover_scene_construction_publication(
+        queue_root=queue,
+        envelope=portable,
+        terminal_result=completed_terminal,
+        prior_finalization=prior,
+    )
+    replayed = recover_scene_construction_publication(
+        queue_root=queue,
+        envelope=portable,
+        terminal_result=completed_terminal,
+        prior_finalization=prior,
+    )
+
+    assert recovered == replayed
+    assert recovered["status"] == "completed"
+    assert recovered["queue_state"] == "completed"
+    assert recovered["publication_recovery"] == {
+        "performed": True,
+        "provider_execution_repeated": False,
+        "prior_finalization_digest": prior["result_digest"],
+        "prior_result_path": str(original_path),
+    }
+    assert original_path.read_bytes() == original_bytes
+    assert not list((queue / "blocked").glob("*.json"))
+    assert len(list((queue / "completed").glob("*.json"))) == 1
+    assert len(list((queue / "results").glob("*.json"))) == 1
+    assert len(list((queue / "publication-recoveries").glob("*.json"))) == 1
+
+
+def test_publication_recovery_refuses_non_publication_blocked_result(
+    tmp_path: Path,
+) -> None:
+    value, queue, _inputs = staged_configuration(tmp_path)
+    pending = next((queue / "pending").glob("*.json"))
+    envelope = json.loads(pending.read_text(encoding="utf-8"))
+    portable = {
+        **envelope,
+        "control_plane_envelope_digest": envelope["envelope_digest"],
+    }
+    prior = finalize_scene_construction(
+        queue_root=queue,
+        envelope=portable,
+        terminal_result={
+            "status": "blocked",
+            "run_id": envelope["run_id"],
+            "source_commit": value["expected_production_commit"],
+            "configuration_completed": False,
+            "configured_scene_published": False,
+            "continuing_spend_from_this_run": False,
+            "blockers": ["provider_execution_failed"],
+        },
+    )
+
+    with pytest.raises(
+        TaskEvaluationSceneConstructionQueueError,
+        match="scene_construction_publication_recovery_binding_invalid",
+    ):
+        recover_scene_construction_publication(
+            queue_root=queue,
+            envelope=portable,
+            prior_finalization=prior,
+            terminal_result={
+                "status": "completed",
+                "run_id": envelope["run_id"],
+                "source_commit": value["expected_production_commit"],
+                "configuration_completed": True,
+                "configured_scene_published": True,
+                "configured_scene_revision_digest": "sha256:" + "a" * 64,
+                "publication_result_digest": "sha256:" + "b" * 64,
+                "full_byte_service_account_readback_passed": True,
+                "continuing_spend_from_this_run": False,
+                "blockers": [],
+            },
+        )
 
 
 def test_corrective_configuration_gets_fresh_queue_lifecycle(tmp_path) -> None:

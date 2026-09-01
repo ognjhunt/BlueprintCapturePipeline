@@ -607,6 +607,187 @@ def finalize_scene_construction(
     return finalization
 
 
+def recover_scene_construction_publication(
+    *,
+    queue_root: str | Path,
+    envelope: Mapping[str, Any],
+    terminal_result: Mapping[str, Any],
+    prior_finalization: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Promote one publication-only failure without rewriting its first result.
+
+    The provider execution and its original blocked finalization remain immutable.
+    Recovery is permitted only after configuration completed, spend stopped, and
+    publication subsequently produced a fully qualified completed result.
+    """
+
+    orchestration_id = str(envelope.get("orchestration_id") or "")
+    recipe_digest = str(envelope.get("recipe_digest") or "")
+    envelope_digest = str(envelope.get("control_plane_envelope_digest") or "")
+    run_id = str(envelope.get("run_id") or "")
+    source_commit = str(envelope.get("expected_production_commit") or "")
+    prior_digest = str(prior_finalization.get("result_digest") or "")
+    prior_blockers = [
+        str(item) for item in prior_finalization.get("blockers") or [] if str(item)
+    ]
+    publication_only_blockers = bool(prior_blockers) and all(
+        item == "scene_configuration_configured_revision_not_published"
+        or item.startswith(
+            "scene_configuration_configured_revision_publication_failed:"
+        )
+        for item in prior_blockers
+    )
+    if (
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}", orchestration_id)
+        is None
+        or not run_id
+        or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", recipe_digest) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", envelope_digest) is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", prior_digest) is None
+        or prior_finalization.get("schema_version") != FINALIZATION_SCHEMA_VERSION
+        or prior_finalization.get("status") != "blocked"
+        or prior_finalization.get("queue_state") != "blocked"
+        or prior_finalization.get("finalization_performed") is not True
+        or prior_finalization.get("orchestration_id") != orchestration_id
+        or prior_finalization.get("run_id") != run_id
+        or prior_finalization.get("source_commit") != source_commit
+        or prior_finalization.get("recipe_digest") != recipe_digest
+        or prior_finalization.get("construction_envelope_digest") != envelope_digest
+        or prior_digest
+        != canonical_digest(prior_finalization, digest_field="result_digest")
+        or prior_finalization.get("configuration_completed") is not True
+        or prior_finalization.get("configured_scene_published") is not False
+        or prior_finalization.get("continuing_spend_from_this_run") is not False
+        or not publication_only_blockers
+        or terminal_result.get("run_id") != run_id
+        or terminal_result.get("source_commit") != source_commit
+        or terminal_result.get("status") != "completed"
+        or terminal_result.get("configuration_completed") is not True
+        or terminal_result.get("configured_scene_published") is not True
+        or terminal_result.get("full_byte_service_account_readback_passed") is not True
+        or terminal_result.get("continuing_spend_from_this_run") is not False
+        or terminal_result.get("blockers")
+        or re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(terminal_result.get("configured_scene_revision_digest") or ""),
+        )
+        is None
+        or re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(terminal_result.get("publication_result_digest") or ""),
+        )
+        is None
+    ):
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_publication_recovery_binding_invalid"
+        )
+
+    root = ensure_scene_construction_queue_root(queue_root)
+    filename = f"{orchestration_id}-{recipe_digest.removeprefix('sha256:')}.json"
+    blocked_path = root / "blocked" / filename
+    completed_path = root / "completed" / filename
+    matches = [path for path in (blocked_path, completed_path) if path.exists()]
+    if len(matches) != 1 or matches[0].is_symlink():
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_publication_recovery_identity_ambiguous"
+        )
+    source = matches[0]
+    try:
+        queued = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_publication_recovery_envelope_invalid"
+        ) from exc
+    if (
+        queued.get("schema_version") != ENVELOPE_SCHEMA_VERSION
+        or queued.get("orchestration_id") != orchestration_id
+        or queued.get("run_id") != run_id
+        or queued.get("expected_production_commit") != source_commit
+        or queued.get("recipe_digest") != recipe_digest
+        or queued.get("envelope_digest") != envelope_digest
+        or queued.get("envelope_digest")
+        != canonical_digest(queued, digest_field="envelope_digest")
+    ):
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_publication_recovery_binding_invalid"
+        )
+
+    original_result_path = root / "results" / filename
+    try:
+        original_result = json.loads(original_result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_publication_recovery_prior_result_invalid"
+        ) from exc
+    if original_result != dict(prior_finalization):
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_publication_recovery_prior_result_invalid"
+        )
+
+    recoveries_root = root / "publication-recoveries"
+    if recoveries_root.is_symlink():
+        raise TaskEvaluationSceneConstructionQueueError(
+            "scene_construction_publication_recovery_results_unsafe"
+        )
+    recoveries_root.mkdir(mode=0o750, exist_ok=True)
+    recovery_path = recoveries_root / filename
+    finalization: dict[str, Any] = {
+        "schema_version": FINALIZATION_SCHEMA_VERSION,
+        "status": "completed",
+        "queue_state": "completed",
+        "orchestration_id": orchestration_id,
+        "run_id": run_id,
+        "source_commit": source_commit,
+        "recipe_digest": recipe_digest,
+        "construction_envelope_digest": envelope_digest,
+        "configuration_completed": True,
+        "configured_scene_published": True,
+        "configured_scene_revision_digest": terminal_result[
+            "configured_scene_revision_digest"
+        ],
+        "publication_result_digest": terminal_result["publication_result_digest"],
+        "full_byte_service_account_readback_passed": True,
+        "continuing_spend_from_this_run": False,
+        "finalization_performed": True,
+        "queue_path": str(completed_path),
+        "result_path": str(recovery_path),
+        "blockers": [],
+        "publication_recovery": {
+            "performed": True,
+            "provider_execution_repeated": False,
+            "prior_finalization_digest": prior_digest,
+            "prior_result_path": str(original_result_path),
+        },
+        "result_digest": "",
+    }
+    finalization["result_digest"] = canonical_digest(
+        finalization, digest_field="result_digest"
+    )
+    try:
+        _write_exclusive(recovery_path, finalization)
+    except FileExistsError:
+        try:
+            existing = json.loads(recovery_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TaskEvaluationSceneConstructionQueueError(
+                "scene_construction_publication_recovery_result_conflict"
+            ) from exc
+        if existing != finalization:
+            raise TaskEvaluationSceneConstructionQueueError(
+                "scene_construction_publication_recovery_result_conflict"
+            )
+    if source != completed_path:
+        try:
+            os.replace(source, completed_path)
+        except FileNotFoundError:
+            if not completed_path.is_file():
+                raise TaskEvaluationSceneConstructionQueueError(
+                    "scene_construction_publication_recovery_race"
+                ) from None
+    return finalization
+
+
 def preflight_scene_construction_finalization(
     *,
     queue_root: str | Path,

@@ -181,6 +181,14 @@ def test_accepts_provider_disclosure_only_with_its_digest_bound_decision() -> No
 
     assert validate_configured_scene_revision(value) == value
 
+    value["source"]["raw_source_sent_to_external_provider"] = False
+    value["source"]["production_semantic_input_reuse"] = True
+    value["revision_digest"] = canonical_digest(
+        value, digest_field="revision_digest"
+    )
+
+    assert validate_configured_scene_revision(value) == value
+
 
 @pytest.mark.parametrize(
     "mutation",

@@ -276,14 +276,28 @@ def publish_configured_scene_revision(
         if isinstance(render_inputs, Mapping)
         else None
     )
+    production_semantic_reuse = (
+        isinstance(render_inputs, Mapping)
+        and render_inputs.get("production_semantic_input_reuse") is True
+    )
+    expected_raw_source_sent = renders_on_provider(disclosure_decision or {}) and not (
+        production_semantic_reuse
+    )
     if (
         not isinstance(recipe, Mapping)
         or not isinstance(request, Mapping)
         or not isinstance(render_inputs, Mapping)
         or not render_inputs_disclosure_is_coherent(render_inputs)
         or not isinstance(raw_source_sent, bool)
-        or raw_source_sent
-        is not renders_on_provider(disclosure_decision or {})
+        or raw_source_sent is not expected_raw_source_sent
+        or (
+            production_semantic_reuse
+            and (
+                render_inputs.get("provider_render_skipped") is not True
+                or render_inputs.get("raw_interiorgs_bytes_in_provider_packet")
+                is not False
+            )
+        )
         or request.get("run_mode") != "scene_configuration"
         or request.get("scene", {}).get("mode") != "configure_source_scene"
         or request.get("construction", {}).get("mode") != "production_recipe"
@@ -413,6 +427,11 @@ def publish_configured_scene_revision(
             **(
                 {"provider_disclosure_decision": dict(disclosure_decision)}
                 if isinstance(disclosure_decision, Mapping)
+                else {}
+            ),
+            **(
+                {"production_semantic_input_reuse": True}
+                if production_semantic_reuse
                 else {}
             ),
         },
