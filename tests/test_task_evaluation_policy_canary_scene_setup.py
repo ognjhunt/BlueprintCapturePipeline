@@ -283,6 +283,11 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
         "digest": "sha256:" + "2" * 64,
         "size_bytes": 512,
     }
+    kwargs["native_controller_configuration"] = {
+        "uri": "s3://blueprint/policy-canary/native-controller.json",
+        "digest": "sha256:" + "4" * 64,
+        "size_bytes": 640,
+    }
     kwargs["model_rights"] = {
         "uri": "s3://blueprint/policy-canary/model-rights.json",
         "digest": "sha256:" + "3" * 64,
@@ -315,7 +320,11 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     assert validate_policy_run_setup(plan["legacy_policy_run_setup"])
     assert (
         plan["preparation_template"]["controller"]["configuration"]
-        == plan["policy_controller_configuration"]
+        == kwargs["native_controller_configuration"]
+    )
+    assert (
+        plan["preparation_template"]["controller"]["configuration"]
+        != plan["policy_controller_configuration"]
     )
     assert (
         plan["preparation_template"]["controller"]["model_or_asset_rights"] == plan["model_rights"]
@@ -404,6 +413,11 @@ def test_post_activation_template_separates_configured_and_canary_requests(
         "uri": "s3://blueprint/policy-canary/controller.json",
         "digest": "sha256:" + "2" * 64,
         "size_bytes": 512,
+    }
+    kwargs["native_controller_configuration"] = {
+        "uri": "s3://blueprint/policy-canary/native-controller.json",
+        "digest": "sha256:" + "4" * 64,
+        "size_bytes": 640,
     }
     kwargs["model_rights"] = {
         "uri": "s3://blueprint/policy-canary/model-rights.json",

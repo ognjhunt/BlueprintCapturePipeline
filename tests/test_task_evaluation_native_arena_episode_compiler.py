@@ -11,6 +11,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import (
     OUTPUT_SCHEMA_VERSION,
     TaskEvaluationNativeArenaEpisodeCompilerError,
+    _json_reference,
     _reference_path,
     compile_native_arena_episode,
 )
@@ -34,6 +35,41 @@ def _write_json(root: Path, name: str, value: dict) -> Path:
     path = root / name
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def test_policy_canary_keeps_registry_out_of_native_controller_slot() -> None:
+    root = Path(__file__).resolve().parents[1]
+    native = (
+        root
+        / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_native_controller_configuration.v1.json"
+    )
+    registry = (
+        root
+        / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_controller_configuration.v1.json"
+    )
+    native_record = _record(native, "controller.configuration")
+    registry_record = _record(registry, "controller.configuration")
+
+    controller = _json_reference(
+        {"controller.configuration": native_record},
+        "controller.configuration",
+        "task_evaluation_native_controller_configuration.v1",
+    )
+    assert controller["identity"] == {"id": "paired-policy-canary", "version": "v1"}
+    assert controller["kind"] == "policy_container"
+    assert controller["document_digest"] == canonical_digest(
+        controller, digest_field="document_digest"
+    )
+
+    with pytest.raises(
+        TaskEvaluationNativeArenaEpisodeCompilerError,
+        match="episode_compiler_reference_contract_invalid:controller.configuration",
+    ):
+        _json_reference(
+            {"controller.configuration": registry_record},
+            "controller.configuration",
+            "task_evaluation_native_controller_configuration.v1",
+        )
 
 
 def _configured_bundle(path: Path) -> None:
