@@ -79,7 +79,21 @@ def _write_exclusive_locked(path: Path, value: Mapping[str, Any]) -> None:
                 raise OSError("short immutable scene-construction queue write")
             view = view[written:]
         os.fsync(descriptor)
+        # Preparation and corrective-revision minting may run as root while
+        # the production queue consumer runs as the directory's service
+        # group.  A plain 0440 create inherits the writer's effective group,
+        # which made root-authored envelopes unreadable by the dispatcher.
+        # Bind the immutable file to the queue state's already-authoritative
+        # group before publishing it.
+        parent_gid = path.parent.stat().st_gid
+        os.fchown(descriptor, -1, parent_gid)
         os.fchmod(descriptor, 0o440)
+        metadata = os.fstat(descriptor)
+        if (
+            metadata.st_gid != parent_gid
+            or stat.S_IMODE(metadata.st_mode) != 0o440
+        ):
+            raise OSError("scene-construction queue ownership install failed")
         directory = os.open(
             path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         )

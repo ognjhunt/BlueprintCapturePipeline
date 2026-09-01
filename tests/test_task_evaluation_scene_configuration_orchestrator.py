@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import task_evaluation_scene_construction_queue as scene_queue
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_preparation_queue import (
     stage_launch_preparation_request,
@@ -36,6 +37,27 @@ from tests.test_task_evaluation_launch_preparation_worker import (
 
 
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
+
+
+def test_scene_construction_queue_file_inherits_parent_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pending = tmp_path / "pending"
+    pending.mkdir()
+    target = pending / "request.json"
+    observed: list[tuple[int, int]] = []
+    real_fchown = scene_queue.os.fchown
+
+    def record_fchown(descriptor: int, uid: int, gid: int) -> None:
+        observed.append((uid, gid))
+        real_fchown(descriptor, uid, gid)
+
+    monkeypatch.setattr(scene_queue.os, "fchown", record_fchown)
+    scene_queue._write_exclusive_locked(target, {"status": "pending"})
+
+    assert observed == [(-1, pending.stat().st_gid)]
+    assert target.stat().st_gid == pending.stat().st_gid
+    assert target.stat().st_mode & 0o777 == 0o440
 
 
 def staged_configuration(tmp_path: Path) -> tuple[dict, Path, Path]:

@@ -1058,7 +1058,7 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
     assert production["offering_publication_permitted"] is True
     assert "diagnostic_only" not in production
     with zipfile.ZipFile(production["bundle_path"]) as archive:
-        _manifest, _required, production_preflight_blockers = (
+        _manifest, production_required, production_preflight_blockers = (
             scene_configuration_bundle_contract(archive)
         )
         production_names = set(archive.namelist())
@@ -1071,6 +1071,18 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
             "provider_runtime/task_evaluation_scene_configuration_provider_runner.py"
         )
     assert production_preflight_blockers == []
+    assert (
+        "provider_runtime/"
+        + production_portable["render_inputs_result"]["derived_gaussian_cutout"][
+            "retained_scene_without_source_object"
+        ]["path"]
+    ) in production_required
+    assert (
+        "provider_runtime/"
+        + production_portable["render_inputs_result"]["derived_frames"][0][
+            "source_object_mask"
+        ]["path"]
+    ) in production_required
     assert any(
         name.startswith(
             "provider_runtime/input/production_semantic_reuse_checkpoint/semantic/"
@@ -1116,6 +1128,14 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
     assert runner_spec is not None and runner_spec.loader is not None
     runner_module = importlib.util.module_from_spec(runner_spec)
     runner_spec.loader.exec_module(runner_module)
+    hydrated = runner_module._hydrate_envelope(
+        production_runtime.resolve(), production_portable
+    )
+    hydrated_cutout = hydrated["render_inputs_result"]["derived_gaussian_cutout"]
+    assert "source_object_candidate" not in hydrated_cutout
+    assert Path(
+        hydrated_cutout["retained_scene_without_source_object"]["path"]
+    ).is_file()
     monkeypatch.setattr(
         runner_module,
         "validate_scene_configuration_diagnostic_checkpoint",
