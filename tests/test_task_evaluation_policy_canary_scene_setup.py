@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import (
@@ -223,6 +225,48 @@ def test_checkpoint_registry_drift_fails_before_specs_are_written(
 
     assert decision["status"] == "blocked"
     assert decision["blockers"] == ["policy_canary_pi05_droid_registry_or_rights_invalid"]
+
+
+@pytest.mark.parametrize(
+    "input_name,role",
+    (
+        ("request", "launch_request"),
+        ("profile", "launch_profile"),
+        ("progression", "configured_progression"),
+        ("scene", "scene_plan"),
+        ("packet", "packet_receipt"),
+    ),
+)
+def test_known_corrupt_scene_digest_fails_before_launch_materialization(
+    tmp_path: Path,
+    input_name: str,
+    role: str,
+) -> None:
+    kwargs = _kwargs(tmp_path)
+    field_by_input = {
+        "request": "launch_request_path",
+        "profile": "launch_profile_path",
+        "progression": "configured_progression_path",
+        "scene": "scene_plan_path",
+        "packet": "packet_receipt_path",
+    }
+    source = Path(kwargs[field_by_input[input_name]])
+    value = json.loads(source.read_text(encoding="utf-8"))
+    value["superseded_appearance_digest"] = "sha256:d6c3cd3e" + "0" * 56
+    _write(source, value)
+
+    decision = materialize_setup_preflight_decision(
+        output_path=tmp_path / "decision.json", **kwargs
+    )
+
+    assert decision["status"] == "blocked"
+    assert (
+        f"policy_canary_forbidden_scene_digest_present:{role}:d6c3cd3e"
+        in decision["blockers"]
+    )
+    assert not (
+        tmp_path / "output/task_evaluation_policy_canary_execution_setup.v1.json"
+    ).exists()
 
 
 def test_presubmission_setup_is_activation_independent_and_profile_ready(
