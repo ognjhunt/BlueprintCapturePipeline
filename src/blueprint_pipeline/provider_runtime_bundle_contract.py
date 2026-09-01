@@ -25,6 +25,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp009d_isaac",
     "adp009d_articulated_native",
     "native_task_arena",
+    "native_task_arena_policy_canary_session",
     "paired_target_native_import",
     "adp009d_ovrtx",
     "adp009d_aura_native",
@@ -216,7 +217,10 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp009d_articulated_native_runtime_contract"
-    elif provider_bundle_kind == "native_task_arena":
+    elif provider_bundle_kind in {
+        "native_task_arena",
+        "native_task_arena_policy_canary_session",
+    }:
         result_names = {
             name for name in NATIVE_TASK_ARENA_RESULT_FILENAMES if name in entrypoint_text
         }

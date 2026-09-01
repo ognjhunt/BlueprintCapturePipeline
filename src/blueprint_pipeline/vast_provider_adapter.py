@@ -333,6 +333,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "native_task_arena_policy_canary_session",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }
@@ -345,6 +346,7 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "native_task_arena_policy_canary_session",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }:
@@ -2703,7 +2705,10 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/articulated_native_diagnostic_runtime.py"
         readiness_name = "adp_arena_provider_manifest.json"
-    elif provider_bundle_kind == "native_task_arena":
+    elif provider_bundle_kind in {
+        "native_task_arena",
+        "native_task_arena_policy_canary_session",
+    }:
         required_entries = native_task_arena_required_entries
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp_arena_provider_runner.py"
@@ -2827,6 +2832,7 @@ def _blueprint_bundle_preflight(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
             "paired_target_native_import",
             "adp009d_ovrtx",
             "adp009d_aura_native",
@@ -2889,7 +2895,10 @@ def _blueprint_bundle_preflight(
                         )
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
-                    if provider_bundle_kind == "native_task_arena":
+                    if provider_bundle_kind in {
+                        "native_task_arena",
+                        "native_task_arena_policy_canary_session",
+                    }:
                         readiness_member = (
                             "provider_runtime/adp_arena_provider_manifest.json"
                         )
@@ -3421,6 +3430,7 @@ def _blueprint_bundle_preflight(
                         )
         if provider_bundle_kind in {
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
             "task_evaluation_scene_configuration",
         }:
             # The native readiness manifest is a required, JSON-validated member
@@ -3825,6 +3835,7 @@ def _resolve_launch_mode(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
             "paired_target_native_import",
             "paired_target_native_import",
             "adp009d_ovrtx",
@@ -3891,6 +3902,7 @@ def _probe_env(
         "adp009d_isaac",
         "adp009d_articulated_native",
         "native_task_arena",
+        "native_task_arena_policy_canary_session",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }:
@@ -4639,6 +4651,7 @@ def _probe_shell_script(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
             "paired_target_native_import",
         }:
             script += (
@@ -6568,6 +6581,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -7492,6 +7506,7 @@ def run_vast_provider_adapter(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "native_task_arena",
+            "native_task_arena_policy_canary_session",
             "adp009d_ovrtx",
             "adp009d_aura_native",
         }
@@ -9029,7 +9044,8 @@ def run_vast_provider_adapter(
             or onstart_logs.get("break_reason") == "log_transport_unavailable"
         )
         command_execute_fallback_allowed = bool(
-            provider_bundle_kind == "native_task_arena"
+            provider_bundle_kind
+            in {"native_task_arena", "native_task_arena_policy_canary_session"}
             or _env_truthy(VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV)
         )
         if (

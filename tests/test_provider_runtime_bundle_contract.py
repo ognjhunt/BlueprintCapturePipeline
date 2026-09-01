@@ -101,3 +101,31 @@ def test_scene_configuration_runtime_contract_is_closed_and_fail_closed() -> Non
         entrypoint_text="#!/bin/sh\nexit 0\n",
         runner_text=runner,
     ) == ["provider_entrypoint_missing_runtime_result_crash_fallback"]
+
+
+def test_policy_canary_reuses_the_closed_native_arena_runtime_contract() -> None:
+    entrypoint = "\n".join(
+        (
+            "native_task_arena_worker_failed_without_runtime_result",
+            "native_task_arena_process_exited_without_result",
+            "native_task_arena_policy_result.v1.json",
+        )
+    )
+    runner = "\n".join(
+        (
+            "native_task_arena_runtime_preflight.v1.json",
+            "preflight_native_dependency_matrix",
+            "build_native_task_arena_environment",
+            "NativeFrankaDifferentialIkServo",
+            "task_motion_executed",
+            "candidate_policy_queried",
+            "provider_zero_required_after_return",
+        )
+    )
+
+    assert "native_task_arena_policy_canary_session" in PROVIDER_RUNTIME_BUNDLE_KINDS
+    assert provider_runtime_contract_blockers(
+        provider_bundle_kind="native_task_arena_policy_canary_session",
+        entrypoint_text=entrypoint,
+        runner_text=runner,
+    ) == []

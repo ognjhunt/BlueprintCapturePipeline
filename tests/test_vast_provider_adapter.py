@@ -6054,6 +6054,14 @@ def test_vast_adapter_small_provider_helper_edges(
     assert 're.fullmatch(r"sha256:[0-9a-f]{64}", value)' in arena_script
     assert 'downloaded_sha" != "$dependency_sha' in arena_script
     assert 'downloaded_size" != "$dependency_size' in arena_script
+    policy_canary_script = vpa._probe_shell_script(
+        "https://heartbeat.example",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="native_task_arena_policy_canary_session",
+    )
+    assert "BLUEPRINT_RUNTIME_DEPENDENCY_URI" in policy_canary_script
+    assert "native_task_runtime_dependency_cache" in policy_canary_script
     layered_env = vpa._probe_env(
         job_dir=tmp_path / "layered-arena",
         enable_isaac_smoke=True,
