@@ -33,6 +33,9 @@ from .task_evaluation_scene_construction_queue import (
 from .task_evaluation_native_arena_episode_compiler import (
     compile_native_arena_episode,
 )
+from .task_evaluation_native_arena_preparation_adapter import (
+    TaskEvaluationNativeArenaAdapterError,
+)
 
 
 COMPILER_OUTPUT_SCHEMA_VERSION = "task_evaluation_episode_compiler_output.v1"
@@ -334,6 +337,8 @@ def process_episode_compilation_queue(
                     if isinstance(
                         exc, TaskEvaluationEpisodeCompilationWorkerError
                     )
+                    else str(exc)
+                    if isinstance(exc, TaskEvaluationNativeArenaAdapterError)
                     else f"episode_compilation_failed:{type(exc).__name__}"
                 ],
                 "result_digest": "",
