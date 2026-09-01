@@ -73,6 +73,28 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
 
 
+def test_preparation_graph_blocker_retains_typed_step_failure() -> None:
+    with pytest.raises(
+        TaskEvaluationLaunchActivationWorkerError,
+        match=(
+            "launch_activation_preparation_graph_blocked:"
+            "profile_publication:exit_2"
+        ),
+    ):
+        worker._activation_result(
+            request={"expected_production_commit": "a" * 40},
+            preparation_result={},
+            window={},
+            preparation_receipt={
+                "status": "blocked",
+                "source_commit": "a" * 40,
+                "provider_allocation_performed": False,
+                "paid_inference_performed": False,
+                "blockers": ["profile_publication:exit_2"],
+            },
+        )
+
+
 def _configured_controls_intent_root(
     tmp_path: Path, preparation: dict[str, object]
 ) -> Path:

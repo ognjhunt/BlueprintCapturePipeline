@@ -1144,6 +1144,12 @@ def _activation_result(
     window: Mapping[str, Any],
     preparation_receipt: Mapping[str, Any],
 ) -> dict[str, Any]:
+    preparation_blockers = [
+        str(value)
+        for value in preparation_receipt.get("blockers") or []
+        if isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9_.:-]{1,240}", value)
+    ][:3]
     if (
         preparation_receipt.get("status") != "prepared"
         or preparation_receipt.get("source_commit")
@@ -1153,6 +1159,11 @@ def _activation_result(
     ):
         raise TaskEvaluationLaunchActivationWorkerError(
             "launch_activation_preparation_graph_blocked"
+            + (
+                ":" + ",".join(preparation_blockers)
+                if preparation_blockers
+                else ""
+            )
         )
     profile_path = _artifact_for_step(preparation_receipt, "live_profile")
     publication_path = _artifact_for_step(
@@ -1542,6 +1553,7 @@ def process_launch_activation_queue(
             continue
         processing_leases.append(_acquire_processing_lease(claimed))
         terminal_state = "prepared"
+        request: dict[str, Any] | None = None
         try:
             envelope = _load_sealed(
                 claimed,
@@ -1712,7 +1724,11 @@ def process_launch_activation_queue(
             result = {
                 "schema_version": RESULT_SCHEMA_VERSION,
                 "status": "blocked",
-                "activation_id": re.sub(r"-[0-9a-f]{64}\.json$", "", source.name),
+                "activation_id": (
+                    request["activation_id"]
+                    if isinstance(request, Mapping)
+                    else re.sub(r"-[0-9a-f]{64}\.json$", "", source.name)
+                ),
                 "blockers": [
                     str(exc)
                     if isinstance(

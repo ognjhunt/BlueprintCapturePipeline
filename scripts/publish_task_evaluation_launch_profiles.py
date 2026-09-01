@@ -140,7 +140,8 @@ def _install_parent_traversal(path: Path, *, boundary: Path, gid: int, name: str
             mode = stat.S_IMODE(info.st_mode)
             if info.st_gid == gid and mode & stat.S_IXGRP:
                 continue
-            os.chown(directory, -1, gid)
+            if info.st_gid != gid:
+                os.chown(directory, -1, gid)
             directory.chmod(mode | stat.S_IXGRP)
         except OSError as exc:
             raise TaskEvaluationLaunchError(
