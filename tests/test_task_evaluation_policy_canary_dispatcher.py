@@ -497,6 +497,58 @@ def test_nonretryable_setup_refusal_moves_queue_only_after_blocked_email_sync(
     ).is_file()
 
 
+def test_stale_commit_setup_is_terminalized_before_allocator(
+    tmp_path: Path,
+) -> None:
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    queue = tmp_path / "queue"
+    for name in ("pending", "processing", "completed", "blocked"):
+        (queue / name).mkdir(parents=True, exist_ok=True)
+    envelope = {
+        "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
+        "activation_id": "activation-1",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "source_commit": COMMIT,
+        "activation_result": _record(activation_result),
+        "capture_session_id": "capture-839873",
+        "intake_id": "intake-839873",
+        "request_digest": "sha256:" + "7" * 64,
+        "maximum_provider_allocations": 1,
+        "retry_cap": 0,
+        "automatic_retry_authorized": False,
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "envelope_digest": "",
+    }
+    envelope["envelope_digest"] = canonical_digest(
+        envelope, digest_field="envelope_digest"
+    )
+    pending = _write(queue / "pending" / "activation-1.json", envelope)
+    setups = tmp_path / "setups"
+    setups.mkdir()
+    (setups / "activation-1.json").write_bytes(setup_path.read_bytes())
+
+    observed = process_policy_canary_dispatch_queue(
+        dispatch_queue_root=queue,
+        execution_setup_root=setups,
+        dispatch_root=tmp_path / "dispatches",
+        implementation_commit="b" * 40,
+        execute=True,
+        blocked_sync_runner=lambda **_kwargs: {
+            "status": "succeeded",
+            "notification_delivery": {"status": "delivered"},
+        },
+    )
+
+    result = observed["results"][0]
+    assert result["status"] == "blocked_before_paid_dispatch"
+    assert result["allocator_invoked"] is False
+    assert result["blockers"] == ["policy_canary_dispatch_activation_setup_mismatch"]
+    assert not pending.exists()
+    assert (queue / "blocked" / pending.name).is_file()
+
+
 def test_paid_queue_materializes_setup_from_staged_template_before_dispatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1057,6 +1057,49 @@ def process_policy_canary_dispatch_queue(
                 "policy_canary_dispatch_queue_root_invalid"
             )
     processed: list[dict[str, Any]] = []
+
+    def block_before_paid_dispatch(
+        *,
+        envelope_path: Path,
+        envelope: Mapping[str, Any],
+        activation_id: str,
+        blockers: Sequence[str],
+    ) -> dict[str, Any]:
+        blocked: dict[str, Any] = {
+            "schema_version": "task_evaluation_policy_canary_preprovider_blocked.v1",
+            "status": "blocked_before_paid_dispatch",
+            "activation_id": activation_id,
+            "run_kind": RUN_KIND,
+            "claim_ceiling": CLAIM_CEILING,
+            "allocator_invoked": False,
+            "provider_mutation_performed": False,
+            "automatic_retry_performed": False,
+            "blockers": list(blockers),
+            "blocked_result_digest": "",
+        }
+        blocked["blocked_result_digest"] = canonical_digest(
+            blocked, digest_field="blocked_result_digest"
+        )
+        blocked_root = outputs / activation_id
+        blocked_root.mkdir(parents=True, exist_ok=True)
+        write_json(blocked_root / "preprovider_blocked.json", blocked)
+        sync = dict(
+            blocked_sync_runner(
+                activation_id=activation_id,
+                capture_session_id=envelope["capture_session_id"],
+                intake_id=envelope["intake_id"],
+                request_digest=envelope["request_digest"],
+                blockers=list(blockers),
+            )
+        )
+        blocked["terminal_sync"] = sync
+        if sync.get("status") == "succeeded":
+            os.replace(envelope_path, queue / "blocked" / envelope_path.name)
+        else:
+            blocked["status"] = "blocked_awaiting_website_notification"
+        processed.append(blocked)
+        return blocked
+
     for envelope_path in sorted((queue / "pending").glob("*.json"))[:max_messages]:
         envelope = _read(envelope_path, code="policy_canary_dispatch_envelope_invalid")
         activation_record = envelope.get("activation_result")
@@ -1096,39 +1139,12 @@ def process_policy_canary_dispatch_queue(
                     output_dir=setup_directory,
                 )
             except PolicyCanarySetupError as exc:
-                blocked: dict[str, Any] = {
-                    "schema_version": "task_evaluation_policy_canary_preprovider_blocked.v1",
-                    "status": "blocked_before_paid_dispatch",
-                    "activation_id": activation_id,
-                    "run_kind": RUN_KIND,
-                    "claim_ceiling": CLAIM_CEILING,
-                    "allocator_invoked": False,
-                    "provider_mutation_performed": False,
-                    "automatic_retry_performed": False,
-                    "blockers": list(exc.blockers),
-                    "blocked_result_digest": "",
-                }
-                blocked["blocked_result_digest"] = canonical_digest(
-                    blocked, digest_field="blocked_result_digest"
+                block_before_paid_dispatch(
+                    envelope_path=envelope_path,
+                    envelope=envelope,
+                    activation_id=activation_id,
+                    blockers=exc.blockers,
                 )
-                blocked_root = outputs / activation_id
-                blocked_root.mkdir(parents=True, exist_ok=True)
-                write_json(blocked_root / "preprovider_blocked.json", blocked)
-                sync = dict(
-                    blocked_sync_runner(
-                        activation_id=activation_id,
-                        capture_session_id=envelope["capture_session_id"],
-                        intake_id=envelope["intake_id"],
-                        request_digest=envelope["request_digest"],
-                        blockers=list(exc.blockers),
-                    )
-                )
-                blocked["terminal_sync"] = sync
-                if sync.get("status") == "succeeded":
-                    os.replace(envelope_path, queue / "blocked" / envelope_path.name)
-                else:
-                    blocked["status"] = "blocked_awaiting_website_notification"
-                processed.append(blocked)
                 continue
             setup_path = (
                 setup_directory
@@ -1153,17 +1169,26 @@ def process_policy_canary_dispatch_queue(
             processed.append(waiting)
             continue
         output = outputs / activation_id
-        result = dispatch_policy_canary_activation(
-            activation_result_path=activation_path,
-            execution_setup_path=setup_path,
-            output_root=output,
-            implementation_commit=implementation_commit,
-            execute=execute,
-            official_billing_receipt_path=(
-                output / "official_billing_reconciliation.json"
-            ),
-            billing_audit_root=billing_audit_root,
-        )
+        try:
+            result = dispatch_policy_canary_activation(
+                activation_result_path=activation_path,
+                execution_setup_path=setup_path,
+                output_root=output,
+                implementation_commit=implementation_commit,
+                execute=execute,
+                official_billing_receipt_path=(
+                    output / "official_billing_reconciliation.json"
+                ),
+                billing_audit_root=billing_audit_root,
+            )
+        except TaskEvaluationPolicyCanaryDispatchError as exc:
+            block_before_paid_dispatch(
+                envelope_path=envelope_path,
+                envelope=envelope,
+                activation_id=activation_id,
+                blockers=[str(exc)],
+            )
+            continue
         processed.append(result)
         if (output / "dispatch_receipt.json").is_file():
             os.replace(envelope_path, queue / "completed" / envelope_path.name)
