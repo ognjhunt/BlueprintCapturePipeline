@@ -36,6 +36,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_arena_runtime.py",
     "native_task_isaaclab_launch.py",
     "native_task_camera_observability.py",
+    "native_task_frame_display_encoding.py",
     # measure_native_task_camera_observability imports the framing
     # expectation module lazily, so the closure import probe cannot see
     # this edge; ship it beside observability everywhere observability
@@ -112,6 +113,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_arena_runtime.py",
     "native_task_isaaclab_launch.py",
     "native_task_camera_observability.py",
+    "native_task_frame_display_encoding.py",
     # measure_native_task_camera_observability imports the framing
     # expectation module lazily, so the closure import probe cannot see
     # this edge; ship it beside observability everywhere observability

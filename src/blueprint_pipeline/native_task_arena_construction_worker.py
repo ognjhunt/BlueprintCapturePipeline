@@ -845,6 +845,9 @@ def _camera_snapshot(
     from blueprint_pipeline.native_task_camera_observability import (
         measure_native_task_camera_observability,
     )
+    from blueprint_pipeline.native_task_frame_display_encoding import (
+        display_encode_hdr,
+    )
 
     rows = []
     diagnostics: dict[str, Any] = {
@@ -869,6 +872,7 @@ def _camera_snapshot(
         if rgb_array.shape[-1] == 4:
             rgb_array = rgb_array[..., :3]
         rgb_array = np.clip(rgb_array, 0, 255).astype(np.uint8)
+        rgb_source = "isaac_ldr_annotator"
         hdr_raw = None
         hdr_array = None
         if "rgb_hdr" in outputs:
@@ -879,6 +883,13 @@ def _camera_snapshot(
                 else hdr_raw
             )
             hdr_array = np.asarray(hdr_array, dtype=np.float32)[..., :3]
+            # Prefer our own display encoding of the linear buffer over the
+            # annotator's per-channel clip: the retained frames from this
+            # lane's attempt 001 carried a 17% over-white tail that clipped
+            # to white blobs with chromatic fringes. The retained PNG is the
+            # frame the camera gates measure and the one a human reviews.
+            rgb_array = display_encode_hdr(hdr_array)
+            rgb_source = "rgb_hdr_display_encoded"
         semantic_raw = _explicit_array(outputs["semantic_segmentation"])
         semantic = np.squeeze(semantic_raw)
         expected_hw = tuple(int(value) for value in rgb_array.shape[:2])
@@ -914,6 +925,7 @@ def _camera_snapshot(
             {
                 "role": role,
                 "scene_name": scene_name,
+                "rgb_source": rgb_source,
                 "rgb_raw_shape": list(rgb_raw.shape),
                 "rgb_image_shape": list(rgb_array.shape),
                 "rgb_hdr_raw_shape": (
@@ -960,6 +972,7 @@ def _camera_snapshot(
                     "path": str(frame_path.relative_to(output_root)),
                     "sha256": _sha256(frame_path),
                 },
+                "rgb_source": rgb_source,
                 "rgb_min": int(rgb_array.min()),
                 "rgb_max": int(rgb_array.max()),
                 "rgb_mean": float(rgb_array.mean()),
