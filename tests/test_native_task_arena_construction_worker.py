@@ -717,10 +717,12 @@ def test_persist_survives_values_json_cannot_encode() -> None:
 class _FakeCameraData:
     """Only what `_camera_snapshot` touches, in the shapes Isaac Lab returns."""
 
-    def __init__(self, *, rgb, semantic, labels) -> None:
+    def __init__(self, *, rgb, semantic, labels, hdr=None) -> None:
         import numpy as np
 
         self.output = {"rgb": rgb[None, ...], "semantic_segmentation": semantic[None, ...]}
+        if hdr is not None:
+            self.output["rgb_hdr"] = hdr[None, ...]
         self.info = {"semantic_segmentation": {"idToLabels": labels}}
         self.intrinsic_matrices = np.eye(3, dtype=np.float32)[None, ...]
         self.pos_w = np.zeros((1, 3), dtype=np.float32)
@@ -737,19 +739,113 @@ class _FakeEnv:
         )()
 
 
-def _snapshot_one_camera(*, rgb, semantic, labels, output_root):
+def _snapshot_one_camera(*, rgb, semantic, labels, output_root, hdr=None):
     from blueprint_pipeline.native_task_arena_construction_worker import (
         _camera_snapshot,
     )
 
     camera = type("_Camera", (), {})()
-    camera.data = _FakeCameraData(rgb=rgb, semantic=semantic, labels=labels)
+    camera.data = _FakeCameraData(rgb=rgb, semantic=semantic, labels=labels, hdr=hdr)
     return _camera_snapshot(
         env=_FakeEnv({"external_cam": camera}),
         camera_scene_names={"external": "external_cam"},
         output_root=output_root,
         snapshot_id="reset",
     )
+
+
+def test_display_encode_rolls_off_highlights_without_channel_fringes() -> None:
+    """The franka-controls run retained HDR frames with a 17% over-white tail
+    (p99 = 11, max = 55); Isaac's per-channel clip rendered them as white
+    blobs with chromatic fringes. The display encode must (a) leave content at
+    or below the knee at its plain sRGB encoding, (b) preserve channel ratios
+    on saturated pixels instead of clipping channels independently, and (c)
+    sanitize non-finite radiance instead of propagating it."""
+
+    import numpy as np
+
+    from blueprint_pipeline.native_task_frame_display_encoding import (
+        DISPLAY_ENCODE_KNEE,
+        display_encode_hdr,
+    )
+
+    low = np.full((4, 4, 3), 0.5, dtype=np.float32)
+    low[0, 0] = [DISPLAY_ENCODE_KNEE, 0.2, 0.01]
+    encoded_low = display_encode_hdr(low)
+    srgb = np.where(
+        low <= 0.0031308, 12.92 * low, 1.055 * np.power(low, 1.0 / 2.4) - 0.055
+    )
+    expected = (np.clip(srgb, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+    assert np.array_equal(encoded_low, expected)
+
+    bright = np.zeros((1, 1, 3), dtype=np.float32)
+    bright[0, 0] = [10.0, 5.0, 1.0]
+    encoded_bright = display_encode_hdr(bright)[0, 0].astype(np.int64)
+    # No channel may sit at the clip ceiling while the others carry structure,
+    # and the input ordering must survive.
+    assert encoded_bright[0] < 255
+    assert encoded_bright[0] > encoded_bright[1] > encoded_bright[2]
+
+    hotter = np.zeros((1, 1, 3), dtype=np.float32)
+    hotter[0, 0] = [55.0, 27.5, 5.5]
+    assert int(display_encode_hdr(hotter)[0, 0, 0]) >= int(encoded_bright[0])
+
+    poisoned = np.array([[[np.inf, np.nan, -np.inf]]], dtype=np.float32)
+    sanitized = display_encode_hdr(poisoned)
+    assert sanitized.dtype == np.uint8
+    assert int(sanitized[0, 0, 1]) == 0
+    assert int(sanitized[0, 0, 2]) == 0
+
+
+def test_construction_camera_snapshot_prefers_hdr_derived_display_frame(
+    tmp_path,
+) -> None:
+    """With a linear HDR buffer present the retained PNG must come from the
+    chroma-preserving display encode, recorded as such, and a superbright
+    region must land below the hard-clip ceiling instead of fringing."""
+
+    import numpy as np
+
+    semantic = np.full((64, 64), 7, dtype=np.int32)
+    ldr = np.full((64, 64, 3), 128, dtype=np.uint8)
+    hdr = np.full((64, 64, 3), 0.5, dtype=np.float32)
+    hdr[:16, :16] = [10.0, 5.0, 1.0]
+
+    snapshot = _snapshot_one_camera(
+        rgb=ldr,
+        semantic=semantic,
+        labels={"7": {"class": "task_object"}},
+        output_root=tmp_path,
+        hdr=hdr,
+    )
+
+    row = snapshot["cameras"][0]
+    assert row["rgb_source"] == "rgb_hdr_display_encoded"
+    assert row["rgb_max"] < 255
+    diagnostics = json.loads(
+        (tmp_path / "native_task_camera_snapshot_diagnostics.v1.json").read_text()
+    )
+    assert diagnostics["cameras"][0]["rgb_source"] == "rgb_hdr_display_encoded"
+    assert row["rgb_hdr"]["maximum"] == 10.0
+
+
+def test_construction_camera_snapshot_keeps_ldr_fallback_without_hdr(
+    tmp_path,
+) -> None:
+    import numpy as np
+
+    semantic = np.full((64, 64), 7, dtype=np.int32)
+    textured = (np.arange(64 * 64 * 3, dtype=np.uint64) % 251).astype(np.uint8)
+    textured = textured.reshape(64, 64, 3)
+
+    snapshot = _snapshot_one_camera(
+        rgb=textured,
+        semantic=semantic,
+        labels={"7": {"class": "task_object"}},
+        output_root=tmp_path,
+    )
+
+    assert snapshot["cameras"][0]["rgb_source"] == "isaac_ldr_annotator"
 
 
 def test_construction_camera_snapshot_fails_a_black_frame(tmp_path) -> None:

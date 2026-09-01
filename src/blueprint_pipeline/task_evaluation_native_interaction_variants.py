@@ -42,7 +42,7 @@ def build_native_interaction_variants(
         phase_id = str(phase["phase_id"])
         if "release" in phase_id:
             stage_kind = "release"
-        elif any(token in phase_id for token in ("retreat", "recovery")):
+        elif any(token in phase_id for token in ("detach", "retreat", "recovery")):
             stage_kind = "retreat"
         elif phase_id != first_phase_id:
             stage_kind = "contact"

@@ -22,6 +22,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_construction_plan.py",
     "native_task_construction_authored_contract.py",
     "native_task_construction_validation.py",
+    "native_task_rigid_gate_evaluation.py",
     "native_franka_pose_servo.py",
     "native_franka_grasp_geometry.py",
     "native_franka_action_math.py",
@@ -35,6 +36,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_arena_runtime.py",
     "native_task_isaaclab_launch.py",
     "native_task_camera_observability.py",
+    "native_task_frame_display_encoding.py",
     # measure_native_task_camera_observability imports the framing
     # expectation module lazily, so the closure import probe cannot see
     # this edge; ship it beside observability everywhere observability
@@ -111,6 +113,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_arena_runtime.py",
     "native_task_isaaclab_launch.py",
     "native_task_camera_observability.py",
+    "native_task_frame_display_encoding.py",
     # measure_native_task_camera_observability imports the framing
     # expectation module lazily, so the closure import probe cannot see
     # this edge; ship it beside observability everywhere observability
@@ -119,6 +122,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_construction_plan.py",
     "native_task_construction_authored_contract.py",
     "native_task_construction_validation.py",
+    "native_task_rigid_gate_evaluation.py",
     "native_task_nurec_render_setup.py",
     "native_task_rigid_controls.py",
     "native_task_episode_environment.py",

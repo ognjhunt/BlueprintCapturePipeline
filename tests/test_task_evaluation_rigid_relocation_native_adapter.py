@@ -368,6 +368,88 @@ def test_rigid_root_cannot_begin_below_registered_support(tmp_path: Path) -> Non
     )
 
 
+def test_push_geometry_authors_measured_fingertip_and_clearance_contract(
+    tmp_path: Path,
+) -> None:
+    """Attempt 001 of the scene-839873 franka-controls launch measured the
+    closed fingertips 39 mm ahead of the commanded pinch centre and a 59.6 N
+    support graze from the hand envelope ~55 mm below it.  The adapter must
+    author that geometry into the affordance and lift the contact point up
+    the pushed face until the hand envelope clears the support."""
+
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import (
+        CLOSED_HAND_SUPPORT_ENVELOPE_BELOW_GRASP_FRAME_M,
+        PUSH_CONTACT_INTERFERENCE_M,
+        PUSH_CONTACT_MAX_DISPLACEMENT_M,
+        PUSH_SUPPORT_CLEARANCE_MARGIN_M,
+        ROBOTIQ_2F85_CLOSED_FINGERTIP_FORWARD_OFFSET_M,
+    )
+
+    launch, configured, references, docs = _case(tmp_path)
+    result = adapt_rigid_relocation_task_template(
+        request=launch,
+        configured_revision=configured,
+        materialized_references=references,
+    )
+
+    task_spec = result["native_task_definition"]["task_spec"]
+    affordance = task_spec["interaction_affordance"]
+    assert affordance["closed_fingertip_forward_offset_m"] == (
+        ROBOTIQ_2F85_CLOSED_FINGERTIP_FORWARD_OFFSET_M
+    )
+    assert affordance["push_contact_interference_m"] == (
+        PUSH_CONTACT_INTERFERENCE_M
+    )
+    assert task_spec["push_contact_max_displacement_m"] == (
+        PUSH_CONTACT_MAX_DISPLACEMENT_M
+    )
+    start_z = docs[EXECUTION]["start_center_xyz_m"][2]
+    expected_contact_z = (
+        docs[SUPPORT]["top_z_m"]
+        + CLOSED_HAND_SUPPORT_ENVELOPE_BELOW_GRASP_FRAME_M
+        + PUSH_SUPPORT_CLEARANCE_MARGIN_M
+        - start_z
+    )
+    assert affordance["contact_point_scoring_frame_m"][2] == pytest.approx(
+        expected_contact_z
+    )
+    assert affordance["contact_point_scoring_frame_m"][2] <= (
+        docs[SOURCE_OBJECT]["aabb_max_xyz_m"][2] - start_z - 0.005
+    )
+
+
+def test_push_refuses_an_object_too_short_to_clear_the_hand_envelope(
+    tmp_path: Path,
+) -> None:
+    """A pushed face shorter than the clearing height cannot be pushed by
+    this hand without grazing the support; refuse at adapter time instead of
+    paying a run to measure the graze again."""
+
+    launch, configured, references, docs = _case(tmp_path)
+    source = copy.deepcopy(docs[SOURCE_OBJECT])
+    source["aabb_max_xyz_m"][2] = 0.83
+    _rewrite(
+        tmp_path=tmp_path,
+        configured=configured,
+        references=references,
+        contract_path=SOURCE_OBJECT,
+        document=source,
+    )
+    launch["task"]["configured_scene_revision_digest"] = configured[
+        "revision_digest"
+    ]
+
+    with pytest.raises(
+        TaskEvaluationRigidRelocationNativeAdapterError,
+        match="rigid_relocation_native_adapter_push_support_clearance_unauthorable",
+    ):
+        adapt_rigid_relocation_task_template(
+            request=launch,
+            configured_revision=configured,
+            materialized_references=references,
+        )
+
+
 def test_diagnostic_authority_reuses_exact_documents_without_revision_claim(
     tmp_path: Path,
 ) -> None:
