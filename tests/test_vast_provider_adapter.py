@@ -5755,6 +5755,47 @@ def test_vast_adapter_blueprint_preflight_branch_matrix(
     ]
 
 
+def test_policy_canary_provider_manifest_uses_its_typed_schema() -> None:
+    manifest = {
+        "schema_version": "native_task_arena_policy_canary_provider_bundle.v1",
+        "status": "ready",
+        "blockers": [],
+        "execution_mode": "internal_policy_canary_paired_session",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "episodes_per_policy": 10,
+        "learned_policy_rollout_count": 20,
+        "maximum_provider_allocations": 1,
+        "retry_cap": 0,
+        "expected_output_filename": (
+            "native_task_arena_policy_canary_session_result.v1.json"
+        ),
+        "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
+        "candidate_policy_queried": False,
+        "provider_zero_required_after_return": True,
+    }
+    manifest["input_digest"] = vpa.canonical_digest(
+        manifest,
+        digest_field="input_digest",
+    )
+
+    readiness = vpa._validate_policy_canary_provider_manifest(manifest)
+
+    assert readiness["local_bundle_ready_for_remote_staging"] is True
+    wrong_schema = dict(manifest)
+    wrong_schema["schema_version"] = "native_task_arena_provider_bundle.v1"
+    wrong_schema["input_digest"] = vpa.canonical_digest(
+        wrong_schema,
+        digest_field="input_digest",
+    )
+    with pytest.raises(
+        ValueError,
+        match="native_task_arena_policy_canary_manifest_invalid",
+    ):
+        vpa._validate_policy_canary_provider_manifest(wrong_schema)
+
+
 def test_vast_adapter_small_provider_helper_edges(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

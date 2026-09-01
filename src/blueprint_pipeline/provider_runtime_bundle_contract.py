@@ -217,10 +217,28 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp009d_articulated_native_runtime_contract"
-    elif provider_bundle_kind in {
-        "native_task_arena",
-        "native_task_arena_policy_canary_session",
-    }:
+    elif provider_bundle_kind == "native_task_arena_policy_canary_session":
+        entrypoint_valid = all(
+            token in entrypoint_text
+            for token in (
+                "native_task_arena_policy_canary_session_result.v1.json",
+                "policy_canary_worker_failed_without_result",
+                "adp009d_policy_server_worker.py",
+            )
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "execute_paired_session",
+                "validate_runtime_input_manifest",
+                "build_native_task_arena_environment",
+                "launch_native_task_isaaclab",
+                "candidate_policy_queried",
+                "policy_canary_telemetry",
+            )
+        )
+        runner_blocker = "provider_runner_missing_policy_canary_session_runtime_contract"
+    elif provider_bundle_kind == "native_task_arena":
         result_names = {
             name for name in NATIVE_TASK_ARENA_RESULT_FILENAMES if name in entrypoint_text
         }

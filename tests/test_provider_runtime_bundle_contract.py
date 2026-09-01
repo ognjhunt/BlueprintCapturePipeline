@@ -106,20 +106,19 @@ def test_scene_configuration_runtime_contract_is_closed_and_fail_closed() -> Non
 def test_policy_canary_reuses_the_closed_native_arena_runtime_contract() -> None:
     entrypoint = "\n".join(
         (
-            "native_task_arena_worker_failed_without_runtime_result",
-            "native_task_arena_process_exited_without_result",
-            "native_task_arena_policy_result.v1.json",
+            "native_task_arena_policy_canary_session_result.v1.json",
+            "policy_canary_worker_failed_without_result",
+            "adp009d_policy_server_worker.py",
         )
     )
     runner = "\n".join(
         (
-            "native_task_arena_runtime_preflight.v1.json",
-            "preflight_native_dependency_matrix",
+            "execute_paired_session",
+            "validate_runtime_input_manifest",
             "build_native_task_arena_environment",
-            "NativeFrankaDifferentialIkServo",
-            "task_motion_executed",
+            "launch_native_task_isaaclab",
             "candidate_policy_queried",
-            "provider_zero_required_after_return",
+            "policy_canary_telemetry",
         )
     )
 
