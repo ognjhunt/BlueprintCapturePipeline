@@ -475,6 +475,7 @@ def materialize_policy_canary_presubmission_setup(
     historical_policy_readiness_path: str | Path,
     pi05_checkpoint_inventory_path: str | Path,
     policy_controller_configuration: Mapping[str, Any],
+    native_controller_configuration: Mapping[str, Any],
     model_rights: Mapping[str, Any],
     output_dir: str | Path,
     maximum_hourly_rate_usd: float = 0.8,
@@ -732,6 +733,10 @@ def materialize_policy_canary_presubmission_setup(
         policy_controller_configuration,
         code="policy_canary_controller_configuration_invalid",
     )
+    native_controller_ref = _immutable_ref(
+        native_controller_configuration,
+        code="policy_canary_native_controller_configuration_invalid",
+    )
     rights_ref = _immutable_ref(
         model_rights,
         code="policy_canary_model_rights_invalid",
@@ -760,7 +765,7 @@ def materialize_policy_canary_presubmission_setup(
         "controller": {
             "identity": {"id": "paired-policy-canary", "version": "v1"},
             "kind": "policy_container",
-            "configuration": controller_ref,
+            "configuration": native_controller_ref,
             "model_or_asset_rights": rights_ref,
         },
         "publication": {"service_account_readback_required": True},
