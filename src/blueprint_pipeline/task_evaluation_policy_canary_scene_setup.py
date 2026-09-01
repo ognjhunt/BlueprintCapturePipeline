@@ -476,6 +476,7 @@ def materialize_policy_canary_presubmission_setup(
     pi05_checkpoint_inventory_path: str | Path,
     policy_controller_configuration: Mapping[str, Any],
     native_controller_configuration: Mapping[str, Any],
+    runtime_source_bundle: Mapping[str, Any],
     model_rights: Mapping[str, Any],
     output_dir: str | Path,
     maximum_hourly_rate_usd: float = 0.8,
@@ -737,6 +738,10 @@ def materialize_policy_canary_presubmission_setup(
         native_controller_configuration,
         code="policy_canary_native_controller_configuration_invalid",
     )
+    runtime_source_ref = _immutable_ref(
+        runtime_source_bundle,
+        code="policy_canary_runtime_source_bundle_invalid",
+    )
     rights_ref = _immutable_ref(
         model_rights,
         code="policy_canary_model_rights_invalid",
@@ -762,6 +767,10 @@ def materialize_policy_canary_presubmission_setup(
     preparation_template: dict[str, Any] = {
         "schema_version": "task_evaluation_policy_run_preparation_template.v1",
         **{field: deepcopy(configured_preparation[field]) for field in required_template_fields},
+        "execution_adapter": {
+            **deepcopy(configured_preparation["execution_adapter"]),
+            "runtime_source_bundle": runtime_source_ref,
+        },
         "controller": {
             "identity": {"id": "paired-policy-canary", "version": "v1"},
             "kind": "policy_container",
