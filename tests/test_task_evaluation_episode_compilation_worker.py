@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -241,3 +242,28 @@ def test_compilation_preserves_typed_native_adapter_blocker(
     assert run["results"][0]["blockers"] == [
         "task_evaluation_adapter_bundle_identity_mismatch"
     ]
+
+
+def test_compilation_reports_errno_and_removes_partial_output(
+    tmp_path: Path,
+) -> None:
+    queue, inputs, envelope = _stage(tmp_path)
+    outputs = tmp_path / "outputs"
+
+    def disk_full(*, output_root, **_kwargs):
+        (Path(output_root) / "partial.bin").write_bytes(b"partial")
+        raise OSError(28, "No space left on device", "/secret/host/path")
+
+    run = process_episode_compilation_queue(
+        queue_root=queue,
+        input_root=inputs,
+        output_root=outputs,
+        source_commit=envelope["expected_production_commit"],
+        episode_compiler=disk_full,
+    )
+
+    result = run["results"][0]
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["episode_compilation_failed:OSError:errno_28"]
+    assert "/secret/host/path" not in json.dumps(result)
+    assert not (outputs / envelope["compilation_id"]).exists()

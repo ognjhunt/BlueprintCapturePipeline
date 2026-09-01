@@ -161,7 +161,10 @@ def test_canary_sync_requires_website_notification_receipt(monkeypatch) -> None:
     assert "sync-secret" not in json.dumps(synced)
 
 
-def test_preprovider_blocked_sync_requires_terminal_email_readback(monkeypatch) -> None:
+def test_preprovider_blocked_sync_requires_terminal_email_readback(
+    tmp_path,
+    monkeypatch,
+) -> None:
     class Response:
         def __enter__(self):
             return self
@@ -203,6 +206,11 @@ def test_preprovider_blocked_sync_requires_terminal_email_readback(monkeypatch) 
         "blueprint_pipeline.task_evaluation_run_webapp_sync.urllib_request.urlopen",
         open_response,
     )
+    token_file = tmp_path / "pipeline-sync-token"
+    token_file.write_text("sync-secret\n", encoding="utf-8")
+    token_file.chmod(0o440)
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN_FILE", str(token_file))
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
     synced = sync_policy_canary_preprovider_blocked_to_webapp(
         activation_id="activation-839873",
         capture_session_id="capture-839873",
@@ -213,7 +221,6 @@ def test_preprovider_blocked_sync_requires_terminal_email_readback(monkeypatch) 
         request_digest="sha256:" + "1" * 64,
         blockers=["policy_canary_setup_invalid"],
         endpoint_url="https://webapp.example/api/internal/pipeline/task-evaluation-runs",
-        token="sync-secret",
     )
 
     assert synced["status"] == "succeeded"

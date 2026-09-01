@@ -12,6 +12,10 @@ from urllib import request as urllib_request
 from .core.security_controls import strict_identifier
 from .decision_evidence_contracts import DecisionEnvelope, EvidencePlan, canonical_digest
 from .task_evaluation_result_delivery import DELIVERY_SCHEMA_VERSION
+from .task_evaluation_launch_webapp_sync import (
+    PipelineSyncTokenError,
+    load_pipeline_sync_token,
+)
 from .task_evaluation_policy_run_contract import (
     TaskEvaluationPolicyRunContractError,
     validate_policy_run_result_projection,
@@ -37,6 +41,13 @@ def _text(value: Any) -> str:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _resolved_sync_token(token: str | None) -> str:
+    try:
+        return load_pipeline_sync_token(token=token)
+    except PipelineSyncTokenError:
+        return ""
 
 
 def build_task_evaluation_run_webapp_publication(
@@ -223,7 +234,7 @@ def sync_task_evaluation_run_to_webapp(
     resolved_url = _text(endpoint_url) or _text(
         os.getenv(TASK_EVALUATION_RUN_WEBAPP_URL_ENV)
     )
-    resolved_token = _text(token) or _text(os.getenv("PIPELINE_SYNC_TOKEN"))
+    resolved_token = _resolved_sync_token(token)
     common = {
         "schema_version": "task_evaluation_run_webapp_sync_result.v1",
         "capture_session_id": payload["capture_session_id"],
@@ -350,7 +361,7 @@ def sync_task_evaluation_policy_canary_to_webapp(
     resolved_url = _text(endpoint_url) or _text(
         os.getenv(TASK_EVALUATION_RUN_WEBAPP_URL_ENV)
     )
-    resolved_token = _text(token) or _text(os.getenv("PIPELINE_SYNC_TOKEN"))
+    resolved_token = _resolved_sync_token(token)
     common = {
         "schema_version": "task_evaluation_policy_canary_webapp_sync_result.v1",
         "capture_session_id": payload["capture_session_id"],
@@ -490,7 +501,7 @@ def sync_policy_canary_preprovider_blocked_to_webapp(
     resolved_url = _text(endpoint_url) or _text(
         os.getenv(TASK_EVALUATION_RUN_WEBAPP_URL_ENV)
     )
-    resolved_token = _text(token) or _text(os.getenv("PIPELINE_SYNC_TOKEN"))
+    resolved_token = _resolved_sync_token(token)
     if not resolved_url or not resolved_token:
         return {"status": "skipped", "reason": "sync_not_configured", **payload}
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")

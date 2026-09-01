@@ -48,6 +48,7 @@ Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
 Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
 Environment=VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock
 Environment=HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token
+Environment=PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token
 # Keep terminal report and notification publication reachable after a clean
 # production rebuild; EnvironmentFile remains the operator override.
 Environment=PIPELINE_TASK_EVALUATION_RUN_WEBAPP_URL=https://tryblueprint.io/api/internal/pipeline/capture-task-evaluation-runs
