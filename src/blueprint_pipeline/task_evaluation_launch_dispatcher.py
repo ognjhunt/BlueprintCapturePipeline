@@ -56,7 +56,6 @@ from .task_evaluation_policy_run_contract import (
 )
 from . import task_evaluation_policy_canary_setup as policy_canary_setup
 
-
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
 LAUNCH_PROFILE_SCHEMA_VERSION = "task_evaluation_launch_profile.v1"
 LAUNCH_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_receipt.v1"
@@ -125,10 +124,8 @@ PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS = (
     "internal_policy_canary_setup",
 )
 
-
 class TaskEvaluationLaunchError(ValueError):
     """Raised when a launch request or profile fails closed."""
-
 
 def standing_authorization_directory(state_root: str | Path) -> str:
     """Where this host keeps standing authorizations.
@@ -148,7 +145,6 @@ def standing_authorization_directory(state_root: str | Path) -> str:
     if configured:
         return configured
     return str(Path(state_root).expanduser().resolve().parent / "standing-authorizations")
-
 
 def _standing_authorization_decision(
     profile: Mapping[str, Any], live_requested: bool, state_root: str | Path
@@ -172,16 +168,13 @@ def _standing_authorization_decision(
         spend_consumed_usd=spend,
     )
 
-
 def _canonical_json(value: Mapping[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
 
 def canonical_digest(value: Mapping[str, Any], *, digest_field: str) -> str:
     payload = dict(value)
     payload.pop(digest_field, None)
     return _DIGEST_PREFIX + hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
-
 
 def _is_digest(value: Any) -> bool:
     text = str(value or "")
@@ -883,7 +876,15 @@ def validate_launch_request_against_public_catalog(
         ("required_controls", "required_controls"),
         ("claim_ceiling", "claim_ceiling"),
     ):
-        if request.get(request_field) != descriptor.get(descriptor_field):
+        expected = descriptor.get(descriptor_field)
+        requested = (
+            policy_canary_setup.bound_policy_canary_required_controls(
+                request, _mapping(expected)
+            )
+            if request_field == "required_controls"
+            else request.get(request_field)
+        )
+        if requested != expected:
             blockers.append(f"launch_profile_public_catalog_{request_field}_mismatch")
     if "source_commit" in descriptor and request.get("source_commit") != descriptor.get(
         "source_commit"

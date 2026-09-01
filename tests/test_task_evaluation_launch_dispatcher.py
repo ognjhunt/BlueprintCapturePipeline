@@ -865,6 +865,30 @@ def test_public_catalog_binds_request_fields_to_the_published_descriptor(tmp_pat
     ) == ["launch_profile_public_catalog_source_bundle_mismatch"]
 
 
+def test_public_catalog_normalizes_typed_canary_allocation_control(
+    tmp_path: Path,
+) -> None:
+    profile = _profile(tmp_path)
+    descriptor = public_launch_profile_descriptor(profile)
+    catalog_path = tmp_path / "catalog.json"
+    _write(catalog_path, [descriptor])
+    request = _request(profile)
+    request["run_kind"] = "internal_policy_canary"
+    request["required_controls"] = {
+        **request["required_controls"],
+        "maximum_provider_allocations": 1,
+    }
+
+    assert validate_launch_request_against_public_catalog(
+        request, catalog_path=catalog_path
+    ) == []
+
+    request["run_kind"] = "qualified_evaluation"
+    assert validate_launch_request_against_public_catalog(
+        request, catalog_path=catalog_path
+    ) == ["launch_profile_public_catalog_required_controls_mismatch"]
+
+
 def test_dispatch_calls_only_canonical_allocator_and_live_closeout_is_required(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
