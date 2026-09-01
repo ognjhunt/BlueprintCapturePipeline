@@ -238,6 +238,69 @@ def test_dispatcher_refuses_absent_scene839873_setup_before_allocator(
         )
 
 
+def test_allocator_invocation_marker_prevents_unrecorded_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    output = tmp_path / "dispatch-crashed-allocator"
+
+    def fake_bundle(**kwargs):
+        job = Path(kwargs["job_dir"])
+        job.mkdir(parents=True, exist_ok=True)
+        receipt = {"bundle_sha256": "sha256:" + "b" * 64}
+        _write(
+            job / "native_task_arena_policy_canary_session_bundle_receipt.v1.json",
+            receipt,
+        )
+        return receipt
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.build_policy_canary_session_bundle",
+        fake_bundle,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_provider_bundle",
+        lambda value, **_kwargs: value,
+    )
+
+    with pytest.raises(
+        TaskEvaluationPolicyCanaryDispatchError,
+        match="policy_canary_allocator_exit_17_without_result",
+    ):
+        dispatch_policy_canary_activation(
+            activation_result_path=activation_result,
+            execution_setup_path=setup_path,
+            output_root=output,
+            implementation_commit=COMMIT,
+            execute=True,
+            allocator_runner=lambda _argv: 17,
+        )
+
+    started = json.loads(
+        (output / "allocator_invocation_started.json").read_text(encoding="utf-8")
+    )
+    finished = json.loads(
+        (output / "allocator_invocation_finished.json").read_text(encoding="utf-8")
+    )
+    assert started["allocator_invoked"] is True
+    assert started["automatic_retry_authorized"] is False
+    assert finished["exit_code"] == 17
+    assert finished["adapter_result_present"] is False
+    with pytest.raises(
+        TaskEvaluationPolicyCanaryDispatchError,
+        match="policy_canary_allocator_previous_invocation_without_result",
+    ):
+        dispatch_policy_canary_activation(
+            activation_result_path=activation_result,
+            execution_setup_path=setup_path,
+            output_root=output,
+            implementation_commit=COMMIT,
+            execute=True,
+            allocator_runner=lambda _argv: pytest.fail("allocator invoked twice"),
+        )
+
+
 def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -394,6 +457,109 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
     assert third["status"] == "completed_unqualified"
     assert third["allocator_invoked"] is False
     assert calls == {"allocator": 1, "bundle": 1}
+
+
+def test_invalid_envelope_is_quarantined_without_allocator(tmp_path: Path) -> None:
+    queue = tmp_path / "queue"
+    for name in ("pending", "processing", "completed", "blocked"):
+        (queue / name).mkdir(parents=True, exist_ok=True)
+    pending = _write(queue / "pending" / "000-invalid.json", {"secret": "redacted"})
+    setups = tmp_path / "setups"
+    setups.mkdir()
+
+    observed = process_policy_canary_dispatch_queue(
+        dispatch_queue_root=queue,
+        execution_setup_root=setups,
+        dispatch_root=tmp_path / "dispatches",
+        implementation_commit=COMMIT,
+        execute=True,
+    )
+
+    result = observed["results"][0]
+    assert result["status"] == "blocked_invalid_envelope"
+    assert result["allocator_invoked"] is False
+    assert result["provider_mutation_performed"] is False
+    assert "secret" not in json.dumps(result)
+    assert not pending.exists()
+    assert (queue / "blocked" / pending.name).is_file()
+
+
+def test_post_allocator_failure_is_not_labeled_preprovider_or_retried(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    queue = tmp_path / "queue"
+    for name in ("pending", "processing", "completed", "blocked"):
+        (queue / name).mkdir(parents=True, exist_ok=True)
+    envelope = {
+        "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
+        "activation_id": "activation-1",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "source_commit": COMMIT,
+        "activation_result": _record(activation_result),
+        "capture_session_id": "capture-839873",
+        "intake_id": "intake-839873",
+        "request_digest": "sha256:" + "7" * 64,
+        "maximum_provider_allocations": 1,
+        "retry_cap": 0,
+        "automatic_retry_authorized": False,
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "envelope_digest": "",
+    }
+    envelope["envelope_digest"] = canonical_digest(
+        envelope, digest_field="envelope_digest"
+    )
+    pending = _write(queue / "pending" / "activation-1.json", envelope)
+    setups = tmp_path / "setups"
+    setups.mkdir()
+    (setups / "activation-1.json").write_bytes(setup_path.read_bytes())
+
+    def crash_after_allocator(**kwargs):
+        output = Path(kwargs["output_root"])
+        output.mkdir(parents=True, exist_ok=True)
+        marker = {
+            "schema_version": "task_evaluation_policy_canary_allocator_invocation.v1",
+            "status": "started",
+            "run_id": "scene-839873-canary-1",
+            "allocator_invoked": True,
+            "invocation_digest": "sha256:" + "a" * 64,
+        }
+        _write(output / "allocator_invocation_started.json", marker)
+        raise TaskEvaluationPolicyCanaryDispatchError(
+            "policy_canary_allocator_exit_17_without_result"
+        )
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.dispatch_policy_canary_activation",
+        crash_after_allocator,
+    )
+    zero = {
+        "status": "provider_zero_confirmed",
+        "provider_zero_verified": True,
+        "live_instance_count": 0,
+    }
+    observed = process_policy_canary_dispatch_queue(
+        dispatch_queue_root=queue,
+        execution_setup_root=setups,
+        dispatch_root=tmp_path / "dispatches",
+        implementation_commit=COMMIT,
+        execute=True,
+        blocked_sync_runner=lambda **_kwargs: pytest.fail(
+            "post-allocator failure cannot use preprovider sync"
+        ),
+        provider_zero_collector=lambda: zero,
+    )
+
+    result = observed["results"][0]
+    assert result["status"] == "blocked_after_allocator_invocation_provider_zero"
+    assert result["allocator_invoked"] is True
+    assert result["provider_mutation_status"] == "unknown_after_allocator_invocation"
+    assert result["automatic_retry_performed"] is False
+    assert not pending.exists()
+    assert (queue / "blocked" / pending.name).is_file()
 
 
 def test_paid_queue_waits_for_setup_without_invoking_dispatcher(tmp_path: Path) -> None:

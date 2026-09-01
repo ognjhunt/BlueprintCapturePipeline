@@ -678,6 +678,8 @@ def dispatch_policy_canary_activation(
     )
     admission_path = root / "paid_admission.json"
     adapter_path = root / "allocator_result.json"
+    invocation_started_path = root / "allocator_invocation_started.json"
+    invocation_finished_path = root / "allocator_invocation_finished.json"
     argv = [
         "gpu-canary",
         "--provider",
@@ -703,11 +705,49 @@ def dispatch_policy_canary_activation(
     ]
     allocator_invoked = False
     if not adapter_path.is_file():
+        if invocation_started_path.is_file():
+            raise TaskEvaluationPolicyCanaryDispatchError(
+                "policy_canary_allocator_previous_invocation_without_result"
+            )
         _event(root, stage="provider_allocating", status="running")
         if execute:
             argv.append("--execute")
+        invocation_started = {
+            "schema_version": "task_evaluation_policy_canary_allocator_invocation.v1",
+            "status": "started",
+            "run_id": activation["run_id"],
+            "execute": execute,
+            "allocator_argv_digest": canonical_digest({"argv": argv}),
+            "allocator_invoked": True,
+            "automatic_retry_authorized": False,
+            "invocation_digest": "",
+        }
+        invocation_started["invocation_digest"] = canonical_digest(
+            invocation_started,
+            digest_field="invocation_digest",
+        )
+        _write_exclusive(invocation_started_path, invocation_started)
         exit_code = int((allocator_runner or _default_allocator_runner)(argv))
         allocator_invoked = True
+        invocation_finished = {
+            "schema_version": "task_evaluation_policy_canary_allocator_invocation.v1",
+            "status": "finished",
+            "run_id": activation["run_id"],
+            "execute": execute,
+            "allocator_argv_digest": invocation_started[
+                "allocator_argv_digest"
+            ],
+            "exit_code": exit_code,
+            "adapter_result_present": adapter_path.is_file(),
+            "allocator_invoked": True,
+            "automatic_retry_performed": False,
+            "invocation_digest": "",
+        }
+        invocation_finished["invocation_digest"] = canonical_digest(
+            invocation_finished,
+            digest_field="invocation_digest",
+        )
+        _write_exclusive(invocation_finished_path, invocation_finished)
         if not adapter_path.is_file():
             raise TaskEvaluationPolicyCanaryDispatchError(
                 f"policy_canary_allocator_exit_{exit_code}_without_result"
@@ -1045,6 +1085,7 @@ def process_policy_canary_dispatch_queue(
     billing_audit_root: str | Path | None = None,
     max_messages: int = 1,
     blocked_sync_runner: SyncRunner = sync_policy_canary_preprovider_blocked_to_webapp,
+    provider_zero_collector: ProviderZeroCollector = collect_policy_canary_vast_provider_zero,
 ) -> dict[str, Any]:
     """Consume the activation worker's sealed canary-only paid queue."""
 
@@ -1101,27 +1142,55 @@ def process_policy_canary_dispatch_queue(
         return blocked
 
     for envelope_path in sorted((queue / "pending").glob("*.json"))[:max_messages]:
-        envelope = _read(envelope_path, code="policy_canary_dispatch_envelope_invalid")
-        activation_record = envelope.get("activation_result")
-        if (
-            envelope.get("schema_version")
-            != "task_evaluation_policy_canary_dispatch_envelope.v1"
-            or envelope.get("run_kind") != RUN_KIND
-            or envelope.get("claim_ceiling") != CLAIM_CEILING
-            or envelope.get("maximum_provider_allocations") != 1
-            or envelope.get("retry_cap") != 0
-            or envelope.get("automatic_retry_authorized") is not False
-            or envelope.get("provider_mutation_performed") is not False
-            or envelope.get("paid_execution_requested") is not False
-            or envelope.get("envelope_digest")
-            != canonical_digest(envelope, digest_field="envelope_digest")
-        ):
-            raise TaskEvaluationPolicyCanaryDispatchError(
-                "policy_canary_dispatch_envelope_invalid"
+        try:
+            envelope = _read(
+                envelope_path,
+                code="policy_canary_dispatch_envelope_invalid",
             )
-        activation_path = _record_path(
-            activation_record, code="policy_canary_dispatch_activation_record_invalid"
-        )
+            activation_record = envelope.get("activation_result")
+            if (
+                envelope.get("schema_version")
+                != "task_evaluation_policy_canary_dispatch_envelope.v1"
+                or envelope.get("run_kind") != RUN_KIND
+                or envelope.get("claim_ceiling") != CLAIM_CEILING
+                or envelope.get("maximum_provider_allocations") != 1
+                or envelope.get("retry_cap") != 0
+                or envelope.get("automatic_retry_authorized") is not False
+                or envelope.get("provider_mutation_performed") is not False
+                or envelope.get("paid_execution_requested") is not False
+                or envelope.get("envelope_digest")
+                != canonical_digest(envelope, digest_field="envelope_digest")
+            ):
+                raise TaskEvaluationPolicyCanaryDispatchError(
+                    "policy_canary_dispatch_envelope_invalid"
+                )
+            activation_path = _record_path(
+                activation_record,
+                code="policy_canary_dispatch_activation_record_invalid",
+            )
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            invalid = {
+                "schema_version": "task_evaluation_policy_canary_invalid_envelope.v1",
+                "status": "blocked_invalid_envelope",
+                "envelope_filename": envelope_path.name,
+                "envelope_size_bytes": envelope_path.stat().st_size,
+                "envelope_sha256": _sha256(envelope_path),
+                "allocator_invoked": False,
+                "provider_mutation_performed": False,
+                "automatic_retry_performed": False,
+                "blockers": [str(exc) or type(exc).__name__],
+                "receipt_digest": "",
+            }
+            invalid["receipt_digest"] = canonical_digest(
+                invalid,
+                digest_field="receipt_digest",
+            )
+            invalid_root = outputs / "invalid-envelopes" / envelope_path.stem
+            invalid_root.mkdir(parents=True, exist_ok=True)
+            write_json(invalid_root / "invalid_envelope_receipt.json", invalid)
+            os.replace(envelope_path, queue / "blocked" / envelope_path.name)
+            processed.append(invalid)
+            continue
         activation_id = str(envelope["activation_id"])
         setup_candidates = (
             setups / f"{activation_id}.json",
@@ -1182,6 +1251,50 @@ def process_policy_canary_dispatch_queue(
                 billing_audit_root=billing_audit_root,
             )
         except TaskEvaluationPolicyCanaryDispatchError as exc:
+            invocation_started = output / "allocator_invocation_started.json"
+            if invocation_started.is_file():
+                try:
+                    provider_zero = dict(provider_zero_collector())
+                except Exception as zero_exc:  # pragma: no cover - defensive boundary
+                    provider_zero = {
+                        "status": "provider_zero_unproven",
+                        "provider_zero_verified": False,
+                        "blockers": [type(zero_exc).__name__],
+                    }
+                after_allocator = {
+                    "schema_version": (
+                        "task_evaluation_policy_canary_post_allocator_blocked.v1"
+                    ),
+                    "status": (
+                        "blocked_after_allocator_invocation_provider_zero"
+                        if provider_zero.get("provider_zero_verified") is True
+                        else "awaiting_post_allocator_provider_zero"
+                    ),
+                    "activation_id": activation_id,
+                    "run_kind": RUN_KIND,
+                    "claim_ceiling": CLAIM_CEILING,
+                    "allocator_invoked": True,
+                    "provider_mutation_status": (
+                        "unknown_after_allocator_invocation"
+                    ),
+                    "automatic_retry_performed": False,
+                    "blockers": [str(exc)],
+                    "allocator_invocation": _record(invocation_started),
+                    "provider_zero": provider_zero,
+                    "blocked_result_digest": "",
+                }
+                after_allocator["blocked_result_digest"] = canonical_digest(
+                    after_allocator,
+                    digest_field="blocked_result_digest",
+                )
+                write_json(output / "post_allocator_blocked.json", after_allocator)
+                if provider_zero.get("provider_zero_verified") is True:
+                    os.replace(
+                        envelope_path,
+                        queue / "blocked" / envelope_path.name,
+                    )
+                processed.append(after_allocator)
+                continue
             block_before_paid_dispatch(
                 envelope_path=envelope_path,
                 envelope=envelope,

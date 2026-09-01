@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -273,6 +274,7 @@ def process_episode_compilation_queue(
             claimed.unlink(missing_ok=True)
             continue
         terminal_state = "completed"
+        owned_output: Path | None = None
         try:
             envelope = _load_envelope(claimed)
             if envelope["expected_production_commit"] != source_commit:
@@ -322,6 +324,35 @@ def process_episode_compilation_queue(
             }
         except Exception as exc:
             terminal_state = "blocked"
+            cleanup_blockers: list[str] = []
+            if owned_output is not None and owned_output.exists():
+                try:
+                    shutil.rmtree(owned_output)
+                except OSError as cleanup_exc:
+                    cleanup_errno = (
+                        cleanup_exc.errno
+                        if isinstance(cleanup_exc.errno, int)
+                        else "unknown"
+                    )
+                    cleanup_blockers.append(
+                        "episode_compilation_partial_cleanup_failed:"
+                        f"errno_{cleanup_errno}"
+                    )
+            if isinstance(
+                exc,
+                (
+                    TaskEvaluationEpisodeCompilationWorkerError,
+                    TaskEvaluationNativeArenaAdapterError,
+                ),
+            ):
+                primary_blocker = str(exc)
+            elif isinstance(exc, OSError):
+                error_number = exc.errno if isinstance(exc.errno, int) else "unknown"
+                primary_blocker = (
+                    f"episode_compilation_failed:OSError:errno_{error_number}"
+                )
+            else:
+                primary_blocker = f"episode_compilation_failed:{type(exc).__name__}"
             result = {
                 "schema_version": RESULT_SCHEMA_VERSION,
                 "status": "blocked",
@@ -332,15 +363,7 @@ def process_episode_compilation_queue(
                 "provider_mutation_performed": False,
                 "paid_execution_requested": False,
                 "automatic_retry_performed": False,
-                "blockers": [
-                    str(exc)
-                    if isinstance(
-                        exc, TaskEvaluationEpisodeCompilationWorkerError
-                    )
-                    else str(exc)
-                    if isinstance(exc, TaskEvaluationNativeArenaAdapterError)
-                    else f"episode_compilation_failed:{type(exc).__name__}"
-                ],
+                "blockers": [primary_blocker, *cleanup_blockers],
                 "result_digest": "",
             }
         result["result_digest"] = canonical_digest(

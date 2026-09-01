@@ -39,6 +39,10 @@ def test_canary_paid_dispatcher_is_installed_but_never_always_armed() -> None:
         "https://tryblueprint.io/api/internal/pipeline/capture-task-evaluation-runs"
     ) in service
     assert "EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env" in service
+    assert (
+        "PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token"
+        in service
+    )
     assert "task-evaluation-policy-canary-dispatches/pending" in path
     assert "gpu_spend_guard/billing-audit" in path
     assert service_name in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
