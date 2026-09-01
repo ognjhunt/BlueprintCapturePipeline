@@ -25,6 +25,9 @@ from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
     build_scene_configuration_provider_bundle,
     load_scene_configuration_provider_bundle_receipt,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_provider_preflight import (
+    scene_configuration_bundle_contract,
+)
 from blueprint_pipeline.task_evaluation_splat_render_runtime import (
     PROVIDER_RENDERER_REQUIRED_PACKAGES,
     PROVIDER_RENDERER_SCHEMA_VERSION,
@@ -1055,6 +1058,9 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
     assert production["offering_publication_permitted"] is True
     assert "diagnostic_only" not in production
     with zipfile.ZipFile(production["bundle_path"]) as archive:
+        _manifest, _required, production_preflight_blockers = (
+            scene_configuration_bundle_contract(archive)
+        )
         production_names = set(archive.namelist())
         production_portable = json.loads(
             archive.read(
@@ -1064,6 +1070,7 @@ def test_diagnostic_bundle_reuses_checkpoint_without_raw_source_or_renderer(
         production_runner = archive.read(
             "provider_runtime/task_evaluation_scene_configuration_provider_runner.py"
         )
+    assert production_preflight_blockers == []
     assert any(
         name.startswith(
             "provider_runtime/input/production_semantic_reuse_checkpoint/semantic/"
