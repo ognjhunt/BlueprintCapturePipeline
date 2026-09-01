@@ -498,3 +498,35 @@ def test_revision_reports_provider_disclosure_truthfully(tmp_path: Path) -> None
 
     assert revision["source"]["raw_source_sent_to_external_provider"] is True
     assert "public_display" not in result["configured_scene_offering"]
+
+    semantic_reuse_envelope = json.loads(json.dumps(envelope))
+    semantic_render = semantic_reuse_envelope["render_inputs_result"]
+    semantic_render.update(
+        {
+            "status": "derived_method_inputs_materialized",
+            "production_semantic_input_reuse": True,
+            "provider_render_skipped": True,
+            "raw_interiorgs_bytes_in_provider_packet": False,
+        }
+    )
+    semantic_reuse_envelope["provider_disclosure_receipt"] = {
+        "raw_interiorgs_bytes_in_provider_bundle": False,
+    }
+    semantic_output = tmp_path / "semantic-reuse-publication"
+    semantic_output.mkdir()
+
+    semantic_result = publish_configured_scene_revision(
+        envelope=semantic_reuse_envelope,
+        stage_results=[{"output_artifacts": rows}],
+        output_root=semantic_output,
+        publisher=publish,
+    )
+    semantic_revision = validate_configured_scene_revision(
+        json.loads(
+            Path(semantic_result["configured_scene_revision"]["path"]).read_text()
+        )
+    )
+
+    assert semantic_revision["source"]["raw_source_sent_to_external_provider"] is False
+    assert semantic_revision["source"]["production_semantic_input_reuse"] is True
+    assert semantic_revision["source"]["provider_disclosure_decision"] == decision

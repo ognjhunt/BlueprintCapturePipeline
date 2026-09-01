@@ -86,7 +86,10 @@ def validate_configured_scene_revision(
             or disclosure.get("decision_digest")
             != canonical_digest(disclosure, digest_field="decision_digest")
             or source["raw_source_sent_to_external_provider"]
-            is not renders_on_provider(disclosure)
+            is not (
+                renders_on_provider(disclosure)
+                and source.get("production_semantic_input_reuse") is not True
+            )
         ):
             raise TaskEvaluationConfiguredSceneRevisionError(
                 "configured_scene_revision_disclosure_invalid"

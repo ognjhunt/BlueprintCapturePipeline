@@ -57,6 +57,7 @@
           ]
         },
         "raw_source_sent_to_external_provider": {"type": "boolean"},
+        "production_semantic_input_reuse": {"const": true},
         "provider_disclosure_decision": {
           "type": "object",
           "required": ["schema_version", "render_execution_site", "source_appearance_bytes_to_provider", "decision_digest"],
@@ -83,6 +84,18 @@
                   "source_appearance_bytes_to_provider": {"const": true}
                 }
               }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"production_semantic_input_reuse": {"const": true}},
+            "required": ["production_semantic_input_reuse"]
+          },
+          "then": {
+            "required": ["provider_disclosure_decision"],
+            "properties": {
+              "raw_source_sent_to_external_provider": {"const": false}
             }
           }
         }
