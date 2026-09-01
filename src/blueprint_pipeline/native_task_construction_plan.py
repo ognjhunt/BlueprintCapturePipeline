@@ -2009,7 +2009,7 @@ def evaluate_rigid_construction_gates(
     )
     relocation_path = relocation_tracking and relocation_progress
     closed_motion_ids = (
-        [contact_phase_id, *relocation_ids]
+        relocation_ids
         if push
         else ["lift_clearance", *relocation_ids, "place"]
     )
