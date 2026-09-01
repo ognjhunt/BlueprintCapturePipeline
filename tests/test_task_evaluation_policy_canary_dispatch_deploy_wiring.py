@@ -32,6 +32,8 @@ def test_canary_paid_dispatcher_is_installed_but_never_always_armed() -> None:
     assert "--dispatch-queue-root" in service
     assert "--execution-setup-template" in service
     assert "--billing-audit-root" in service
+    assert "--hotfix-overlay" in service
+    assert "BLUEPRINT_TASK_EVALUATION_CANARY_HOTFIX_OVERLAY" in service
     assert "--execute" in service
     assert "KillMode=process" in service
     assert (
@@ -51,6 +53,15 @@ def test_canary_paid_dispatcher_is_installed_but_never_always_armed() -> None:
     assert f"systemctl enable --now {path_name}" not in installer
     assert f"deploy/systemd/{service_name}" in installer
     assert f"deploy/systemd/{path_name}" in installer
+
+
+def test_iteration_wrapper_prefers_signed_canary_overlay_for_eligible_deltas() -> None:
+    wrapper = _text("scripts/deploy_control_plane_iteration.sh")
+
+    assert "task_evaluation_canary_hotfix_overlay route" in wrapper
+    assert "task_evaluation_canary_hotfix_overlay prepare" in wrapper
+    assert "task_evaluation_canary_hotfix_overlay install" in wrapper
+    assert "normal exact-main deployment remains required for promotion" in wrapper
 
 
 def test_direct_launch_dispatcher_can_only_queue_canary_preparation() -> None:

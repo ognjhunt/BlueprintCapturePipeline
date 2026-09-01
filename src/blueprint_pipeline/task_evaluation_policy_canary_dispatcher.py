@@ -35,6 +35,10 @@ from .native_task_arena_policy_canary_session import (
     validate_runtime_input_manifest,
 )
 from .task_evaluation_policy_canary_result import validate_policy_canary_result
+from .task_evaluation_canary_hotfix_overlay import (
+    canary_hotfix_execution_release,
+    verify_canary_hotfix_overlay,
+)
 from .task_evaluation_policy_canary_scene_setup import (
     PolicyCanarySetupError,
     materialize_scene839873_policy_canary_setup_from_template,
@@ -542,6 +546,7 @@ def dispatch_policy_canary_activation(
     execute: bool = False,
     official_billing_receipt_path: str | Path | None = None,
     billing_audit_root: str | Path | None = None,
+    hotfix_overlay_path: str | Path | None = None,
     allocator_runner: AllocatorRunner | None = None,
     provider_zero_collector: ProviderZeroCollector = collect_policy_canary_vast_provider_zero,
     sync_runner: SyncRunner = sync_task_evaluation_policy_canary_to_webapp,
@@ -601,6 +606,23 @@ def dispatch_policy_canary_activation(
     root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     _event(root, stage="queued", status="completed", run_id=activation["run_id"])
+    hotfix_manifest = (
+        verify_canary_hotfix_overlay(hotfix_overlay_path)
+        if hotfix_overlay_path is not None
+        else None
+    )
+    execution_release = (
+        canary_hotfix_execution_release(hotfix_manifest)
+        if hotfix_manifest is not None
+        else None
+    )
+    if (
+        execution_release is not None
+        and execution_release["base_release_commit"] != implementation_commit
+    ):
+        raise TaskEvaluationPolicyCanaryDispatchError(
+            "policy_canary_hotfix_base_release_mismatch"
+        )
     authority = build_session_authority(
         activation_manifest=activation,
         activation_record=_record(activation_path),
@@ -609,6 +631,7 @@ def dispatch_policy_canary_activation(
         resource_name=str(resource["resource_name"]),
         hard_cap_usd=float(resource["hard_cap_usd"]),
         hard_ttl_seconds=int(resource["hard_ttl_seconds"]),
+        execution_release=execution_release,
     )
     authority_path = root / "policy_canary_session_authority.json"
     _write_exclusive(authority_path, authority)
@@ -633,6 +656,7 @@ def dispatch_policy_canary_activation(
             groot_execution_spec_path=records["groot_execution_spec"]["path"],
             pi05_checkpoint_inventory_path=records["pi05_checkpoint_inventory"]["path"],
             implementation_commit=implementation_commit,
+            hotfix_overlay_path=hotfix_overlay_path,
         )
     _event(
         root,
@@ -1032,6 +1056,7 @@ def process_policy_canary_dispatch_queue(
     execute: bool,
     execution_setup_template_path: str | Path | None = None,
     billing_audit_root: str | Path | None = None,
+    hotfix_overlay_path: str | Path | None = None,
     max_messages: int = 1,
     blocked_sync_runner: SyncRunner = sync_policy_canary_preprovider_blocked_to_webapp,
     provider_zero_collector: ProviderZeroCollector = collect_policy_canary_vast_provider_zero,
@@ -1187,6 +1212,7 @@ def process_policy_canary_dispatch_queue(
                 output_root=output,
                 implementation_commit=implementation_commit,
                 execute=execute,
+                hotfix_overlay_path=hotfix_overlay_path,
                 official_billing_receipt_path=(output / "official_billing_reconciliation.json"),
                 billing_audit_root=billing_audit_root,
             )
@@ -1262,6 +1288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--official-billing-receipt")
     parser.add_argument("--billing-audit-root")
+    parser.add_argument("--hotfix-overlay")
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -1281,6 +1308,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 execute=args.execute,
                 execution_setup_template_path=args.execution_setup_template,
                 billing_audit_root=args.billing_audit_root,
+                hotfix_overlay_path=args.hotfix_overlay,
             )
             if queue_mode
             else process_policy_canary_activation_results(
@@ -1299,6 +1327,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 execute=args.execute,
                 official_billing_receipt_path=args.official_billing_receipt,
                 billing_audit_root=args.billing_audit_root,
+                hotfix_overlay_path=args.hotfix_overlay,
             )
         )
     except (OSError, ValueError, TypeError, KeyError) as exc:

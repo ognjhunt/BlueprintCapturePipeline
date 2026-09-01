@@ -12,10 +12,11 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 import json
 import math
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
-from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -40,6 +41,25 @@ CONTROL_MODES = frozenset({"nonblocking_diagnostic_pending", "nonblocking_diagno
 
 class PolicyCanarySessionError(ValueError):
     """Raised before paid execution when the paired-session contract is invalid."""
+
+
+def _write_json(path: Path, value: Mapping[str, Any]) -> None:
+    """Atomically retain provider output without importing host-only helpers."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(dict(value), indent=2, sort_keys=True) + "\n"
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        delete=False,
+    ) as stream:
+        temporary = Path(stream.name)
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -73,6 +93,36 @@ def _finite_positive(value: Any) -> bool:
         and math.isfinite(float(value))
         and float(value) > 0
     )
+
+
+def _execution_release(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    release = _mapping(value)
+    required_digests = (
+        "overlay_digest",
+        "test_receipt_digest",
+        "exact_failure_input_digest",
+        "release_digest",
+    )
+    if (
+        release.get("mode") != "signed_hotfix_overlay"
+        or not all(_digest(release.get(field)) for field in required_digests)
+        or any(
+            not isinstance(release.get(field), str)
+            or len(release[field]) != 40
+            for field in ("base_release_commit", "patch_commit")
+        )
+        or release.get("evidence_grade_ceiling") != "development_only"
+        or release.get("qualification_authorized") is not False
+        or release.get("official_ranking_authorized") is not False
+        or release.get("scene_promotion_authorized") is not False
+        or release.get("normal_deployment_required_for_promotion") is not True
+        or release.get("release_digest")
+        != canonical_digest(release, digest_field="release_digest")
+    ):
+        raise PolicyCanarySessionError("policy_canary_execution_release_invalid")
+    return release
 
 
 def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -170,6 +220,7 @@ def validate_session_authority(value: Mapping[str, Any]) -> dict[str, Any]:
         raise PolicyCanarySessionError("policy_canary_session_authority_identity_invalid")
     for field in ("activation_manifest", "runtime_inputs"):
         _record(payload.get(field), code=f"policy_canary_session_{field}_invalid")
+    _execution_release(payload.get("execution_release"))
     if not _digest(payload.get("runtime_inputs_digest")):
         raise PolicyCanarySessionError("policy_canary_session_runtime_inputs_digest_invalid")
     if (
@@ -229,6 +280,7 @@ def validate_provider_bundle(
 ) -> dict[str, Any]:
     payload = json.loads(json.dumps(value, allow_nan=False))
     bound_authority = validate_session_authority(authority)
+    execution_release = _execution_release(bound_authority.get("execution_release"))
     if (
         payload.get("schema_version") != PROVIDER_BUNDLE_SCHEMA_VERSION
         or payload.get("status") != "ready"
@@ -245,6 +297,7 @@ def validate_provider_bundle(
         or payload.get("runtime_inputs_digest")
         != bound_authority["runtime_inputs_digest"]
         or payload.get("authority_digest") != bound_authority["authority_digest"]
+        or payload.get("execution_release") != execution_release
     ):
         raise PolicyCanarySessionError("policy_canary_provider_bundle_invalid")
     if (
@@ -267,6 +320,7 @@ def build_session_authority(
     resource_name: str,
     hard_cap_usd: float,
     hard_ttl_seconds: int,
+    execution_release: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     inputs = validate_runtime_input_manifest(runtime_inputs)
     activation = json.loads(json.dumps(activation_manifest, allow_nan=False))
@@ -306,6 +360,11 @@ def build_session_authority(
         "canonical_allocator": CANONICAL_ALLOCATOR,
         "scene_promotion_authorized": False,
         "official_ranking_authorized": False,
+        **(
+            {"execution_release": _execution_release(execution_release)}
+            if execution_release is not None
+            else {}
+        ),
         "authority_digest": "",
     }
     payload["authority_digest"] = canonical_digest(
@@ -556,7 +615,7 @@ def execute_paired_session(
         result["status"] = "runtime_completed_unqualified_pending_closeout"
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     if output_path is not None:
-        write_json(Path(output_path), result)
+        _write_json(Path(output_path), result)
     return result
 
 

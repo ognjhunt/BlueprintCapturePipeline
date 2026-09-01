@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 
 import pytest
 
@@ -132,6 +135,39 @@ def test_provider_worker_has_one_simulation_launch_outside_episode_loop() -> Non
     assert "policy_canary_telemetry.jsonl" in source
     assert "from mcap.writer import Writer" in source
     assert "mcap_unavailable:" in source
+
+
+def test_provider_canary_package_imports_from_its_shipped_module_closure(
+    tmp_path: Path,
+) -> None:
+    package = Path(bundle.__file__).resolve().parent
+    staged = tmp_path / "blueprint_pipeline"
+    staged.mkdir()
+    (staged / "__init__.py").write_text("", encoding="utf-8")
+    module_names = {
+        *bundle.POLICY_RUNTIME_MODULE_NAMES,
+        "native_task_arena_policy_worker.py",
+        "native_task_arena_policy_canary_session.py",
+        "native_task_arena_policy_canary_worker.py",
+    }
+    for name in module_names:
+        shutil.copy2(package / name, staged / name)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import blueprint_pipeline.native_task_arena_policy_canary_session; "
+                "import blueprint_pipeline.native_task_arena_policy_canary_worker"
+            ),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_paid_allocator_routes_canary_only_through_one_session_transport(
