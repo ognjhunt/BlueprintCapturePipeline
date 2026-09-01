@@ -655,23 +655,19 @@ def _read_json(path: Path, *, blocker: str) -> dict[str, Any]:
     return dict(value)
 
 
-def _control_search_warm_retention_requested(
-    *, packet_request: Mapping[str, Any], lane: str
-) -> bool:
+def _control_search_warm_retention_requested(*, packet_request: Mapping[str, Any], lane: str) -> bool:
     feedback = packet_request.get("native_construction_feedback")
-    control_search = (
-        feedback.get("control_search") if isinstance(feedback, Mapping) else None
-    )
+    control_search = feedback.get("control_search") if isinstance(feedback, Mapping) else None
     return bool(
         lane == "native_task_arena_construction"
         and isinstance(control_search, Mapping)
         and control_search.get("enabled") is True
-        and control_search.get("claim_ceiling")
-        == "development_only_control_search"
+        and control_search.get("claim_ceiling") == "development_only_control_search"
         and control_search.get("provider_allocations_performed") == 0
         and control_search.get("full_fidelity_replay_required") is True
-        and control_search.get("authority_digest")
-        == canonical_digest(control_search, digest_field="authority_digest")
+        and control_search.get("authority_digest") == canonical_digest(
+            control_search, digest_field="authority_digest"
+        )
     )
 
 
@@ -700,9 +696,7 @@ def _build_native_context(
                 blocker="launch_activation_configured_revision_invalid",
             )
         )
-        source_manifest_path = preparation_materialized[
-            "scene.configured_revision.source.manifest"
-        ]
+        source_manifest_path = preparation_materialized["scene.configured_revision.source.manifest"]
         source_manifest_digest = configured_revision["source"]["manifest"]["digest"]
         rights_admission_path = preparation_materialized[
             "scene.configured_revision.source.rights_admission"
@@ -710,28 +704,14 @@ def _build_native_context(
         rights_admission_digest = configured_revision["source"]["rights_admission"][
             "digest"
         ]
-        rights_evidence_contracts = configured_revision["source"][
-            "rights_evidence"
-        ]
-        rights_evidence_prefix = (
-            "scene.configured_revision.source.rights_evidence"
-        )
+        rights_evidence_contracts = configured_revision["source"]["rights_evidence"]
+        rights_evidence_prefix = "scene.configured_revision.source.rights_evidence"
     else:
-        source_manifest_path = preparation_materialized[
-            "scene.source_manifest"
-        ]
-        source_manifest_digest = preparation_request["scene"]["source_manifest"][
-            "digest"
-        ]
-        rights_admission_path = preparation_materialized[
-            "scene.rights.admission"
-        ]
-        rights_admission_digest = preparation_request["scene"]["rights"][
-            "admission"
-        ]["digest"]
-        rights_evidence_contracts = preparation_request["scene"]["rights"][
-            "evidence"
-        ]
+        source_manifest_path = preparation_materialized["scene.source_manifest"]
+        source_manifest_digest = preparation_request["scene"]["source_manifest"]["digest"]
+        rights_admission_path = preparation_materialized["scene.rights.admission"]
+        rights_admission_digest = preparation_request["scene"]["rights"]["admission"]["digest"]
+        rights_evidence_contracts = preparation_request["scene"]["rights"]["evidence"]
         rights_evidence_prefix = "scene.rights.evidence"
     _read_json(
         source_manifest_path, blocker="launch_activation_source_manifest_invalid"
@@ -741,14 +721,9 @@ def _build_native_context(
     )
     packet_root = Path(str(adapter["packet_root"])).resolve()
     packet_request_path = packet_root / "native_task_arena_packet_request.v1.json"
-    packet_request = (
-        _read_json(
-            packet_request_path,
-            blocker="launch_activation_packet_request_invalid",
-        )
-        if packet_request_path.exists()
-        else {}
-    )
+    packet_request = _read_json(
+        packet_request_path, blocker="launch_activation_packet_request_invalid"
+    ) if packet_request_path.exists() else {}
     runtime_contract = _read_json(
         packet_root / "native_task_runtime_contract.v1.json",
         blocker="launch_activation_runtime_contract_invalid",
@@ -799,8 +774,7 @@ def _build_native_context(
         "service_group": service_group,
     }
     if _control_search_warm_retention_requested(
-        packet_request=packet_request,
-        lane=str(activation_request["lane"]),
+        packet_request=packet_request, lane=str(activation_request["lane"])
     ):
         operations["retain_warm_control_search"] = True
     if lineage["kind"] == "initial_project":
@@ -940,14 +914,8 @@ def _build_scene_configuration_context(
         task_id=str(preparation_request["task"]["identity"]["id"]),
     )
     intent_source = configured_controls_autostart_intent_root / registry_name
-    # A scene reaches its first configuration before any controls continuation
-    # can exist for it -- the continuation binds a trajectory plan that is only
-    # authored against a published configured revision.  So an absent intent
-    # means "no continuation authorized yet", not "refuse this configuration".
-    # It is never fail-open: the progression worker skips every profile that
-    # carries no intent, so controls still cannot start without one.  An intent
-    # that is present but unreadable, malformed, or bound to another
-    # scene/task/commit remains a refusal.
+    # An absent continuation intent does not block initial configuration; the
+    # progression worker still refuses controls until a valid intent exists.
     continuation_provisioned = (
         intent_source.is_file() and not intent_source.is_symlink()
     )

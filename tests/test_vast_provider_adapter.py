@@ -6447,6 +6447,99 @@ def test_vast_adapter_falls_back_to_command_execute_after_missing_container_logs
     assert gpu["status"] == "completed"
 
 
+def test_native_arena_falls_back_when_vast_log_transport_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "secret-vast-key"
+    key_file = tmp_path / "vast_api_key"
+    key_file.write_text(secret + "\n", encoding="utf-8")
+    key_file.chmod(0o600)
+    monkeypatch.setenv(vpa.VAST_API_KEY_FILE_ENV, str(key_file))
+    monkeypatch.setenv(vpa.VAST_API_GATE_ENV, "true")
+    monkeypatch.setenv(vpa.VAST_INSTANCE_LAUNCH_GATE_ENV, "true")
+    monkeypatch.delenv(vpa.VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV, raising=False)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_api_json(
+        *,
+        method: str,
+        path: str,
+        api_key: str,
+        payload=None,
+        timeout_seconds: int = 30,
+    ):  # type: ignore[no-untyped-def]
+        assert api_key == secret
+        calls.append((method, path))
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            return 200, {
+                "offers": [
+                    {
+                        "id": 101,
+                        "ask_contract_id": 101,
+                        "gpu_name": "RTX 4090",
+                        "dph_total": 0.42,
+                        "num_gpus": 1,
+                        "rentable": True,
+                        "verified": True,
+                    }
+                ]
+            }
+        if method == "PUT" and path == "/asks/101/":
+            return 200, {"success": True, "new_contract": 556}
+        if method == "GET" and path == "/instances/556/":
+            return 200, _created_instance_detail(dph_total=0.42)
+        if method == "PUT" and path == "/instances/request_logs/556":
+            return 200, {"success": True, "result_url": "https://logs.example/request"}
+        if method == "PUT" and path == "/instances/command/556/":
+            assert payload is not None
+            assert "BLUEPRINT_VAST_ONSTART_STARTED" in payload["command"]
+            return 200, {"success": True, "result_url": "https://logs.example/execute"}
+        if method == "DELETE" and path == "/instances/556/":
+            return 200, {"success": True, "msg": "Instance destroyed successfully"}
+        raise AssertionError((method, path))
+
+    def fake_fetch_text(url: str, timeout_seconds: int = 30) -> str:
+        if url == "https://logs.example/request":
+            raise PermissionError("log transport unavailable")
+        if url == "https://logs.example/execute":
+            return (
+                "BLUEPRINT_VAST_HEARTBEAT_OK\n"
+                "RTX 4090, 590.48, 24576 MiB\n"
+                "BLUEPRINT_VAST_GPU_SANITY_OK\n"
+            )
+        raise AssertionError(url)
+
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    monkeypatch.setattr(vpa, "_fetch_text", fake_fetch_text)
+
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=20,
+        provider_bundle_kind="native_task_arena",
+    )
+
+    assert result["status"] == "completed"
+    assert ("PUT", "/instances/command/556/") in calls
+    heartbeat = _read_json(tmp_path / "vast_startup_probe_manifest.json")
+    assert heartbeat["status"] == "completed"
+    assert heartbeat["container_log_result"]["break_reason"] == (
+        "log_transport_unavailable"
+    )
+    assert heartbeat["container_log_result"]["effective_log_source"] == (
+        "command_execute_fallback"
+    )
+
+
 def test_execute_and_fetch_records_api_error_without_raising(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
