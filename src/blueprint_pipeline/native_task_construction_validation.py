@@ -6,6 +6,9 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
+RIGID_SCHEMA_VERSION = "native_rigid_construction_phase_plan.v1"
+
+
 
 class NativeTaskConstructionPlanError(ValueError):
     """Stable pre-native failures for task-neutral construction planning."""
