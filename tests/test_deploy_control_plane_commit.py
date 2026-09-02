@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1094,6 +1095,32 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         "service_account_readback",
         lambda _user: lambda path: path.read_bytes(),
     )
+    disk_runtime_receipt = {
+        "status": "ready",
+        "account": "blueprint",
+        "repaired_paths": [str(tmp_path / "disk-reservations/.lock")],
+    }
+
+    class Reservation:
+        def receipt(self):
+            return {"reservation_token": "deploy-test"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+    monkeypatch.setattr(
+        deploy,
+        "_install_disk_reservation_runtime_prerequisites",
+        lambda root: disk_runtime_receipt,
+    )
+    monkeypatch.setattr(
+        deploy,
+        "reserve_control_plane_disk",
+        lambda *args, **kwargs: Reservation(),
+    )
 
     def assert_lock_held(stage: str):
         with lock.open("r", encoding="utf-8") as probe:
@@ -1166,6 +1193,7 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         paid_launch_locks=(str(lock),),
         intake_runtime_drop_in=tmp_path / "drop-in",
         scene_configuration_environment_file=tmp_path / "scene-runtime.env",
+        disk_reservation_root=tmp_path / "disk-reservations",
     )
 
     assert observed == [
@@ -1175,6 +1203,8 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         "path_activation",
     ]
     assert receipt["intake_runtime"]["source_commit"] == commit
+    assert receipt["disk_reservation_runtime"] == disk_runtime_receipt
+    assert receipt["disk_reservation"] == {"reservation_token": "deploy-test"}
     assert receipt["restarted_units"][0]["unit"] == deploy.DEFAULT_RESTART_UNITS[0]
     assert receipt["installed_systemd_units"][0]["unit"] == (
         "blueprint-task-evaluation-launch-dispatcher.service"
@@ -1198,6 +1228,83 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     ]
     assert receipt["release_provenance"]["git_sha"] == commit
     assert Path(receipt["release_provenance"]["path"]).stat().st_mode & 0o777 == 0o440
+
+
+def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "disk-reservations"
+    root.mkdir(mode=0o755)
+    lock = root / ".lock"
+    lock.write_bytes(b"")
+    lock.chmod(0o644)
+    blueprint_gid = 2401
+    ownership = {
+        str(root): (0, 0),
+        str(lock): (0, 0),
+    }
+    chowns: list[tuple[str, int, int]] = []
+
+    def chown(path: Path, uid: int, gid: int) -> None:
+        chowns.append((str(path), uid, gid))
+        ownership[str(path)] = (uid, gid)
+
+    def stat_reader(path: Path) -> SimpleNamespace:
+        metadata = path.stat()
+        uid, gid = ownership[str(path)]
+        return SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=metadata.st_mode)
+
+    monkeypatch.setattr(
+        deploy,
+        "_service_account_ids",
+        lambda account: (3101, blueprint_gid) if account == "blueprint" else None,
+    )
+
+    receipt = deploy._install_disk_reservation_runtime_prerequisites(
+        root,
+        chown=chown,
+        stat_reader=stat_reader,
+    )
+
+    assert chowns == [
+        (str(root), 0, blueprint_gid),
+        (str(lock), 0, blueprint_gid),
+    ]
+    assert root.stat().st_mode & 0o7777 == 0o2770
+    assert lock.stat().st_mode & 0o777 == 0o660
+    assert receipt == {
+        "status": "ready",
+        "account": "blueprint",
+        "repaired_paths": [str(root), str(lock)],
+        "installed": [
+            {
+                "kind": "directory",
+                "path": str(root),
+                "owner": "root",
+                "group": "blueprint",
+                "owner_uid": 0,
+                "owner_gid": blueprint_gid,
+                "mode": "2770",
+            },
+            {
+                "kind": "lock",
+                "path": str(lock),
+                "owner": "root",
+                "group": "blueprint",
+                "owner_uid": 0,
+                "owner_gid": blueprint_gid,
+                "mode": "0660",
+            },
+        ],
+    }
+
+    repeated = deploy._install_disk_reservation_runtime_prerequisites(
+        root,
+        chown=chown,
+        stat_reader=stat_reader,
+    )
+    assert repeated["repaired_paths"] == []
+    assert len(chowns) == 2
 
 
 def test_episode_compilation_directory_retry_skips_correct_privileged_mutations(
