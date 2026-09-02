@@ -54,7 +54,11 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
         raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_digest_mismatch")
     counts = result["counts"]
     if (
-        counts["completed_learned_policy_rollout_count"] != len(result["episodes"])
+        counts["completed_learned_policy_rollout_count"]
+        != sum(
+            episode["terminal_state"] == "completed"
+            for episode in result["episodes"]
+        )
         or counts["completed_diagnostic_control_rollout_count"]
         > counts["diagnostic_control_rollout_count"]
         or [row["candidate_id"] for row in result["candidate_results"]]

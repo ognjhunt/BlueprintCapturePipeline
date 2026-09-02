@@ -105,6 +105,50 @@ def _projection() -> tuple[dict[str, object], dict[str, object]]:
     return delivery, validate_policy_canary_result(result)
 
 
+def test_blocked_episode_does_not_count_as_completed_rollout() -> None:
+    _delivery, result = _projection()
+    evidence = {
+        "checkpoint_digest": "sha256:" + "a" * 64,
+        "runtime_identity_digest": "sha256:" + "b" * 64,
+        "reset_state_digest": "sha256:" + "c" * 64,
+        "reset_state": None,
+        "frame_manifest": None,
+        "review_video": None,
+        "policy_query_receipt": None,
+        "action_sequence": None,
+        "action_delivery_readback": None,
+        "state_trace": None,
+        "contact_force_trace": None,
+        "task_object_trajectory": None,
+        "score_receipt": None,
+        "evidence_gaps": ["before_first_observation"],
+        "typed_media_gap": "provider_runtime_failed_before_first_observation",
+    }
+    result["episodes"] = [
+        {
+            "episode_id": "episode-1",
+            "candidate_id": "pi05_droid",
+            "cell_id": "cell-1",
+            "seed": 1,
+            "terminal_state": "blocked",
+            "candidate_policy_queried": False,
+            "actions_reached_robot": False,
+            "arm_moved": False,
+            "policy_outcome_interpretable": False,
+            "failure_taxonomy": "RuntimeError",
+            "evidence": evidence,
+        }
+    ]
+    result["projection_digest"] = cross_runtime_canonical_digest(
+        result, digest_field="projection_digest"
+    )
+
+    validated = validate_policy_canary_result(result)
+
+    assert validated["counts"]["completed_learned_policy_rollout_count"] == 0
+    assert len(validated["episodes"]) == 1
+
+
 def test_canary_sync_requires_website_notification_receipt(monkeypatch) -> None:
     delivery, result = _projection()
 
