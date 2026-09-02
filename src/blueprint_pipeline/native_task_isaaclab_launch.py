@@ -42,6 +42,22 @@ NATIVE_TASK_ARENA_NUREC_UTILS_EXTENSION = "isaacsim.replicator.nurec_utils"
 NATIVE_TASK_ARENA_NUREC_SCHEMA = "OmniNuRecFieldAsset"
 NATIVE_TASK_ARENA_NUREC_RENDER_PATH = "plain_nurec_volume"
 NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH = "particlefield_3d_gaussian_splat"
+#: Every appearance backend the arena launcher may be told to expect.  The
+#: launcher records the caller's choice; it never picks one.  Scene 839873's
+#: render-only probe was launched with the ParticleField path while the policy
+#: canary worker launched with no path at all and inherited the legacy NuRec
+#: default, so the two receipts disagreed about which renderer a Website run
+#: would use.  A default argument must not select the scientific representation.
+#: A lane that composes no site appearance at all (control sweeps run with
+#: ``appearance_mode: omitted`` and cameras disabled) says so explicitly.
+NATIVE_TASK_ARENA_NO_APPEARANCE_RENDER_PATH = "no_site_appearance"
+NATIVE_TASK_ARENA_APPEARANCE_RENDER_PATHS = frozenset(
+    {
+        NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
+        NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH,
+        NATIVE_TASK_ARENA_NO_APPEARANCE_RENDER_PATH,
+    }
+)
 NATIVE_TASK_ARENA_UJITSO_GEOMETRY_SETTING = "/UJITSO/geometry"
 # Omniverse RTX composites ParticleField prims "as-is": their light fields are
 # display-referred sRGB and the tonemapping pipeline is skipped for them
@@ -287,12 +303,19 @@ def launch_native_task_isaaclab(
     provisioning_receipt_path: str | Path,
     *,
     device: str,
+    appearance_render_path: str,
     enable_cameras: bool = True,
-    appearance_render_path: str = NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
     app_launcher_factory: Callable[..., Any] | None = None,
     nurec_renderer_probe_factory: Callable[[], Mapping[str, Any]] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Launch Isaac Lab on ``device`` with the verified compatibility experience.
+
+    ``appearance_render_path`` is required and must name the backend the scene
+    plan actually composes (see
+    :func:`blueprint_pipeline.native_task_nurec_render_setup.appearance_render_path_from_plan`).
+    The launcher only records it; it does not switch renderers, so a wrong
+    value here is a false receipt rather than a different picture, and that
+    is exactly why it cannot default.
 
     The launch must go through Isaac Lab's ``AppLauncher``, not a bare
     ``SimulationApp``. ``AppLauncher`` is what resolves the requested device and
@@ -310,6 +333,14 @@ def launch_native_task_isaaclab(
     a bare ``SimulationApp``.
     """
 
+    if (
+        not isinstance(appearance_render_path, str)
+        or appearance_render_path not in NATIVE_TASK_ARENA_APPEARANCE_RENDER_PATHS
+    ):
+        raise NativeTaskIsaacLabLaunchError(
+            ["native_task_isaaclab_appearance_render_path_invalid"],
+            diagnostics={"appearance_render_path": appearance_render_path},
+        )
     receipt = verify_native_task_isaaclab_launch_contract(
         provisioning_receipt_path
     )
@@ -460,10 +491,12 @@ def launch_native_task_isaaclab(
 
 
 __all__ = [
+    "NATIVE_TASK_ARENA_APPEARANCE_RENDER_PATHS",
     "NATIVE_TASK_ARENA_DEVICE",
     "NATIVE_TASK_ARENA_GAUSSIAN_SKIP_TONEMAPPING_SETTING",
     "NATIVE_TASK_ARENA_IMAGE",
     "NATIVE_TASK_ARENA_KIT_ARGS",
+    "NATIVE_TASK_ARENA_NO_APPEARANCE_RENDER_PATH",
     "NATIVE_TASK_ARENA_NUREC_EXTENSION",
     "NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH",
     "NATIVE_TASK_ARENA_NUREC_SCHEMA",

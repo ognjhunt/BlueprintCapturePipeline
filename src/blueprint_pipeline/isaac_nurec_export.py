@@ -117,3 +117,4 @@ def convert_ply_to_isaac_usd(
         "converter": "threedgrut_transcode",
         "command": " ".join(command),
     }
+

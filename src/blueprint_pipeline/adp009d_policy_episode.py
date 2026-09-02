@@ -544,6 +544,7 @@ def _prestart_episode_readiness(
     max_policy_queries: int,
     open_loop_horizon: int,
     settle_window_samples: int,
+    observation_integrity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Exercise every predictable runtime seam, then restore canonical reset.
 
@@ -654,15 +655,12 @@ def _prestart_episode_readiness(
         external=camera_rgb[DROID_EXTERIOR_VIEW_1], wrist=camera_rgb[DROID_WRIST_VIEW]
     )
     prepolicy_visual_quality = _evidence(
-        prepolicy_visual_readiness_evidence, camera_rgb=prepolicy_frames
+        prepolicy_visual_readiness_evidence,
+        camera_rgb=prepolicy_frames,
+        candidate_policy_loaded=True,
+        candidate_policy_queried=bool(getattr(policy, "candidate_policy_queried", False)),
+        observation_integrity=observation_integrity,
     )
-    if not prepolicy_visual_quality["passed"]:
-        raise PolicyEpisodeError(
-            [
-                f"{BLOCKER_PRESTART_READINESS}:{blocker}"
-                for blocker in prepolicy_visual_quality["blockers"]
-            ]
-        )
 
     # Exercise the same step/readback seam the episode will use, while holding
     # the reset joint targets.  This is not a learned-policy action.
@@ -789,6 +787,7 @@ def run_policy_episode(
     scoring_authorized: bool = True,
     require_complete_multicamera_media: bool = False,
     require_prestart_readiness: bool = False,
+    observation_integrity: Mapping[str, Any] | None = None,
     progress: dict[str, Any] | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -941,6 +940,7 @@ def run_policy_episode(
             max_policy_queries=int(max_policy_queries),
             open_loop_horizon=int(open_loop_horizon),
             settle_window_samples=int(settle_window_samples),
+            observation_integrity=observation_integrity,
         )
         episode_progress["prestart_readiness"] = prestart_readiness
         episode_progress["episode_readiness_verified"] = True

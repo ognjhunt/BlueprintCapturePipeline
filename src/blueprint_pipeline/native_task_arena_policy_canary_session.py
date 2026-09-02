@@ -549,8 +549,17 @@ def execute_paired_session(
     output_path: str | Path | None = None,
     provider_closeout_pending: bool = False,
     selected_cell_index: int | None = None,
+    prepolicy_observation_gate: Callable[[Any], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Execute all twenty learned rollouts in one caller-owned warm session."""
+    """Execute all twenty learned rollouts in one caller-owned warm session.
+
+    ``prepolicy_observation_gate`` runs after the session opens and before the
+    first ``load_policy``.  It must return a mapping whose
+    ``policy_observation_integrity_passed`` is ``True``; anything else ends the
+    session with zero policies loaded and zero queries, so 19 GB of candidate
+    weights are never pulled onto a runtime whose observations are not yet
+    proven usable (Scene 839873, 2026-09-02).
+    """
 
     bound_authority = validate_session_authority(authority)
     inputs = validate_runtime_input_manifest(runtime_inputs)
@@ -578,6 +587,7 @@ def execute_paired_session(
         "provider_zero_confirmed": False,
     }
     open_failure: Exception | None = None
+    preload_observation_gate: dict[str, Any] | None = None
     try:
         session = open_session(inputs)
         if not isinstance(session, Mapping) or (
@@ -585,6 +595,15 @@ def execute_paired_session(
             and session.get("provider_allocations_observed") != 1
         ):
             raise PolicyCanarySessionError("policy_canary_session_open_receipt_invalid")
+        if prepolicy_observation_gate is not None:
+            gate = prepolicy_observation_gate(session)
+            preload_observation_gate = (
+                dict(gate) if isinstance(gate, Mapping) else {"invalid": repr(gate)}
+            )
+            if preload_observation_gate.get("policy_observation_integrity_passed") is not True:
+                raise PolicyCanarySessionError(
+                    "policy_canary_session_observation_integrity_blocked"
+                )
         for candidate_id in CANDIDATE_IDS:
             policy = load_policy(session, candidate_id)
             policy_loads.append({"candidate_id": candidate_id, "loaded_once": True})
@@ -693,6 +712,7 @@ def execute_paired_session(
         ),
         "retry_cap": 0,
         "warm_session_open_count": 1,
+        "preload_observation_gate": preload_observation_gate,
         "policy_loads": policy_loads,
         "episodes": episodes,
         "session_closeout": closeout,

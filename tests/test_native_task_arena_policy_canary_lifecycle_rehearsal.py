@@ -129,8 +129,23 @@ def _scene_plan() -> dict[str, Any]:
                 "task_subject": True,
                 "pose_world": json.loads(json.dumps(pose)),
                 "reset_state": {"root_pose_world": json.loads(json.dumps(pose))},
-            }
+            },
+            {
+                "name": "scene_appearance",
+                "semantic_role": "scene_appearance",
+                "task_subject": False,
+                "sha256": "1bfd4438e057587c785b8211a70e26b896dd1ef90626e7923c541dbfd7c125cc",
+                "pose_world": json.loads(json.dumps(pose)),
+            },
         ],
+        "appearance_frame_alignment": {
+            "status": "aligned",
+            "representation": "particlefield_3d_gaussian_splat",
+            "measurement_authority": "particlefield_position_quantiles",
+            "source_asset_sha256": (
+                "sha256:9193a9de6bd81bd6348065b3cad46ad835b62dcfaa6212285a91bffd8a166445"
+            ),
+        },
         "cameras": [
             {"role": "external", "frame_from_camera_matrix": [1.0] * 16},
             {"role": "wrist", "frame_from_camera_matrix": [1.0] * 16},
@@ -160,6 +175,32 @@ def _scene_plan() -> dict[str, Any]:
     }
     value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
     return value
+
+
+def _observation_integrity_authority(*, plan: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Approved same-pose parity + human review bound to the rehearsal backend."""
+
+    from blueprint_pipeline.native_task_camera_observability import (
+        build_policy_observation_integrity_authority,
+    )
+
+    backend = worker.appearance_render_backend_from_plan(plan or _scene_plan())
+    return build_policy_observation_integrity_authority(
+        appearance_render_backend_receipt_digest=backend["receipt_digest"],
+        reference_renderer_identity="nvcr.io/nvidia/nre/nre@sha256:rehearsal",
+        reference_source_sha256=backend["source_asset_digest"],
+        views={
+            view: {
+                "reference_png_sha256": "sha256:" + "1" * 64,
+                "candidate_png_sha256": "sha256:" + "2" * 64,
+            }
+            for view in ("external", "wrist", "overview")
+        },
+        parity_passed=True,
+        human_review_status="approved",
+        reviewer="rehearsal-reviewer",
+        contact_sheet_sha256="sha256:" + "3" * 64,
+    )
 
 
 def _execution_spec(candidate: str, *, port: int) -> dict[str, Any]:
@@ -304,6 +345,10 @@ def _stage_runtime_root(tmp_path: Path) -> tuple[Path, Path]:
         hard_ttl_seconds=9_000,
     )
     _write(runtime / "runtime_inputs" / "policy_canary_session_authority.json", authority)
+    _write(
+        runtime / "runtime_inputs" / worker.OBSERVATION_INTEGRITY_AUTHORITY_FILENAME,
+        _observation_integrity_authority(),
+    )
     manifest: dict[str, Any] = {
         "schema_version": "native_task_arena_policy_canary_provider_bundle.v1",
         "execution_mode": "internal_policy_canary_paired_session",
@@ -339,6 +384,7 @@ class FakeIsaac:
     def __init__(self, result_path: Path) -> None:
         self.result_path = result_path
         self.launches = 0
+        self.appearance_render_paths: list[str] = []
         self.builds = 0
         self.environment_closes = 0
         self.closed = False
@@ -347,9 +393,16 @@ class FakeIsaac:
         self.built_control_frequencies: list[float] = []
         self.built_cell_ids: list[str] = []
 
-    def launch(self, receipt_path: Path, *, device: str) -> tuple[Any, dict[str, Any]]:
+    def launch(
+        self, receipt_path: Path, *, device: str, appearance_render_path: str
+    ) -> tuple[Any, dict[str, Any]]:
         self.launches += 1
-        return _FakeSimulationApp(self), {"device": device, "receipt": receipt_path.name}
+        self.appearance_render_paths.append(appearance_render_path)
+        return _FakeSimulationApp(self), {
+            "device": device,
+            "receipt": receipt_path.name,
+            "nurec_renderer": {"render_path": appearance_render_path},
+        }
 
     def build(
         self,
@@ -593,6 +646,12 @@ def test_selected_cell_queries_both_real_clients_and_seals_before_isaac_close(
         assert episode["evidence_artifacts"]["frame_manifest"] is not None
         assert episode["evidence_artifacts"]["review_video"] is not None
         assert episode["episode"]["prestart_readiness"]["candidate_policy_queried"] is False
+        visual_gate = episode["episode"]["prestart_readiness"]["prepolicy_visual_quality"]
+        # Truthful load state: the session loads a candidate before its episodes.
+        assert visual_gate["candidate_policy_loaded"] is True
+        assert visual_gate["candidate_policy_queried"] is False
+        assert visual_gate["policy_observation_integrity_passed"] is True
+        assert visual_gate["appearance_reference_parity_binding"]["backend_bound"] is True
         assert episode["episode_environment"]["appearance_renderer"]["passed"] is True
         assert episode["episode_environment"]["appearance_renderer"][
             "requested_warmup_steps"
@@ -600,6 +659,14 @@ def test_selected_cell_queries_both_real_clients_and_seals_before_isaac_close(
     # Exactly one Isaac launch, one environment build for the selected cell,
     # and the environment closed once after the second candidate.
     assert isaac.launches == 1
+    # The launcher was told which backend the plan composes; nothing defaulted.
+    assert isaac.appearance_render_paths == ["particlefield_3d_gaussian_splat"]
+    assert result["appearance_render_backend"]["kind"] == (
+        "particlefield_blueprint_private_tensor_conversion"
+    )
+    assert result["appearance_render_backend"]["development_only"] is True
+    assert result["preload_observation_gate"]["policy_observation_integrity_passed"] is True
+    assert result["preload_observation_gate"]["candidate_policy_loaded"] is False
     assert isaac.builds == 1
     assert isaac.built_cell_ids == ["cell-3"]
     assert isaac.environment_closes == 1
@@ -964,6 +1031,12 @@ def test_real_clients_refuse_a_second_readiness_preflight_after_inference(
             episode_id=f"{candidate}-{label}",
             require_complete_multicamera_media=True,
             require_prestart_readiness=True,
+            observation_integrity={
+                "authority": _observation_integrity_authority(),
+                "appearance_render_backend_receipt_digest": (
+                    worker.appearance_render_backend_from_plan(_scene_plan())["receipt_digest"]
+                ),
+            },
         )
 
     for candidate, receipt in (("pi05_droid", None), ("groot_n17_droid", groot_receipt)):
@@ -979,3 +1052,57 @@ def test_real_clients_refuse_a_second_readiness_preflight_after_inference(
             match="preflight_after_inference_forbidden|policy_episode_readiness_queried_candidate",
         ):
             episode(client, candidate, "second")
+
+
+def test_missing_observation_integrity_authority_blocks_before_any_policy_load(
+    tmp_path: Path,
+) -> None:
+    """Scene 839873: a structurally passing render is not observation integrity.
+
+    Without a sealed same-pose parity + human review bound to this session's
+    backend, the worker must end the session before either candidate client
+    is constructed, with zero queries, and still seal and close.
+    """
+
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    (runtime_root / "runtime_inputs" / worker.OBSERVATION_INTEGRITY_AUTHORITY_FILENAME).unlink()
+    child_root = provider_output / "cell_runs" / "03"
+    child_root.mkdir(parents=True)
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    loads: list[str] = []
+    runtime = _rehearsal_runtime(isaac)
+    runtime = worker.CellRuntime(
+        **{
+            **runtime.__dict__,
+            "policy_client": lambda spec, **_kwargs: loads.append(spec["candidate_id"]),
+        }
+    )
+
+    with pytest.raises(SystemExit):
+        worker._run_selected_cell(
+            3,
+            runtime_root=runtime_root,
+            output_root=child_root,
+            provider_output_root=provider_output,
+            cell_runtime=runtime,
+        )
+
+    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+    assert result["status"] == "blocked"
+    assert result["session_failure_type"] == "PolicyCanarySessionError"
+    assert result["policy_loads"] == []
+    assert result["episodes"] == []
+    assert result["candidate_policy_queried"] is False
+    assert loads == []
+    assert isaac.launches == 1
+    assert isaac.builds == 0
+    gate = result["preload_observation_gate"]
+    assert gate["authority_present"] is False
+    assert gate["policy_observation_integrity_passed"] is False
+    assert gate["blockers"] == [
+        "native_task_appearance_reference_parity_missing",
+        "native_task_human_visual_review_not_approved",
+    ]
+    assert result["appearance_render_backend"]["receipt_digest"] == gate[
+        "session_backend_receipt_digest"
+    ]

@@ -559,3 +559,65 @@ def test_result_validator_rejects_forged_second_allocation(tmp_path: Path) -> No
 
     with pytest.raises(PolicyCanarySessionError, match="result_closeout_invalid"):
         validate_session_result(result)
+
+
+def _preload_gate_session_kwargs(tmp_path: Path, calls: dict) -> dict:
+    authority, inputs = _authority(tmp_path)
+
+    def open_session(_inputs):
+        calls["open"] += 1
+        return {"session": "warm", "provider_allocations_observed": 1}
+
+    def load_policy(_session, candidate_id):
+        calls["loads"].append(candidate_id)
+        raise AssertionError("load_policy must not run when the observation gate blocks")
+
+    return dict(
+        authority=authority,
+        runtime_inputs=inputs,
+        open_session=open_session,
+        load_policy=load_policy,
+        run_episode=lambda *_args: (_ for _ in ()).throw(AssertionError("no episode")),
+        close_policy=lambda _policy: None,
+        close_session=lambda _session: calls.__setitem__("close", calls["close"] + 1)
+        or {
+            "status": "closed",
+            "provider_allocations_observed": 1,
+            "teardown_completed": True,
+            "provider_zero_confirmed": True,
+        },
+    )
+
+
+def test_blocked_preload_observation_gate_loads_zero_policies_and_still_closes(
+    tmp_path: Path,
+) -> None:
+    """Scene 839873: unusable observations must never cost a policy load."""
+
+    calls = {"open": 0, "close": 0, "loads": []}
+    gate_receipt = {
+        "policy_observation_integrity_passed": False,
+        "blockers": ["native_task_appearance_reference_parity_missing"],
+    }
+    result = execute_paired_session(
+        **_preload_gate_session_kwargs(tmp_path, calls),
+        prepolicy_observation_gate=lambda session: gate_receipt,
+    )
+    assert result["status"] == "blocked"
+    assert result["session_failure_type"] == "PolicyCanarySessionError"
+    assert result["policy_loads"] == []
+    assert result["episodes"] == []
+    assert result["candidate_policy_queried"] is False
+    assert result["preload_observation_gate"] == gate_receipt
+    assert calls == {"open": 1, "close": 1, "loads": []}
+
+
+def test_preload_observation_gate_must_return_an_explicit_pass(tmp_path: Path) -> None:
+    calls = {"open": 0, "close": 0, "loads": []}
+    result = execute_paired_session(
+        **_preload_gate_session_kwargs(tmp_path, calls),
+        prepolicy_observation_gate=lambda session: {"passed": True},
+    )
+    assert result["status"] == "blocked"
+    assert result["policy_loads"] == []
+    assert calls["loads"] == []

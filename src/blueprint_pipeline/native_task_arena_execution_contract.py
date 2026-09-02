@@ -42,6 +42,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     # this edge; ship it beside observability everywhere observability
     # ships or the pod fails at snapshot time, mid paid run.
     "native_task_camera_framing_expectation.py",
+    "appearance_render_backend.py",
     "native_task_nurec_render_setup.py",
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
@@ -123,6 +124,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_construction_authored_contract.py",
     "native_task_construction_validation.py",
     "native_task_rigid_gate_evaluation.py",
+    "appearance_render_backend.py",
     "native_task_nurec_render_setup.py",
     "native_task_rigid_controls.py",
     "native_task_episode_environment.py",
