@@ -1136,6 +1136,15 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         "reserve_control_plane_disk",
         lambda *args, **kwargs: Reservation(),
     )
+    storage_pins_receipt = {
+        "status": "ready",
+        "path": "/var/lib/blueprint/pipeline-control-plane/storage-pins",
+    }
+    monkeypatch.setattr(
+        deploy,
+        "_install_storage_pins_runtime_root",
+        lambda: storage_pins_receipt,
+    )
 
     def assert_lock_held(stage: str):
         with lock.open("r", encoding="utf-8") as probe:
@@ -1220,6 +1229,7 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     assert receipt["intake_runtime"]["source_commit"] == commit
     assert receipt["disk_reservation_runtime"] == disk_runtime_receipt
     assert receipt["disk_reservation"] == {"reservation_token": "deploy-test"}
+    assert receipt["storage_pins_runtime"] == storage_pins_receipt
     assert receipt["restarted_units"][0]["unit"] == deploy.DEFAULT_RESTART_UNITS[0]
     assert receipt["installed_systemd_units"][0]["unit"] == (
         "blueprint-task-evaluation-launch-dispatcher.service"
@@ -1320,6 +1330,60 @@ def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
     )
     assert repeated["repaired_paths"] == []
     assert len(chowns) == 2
+
+
+def test_storage_pins_runtime_repairs_root_owned_directory_and_reports_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "storage-pins"
+    root.mkdir(mode=0o700)
+    blueprint_uid = 3101
+    blueprint_gid = 3102
+    ownership = {str(root): (0, 0)}
+    chowns: list[tuple[str, int, int]] = []
+
+    def chown(path: Path, uid: int, gid: int) -> None:
+        chowns.append((str(path), uid, gid))
+        ownership[str(path)] = (uid, gid)
+
+    def stat_reader(path: Path) -> SimpleNamespace:
+        metadata = path.stat()
+        uid, gid = ownership[str(path)]
+        return SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=metadata.st_mode)
+
+    monkeypatch.setattr(
+        deploy,
+        "_service_account_ids",
+        lambda account: (
+            (blueprint_uid, blueprint_gid) if account == "blueprint" else None
+        ),
+    )
+
+    receipt = deploy._install_storage_pins_runtime_root(
+        pins_root=root,
+        chown=chown,
+        stat_reader=stat_reader,
+    )
+
+    assert chowns == [(str(root), blueprint_uid, blueprint_gid)]
+    assert root.stat().st_mode & 0o777 == 0o750
+    assert receipt == {
+        "status": "ready",
+        "path": str(root),
+        "account": "blueprint",
+        "owner_uid": blueprint_uid,
+        "owner_gid": blueprint_gid,
+        "mode": "0750",
+        "repaired": True,
+    }
+
+    repeated = deploy._install_storage_pins_runtime_root(
+        pins_root=root,
+        chown=chown,
+        stat_reader=stat_reader,
+    )
+    assert repeated["repaired"] is False
+    assert len(chowns) == 1
 
 
 def test_episode_compilation_directory_retry_skips_correct_privileged_mutations(
