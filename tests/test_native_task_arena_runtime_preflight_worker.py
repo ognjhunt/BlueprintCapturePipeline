@@ -53,7 +53,9 @@ def test_gripper_pad_geometry_uses_live_bounds_not_coincident_body_origins() -> 
     assert abs(axis["derived"]["jaw_approach_orthogonality_dot"]) < 1.0e-9
 
 
-def _stage(*, interpolation: str = "vertex", element_size: int = 16):
+def _stage(
+    *, interpolation: str = "vertex", element_size: int = 16, legacy_material: bool = False
+):
     from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
     stage = Usd.Stage.CreateInMemory()
@@ -88,16 +90,17 @@ def _stage(*, interpolation: str = "vertex", element_size: int = 16):
     prim.CreateAttribute("extent", Sdf.ValueTypeNames.Float3Array).Set(
         Vt.Vec3fArray([Gf.Vec3f(-1.0), Gf.Vec3f(1.0)])
     )
-    material_path = "/World/envs/env_0/scene_appearance/gauss/Looks/ParticleFieldEmissive"
-    material = stage.DefinePrim(material_path, "Material")
-    shader = stage.DefinePrim(f"{material_path}/Shader", "Shader")
-    shader.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(
-        "ParticleFieldEmissive.mdl"
-    )
-    shader.CreateAttribute(
-        "info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token
-    ).Set("ParticleFieldEmissive")
-    prim.CreateRelationship("material:binding").SetTargets([material.GetPath()])
+    if legacy_material:
+        material_path = "/World/envs/env_0/scene_appearance/gauss/Looks/ParticleFieldEmissive"
+        material = stage.DefinePrim(material_path, "Material")
+        shader = stage.DefinePrim(f"{material_path}/Shader", "Shader")
+        shader.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(
+            "ParticleFieldEmissive.mdl"
+        )
+        shader.CreateAttribute(
+            "info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token
+        ).Set("ParticleFieldEmissive")
+        prim.CreateRelationship("material:binding").SetTargets([material.GetPath()])
     return stage
 
 
@@ -111,7 +114,17 @@ def test_live_particlefield_readback_accepts_official_layout() -> None:
     assert row["sh_element_size"] == 16
     assert row["sh_interpolation"] == "vertex"
     assert row["sh_coefficient_count"] == 32
-    assert row["material_shader_source_asset"] == "ParticleFieldEmissive.mdl"
+    assert row["material_contract"] == "upstream_native_unbound"
+    assert row["material_binding_targets"] == []
+
+
+def test_live_particlefield_readback_preserves_legacy_replay_compatibility() -> None:
+    result = _particlefield_stage_readback(_stage(legacy_material=True))
+
+    assert result["passed"] is True
+    assert result["particlefields"][0]["material_contract"] == (
+        "legacy_particlefield_emissive"
+    )
 
 
 @pytest.mark.parametrize(

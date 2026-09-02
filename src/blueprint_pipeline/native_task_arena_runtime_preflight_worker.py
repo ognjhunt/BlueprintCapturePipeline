@@ -304,6 +304,25 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
                 else None
             ),
         }
+        upstream_native_material = (
+            not material_targets
+            and not row["material_prim_valid"]
+            and not row["material_shader_valid"]
+        )
+        legacy_emissive_material = (
+            len(material_targets) == 1
+            and row["material_prim_valid"]
+            and row["material_shader_valid"]
+            and row["material_shader_source_asset"] == "ParticleFieldEmissive.mdl"
+            and row["material_shader_sub_identifier"] == "ParticleFieldEmissive"
+        )
+        row["material_contract"] = (
+            "upstream_native_unbound"
+            if upstream_native_material
+            else "legacy_particlefield_emissive"
+            if legacy_emissive_material
+            else "invalid"
+        )
         row["passed"] = bool(
             row["active"]
             and row["defined"]
@@ -320,13 +339,7 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
             == position_count * expected_element_size
             and isinstance(row["extent"], list)
             and len(row["extent"]) == 2
-            and len(material_targets) == 1
-            and row["material_prim_valid"]
-            and row["material_shader_valid"]
-            and row["material_shader_source_asset"]
-            == "ParticleFieldEmissive.mdl"
-            and row["material_shader_sub_identifier"]
-            == "ParticleFieldEmissive"
+            and (upstream_native_material or legacy_emissive_material)
         )
         rows.append(row)
     if len(rows) != 1:
