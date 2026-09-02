@@ -53,6 +53,37 @@ class TaskEvaluationNativeArenaEpisodeCompilerError(RuntimeError):
 NativeAppearanceMaterializer = Callable[..., Mapping[str, Any]]
 
 
+def _appearance_render_backend(
+    *,
+    kind: str,
+    source_digest: str,
+    particlefield_digest: str,
+    authoring_receipt_digest: str | None,
+    upstream_converter: Mapping[str, Any] | None = None,
+    projection_mode_hint: str | None = None,
+    sorting_mode_hint: str | None = None,
+    color_space: str | None = None,
+) -> dict[str, Any]:
+    backend: dict[str, Any] = {
+        "schema_version": "task_evaluation_appearance_render_backend.v1",
+        "kind": str(kind),
+        "source_configured_appearance_digest": source_digest,
+        "particlefield_digest": particlefield_digest,
+        "authoring_receipt_digest": authoring_receipt_digest,
+        "upstream_converter": (
+            dict(upstream_converter) if upstream_converter is not None else None
+        ),
+        "projection_mode_hint": projection_mode_hint,
+        "sorting_mode_hint": sorting_mode_hint,
+        "color_space": color_space,
+        "backend_digest": "",
+    }
+    backend["backend_digest"] = canonical_digest(
+        backend, digest_field="backend_digest"
+    )
+    return backend
+
+
 def _runtime_subject_task_spec(value: Mapping[str, Any]) -> dict[str, Any]:
     """Derive a native-safe asset ID while retaining product identity."""
 
@@ -290,6 +321,12 @@ def _materialize_native_particlefield_appearance(
             "representation_conversion_performed": False,
             "exact_learned_arrays_preserved": True,
             "gaussian_field_quality": field_quality,
+            "appearance_render_backend": _appearance_render_backend(
+                kind="preauthored_particlefield",
+                source_digest=source_digest,
+                particlefield_digest=source_digest,
+                authoring_receipt_digest=None,
+            ),
         }
     if len(nurec_volumes) != 1 or particlefields:
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
@@ -324,6 +361,18 @@ def _materialize_native_particlefield_appearance(
             "representation_conversion_performed": True,
             "exact_learned_arrays_preserved": True,
             "gaussian_field_quality": receipt["gaussian_field_quality"],
+            "appearance_render_backend": _appearance_render_backend(
+                kind=receipt["particlefield_authoring_implementation"],
+                source_digest=source_digest,
+                particlefield_digest=receipt["output_sha256"],
+                authoring_receipt_digest=receipt["receipt_digest"],
+                upstream_converter=receipt.get("upstream_converter"),
+                projection_mode_hint=receipt.get(
+                    "upstream_projection_mode_hint"
+                ),
+                sorting_mode_hint=receipt.get("upstream_sorting_mode_hint"),
+                color_space=receipt.get("upstream_color_space"),
+            ),
         }
     if source_size > MAXIMUM_INLINE_NUREC_CONVERSION_BYTES:
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
@@ -373,6 +422,16 @@ def _materialize_native_particlefield_appearance(
         "representation_conversion_performed": True,
         "exact_learned_arrays_preserved": True,
         "gaussian_field_quality": receipt["gaussian_field_quality"],
+        "appearance_render_backend": _appearance_render_backend(
+            kind=receipt["particlefield_authoring_implementation"],
+            source_digest=source_digest,
+            particlefield_digest=receipt["output_sha256"],
+            authoring_receipt_digest=receipt["receipt_digest"],
+            upstream_converter=receipt.get("upstream_converter"),
+            projection_mode_hint=receipt.get("upstream_projection_mode_hint"),
+            sorting_mode_hint=receipt.get("upstream_sorting_mode_hint"),
+            color_space=receipt.get("upstream_color_space"),
+        ),
     }
 
 
@@ -595,6 +654,7 @@ def compile_native_arena_episode(
             ],
             "exact_learned_arrays_preserved": True,
             "gaussian_field_quality": native_appearance["gaussian_field_quality"],
+            "render_backend": native_appearance["appearance_render_backend"],
         },
         "native_construction_feedback": (
             {
