@@ -165,6 +165,43 @@ class _Policy:
         return chunk
 
 
+_BACKEND_RECEIPT_DIGEST = "sha256:" + "b" * 64
+
+
+def _observation_integrity_authority(
+    *, backend_digest: str = _BACKEND_RECEIPT_DIGEST, status: str = "approved", parity: bool = True
+) -> dict:
+    """An approved same-pose parity + human review bound to the test backend."""
+
+    from blueprint_pipeline.native_task_camera_observability import (
+        build_policy_observation_integrity_authority,
+    )
+
+    return build_policy_observation_integrity_authority(
+        appearance_render_backend_receipt_digest=backend_digest,
+        reference_renderer_identity="nvcr.io/nvidia/nre/nre@sha256:test",
+        reference_source_sha256="sha256:" + "9" * 64,
+        views={
+            view: {
+                "reference_png_sha256": "sha256:" + "1" * 64,
+                "candidate_png_sha256": "sha256:" + "2" * 64,
+            }
+            for view in ("external", "wrist", "overview")
+        },
+        parity_passed=parity,
+        human_review_status=status,
+        reviewer="test-reviewer",
+        contact_sheet_sha256="sha256:" + "3" * 64,
+    )
+
+
+def _integrity(authority, *, backend_digest: str = _BACKEND_RECEIPT_DIGEST) -> dict:
+    return {
+        "authority": authority,
+        "appearance_render_backend_receipt_digest": backend_digest,
+    }
+
+
 def _run(environment=None, policy=None, **overrides):
     kwargs = dict(
         environment=environment or _Environment(),
@@ -176,6 +213,11 @@ def _run(environment=None, policy=None, **overrides):
         max_policy_queries=4,
         settle_window_samples=6,
     )
+    if overrides.get("require_prestart_readiness") and "observation_integrity" not in overrides:
+        # Prestart readiness now also requires sealed observation integrity;
+        # tests of the other prestart checks get an approved authority so they
+        # keep exercising what they were written for.
+        kwargs["observation_integrity"] = _integrity(_observation_integrity_authority())
     kwargs.update(overrides)
     return run_policy_episode(**kwargs)
 
@@ -2207,3 +2249,87 @@ def test_policy_input_saturation_evidence_carries_the_prestart_readiness_prefix(
     assert failure.value.errors == [
         f"{PRESTART_READINESS_BLOCKER}:native_task_policy_input_frame_saturated:{DROID_WRIST_VIEW}"
     ]
+
+
+def test_structural_pass_without_sealed_observation_integrity_blocks_before_any_query(
+    tmp_path,
+) -> None:
+    """Scene 839873: structurally passing frames must not unlock a policy."""
+
+    policy = _LifecyclePolicy()
+    progress: dict = {}
+    with pytest.raises(PolicyEpisodeError) as excinfo:
+        _run(
+            environment=_LifecycleEnvironment(),
+            policy=policy,
+            max_policy_queries=1,
+            settle_window_samples=1,
+            media_output_dir=tmp_path,
+            episode_id="lifecycle-no-authority",
+            require_complete_multicamera_media=True,
+            require_prestart_readiness=True,
+            observation_integrity=_integrity(None),
+            progress=progress,
+        )
+    message = str(excinfo.value)
+    assert "native_task_appearance_reference_parity_missing" in message
+    assert "native_task_human_visual_review_not_approved" in message
+    assert progress["episode_readiness_verified"] is False
+    assert progress["episode_started"] is False
+    assert policy.observations == []
+
+
+@pytest.mark.parametrize(
+    ("authority_kwargs", "expected"),
+    [
+        ({"backend_digest": "sha256:" + "0" * 64}, "native_task_appearance_reference_parity_backend_mismatch"),
+        ({"parity": False}, "native_task_appearance_reference_parity_failed"),
+        ({"status": "pending"}, "native_task_human_visual_review_not_approved"),
+        ({"status": "failed"}, "native_task_human_visual_review_not_approved"),
+    ],
+)
+def test_unbound_failed_or_unreviewed_authority_keeps_the_episode_blocked(
+    tmp_path, authority_kwargs: dict, expected: str
+) -> None:
+    policy = _LifecyclePolicy()
+    with pytest.raises(PolicyEpisodeError, match=expected):
+        _run(
+            environment=_LifecycleEnvironment(),
+            policy=policy,
+            max_policy_queries=1,
+            settle_window_samples=1,
+            media_output_dir=tmp_path,
+            episode_id="lifecycle-authority-" + expected,
+            require_complete_multicamera_media=True,
+            require_prestart_readiness=True,
+            observation_integrity=_integrity(_observation_integrity_authority(**authority_kwargs)),
+        )
+    assert policy.observations == []
+
+
+def test_prestart_receipt_records_that_the_candidate_is_loaded_but_not_queried(
+    tmp_path,
+) -> None:
+    """The gate used to hard-code ``candidate_policy_loaded=False``."""
+
+    receipt = _run(
+        environment=_LifecycleEnvironment(),
+        policy=_LifecyclePolicy(),
+        max_policy_queries=1,
+        settle_window_samples=1,
+        media_output_dir=tmp_path,
+        episode_id="lifecycle-truthful-load-state",
+        require_complete_multicamera_media=True,
+        require_prestart_readiness=True,
+    )
+    gate = receipt["prestart_readiness"]["prepolicy_visual_quality"]
+    assert gate["schema_version"] == "native_task_prepolicy_visual_gate.v2"
+    assert gate["candidate_policy_loaded"] is True
+    assert gate["candidate_policy_queried"] is False
+    assert gate["frame_structure_passed"] is True
+    assert gate["appearance_reference_parity_passed"] is True
+    assert gate["human_visual_review_status"] == "approved"
+    assert gate["policy_observation_integrity_passed"] is True
+    assert gate["appearance_reference_parity_binding"]["backend_bound"] is True
+    for row in gate["views"].values():
+        assert "rgb_spread_pixel_fraction" in row["chromatic_diagnostics"]
