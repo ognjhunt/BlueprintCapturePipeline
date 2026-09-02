@@ -433,7 +433,7 @@ def validate_candidate_action_bounds(
         row_index = int(invalid_gripper[0, 0])
         errors.append(
             f"{BLOCKER_GRIPPER_BOUNDS}:count={len(invalid_gripper)}:"
-            f"first_row={row_index}:value={gripper_values[row_index]!r}:"
+            f"first_row={row_index}:value={float(gripper_values[row_index])!r}:"
             f"bounds=[{raw_gripper_lower},{raw_gripper_upper}]"
         )
     gripper_outside_command_interval = np.argwhere(
@@ -465,7 +465,7 @@ def validate_candidate_action_bounds(
             errors.append(
                 f"{BLOCKER_JOINT_VELOCITY_BOUNDS}:count={len(invalid_arm)}:"
                 f"first_row={row_index}:first_dimension={dimension_index}:"
-                f"value={values[row_index, dimension_index]!r}:"
+                f"value={float(values[row_index, dimension_index])!r}:"
                 f"bounds=[{arm_lower},{arm_upper}]"
             )
         arm_contract: dict[str, Any] = {
@@ -518,9 +518,9 @@ def validate_candidate_action_bounds(
             errors.append(
                 f"{BLOCKER_JOINT_POSITION_BOUNDS}:count={len(invalid_arm)}:"
                 f"first_row={row_index}:first_dimension={dimension_index}:"
-                f"value={values[row_index, dimension_index]!r}:"
-                f"bounds=[{raw_lower[dimension_index]!r},"
-                f"{raw_upper[dimension_index]!r}]"
+                f"value={float(values[row_index, dimension_index])!r}:"
+                f"bounds=[{float(raw_lower[dimension_index])!r},"
+                f"{float(raw_upper[dimension_index])!r}]"
             )
         arm_outside_command_interval = np.argwhere(
             (arm_values < command_lower[None, :])

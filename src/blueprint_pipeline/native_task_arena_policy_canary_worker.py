@@ -17,6 +17,7 @@ from typing import Any, Callable, Mapping
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     CANDIDATE_IDS,
+    PolicyCanaryEpisodeFailure,
     PROVIDER_RESULT_FILENAME,
     execute_paired_session,
     validate_runtime_input_manifest,
@@ -389,8 +390,9 @@ def _write_episode_failure_gap(
     run_id: str,
     context: Mapping[str, Any],
     failure: Exception,
+    progress: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Retain one safe per-episode diagnostic if execution fails before evidence."""
+    """Retain the strongest episode evidence reached before a typed failure."""
 
     raw_message = str(failure).strip().replace("\n", " ").replace("\r", " ")
     safe_message = re.sub(r"(?<![A-Za-z0-9])/(?:[^\s/:]+/)*[^\s:]+", "<path>", raw_message)
@@ -398,31 +400,207 @@ def _write_episode_failure_gap(
     episode_id = (
         f"{run_id}--{context.get('cell_id')}--{context.get('candidate_id')}"
     )
-    path = output_root / "episodes" / f"{episode_id}.failure_gap.json"
+    progress = progress if isinstance(progress, Mapping) else {}
+    first_observation_retained = progress.get("first_observation_retained") is True
+    candidate_policy_queried = progress.get("candidate_policy_queried") is True
+    candidate_action_returned = progress.get("candidate_action_returned") is True
+    action_applied = progress.get("candidate_action_applied") is True
+    violations = [
+        str(item)
+        for item in getattr(failure, "errors", ())
+        if str(item).startswith("candidate_action_joint_position_bounds_invalid")
+    ]
+    action_rejected = bool(
+        candidate_policy_queried
+        and candidate_action_returned
+        and not action_applied
+        and progress.get("phase") == "policy_action_bounds_refused"
+        and violations
+    )
+    failure_stage = (
+        "action_delivery_rejected"
+        if action_rejected
+        else "after_first_observation"
+        if first_observation_retained
+        else "before_first_observation"
+    )
+    suffix = "failure_evidence" if first_observation_retained else "failure_gap"
+    path = output_root / "episodes" / f"{episode_id}.{suffix}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
+    visual_evidence: dict[str, Any]
+    media_artifacts: list[dict[str, Any]] = []
+    if first_observation_retained:
+        finalizer = progress.get("_failure_media_finalizer")
+        if callable(finalizer):
+            try:
+                visual, artifacts = finalizer(
+                    failure_reason=f"{type(failure).__name__}:{safe_message}"
+                )
+                visual_evidence = dict(visual)
+                media_artifacts = [
+                    dict(item) for item in artifacts if isinstance(item, Mapping)
+                ]
+            except Exception as exc:  # noqa: BLE001 - preserve the primary failure
+                visual_evidence = {
+                    "status": "incomplete_after_first_observation",
+                    "media_gap": {
+                        "type": "after_first_observation_media_seal_failed",
+                        "reason": type(exc).__name__,
+                    },
+                }
+        else:
+            visual_evidence = {
+                "status": "incomplete_after_first_observation",
+                "media_gap": {
+                    "type": "after_first_observation_media_finalizer_missing",
+                    "reason": "policy_canary_episode_runner_failed",
+                },
+            }
+    else:
+        visual_evidence = {
+            "status": "unavailable_before_first_observation",
+            "media_gap": {
+                "type": "before_first_observation",
+                "reason": "policy_canary_episode_runner_failed",
+            },
+        }
+    raw_queries = [
+        dict(item)
+        for item in progress.get("candidate_policy_action_queries") or []
+        if isinstance(item, Mapping)
+    ]
+    commanded_actions = [
+        dict(item)
+        for item in progress.get("commanded_actions") or []
+        if isinstance(item, Mapping)
+    ]
+    action_rejection = None
+    if action_rejected:
+        action_rejection = {
+            "schema_version": "policy_canary_action_delivery_rejection.v1",
+            "status": "rejected_before_robot",
+            "reason": "hard_joint_limit_violation",
+            "violations": violations,
+            "clamping_performed": False,
+            "delivery_attempted": False,
+            "actions_reached_robot": False,
+            "rejection_digest": "",
+        }
+        action_rejection["rejection_digest"] = canonical_digest(
+            action_rejection, digest_field="rejection_digest"
+        )
+    evidence_artifacts: dict[str, Any] = {}
+    media_root = output_root / "episodes"
+    if media_artifacts:
+        evidence_artifacts["frame_manifest"] = _bound_media_artifact(
+            output_root,
+            media_root=media_root,
+            artifacts=media_artifacts,
+            role="lossless_frame_manifest",
+            role_match=lambda name: "frame_manifest" in name,
+        )
+        evidence_artifacts["review_video"] = _bound_media_artifact(
+            output_root,
+            media_root=media_root,
+            artifacts=media_artifacts,
+            role="review_video",
+            role_match=lambda name: "video" in name,
+        )
+    if candidate_policy_queried:
+        evidence_artifacts["policy_query_receipt"] = _write_episode_json_artifact(
+            output_root,
+            episode_id=episode_id,
+            role="policy_query_receipt",
+            value={
+                "candidate_policy_queried": True,
+                "candidate_action_returned": candidate_action_returned,
+                "policy_queries": raw_queries,
+            },
+        )
+    if candidate_action_returned:
+        evidence_artifacts["action_sequence"] = _write_episode_json_artifact(
+            output_root,
+            episode_id=episode_id,
+            role="action_sequence",
+            value=raw_queries,
+        )
+    if action_rejection is not None:
+        evidence_artifacts["action_delivery_readback"] = _write_episode_json_artifact(
+            output_root,
+            episode_id=episode_id,
+            role="action_delivery_readback",
+            value=action_rejection,
+        )
     value = {
-        "schema_version": "policy_canary_episode_failure_gap.v1",
-        "status": "unavailable_before_first_observation",
+        "schema_version": "policy_canary_episode_failure_evidence.v2",
+        "status": "blocked",
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "candidate_id": context.get("candidate_id"),
         "cell_id": context.get("cell_id"),
         "seed": context.get("seed"),
+        "episode_failure_stage": failure_stage,
+        "first_observation_retained": first_observation_retained,
         "reset_state_digest": canonical_digest(
             {
                 "resolved_scenario": context.get("resolved_scenario"),
                 "seed": context.get("seed"),
-                "execution_performed": False,
+                "execution_performed": first_observation_retained,
             }
         ),
-        "candidate_policy_queried": False,
-        "actions_reached_robot": False,
+        "candidate_policy_queried": candidate_policy_queried,
+        "candidate_action_returned": candidate_action_returned,
+        "candidate_action_shape_validated": (
+            progress.get("candidate_action_shape_validated") is True
+        ),
+        "candidate_action_finite_validated": (
+            progress.get("candidate_action_finite_validated") is True
+        ),
+        "candidate_action_bounds_validated": (
+            progress.get("candidate_action_bounds_validated") is True
+        ),
+        "actions_reached_robot": action_applied,
+        "arm_moved": False,
+        "policy_outcome_interpretable": False,
         "failure_type": type(failure).__name__,
+        "typed_harness_failure": type(failure).__name__,
         "failure_message": safe_message or None,
         "failure_message_digest": _digest(raw_message),
-        "media_gap": {
-            "type": "before_first_observation",
-            "reason": "policy_canary_episode_runner_failed",
+        "candidate_policy_action_queries": raw_queries,
+        "commanded_actions": commanded_actions,
+        "action_delivery_rejection": action_rejection,
+        "visual_evidence": visual_evidence,
+        "lossless_frame_manifest_digest": (
+            _digest(visual_evidence) if first_observation_retained else None
+        ),
+        "review_video_digest": (
+            _digest(media_artifacts) if media_artifacts else None
+        ),
+        "returned_action_sequence_digest": (
+            _digest(raw_queries) if candidate_action_returned else None
+        ),
+        "action_delivery_readback_digest": (
+            action_rejection["rejection_digest"]
+            if action_rejection is not None
+            else None
+        ),
+        "evidence_artifacts": evidence_artifacts,
+        "episode": {
+            "episode_id": episode_id,
+            "candidate_policy_action_queries": raw_queries,
+            "commanded_actions": commanded_actions,
+            "visual_evidence": visual_evidence,
+            "media_artifacts": media_artifacts,
+            "motion_evidence": {
+                "actions_reached_robot": action_applied,
+                "arm_moved": False,
+                "policy_outcome_interpretable": False,
+                "action_delivery_rejection": action_rejection,
+            },
+            "score": {
+                "status": "not_scored",
+                "blockers": ["policy_outcome_uninterpretable"],
+            },
         },
         "gap_digest": "",
     }
@@ -932,6 +1110,7 @@ def _run_selected_cell(
         _session: Mapping[str, Any],
         policy: Mapping[str, Any],
         context: Mapping[str, Any],
+        episode_progress: dict[str, Any],
     ) -> dict[str, Any]:
         started_ns = time.time_ns()
         from blueprint_pipeline.adp009d_droid_action_execution import GripperConvention
@@ -1029,7 +1208,20 @@ def _run_selected_cell(
                 scoring_authorized=True,
                 require_complete_multicamera_media=True,
                 require_prestart_readiness=True,
+                progress=episode_progress,
             )
+        except Exception as exc:
+            failure_path = _write_episode_failure_gap(
+                output_root=output_root,
+                run_id=str(authority["run_id"]),
+                context=context,
+                failure=exc,
+                progress=episode_progress,
+            )
+            raise PolicyCanaryEpisodeFailure(
+                cause=exc,
+                evidence=_read(failure_path),
+            ) from exc
         finally:
             if str(context["candidate_id"]) == CANDIDATE_IDS[-1]:
                 close = getattr(env, "close", None)
@@ -1198,16 +1390,23 @@ def _run_selected_cell(
         policy: Mapping[str, Any],
         context: Mapping[str, Any],
     ) -> dict[str, Any]:
+        episode_progress: dict[str, Any] = {}
         try:
-            return _run_episode_impl(session, policy, context)
+            return _run_episode_impl(session, policy, context, episode_progress)
+        except PolicyCanaryEpisodeFailure:
+            raise
         except Exception as exc:
-            _write_episode_failure_gap(
+            failure_path = _write_episode_failure_gap(
                 output_root=output_root,
                 run_id=str(authority["run_id"]),
                 context=context,
                 failure=exc,
+                progress=episode_progress,
             )
-            raise
+            raise PolicyCanaryEpisodeFailure(
+                cause=exc,
+                evidence=_read(failure_path),
+            ) from exc
 
     def close_policy(policy: Mapping[str, Any]) -> None:
         close = getattr(policy.get("client"), "close", None)

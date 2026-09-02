@@ -8,6 +8,7 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     CANDIDATE_IDS,
+    PolicyCanaryEpisodeFailure,
     PolicyCanarySessionError,
     build_session_authority,
     consume_session_authority_once,
@@ -345,6 +346,117 @@ def test_episode_failure_is_preserved_and_does_not_cancel_remaining_rollouts(
         }
     )
     assert result["episodes"][1]["status"] == "completed"
+    assert result["status"] == "blocked"
+    assert validate_session_result(result)["status"] == "blocked"
+
+
+def test_action_rejection_retains_policy_truth_and_validates_as_uninterpretable(
+    tmp_path: Path,
+) -> None:
+    authority, inputs = _authority(tmp_path)
+    rejection = {
+        "schema_version": "policy_canary_action_delivery_rejection.v1",
+        "status": "rejected_before_robot",
+        "reason": "hard_joint_limit_violation",
+        "violations": [
+            "candidate_action_joint_position_bounds_invalid:count=7:first_row=1:"
+            "first_dimension=3:value=-0.06750612128169087:"
+            "bounds=[-3.0717999935150146,-0.0697999969124794]"
+        ],
+        "clamping_performed": False,
+        "delivery_attempted": False,
+        "actions_reached_robot": False,
+        "rejection_digest": "",
+    }
+    rejection["rejection_digest"] = canonical_digest(
+        rejection, digest_field="rejection_digest"
+    )
+    observed = []
+
+    def run_episode(_session, policy, context):
+        observed.append((context["candidate_id"], context["cell_id"]))
+        if len(observed) == 1:
+            evidence = {
+                "status": "blocked",
+                "episode_failure_stage": "action_delivery_rejected",
+                "first_observation_retained": True,
+                "candidate_policy_queried": True,
+                "candidate_action_returned": True,
+                "actions_reached_robot": False,
+                "arm_moved": False,
+                "policy_outcome_interpretable": False,
+                "visual_evidence": {
+                    "status": "complete",
+                    "episode_terminal_status": "failed_after_first_observation",
+                    "human_review_available": True,
+                    "terminal_observation_invented": False,
+                },
+                "lossless_frame_manifest_digest": "sha256:" + "a" * 64,
+                "review_video_digest": "sha256:" + "b" * 64,
+                "candidate_policy_action_queries": [
+                    {"raw_action_chunk": [[0.0, 0.0, 0.0, -0.06750612128169087]]}
+                ],
+                "returned_action_sequence_digest": canonical_digest(
+                    {
+                        "value": [
+                            {
+                                "raw_action_chunk": [
+                                    [0.0, 0.0, 0.0, -0.06750612128169087]
+                                ]
+                            }
+                        ]
+                    }
+                ),
+                "action_delivery_readback_digest": rejection["rejection_digest"],
+                "action_delivery_rejection": rejection,
+            }
+            raise PolicyCanaryEpisodeFailure(
+                cause=RuntimeError("joint limit rejection"), evidence=evidence
+            )
+        return {
+            "status": "completed",
+            "candidate_policy_queried": True,
+            "actions_reached_robot": True,
+            "arm_moved": True,
+            "checkpoint_digest": policy["checkpoint_digest"],
+            "runtime_identity_digest": policy["runtime_identity_digest"],
+            "lossless_frame_manifest_digest": "sha256:" + "a" * 64,
+            "review_video_digest": "sha256:" + "b" * 64,
+            "returned_action_sequence_digest": "sha256:" + "1" * 64,
+            "action_delivery_readback_digest": "sha256:" + "2" * 64,
+            "state_trace_digest": "sha256:" + "3" * 64,
+            "contact_force_digest": "sha256:" + "4" * 64,
+            "task_object_trajectory_digest": "sha256:" + "5" * 64,
+            "deterministic_score_digest": "sha256:" + "6" * 64,
+            "scoring_authority": "deterministic_simulator_state",
+        }
+
+    result = execute_paired_session(
+        authority=authority,
+        runtime_inputs=inputs,
+        open_session=lambda _inputs: {"provider_allocations_observed": 1},
+        load_policy=lambda _session, candidate_id: {
+            "candidate_id": candidate_id,
+            "checkpoint_digest": "sha256:" + "c" * 64,
+            "runtime_identity_digest": "sha256:" + "d" * 64,
+        },
+        run_episode=run_episode,
+        close_policy=lambda _policy: None,
+        close_session=lambda _session: {
+            "status": "closed",
+            "provider_allocations_observed": 1,
+            "teardown_completed": True,
+            "provider_zero_confirmed": True,
+        },
+    )
+
+    assert len(observed) == 20
+    failed = result["episodes"][0]
+    assert failed["candidate_policy_queried"] is True
+    assert failed["actions_reached_robot"] is False
+    assert failed["episode_failure_stage"] == "action_delivery_rejected"
+    assert failed["action_delivery_rejection"]["clamping_performed"] is False
+    assert result["candidate_policy_queried"] is True
     assert result["status"] == "blocked"
     assert validate_session_result(result)["status"] == "blocked"
 
