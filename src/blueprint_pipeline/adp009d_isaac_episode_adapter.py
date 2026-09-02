@@ -817,7 +817,9 @@ class IsaacEpisodeAdapter:
             inputs[view] = rgb_from_camera_output(frame)
         inputs["joint_position"] = self.read_arm_joint_positions()
         inputs["gripper_position"] = self._droid_gripper_position()
-        inputs["eef_9d"] = self._eef_9d()
+        eef_9d, eef_frame_provenance = self._eef_9d_with_frame_provenance()
+        inputs["eef_9d"] = eef_9d
+        inputs["eef_9d_frame_provenance"] = eef_frame_provenance
         return inputs
 
     def read_evaluation_camera_inputs(self) -> dict[str, Any]:
@@ -1521,7 +1523,7 @@ class IsaacEpisodeAdapter:
         )
         return min(1.0, max(0.0, 1.0 - open_fraction))
 
-    def _eef_9d(self) -> Any:
+    def _eef_9d_with_frame_provenance(self) -> tuple[Any, dict[str, Any]]:
         end_effector_pose = self._to_torch(self._robot.data.body_pose_w)[
             0, self._droid_eef_body_index
         ]
@@ -1549,12 +1551,36 @@ class IsaacEpisodeAdapter:
             from groot_n17_droid_policy_runtime import droid_eef_9d
         except ModuleNotFoundError:  # repository package
             from .groot_n17_droid_policy_runtime import droid_eef_9d
-        return droid_eef_9d(
+        eef_9d = droid_eef_9d(
             position_m=position_root,
             rotation_row_major=rotation_row_major_from_quaternion_xyzw(
                 quaternion_root
             ),
         )
+        provenance = {
+            "schema_version": "droid_eef_frame_provenance.v1",
+            "state_frame": "robot_root",
+            "body_name": DROID_EEF_BODY_NAME,
+            "body_source": DROID_EEF_BODY_SOURCE,
+            "state_source": DROID_EEF_STATE_SOURCE,
+            "position_robot_root_m": [float(value) for value in position_root],
+            "body_pose_world_xyzw": end_effector_world,
+            "robot_root_pose_world_xyzw": root_world,
+            "provenance_digest": "",
+        }
+        try:  # flat provider bundle
+            from decision_evidence_contracts import canonical_digest
+        except ModuleNotFoundError:  # repository package
+            from .decision_evidence_contracts import canonical_digest
+        provenance["provenance_digest"] = canonical_digest(
+            provenance, digest_field="provenance_digest"
+        )
+        return eef_9d, provenance
+
+    def _eef_9d(self) -> Any:
+        """Backward-compatible value-only view for existing adapter callers."""
+
+        return self._eef_9d_with_frame_provenance()[0]
 
 
 def describe_adapter() -> dict[str, Any]:

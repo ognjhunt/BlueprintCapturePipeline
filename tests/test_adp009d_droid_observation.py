@@ -15,6 +15,7 @@ from blueprint_pipeline.adp009d_droid_observation import (
 )
 
 _JOINTS = [0.0, -0.628, 0.0, -2.513, 0.0, 1.885, 0.0]
+_EEF_PROVENANCE = {"schema_version": "droid_eef_frame_provenance.v1"}
 
 
 def _isaac_frame() -> np.ndarray:
@@ -75,6 +76,7 @@ def test_each_candidate_gets_its_own_measured_shape() -> None:
         gripper_position=0.04,
         prompt="pick up the can",
         eef_9d=np.arange(9, dtype=float),
+        eef_9d_frame_provenance=_EEF_PROVENANCE,
     )
     assert groot[DROID_EXTERIOR_VIEW_1].shape == (180, 320, 3)
     assert np.array_equal(groot["observation/eef_9d"], np.arange(9, dtype=float))
@@ -94,8 +96,11 @@ def test_groot_requires_the_live_nine_dimensional_end_effector_pose() -> None:
 
     for eef in (None, [0.0] * 8, [float("nan")] * 9):
         with pytest.raises(DroidObservationError, match="eef_9d_invalid"):
-            build_droid_observation(**base, eef_9d=eef)
-
+            build_droid_observation(
+                **base,
+                eef_9d=eef,
+                eef_9d_frame_provenance=_EEF_PROVENANCE,
+            )
 
 def test_groot_uses_only_the_current_checkpoint_requested_camera_frames() -> None:
     observation = build_droid_observation(
@@ -108,6 +113,7 @@ def test_groot_uses_only_the_current_checkpoint_requested_camera_frames() -> Non
         gripper_position=0.04,
         prompt="pick up the can",
         eef_9d=np.arange(9, dtype=float),
+        eef_9d_frame_provenance=_EEF_PROVENANCE,
     )
 
     assert set(observation) == {
@@ -116,6 +122,7 @@ def test_groot_uses_only_the_current_checkpoint_requested_camera_frames() -> Non
         "observation/joint_position",
         "observation/gripper_position",
         "observation/eef_9d",
+        "observation/eef_9d_frame_provenance",
         "prompt",
     }
 
