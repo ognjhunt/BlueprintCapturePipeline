@@ -19,7 +19,7 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import pytest
@@ -499,6 +499,14 @@ def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
             "device": expected_device,
         },
         build_environment=isaac.build,
+        prepare_appearance_renderer=lambda *, simulation_app, plan: {
+            "schema_version": "native_task_arena_nurec_warmup.v1",
+            "status": "completed",
+            "passed": getattr(simulation_app, "_isaac", None) is isaac and bool(plan),
+            "requested_warmup_steps": 800,
+            "app_update_count": 805,
+            "blockers": [],
+        },
         read_device_binding=lambda built, *, expected_device: {
             "passed": built.env is not None and expected_device == "cuda:0"
         },
@@ -585,6 +593,10 @@ def test_selected_cell_queries_both_real_clients_and_seals_before_isaac_close(
         assert episode["evidence_artifacts"]["frame_manifest"] is not None
         assert episode["evidence_artifacts"]["review_video"] is not None
         assert episode["episode"]["prestart_readiness"]["candidate_policy_queried"] is False
+        assert episode["episode_environment"]["appearance_renderer"]["passed"] is True
+        assert episode["episode_environment"]["appearance_renderer"][
+            "requested_warmup_steps"
+        ] == 800
     # Exactly one Isaac launch, one environment build for the selected cell,
     # and the environment closed once after the second candidate.
     assert isaac.launches == 1
@@ -686,6 +698,52 @@ def test_one_failed_cell_is_a_typed_gap_and_the_other_nineteen_rollouts_continue
     # other process was disturbed.
     assert isaacs[5].result_sealed_at_close is True
     assert all(isaac.result_sealed_at_close is True for isaac in isaacs)
+
+
+def test_unqualified_nurec_renderer_blocks_both_policies_before_query_and_seals_gap(
+    tmp_path: Path,
+) -> None:
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    child_root = provider_output / "cell_runs" / "00"
+    child_root.mkdir(parents=True)
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    runtime = _rehearsal_runtime(isaac)
+
+    def blocked_renderer(*, simulation_app: Any, plan: Mapping[str, Any]) -> dict[str, Any]:
+        assert getattr(simulation_app, "_isaac", None) is isaac
+        assert plan
+        return {
+            "schema_version": "native_task_arena_nurec_warmup.v1",
+            "passed": False,
+            "blockers": ["native_task_arena_nurec_official_setup_not_qualified"],
+        }
+
+    runtime = worker.CellRuntime(
+        **{**runtime.__dict__, "prepare_appearance_renderer": blocked_renderer}
+    )
+    with pytest.raises(SystemExit) as exited:
+        worker._run_selected_cell(
+            0,
+            runtime_root=runtime_root,
+            output_root=child_root,
+            provider_output_root=provider_output,
+            cell_runtime=runtime,
+        )
+
+    assert exited.value.code == 0
+    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+    assert [row["typed_harness_failure"] for row in result["episodes"]] == [
+        "RuntimeError",
+        "RuntimeError",
+    ]
+    assert all(row["candidate_policy_queried"] is False for row in result["episodes"])
+    gaps = sorted((child_root / "episodes").glob("*.failure_gap.json"))
+    assert len(gaps) == 2
+    assert all(
+        json.loads(path.read_text(encoding="utf-8"))["failure_message"]
+        == "policy_canary_appearance_renderer_unqualified"
+        for path in gaps
+    )
 
 
 def test_cadence_mismatch_is_refused_by_the_real_episode_contract_and_still_sealed(
