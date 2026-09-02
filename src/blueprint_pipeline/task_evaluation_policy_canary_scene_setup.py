@@ -248,7 +248,15 @@ def materialize_scene839873_policy_canary_setup(
     maximum_hourly_rate_usd: float = 0.8,
     hard_cap_usd: float = 4.0,
     hard_ttl_seconds: int = 14_400,
+    activation_release_window_template: Mapping[str, Any] | None = None,
+    activation_lineage: Mapping[str, Any] | None = None,
+    activation_authorization: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    del (
+        activation_release_window_template,
+        activation_lineage,
+        activation_authorization,
+    )
     blockers: list[str] = []
     if not _SHA.fullmatch(source_commit):
         blockers.append("policy_canary_source_commit_invalid")
@@ -483,6 +491,9 @@ def materialize_policy_canary_presubmission_setup(
     runtime_source_bundle: Mapping[str, Any],
     runtime_source_implementation_commit: str | None = None,
     model_rights: Mapping[str, Any],
+    activation_release_window_template: Mapping[str, Any],
+    activation_lineage: Mapping[str, Any],
+    activation_authorization: Mapping[str, Any],
     output_dir: str | Path,
     maximum_hourly_rate_usd: float = 0.8,
     hard_cap_usd: float = 4.0,
@@ -951,6 +962,22 @@ def materialize_policy_canary_presubmission_setup(
     configured_preparation_digest = str(progression.get("episode_preparation_request_digest") or "")
     if not _DIGEST.fullmatch(configured_preparation_digest):
         configured_preparation_digest = canonical_digest(configured_preparation)
+    activation_automation = {
+        "mode": "automatic_after_no_spend_compilation",
+        "release_window_template": json.loads(
+            json.dumps(dict(activation_release_window_template), allow_nan=False)
+        ),
+        "lineage": json.loads(json.dumps(dict(activation_lineage), allow_nan=False)),
+        "authorization_template": json.loads(
+            json.dumps(dict(activation_authorization), allow_nan=False)
+        ),
+        "requested_mutations": {
+            "profile_publication": False,
+            "catalog_synchronization": False,
+            "standing_authorization": False,
+            "policy_campaign_queue": True,
+        },
+    }
     execution_plan: dict[str, Any] = {
         "schema_version": "task_evaluation_policy_canary_execution_plan.v1",
         "source_commit": source_commit,
@@ -971,6 +998,7 @@ def materialize_policy_canary_presubmission_setup(
             "maximum_provider_allocations": 1,
             "retry_cap": 0,
         },
+        "activation_automation": activation_automation,
         "lineage_aliases": {
             "capture_session_id": configured_source_launch_id,
             "capture_session_id_semantics": (

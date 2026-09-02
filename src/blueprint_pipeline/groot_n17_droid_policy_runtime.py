@@ -462,10 +462,11 @@ class GrootN17DroidPolicyClient:
             raise ValueError("groot_policy_reset_response_invalid")
 
     def preflight_readiness(self) -> dict[str, Any]:
-        """Reconfirm live transport/identity without requesting an action."""
+        """Reconfirm live transport/identity for the next warm-session episode."""
 
-        if self.candidate_policy_queried or self._last_inference_evidence is not None:
-            raise ValueError("groot_policy_preflight_after_inference_forbidden")
+        prior_query_observed = bool(
+            self.candidate_policy_queried or self._last_inference_evidence is not None
+        )
         if self._client.ping() is not True:
             raise ValueError("groot_policy_server_unreachable")
         self.reset()
@@ -477,6 +478,7 @@ class GrootN17DroidPolicyClient:
             "candidate_inference_performed": False,
             "policy_state_advanced": False,
             "last_inference_evidence": None,
+            "prior_candidate_policy_query_observed": prior_query_observed,
             "policy_identity": self._spec.identity(),
             "worker_identity_receipt_digest": self._worker_receipt.get(
                 "receipt_digest"

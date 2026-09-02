@@ -147,6 +147,7 @@ from .vast_scene_configuration_warm_readiness import (
 )
 from .vast_provider_transfer_upload import provider_output_upload_shell_fragment
 from .vast_args_payload_transport import args_mode_command, onstart_mode_script
+from .vast_provider_bundle_digest_guard import provider_bundle_digest_guard
 
 
 VAST_RUNTIME_DISCOVERY_SCHEMA_VERSION = "vast_runtime_discovery.v1"
@@ -4275,15 +4276,8 @@ def _probe_shell_script(
     ) is None:
         raise ValueError("expected_provider_bundle_sha256_invalid")
     quoted_url = shlex.quote(heartbeat_url)
-    scene_bundle_digest_guard = (
-        'actual_bundle_sha="sha256:$(sha256sum "$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip" | cut -d" " -f1)"; '
-        "if [ \"$actual_bundle_sha\" != "
-        + shlex.quote(expected_provider_bundle_sha256)
-        + ' ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_bundle_digest_mismatch; bundle_digest_rc=86; '
-        "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; echo BLUEPRINT_VAST_SCENE_CONFIGURATION_BUNDLE_SHA256_VERIFIED; bundle_digest_rc=0; fi; "
-        if expected_provider_bundle_sha256 is not None
-        else "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; bundle_digest_rc=0; "
-    )
+    scene_bundle_digest_guard = provider_bundle_digest_guard(expected_provider_bundle_sha256, '"$WORK_DIR/task_evaluation_scene_configuration_provider_bundle.zip"', "scene_configuration_bundle_digest_mismatch", "BLUEPRINT_VAST_SCENE_CONFIGURATION_BUNDLE_SHA256_VERIFIED", emit_downloaded_marker=True)
+    arena_bundle_digest_guard = provider_bundle_digest_guard(expected_provider_bundle_sha256, '"$WORK_DIR/adp_arena_provider_runtime_bundle.zip"', "arena_bundle_digest_mismatch", "BLUEPRINT_VAST_ARENA_BUNDLE_SHA256_VERIFIED")
     # Unconditional, and retried.  This began as an allowlist of the four kinds
     # observed to fail, but an HTTP/2 stream reset is a property of the
     # transport and the object size, not of what is inside the zip: a bundle
@@ -4729,6 +4723,9 @@ def _probe_shell_script(
                 'rm -rf "$WORK_DIR/adp_arena_provider_bundle" "$WORK_DIR/adp_arena_provider_runtime_bundle.zip" "$WORK_DIR/adp_arena_provider_runtime_output.zip"; '
                 'blueprint_download_url "$BUNDLE_URL" "$WORK_DIR/adp_arena_provider_runtime_bundle.zip"; dl=$?; '
                 "if [ $dl -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:download_failed:$dl; "
+                "else "
+                + arena_bundle_digest_guard
+                + "if [ $bundle_digest_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:bundle_digest_invalid:$bundle_digest_rc; "
                 "else echo BLUEPRINT_VAST_PROVIDER_BUNDLE_DOWNLOADED; "
                 '$RUNTIME_PY -m zipfile -e "$WORK_DIR/adp_arena_provider_runtime_bundle.zip" "$WORK_DIR/adp_arena_provider_bundle"; unzip_rc=$?; '
                 "if [ $unzip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:unzip_failed:$unzip_rc; "
@@ -4812,7 +4809,7 @@ def _probe_shell_script(
                 "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
-                "fi; fi; fi; fi; fi; "
+                "fi; fi; fi; fi; fi; fi; "
             )
         elif provider_bundle_kind == "adp009d_ovrtx":
             script += (

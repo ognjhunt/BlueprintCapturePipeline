@@ -109,6 +109,11 @@ def test_provider_entrypoint_provisions_both_servers_once_and_runs_one_worker() 
     groot_provision = script.index("adp009d_policy_provisioning.groot_n17_droid.sh")
     worker = script.index('"$RUNTIME_DIR/adp_arena_provider_runner.py"')
     assert pi_copy < pi_provision < groot_copy < groot_provision < worker
+    assert script.index("trap teardown_servers EXIT INT TERM HUP") < script.index(
+        "native_task_runtime_source_provision"
+    )
+    assert "policy_canary_runtime_source_provision_failed" in script
+    assert "write_fallback_result policy_canary_entrypoint_failed_without_result" in script
 
 
 def test_candidate_servers_have_distinct_transports_ports_and_receipts() -> None:
@@ -123,6 +128,15 @@ def test_candidate_servers_have_distinct_transports_ports_and_receipts() -> None
     assert CANDIDATE_DEFAULT_PORTS[transport_for("groot_n17_droid")] == 5555
     script = bundle._entrypoint()
     assert "adp009d_policy_server_receipt.$candidate.json" in script
+
+
+def test_provider_manifest_digest_is_revalidated_inside_shipped_worker() -> None:
+    source = (
+        Path(bundle.__file__).with_name("native_task_arena_policy_canary_worker.py")
+    ).read_text(encoding="utf-8")
+
+    assert "policy_canary_provider_manifest_invalid" in source
+    assert 'canonical_digest(manifest, digest_field="input_digest")' in source
 
 
 def test_provider_worker_has_one_simulation_launch_outside_episode_loop() -> None:

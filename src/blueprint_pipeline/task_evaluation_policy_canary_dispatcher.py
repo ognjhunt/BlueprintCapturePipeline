@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
 from .common import write_json
@@ -51,6 +52,7 @@ from .task_evaluation_run_webapp_sync import (
     sync_policy_canary_preprovider_blocked_to_webapp,
     sync_task_evaluation_policy_canary_to_webapp,
 )
+from .task_evaluation_launch_webapp_sync import sync_launch_progress_to_webapp
 from .vast_official_billing_extractor import (
     VastOfficialBillingExtractionError,
     materialize_vast_official_same_goal_reconciliation,
@@ -72,6 +74,41 @@ class TaskEvaluationPolicyCanaryDispatchError(ValueError):
 AllocatorRunner = Callable[[Sequence[str]], int]
 ProviderZeroCollector = Callable[[], Mapping[str, Any]]
 SyncRunner = Callable[..., Mapping[str, Any]]
+
+
+def _proves_no_provider_allocation(adapter: Mapping[str, Any]) -> bool:
+    instance_ids = adapter.get("vast_instance_ids")
+    return bool(
+        instance_ids in (None, [])
+        and adapter.get("provider_mutations_performed") in {0, False}
+        and adapter.get("provider_create_attempted") is not True
+        and adapter.get("vast_side_effects_may_have_occurred") is not True
+        and adapter.get("continuing_spend_from_this_run") is not True
+    )
+
+
+def _sync_pending_progress(
+    *,
+    runner: SyncRunner,
+    run_id: str,
+    request_digest: str,
+    phase: str,
+    blocker: str,
+) -> dict[str, Any]:
+    return dict(
+        runner(
+            progress={
+                "schema_version": "task_evaluation_launch_progress.v1",
+                "launch_id": run_id,
+                "run_id": run_id,
+                "request_digest": request_digest,
+                "phase": phase,
+                "phase_status": blocker,
+                "observed_at_iso": datetime.now(timezone.utc).isoformat(),
+                "elapsed_seconds": 0.0,
+            }
+        )
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -569,6 +606,8 @@ def dispatch_policy_canary_activation(
     allocator_runner: AllocatorRunner | None = None,
     provider_zero_collector: ProviderZeroCollector = collect_policy_canary_vast_provider_zero,
     sync_runner: SyncRunner = sync_task_evaluation_policy_canary_to_webapp,
+    blocked_sync_runner: SyncRunner = sync_policy_canary_preprovider_blocked_to_webapp,
+    progress_sync_runner: SyncRunner = sync_launch_progress_to_webapp,
 ) -> dict[str, Any]:
     """Dispatch or resume exactly one Scene 839873 policy canary."""
 
@@ -778,6 +817,41 @@ def dispatch_policy_canary_activation(
         _write_exclusive(root / "dispatch_receipt.json", receipt)
         return receipt
 
+    if _proves_no_provider_allocation(adapter):
+        blockers = list(adapter.get("blockers") or ["policy_canary_provider_not_allocated"])
+        terminal_sync = dict(
+            blocked_sync_runner(
+                activation_id=activation_result["activation_id"],
+                capture_session_id=setup["capture_session_id"],
+                intake_id=setup["intake_id"],
+                request_digest=setup["request_digest"],
+                blockers=blockers,
+            )
+        )
+        blocked = {
+            "schema_version": SCHEMA_VERSION,
+            "status": (
+                "blocked_without_provider_allocation"
+                if terminal_sync.get("status") == "succeeded"
+                else "blocked_without_provider_allocation_awaiting_notification"
+            ),
+            "run_id": activation["run_id"],
+            "run_kind": RUN_KIND,
+            "claim_ceiling": CLAIM_CEILING,
+            "allocator_invoked": allocator_invoked,
+            "provider_allocation_performed": False,
+            "provider_mutation_performed": False,
+            "automatic_retry_performed": False,
+            "blockers": blockers,
+            "terminal_sync": terminal_sync,
+            "receipt_digest": "",
+        }
+        blocked["receipt_digest"] = canonical_digest(
+            blocked, digest_field="receipt_digest"
+        )
+        write_json(root / "no_provider_allocation_blocked.json", blocked)
+        return blocked
+
     provider_zero_path = root / "post_teardown_global_provider_zero.json"
     provider_zero = dict(provider_zero_collector())
     write_json(provider_zero_path, provider_zero)
@@ -877,6 +951,13 @@ def dispatch_policy_canary_activation(
             expected_episode_count=10,
         )
     if provider_zero.get("provider_zero_verified") is not True:
+        progress_sync = _sync_pending_progress(
+            runner=progress_sync_runner,
+            run_id=activation["run_id"],
+            request_digest=setup["request_digest"],
+            phase="awaiting_authenticated_vast_provider_zero",
+            blocker="policy_canary_global_provider_zero_unproven",
+        )
         pending = {
             "schema_version": SCHEMA_VERSION,
             "status": "awaiting_authenticated_vast_provider_zero",
@@ -884,6 +965,7 @@ def dispatch_policy_canary_activation(
             "allocator_invoked": allocator_invoked,
             "automatic_retry_performed": False,
             "blockers": ["policy_canary_global_provider_zero_unproven"],
+            "website_progress_sync": progress_sync,
         }
         write_json(root / "dispatch_pending.json", pending)
         return pending
@@ -905,6 +987,13 @@ def dispatch_policy_canary_activation(
             output_path=billing_path,
         )
     if not billing_path.is_file():
+        progress_sync = _sync_pending_progress(
+            runner=progress_sync_runner,
+            run_id=activation["run_id"],
+            request_digest=setup["request_digest"],
+            phase="awaiting_official_billing",
+            blocker="policy_canary_official_billing_receipt_missing",
+        )
         pending = {
             "schema_version": SCHEMA_VERSION,
             "status": "awaiting_official_billing",
@@ -912,6 +1001,7 @@ def dispatch_policy_canary_activation(
             "allocator_invoked": allocator_invoked,
             "automatic_retry_performed": False,
             "blockers": ["policy_canary_official_billing_receipt_missing"],
+            "website_progress_sync": progress_sync,
         }
         write_json(root / "dispatch_pending.json", pending)
         return pending
@@ -951,8 +1041,11 @@ def dispatch_policy_canary_activation(
             policy_canary_result=projection,
         )
     )
-    if sync.get("status") != "succeeded" or not isinstance(
-        sync.get("notification_delivery"), Mapping
+    notification = sync.get("notification_delivery")
+    if (
+        sync.get("status") != "succeeded"
+        or not isinstance(notification, Mapping)
+        or notification.get("status") not in {"accepted", "delivered"}
     ):
         pending = {
             "schema_version": SCHEMA_VERSION,
@@ -1286,6 +1379,11 @@ def process_policy_canary_dispatch_queue(
         processed.append(result)
         if (output / "dispatch_receipt.json").is_file():
             os.replace(envelope_path, queue / "completed" / envelope_path.name)
+        elif (
+            result.get("status") == "blocked_without_provider_allocation"
+            and result.get("terminal_sync", {}).get("status") == "succeeded"
+        ):
+            os.replace(envelope_path, queue / "blocked" / envelope_path.name)
     return {
         "schema_version": "task_evaluation_policy_canary_dispatch_queue_run.v1",
         "status": "processed" if processed else "idle",

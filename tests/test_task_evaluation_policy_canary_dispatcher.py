@@ -470,6 +470,12 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
         "blockers": [],
         "receipt_digest": "sha256:" + "c" * 64,
     }
+    progress_updates = []
+
+    def sync_progress(**kwargs):
+        progress_updates.append(kwargs["progress"])
+        return {"status": "succeeded", "response": {"status": "recorded"}}
+
     first = dispatch_policy_canary_activation(
         activation_result_path=activation_result,
         execution_setup_path=setup_path,
@@ -478,6 +484,7 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
         execute=True,
         allocator_runner=fake_allocator,
         provider_zero_collector=lambda: zero,
+        progress_sync_runner=sync_progress,
     )
     second = dispatch_policy_canary_activation(
         activation_result_path=activation_result,
@@ -487,11 +494,14 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
         execute=True,
         allocator_runner=lambda _argv: pytest.fail("allocator invoked twice"),
         provider_zero_collector=lambda: zero,
+        progress_sync_runner=sync_progress,
     )
 
     assert first["status"] == second["status"] == "awaiting_official_billing"
     assert first["allocator_invoked"] is True
     assert second["allocator_invoked"] is False
+    assert first["website_progress_sync"]["status"] == "succeeded"
+    assert progress_updates[0]["phase"] == "awaiting_official_billing"
     assert calls == {"allocator": 1, "bundle": 1}
 
     def post_billing(**kwargs):
@@ -531,14 +541,35 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
         sync_runner=lambda **_kwargs: {
             "status": "succeeded",
             "notification_delivery": {
+                "status": "failed",
+                "run_result_digest": "sha256:" + "e" * 64,
+            },
+        },
+    )
+
+    assert third["status"] == "awaiting_website_sync_or_notification"
+    assert third["allocator_invoked"] is False
+    assert not (output / "dispatch_receipt.json").exists()
+
+    fourth = dispatch_policy_canary_activation(
+        activation_result_path=activation_result,
+        execution_setup_path=setup_path,
+        output_root=output,
+        implementation_commit=COMMIT,
+        execute=True,
+        allocator_runner=lambda _argv: pytest.fail("allocator invoked on sync resume"),
+        provider_zero_collector=lambda: zero,
+        sync_runner=lambda **_kwargs: {
+            "status": "succeeded",
+            "notification_delivery": {
                 "status": "delivered",
                 "run_result_digest": "sha256:" + "e" * 64,
             },
         },
     )
 
-    assert third["status"] == "completed_unqualified"
-    assert third["allocator_invoked"] is False
+    assert fourth["status"] == "completed_unqualified"
+    assert fourth["allocator_invoked"] is False
     assert calls == {"allocator": 1, "bundle": 1}
 
 
@@ -565,6 +596,71 @@ def test_invalid_envelope_is_quarantined_without_allocator(tmp_path: Path) -> No
     assert "secret" not in json.dumps(result)
     assert not pending.exists()
     assert (queue / "blocked" / pending.name).is_file()
+
+
+def test_proven_zero_allocation_terminalizes_without_billing_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    output = tmp_path / "dispatch-no-allocation"
+
+    def fake_bundle(**kwargs):
+        job = Path(kwargs["job_dir"])
+        job.mkdir(parents=True, exist_ok=True)
+        receipt = {"bundle_sha256": "sha256:" + "b" * 64}
+        _write(
+            job / "native_task_arena_policy_canary_session_bundle_receipt.v1.json",
+            receipt,
+        )
+        return receipt
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.build_policy_canary_session_bundle",
+        fake_bundle,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_provider_bundle",
+        lambda value, **_kwargs: value,
+    )
+
+    def allocator_without_instance(argv):
+        adapter_path = Path(argv[argv.index("--adapter-output") + 1])
+        _write(
+            adapter_path,
+            {
+                "status": "blocked",
+                "vast_instance_ids": [],
+                "provider_mutations_performed": 0,
+                "provider_create_attempted": False,
+                "vast_side_effects_may_have_occurred": False,
+                "continuing_spend_from_this_run": False,
+                "blockers": ["policy_canary_provider_capacity_unavailable"],
+            },
+        )
+        return 2
+
+    synced = []
+    result = dispatch_policy_canary_activation(
+        activation_result_path=activation_result,
+        execution_setup_path=setup_path,
+        output_root=output,
+        implementation_commit=COMMIT,
+        execute=True,
+        allocator_runner=allocator_without_instance,
+        blocked_sync_runner=lambda **kwargs: synced.append(kwargs)
+        or {
+            "status": "succeeded",
+            "notification_delivery": {"status": "accepted"},
+        },
+    )
+
+    assert result["status"] == "blocked_without_provider_allocation"
+    assert result["provider_allocation_performed"] is False
+    assert result["provider_mutation_performed"] is False
+    assert result["terminal_sync"]["status"] == "succeeded"
+    assert synced[0]["blockers"] == ["policy_canary_provider_capacity_unavailable"]
+    assert not (output / "official_billing_reconciliation.json").exists()
 
 
 def test_post_allocator_failure_is_not_labeled_preprovider_or_retried(
