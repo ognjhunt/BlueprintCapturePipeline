@@ -9,8 +9,8 @@ new immutable packet request:
 
 * policy cameras render at 640x360 and retain those lossless frames;
 * the review-only overview renders at 1280x720;
-* the wrist translation stays byte-for-value identical while its +Z OpenCV
-  optical axis is aimed at the frozen task start position;
+* the wrist camera moves by one bounded, declared mount offset to clear the
+  gripper body, then its +Z OpenCV optical axis is aimed at the frozen task;
 * policy-specific resizing remains owned by ``adp009d_droid_observation``.
 
 No provider is contacted and no camera is called qualified until the derived
@@ -33,6 +33,8 @@ from .native_task_arena_packet import validate_native_task_arena_packet_request
 SCHEMA_VERSION = "task_evaluation_policy_canary_camera_reframe.v1"
 POLICY_RENDER_RESOLUTION = (640, 360)
 OVERVIEW_RENDER_RESOLUTION = (1280, 720)
+WRIST_FORWARD_MOUNT_OFFSET_M = 0.14
+WRIST_LATERAL_MOUNT_OFFSET_M = 0.08
 
 
 class PolicyCanaryCameraReframeError(ValueError):
@@ -257,13 +259,30 @@ def materialize_policy_canary_camera_reframe(
         wrist_snapshot.get("quaternion_world_opengl_xyzw"),
     )
     parent_world = _multiply(old_world, _inverse_rigid(old_relative))
-    desired_world = _look_at(
-        [old_world[row][3] for row in range(3)], target
-    )
+    old_position = [old_world[row][3] for row in range(3)]
+    initial_aim = _look_at(old_position, target)
+    right = [initial_aim[row][0] for row in range(3)]
+    forward = [initial_aim[row][2] for row in range(3)]
+    desired_position = [
+        old_position[index]
+        + WRIST_FORWARD_MOUNT_OFFSET_M * forward[index]
+        + WRIST_LATERAL_MOUNT_OFFSET_M * right[index]
+        for index in range(3)
+    ]
+    desired_world = _look_at(desired_position, target)
     new_relative = _multiply(_inverse_rigid(parent_world), desired_world)
-    if any(abs(new_relative[row][3] - old_relative[row][3]) > 1.0e-5 for row in range(3)):
+    world_offset = math.sqrt(
+        sum(
+            (desired_position[index] - old_position[index]) ** 2
+            for index in range(3)
+        )
+    )
+    expected_offset = math.hypot(
+        WRIST_FORWARD_MOUNT_OFFSET_M, WRIST_LATERAL_MOUNT_OFFSET_M
+    )
+    if not math.isclose(world_offset, expected_offset, abs_tol=1.0e-9):
         raise PolicyCanaryCameraReframeError(
-            "policy_canary_camera_reframe_wrist_translation_changed"
+            "policy_canary_camera_reframe_wrist_offset_invalid"
         )
     wrist["frame_from_camera_matrix"] = _flatten(new_relative)
 
@@ -281,7 +300,10 @@ def materialize_policy_canary_camera_reframe(
         "policy_preprocessing_contract": (
             "candidate_specific_aspect_preserving_resize_with_centred_black_pad"
         ),
-        "wrist_translation_preserved": True,
+        "wrist_forward_mount_offset_m": WRIST_FORWARD_MOUNT_OFFSET_M,
+        "wrist_lateral_mount_offset_m": WRIST_LATERAL_MOUNT_OFFSET_M,
+        "wrist_mount_offset_magnitude_m": world_offset,
+        "wrist_mount_offset_bounded": world_offset <= 0.17,
         "wrist_rotation_aimed_at_task_start": True,
         "camera_configuration_qualified": False,
         "fresh_native_render_required": True,
@@ -305,5 +327,7 @@ __all__ = [
     "POLICY_RENDER_RESOLUTION",
     "PolicyCanaryCameraReframeError",
     "SCHEMA_VERSION",
+    "WRIST_FORWARD_MOUNT_OFFSET_M",
+    "WRIST_LATERAL_MOUNT_OFFSET_M",
     "materialize_policy_canary_camera_reframe",
 ]

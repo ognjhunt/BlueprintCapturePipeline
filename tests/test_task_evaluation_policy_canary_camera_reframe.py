@@ -14,6 +14,8 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_policy_canary_camera_reframe import (
     OVERVIEW_RENDER_RESOLUTION,
     POLICY_RENDER_RESOLUTION,
+    WRIST_FORWARD_MOUNT_OFFSET_M,
+    WRIST_LATERAL_MOUNT_OFFSET_M,
     PolicyCanaryCameraReframeError,
     materialize_policy_canary_camera_reframe,
 )
@@ -106,14 +108,25 @@ def test_reaims_only_wrist_rotation_and_increases_capture_resolution(
         "frame_from_camera_matrix"
     ]
     wrist = by_role["wrist"]["frame_from_camera_matrix"]
-    assert [wrist[3], wrist[7], wrist[11]] == pytest.approx([0.0, -1.0, 1.0])
+    old_position = np.asarray([0.0, -1.0, 1.0])
+    old_forward = np.asarray([0.0, 1.0, -1.0]) / np.sqrt(2.0)
+    old_right = np.asarray([1.0, 0.0, 0.0])
+    expected_position = (
+        old_position
+        + WRIST_FORWARD_MOUNT_OFFSET_M * old_forward
+        + WRIST_LATERAL_MOUNT_OFFSET_M * old_right
+    )
+    assert [wrist[3], wrist[7], wrist[11]] == pytest.approx(
+        expected_position.tolist()
+    )
     forward = [wrist[2], wrist[6], wrist[10]]
-    expected = np.asarray([0.0, 1.0, -1.0]) / np.sqrt(2.0)
+    expected = -expected_position / np.linalg.norm(expected_position)
     assert forward == pytest.approx(expected.tolist())
     assert result["request_digest"] == canonical_digest(
         result, digest_field="request_digest"
     )
     assert result["camera_reframe"]["fresh_native_render_required"] is True
+    assert result["camera_reframe"]["wrist_mount_offset_bounded"] is True
 
 
 @pytest.mark.parametrize(
