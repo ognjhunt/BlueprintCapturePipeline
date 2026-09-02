@@ -31,47 +31,28 @@ BLOCKER_PARTICLEFIELD_TONEMAPPING_UNREADABLE = (
     "native_task_arena_particlefield_tonemapping_setting_unreadable"
 )
 
-#: A standard 3DGS field is trained on sRGB photographs, so its spherical
-#: harmonics are display-referred.  NVIDIA's shipped ``usd-convert-gsplat``
-#: binds no material and RTX composites such a field as-is; 3dgrut binds
-#: ``ParticleFieldEmissive.mdl`` only for its PPISP mode, after converting the
-#: SH to linear itself, and then sets ``apply_srgb_linear`` False.  Our sealed
-#: assets bind that same emissive material with the input at its MDL default,
-#: so the field is emitted as *linear* radiance and the display transform
-#: encodes it a second time: the scene-839873 f23e2100 policy frames, decoded
-#: once from sRGB, reproduce the asset's own DC luminance percentiles
-#: (0.04/0.25/0.46/0.75 rendered-and-decoded vs 0.04/0.24/0.45/0.72 in the
-#: field) while the raw frames sat at 0.21/0.53/0.71/0.88 -- pale and washed
-#: out.  The live stage is therefore told to linearise the field before it is
-#: composited, and the shader is read back before a single warmup tick.
+#: Standard ParticleFields authored by Pixar's and NVIDIA's public converters
+#: bind no material and carry no renderer hints.  Keep the legacy names below
+#: for receipt compatibility; the production validator now requires the
+#: upstream-native, unbound contract and never mutates a live shader.
 PARTICLEFIELD_EMISSIVE_SOURCE_ASSET = "ParticleFieldEmissive.mdl"
-DISPLAY_REFERRED_MATERIAL_INPUTS: dict[str, bool] = {
-    "apply_srgb_linear": True,
-    "apply_inverse_tonemap": False,
-}
+DISPLAY_REFERRED_MATERIAL_INPUTS: dict[str, bool] = {}
 BLOCKER_PARTICLEFIELD_PRIM_MISSING = "native_task_arena_particlefield_prim_missing"
 BLOCKER_PARTICLEFIELD_MATERIAL_MISSING = (
-    "native_task_arena_particlefield_emissive_material_missing"
+    "native_task_arena_particlefield_nonstandard_material_binding"
 )
 BLOCKER_PARTICLEFIELD_INPUTS_NOT_APPLIED = (
-    "native_task_arena_particlefield_display_referred_inputs_not_applied"
+    "native_task_arena_particlefield_nonstandard_render_hint"
 )
 
 
 def apply_display_referred_particlefield_material(stage: Any) -> dict[str, Any]:
-    """Make every bound ParticleFieldEmissive shader linearise its sRGB field.
+    """Validate NVIDIA/OpenUSD's native, material-free ParticleField contract.
 
-    Authored as an override on the live stage so a sealed asset keeps its
-    bytes; the readback after authoring is the evidence the render will use
-    the display-referred inputs.
+    The compatibility name is retained because provider bundles import it.
+    This function intentionally authors nothing on the live stage.
     """
 
-    try:
-        from pxr import Sdf
-
-        bool_type = Sdf.ValueTypeNames.Bool
-    except ImportError:  # pragma: no cover - a fake stage needs no pxr
-        bool_type = None
     rows: list[dict[str, Any]] = []
     blockers: list[str] = []
     for prim in stage.Traverse():
@@ -80,36 +61,28 @@ def apply_display_referred_particlefield_material(stage: Any) -> dict[str, Any]:
         targets = [
             str(path) for path in prim.GetRelationship("material:binding").GetTargets()
         ]
-        shader = stage.GetPrimAtPath(f"{targets[0]}/Shader") if len(targets) == 1 else None
-        source = shader.GetAttribute("info:mdl:sourceAsset").Get() if shader else None
-        source_path = getattr(source, "path", source)
+        def authored(name: str) -> bool:
+            attribute = prim.GetAttribute(name)
+            checker = getattr(attribute, "HasAuthoredValueOpinion", None)
+            return bool(checker()) if callable(checker) else bool(attribute)
+
         row: dict[str, Any] = {
             "prim_path": str(prim.GetPath()),
             "material_binding_targets": targets,
-            "shader_source_asset": str(source_path) if source_path is not None else None,
-            "inputs_before": {},
-            "inputs_after": {},
+            "projection_mode_hint_authored": authored("projectionModeHint"),
+            "sorting_mode_hint_authored": authored("sortingModeHint"),
         }
         rows.append(row)
-        if not shader or source_path != PARTICLEFIELD_EMISSIVE_SOURCE_ASSET:
+        if targets:
             blockers.append(BLOCKER_PARTICLEFIELD_MATERIAL_MISSING)
-            continue
-        for name, value in DISPLAY_REFERRED_MATERIAL_INPUTS.items():
-            attribute = shader.GetAttribute(f"inputs:{name}")
-            row["inputs_before"][name] = attribute.Get() if attribute else None
-            if not attribute:
-                attribute = shader.CreateAttribute(f"inputs:{name}", bool_type, custom=True)
-            attribute.Set(value)
-            readback = shader.GetAttribute(f"inputs:{name}").Get()
-            row["inputs_after"][name] = readback
-            if readback is not value:
-                blockers.append(BLOCKER_PARTICLEFIELD_INPUTS_NOT_APPLIED)
+        if row["projection_mode_hint_authored"] or row["sorting_mode_hint_authored"]:
+            blockers.append(BLOCKER_PARTICLEFIELD_INPUTS_NOT_APPLIED)
     if not rows:
         blockers.append(BLOCKER_PARTICLEFIELD_PRIM_MISSING)
     return {
-        "schema_version": "native_task_arena_particlefield_display_referred_material.v1",
-        "shader_source_asset": PARTICLEFIELD_EMISSIVE_SOURCE_ASSET,
-        "inputs": dict(DISPLAY_REFERRED_MATERIAL_INPUTS),
+        "schema_version": "native_task_arena_upstream_particlefield_contract.v1",
+        "authoring_implementation": "nvidia_usd_convert_gsplat",
+        "live_stage_mutated": False,
         "particlefields": rows,
         "blockers": sorted(set(blockers)),
         "passed": not blockers,

@@ -412,8 +412,15 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "sh_primvar_element_size": 16,
         "sh_primvar_interpolation": "vertex",
         "display_color_fallback_authored": True,
-        "particlefield_emissive_material_binding_authored": True,
-        "particlefield_emissive_material_inputs": "mdl_defaults",
+        "particlefield_emissive_material_binding_authored": False,
+        "particlefield_emissive_material_inputs": None,
+        "particlefield_custom_render_hints_authored": False,
+        "particlefield_authoring_implementation": "nvidia_usd_convert_gsplat",
+        "upstream_converter": {
+            "distribution": "usd-convert-gsplat",
+            "version": "0.1.15",
+            "source_revision": "621017ebf78394488260c70ec4eadd70ff621131",
+        },
         "gaussian_field_quality": {
             "schema_version": "gaussian_field_quality.v1",
             "status": "qualified",
@@ -454,7 +461,11 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
     assert variant["appearance_variant"]["display_color_fallback_authored"] is True
     assert variant["appearance_variant"][
         "particlefield_emissive_material_binding_authored"
-    ] is True
+    ] is False
+    assert variant["appearance_variant"]["particlefield_custom_render_hints_authored"] is False
+    assert variant["appearance_variant"]["particlefield_authoring_implementation"] == (
+        "nvidia_usd_convert_gsplat"
+    )
     assert variant["appearance_variant"]["gaussian_field_quality"]["status"] == (
         "qualified"
     )
@@ -479,7 +490,9 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "sh_primvar_interpolation",
         "display_color_fallback_authored",
         "particlefield_emissive_material_binding_authored",
-        "particlefield_emissive_material_inputs",
+        "particlefield_custom_render_hints_authored",
+        "particlefield_authoring_implementation",
+        "upstream_converter",
         "gaussian_field_quality",
     ):
         invalid = dict(receipt)

@@ -206,20 +206,14 @@ def test_path_source_is_digest_bound_and_authors_default_prim(
     assert result["sh_primvar_element_size"] == 16
     assert result["sh_primvar_interpolation"] == "vertex"
     assert result["display_color_fallback_authored"] is True
-    assert result["particlefield_emissive_material_binding_authored"] is True
-    assert result["particlefield_emissive_material_inputs"] == "display_referred_srgb"
-    assert result["particlefield_emissive_material_input_values"] == {
-        "apply_srgb_linear": True,
-        "apply_inverse_tonemap": False,
-    }
+    assert result["particlefield_emissive_material_binding_authored"] is False
+    assert result["particlefield_emissive_material_inputs"] == "upstream_native_unbound"
+    assert result["particlefield_emissive_material_input_values"] == {}
+    assert result["particlefield_custom_render_hints_authored"] is False
     binding = prim.GetRelationship("material:binding").GetTargets()
-    assert [str(path) for path in binding] == [result["particlefield_emissive_material_path"]]
-    shader = stage.GetPrimAtPath(result["particlefield_emissive_material_path"] + "/Shader")
-    assert shader.GetAttribute("info:mdl:sourceAsset").Get().path == ("ParticleFieldEmissive.mdl")
-    # Display-referred sRGB field: the shader linearises it so RTX's display
-    # transform round-trips it instead of encoding it twice.
-    assert shader.GetAttribute("inputs:apply_inverse_tonemap").Get() is False
-    assert shader.GetAttribute("inputs:apply_srgb_linear").Get() is True
+    assert list(binding) == []
+    assert not prim.GetAttribute("projectionModeHint").HasAuthoredValueOpinion()
+    assert not prim.GetAttribute("sortingModeHint").HasAuthoredValueOpinion()
 
 
 @pytest.mark.skipif(not _HAS_PXR, reason="usd-core unavailable")
@@ -306,6 +300,12 @@ def test_nurec_is_represented_as_particlefield_without_changing_gaussians(
         "coefficient_major_rgb_triplets"
     )
     assert result["splat_count"] == splat.count
+    assert result["particlefield_authoring_implementation"] == (
+        "nvidia_usd_convert_gsplat"
+    )
+    assert result["upstream_converter"]["version"] == "0.1.15"
+    assert result["particlefield_emissive_material_binding_authored"] is False
+    assert result["particlefield_custom_render_hints_authored"] is False
     assert json.loads(receipt_path.read_text(encoding="utf-8")) == result
     before = measure_native_task_appearance_frame(source)
     after = measure_native_task_appearance_frame(output)

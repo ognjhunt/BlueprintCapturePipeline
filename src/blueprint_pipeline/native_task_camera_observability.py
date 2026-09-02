@@ -46,6 +46,7 @@ declaration visible instead of silently changing the claim.
 from __future__ import annotations
 
 import ast
+import hashlib
 import math
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -134,6 +135,13 @@ SATURATED_CHANNEL_LEVEL = 255
 POLICY_INPUT_SATURATION_SCHEMA_VERSION = "native_task_policy_input_frame_saturation.v1"
 REFUSAL_POLICY_INPUT_FRAME_SATURATED = "native_task_policy_input_frame_saturated"
 REFUSAL_POLICY_INPUT_FRAMES_INVALID = "native_task_policy_input_frames_invalid"
+PREPOLICY_VISUAL_REQUIRED_VIEWS = frozenset({"external", "wrist", "overview"})
+MAXIMUM_PREPOLICY_NEAR_BLACK_PIXEL_FRACTION = 0.50
+REFUSAL_PREPOLICY_VISUAL_FRAME_NEAR_BLACK = (
+    "native_task_prepolicy_visual_frame_near_black_fraction_above_ceiling"
+)
+REFUSAL_PREPOLICY_VISUAL_FRAME_INVALID = "native_task_prepolicy_visual_frame_invalid"
+REFUSAL_PREPOLICY_VISUAL_FRAME_DUPLICATE = "native_task_prepolicy_visual_frame_duplicate"
 
 BLOCKER_FRAME_VOID = "native_task_camera_rgb_frame_void"
 BLOCKER_FRAME_UNIFORM = "native_task_camera_rgb_frame_uniform"
@@ -779,6 +787,81 @@ def validate_native_task_policy_input_frames(
     }
 
 
+def measure_native_task_prepolicy_visual_frames(
+    frames: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Gate all reset cameras before either learned-policy client is loaded.
+
+    This is deliberately stricter than the historical saturation-only check.
+    Scene 839873 produced frames with zero clipped pixels that were nevertheless
+    58-75% near black and visibly contained only scattered chromatic splats.
+    A policy must not be queried against that observation domain.
+    """
+
+    import numpy as np
+
+    if not isinstance(frames, Mapping) or set(frames) != PREPOLICY_VISUAL_REQUIRED_VIEWS:
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_INPUT_FRAMES_INVALID])
+    blockers: list[str] = []
+    views: dict[str, dict[str, Any]] = {}
+    digests: dict[str, str] = {}
+    for view in sorted(PREPOLICY_VISUAL_REQUIRED_VIEWS):
+        frame = _as_uint8_rgb(frames[view])
+        saturation = measure_native_task_frame_saturation(rgb=frame)
+        render = measure_native_task_frame_render_evidence(
+            rgb=frame,
+            site_appearance_render_expected=True,
+        )
+        near_black_fraction = float(
+            (frame.astype(np.float64).mean(axis=-1) <= NEAR_BLACK_LUMINANCE_MAX).mean()
+        )
+        digest = "sha256:" + hashlib.sha256(np.ascontiguousarray(frame).tobytes()).hexdigest()
+        digests[view] = digest
+        view_blockers: list[str] = []
+        if not saturation["passed"]:
+            view_blockers.append(REFUSAL_POLICY_INPUT_FRAME_SATURATED)
+        view_blockers.extend(
+            f"{REFUSAL_PREPOLICY_VISUAL_FRAME_INVALID}:{blocker}"
+            for blocker in render["blockers"]
+        )
+        if near_black_fraction > MAXIMUM_PREPOLICY_NEAR_BLACK_PIXEL_FRACTION:
+            view_blockers.append(REFUSAL_PREPOLICY_VISUAL_FRAME_NEAR_BLACK)
+        blockers.extend(f"{blocker}:{view}" for blocker in view_blockers)
+        views[view] = {
+            "frame_digest": digest,
+            "saturation": saturation,
+            "render_presence": render,
+            "near_black_pixel_fraction": near_black_fraction,
+            "maximum_near_black_pixel_fraction": (
+                MAXIMUM_PREPOLICY_NEAR_BLACK_PIXEL_FRACTION
+            ),
+            "blockers": view_blockers,
+            "passed": not view_blockers,
+        }
+    by_digest: dict[str, list[str]] = {}
+    for view, digest in digests.items():
+        by_digest.setdefault(digest, []).append(view)
+    for duplicate_views in by_digest.values():
+        if len(duplicate_views) > 1:
+            blockers.append(
+                f"{REFUSAL_PREPOLICY_VISUAL_FRAME_DUPLICATE}:"
+                + ",".join(sorted(duplicate_views))
+            )
+    return {
+        "schema_version": "native_task_prepolicy_visual_gate.v1",
+        "required_views": sorted(PREPOLICY_VISUAL_REQUIRED_VIEWS),
+        "views": views,
+        "candidate_policy_loaded": False,
+        "candidate_policy_queried": False,
+        "blockers": sorted(set(blockers)),
+        "passed": not blockers,
+        "measurement_authority": "exact_reset_policy_and_review_rgb_frames",
+        "quality_boundary": (
+            "structural_and_exposure_gate_only;official_same_pose_nre_parity_pending"
+        ),
+    }
+
+
 __all__ = [
     "CLAIM_WITHOUT_SITE",
     "CLAIM_WITH_SITE",
@@ -792,6 +875,7 @@ __all__ = [
     "REFUSAL_POLICY_INPUT_FRAME_SATURATED",
     "SATURATED_CHANNEL_LEVEL",
     "measure_native_task_frame_saturation",
+    "measure_native_task_prepolicy_visual_frames",
     "validate_native_task_policy_input_frames",
     "NativeTaskCameraObservabilityError",
     "POLICY_INPUT_CAMERA_ROLES",

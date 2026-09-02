@@ -19,7 +19,6 @@ import re
 import subprocess  # nosec B404 - fixed executable and repository-owned script
 import sys
 import uuid
-import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,12 +64,14 @@ from .task_evaluation_policy_run_contract import (
     build_policy_campaign_activation_manifest,
 )
 from .task_evaluation_native_arena_preparation_adapter import (
-    MANIFEST_NAME as ADAPTER_MANIFEST_NAME,
-    RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX,
     RESULT_SCHEMA_VERSION as ADAPTER_RESULT_SCHEMA_VERSION,
-    TaskEvaluationNativeArenaAdapterError,
     control_search_warm_retention_requested as _control_search_warm_retention_requested,
-    read_runtime_source_external_layers,
+)
+from .task_evaluation_activation_runtime_layers import (
+    ActivationRuntimeLayerError,
+    augment_runtime_source_external_layer_references,
+    collect_request_references as _collect_references,
+    runtime_source_reference_matches,
 )
 from .task_evaluation_shared_mutation_window import (
     TaskEvaluationSharedMutationWindowError,
@@ -194,67 +195,6 @@ def _under(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
-
-
-def _collect_references(value: Mapping[str, Any]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-
-    def visit(node: Any, path: tuple[str, ...]) -> None:
-        if isinstance(node, Mapping):
-            if set(node) == {"uri", "digest", "size_bytes"}:
-                rows.append(
-                    {
-                        "contract_path": ".".join(path),
-                        "uri": str(node["uri"]),
-                        "digest": str(node["digest"]),
-                        "size_bytes": int(node["size_bytes"]),
-                    }
-                )
-                return
-            for key, child in node.items():
-                visit(child, (*path, str(key)))
-        elif isinstance(node, Sequence) and not isinstance(node, (str, bytes)):
-            for index, child in enumerate(node):
-                visit(child, (*path, str(index)))
-
-    visit(value, ())
-    return rows
-
-
-def _runtime_source_external_layer_references(
-    *, request: Mapping[str, Any], wrapper_path: Path
-) -> list[dict[str, Any]]:
-    """Validate a runtime wrapper and derive its preparation-layer contracts."""
-
-    # Historical test/fixture wrappers were opaque non-ZIP references. Keep
-    # that accepted shape additive; every ZIP wrapper is a typed adapter bundle
-    # and must validate fully, even when it declares zero external layers.
-    if not zipfile.is_zipfile(wrapper_path):
-        return []
-    try:
-        with zipfile.ZipFile(wrapper_path) as archive:
-            if ADAPTER_MANIFEST_NAME not in archive.namelist():
-                return []
-    except (OSError, zipfile.BadZipFile):
-        return []
-    try:
-        layers = read_runtime_source_external_layers(
-            bundle_path=wrapper_path,
-            request=request,
-        )
-    except TaskEvaluationNativeArenaAdapterError as exc:
-        raise TaskEvaluationLaunchActivationWorkerError(
-            f"launch_activation_runtime_source_bundle_invalid:{exc}"
-        ) from exc
-    return [
-        {
-            "contract_path": f"{RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX}{index}",
-            "uri": layer["uri"],
-            "digest": layer["sha256"],
-            "size_bytes": layer["size_bytes"],
-        }
-        for index, layer in enumerate(layers)
-    ]
 
 
 def _materialize_activation_references(
@@ -448,25 +388,14 @@ def _load_verified_preparation(
             continue
         materialized_rows[contract_path] = row
         materialized_references[contract_path] = path
-    external_layer_uris: dict[str, str] = {}
-    runtime_source = materialized_references.get(
-        "execution_adapter.runtime_source_bundle"
-    )
-    if runtime_source is not None:
-        for reference in _runtime_source_external_layer_references(
+    try:
+        external_layer_uris = augment_runtime_source_external_layer_references(
             request=request,
-            wrapper_path=runtime_source,
-        ):
-            contract_path = str(reference["contract_path"])
-            if contract_path in expected_references:
-                raise TaskEvaluationLaunchActivationWorkerError(
-                    "launch_activation_runtime_source_layer_contract_conflict"
-                )
-            expected_references[contract_path] = (
-                str(reference["digest"]),
-                int(reference["size_bytes"]),
-            )
-            external_layer_uris[contract_path] = str(reference["uri"])
+            materialized_references=materialized_references,
+            expected_references=expected_references,
+        )
+    except ActivationRuntimeLayerError as exc:
+        raise TaskEvaluationLaunchActivationWorkerError(str(exc)) from exc
     construction_envelope: dict[str, Any] | None = None
     construction_envelope_path: Path | None = None
     if result.get("status") == "queued_for_production_scene_configuration":
@@ -612,12 +541,11 @@ def _load_verified_preparation(
         )
     for contract_path, expected in expected_references.items():
         row = materialized_rows[contract_path]
-        if (
-            (row.get("digest"), row.get("size_bytes")) != expected
-            or (
-                contract_path in external_layer_uris
-                and row.get("uri") != external_layer_uris[contract_path]
-            )
+        if not runtime_source_reference_matches(
+            contract_path=contract_path,
+            row=row,
+            expected=expected,
+            external_layer_uris=external_layer_uris,
         ):
             raise TaskEvaluationLaunchActivationWorkerError(
                 "launch_activation_preparation_reference_invalid"

@@ -1627,21 +1627,28 @@ def test_nonexecuted_groot_tail_bound_violation_is_retained_not_applied() -> Non
 class _LifecycleEnvironment(_Environment):
     """Small complete-media fixture for the production lifecycle boundary."""
 
+    def _camera_frame(self, base: int) -> np.ndarray:
+        yy, xx = np.indices((24, 32))
+        return np.stack(
+            [
+                base + (xx % 17),
+                base + (yy % 13),
+                base + ((xx + yy) % 19),
+            ],
+            axis=-1,
+        ).astype(np.uint8)
+
     def read_policy_inputs(self):
         inputs = super().read_policy_inputs()
-        inputs[DROID_EXTERIOR_VIEW_1] = np.full(
-            (24, 32, 3), 40 + self._t, dtype=np.uint8
-        )
-        inputs[DROID_WRIST_VIEW] = np.full(
-            (24, 32, 3), 80 + self._t, dtype=np.uint8
-        )
+        inputs[DROID_EXTERIOR_VIEW_1] = self._camera_frame(40 + self._t)
+        inputs[DROID_WRIST_VIEW] = self._camera_frame(80 + self._t)
         return inputs
 
     def read_evaluation_camera_inputs(self):
         return {
-            "external": np.full((24, 32, 3), 40 + self._t, dtype=np.uint8),
-            "wrist": np.full((24, 32, 3), 80 + self._t, dtype=np.uint8),
-            "overview": np.full((24, 32, 3), 120 + self._t, dtype=np.uint8),
+            "external": self._camera_frame(40 + self._t),
+            "wrist": self._camera_frame(80 + self._t),
+            "overview": self._camera_frame(120 + self._t),
         }
 
     def read_control_observation_metadata(self):
@@ -2129,6 +2136,39 @@ def test_saturated_policy_input_frames_block_readiness_before_any_query(tmp_path
     assert progress["episode_readiness_verified"] is False
     assert progress["episode_started"] is False
     assert policy.observations == []
+
+
+def test_dark_three_camera_reset_blocks_before_any_policy_query_and_retains_frames(
+    tmp_path,
+) -> None:
+    class _DarkSplat(_LifecycleEnvironment):
+        def _camera_frame(self, base: int) -> np.ndarray:
+            frame = np.zeros((24, 32, 3), dtype=np.uint8)
+            frame[:, :6] = super()._camera_frame(max(base // 4, 8))[:, :6]
+            return frame
+
+    policy = _LifecyclePolicy()
+    progress: dict = {}
+    with pytest.raises(
+        PolicyEpisodeError,
+        match="native_task_prepolicy_visual_frame_near_black_fraction_above_ceiling",
+    ):
+        _run(
+            environment=_DarkSplat(),
+            policy=policy,
+            max_policy_queries=1,
+            settle_window_samples=1,
+            media_output_dir=tmp_path,
+            episode_id="lifecycle-dark-splat",
+            require_complete_multicamera_media=True,
+            require_prestart_readiness=True,
+            progress=progress,
+        )
+
+    assert progress["episode_readiness_verified"] is False
+    assert progress["episode_started"] is False
+    assert policy.observations == []
+    assert sorted(path.name for path in tmp_path.rglob("000000-policy-input.png"))
 
 
 def test_readiness_receipt_carries_the_policy_input_saturation_evidence(tmp_path) -> None:
