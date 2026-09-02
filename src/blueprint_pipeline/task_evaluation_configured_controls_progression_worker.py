@@ -1409,9 +1409,19 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
             ValueError,
         ) as exc:
             rows.append({"status": "blocked", "source_launch_id": run_root.name, "blockers": [str(exc)]})
+    configured_controls_kwargs = dict(kwargs)
+    # This root belongs only to the policy-canary branch above. Forwarding it
+    # into the older configured-controls transition caused the production CLI
+    # to fail before it could revisit the completed canary compilation.
+    configured_controls_kwargs.pop("episode_compilation_queue_root", None)
     for path in sorted(plan_root.glob("*.json")) if plan_root.is_dir() else []:
         try:
-            rows.append(advance_configured_controls_plan(plan_path=path, **kwargs))
+            rows.append(
+                advance_configured_controls_plan(
+                    plan_path=path,
+                    **configured_controls_kwargs,
+                )
+            )
         except (TaskEvaluationConfiguredControlsProgressionError, TaskEvaluationConfiguredControlsProgressionWorkerError) as exc:
             rows.append({"status": "blocked", "plan": path.name, "blockers": [str(exc)]})
     return {

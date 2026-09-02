@@ -94,6 +94,7 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-scene-object-discovery.path",
     "blueprint-task-evaluation-configured-controls-progression.service",
     "blueprint-task-evaluation-configured-controls-progression.timer",
+    "blueprint-task-evaluation-configured-controls-progression.path",
     "blueprint-pipeline-control-plane.service",
     "blueprint-pipeline-intake.service",
 )
@@ -112,12 +113,17 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
 #: launch profile and never invokes an allocator directly, but unlike the
 #: no-spend queue watchers above it may eventually reach already-authorized
 #: downstream spend.  Keep that authority distinct in the deployment receipt.
+#: The compilation-result path watcher wakes the same oneshot service the
+#: moment a no-spend canary compiles, so it carries the same progression
+#: authority rather than the no-spend watcher category.
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-task-evaluation-configured-controls-progression.timer",
+    "blueprint-task-evaluation-configured-controls-progression.path",
 )
 #: The only unit kinds a release may install.  Services and their queue-watching
-#: paths stay paired, while the one fixed progression timer stays paired with
-#: its oneshot service.  Sockets, mounts, and anything else remain refused.
+#: paths stay paired, while the one fixed progression timer (and its
+#: compilation-result path watcher) stays paired with its oneshot service.
+#: Sockets, mounts, and anything else remain refused.
 DEPLOYED_SYSTEMD_UNIT_SUFFIXES = (".service", ".path", ".timer")
 DEFAULT_SYSTEMD_DIR = "/etc/systemd/system"
 DEFAULT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT = (

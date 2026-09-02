@@ -408,3 +408,43 @@ def test_adapter_refuses_task_subject_bytes_or_strategy_not_in_packet(
             runtime_source_bundle_path=runtime_bundle,
             output_root=tmp_path / "adapter-output",
         )
+
+
+def test_adapter_bundle_stores_incompressible_payload_members(tmp_path: Path) -> None:
+    """The compile-side archive must not deflate splat or checkpoint bytes.
+
+    Every payload member was deflated regardless of content, which made the
+    no-spend episode compilation the slowest control-plane hop (about four CPU
+    minutes per run).  Entropy-coded payloads are stored, text still deflates,
+    the manifest still deflates, and every member reads back byte-exact.
+    """
+
+    source = tmp_path / "runtime-source"
+    source.mkdir()
+    splat_bytes = b"".join(
+        hashlib.sha256(index.to_bytes(8, "big")).digest() for index in range(65_536)
+    )
+    (source / "scene.ply").write_bytes(splat_bytes)
+    (source / "runtime.json").write_text(
+        json.dumps({"rows": ["row"] * 4096}), encoding="utf-8"
+    )
+    output = tmp_path / "runtime-source.zip"
+
+    receipt = build_task_evaluation_runtime_source_bundle(
+        source_root=source,
+        output_path=output,
+        expected_production_commit="a" * 40,
+        runtime_identity={"id": "native-arena", "version": "isaac-2026-1"},
+    )
+
+    assert receipt["status"] == "built"
+    with zipfile.ZipFile(output) as archive:
+        kinds = {info.filename: info.compress_type for info in archive.infolist()}
+        assert kinds["payload/scene.ply"] == zipfile.ZIP_STORED
+        assert kinds["payload/runtime.json"] == zipfile.ZIP_DEFLATED
+        manifest_members = [name for name in kinds if not name.startswith("payload/")]
+        assert manifest_members == ["task_evaluation_adapter_bundle_manifest.v1.json"]
+        assert kinds[manifest_members[0]] == zipfile.ZIP_DEFLATED
+        assert archive.read("payload/scene.ply") == splat_bytes
+        assert json.loads(archive.read("payload/runtime.json")) == {"rows": ["row"] * 4096}
+    assert output.stat().st_size < len(splat_bytes) + 64 * 1024
