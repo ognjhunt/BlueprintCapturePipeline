@@ -776,6 +776,121 @@ def _retire_superseded_release_trees(
     }
 
 
+_SANDBOX_DIRECTIVES = ("ReadWritePaths=", "ReadOnlyPaths=")
+_UNIT_PROVISIONABLE_PREFIX = "/var/lib/blueprint/"
+_UNIT_FILE_SUFFIXES = (".json", ".jsonl", ".lock", ".env", ".sqlite", ".log", ".txt")
+
+
+def _unit_sandbox_entries(unit_text: str) -> list[tuple[str, bool, str]]:
+    """Every ``(path, optional, directive)`` a unit's filesystem sandbox names."""
+
+    entries: list[tuple[str, bool, str]] = []
+    for raw_line in unit_text.splitlines():
+        line = raw_line.strip()
+        for directive in _SANDBOX_DIRECTIVES:
+            if not line.startswith(directive):
+                continue
+            for token in line[len(directive):].split():
+                optional = token.startswith("-")
+                path_text = token[1:] if optional else token
+                if not path_text.startswith("/"):
+                    continue
+                entries.append((path_text.rstrip("/") or "/", optional, directive[:-1]))
+    return entries
+
+
+def _install_unit_sandbox_paths(
+    *,
+    release_path: str | Path,
+    units: Sequence[str] = DEFAULT_DEPLOYED_SYSTEMD_UNITS,
+    root_prefix: str | Path | None = None,
+    account: str = DEFAULT_SERVICE_ACCOUNT,
+    owner_ids: tuple[int, int] | None = None,
+) -> dict[str, Any]:
+    """Make every path a deployed unit's sandbox names exist before the release moves.
+
+    ``ProtectSystem=strict`` units fail to start when a ``ReadWritePaths`` or
+    ``ReadOnlyPaths`` entry does not exist.  Twice (the disk-reservation ledger,
+    then the storage-pin ledger) a unit gained a path that no deploy step
+    created, and the dead worker was discovered only when a Website run
+    stalled; each time the fix was one more hand-written installer.  This step
+    reads the staged release's own unit files, creates any missing
+    service-owned directory under ``/var/lib/blueprint`` (never repairing one
+    that exists), and refuses the deploy when a path it may not create -- host
+    configuration under ``/etc``, a file, another tree -- is absent and not
+    marked optional with a leading ``-``.
+    """
+
+    release = Path(release_path).expanduser()
+    created: list[dict[str, Any]] = []
+    verified: list[dict[str, str]] = []
+    blockers: list[str] = []
+    pending: list[tuple[str, str, Path]] = []
+    seen: set[str] = set()
+    for unit in units:
+        source = release / "deploy" / "systemd" / unit
+        if source.is_symlink() or not source.is_file():
+            # The unit installer refuses an absent release unit on its own.
+            continue
+        for path_text, optional, directive in _unit_sandbox_entries(
+            source.read_text(encoding="utf-8")
+        ):
+            if path_text in seen:
+                continue
+            seen.add(path_text)
+            host_path = (
+                Path(path_text)
+                if root_prefix is None
+                else Path(root_prefix).expanduser() / path_text.lstrip("/")
+            )
+            if host_path.exists():
+                verified.append({"unit": unit, "path": path_text, "directive": directive})
+                continue
+            if optional:
+                continue
+            file_like = Path(path_text).suffix in _UNIT_FILE_SUFFIXES
+            if path_text.startswith(_UNIT_PROVISIONABLE_PREFIX) and not file_like:
+                pending.append((unit, path_text, host_path))
+                continue
+            blockers.append(f"deploy_unit_sandbox_path_missing:{unit}:{path_text}")
+    if blockers:
+        raise ControlPlaneDeployError(",".join(sorted(blockers)))
+    if pending:
+        ids = owner_ids or _service_account_ids(account)
+        if ids is None:
+            raise ControlPlaneDeployError(f"deploy_unit_sandbox_account_missing:{account}")
+        owner_uid, owner_gid = ids
+        for unit, path_text, host_path in pending:
+            try:
+                host_path.mkdir(parents=True, exist_ok=True, mode=0o750)
+                if host_path.is_symlink() or not host_path.is_dir():
+                    raise ControlPlaneDeployError(
+                        f"deploy_unit_sandbox_path_invalid:{unit}:{path_text}"
+                    )
+                os.chown(host_path, owner_uid, owner_gid)
+                host_path.chmod(0o750)
+            except OSError as exc:
+                raise ControlPlaneDeployError(
+                    f"deploy_unit_sandbox_path_install_failed:{unit}:{path_text}"
+                ) from exc
+            created.append(
+                {
+                    "unit": unit,
+                    "path": path_text,
+                    "mode": "0750",
+                    "owner_uid": owner_uid,
+                    "owner_gid": owner_gid,
+                }
+            )
+    return {
+        "status": "ready",
+        "unit_count": len(units),
+        "verified_count": len(verified),
+        "created_count": len(created),
+        "created": created,
+    }
+
+
 def _install_scene_object_discovery_runtime_directories(
     *,
     directories: Sequence[str] = DEFAULT_SCENE_OBJECT_DISCOVERY_RUNTIME_DIRECTORIES,
@@ -2026,6 +2141,16 @@ def deploy_control_plane_commit(
         for unit in DEFAULT_DEPLOYED_SYSTEMD_UNITS
         if unit.endswith((".path", ".timer"))
     ]
+    # Where a deploy's minutes go is otherwise invisible; the receipt records
+    # each stage so a slow deploy is a measurement, not a feeling.
+    stage_timings: dict[str, float] = {}
+    stage_clock = [time.monotonic()]
+
+    def _mark_stage(name: str) -> None:
+        now = time.monotonic()
+        stage_timings[name] = round(now - stage_clock[0], 3)
+        stage_clock[0] = now
+
     # Held for the whole deploy, not sampled before it: a launch that starts
     # mid-deploy would read a release being swapped underneath it.  The nested
     # guard restores exact watcher intent before the paid locks are released if
@@ -2053,6 +2178,14 @@ def deploy_control_plane_commit(
             activate=False,
             allow_unmerged_remote_commit=canary,
         )
+        _mark_stage("release_staged")
+        # Every path the new units' sandboxes name must exist before the
+        # release link moves, or the first worker to start after the switch
+        # dies on mount setup and the deploy still reports success.
+        unit_sandbox_paths = _install_unit_sandbox_paths(
+            release_path=staged_release["release_path"]
+        )
+        _mark_stage("unit_sandbox_paths")
         try:
             prerequisite = validate_splat_render_prerequisites(
                 root=splat_render_prerequisite_root,
@@ -2080,6 +2213,7 @@ def deploy_control_plane_commit(
             Path(scene_configuration_environment_file).expanduser(),
             environment=scene_configuration_runtime["environment"],
         )
+        _mark_stage("runtime_trees_provisioned")
         _move_source_checkout(source, source_commit)
         release = stage_task_evaluation_control_plane_release(
             source_repo=source,
@@ -2090,6 +2224,7 @@ def deploy_control_plane_commit(
             activate=True,
         )
         commit = str(release["source_commit"])
+        _mark_stage("release_activated")
 
         surfaces = {
             "source_checkout": source,
@@ -2150,10 +2285,12 @@ def deploy_control_plane_commit(
             )
             lock_repair["status"] = "repaired"
             lock_repair["account"] = DEFAULT_SERVICE_ACCOUNT
+        _mark_stage("units_and_directories_installed")
         restarted = _restart_units(_required_restart_units(restart_units))
         runtime = _verify_intake_runtime(
             intake_version_url, expected_commit=commit
         )
+        _mark_stage("intake_restarted_and_proven")
         # Last inside the held locks: the queue watcher only starts watching
         # once the restarted intake has proven the new commit, and no launch
         # can slip in between the watcher restart and the lock release.
@@ -2175,11 +2312,14 @@ def deploy_control_plane_commit(
             reference_roots=release_retirement_reference_roots,
             keep_last=release_retirement_keep_last,
         )
+        _mark_stage("release_retirement")
 
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "deployed",
         "release_retirement": release_retirement,
+        "unit_sandbox_paths": unit_sandbox_paths,
+        "stage_timings_seconds": stage_timings,
         "source_commit": commit,
         "disk_reservation": disk_reservation_receipt,
         "disk_reservation_runtime": disk_reservation_runtime,

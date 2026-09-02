@@ -43,6 +43,10 @@ from .task_evaluation_configured_scene_revision import (
     TaskEvaluationConfiguredSceneRevisionError,
     validate_configured_scene_revision,
 )
+from .task_evaluation_configured_scene_object_store import (
+    EXTERNAL_LAYER_ARTIFACT_KIND,
+    LARGE_ARTIFACT_KEY_PREFIX,
+)
 
 
 ADAPTER_KIND = "native_task_arena"
@@ -67,6 +71,28 @@ RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX = (
 )
 DEFAULT_EXTERNAL_LAYER_MIN_BYTES = 64 * 1024 * 1024
 _LAYER_URI_SCHEMES = frozenset({"s3", "gs", "https"})
+_BUCKET_RE = re.compile(r"[a-z0-9][a-z0-9.-]{1,62}\Z")
+# The publisher derives every object key from the artifact kind and the
+# content digest; the wrapper embeds the resulting URI verbatim.  A layer
+# prefix therefore has exactly one valid shape per bucket, and a typed one
+# (a pluralised kind, a wrong path) is refused at build time, not at publish.
+_LAYER_PREFIX_RE = re.compile(
+    r"s3://(?P<bucket>[a-z0-9][a-z0-9.-]{1,62})/"
+    + re.escape(LARGE_ARTIFACT_KEY_PREFIX)
+    + "/"
+    + re.escape(EXTERNAL_LAYER_ARTIFACT_KIND)
+    + r"\Z"
+)
+
+
+def external_layer_uri_prefix_for_bucket(bucket: str) -> str:
+    """The only layer URI prefix the publisher can honour for ``bucket``."""
+
+    if not isinstance(bucket, str) or _BUCKET_RE.fullmatch(bucket) is None:
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_external_layer_bucket_invalid"
+        )
+    return f"s3://{bucket}/{LARGE_ARTIFACT_KEY_PREFIX}/{EXTERNAL_LAYER_ARTIFACT_KIND}"
 
 
 class TaskEvaluationNativeArenaAdapterError(RuntimeError):
@@ -722,12 +748,16 @@ def materialize_native_arena_adapter(
 
 
 def _external_layer_store(
-    root: str | Path | None, *, uri_prefix: str | None, minimum_bytes: int
+    root: str | Path | None,
+    *,
+    uri_prefix: str | None,
+    minimum_bytes: int,
+    bucket: str | None = None,
 ) -> tuple[Path | None, str]:
     if root is None:
         return None, ""
     if (
-        not _valid_layer_uri(str(uri_prefix or ""))
+        (uri_prefix is None and bucket is None)
         or not isinstance(minimum_bytes, int)
         or isinstance(minimum_bytes, bool)
         or minimum_bytes <= 0
@@ -735,6 +765,15 @@ def _external_layer_store(
         raise TaskEvaluationNativeArenaAdapterError(
             "task_evaluation_adapter_external_layer_configuration_invalid"
         )
+    derived = external_layer_uri_prefix_for_bucket(bucket) if bucket is not None else None
+    typed = str(uri_prefix).rstrip("/") if uri_prefix is not None else None
+    if typed is not None and (
+        _LAYER_PREFIX_RE.fullmatch(typed) is None or (derived is not None and typed != derived)
+    ):
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_external_layer_prefix_contract_mismatch"
+        )
+    uri_prefix = derived if derived is not None else typed
     store = Path(root).expanduser()
     if store.is_symlink():
         raise TaskEvaluationNativeArenaAdapterError(
@@ -804,6 +843,7 @@ def _build_task_evaluation_adapter_bundle(
     external_layer_store_root: str | Path | None = None,
     external_layer_uri_prefix: str | None = None,
     external_layer_min_bytes: int = DEFAULT_EXTERNAL_LAYER_MIN_BYTES,
+    external_layer_bucket: str | None = None,
 ) -> dict[str, Any]:
     """Build deterministic bytes after the caller validates their identity."""
 
@@ -826,6 +866,7 @@ def _build_task_evaluation_adapter_bundle(
         external_layer_store_root,
         uri_prefix=external_layer_uri_prefix,
         minimum_bytes=external_layer_min_bytes,
+        bucket=external_layer_bucket,
     )
     rows: list[dict[str, Any]] = []
     sources: list[tuple[str, Path]] = []
@@ -965,6 +1006,7 @@ def build_task_evaluation_runtime_source_bundle(
     external_layer_store_root: str | Path | None = None,
     external_layer_uri_prefix: str | None = None,
     external_layer_min_bytes: int = DEFAULT_EXTERNAL_LAYER_MIN_BYTES,
+    external_layer_bucket: str | None = None,
 ) -> dict[str, Any]:
     """Build reusable runtime bytes before a configured revision exists.
 
@@ -998,6 +1040,7 @@ def build_task_evaluation_runtime_source_bundle(
         external_layer_store_root=external_layer_store_root,
         external_layer_uri_prefix=external_layer_uri_prefix,
         external_layer_min_bytes=external_layer_min_bytes,
+        external_layer_bucket=external_layer_bucket,
     )
 
 
@@ -1051,7 +1094,14 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--runtime-id", required=True)
     build.add_argument("--runtime-version", required=True)
     build.add_argument("--external-layer-store-root")
-    build.add_argument("--external-layer-uri-prefix")
+    build.add_argument(
+        "--external-layer-bucket",
+        help="Artifact bucket; the layer URI prefix is derived from the object-store contract.",
+    )
+    build.add_argument(
+        "--external-layer-uri-prefix",
+        help="Optional; must equal the prefix derived for the bucket or the build is refused.",
+    )
     build.add_argument(
         "--external-layer-min-bytes", type=int, default=DEFAULT_EXTERNAL_LAYER_MIN_BYTES
     )
@@ -1070,6 +1120,7 @@ def main(argv: list[str] | None = None) -> int:
                 external_layer_store_root=args.external_layer_store_root,
                 external_layer_uri_prefix=args.external_layer_uri_prefix,
                 external_layer_min_bytes=args.external_layer_min_bytes,
+                external_layer_bucket=args.external_layer_bucket,
             )
         else:
             from .task_evaluation_configured_scene_object_store import (
@@ -1102,6 +1153,7 @@ __all__ = [
     "DEFAULT_EXTERNAL_LAYER_MIN_BYTES",
     "EXTERNAL_LAYER_TRANSPORT",
     "RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX",
+    "external_layer_uri_prefix_for_bucket",
     "materialize_native_arena_adapter",
     "read_runtime_source_external_layers",
 ]
