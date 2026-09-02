@@ -16,6 +16,7 @@ from blueprint_pipeline.nvidia_3dgrut_particlefield_transcode import (
     SORTING_MODE_HINT,
     validate_direct_particlefield,
     write_direct_particlefield_from_nurec,
+    write_direct_particlefield_from_ply,
 )
 
 
@@ -105,6 +106,26 @@ def _fake_direct_transcode(source, output, **kwargs) -> None:
     stage.GetRootLayer().Save()
 
 
+def _ply_source(tmp_path: Path, *, count: int = 4) -> Path:
+    names = [
+        "x", "y", "z", "rot_0", "rot_1", "rot_2", "rot_3",
+        "scale_0", "scale_1", "scale_2", "opacity",
+        "f_dc_0", "f_dc_1", "f_dc_2",
+    ]
+    source = tmp_path / "source.ply"
+    header = [
+        "ply",
+        "format binary_little_endian 1.0",
+        f"element vertex {count}",
+        *(f"property float {name}" for name in names),
+        "end_header",
+        "",
+    ]
+    rows = np.zeros((count, len(names)), dtype="<f4")
+    source.write_bytes("\n".join(header).encode("ascii") + rows.tobytes())
+    return source
+
+
 def test_direct_transcode_seals_upstream_lightfield_contract(tmp_path: Path) -> None:
     source = _source(tmp_path)
     output = tmp_path / "direct.usdc"
@@ -161,3 +182,39 @@ def test_direct_transcode_refuses_legacy_unhinted_output(tmp_path: Path) -> None
     assert result["status"] == "blocked"
     assert "nvidia_3dgrut_particlefield_contract_invalid" in result["blockers"][0]
     assert not output.exists()
+
+
+def test_direct_ply_transcode_seals_distinct_source_contract(tmp_path: Path) -> None:
+    source = _ply_source(tmp_path)
+    output = tmp_path / "direct-from-ply.usdc"
+
+    result = write_direct_particlefield_from_ply(
+        source,
+        output,
+        expected_source_sha256="sha256:" + sha256_file(source),
+        transcode_runner=_fake_direct_transcode,
+    )
+
+    assert result["status"] == "completed"
+    assert result["source_kind"] == "standard_3dgs_ply"
+    assert result["source_vertex_count"] == 4
+    assert result["splat_count"] == 4
+    assert result["exact_learned_arrays_preserved"] is True
+    assert result["receipt_digest"] == canonical_digest(
+        result, digest_field="receipt_digest"
+    )
+
+
+def test_direct_ply_transcode_refuses_nonstandard_header(tmp_path: Path) -> None:
+    source = tmp_path / "source.ply"
+    source.write_text("ply\nformat ascii 1.0\nelement vertex 4\nend_header\n")
+
+    result = write_direct_particlefield_from_ply(
+        source,
+        tmp_path / "output.usdc",
+        expected_source_sha256="sha256:" + sha256_file(source),
+        transcode_runner=_fake_direct_transcode,
+    )
+
+    assert result["status"] == "blocked"
+    assert "nvidia_3dgrut_standard_ply_contract_invalid" in result["blockers"][0]
