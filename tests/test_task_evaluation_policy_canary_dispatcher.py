@@ -6,9 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import (
+    canonical_digest,
+    cross_runtime_canonical_digest,
+)
 from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import (
     _projection,
+    _resume_materialized_policy_canary_delivery,
     TaskEvaluationPolicyCanaryDispatchError,
     dispatch_policy_canary_activation,
     process_policy_canary_dispatch_queue,
@@ -98,6 +102,135 @@ def test_projection_derives_reset_identity_only_for_blocked_legacy_episodes() ->
     )
     assert projected["episodes"][0]["evidence"]["reset_state_digest"] == expected
     assert projected["counts"]["completed_learned_policy_rollout_count"] == 0
+
+
+def test_materialized_delivery_resume_retries_only_website_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "dispatch"
+    episodes = []
+    for candidate_id in ("pi05_droid", "groot_n17_droid"):
+        for index in range(10):
+            episodes.append(
+                {
+                    "candidate_id": candidate_id,
+                    "cell_id": f"quick-cell-{index}",
+                    "seed": 3100 + index,
+                    "resolved_scenario": {"family": "canonical_anchor", "ordinal": index},
+                    "status": "blocked",
+                    "candidate_policy_queried": False,
+                    "actions_reached_robot": False,
+                    "arm_moved": False,
+                    "policy_outcome_interpretable": False,
+                    "typed_harness_failure": "RuntimeError",
+                    "checkpoint_digest": "sha256:" + "a" * 64,
+                    "runtime_identity_digest": "sha256:" + "b" * 64,
+                    "reset_state_digest": "sha256:" + "c" * 64,
+                    "visual_evidence": {
+                        "media_gap": {
+                            "type": "before_first_observation",
+                            "reason": "policy_canary_episode_runner_failed",
+                        }
+                    },
+                }
+            )
+    joined = {
+        "run_id": "scene-839873-canary-resume",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "status": "blocked",
+        "configuration_digest": "sha256:" + "d" * 64,
+        "episodes": episodes,
+        "blockers": ["policy_canary_episode_runner_failed"],
+        "result_digest": "",
+    }
+    joined["result_digest"] = canonical_digest(joined, digest_field="result_digest")
+    joined_path = _write(root / "policy_canary_terminal_result.json", joined)
+    report_path = _write(
+        root / "artifacts/result_delivery/policy_canary_full_report.json", joined
+    )
+    billing_path = _write(root / "official_billing_reconciliation.json", {"status": "ok"})
+    teardown_path = _write(root / "teardown.json", {"status": "completed"})
+    provider_zero_path = _write(
+        root / "post_teardown_global_provider_zero.json",
+        {"provider_zero_verified": True},
+    )
+
+    def descriptor(path: Path, artifact_id: str) -> dict[str, object]:
+        return {
+            "artifact_id": artifact_id,
+            "digest": _sha(path),
+            "size_bytes": path.stat().st_size,
+        }
+
+    delivery = {
+        "schema_version": "task_evaluation_result_delivery.v2",
+        "run_id": joined["run_id"],
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "result_status": "blocked",
+        "status": "ready",
+        "blockers": list(joined["blockers"]),
+        "report": {
+            "machine_readable_report": descriptor(report_path, "report"),
+            "evidence_manifest": _public_artifact("e", "manifest"),
+        },
+        "closure": {
+            "billing": descriptor(billing_path, "billing"),
+            "teardown": descriptor(teardown_path, "teardown"),
+            "provider_zero": {
+                **descriptor(provider_zero_path, "provider-zero"),
+                "provider_zero_verified": True,
+            },
+        },
+        "candidate_results": [],
+        "artifacts": [],
+        "delivery_digest": "",
+    }
+    delivery["delivery_digest"] = cross_runtime_canonical_digest(
+        delivery, digest_field="delivery_digest"
+    )
+    _write(root / "artifacts/result_delivery/delivery.json", delivery)
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_vast_official_same_goal_reconciliation",
+        lambda _path: {},
+    )
+    sync_calls = []
+
+    receipt = _resume_materialized_policy_canary_delivery(
+        root=root,
+        setup={
+            "scene_id": "839873",
+            "capture_session_id": "capture-839873",
+            "intake_id": "intake-839873",
+            "request_digest": "sha256:" + "f" * 64,
+        },
+        runtime_inputs={"configuration_digest": joined["configuration_digest"]},
+        authority={"authority_digest": "sha256:" + "1" * 64},
+        bundle={"bundle_sha256": "sha256:" + "2" * 64},
+        adapter={"teardown_manifest_path": str(teardown_path)},
+        sync_runner=lambda **kwargs: (
+            sync_calls.append(kwargs)
+            or {
+                "status": "succeeded",
+                "notification_delivery": {
+                    "status": "failed",
+                    "attempts": 1,
+                    "provider": "email_transport_unavailable",
+                    "message_id": None,
+                    "delivered_at": None,
+                    "run_result_digest": joined["result_digest"],
+                },
+            }
+        ),
+    )
+
+    assert receipt is not None
+    assert receipt["status"] == "blocked"
+    assert receipt["allocator_invoked"] is False
+    assert len(sync_calls) == 1
+    assert (root / "dispatch_receipt.json").is_file()
+    assert json.loads(joined_path.read_text(encoding="utf-8")) == joined
 
 
 def _sha(path: Path) -> str:
@@ -547,29 +680,10 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
         },
     )
 
-    assert third["status"] == "awaiting_website_sync_or_notification"
+    assert third["status"] == "completed_unqualified"
     assert third["allocator_invoked"] is False
-    assert not (output / "dispatch_receipt.json").exists()
-
-    fourth = dispatch_policy_canary_activation(
-        activation_result_path=activation_result,
-        execution_setup_path=setup_path,
-        output_root=output,
-        implementation_commit=COMMIT,
-        execute=True,
-        allocator_runner=lambda _argv: pytest.fail("allocator invoked on sync resume"),
-        provider_zero_collector=lambda: zero,
-        sync_runner=lambda **_kwargs: {
-            "status": "succeeded",
-            "notification_delivery": {
-                "status": "delivered",
-                "run_result_digest": "sha256:" + "e" * 64,
-            },
-        },
-    )
-
-    assert fourth["status"] == "completed_unqualified"
-    assert fourth["allocator_invoked"] is False
+    assert third["notification_delivery"]["status"] == "failed"
+    assert (output / "dispatch_receipt.json").is_file()
     assert calls == {"allocator": 1, "bundle": 1}
 
 
