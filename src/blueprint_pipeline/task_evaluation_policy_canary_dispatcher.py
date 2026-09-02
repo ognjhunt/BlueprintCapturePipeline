@@ -45,6 +45,7 @@ from .task_evaluation_policy_canary_scene_setup import (
     materialize_scene839873_policy_canary_setup_from_template,
 )
 from .task_evaluation_result_delivery import (
+    POLICY_CANARY_DELIVERY_SCHEMA_VERSION,
     TaskEvaluationResultDeliveryError,
     materialize_policy_canary_result_delivery,
 )
@@ -593,6 +594,189 @@ def _projection(
     return validate_policy_canary_result(value)
 
 
+def _finish_policy_canary_delivery(
+    *,
+    root: Path,
+    setup: Mapping[str, Any],
+    runtime_inputs: Mapping[str, Any],
+    authority: Mapping[str, Any],
+    bundle: Mapping[str, Any],
+    joined: Mapping[str, Any],
+    joined_path: Path,
+    delivery: Mapping[str, Any],
+    closure: Mapping[str, Mapping[str, Any]],
+    sync_runner: SyncRunner,
+    allocator_invoked: bool,
+) -> dict[str, Any]:
+    """Publish one already sealed delivery without re-entering provider closeout."""
+
+    projection = _projection(setup=setup, result=joined, delivery=delivery)
+    _event(root, stage="report_generating", status="completed")
+    sync = dict(
+        sync_runner(
+            capture_session_id=setup["capture_session_id"],
+            intake_id=setup["intake_id"],
+            run_id=str(joined["run_id"]),
+            request_digest=setup["request_digest"],
+            configuration_digest=runtime_inputs["configuration_digest"],
+            result_status=str(joined["status"]),
+            result_delivery=delivery,
+            policy_canary_result=projection,
+        )
+    )
+    notification = sync.get("notification_delivery")
+    if (
+        sync.get("status") != "succeeded"
+        or not isinstance(notification, Mapping)
+        or notification.get("status") not in {"accepted", "delivered", "failed"}
+    ):
+        pending = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "awaiting_website_sync_or_notification",
+            "run_id": joined["run_id"],
+            "allocator_invoked": allocator_invoked,
+            "automatic_retry_performed": False,
+            "blockers": ["policy_canary_website_notification_readback_missing"],
+        }
+        write_json(root / "dispatch_pending.json", pending)
+        return pending
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "status": joined["status"],
+        "run_id": joined["run_id"],
+        "run_kind": RUN_KIND,
+        "claim_ceiling": CLAIM_CEILING,
+        "authority_digest": authority["authority_digest"],
+        "bundle_sha256": bundle["bundle_sha256"],
+        "terminal_result": _record(joined_path),
+        "result_delivery_digest": delivery["delivery_digest"],
+        "policy_canary_projection_digest": projection["projection_digest"],
+        "notification_delivery": sync["notification_delivery"],
+        "official_billing": closure["billing"],
+        "teardown": closure["teardown"],
+        "provider_zero": closure["provider_zero"],
+        "allocator_invoked": allocator_invoked,
+        "automatic_retry_performed": False,
+        "scene_promotion_performed": False,
+        "official_ranking_performed": False,
+        "retry_cap": 0,
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    _write_exclusive(root / "dispatch_receipt.json", receipt)
+    _event(root, stage="billing_teardown", status="completed")
+    _event(root, stage=str(joined["status"]), status="completed")
+    return receipt
+
+
+def _resume_materialized_policy_canary_delivery(
+    *,
+    root: Path,
+    setup: Mapping[str, Any],
+    runtime_inputs: Mapping[str, Any],
+    authority: Mapping[str, Any],
+    bundle: Mapping[str, Any],
+    adapter: Mapping[str, Any],
+    sync_runner: SyncRunner,
+) -> dict[str, Any] | None:
+    """Resume only Website publication after evidence packaging already sealed.
+
+    Provider-zero receipts contain observation timestamps, so collecting a new
+    one after an immutable delivery was written would necessarily change the
+    package. Resume from the exact sealed result and closure instead.
+    """
+
+    joined_path = root / "policy_canary_terminal_result.json"
+    delivery_path = root / "artifacts" / "result_delivery" / "delivery.json"
+    if not delivery_path.exists():
+        return None
+    if not joined_path.is_file() or not delivery_path.is_file():
+        raise TaskEvaluationPolicyCanaryDispatchError(
+            "policy_canary_materialized_delivery_partial"
+        )
+    joined = _read(joined_path, code="policy_canary_terminal_result_invalid")
+    delivery = _read(delivery_path, code="policy_canary_result_delivery_invalid")
+    if (
+        joined.get("run_kind") != RUN_KIND
+        or joined.get("claim_ceiling") != CLAIM_CEILING
+        or joined.get("status") not in {"completed_unqualified", "blocked", "cancelled"}
+        or joined.get("result_digest")
+        != canonical_digest(joined, digest_field="result_digest")
+        or delivery.get("schema_version") != POLICY_CANARY_DELIVERY_SCHEMA_VERSION
+        or delivery.get("run_id") != joined.get("run_id")
+        or delivery.get("result_status") != joined.get("status")
+        or delivery.get("claim_ceiling") != CLAIM_CEILING
+        or delivery.get("delivery_digest")
+        != cross_runtime_canonical_digest(delivery, digest_field="delivery_digest")
+    ):
+        raise TaskEvaluationPolicyCanaryDispatchError(
+            "policy_canary_materialized_delivery_invalid"
+        )
+    report_path = root / "artifacts" / "result_delivery" / "policy_canary_full_report.json"
+    report_record = (delivery.get("report") or {}).get("machine_readable_report")
+    if (
+        not isinstance(report_record, Mapping)
+        or not report_path.is_file()
+        or report_record.get("digest") != _sha256(report_path)
+        or report_record.get("size_bytes") != report_path.stat().st_size
+        or _read(report_path, code="policy_canary_full_report_invalid") != joined
+    ):
+        raise TaskEvaluationPolicyCanaryDispatchError(
+            "policy_canary_materialized_report_invalid"
+        )
+    billing_path = root / "official_billing_reconciliation.json"
+    validate_vast_official_same_goal_reconciliation(billing_path)
+    teardown_path = Path(str(adapter.get("teardown_manifest_path") or "")).resolve()
+    provider_zero_path = root / "post_teardown_global_provider_zero.json"
+    provider_zero = _read(
+        provider_zero_path,
+        code="policy_canary_materialized_provider_zero_invalid",
+    )
+    if provider_zero.get("provider_zero_verified") is not True:
+        raise TaskEvaluationPolicyCanaryDispatchError(
+            "policy_canary_materialized_provider_zero_invalid"
+        )
+    closure = {
+        "billing": {**_record(billing_path), "official_billing_sealed": True},
+        "teardown": {**_record(teardown_path), "teardown_completed": True},
+        "provider_zero": {
+            **_record(provider_zero_path),
+            "provider_zero_verified": True,
+        },
+    }
+    delivered_closure = delivery.get("closure")
+    if not isinstance(delivered_closure, Mapping):
+        raise TaskEvaluationPolicyCanaryDispatchError(
+            "policy_canary_materialized_closure_invalid"
+        )
+    for role, record in closure.items():
+        delivered = delivered_closure.get(role)
+        if (
+            not isinstance(delivered, Mapping)
+            or delivered.get("digest") != record["sha256"]
+            or delivered.get("size_bytes") != record["size_bytes"]
+        ):
+            raise TaskEvaluationPolicyCanaryDispatchError(
+                f"policy_canary_materialized_closure_invalid:{role}"
+            )
+    _event(root, stage="artifacts_syncing", status="resumed_from_sealed_delivery")
+    return _finish_policy_canary_delivery(
+        root=root,
+        setup=setup,
+        runtime_inputs=runtime_inputs,
+        authority=authority,
+        bundle=bundle,
+        joined=joined,
+        joined_path=joined_path,
+        delivery=delivery,
+        closure=closure,
+        sync_runner=sync_runner,
+        allocator_invoked=False,
+    )
+
+
 def dispatch_policy_canary_activation(
     *,
     activation_result_path: str | Path,
@@ -817,6 +1001,18 @@ def dispatch_policy_canary_activation(
         _write_exclusive(root / "dispatch_receipt.json", receipt)
         return receipt
 
+    resumed = _resume_materialized_policy_canary_delivery(
+        root=root,
+        setup=setup,
+        runtime_inputs=runtime_inputs,
+        authority=authority,
+        bundle=bundle,
+        adapter=adapter,
+        sync_runner=sync_runner,
+    )
+    if resumed is not None:
+        return resumed
+
     if _proves_no_provider_allocation(adapter):
         blockers = list(adapter.get("blockers") or ["policy_canary_provider_not_allocated"])
         terminal_sync = dict(
@@ -1027,63 +1223,19 @@ def dispatch_policy_canary_activation(
         )
     except TaskEvaluationResultDeliveryError as exc:
         raise TaskEvaluationPolicyCanaryDispatchError(str(exc)) from exc
-    projection = _projection(setup=setup, result=joined, delivery=delivery)
-    _event(root, stage="report_generating", status="completed")
-    sync = dict(
-        sync_runner(
-            capture_session_id=setup["capture_session_id"],
-            intake_id=setup["intake_id"],
-            run_id=activation["run_id"],
-            request_digest=setup["request_digest"],
-            configuration_digest=runtime_inputs["configuration_digest"],
-            result_status=joined["status"],
-            result_delivery=delivery,
-            policy_canary_result=projection,
-        )
+    return _finish_policy_canary_delivery(
+        root=root,
+        setup=setup,
+        runtime_inputs=runtime_inputs,
+        authority=authority,
+        bundle=bundle,
+        joined=joined,
+        joined_path=joined_path,
+        delivery=delivery,
+        closure=closure,
+        sync_runner=sync_runner,
+        allocator_invoked=allocator_invoked,
     )
-    notification = sync.get("notification_delivery")
-    if (
-        sync.get("status") != "succeeded"
-        or not isinstance(notification, Mapping)
-        or notification.get("status") not in {"accepted", "delivered"}
-    ):
-        pending = {
-            "schema_version": SCHEMA_VERSION,
-            "status": "awaiting_website_sync_or_notification",
-            "run_id": activation["run_id"],
-            "allocator_invoked": allocator_invoked,
-            "automatic_retry_performed": False,
-            "blockers": ["policy_canary_website_notification_readback_missing"],
-        }
-        write_json(root / "dispatch_pending.json", pending)
-        return pending
-    receipt = {
-        "schema_version": SCHEMA_VERSION,
-        "status": joined["status"],
-        "run_id": activation["run_id"],
-        "run_kind": RUN_KIND,
-        "claim_ceiling": CLAIM_CEILING,
-        "authority_digest": authority["authority_digest"],
-        "bundle_sha256": bundle["bundle_sha256"],
-        "terminal_result": _record(joined_path),
-        "result_delivery_digest": delivery["delivery_digest"],
-        "policy_canary_projection_digest": projection["projection_digest"],
-        "notification_delivery": sync["notification_delivery"],
-        "official_billing": closure["billing"],
-        "teardown": closure["teardown"],
-        "provider_zero": closure["provider_zero"],
-        "allocator_invoked": allocator_invoked,
-        "automatic_retry_performed": False,
-        "scene_promotion_performed": False,
-        "official_ranking_performed": False,
-        "retry_cap": 0,
-        "receipt_digest": "",
-    }
-    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
-    _write_exclusive(root / "dispatch_receipt.json", receipt)
-    _event(root, stage="billing_teardown", status="completed")
-    _event(root, stage=joined["status"], status="completed")
-    return receipt
 
 
 def process_policy_canary_activation_results(
