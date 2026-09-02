@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -9,6 +10,7 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import native_task_arena_policy_canary_bundle as bundle
+from blueprint_pipeline import native_task_arena_policy_canary_worker as worker
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import policy_canary_allocator_lane as allocator_lane
 
@@ -135,6 +137,185 @@ def test_provider_worker_has_one_simulation_launch_outside_episode_loop() -> Non
     assert "policy_canary_telemetry.jsonl" in source
     assert "from mcap.writer import Writer" in source
     assert "mcap_unavailable:" in source
+
+
+def test_provider_result_is_durable_before_isaac_close_can_exit(
+    tmp_path: Path,
+) -> None:
+    class ExitOnClose:
+        def close(self) -> None:
+            raise SystemExit(0)
+
+    result = {
+        "schema_version": "native_task_arena_policy_canary_session_result.v1",
+        "status": "runtime_completed_unqualified_pending_closeout",
+        "episodes": [],
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    result_path = tmp_path / "provider-result.json"
+
+    with pytest.raises(SystemExit) as exited:
+        worker._seal_result_before_simulation_close(
+            result_path=result_path,
+            result=result,
+            simulation_app=ExitOnClose(),
+        )
+
+    assert exited.value.code == 0
+    sealed = json.loads(result_path.read_text(encoding="utf-8"))
+    assert sealed == result
+    assert sealed["result_digest"] == canonical_digest(
+        sealed, digest_field="result_digest"
+    )
+
+
+def test_episode_failure_gap_retains_safe_diagnostic_without_host_path(
+    tmp_path: Path,
+) -> None:
+    path = worker._write_episode_failure_gap(
+        output_root=tmp_path,
+        run_id="run-1",
+        context={"candidate_id": "pi05_droid", "cell_id": "anchor-1", "seed": 7},
+        failure=RuntimeError("camera failed at /workspace/private/runtime.py"),
+    )
+
+    gap = json.loads(path.read_text(encoding="utf-8"))
+    assert gap["failure_type"] == "RuntimeError"
+    assert gap["failure_message"] == "camera failed at <path>"
+    assert "/workspace" not in json.dumps(gap)
+    assert gap["gap_digest"] == canonical_digest(gap, digest_field="gap_digest")
+
+
+def test_resolved_scene_plan_binds_policy_cadence_and_supported_variations() -> None:
+    base = {
+        "schema_version": "native_task_arena_scene_plan.v1",
+        "objects": [
+            {
+                "name": "task_object",
+                "task_subject": True,
+                "pose_world": {
+                    "position_world_m": [1.0, 2.0, 3.0],
+                    "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+                "reset_state": {
+                    "root_pose_world": {
+                        "position_world_m": [1.0, 2.0, 3.0],
+                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    }
+                },
+            }
+        ],
+        "cameras": [
+            {"role": "external", "frame_from_camera_matrix": [1.0] * 16}
+        ],
+        "cadence": {
+            "control_frequency_hz": 20.0,
+            "physics_frequency_hz": 120.0,
+            "physics_dt_seconds": 1.0 / 120.0,
+            "control_decimation": 6,
+            "maximum_action_steps": 240,
+            "settle_window_samples": 20,
+            "episode_length_seconds": 13.05,
+        },
+        "task_spec": {
+            "control_frequency_hz": 20.0,
+            "maximum_episode_seconds": 12.0,
+        },
+        "plan_digest": "",
+    }
+    base["plan_digest"] = canonical_digest(base, digest_field="plan_digest")
+    cell = {
+        "cell_id": "cell-8",
+        "seed": 8,
+        "resolved_scenario": {
+            "family": "pairwise_stress",
+            "parameters": {
+                "object_start_y_delta_m": 0.015,
+                "object_yaw_delta_degrees": -5.0,
+                "external_camera_x_delta_m": -0.015,
+                "task_light_intensity_scale": 1.1,
+                "dynamic_friction": 0.55,
+            },
+        },
+    }
+
+    resolved = worker._resolved_scene_plan(base, cell)
+
+    assert resolved["cadence"]["control_frequency_hz"] == 15.0
+    assert resolved["cadence"]["control_decimation"] == 8
+    assert resolved["task_spec"]["control_frequency_hz"] == 15.0
+    assert resolved["objects"][0]["pose_world"]["position_world_m"][1] == 2.015
+    assert resolved["cameras"][0]["frame_from_camera_matrix"][3] == 0.985
+    assert {row["parameter_id"] for row in resolved["scenario"]["parameter_applications"]} == {
+        "object_start_y_delta_m",
+        "object_yaw_delta_degrees",
+        "external_camera_x_delta_m",
+        "task_light_intensity_scale",
+    }
+    assert resolved["scenario"]["runtime_coverage_gaps"] == [
+        {
+            "family": "bounded_physics",
+            "reason": "runtime_material_link_binding_unavailable",
+            "fallback": "canonical_task_material",
+        }
+    ]
+    assert resolved["plan_digest"] == canonical_digest(
+        resolved, digest_field="plan_digest"
+    )
+
+
+def test_isolated_cell_results_aggregate_to_twenty_paired_episodes(
+    tmp_path: Path,
+) -> None:
+    cells = [
+        {"cell_id": f"cell-{index}", "seed": index}
+        for index in range(10)
+    ]
+    children = []
+    for index, cell in enumerate(cells):
+        children.append(
+            {
+                "status": "runtime_selected_cell_completed_pending_aggregation",
+                "selected_cell_index": index,
+                "episodes": [
+                    {
+                        "candidate_id": candidate,
+                        "cell_id": cell["cell_id"],
+                        "seed": cell["seed"],
+                        "status": "blocked",
+                        "candidate_policy_queried": False,
+                        "actions_reached_robot": False,
+                        "evidence_artifacts": {
+                            "reset_state": {
+                                "relative_path": "episodes/reset.json",
+                                "size_bytes": 1,
+                                "sha256": "sha256:" + "1" * 64,
+                            }
+                        },
+                    }
+                    for candidate in ("pi05_droid", "groot_n17_droid")
+                ],
+            }
+        )
+
+    result = worker._aggregate_isolated_cell_results(
+        authority={},
+        inputs={"cells": cells, "matrix_digest": "sha256:" + "a" * 64},
+        child_results=children,
+        output_root=tmp_path,
+        construction_lineage_mode="compiled_configured_scene_diagnostic",
+    )
+
+    assert result["status"] == "runtime_completed_unqualified_pending_closeout"
+    assert len(result["episodes"]) == 20
+    assert result["isolated_simulation_process_count"] == 10
+    assert result["episodes"][0]["evidence_artifacts"]["reset_state"][
+        "relative_path"
+    ] == "cell_runs/00/episodes/reset.json"
+    assert result["result_digest"] == canonical_digest(
+        result, digest_field="result_digest"
+    )
 
 
 def test_provider_canary_package_imports_from_its_shipped_module_closure(

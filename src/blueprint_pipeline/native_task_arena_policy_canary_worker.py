@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import math
 import os
 from pathlib import Path
+import re
+import subprocess
+import sys
 import time
 from typing import Any, Callable, Mapping
 
@@ -30,12 +34,164 @@ def _read(path: Path) -> dict[str, Any]:
     return value
 
 
+def _construction_lineage_mode(
+    *,
+    inputs: Mapping[str, Any],
+    base_scene_plan: Mapping[str, Any],
+    construction: Mapping[str, Any],
+) -> str:
+    """Accept strict construction or typed compiled-scene diagnostic lineage."""
+
+    if (
+        base_scene_plan.get("plan_digest")
+        != canonical_digest(base_scene_plan, digest_field="plan_digest")
+    ):
+        raise RuntimeError("policy_canary_scene_plan_invalid")
+    if construction.get("schema_version") == "native_task_arena_construction_result.v1":
+        if (
+            construction.get("status") != "completed"
+            or construction.get("construction_gate_qualified") is not True
+            or construction.get("scene_plan_digest")
+            != base_scene_plan.get("plan_digest")
+            or construction.get("result_digest")
+            != canonical_digest(construction, digest_field="result_digest")
+        ):
+            raise RuntimeError("policy_canary_construction_result_invalid")
+        return "qualified_native_construction_result"
+    if construction.get("schema_version") == "task_evaluation_episode_compilation_result.v1":
+        if (
+            construction.get("status") != "compiled_for_production_launch"
+            or construction.get("blockers") != []
+            or construction.get("configured_scene_revision_digest")
+            != inputs.get("scene_revision_digest")
+            or construction.get("provider_mutation_performed") is not False
+            or construction.get("paid_execution_requested") is not False
+            or construction.get("result_digest")
+            != canonical_digest(construction, digest_field="result_digest")
+        ):
+            raise RuntimeError("policy_canary_compiled_scene_lineage_invalid")
+        return "compiled_configured_scene_diagnostic"
+    raise RuntimeError("policy_canary_construction_lineage_schema_invalid")
+
+
+def _yaw_quaternion_xyzw(degrees: float) -> list[float]:
+    half = math.radians(degrees) / 2.0
+    return [0.0, 0.0, math.sin(half), math.cos(half)]
+
+
+def _quaternion_product_xyzw(a: list[float], b: list[float]) -> list[float]:
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ]
+
+
 def _resolved_scene_plan(base: Mapping[str, Any], cell: Mapping[str, Any]) -> dict[str, Any]:
     plan = deepcopy(dict(base))
     scenario = deepcopy(dict(cell["resolved_scenario"]))
     scenario["cell_id"] = cell["cell_id"]
     scenario["seed"] = cell["seed"]
+    parameters = dict(scenario.get("parameters") or {})
+    applications: list[dict[str, Any]] = []
+    coverage_gaps: list[dict[str, Any]] = []
+    subject = next(row for row in plan["objects"] if row.get("task_subject") is True)
+    if "object_start_y_delta_m" in parameters:
+        delta = float(parameters["object_start_y_delta_m"])
+        subject["pose_world"]["position_world_m"][1] += delta
+        subject["reset_state"]["root_pose_world"]["position_world_m"][1] += delta
+        applications.append(
+            {
+                "parameter_id": "object_start_y_delta_m",
+                "readback_kind": "task_subject_root_position_y_m",
+                "expected_native_value": subject["pose_world"]["position_world_m"][1],
+                "delta_from_nominal": delta,
+            }
+        )
+    if "object_yaw_delta_degrees" in parameters:
+        delta = float(parameters["object_yaw_delta_degrees"])
+        orientation = _quaternion_product_xyzw(
+            _yaw_quaternion_xyzw(delta),
+            list(subject["pose_world"]["orientation_xyzw"]),
+        )
+        subject["pose_world"]["orientation_xyzw"] = orientation
+        subject["reset_state"]["root_pose_world"]["orientation_xyzw"] = list(
+            orientation
+        )
+        applications.append(
+            {
+                "parameter_id": "object_yaw_delta_degrees",
+                "readback_kind": "task_subject_root_orientation_xyzw",
+                "expected_native_value": orientation,
+                "delta_from_nominal": delta,
+            }
+        )
+    if "external_camera_x_delta_m" in parameters:
+        delta = float(parameters["external_camera_x_delta_m"])
+        camera = next(row for row in plan["cameras"] if row["role"] == "external")
+        camera["frame_from_camera_matrix"][3] += delta
+        applications.append(
+            {
+                "parameter_id": "external_camera_x_delta_m",
+                "readback_kind": "camera_offset_position_x_m",
+                "camera_role": "external",
+                "expected_native_value": camera["frame_from_camera_matrix"][3],
+                "delta_from_nominal": delta,
+            }
+        )
+    if "task_light_intensity_scale" in parameters:
+        scale = float(parameters["task_light_intensity_scale"])
+        applications.append(
+            {
+                "parameter_id": "task_light_intensity_scale",
+                "readback_kind": "task_light_intensity_scale",
+                "expected_native_value": scale,
+                "nominal_native_intensity": 1500.0,
+                "application_tolerance": 1.0e-6,
+            }
+        )
+    if "dynamic_friction" in parameters:
+        coverage_gaps.append(
+            {
+                "family": "bounded_physics",
+                "reason": "runtime_material_link_binding_unavailable",
+                "fallback": "canonical_task_material",
+            }
+        )
+    if "material_cousin" in parameters:
+        coverage_gaps.append(
+            {
+                "family": "admitted_object_material_cousin",
+                "reason": "admitted_runtime_material_asset_unavailable",
+                "fallback": "canonical_task_material",
+            }
+        )
+    scenario["parameter_applications"] = applications
+    scenario["runtime_coverage_gaps"] = coverage_gaps
     plan["scenario"] = scenario
+    # Both frozen DROID adapters emit actions at 15 Hz. Keep PhysX at 120 Hz
+    # and change the exact canary cadence to an integral decimation of eight.
+    plan["cadence"]["control_frequency_hz"] = 15.0
+    plan["cadence"]["control_decimation"] = 8
+    action_steps = int(plan["cadence"]["maximum_action_steps"])
+    settle_samples = int(plan["cadence"]["settle_window_samples"])
+    plan["task_spec"]["control_frequency_hz"] = 15.0
+    plan["task_spec"]["maximum_episode_seconds"] = action_steps / 15.0
+    plan["cadence"]["episode_length_seconds"] = (
+        action_steps / 15.0
+        + settle_samples / 15.0
+        + 6.0 * float(plan["cadence"]["physics_dt_seconds"])
+    )
+    plan["canary_cadence_adjustment"] = {
+        "source_control_frequency_hz": float(base["cadence"]["control_frequency_hz"]),
+        "resolved_control_frequency_hz": 15.0,
+        "physics_frequency_hz": float(plan["cadence"]["physics_frequency_hz"]),
+        "control_decimation": 8,
+        "reason": "frozen_droid_policy_action_cadence",
+    }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     return plan
 
@@ -44,6 +200,100 @@ def _sha256(path: Path) -> str:
     import hashlib
 
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _seal_result(*, result_path: Path, result: Mapping[str, Any]) -> None:
+    """Durably seal one final provider result before process teardown."""
+
+    value = dict(result)
+    if value.get("result_digest") != canonical_digest(
+        value, digest_field="result_digest"
+    ):
+        raise RuntimeError("policy_canary_result_digest_invalid_before_close")
+    payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temporary = result_path.with_name(f".{result_path.name}.{os.getpid()}.sealing")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_CREAT
+            | os.O_EXCL
+            | os.O_WRONLY
+            | getattr(os, "O_CLOEXEC", 0),
+            0o440,
+        )
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(temporary, result_path)
+        directory = os.open(
+            result_path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
+def _seal_result_before_simulation_close(
+    *, result_path: Path, result: Mapping[str, Any], simulation_app: Any
+) -> None:
+    """Seal the provider result before Isaac can terminate the interpreter."""
+
+    close = getattr(simulation_app, "close", None)
+    if not callable(close):
+        raise RuntimeError("policy_canary_simulation_close_unavailable")
+    _seal_result(result_path=result_path, result=result)
+    close()
+
+
+def _write_episode_failure_gap(
+    *,
+    output_root: Path,
+    run_id: str,
+    context: Mapping[str, Any],
+    failure: Exception,
+) -> Path:
+    """Retain one safe per-episode diagnostic if execution fails before evidence."""
+
+    raw_message = str(failure).strip().replace("\n", " ").replace("\r", " ")
+    safe_message = re.sub(r"(?<![A-Za-z0-9])/(?:[^\s/:]+/)*[^\s:]+", "<path>", raw_message)
+    safe_message = safe_message[:512]
+    episode_id = (
+        f"{run_id}--{context.get('cell_id')}--{context.get('candidate_id')}"
+    )
+    path = output_root / "episodes" / f"{episode_id}.failure_gap.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    value = {
+        "schema_version": "policy_canary_episode_failure_gap.v1",
+        "status": "unavailable_before_first_observation",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "candidate_id": context.get("candidate_id"),
+        "cell_id": context.get("cell_id"),
+        "seed": context.get("seed"),
+        "candidate_policy_queried": False,
+        "actions_reached_robot": False,
+        "failure_type": type(failure).__name__,
+        "failure_message": safe_message or None,
+        "failure_message_digest": _digest(raw_message),
+        "media_gap": {
+            "type": "before_first_observation",
+            "reason": "policy_canary_episode_runner_failed",
+        },
+        "gap_digest": "",
+    }
+    value["gap_digest"] = canonical_digest(value, digest_field="gap_digest")
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
 
 
 def _write_episode_json_artifact(
@@ -247,11 +497,180 @@ def _write_indexed_telemetry(
     return index, artifacts
 
 
-def main() -> int:
+def _prefix_episode_evidence_paths(
+    episode: Mapping[str, Any], *, prefix: str
+) -> dict[str, Any]:
+    value = deepcopy(dict(episode))
+    evidence = value.get("evidence_artifacts")
+    if isinstance(evidence, Mapping):
+        rewritten: dict[str, Any] = {}
+        for role, record in evidence.items():
+            if isinstance(record, Mapping) and isinstance(
+                record.get("relative_path"), str
+            ):
+                rewritten[role] = {
+                    **record,
+                    "relative_path": f"{prefix}/{record['relative_path']}",
+                }
+            else:
+                rewritten[role] = record
+        value["evidence_artifacts"] = rewritten
+    return value
+
+
+def _aggregate_isolated_cell_results(
+    *,
+    authority: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+    child_results: list[Mapping[str, Any]],
+    output_root: Path,
+    construction_lineage_mode: str,
+) -> dict[str, Any]:
+    if len(child_results) != len(inputs["cells"]):
+        raise RuntimeError("policy_canary_isolated_cell_result_count_invalid")
+    episodes: list[dict[str, Any]] = []
+    for index, child in enumerate(child_results):
+        if (
+            child.get("selected_cell_index") != index
+            or child.get("status")
+            != "runtime_selected_cell_completed_pending_aggregation"
+            or not isinstance(child.get("episodes"), list)
+            or len(child["episodes"]) != len(CANDIDATE_IDS)
+        ):
+            raise RuntimeError("policy_canary_isolated_cell_result_invalid")
+        prefix = f"cell_runs/{index:02d}"
+        episodes.extend(
+            _prefix_episode_evidence_paths(row, prefix=prefix)
+            for row in child["episodes"]
+        )
+    expected = {
+        (candidate, str(cell["cell_id"]), int(cell["seed"]))
+        for candidate in CANDIDATE_IDS
+        for cell in inputs["cells"]
+    }
+    observed = {
+        (str(row.get("candidate_id")), str(row.get("cell_id")), int(row.get("seed")))
+        for row in episodes
+    }
+    if observed != expected:
+        raise RuntimeError("policy_canary_isolated_cell_pairing_invalid")
+    result: dict[str, Any] = {
+        "schema_version": "native_task_arena_policy_canary_session_result.v1",
+        "status": "runtime_completed_unqualified_pending_closeout",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "candidate_ids": list(CANDIDATE_IDS),
+        "episodes_per_policy": 10,
+        "learned_policy_rollout_count": 20,
+        "provider_allocations_observed": None,
+        "retry_cap": 0,
+        "warm_session_open_count": 1,
+        "isolated_simulation_process_count": len(child_results),
+        "policy_loads": [
+            {"candidate_id": candidate, "loaded_once": True}
+            for candidate in CANDIDATE_IDS
+        ],
+        "episodes": episodes,
+        "session_closeout": {
+            "status": "runtime_closed_pending_provider_teardown",
+            "runtime_closed": True,
+            "provider_closeout_pending": True,
+            "isolated_simulation_process_count": len(child_results),
+        },
+        "session_failure_type": None,
+        "scene_promotion_performed": False,
+        "official_ranking_performed": False,
+        "candidate_policy_queried": any(
+            row.get("candidate_policy_queried") is True for row in episodes
+        ),
+        "provider_zero_required_after_return": True,
+        "construction_lineage_mode": construction_lineage_mode,
+        "matrix_digest": inputs.get("matrix_digest") or _digest(inputs["cells"]),
+        "result_digest": "",
+    }
+    telemetry_index, telemetry_artifacts = _write_indexed_telemetry(
+        output_root, result["episodes"]
+    )
+    result["telemetry"] = telemetry_index
+    if authority.get("execution_release") is not None:
+        result["execution_release"] = authority["execution_release"]
+    result["artifact_inventory"] = telemetry_artifacts
+    result["artifact_inventory_digest"] = _digest(telemetry_artifacts)
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    return result
+
+
+def _run_isolated_cell_processes() -> int:
     runtime = Path(__file__).resolve().parent
     output_root = Path(
         os.environ.get("BLUEPRINT_ADP_ARENA_OUTPUT_DIR")
         or runtime.parent / "runtime_output"
+    ).resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    inputs = validate_runtime_input_manifest(
+        _read(runtime / "runtime_inputs" / "policy_canary_runtime_inputs.json")
+    )
+    authority = validate_session_authority(
+        _read(runtime / "runtime_inputs" / "policy_canary_session_authority.json")
+    )
+    base_scene_plan = _read(
+        runtime / "native_task_packet" / "native_task_arena_scene_plan.v1.json"
+    )
+    construction = _read(
+        runtime / "runtime_inputs" / "native_task_arena_construction_result.v1.json"
+    )
+    construction_lineage_mode = _construction_lineage_mode(
+        inputs=inputs,
+        base_scene_plan=base_scene_plan,
+        construction=construction,
+    )
+    child_results: list[Mapping[str, Any]] = []
+    for index in range(len(inputs["cells"])):
+        child_root = output_root / "cell_runs" / f"{index:02d}"
+        child_root.mkdir(parents=True, exist_ok=False)
+        child_log = child_root / "worker_console.log"
+        environment = dict(os.environ)
+        environment["BLUEPRINT_POLICY_CANARY_CELL_INDEX"] = str(index)
+        environment["BLUEPRINT_ADP_ARENA_PARENT_OUTPUT_DIR"] = str(output_root)
+        environment["BLUEPRINT_ADP_ARENA_OUTPUT_DIR"] = str(child_root)
+        with child_log.open("xb") as stream:
+            completed = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve())],
+                env=environment,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                timeout=900,
+                check=False,
+            )
+        child_result_path = child_root / PROVIDER_RESULT_FILENAME
+        if not child_result_path.is_file():
+            raise RuntimeError(
+                f"policy_canary_isolated_cell_result_missing:{index}:"
+                f"exit_{completed.returncode}"
+            )
+        child_results.append(_read(child_result_path))
+    result = _aggregate_isolated_cell_results(
+        authority=authority,
+        inputs=inputs,
+        child_results=child_results,
+        output_root=output_root,
+        construction_lineage_mode=construction_lineage_mode,
+    )
+    _seal_result(
+        result_path=output_root / PROVIDER_RESULT_FILENAME,
+        result=result,
+    )
+    return 0
+
+
+def _run_selected_cell(selected_cell_index: int) -> int:
+    runtime = Path(__file__).resolve().parent
+    output_root = Path(
+        os.environ.get("BLUEPRINT_ADP_ARENA_OUTPUT_DIR")
+        or runtime.parent / "runtime_output"
+    ).resolve()
+    provider_output_root = Path(
+        os.environ.get("BLUEPRINT_ADP_ARENA_PARENT_OUTPUT_DIR") or output_root
     ).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     result_path = output_root / PROVIDER_RESULT_FILENAME
@@ -269,14 +688,11 @@ def main() -> int:
         / "runtime_inputs"
         / "native_task_arena_construction_result.v1.json"
     )
-    if (
-        construction.get("status") != "completed"
-        or construction.get("construction_gate_qualified") is not True
-        or construction.get("scene_plan_digest") != base_scene_plan.get("plan_digest")
-        or construction.get("result_digest")
-        != canonical_digest(construction, digest_field="result_digest")
-    ):
-        raise RuntimeError("policy_canary_construction_result_invalid")
+    construction_lineage_mode = _construction_lineage_mode(
+        inputs=inputs,
+        base_scene_plan=base_scene_plan,
+        construction=construction,
+    )
     specs = {
         candidate: _read(
             runtime
@@ -286,6 +702,7 @@ def main() -> int:
         for candidate in CANDIDATE_IDS
     }
     current_env: dict[str, Any] = {}
+    current_session: dict[str, Any] = {}
 
     def open_session(_inputs: Mapping[str, Any]) -> dict[str, Any]:
         from blueprint_pipeline.native_task_isaaclab_launch import (
@@ -294,9 +711,10 @@ def main() -> int:
         )
 
         simulation_app, launch = launch_native_task_isaaclab(
-            output_root / "native_task_runtime_source_provisioning.v1.json",
+            provider_output_root / "native_task_runtime_source_provisioning.v1.json",
             device=NATIVE_TASK_ARENA_DEVICE,
         )
+        current_session["simulation_app"] = simulation_app
         return {
             "simulation_app": simulation_app,
             "launch": launch,
@@ -314,7 +732,7 @@ def main() -> int:
         runtime_identity: Mapping[str, Any] = spec.get("runtime_identity") or {}
         if candidate == "groot_n17_droid":
             groot_identity, runtime_identity = _runtime_groot_worker_identity(
-                output_root=output_root, spec=spec
+                output_root=provider_output_root, spec=spec
             )
         client = _policy_client(
             spec, groot_worker_identity_receipt=groot_identity
@@ -328,7 +746,7 @@ def main() -> int:
             or _digest(runtime_identity),
         }
 
-    def run_episode(
+    def _run_episode_impl(
         _session: Mapping[str, Any],
         policy: Mapping[str, Any],
         context: Mapping[str, Any],
@@ -378,13 +796,18 @@ def main() -> int:
         )
         if not preconstruction["passed"]:
             raise RuntimeError("policy_canary_preconstruction_failed")
-        built = build_native_task_arena_environment(
-            scene_plan,
-            device=NATIVE_TASK_ARENA_DEVICE,
-            bundle_root=runtime / "native_task_packet",
-            preconstruction_receipt=preconstruction,
-        )
-        current_env["env"] = built.env
+        built = current_env.get("built")
+        if built is None:
+            built = build_native_task_arena_environment(
+                scene_plan,
+                device=NATIVE_TASK_ARENA_DEVICE,
+                bundle_root=runtime / "native_task_packet",
+                preconstruction_receipt=preconstruction,
+            )
+            current_env["built"] = built
+            current_env["cell_id"] = str(context["cell_id"])
+        elif current_env.get("cell_id") != str(context["cell_id"]):
+            raise RuntimeError("policy_canary_isolated_cell_environment_mismatch")
         device = read_native_task_arena_device_binding(
             built, expected_device=NATIVE_TASK_ARENA_DEVICE
         )
@@ -445,10 +868,11 @@ def main() -> int:
                 require_prestart_readiness=True,
             )
         finally:
-            close = getattr(env, "close", None)
-            if callable(close):
-                close()
-            current_env.clear()
+            if str(context["candidate_id"]) == CANDIDATE_IDS[-1]:
+                close = getattr(env, "close", None)
+                if callable(close):
+                    close()
+                current_env.clear()
         visual = episode.get("visual_evidence") or {}
         media = episode.get("media_artifacts") or {}
         motion = episode.get("motion_evidence") or {}
@@ -578,6 +1002,22 @@ def main() -> int:
             "evidence_artifacts": evidence_artifacts,
         }
 
+    def run_episode(
+        session: Mapping[str, Any],
+        policy: Mapping[str, Any],
+        context: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return _run_episode_impl(session, policy, context)
+        except Exception as exc:
+            _write_episode_failure_gap(
+                output_root=output_root,
+                run_id=str(authority["run_id"]),
+                context=context,
+                failure=exc,
+            )
+            raise
+
     def close_policy(policy: Mapping[str, Any]) -> None:
         close = getattr(policy.get("client"), "close", None)
         if callable(close):
@@ -585,11 +1025,14 @@ def main() -> int:
 
     def close_session(session: Mapping[str, Any]) -> dict[str, Any]:
         close = getattr(session.get("simulation_app"), "close", None)
-        if callable(close):
-            close()
+        if not callable(close) or session.get("simulation_app") is not current_session.get(
+            "simulation_app"
+        ):
+            raise RuntimeError("policy_canary_simulation_close_unavailable")
         return {
-            "status": "runtime_closed_pending_provider_teardown",
+            "status": "runtime_close_committed_after_result_seal",
             "runtime_closed": True,
+            "runtime_close_deferred_until_result_sealed": True,
             "provider_closeout_pending": True,
         }
 
@@ -603,21 +1046,41 @@ def main() -> int:
         close_session=close_session,
         output_path=result_path,
         provider_closeout_pending=True,
+        selected_cell_index=selected_cell_index,
     )
     telemetry_index, telemetry_artifacts = _write_indexed_telemetry(
         output_root, result["episodes"]
     )
     result["telemetry"] = telemetry_index
+    result["construction_lineage_mode"] = construction_lineage_mode
     if authority.get("execution_release") is not None:
         result["execution_release"] = authority["execution_release"]
     result["artifact_inventory"] = telemetry_artifacts
     result["artifact_inventory_digest"] = _digest(telemetry_artifacts)
     result["matrix_digest"] = inputs.get("matrix_digest") or _digest(inputs["cells"])
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
-    result_path.write_text(
-        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    _seal_result_before_simulation_close(
+        result_path=result_path,
+        result=result,
+        simulation_app=current_session.get("simulation_app"),
     )
-    return 0 if result["status"] == "runtime_completed_unqualified_pending_closeout" else 1
+    return (
+        0
+        if result["status"]
+        == "runtime_selected_cell_completed_pending_aggregation"
+        else 1
+    )
+
+
+def main() -> int:
+    raw_index = os.environ.get("BLUEPRINT_POLICY_CANARY_CELL_INDEX")
+    if raw_index is None:
+        return _run_isolated_cell_processes()
+    try:
+        selected_cell_index = int(raw_index)
+    except ValueError as exc:
+        raise RuntimeError("policy_canary_cell_index_invalid") from exc
+    return _run_selected_cell(selected_cell_index)
 
 
 if __name__ == "__main__":  # pragma: no cover

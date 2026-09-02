@@ -227,6 +227,50 @@ def test_executor_opens_one_session_loads_each_policy_once_and_runs_twenty(
     assert validate_session_result(result)["result_digest"] == result["result_digest"]
 
 
+def test_executor_can_isolate_one_cell_for_fresh_isaac_process(
+    tmp_path: Path,
+) -> None:
+    authority, inputs = _authority(tmp_path)
+    observed: list[tuple[str, str]] = []
+
+    result = execute_paired_session(
+        authority=authority,
+        runtime_inputs=inputs,
+        open_session=lambda _inputs: {"simulation_app": "cell"},
+        load_policy=lambda _session, candidate_id: {
+            "candidate_id": candidate_id,
+            "checkpoint_digest": "sha256:" + "c" * 64,
+            "runtime_identity_digest": "sha256:" + "d" * 64,
+        },
+        run_episode=lambda _session, policy, context: observed.append(
+            (policy["candidate_id"], context["cell_id"])
+        )
+        or {
+            "status": "blocked",
+            "candidate_policy_queried": False,
+            "actions_reached_robot": False,
+            "checkpoint_digest": policy["checkpoint_digest"],
+            "runtime_identity_digest": policy["runtime_identity_digest"],
+        },
+        close_policy=lambda _policy: None,
+        close_session=lambda _session: {
+            "status": "runtime_close_committed_after_result_seal",
+            "runtime_closed": True,
+            "provider_closeout_pending": True,
+        },
+        provider_closeout_pending=True,
+        selected_cell_index=4,
+    )
+
+    assert observed == [
+        ("pi05_droid", "cell-4"),
+        ("groot_n17_droid", "cell-4"),
+    ]
+    assert result["selected_cell_index"] == 4
+    assert len(result["episodes"]) == 2
+    assert result["status"] == "runtime_selected_cell_completed_pending_aggregation"
+
+
 def test_episode_failure_is_preserved_and_does_not_cancel_remaining_rollouts(
     tmp_path: Path,
 ) -> None:

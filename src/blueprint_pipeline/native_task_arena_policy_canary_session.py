@@ -485,6 +485,7 @@ def execute_paired_session(
     close_session: Callable[[Any], Mapping[str, Any]],
     output_path: str | Path | None = None,
     provider_closeout_pending: bool = False,
+    selected_cell_index: int | None = None,
 ) -> dict[str, Any]:
     """Execute all twenty learned rollouts in one caller-owned warm session."""
 
@@ -492,6 +493,18 @@ def execute_paired_session(
     inputs = validate_runtime_input_manifest(runtime_inputs)
     if bound_authority["runtime_inputs_digest"] != inputs["runtime_inputs_digest"]:
         raise PolicyCanarySessionError("policy_canary_session_runtime_binding_mismatch")
+    if selected_cell_index is not None and (
+        isinstance(selected_cell_index, bool)
+        or not isinstance(selected_cell_index, int)
+        or not 0 <= selected_cell_index < len(inputs["cells"])
+    ):
+        raise PolicyCanarySessionError("policy_canary_session_cell_selection_invalid")
+    selected_cells = (
+        inputs["cells"]
+        if selected_cell_index is None
+        else [inputs["cells"][selected_cell_index]]
+    )
+    expected_episode_count = len(CANDIDATE_IDS) * len(selected_cells)
     session = None
     episodes: list[dict[str, Any]] = []
     policy_loads: list[dict[str, Any]] = []
@@ -513,7 +526,7 @@ def execute_paired_session(
             policy = load_policy(session, candidate_id)
             policy_loads.append({"candidate_id": candidate_id, "loaded_once": True})
             try:
-                for cell in inputs["cells"]:
+                for cell in selected_cells:
                     context = {
                         **cell,
                         "candidate_id": candidate_id,
@@ -599,6 +612,8 @@ def execute_paired_session(
         "provider_zero_required_after_return": True,
         "result_digest": "",
     }
+    if selected_cell_index is not None:
+        result["selected_cell_index"] = selected_cell_index
     if (
         len(episodes) == LEARNED_ROLLOUT_COUNT
         and all(row.get("status") == "completed" for row in episodes)
@@ -609,10 +624,14 @@ def execute_paired_session(
         result["status"] = "completed_unqualified"
     if (
         provider_closeout_pending
-        and len(episodes) == LEARNED_ROLLOUT_COUNT
+        and len(episodes) == expected_episode_count
         and closeout.get("runtime_closed") is True
     ):
-        result["status"] = "runtime_completed_unqualified_pending_closeout"
+        result["status"] = (
+            "runtime_completed_unqualified_pending_closeout"
+            if selected_cell_index is None
+            else "runtime_selected_cell_completed_pending_aggregation"
+        )
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     if output_path is not None:
         _write_json(Path(output_path), result)

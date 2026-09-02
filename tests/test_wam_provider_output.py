@@ -120,6 +120,32 @@ def test_provider_output_recognizes_native_policy_diagnostic_result(
     ]
 
 
+def test_provider_output_recognizes_policy_canary_session_result(
+    tmp_path: Path,
+) -> None:
+    output_zip = tmp_path / "policy-canary-output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "native_task_arena_policy_canary_session_result.v1.json",
+            json.dumps(
+                {
+                    "schema_version": (
+                        "native_task_arena_policy_canary_session_result.v1"
+                    ),
+                    "status": "runtime_completed_unqualified_pending_closeout",
+                    "blockers": [],
+                }
+            ),
+        )
+
+    result = inspect_provider_runtime_output_zip(output_zip)
+
+    assert result["runtime_result_present"] is True
+    assert result["runtime_result_status"] == (
+        "runtime_completed_unqualified_pending_closeout"
+    )
+
+
 def test_provider_output_recognizes_artifixer3d_result(tmp_path: Path) -> None:
     output_zip = tmp_path / "artifixer3d-output.zip"
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
