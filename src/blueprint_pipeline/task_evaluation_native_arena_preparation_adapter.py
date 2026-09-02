@@ -24,7 +24,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-from .native_task_arena_bundle import verify_native_task_arena_packet
+from .native_task_arena_bundle import (
+    verify_native_task_arena_packet,
+    zip_member_compression,
+)
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
@@ -682,7 +685,9 @@ def _build_task_evaluation_adapter_bundle(
             for archive_path, path in sources:
                 info = zipfile.ZipInfo(archive_path, (1980, 1, 1, 0, 0, 0))
                 info.external_attr = 0o100440 << 16
-                info.compress_type = zipfile.ZIP_DEFLATED
+                # Splat, mesh, and checkpoint payloads do not deflate; storing
+                # them turns a four-minute compile into seconds of I/O.
+                info.compress_type = zip_member_compression(path)
                 with archive.open(info, "w", force_zip64=True) as destination, path.open(
                     "rb"
                 ) as source_stream:

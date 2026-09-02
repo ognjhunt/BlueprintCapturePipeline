@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import shutil
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
@@ -345,17 +346,56 @@ def _scenario_parameter_bindings(scenario: Mapping[str, Any]) -> list[dict[str, 
     return rows
 
 
+def _stage_verified_asset(
+    source_path: Path, destination: Path, *, link_within: Path | None
+) -> None:
+    """Place verified source bytes at ``destination`` by hard link or copy.
+
+    A hard link is taken only when the caller names the tree both files live in
+    (the compiler's per-run output, whose extracted assets and packet are
+    deleted together) and both sit on one filesystem.  Anything else, including
+    a long-lived evidence store, keeps the byte copy so the packet never shares
+    an inode with retained evidence.
+    """
+
+    if link_within is not None:
+        resolved_source = source_path.resolve()
+        if (
+            link_within in resolved_source.parents
+            and resolved_source.stat().st_dev == destination.parent.stat().st_dev
+        ):
+            try:
+                os.link(resolved_source, destination, follow_symlinks=False)
+            except OSError:
+                destination.unlink(missing_ok=True)
+            else:
+                return
+    shutil.copyfile(source_path, destination)
+
+
 def materialize_native_task_arena_packet(
     *,
     request: Mapping[str, Any],
     evidence_root: str | Path,
     output_dir: str | Path,
+    link_sources_within: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Verify source bytes and build one immutable local construction packet."""
+    """Verify source bytes and build one immutable local construction packet.
+
+    ``link_sources_within`` opts into hard-linking verified assets whose source
+    lives under that directory instead of copying them.  The episode compiler
+    passes its per-run output root so a multi-gigabyte packet costs no second
+    copy of bytes it already extracted and will delete together.
+    """
 
     frozen = _clone_request(request)
     evidence = Path(evidence_root).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
+    link_within = (
+        Path(link_sources_within).expanduser().resolve()
+        if link_sources_within is not None
+        else None
+    )
     if not evidence.is_dir() or evidence.is_symlink():
         raise NativeTaskArenaPacketError(["native_task_arena_packet_evidence_root_invalid"])
     if output.exists():
@@ -400,7 +440,7 @@ def materialize_native_task_arena_packet(
                         ["native_task_arena_packet_scene_collision_adaptation_failed"]
                     ) from exc
             if collision_adaptation is None:
-                shutil.copyfile(source_path, destination)
+                _stage_verified_asset(source_path, destination, link_within=link_within)
             staged_size = destination.stat().st_size
             staged_digest = _sha256(destination)
             if collision_adaptation is None and (

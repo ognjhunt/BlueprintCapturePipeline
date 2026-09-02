@@ -585,10 +585,14 @@ def compile_native_arena_episode(
         packet_request, digest_field="request_digest"
     )
     packet_root = root / "native-task-packet"
+    # The extracted assets and the packet share this per-run root and are
+    # retired together, so the packet hard-links the verified bytes instead of
+    # writing a second multi-gigabyte copy onto the control plane's disk.
     materialize_native_task_arena_packet(
         request=packet_request,
         evidence_root=root,
         output_dir=packet_root,
+        link_sources_within=root,
     )
     packet_zip = root / "native-task-arena-bundle.zip"
     build_task_evaluation_adapter_bundle(

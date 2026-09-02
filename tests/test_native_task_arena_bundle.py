@@ -28,6 +28,7 @@ from blueprint_pipeline.native_task_arena_bundle import (
     NativeTaskArenaBundleError,
     _entrypoint,
     build_native_task_arena_bundle,
+    zip_member_compression,
 )
 from blueprint_pipeline.native_task_arena_construction_bundle import (
     CONSTRUCTION_RUNTIME_MODULE_NAMES,
@@ -4042,3 +4043,40 @@ def test_camera_framing_expectation_ships_beside_observability() -> None:
     ):
         assert "native_task_camera_observability.py" in names
         assert "native_task_camera_framing_expectation.py" in names
+
+
+def _incompressible_bytes(size: int) -> bytes:
+    chunks = []
+    counter = 0
+    while sum(len(chunk) for chunk in chunks) < size:
+        chunks.append(hashlib.sha256(counter.to_bytes(8, "big")).digest())
+        counter += 1
+    return b"".join(chunks)[:size]
+
+
+def test_zip_member_compression_stores_entropy_coded_bytes_and_deflates_text(
+    tmp_path: Path,
+) -> None:
+    """Deflating splat and checkpoint payloads burned minutes for nothing.
+
+    The control plane compiled one no-spend canary packet in about four CPU
+    minutes, almost all of it deflating gigabytes of bytes that do not shrink.
+    The member policy stores known containers outright, probes everything
+    else on its first mebibyte, and stays a pure function of the bytes so one
+    sealed source tree always yields one archive.
+    """
+
+    splat = tmp_path / "scene.ply"
+    splat.write_bytes(_incompressible_bytes(3 * 1024 * 1024))
+    text = tmp_path / "packet.json"
+    text.write_text(json.dumps({"rows": ["row"] * 4096}), encoding="utf-8")
+    usdz = tmp_path / "scene.usdz"
+    usdz.write_text("looks compressible but is a container", encoding="utf-8")
+    empty = tmp_path / "empty.bin"
+    empty.write_bytes(b"")
+
+    assert zip_member_compression(splat) == zipfile.ZIP_STORED
+    assert zip_member_compression(usdz) == zipfile.ZIP_STORED
+    assert zip_member_compression(text) == zipfile.ZIP_DEFLATED
+    assert zip_member_compression(empty) == zipfile.ZIP_DEFLATED
+    assert zip_member_compression(splat) == zip_member_compression(splat)

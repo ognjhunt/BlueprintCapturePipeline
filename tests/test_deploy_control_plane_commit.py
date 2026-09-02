@@ -365,6 +365,14 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "[Timer]\nOnUnitInactiveSec=2min\n",
         encoding="utf-8",
     )
+    progression_path = (
+        unit_dir
+        / "blueprint-task-evaluation-configured-controls-progression.path"
+    )
+    progression_path.write_text(
+        "[Path]\nPathChanged=/task-evaluation-episode-compilations/results\n",
+        encoding="utf-8",
+    )
     intake_service = unit_dir / "blueprint-pipeline-intake.service"
     intake_service.write_text(
         "[Service]\nExecStart=/usr/bin/blueprint-live-pipeline-intake\n",
@@ -406,6 +414,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         discovery_path,
         progression_service,
         progression_timer,
+        progression_path,
         control_plane_service,
         intake_service,
     ):
@@ -448,6 +457,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-object-discovery.path",
         "blueprint-task-evaluation-configured-controls-progression.service",
         "blueprint-task-evaluation-configured-controls-progression.timer",
+        "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-pipeline-control-plane.service",
         "blueprint-pipeline-intake.service",
     )
@@ -459,6 +469,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
         "blueprint-task-evaluation-configured-controls-progression.timer",
+        "blueprint-task-evaluation-configured-controls-progression.path",
     )
 
 
