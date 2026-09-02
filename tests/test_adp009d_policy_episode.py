@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import re
+
 import numpy as np
 import pytest
 
@@ -2064,3 +2066,58 @@ def test_a_client_shaped_like_the_shipped_one_drives_a_full_episode() -> None:
 
     assert client.calls == receipt["policy_queries"] == 4
     assert receipt["candidate_policy_queried"] is True
+
+
+def test_saturated_policy_input_frames_block_readiness_before_any_query(tmp_path) -> None:
+    """A clamped splat observation is a readiness refusal, not policy evidence."""
+
+    class _ClampedSplat(_LifecycleEnvironment):
+        def read_policy_inputs(self):
+            inputs = super().read_policy_inputs()
+            frame = np.full((24, 32, 3), 40, dtype=np.uint8)
+            frame[:, :12, 0] = 255  # 37.5 percent of pixels clip in one channel
+            inputs[DROID_EXTERIOR_VIEW_1] = frame
+            return inputs
+
+    policy = _LifecyclePolicy()
+    progress: dict = {}
+    with pytest.raises(
+        PolicyEpisodeError,
+        match="native_task_policy_input_frame_saturated:"
+        + re.escape(DROID_EXTERIOR_VIEW_1),
+    ):
+        _run(
+            environment=_ClampedSplat(),
+            policy=policy,
+            max_policy_queries=1,
+            settle_window_samples=1,
+            media_output_dir=tmp_path,
+            episode_id="lifecycle-saturated-observation",
+            require_complete_multicamera_media=True,
+            require_prestart_readiness=True,
+            progress=progress,
+        )
+
+    assert progress["episode_readiness_verified"] is False
+    assert progress["episode_started"] is False
+    assert policy.observations == []
+
+
+def test_readiness_receipt_carries_the_policy_input_saturation_evidence(tmp_path) -> None:
+    receipt = _run(
+        environment=_LifecycleEnvironment(),
+        policy=_LifecyclePolicy(),
+        max_policy_queries=1,
+        settle_window_samples=1,
+        media_output_dir=tmp_path,
+        episode_id="lifecycle-saturation-evidence",
+        require_complete_multicamera_media=True,
+        require_prestart_readiness=True,
+    )
+
+    readiness = receipt["prestart_readiness"]
+    assert readiness["checks"]["policy_input_frames_unsaturated"] is True
+    saturation = readiness["policy_input_frame_saturation"]
+    assert saturation["passed"] is True
+    assert set(saturation["views"]) == {DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW}
+    assert saturation["views"][DROID_EXTERIOR_VIEW_1]["saturated_channel_pixel_fraction"] == 0.0

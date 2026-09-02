@@ -43,6 +43,7 @@ REQUIRED_READINESS_CHECKS = (
     "joint_state_readback",
     "task_state_readback",
     "policy_observation_built",
+    "policy_input_frames_unsaturated",
     "policy_control_plane_ready",
     "evidence_storage_reserved",
     "exact_media_write_readback",
