@@ -352,3 +352,85 @@ def test_preparation_and_activation_share_one_allowed_uri_prefix_list() -> None:
         preparation
     )
     assert all(prefix.endswith("/") for prefix in preparation)
+
+
+
+def test_every_storage_pin_writer_has_exact_systemd_write_access() -> None:
+    pins_root = "/var/lib/blueprint/pipeline-control-plane/storage-pins"
+    writers = {
+        "blueprint-task-evaluation-launch-preparation.service": (
+            "src/blueprint_pipeline/task_evaluation_launch_preparation_worker.py",
+            "write_storage_pin(",
+        ),
+        "blueprint-task-evaluation-episode-compilation.service": (
+            "src/blueprint_pipeline/task_evaluation_episode_compilation_worker.py",
+            "write_storage_pin(",
+        ),
+        "blueprint-task-evaluation-launch-activation.service": (
+            "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py",
+            "pin_activation_best_effort(",
+        ),
+        "blueprint-task-evaluation-policy-canary-dispatcher.service": (
+            "src/blueprint_pipeline/task_evaluation_policy_canary_dispatcher.py",
+            "release_storage_pin(",
+        ),
+    }
+    for unit, (module, call) in writers.items():
+        assert call in text(module), (unit, call)
+        service = text(f"deploy/systemd/{unit}")
+        assert f"Environment=BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT={pins_root}" in service
+        write_paths = next(
+            line.split("=", 1)[1].split()
+            for line in service.splitlines()
+            if line.startswith("ReadWritePaths=")
+        )
+        assert pins_root in write_paths, (
+            f"{unit} touches storage pins but its strict filesystem sandbox does not "
+            "expose the pins ledger as an exact writable path"
+        )
+
+
+def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -> None:
+    from blueprint_pipeline.control_plane_storage_gc import (
+        CONTENT_STORE_ROOTS_ENV,
+        DERIVED_ROOTS_ENV,
+        EVIDENCE_ROOTS_ENV,
+        QUEUE_ROOTS_ENV,
+        RUN_ACK,
+    )
+    from blueprint_pipeline.control_plane_storage_pins import PINS_ROOT_ENV
+    from blueprint_pipeline.control_plane_storage_roots import classify_path
+
+    service = text("deploy/systemd/blueprint-control-plane-storage-gc.service")
+    timer = text("deploy/systemd/blueprint-control-plane-storage-gc.timer")
+    assert (
+        f"-m blueprint_pipeline.control_plane_storage_gc run --apply --ack {RUN_ACK}"
+    ) in service
+    assert "User=blueprint" in service and "ProtectSystem=strict" in service
+
+    def roots(env: str) -> list[str]:
+        line = next(row for row in service.splitlines() if row.startswith(f"Environment={env}="))
+        return [item for item in line.split("=", 2)[2].split(":") if item]
+
+    for root in roots(DERIVED_ROOTS_ENV):
+        assert classify_path(root).storage_class == "cache", root
+    for root in roots(CONTENT_STORE_ROOTS_ENV):
+        assert root.endswith("/sha256") and classify_path(root).storage_class == "cache", root
+    for root in roots(EVIDENCE_ROOTS_ENV):
+        assert classify_path(root).storage_class == "evidence_cold", root
+    for root in roots(QUEUE_ROOTS_ENV):
+        assert classify_path(root).storage_class == "work", root
+    assert roots(PINS_ROOT_ENV) == ["/var/lib/blueprint/pipeline-control-plane/storage-pins"]
+    assert not any(
+        row.startswith("Environment=BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=")
+        for row in service.splitlines()
+    ), "offload must stay an operator opt-in from the environment file"
+    assert "Unit=blueprint-control-plane-storage-gc.service" in timer
+    assert "OnUnitInactiveSec=" in timer and "Persistent=true" in timer
+
+    deploy_source = text("scripts/deploy_control_plane_commit.py")
+    assert '"blueprint-control-plane-storage-gc.timer",' in deploy_source
+    assert '"blueprint-control-plane-storage-gc.service",' in deploy_source
+    installer = text("scripts/install_live_pipeline_control_plane.sh")
+    assert "blueprint-control-plane-storage-gc.service" in installer
+    assert "systemctl enable --now blueprint-control-plane-storage-gc.timer" in installer

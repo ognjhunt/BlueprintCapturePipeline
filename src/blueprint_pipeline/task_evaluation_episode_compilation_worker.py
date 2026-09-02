@@ -26,6 +26,11 @@ from .control_plane_disk_budget import (
     DiskReservation,
     reserve_control_plane_disk,
 )
+from .control_plane_storage_pins import (
+    PINS_ROOT_ENV,
+    ControlPlaneStoragePinError,
+    write_storage_pin,
+)
 from .task_evaluation_episode_compilation_queue import ENVELOPE_SCHEMA_VERSION
 from .task_evaluation_launch_preparation_contract import (
     TaskEvaluationLaunchPreparationContractError,
@@ -278,6 +283,7 @@ def process_episode_compilation_queue(
     episode_compiler: EpisodeCompiler = compile_native_arena_episode,
     max_messages: int = 1,
     disk_reservation_root: str | Path | None = None,
+    storage_pins_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Compile queued Website evaluations without allocating a provider."""
 
@@ -429,6 +435,23 @@ def process_episode_compilation_queue(
             }
         if disk_reservation is not None:
             disk_reservation.release()
+        if (
+            storage_pins_root is not None
+            and owned_output is not None
+            and result.get("status") == "compiled_for_production_launch"
+        ):
+            try:
+                write_storage_pin(
+                    pins_root=storage_pins_root,
+                    kind="compilation",
+                    owner_id=str(result["compilation_id"]),
+                    paths=[owned_output],
+                    depends_on=[
+                        {"kind": "preparation", "owner_id": str(envelope["preparation_id"])}
+                    ],
+                )
+            except (ControlPlaneStoragePinError, OSError, KeyError):
+                pass
         result["result_digest"] = canonical_digest(
             result, digest_field="result_digest"
         )
@@ -476,6 +499,7 @@ def main(argv: list[str] | None = None) -> int:
         disk_reservation_root=os.getenv(
             "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"
         ),
+        storage_pins_root=os.getenv(PINS_ROOT_ENV),
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

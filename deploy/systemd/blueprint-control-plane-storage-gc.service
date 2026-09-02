@@ -1,0 +1,58 @@
+[Unit]
+Description=Retire terminal derived directories, reap unreferenced content-store blobs, and offload sealed evidence
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint /var/lib/blueprint/task-evaluation-inputs /var/lib/blueprint/pipeline-control-plane
+ReadOnlyPaths=/etc/blueprint/provider-secrets
+TasksMax=512
+LimitNOFILE=4096
+MemoryMax=8G
+CPUQuota=200%
+TimeoutStartSec=45min
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+# Content stores whose blobs are implicitly pinned by hardlinks from derived directories.
+Environment=BLUEPRINT_CONTROL_PLANE_GC_CONTENT_STORE_ROOTS=/var/lib/blueprint/task-evaluation-inputs/prepared-references/content-addressed/sha256:/var/lib/blueprint/task-evaluation-inputs/compiled-episodes/content-addressed/adapter-members/sha256
+# Derived directories (cache class) retired once unpinned, aged, and unreferenced by any queue message.
+Environment=BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS=/var/lib/blueprint/task-evaluation-inputs/prepared-references:/var/lib/blueprint/task-evaluation-inputs/compiled-episodes:/var/lib/blueprint/task-evaluation-inputs/launch-activations
+Environment=BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches:/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches:/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions
+# Sealed run evidence eligible for offload after the hot window; offload itself stays dry-run until
+# BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1 is set in the operator environment file.
+Environment=BLUEPRINT_CONTROL_PLANE_GC_EVIDENCE_ROOTS=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs:/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries
+Environment=BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-pins
+Environment=BLUEPRINT_CONTROL_PLANE_GC_REPORT_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-gc
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.control_plane_storage_gc run --apply --ack reclaim-control-plane-storage --report-out "$${BLUEPRINT_CONTROL_PLANE_GC_REPORT_ROOT}/latest.json"'

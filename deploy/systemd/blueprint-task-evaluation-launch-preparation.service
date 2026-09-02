@@ -28,7 +28,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
-ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations /var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions /var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations /var/lib/blueprint/pipeline-control-plane/disk-reservations /var/lib/blueprint/task-evaluation-inputs
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations /var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions /var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations /var/lib/blueprint/pipeline-control-plane/disk-reservations /var/lib/blueprint/task-evaluation-inputs /var/lib/blueprint/pipeline-control-plane/storage-pins
 TasksMax=512
 LimitNOFILE=8192
 MemoryMax=8G
@@ -39,6 +39,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/Bluepr
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs/prepared-references
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
+Environment=BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-pins
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_SERVICE_ACCOUNT=blueprint
 Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions
 Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations

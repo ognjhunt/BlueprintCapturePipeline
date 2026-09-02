@@ -1,0 +1,12 @@
+[Unit]
+Description=Reclaim unpinned Blueprint control-plane storage periodically
+
+[Timer]
+OnBootSec=15min
+OnUnitInactiveSec=6h
+RandomizedDelaySec=5min
+Persistent=true
+Unit=blueprint-control-plane-storage-gc.service
+
+[Install]
+WantedBy=timers.target

@@ -27,6 +27,11 @@ from .control_plane_disk_budget import (
     ControlPlaneDiskBudgetError,
     reserve_control_plane_disk,
 )
+from .control_plane_storage_pins import (
+    ControlPlaneStoragePinError,
+    pins_root_from_environment,
+    release_storage_pin,
+)
 from .native_task_arena_policy_canary_bundle import (
     build_policy_canary_session_bundle,
 )
@@ -491,6 +496,24 @@ def _projection(
 AccessChecker = Callable[[Path, int], bool]
 
 
+def _release_activation_storage_pin(root: Path) -> None:
+    """Let the storage reaper retire this activation's derived inputs.
+
+    The dispatch directory is named by the activation id, so the terminal
+    receipt is the moment the preparation, compilation, and launch set it
+    consumed stop being needed.  Best effort: a missing pin or ledger never
+    disturbs a sealed receipt.
+    """
+
+    pins_root = pins_root_from_environment()
+    if pins_root is None:
+        return
+    try:
+        release_storage_pin(pins_root=pins_root, kind="activation", owner_id=root.name)
+    except (ControlPlaneStoragePinError, OSError):
+        return
+
+
 def _default_access_checker(path: Path, mode: int) -> bool:
     """Ask the kernel whether this process's effective identity may use ``path``."""
 
@@ -738,6 +761,7 @@ def _finish_policy_canary_delivery(
         receipt, digest_field="receipt_digest"
     )
     _write_exclusive(root / "dispatch_receipt.json", receipt)
+    _release_activation_storage_pin(root)
     _event_and_sync(
         root,
         stage="billing_teardown",

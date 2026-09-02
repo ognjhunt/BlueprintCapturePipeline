@@ -343,6 +343,12 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.path" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.path"
+install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-storage-gc.service" \
+  "${SYSTEMD_DIR}/blueprint-control-plane-storage-gc.service"
+install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-storage-gc.timer" \
+  "${SYSTEMD_DIR}/blueprint-control-plane-storage-gc.timer"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-supervisor.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-supervisor.service"
@@ -526,6 +532,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
   systemctl enable --now blueprint-task-evaluation-configured-controls-progression.timer
   systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path
+  systemctl enable --now blueprint-control-plane-storage-gc.timer
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.path
   systemctl enable --now blueprint-scene-object-discovery.path

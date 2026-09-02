@@ -69,6 +69,12 @@ from blueprint_pipeline.control_plane_disk_budget import (  # noqa: E402
     ControlPlaneDiskBudgetError,
     reserve_control_plane_disk,
 )
+from blueprint_pipeline.control_plane_release_retirement import (  # noqa: E402
+    ControlPlaneReleaseRetirementError,
+    EXECUTE_ACK as RELEASE_RETIREMENT_ACK,
+    apply_release_retirement_plan,
+    build_release_retirement_plan,
+)
 
 SCHEMA_VERSION = "control_plane_commit_deploy_receipt.v1"
 
@@ -95,6 +101,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-configured-controls-progression.service",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
+    "blueprint-control-plane-storage-gc.service",
+    "blueprint-control-plane-storage-gc.timer",
     "blueprint-pipeline-control-plane.service",
     "blueprint-pipeline-intake.service",
 )
@@ -119,7 +127,27 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
+    # The storage reaper is no-spend housekeeping: it only ever removes
+    # unpinned cache bytes and offloads sealed evidence behind pointers.
+    "blueprint-control-plane-storage-gc.timer",
 )
+#: JSON under these roots names the commits that a launch may still need; a
+#: commit named anywhere here is never retired by the deploy that supersedes it.
+DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS = (
+    "/etc/blueprint/task-evaluation-launch-profiles",
+    "/var/lib/blueprint/pipeline-control-plane/standing-authorizations",
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches/pending",
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches/processing",
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/pending",
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/processing",
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/pending",
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/processing",
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations/pending",
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations/processing",
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches/pending",
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches/processing",
+)
+DEFAULT_RELEASE_RETIREMENT_KEEP_LAST = 3
 #: The only unit kinds a release may install.  Services and their queue-watching
 #: paths stay paired, while the one fixed progression timer (and its
 #: compilation-result path watcher) stays paired with its oneshot service.
@@ -687,6 +715,61 @@ def _install_disk_reservation_runtime_prerequisites(
         "account": account,
         "repaired_paths": repaired,
         "installed": installed,
+    }
+
+
+def _retire_superseded_release_trees(
+    *,
+    release_root: str | Path,
+    runtime_root: str | Path,
+    active_link: str | Path,
+    current_commit: str,
+    reference_roots: Sequence[str],
+    keep_last: int,
+) -> dict[str, Any]:
+    """Retire release and runtime trees this deploy has superseded.
+
+    Deploy is the only event that creates per-commit trees, so it is where
+    they are retired.  Anything the plan cannot prove safe is left in place and
+    reported; a retirement failure never fails a deploy whose surfaces already
+    moved.
+    """
+
+    try:
+        plan = build_release_retirement_plan(
+            release_root=release_root,
+            runtime_root=runtime_root,
+            active_link=active_link,
+            current_commit=current_commit,
+            protected_reference_roots=list(reference_roots),
+            keep_last=keep_last,
+        )
+        if plan["status"] != "dry_run":
+            return {
+                "status": "skipped",
+                "blockers": list(plan["blockers"]),
+                "plan_digest": plan["plan_digest"],
+            }
+        receipt = apply_release_retirement_plan(
+            plan,
+            ack=RELEASE_RETIREMENT_ACK,
+            active_link=active_link,
+            release_root=release_root,
+        )
+    except (ControlPlaneReleaseRetirementError, OSError, ValueError) as exc:
+        return {
+            "status": "blocked",
+            "blockers": [f"deploy_release_retirement_failed:{type(exc).__name__}"],
+        }
+    return {
+        "status": "applied",
+        "plan_digest": plan["plan_digest"],
+        "receipt_digest": receipt["result_digest"],
+        "retired_commits": sorted({row["commit"] for row in receipt["removed"]}),
+        "retired_bytes": plan["candidate_bytes"],
+        "protected_commit_count": len(plan["protected_commits"]),
+        "unmanaged_children": list(plan["unmanaged_children"]),
+        "skipped": list(receipt["skipped"]),
     }
 
 
@@ -1750,6 +1833,10 @@ def deploy_control_plane_commit(
     configured_controls_autostart_intent_sources: Sequence[str] = (),
     arm_path_units: bool = False,
     disk_reservation_root: str | Path | None = None,
+    release_retirement_reference_roots: Sequence[str] = (
+        DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS
+    ),
+    release_retirement_keep_last: int = DEFAULT_RELEASE_RETIREMENT_KEEP_LAST,
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both."""
 
@@ -2010,10 +2097,22 @@ def deploy_control_plane_commit(
             always_arm_units=DEFAULT_ALWAYS_ARM_PATH_UNITS,
             always_arm_timer_units=DEFAULT_ALWAYS_ARM_TIMER_UNITS,
         )
+        # Last, with the new release proven live: retire the trees this deploy
+        # superseded, so per-commit growth is bounded by keep_last instead of
+        # by the number of deploys ever made.
+        release_retirement = _retire_superseded_release_trees(
+            release_root=releases,
+            runtime_root=scene_configuration_runtime_root,
+            active_link=active,
+            current_commit=commit,
+            reference_roots=release_retirement_reference_roots,
+            keep_last=release_retirement_keep_last,
+        )
 
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "deployed",
+        "release_retirement": release_retirement,
         "source_commit": commit,
         "disk_reservation": disk_reservation_receipt,
         "disk_reservation_runtime": disk_reservation_runtime,

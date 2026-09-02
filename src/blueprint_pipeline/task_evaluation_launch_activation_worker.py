@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 
 from .core.common import sha256_file as _sha256_file_hex
 from .decision_evidence_contracts import canonical_digest
-from . import control_plane_disk_budget as disk_budget
+from . import control_plane_disk_budget as disk_budget, control_plane_storage_pins as storage_pins
 from .task_evaluation_configured_scene_revision import (
     TaskEvaluationConfiguredSceneRevisionError,
     validate_configured_scene_revision,
@@ -1787,6 +1787,8 @@ def process_launch_activation_queue(
             )
         if disk_reservation is not None:
             disk_reservation.release()
+        if terminal_state == "prepared":
+            storage_pins.pin_activation_best_effort(request, activation_base)
         result_path = results_root / source.name
         try:
             write_launch_preparation_record_exclusive(result_path, result)

@@ -102,10 +102,65 @@ Consumers:
   Chromium, `node_modules`) from the prerequisite root; a per-commit tree costs
   directories and renderer sources only.
 
-## Reclaim
+## Storage classes
 
-`python -m blueprint_pipeline.control_plane_storage_gc --content-store-root <...>/prepared-references/content-addressed/sha256`
-lists content-store blobs whose link count proves no preparation or compiled
-episode still references them; `--apply --ack reap-unreferenced-content` removes
-exactly the listed candidates after re-verifying each one. Evidence roots,
-release worktrees, and runtime trees are never candidates for this tool.
+`blueprint_pipeline.control_plane_storage_roots` is the single table of
+production roots and their retention law: `evidence_hot` (never evicted or
+offloaded: spend guard, deploy receipts, standing authorizations),
+`evidence_cold` (sealed run directories; offloadable behind a pointer), `cache`
+(reproducible derived inputs; evictable when unpinned), `work` (queues),
+`release` (per-commit trees), `ledger`, `container`, `staging`. A governance test
+requires every root a production unit names to be classified, and the reclaim
+tools refuse a configured root whose class is not the one they may touch.
+
+## Pins
+
+Producers pin the derived directories they create under
+`/var/lib/blueprint/pipeline-control-plane/storage-pins/<kind>/<owner>.json`:
+the preparation worker pins its preparation directory, the compile worker pins
+its compiled episode (depending on the preparation), and the activation worker
+pins its launch set (depending on both). The policy-canary dispatcher releases
+the activation pin when it writes the terminal `dispatch_receipt.json`, and the
+release cascades to dependencies no other live pin still needs. Pins expire
+after 30 days so a release that never arrives cannot protect bytes forever.
+
+## Reclaim timer
+
+`blueprint-control-plane-storage-gc.timer` runs
+`python -m blueprint_pipeline.control_plane_storage_gc run --apply --ack reclaim-control-plane-storage`
+every six hours as the `blueprint` service account and writes
+`/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json`. One tick:
+
+1. **Derived directories** under the configured `cache` roots are retired when
+   no live pin names them, no pending or processing queue message mentions
+   them, and they have been idle for seven days.
+2. **Content-store blobs** whose link count is one (nothing hardlinks them any
+   more), whose bytes still match their digest, and which are older than a day
+   are removed. Retiring directories first is what frees blobs.
+3. **Evidence offload** lists sealed run directories (terminal receipt present,
+   idle past the 14-day hot window) under the `evidence_cold` roots. It applies
+   only when `BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1` is set in
+   `/etc/blueprint/pipeline-control-plane.env`: the directory is packed, published
+   to the artifact store under kind `control-plane-evidence` with full readback,
+   replaced by `<name>.offloaded.v1.json` (URI, digest, size, per-member digests),
+   and only then removed. Bytes are migrated, never deleted; the spend guard and
+   every other `evidence_hot` root are outside the tool's reach.
+
+Restore an offloaded run with
+`python -c 'from blueprint_pipeline.control_plane_evidence_offload import restore_offloaded_evidence as r; r(pointer_path=..., destination=...)'`;
+every member digest is verified before the directory is exposed.
+
+The manual single-root form
+`python -m blueprint_pipeline.control_plane_storage_gc --content-store-root <root>/sha256 [--apply --ack reap-unreferenced-content]`
+remains for operators.
+
+## Release retirement at deploy
+
+Deploy is the only event that creates per-commit release worktrees and runtime
+trees, so deploy retires them: after the new release is proven live, commits
+that are not the active release, not the commit being deployed, not named by any
+launch profile, standing authorization, or pending/processing queue envelope,
+not among the newest three releases, and older than a day are removed together
+with their runtime publication receipts. The deploy receipt records
+`release_retirement` (`applied`, `skipped` with blockers, or `blocked`); a
+retirement problem never fails a deploy whose surfaces already moved.
