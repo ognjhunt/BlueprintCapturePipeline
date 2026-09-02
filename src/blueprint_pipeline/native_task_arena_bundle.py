@@ -20,6 +20,7 @@ import re
 import shutil
 import stat
 import zipfile
+import zlib
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -84,6 +85,55 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+#: Container and media formats that are already entropy-coded.  Deflating them
+#: costs ~30 MB/s of CPU for no size reduction; the packet's splat, geometry,
+#: and checkpoint payloads dominate every per-run archive.
+_ALREADY_COMPRESSED_SUFFIXES = frozenset(
+    {
+        ".zip",
+        ".usdz",
+        ".whl",
+        ".gz",
+        ".xz",
+        ".zst",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".mp4",
+        ".webm",
+        ".spz",
+        ".ksplat",
+    }
+)
+_COMPRESSION_PROBE_BYTES = 1024 * 1024
+_COMPRESSION_PROBE_MINIMUM_GAIN = 0.05
+
+
+def zip_member_compression(source: Path) -> int:
+    """Choose ``ZIP_STORED`` or ``ZIP_DEFLATED`` for one archive member.
+
+    Binary splat, mesh, and checkpoint payloads are effectively incompressible,
+    and deflating gigabytes of them was the dominant CPU cost of compiling one
+    no-spend episode packet (about four minutes per run on the control plane).
+    Known entropy-coded containers are stored outright; everything else is
+    probed on its first mebibyte and stored when deflate would save less than
+    five percent.  The decision is a pure function of the bytes, so archives
+    stay deterministic for one sealed source tree.
+    """
+
+    if source.suffix.lower() in _ALREADY_COMPRESSED_SUFFIXES:
+        return zipfile.ZIP_STORED
+    with source.open("rb") as stream:
+        probe = stream.read(_COMPRESSION_PROBE_BYTES)
+    if not probe:
+        return zipfile.ZIP_DEFLATED
+    compressed = len(zlib.compress(probe, 6))
+    if compressed >= len(probe) * (1.0 - _COMPRESSION_PROBE_MINIMUM_GAIN):
+        return zipfile.ZIP_STORED
+    return zipfile.ZIP_DEFLATED
+
+
 def _write_zip_file(
     archive: zipfile.ZipFile, *, source: Path, archive_path: str
 ) -> None:
@@ -92,11 +142,8 @@ def _write_zip_file(
     info = zipfile.ZipInfo(archive_path, date_time=(1980, 1, 1, 0, 0, 0))
     info.create_system = 3
     info.external_attr = (source.stat().st_mode & 0xFFFF) << 16
-    already_compressed = source.suffix.lower() in {".zip", ".usdz", ".whl"}
-    info.compress_type = (
-        zipfile.ZIP_STORED if already_compressed else zipfile.ZIP_DEFLATED
-    )
-    if not already_compressed:
+    info.compress_type = zip_member_compression(source)
+    if info.compress_type == zipfile.ZIP_DEFLATED:
         info._compresslevel = 6
     with source.open("rb") as input_stream, archive.open(
         info, "w", force_zip64=True

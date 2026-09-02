@@ -1042,3 +1042,51 @@ def test_checked_second_scene_request_and_receipt_are_self_consistent() -> None:
         receipt, digest_field="receipt_digest"
     )
     assert receipt["native_application_claimed"] is False
+
+
+def test_packet_hardlinks_verified_sources_only_inside_the_opted_in_tree(
+    tmp_path: Path,
+) -> None:
+    """A packet may share bytes only with sources the caller will retire with it.
+
+    The episode compiler extracts multi-gigabyte assets and then wrote a second
+    copy into the packet, doubling the disk every no-spend canary consumed on a
+    host that reached 100% during the 2026-09-01 launch.  Linking is opt-in and
+    scoped to one tree; a long-lived evidence store outside it keeps the copy so
+    retained evidence never shares an inode with a packet.
+    """
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    request = _request(evidence, articulated=True)
+    source = evidence / "task_object" / "task_object.usda"
+
+    materialize_native_task_arena_packet(
+        request=request, evidence_root=evidence, output_dir=tmp_path / "copied"
+    )
+    materialize_native_task_arena_packet(
+        request=request,
+        evidence_root=evidence,
+        output_dir=tmp_path / "linked",
+        link_sources_within=evidence,
+    )
+    materialize_native_task_arena_packet(
+        request=request,
+        evidence_root=evidence,
+        output_dir=tmp_path / "unrelated-scope",
+        link_sources_within=tmp_path / "somewhere-else",
+    )
+
+    copied = tmp_path / "copied" / "assets" / "task_object.usda"
+    linked = tmp_path / "linked" / "assets" / "task_object.usda"
+    scoped_out = tmp_path / "unrelated-scope" / "assets" / "task_object.usda"
+    assert copied.read_bytes() == linked.read_bytes() == source.read_bytes()
+    assert linked.stat().st_ino == source.stat().st_ino
+    assert copied.stat().st_ino != source.stat().st_ino
+    assert scoped_out.stat().st_ino != source.stat().st_ino
+    # Collision bytes that need no GPU re-authoring are verified source bytes
+    # like any other asset, so inside the opted-in tree they link as well.
+    collision_source = evidence / "scene_collision" / "scene_collision.usda"
+    linked_collision = tmp_path / "linked" / "assets" / "scene_collision.usda"
+    assert linked_collision.read_bytes() == collision_source.read_bytes()
+    assert linked_collision.stat().st_ino == collision_source.stat().st_ino

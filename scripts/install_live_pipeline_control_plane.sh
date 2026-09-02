@@ -341,6 +341,9 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.timer" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.timer"
 run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.path" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.path"
+run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-supervisor.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-supervisor.service"
 run install -m 0644 \
@@ -522,6 +525,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-gpu-spend-guard.timer
   systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
   systemctl enable --now blueprint-task-evaluation-configured-controls-progression.timer
+  systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.path
   systemctl enable --now blueprint-scene-object-discovery.path
@@ -537,6 +541,7 @@ else
   echo "enable spend admission guard with: systemctl enable --now blueprint-gpu-spend-guard.timer"
   echo "enable launch reconciliation with: systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer"
   echo "enable configured-controls progression with: systemctl enable --now blueprint-task-evaluation-configured-controls-progression.timer"
+  echo "enable compilation-result progression wake-up with: systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path"
   echo "enable durable launch queue watch with: systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path"
   echo "enable no-spend launch preparation queue with: systemctl enable --now blueprint-task-evaluation-launch-preparation.path"
   echo "enable whole-splat object discovery queue with: systemctl enable --now blueprint-scene-object-discovery.path"

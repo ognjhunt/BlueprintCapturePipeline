@@ -372,9 +372,12 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(tmp_path: Path, mo
 
     observed = {}
 
-    def fake_materialize(*, request, evidence_root, output_dir):
+    def fake_materialize(*, request, evidence_root, output_dir, link_sources_within):
         observed["packet_request"] = request
         assert Path(evidence_root) == (tmp_path / "output").resolve()
+        # The packet may hard-link only bytes inside the compiler's own
+        # per-run root, which it extracted and retires together with the packet.
+        assert Path(link_sources_within) == (tmp_path / "output").resolve()
         Path(output_dir).mkdir()
         (Path(output_dir) / "packet.json").write_text("{}\n", encoding="utf-8")
 
