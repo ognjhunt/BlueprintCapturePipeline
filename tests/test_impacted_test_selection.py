@@ -134,3 +134,27 @@ def test_a_bare_stem_inside_a_longer_name_does_not_count_as_coverage(tmp_path: P
 
     assert "tests/test_unrelated.py" not in plan["selected_tests"]
     assert plan["requires_full_suite"] is True
+
+
+def test_policy_canary_hermetic_rehearsals_follow_their_production_modules() -> None:
+    """A worker or bundle change must run the tests that stand in for a paid GPU attempt.
+
+    Five paid Quick-10 attempts failed on defects these suites catch in seconds.
+    The selector maps a changed module to the tests whose source names it, so
+    the suites import their subjects by dotted module path; this pin fails if
+    that import is ever rewritten into a form the selector cannot see.
+    """
+
+    rehearsal = "tests/test_native_task_arena_policy_canary_lifecycle_rehearsal.py"
+    closure = "tests/test_provider_runtime_import_closure.py"
+    expectations = {
+        "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py": {rehearsal, closure},
+        "src/blueprint_pipeline/native_task_arena_policy_canary_bundle.py": {closure},
+        "src/blueprint_pipeline/native_task_arena_policy_canary_session.py": {rehearsal},
+        "src/blueprint_pipeline/adp009d_policy_episode.py": {rehearsal},
+        "src/blueprint_pipeline/native_task_arena_execution_contract.py": {closure},
+    }
+    for changed, expected in expectations.items():
+        plan = MODULE.build_plan(ROOT, [changed])
+        assert plan["requires_full_suite"] is False, (changed, plan["reasons"])
+        assert expected <= set(plan["selected_tests"]), (changed, plan["selected_tests"])

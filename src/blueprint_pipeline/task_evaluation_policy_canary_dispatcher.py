@@ -1440,9 +1440,18 @@ def process_policy_canary_activation_results(
     dispatch_root: str | Path,
     implementation_commit: str,
     execute: bool,
+    hotfix_overlay_path: str | Path | None = None,
+    machine_avoidlist_path: str | Path | None = None,
+    billing_audit_root: str | Path | None = None,
     max_messages: int = 1,
+    access: AccessChecker = _default_access_checker,
 ) -> dict[str, Any]:
-    """Consume activation results automatically; never re-run an allocator output."""
+    """Consume activation results automatically; never re-run an allocator output.
+
+    Operator inputs (signed overlay, machine avoidlist, billing audit root) are
+    forwarded exactly as the queue mode forwards them; a flag accepted by the
+    CLI and silently dropped in one mode would be a fail-open surface.
+    """
 
     if (
         not isinstance(max_messages, int)
@@ -1495,7 +1504,11 @@ def process_policy_canary_activation_results(
                 output_root=output,
                 implementation_commit=implementation_commit,
                 execute=execute,
+                hotfix_overlay_path=hotfix_overlay_path,
+                machine_avoidlist_path=machine_avoidlist_path,
                 official_billing_receipt_path=(output / "official_billing_reconciliation.json"),
+                billing_audit_root=billing_audit_root,
+                access=access,
             )
         )
     return {
@@ -1795,6 +1808,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dispatch_root=args.dispatch_root,
                 implementation_commit=args.implementation_commit,
                 execute=args.execute,
+                hotfix_overlay_path=args.hotfix_overlay,
+                machine_avoidlist_path=args.machine_avoidlist,
+                billing_audit_root=args.billing_audit_root,
             )
             if legacy_queue_mode
             else dispatch_policy_canary_activation(
