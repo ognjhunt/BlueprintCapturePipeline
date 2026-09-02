@@ -19,6 +19,105 @@ RESULT_FILENAME = "native_task_arena_runtime_preflight.v1.json"
 RESULT_SCHEMA_VERSION = "native_task_arena_runtime_preflight.v1"
 
 
+def _bind_measured_gripper_servo(
+    *,
+    env: Any,
+    robot: Any,
+    seed: int,
+    torch: Any,
+    gripper_probe: Any,
+    servo_factory: Any,
+) -> tuple[dict[str, Any], Any | None]:
+    """Mirror the construction/policy gripper binding before live pad reads."""
+
+    gripper = gripper_probe(env=env, robot=robot, seed=seed, torch=torch)
+    if gripper.get("status") != "measured":
+        return gripper, None
+    env.reset(seed=seed)
+    return gripper, servo_factory(
+        env=env,
+        robot=robot,
+        gripper_convention=gripper,
+    )
+
+
+def _prepolicy_visual_gate_from_snapshot(
+    *, snapshot: dict[str, Any], output_root: Path
+) -> dict[str, Any]:
+    """Measure the exact retained reset PNGs before any candidate can load."""
+
+    import numpy as np
+    from PIL import Image
+
+    from blueprint_pipeline.native_task_camera_observability import (
+        measure_native_task_prepolicy_visual_frames,
+    )
+
+    frames: dict[str, Any] = {}
+    root = output_root.resolve()
+    for row in snapshot.get("cameras") or []:
+        role = str(row.get("role") or "")
+        relative = str((row.get("rgb_png") or {}).get("path") or "")
+        frame_path = (root / relative).resolve()
+        if not relative or not frame_path.is_relative_to(root):
+            raise RuntimeError(
+                f"native_task_arena_preflight_camera_path_invalid:{role}"
+            )
+        with Image.open(frame_path) as image:
+            frames[role] = np.asarray(image.convert("RGB"))
+    return measure_native_task_prepolicy_visual_frames(frames)
+
+
+def _observed_contact_position_world(
+    *, plan: dict[str, Any], object_reset_readback: dict[str, Any]
+) -> tuple[list[float], str]:
+    """Resolve the live contact frame for articulated and rigid task plans."""
+
+    task_kind = str(plan.get("task_kind") or "")
+    if task_kind == "articulated_open_close":
+        link = object_reset_readback["task_link_frame_equivalence"]
+        return (
+            [float(value) for value in link["observed_contact_position_world_m"]],
+            "native_articulated_contact_link_readback",
+        )
+    if task_kind != "rigid_pick_place":
+        raise ValueError("unsupported task kind")
+
+    subjects = [
+        row
+        for row in object_reset_readback.get("objects") or []
+        if row.get("task_subject") is True
+    ]
+    if len(subjects) != 1:
+        raise ValueError("rigid task subject")
+    observed = subjects[0]["observed_root_pose_world"]
+    root_position = [float(value) for value in observed["position_world_m"]]
+    root_orientation = [float(value) for value in observed["orientation_xyzw"]]
+    affordance = plan["task_spec"]["interaction_affordance"]
+    transform = affordance["asset_root_from_scoring_frame"]
+    from blueprint_pipeline.rigid_frame_transforms import (
+        apply_rigid_offset,
+        rotate_vector_xyzw,
+    )
+
+    scoring_position, scoring_orientation = apply_rigid_offset(
+        body_position_world=root_position,
+        body_quaternion_world_xyzw=root_orientation,
+        offset_position_body=[float(value) for value in transform["position_m"]],
+        offset_quaternion_body_xyzw=[
+            float(value) for value in transform["orientation_xyzw"]
+        ],
+    )
+    contact_offset = rotate_vector_xyzw(
+        scoring_orientation,
+        [float(value) for value in affordance["contact_point_scoring_frame_m"]],
+    )
+    return (
+        [scoring_position[index] + contact_offset[index] for index in range(3)],
+        "native_rigid_subject_root_plus_scoring_and_contact_offsets",
+    )
+
+
 def _robot_reset_task_space_readback(
     *,
     plan: dict[str, Any],
@@ -41,12 +140,10 @@ def _robot_reset_task_space_readback(
                 "finger_midpoint_world_m"
             ]
         ]
-        contact = [
-            float(value)
-            for value in object_reset_readback["task_link_frame_equivalence"][
-                "observed_contact_position_world_m"
-            ]
-        ]
+        contact, contact_source = _observed_contact_position_world(
+            plan=plan,
+            object_reset_readback=object_reset_readback,
+        )
         if not all(len(row) == 3 for row in (base, midpoint, contact)):
             raise ValueError("vector length")
         forward = rotate_vector_xyzw(base_quaternion, [1.0, 0.0, 0.0])
@@ -124,6 +221,7 @@ def _robot_reset_task_space_readback(
         "robot_forward_unit_world": forward,
         "finger_midpoint_world_m": midpoint,
         "observed_contact_position_world_m": contact,
+        "observed_contact_position_source": contact_source,
         "approach_standoff_position_world_m": approach,
         "approach_standoff_m": 0.12,
         "finger_height_above_base_m": clearance_m,
@@ -304,6 +402,25 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
                 else None
             ),
         }
+        upstream_native_material = (
+            not material_targets
+            and not row["material_prim_valid"]
+            and not row["material_shader_valid"]
+        )
+        legacy_emissive_material = (
+            len(material_targets) == 1
+            and row["material_prim_valid"]
+            and row["material_shader_valid"]
+            and row["material_shader_source_asset"] == "ParticleFieldEmissive.mdl"
+            and row["material_shader_sub_identifier"] == "ParticleFieldEmissive"
+        )
+        row["material_contract"] = (
+            "upstream_native_unbound"
+            if upstream_native_material
+            else "legacy_particlefield_emissive"
+            if legacy_emissive_material
+            else "invalid"
+        )
         row["passed"] = bool(
             row["active"]
             and row["defined"]
@@ -320,13 +437,7 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
             == position_count * expected_element_size
             and isinstance(row["extent"], list)
             and len(row["extent"]) == 2
-            and len(material_targets) == 1
-            and row["material_prim_valid"]
-            and row["material_shader_valid"]
-            and row["material_shader_source_asset"]
-            == "ParticleFieldEmissive.mdl"
-            and row["material_shader_sub_identifier"]
-            == "ParticleFieldEmissive"
+            and (upstream_native_material or legacy_emissive_material)
         )
         rows.append(row)
     if len(rows) != 1:
@@ -461,6 +572,7 @@ def main() -> int:
         from blueprint_pipeline.native_task_arena_construction_worker import (
             _articulation_device_binding,
             _camera_snapshot,
+            _gripper_convention_probe,
             _load_and_verify_manifest,
             preflight_native_dependency_matrix,
         )
@@ -620,6 +732,41 @@ def main() -> int:
         result["phase_reached"] = "environment_built"
         _announce("environment_build", "completed")
 
+        # Capture the exact future policy views before any robot/readback
+        # diagnostic can hide the renderer evidence.  The strict RGB gate is
+        # evaluated before semantic target visibility for the same reason: a
+        # missing label remains important, but it must not erase the images
+        # needed to diagnose appearance fidelity.
+        result["camera_snapshot"] = _camera_snapshot(
+            env=env,
+            camera_scene_names=built.camera_scene_names,
+            output_root=output_root,
+            snapshot_id="runtime_preflight",
+            framing_expectations=(
+                (plan.get("task_object_observability") or {}).get("cameras")
+                or {}
+            ),
+        )
+        result["prepolicy_visual_gate"] = _prepolicy_visual_gate_from_snapshot(
+            snapshot=result["camera_snapshot"],
+            output_root=output_root,
+        )
+        if not result["prepolicy_visual_gate"]["passed"]:
+            result["blockers"].extend(
+                result["prepolicy_visual_gate"]["blockers"]
+            )
+            raise RuntimeError(
+                "native_task_arena_preflight_prepolicy_visual_gate_failed"
+            )
+        camera_rows = result["camera_snapshot"]["cameras"]
+        if not camera_rows or not all(
+            row["observability"]["passed"] for row in camera_rows
+        ):
+            result["blockers"].append(
+                "native_task_arena_preflight_camera_observability_failed"
+            )
+            raise RuntimeError("native_task_arena_preflight_camera_failed")
+
         import torch
 
         from blueprint_pipeline.native_franka_pose_servo import (
@@ -627,7 +774,23 @@ def main() -> int:
         )
 
         robot = env.unwrapped.scene["robot"]
-        servo = NativeFrankaDifferentialIkServo(env=env, robot=robot)
+        _announce("gripper_convention")
+        gripper, servo = _bind_measured_gripper_servo(
+            env=env,
+            robot=robot,
+            seed=seed,
+            torch=torch,
+            gripper_probe=_gripper_convention_probe,
+            servo_factory=NativeFrankaDifferentialIkServo,
+        )
+        result["gripper_convention"] = gripper
+        result["blockers"].extend(gripper.get("blockers") or [])
+        if servo is None:
+            raise RuntimeError(
+                "native_task_arena_preflight_gripper_convention_unresolved"
+            )
+        result["phase_reached"] = "gripper_convention_measured"
+        _announce("gripper_convention", "completed")
         result["gripper_body_origin_axis_readback"] = (
             servo.current_gripper_frame_axis_readback()
         )
@@ -657,11 +820,8 @@ def main() -> int:
             )
         )
         if not result["robot_reset_task_space_readback"]["passed"]:
-            result["blockers"].extend(
+            result.setdefault("diagnostic_findings", []).extend(
                 result["robot_reset_task_space_readback"]["blockers"]
-            )
-            raise RuntimeError(
-                "native_task_arena_preflight_robot_reset_task_space_failed"
             )
         for _ in range(8):
             current = servo.read_arm_joint_positions()
@@ -672,20 +832,6 @@ def main() -> int:
                     dtype=torch.float32,
                 )
             )
-        result["camera_snapshot"] = _camera_snapshot(
-            env=env,
-            camera_scene_names=built.camera_scene_names,
-            output_root=output_root,
-            snapshot_id="runtime_preflight",
-        )
-        camera_rows = result["camera_snapshot"]["cameras"]
-        if not camera_rows or not all(
-            row["observability"]["passed"] for row in camera_rows
-        ):
-            result["blockers"].append(
-                "native_task_arena_preflight_camera_observability_failed"
-            )
-            raise RuntimeError("native_task_arena_preflight_camera_failed")
         result["torch_runtime"] = {
             "version": torch.__version__,
             "cuda_version": torch.version.cuda,

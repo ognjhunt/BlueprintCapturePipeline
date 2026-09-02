@@ -3,8 +3,11 @@ from __future__ import annotations
 import pytest
 
 from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
+    _bind_measured_gripper_servo,
     _gripper_pad_geometry_axis_readback,
+    _observed_contact_position_world,
     _particlefield_stage_readback,
+    _prepolicy_visual_gate_from_snapshot,
     _robot_reset_task_space_readback,
 )
 from blueprint_pipeline.native_task_nurec_render_setup import (
@@ -13,6 +16,142 @@ from blueprint_pipeline.native_task_nurec_render_setup import (
 
 
 pxr = pytest.importorskip("pxr")
+
+
+def test_runtime_preflight_measures_gripper_before_live_pad_readback() -> None:
+    calls = []
+
+    class Env:
+        def reset(self, *, seed):
+            calls.append(("reset", seed))
+
+    measured = {"status": "measured", "blockers": [], "open_command": 0.0}
+
+    def probe(**kwargs):
+        calls.append(("probe", kwargs["seed"]))
+        return measured
+
+    def servo_factory(**kwargs):
+        calls.append(("servo", kwargs["gripper_convention"]))
+        return object()
+
+    gripper, servo = _bind_measured_gripper_servo(
+        env=Env(),
+        robot=object(),
+        seed=85423473,
+        torch=object(),
+        gripper_probe=probe,
+        servo_factory=servo_factory,
+    )
+
+    assert gripper is measured
+    assert servo is not None
+    assert calls == [
+        ("probe", 85423473),
+        ("reset", 85423473),
+        ("servo", measured),
+    ]
+
+
+def test_runtime_preflight_refuses_unmeasured_gripper_without_servo() -> None:
+    gripper, servo = _bind_measured_gripper_servo(
+        env=object(),
+        robot=object(),
+        seed=1,
+        torch=object(),
+        gripper_probe=lambda **_kwargs: {
+            "status": "blocked",
+            "blockers": ["probe_failed"],
+        },
+        servo_factory=lambda **_kwargs: pytest.fail("servo must not be built"),
+    )
+
+    assert gripper["blockers"] == ["probe_failed"]
+    assert servo is None
+
+
+def test_runtime_preflight_applies_visual_gate_to_exact_retained_pngs(
+    tmp_path,
+) -> None:
+    import numpy as np
+    from PIL import Image
+
+    cameras = []
+    for index, role in enumerate(("external", "wrist", "overview"), start=1):
+        frame = np.zeros((40, 60, 3), dtype=np.uint8)
+        frame[:, :, index - 1] = np.tile(
+            np.linspace(20 + index, 220 - index, 60, dtype=np.uint8),
+            (40, 1),
+        )
+        path = tmp_path / f"{role}.png"
+        Image.fromarray(frame).save(path)
+        cameras.append(
+            {"role": role, "rgb_png": {"path": path.name}}
+        )
+
+    result = _prepolicy_visual_gate_from_snapshot(
+        snapshot={"cameras": cameras}, output_root=tmp_path
+    )
+
+    assert result["passed"] is True
+    assert result["candidate_policy_loaded"] is False
+    assert result["candidate_policy_queried"] is False
+
+
+def test_runtime_preflight_visual_gate_refuses_dark_splat_signature(tmp_path) -> None:
+    import numpy as np
+    from PIL import Image
+
+    cameras = []
+    for index, role in enumerate(("external", "wrist", "overview"), start=1):
+        frame = np.zeros((40, 60, 3), dtype=np.uint8)
+        frame[:8, :, index - 1] = np.tile(
+            np.linspace(10, 200, 60, dtype=np.uint8), (8, 1)
+        )
+        path = tmp_path / f"{role}.png"
+        Image.fromarray(frame).save(path)
+        cameras.append(
+            {"role": role, "rgb_png": {"path": path.name}}
+        )
+
+    result = _prepolicy_visual_gate_from_snapshot(
+        snapshot={"cameras": cameras}, output_root=tmp_path
+    )
+
+    assert result["passed"] is False
+    assert any("near_black_fraction_above_ceiling" in value for value in result["blockers"])
+
+
+def test_runtime_preflight_resolves_rigid_contact_from_live_subject_root() -> None:
+    contact, source = _observed_contact_position_world(
+        plan={
+            "task_kind": "rigid_pick_place",
+            "task_spec": {
+                "interaction_affordance": {
+                    "asset_root_from_scoring_frame": {
+                        "position_m": [0.0, 0.0, 0.064],
+                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    },
+                    "contact_point_scoring_frame_m": [-0.064, 0.0, 0.011],
+                }
+            },
+        },
+        object_reset_readback={
+            "task_link_frame_equivalence": None,
+            "objects": [
+                {
+                    "task_subject": True,
+                    "observed_root_pose_world": {
+                        "position_world_m": [2.974, -6.761, 0.755],
+                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    },
+                }
+            ],
+        },
+    )
+
+    assert contact == pytest.approx([2.91, -6.761, 0.83])
+    assert source == "native_rigid_subject_root_plus_scoring_and_contact_offsets"
 
 
 def test_gripper_pad_geometry_uses_live_bounds_not_coincident_body_origins() -> None:
@@ -53,7 +192,9 @@ def test_gripper_pad_geometry_uses_live_bounds_not_coincident_body_origins() -> 
     assert abs(axis["derived"]["jaw_approach_orthogonality_dot"]) < 1.0e-9
 
 
-def _stage(*, interpolation: str = "vertex", element_size: int = 16):
+def _stage(
+    *, interpolation: str = "vertex", element_size: int = 16, legacy_material: bool = False
+):
     from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
     stage = Usd.Stage.CreateInMemory()
@@ -88,16 +229,17 @@ def _stage(*, interpolation: str = "vertex", element_size: int = 16):
     prim.CreateAttribute("extent", Sdf.ValueTypeNames.Float3Array).Set(
         Vt.Vec3fArray([Gf.Vec3f(-1.0), Gf.Vec3f(1.0)])
     )
-    material_path = "/World/envs/env_0/scene_appearance/gauss/Looks/ParticleFieldEmissive"
-    material = stage.DefinePrim(material_path, "Material")
-    shader = stage.DefinePrim(f"{material_path}/Shader", "Shader")
-    shader.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(
-        "ParticleFieldEmissive.mdl"
-    )
-    shader.CreateAttribute(
-        "info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token
-    ).Set("ParticleFieldEmissive")
-    prim.CreateRelationship("material:binding").SetTargets([material.GetPath()])
+    if legacy_material:
+        material_path = "/World/envs/env_0/scene_appearance/gauss/Looks/ParticleFieldEmissive"
+        material = stage.DefinePrim(material_path, "Material")
+        shader = stage.DefinePrim(f"{material_path}/Shader", "Shader")
+        shader.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(
+            "ParticleFieldEmissive.mdl"
+        )
+        shader.CreateAttribute(
+            "info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token
+        ).Set("ParticleFieldEmissive")
+        prim.CreateRelationship("material:binding").SetTargets([material.GetPath()])
     return stage
 
 
@@ -111,7 +253,17 @@ def test_live_particlefield_readback_accepts_official_layout() -> None:
     assert row["sh_element_size"] == 16
     assert row["sh_interpolation"] == "vertex"
     assert row["sh_coefficient_count"] == 32
-    assert row["material_shader_source_asset"] == "ParticleFieldEmissive.mdl"
+    assert row["material_contract"] == "upstream_native_unbound"
+    assert row["material_binding_targets"] == []
+
+
+def test_live_particlefield_readback_preserves_legacy_replay_compatibility() -> None:
+    result = _particlefield_stage_readback(_stage(legacy_material=True))
+
+    assert result["passed"] is True
+    assert result["particlefields"][0]["material_contract"] == (
+        "legacy_particlefield_emissive"
+    )
 
 
 @pytest.mark.parametrize(
@@ -188,6 +340,7 @@ def test_official_nurec_setup_refuses_a_non_nurec_stage() -> None:
 def _reset_task_space_result(midpoint) -> dict:
     return _robot_reset_task_space_readback(
         plan={
+            "task_kind": "articulated_open_close",
             "robot": {
                 "base_pose_world": {
                     "position_world_m": [3.7634863, 8.906664, 0.090782],

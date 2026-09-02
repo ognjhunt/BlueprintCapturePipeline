@@ -25,6 +25,16 @@ from .native_task_arena_scene_plan import (
 from .native_task_arena_runtime import author_gpu_compatible_scene_collision
 from .native_task_execution_admission import seal_native_task_execution_admission
 from .native_task_runtime_contract import materialize_native_task_runtime_contract
+from .nvidia_3dgrut_particlefield_transcode import (
+    AUTHORING_IMPLEMENTATION as NVIDIA_3DGRUT_AUTHORING_IMPLEMENTATION,
+    COLOR_SPACE as NVIDIA_3DGRUT_COLOR_SPACE,
+    PROJECTION_MODE_HINT as NVIDIA_3DGRUT_PROJECTION_MODE_HINT,
+    RECEIPT_SCHEMA_VERSION as NVIDIA_3DGRUT_RECEIPT_SCHEMA_VERSION,
+    SORTING_MODE_HINT as NVIDIA_3DGRUT_SORTING_MODE_HINT,
+    UPSTREAM_MODULE as NVIDIA_3DGRUT_UPSTREAM_MODULE,
+    UPSTREAM_REPOSITORY as NVIDIA_3DGRUT_UPSTREAM_REPOSITORY,
+    UPSTREAM_SOURCE_REVISION as NVIDIA_3DGRUT_UPSTREAM_SOURCE_REVISION,
+)
 from .paired_target_native_construction_bindings import (
     SCHEMA_VERSION as PAIRED_CONSTRUCTION_SCHEMA_VERSION,
 )
@@ -173,19 +183,46 @@ def materialize_native_task_arena_appearance_variant_request(
         and appearance["upstream_converter"].get("source_revision")
         == "621017ebf78394488260c70ec4eadd70ff621131"
     )
+    direct_3dgrut = (
+        appearance.get("particlefield_authoring_implementation")
+        == NVIDIA_3DGRUT_AUTHORING_IMPLEMENTATION
+        and appearance.get("particlefield_emissive_material_binding_authored")
+        is False
+        and appearance.get("particlefield_custom_render_hints_authored") is False
+        and appearance.get("display_color_fallback_authored") is False
+        and appearance.get("upstream_projection_mode_hint")
+        == NVIDIA_3DGRUT_PROJECTION_MODE_HINT
+        and appearance.get("upstream_sorting_mode_hint")
+        == NVIDIA_3DGRUT_SORTING_MODE_HINT
+        and appearance.get("upstream_color_space") == NVIDIA_3DGRUT_COLOR_SPACE
+        and isinstance(appearance.get("upstream_converter"), Mapping)
+        and appearance["upstream_converter"].get("repository")
+        == NVIDIA_3DGRUT_UPSTREAM_REPOSITORY
+        and appearance["upstream_converter"].get("source_revision")
+        == NVIDIA_3DGRUT_UPSTREAM_SOURCE_REVISION
+        and appearance["upstream_converter"].get("module")
+        == NVIDIA_3DGRUT_UPSTREAM_MODULE
+        and appearance["upstream_converter"].get("source_identity_verified")
+        is True
+    )
     legacy_material = (
         appearance.get("particlefield_emissive_material_binding_authored") is True
         and appearance.get("particlefield_emissive_material_inputs")
         in ACCEPTED_PARTICLEFIELD_EMISSIVE_MATERIAL_INPUTS
     )
     if (
-        appearance.get("schema_version") != "particlefield_3dgs_authoring_receipt.v1"
+        appearance.get("schema_version")
+        not in {
+            "particlefield_3dgs_authoring_receipt.v1",
+            NVIDIA_3DGRUT_RECEIPT_SCHEMA_VERSION,
+        }
         or appearance.get("status") != "completed"
         or appearance.get("schema") != "ParticleField3DGaussianSplat"
         or appearance.get("sh_primvar_element_size") != sh_element_size
         or appearance.get("sh_primvar_interpolation") != "vertex"
-        or appearance.get("display_color_fallback_authored") is not True
-        or not (official_upstream or legacy_material)
+        or appearance.get("display_color_fallback_authored")
+        is not (False if direct_3dgrut else True)
+        or not (official_upstream or direct_3dgrut or legacy_material)
         or not gaussian_quality_is_qualified(appearance.get("gaussian_field_quality"))
         or appearance.get("receipt_digest")
         != canonical_digest(appearance, digest_field="receipt_digest")
@@ -225,7 +262,9 @@ def materialize_native_task_arena_appearance_variant_request(
         "sh_degree": sh_degree,
         "sh_primvar_element_size": sh_element_size,
         "sh_primvar_interpolation": "vertex",
-        "display_color_fallback_authored": True,
+        "display_color_fallback_authored": appearance.get(
+            "display_color_fallback_authored"
+        ),
         "particlefield_emissive_material_binding_authored": appearance[
             "particlefield_emissive_material_binding_authored"
         ],
@@ -239,6 +278,13 @@ def materialize_native_task_arena_appearance_variant_request(
             "particlefield_authoring_implementation"
         ),
         "upstream_converter": appearance.get("upstream_converter"),
+        "upstream_projection_mode_hint": appearance.get(
+            "upstream_projection_mode_hint"
+        ),
+        "upstream_sorting_mode_hint": appearance.get(
+            "upstream_sorting_mode_hint"
+        ),
+        "upstream_color_space": appearance.get("upstream_color_space"),
         "gaussian_field_quality": appearance["gaussian_field_quality"],
     }
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")

@@ -464,6 +464,21 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(tmp_path: Path, mo
             "sha256:" + hashlib.sha256(output.read_bytes()).hexdigest(),
             output.stat().st_size,
         )
+        backend = {
+            "schema_version": "task_evaluation_appearance_render_backend.v1",
+            "kind": "nvidia_3dgrut_direct_nurec_transcode",
+            "source_configured_appearance_digest": digest,
+            "particlefield_digest": digest,
+            "authoring_receipt_digest": "sha256:" + "9" * 64,
+            "upstream_converter": {"source_revision": "test"},
+            "projection_mode_hint": "perspective",
+            "sorting_mode_hint": "cameraDistance",
+            "color_space": "srgb_rec709_display",
+            "backend_digest": "",
+        }
+        backend["backend_digest"] = canonical_digest(
+            backend, digest_field="backend_digest"
+        )
         return {
             "status": "nurec_converted_to_particlefield",
             "path": str(output),
@@ -480,6 +495,7 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(tmp_path: Path, mo
                 "blockers": [],
                 "learned_tensors_mutated": False,
             },
+            "appearance_render_backend": backend,
         }
 
     monkeypatch.setattr(
@@ -539,6 +555,9 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(tmp_path: Path, mo
             "blockers": [],
             "learned_tensors_mutated": False,
         },
+        "render_backend": result["native_scene_appearance"][
+            "appearance_render_backend"
+        ],
     }
     source_subject_id = configured["replacement"]["identity"]["id"]
     runtime_subject_id = source_subject_id.replace("-", "_")
