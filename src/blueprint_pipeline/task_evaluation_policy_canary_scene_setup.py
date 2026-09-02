@@ -647,6 +647,7 @@ def materialize_policy_canary_presubmission_setup(
     activation_lineage: Mapping[str, Any],
     activation_authorization: Mapping[str, Any],
     output_dir: str | Path,
+    policy_observation_setup: Mapping[str, Any] | None = None,
     maximum_hourly_rate_usd: float = 0.8,
     hard_cap_usd: float = 4.0,
     hard_ttl_seconds: int = 9_000,
@@ -919,6 +920,42 @@ def materialize_policy_canary_presubmission_setup(
         model_rights,
         code="policy_canary_model_rights_invalid",
     )
+    observation_setup = None
+    if policy_observation_setup is not None:
+        raw_observation_setup = dict(policy_observation_setup)
+        expected_keys = {
+            "schema_version",
+            "appearance_asset",
+            "appearance_authoring_receipt",
+            "wrist_camera_mount_registry",
+            "fresh_native_mount_sweep_required",
+            "policy_master_resolution_wh",
+            "overview_review_resolution_wh",
+        }
+        if (
+            set(raw_observation_setup) != expected_keys
+            or raw_observation_setup.get("schema_version")
+            != "task_evaluation_policy_observation_setup.v1"
+            or raw_observation_setup.get("fresh_native_mount_sweep_required") is not True
+            or raw_observation_setup.get("policy_master_resolution_wh") != [640, 360]
+            or raw_observation_setup.get("overview_review_resolution_wh") != [1280, 720]
+        ):
+            raise PolicyCanarySetupError(["policy_canary_observation_setup_invalid"])
+        observation_setup = {
+            **raw_observation_setup,
+            "appearance_asset": _immutable_ref(
+                raw_observation_setup["appearance_asset"],
+                code="policy_canary_observation_appearance_asset_invalid",
+            ),
+            "appearance_authoring_receipt": _immutable_ref(
+                raw_observation_setup["appearance_authoring_receipt"],
+                code="policy_canary_observation_appearance_receipt_invalid",
+            ),
+            "wrist_camera_mount_registry": _immutable_ref(
+                raw_observation_setup["wrist_camera_mount_registry"],
+                code="policy_canary_wrist_camera_mount_registry_invalid",
+            ),
+        }
     progression = _read(
         configured_progression_path,
         code="policy_canary_progression_invalid",
@@ -944,6 +981,11 @@ def materialize_policy_canary_presubmission_setup(
             **deepcopy(configured_preparation["execution_adapter"]),
             "runtime_source_bundle": runtime_source_ref,
             "runtime_source_implementation_commit": runtime_source_commit,
+            **(
+                {"policy_observation_setup": observation_setup}
+                if observation_setup is not None
+                else {}
+            ),
         },
         "controller": {
             "identity": {"id": "paired-policy-canary", "version": "v1"},

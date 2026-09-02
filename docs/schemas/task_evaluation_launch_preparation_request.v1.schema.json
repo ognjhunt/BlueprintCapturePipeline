@@ -360,7 +360,29 @@
         "kind": {"$ref": "#/$defs/identifier"},
         "version": {"$ref": "#/$defs/identifier"},
         "runtime_source_bundle": {"$ref": "#/$defs/reference"},
-        "runtime_source_implementation_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+        "runtime_source_implementation_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "policy_observation_setup": {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "appearance_asset",
+            "appearance_authoring_receipt",
+            "wrist_camera_mount_registry",
+            "fresh_native_mount_sweep_required",
+            "policy_master_resolution_wh",
+            "overview_review_resolution_wh"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {"const": "task_evaluation_policy_observation_setup.v1"},
+            "appearance_asset": {"$ref": "#/$defs/reference"},
+            "appearance_authoring_receipt": {"$ref": "#/$defs/reference"},
+            "wrist_camera_mount_registry": {"$ref": "#/$defs/reference"},
+            "fresh_native_mount_sweep_required": {"const": true},
+            "policy_master_resolution_wh": {"const": [640, 360]},
+            "overview_review_resolution_wh": {"const": [1280, 720]}
+          }
+        }
       }
     },
     "publication": {

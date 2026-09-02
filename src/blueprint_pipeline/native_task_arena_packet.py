@@ -150,6 +150,7 @@ def materialize_native_task_arena_appearance_variant_request(
     evidence_root: str | Path,
     output_path: str | Path,
     filename: str = "scene_appearance.usdc",
+    appearance_asset_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Derive one packet request with a sealed ParticleField appearance."""
 
@@ -236,7 +237,11 @@ def materialize_native_task_arena_appearance_variant_request(
         != canonical_digest(appearance, digest_field="receipt_digest")
     ):
         raise NativeTaskArenaPacketError(["native_task_arena_appearance_variant_receipt_invalid"])
-    asset = Path(str(appearance.get("output") or "")).expanduser().resolve()
+    asset = Path(
+        appearance_asset_path
+        if appearance_asset_path is not None
+        else str(appearance.get("output") or "")
+    ).expanduser().resolve()
     outside = asset != root and root not in asset.parents
     if (
         outside

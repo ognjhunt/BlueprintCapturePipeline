@@ -485,6 +485,27 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
         "digest": "sha256:" + "3" * 64,
         "size_bytes": 768,
     }
+    kwargs["policy_observation_setup"] = {
+        "schema_version": "task_evaluation_policy_observation_setup.v1",
+        "appearance_asset": {
+            "uri": "s3://blueprint/policy-canary/appearance.usdc",
+            "digest": "sha256:" + "6" * 64,
+            "size_bytes": 239_852_301,
+        },
+        "appearance_authoring_receipt": {
+            "uri": "s3://blueprint/policy-canary/appearance-receipt.json",
+            "digest": "sha256:" + "7" * 64,
+            "size_bytes": 2_048,
+        },
+        "wrist_camera_mount_registry": {
+            "uri": "s3://blueprint/policy-canary/camera-registry.json",
+            "digest": "sha256:" + "8" * 64,
+            "size_bytes": 4_096,
+        },
+        "fresh_native_mount_sweep_required": True,
+        "policy_master_resolution_wh": [640, 360],
+        "overview_review_resolution_wh": [1280, 720],
+    }
     emitted = materialize_policy_canary_presubmission_setup(**kwargs)
     setup = emitted["setup"]
     wrapper = emitted["profile_materialization_input"]
@@ -524,6 +545,12 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     assert (
         plan["preparation_template"]["execution_adapter"]["runtime_source_bundle"]
         == kwargs["runtime_source_bundle"]
+    )
+    assert (
+        plan["preparation_template"]["execution_adapter"][
+            "policy_observation_setup"
+        ]
+        == kwargs["policy_observation_setup"]
     )
     assert (
         plan["preparation_template"]["controller"]["model_or_asset_rights"] == plan["model_rights"]
