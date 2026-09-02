@@ -376,8 +376,9 @@ def Xform "Asset"
     return request
 
 
+@pytest.mark.parametrize("direct_3dgrut", [False, True])
 def test_particlefield_appearance_variant_request_binds_authoring_receipt(
-    tmp_path: Path,
+    tmp_path: Path, direct_3dgrut: bool
 ) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
@@ -400,7 +401,11 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
     asset.parent.mkdir()
     asset.write_bytes(b"particlefield fixture")
     receipt = {
-        "schema_version": "particlefield_3dgs_authoring_receipt.v1",
+        "schema_version": (
+            "nvidia_3dgrut_particlefield_transcode.v1"
+            if direct_3dgrut
+            else "particlefield_3dgs_authoring_receipt.v1"
+        ),
         "status": "completed",
         "schema": "ParticleField3DGaussianSplat",
         "output": str(asset),
@@ -411,16 +416,39 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "sh_degree": 3,
         "sh_primvar_element_size": 16,
         "sh_primvar_interpolation": "vertex",
-        "display_color_fallback_authored": True,
+        "display_color_fallback_authored": not direct_3dgrut,
         "particlefield_emissive_material_binding_authored": False,
         "particlefield_emissive_material_inputs": None,
         "particlefield_custom_render_hints_authored": False,
-        "particlefield_authoring_implementation": "nvidia_usd_convert_gsplat",
-        "upstream_converter": {
-            "distribution": "usd-convert-gsplat",
-            "version": "0.1.15",
-            "source_revision": "621017ebf78394488260c70ec4eadd70ff621131",
-        },
+        "particlefield_authoring_implementation": (
+            "nvidia_3dgrut_direct_nurec_transcode"
+            if direct_3dgrut
+            else "nvidia_usd_convert_gsplat"
+        ),
+        "upstream_converter": (
+            {
+                "repository": "https://github.com/nv-tlabs/3dgrut.git",
+                "source_revision": "a37ef721012dea0f29c0fcfff2d525023b4e854a",
+                "module": "threedgrut.export.scripts.transcode",
+                "module_sha256": _sha("c"),
+                "source_identity_verified": True,
+            }
+            if direct_3dgrut
+            else {
+                "distribution": "usd-convert-gsplat",
+                "version": "0.1.15",
+                "source_revision": "621017ebf78394488260c70ec4eadd70ff621131",
+            }
+        ),
+        "upstream_projection_mode_hint": (
+            "perspective" if direct_3dgrut else None
+        ),
+        "upstream_sorting_mode_hint": (
+            "cameraDistance" if direct_3dgrut else None
+        ),
+        "upstream_color_space": (
+            "srgb_rec709_display" if direct_3dgrut else None
+        ),
         "gaussian_field_quality": {
             "schema_version": "gaussian_field_quality.v1",
             "status": "qualified",
@@ -458,13 +486,20 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
     ]
     assert variant["appearance_variant"]["sh_primvar_element_size"] == 16
     assert variant["appearance_variant"]["sh_primvar_interpolation"] == "vertex"
-    assert variant["appearance_variant"]["display_color_fallback_authored"] is True
+    assert variant["appearance_variant"]["display_color_fallback_authored"] is (
+        not direct_3dgrut
+    )
     assert variant["appearance_variant"][
         "particlefield_emissive_material_binding_authored"
     ] is False
     assert variant["appearance_variant"]["particlefield_custom_render_hints_authored"] is False
     assert variant["appearance_variant"]["particlefield_authoring_implementation"] == (
-        "nvidia_usd_convert_gsplat"
+        "nvidia_3dgrut_direct_nurec_transcode"
+        if direct_3dgrut
+        else "nvidia_usd_convert_gsplat"
+    )
+    assert variant["appearance_variant"]["upstream_sorting_mode_hint"] == (
+        "cameraDistance" if direct_3dgrut else None
     )
     assert variant["appearance_variant"]["gaussian_field_quality"]["status"] == (
         "qualified"

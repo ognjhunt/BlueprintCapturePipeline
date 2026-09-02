@@ -17,6 +17,15 @@ from .particlefield_usd import (
     UPSTREAM_GSPLAT_CONVERTER_REVISION,
     UPSTREAM_GSPLAT_CONVERTER_VERSION,
 )
+from .nvidia_3dgrut_particlefield_transcode import (
+    AUTHORING_IMPLEMENTATION as NVIDIA_3DGRUT_AUTHORING_IMPLEMENTATION,
+    COLOR_SPACE as NVIDIA_3DGRUT_COLOR_SPACE,
+    PROJECTION_MODE_HINT as NVIDIA_3DGRUT_PROJECTION_MODE_HINT,
+    SORTING_MODE_HINT as NVIDIA_3DGRUT_SORTING_MODE_HINT,
+    UPSTREAM_MODULE as NVIDIA_3DGRUT_UPSTREAM_MODULE,
+    UPSTREAM_REPOSITORY as NVIDIA_3DGRUT_UPSTREAM_REPOSITORY,
+    UPSTREAM_SOURCE_REVISION as NVIDIA_3DGRUT_UPSTREAM_SOURCE_REVISION,
+)
 
 
 CACHE_SCHEMA_VERSION = "particlefield_runtime_asset_cache.v1"
@@ -48,7 +57,47 @@ def _safe_member(root: Path, relative: str) -> Path:
     return path
 
 
-def _validate_particlefield_contract(path: Path) -> None:
+LEGACY_AUTHORING_IMPLEMENTATION = "nvidia_usd_convert_gsplat"
+
+
+def _validated_authoring_identity(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    implementation = receipt.get("particlefield_authoring_implementation")
+    upstream = receipt.get("upstream_converter")
+    if implementation == LEGACY_AUTHORING_IMPLEMENTATION:
+        expected = {
+            "distribution": UPSTREAM_GSPLAT_CONVERTER_DISTRIBUTION,
+            "version": UPSTREAM_GSPLAT_CONVERTER_VERSION,
+            "source_revision": UPSTREAM_GSPLAT_CONVERTER_REVISION,
+        }
+        if upstream is not None and (
+            not isinstance(upstream, Mapping)
+            or any(upstream.get(key) != value for key, value in expected.items())
+        ):
+            raise ValueError("particlefield_runtime_cache_authoring_invalid")
+        return {"implementation": implementation, "upstream_converter": expected}
+    if implementation == NVIDIA_3DGRUT_AUTHORING_IMPLEMENTATION:
+        expected = {
+            "repository": NVIDIA_3DGRUT_UPSTREAM_REPOSITORY,
+            "source_revision": NVIDIA_3DGRUT_UPSTREAM_SOURCE_REVISION,
+            "module": NVIDIA_3DGRUT_UPSTREAM_MODULE,
+        }
+        if (
+            not isinstance(upstream, Mapping)
+            or any(upstream.get(key) != value for key, value in expected.items())
+            or upstream.get("source_identity_verified") is not True
+            or not str(upstream.get("module_sha256") or "").startswith("sha256:")
+        ):
+            raise ValueError("particlefield_runtime_cache_authoring_invalid")
+        return {
+            "implementation": implementation,
+            "upstream_converter": dict(upstream),
+        }
+    raise ValueError("particlefield_runtime_cache_authoring_invalid")
+
+
+def _validate_particlefield_contract(
+    path: Path, *, authoring_implementation: str
+) -> None:
     from pxr import Usd
 
     stage = Usd.Stage.Open(str(path))
@@ -60,10 +109,24 @@ def _validate_particlefield_contract(path: Path) -> None:
     if len(fields) != 1:
         raise ValueError("particlefield_runtime_cache_asset_invalid")
     field = fields[0]
-    if (
-        field.GetRelationship("material:binding").GetTargets()
-        or field.GetAttribute("projectionModeHint").HasAuthoredValueOpinion()
-        or field.GetAttribute("sortingModeHint").HasAuthoredValueOpinion()
+    if field.GetRelationship("material:binding").GetTargets():
+        raise ValueError("particlefield_runtime_cache_asset_nonstandard")
+    projection = field.GetAttribute("projectionModeHint")
+    sorting = field.GetAttribute("sortingModeHint")
+    color_space = field.GetAttribute("colorSpace:name")
+    display_color = field.GetAttribute("primvars:displayColor")
+    if authoring_implementation == LEGACY_AUTHORING_IMPLEMENTATION:
+        if projection.HasAuthoredValueOpinion() or sorting.HasAuthoredValueOpinion():
+            raise ValueError("particlefield_runtime_cache_asset_nonstandard")
+        return
+    if authoring_implementation == NVIDIA_3DGRUT_AUTHORING_IMPLEMENTATION and (
+        not projection.HasAuthoredValueOpinion()
+        or projection.Get() != NVIDIA_3DGRUT_PROJECTION_MODE_HINT
+        or not sorting.HasAuthoredValueOpinion()
+        or sorting.Get() != NVIDIA_3DGRUT_SORTING_MODE_HINT
+        or not color_space.HasAuthoredValueOpinion()
+        or color_space.Get() != NVIDIA_3DGRUT_COLOR_SPACE
+        or display_color.HasAuthoredValueOpinion()
     ):
         raise ValueError("particlefield_runtime_cache_asset_nonstandard")
 
@@ -86,8 +149,12 @@ def publish_particlefield_runtime_asset(
     source = Path(particlefield_path).expanduser().resolve()
     receipt_source = Path(authoring_receipt_path).expanduser().resolve()
     asset_identity = _identity(source)
-    _validate_particlefield_contract(source)
     receipt = json.loads(receipt_source.read_text(encoding="utf-8"))
+    authoring_identity = _validated_authoring_identity(receipt)
+    _validate_particlefield_contract(
+        source,
+        authoring_implementation=authoring_identity["implementation"],
+    )
     if (
         source.is_symlink()
         or receipt_source.is_symlink()
@@ -95,8 +162,6 @@ def publish_particlefield_runtime_asset(
         or receipt.get("source_sha256") != source_digest
         or receipt.get("output_sha256") != asset_identity[0]
         or receipt.get("output_bytes") != asset_identity[1]
-        or receipt.get("particlefield_authoring_implementation")
-        != "nvidia_usd_convert_gsplat"
         or receipt.get("particlefield_emissive_material_binding_authored") is not False
         or receipt.get("particlefield_custom_render_hints_authored") is not False
         or receipt.get("receipt_digest")
@@ -113,7 +178,7 @@ def publish_particlefield_runtime_asset(
     shutil.copyfile(receipt_source, authoring)
     asset.chmod(0o440)
     authoring.chmod(0o440)
-    authoring_identity = _identity(authoring)
+    authoring_receipt_identity = _identity(authoring)
     manifest: dict[str, Any] = {
         "schema_version": CACHE_SCHEMA_VERSION,
         "source_configured_appearance_digest": source_digest,
@@ -124,14 +189,11 @@ def publish_particlefield_runtime_asset(
         },
         "authoring_receipt": {
             "relative_path": authoring.name,
-            "digest": authoring_identity[0],
-            "size_bytes": authoring_identity[1],
+            "digest": authoring_receipt_identity[0],
+            "size_bytes": authoring_receipt_identity[1],
         },
-        "upstream_converter": {
-            "distribution": UPSTREAM_GSPLAT_CONVERTER_DISTRIBUTION,
-            "version": UPSTREAM_GSPLAT_CONVERTER_VERSION,
-            "source_revision": UPSTREAM_GSPLAT_CONVERTER_REVISION,
-        },
+        "authoring_implementation": authoring_identity["implementation"],
+        "upstream_converter": authoring_identity["upstream_converter"],
         "immutable": True,
         "manifest_digest": "",
     }
@@ -157,16 +219,19 @@ def materialize_cached_particlefield(
     if not manifest_path.is_file() or manifest_path.is_symlink():
         return None
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    implementation = manifest.get("authoring_implementation") or (
+        LEGACY_AUTHORING_IMPLEMENTATION
+    )
+    manifest_identity = _validated_authoring_identity(
+        {
+            "particlefield_authoring_implementation": implementation,
+            "upstream_converter": manifest.get("upstream_converter"),
+        }
+    )
     if (
         manifest.get("schema_version") != CACHE_SCHEMA_VERSION
         or manifest.get("source_configured_appearance_digest") != source_digest
         or manifest.get("immutable") is not True
-        or manifest.get("upstream_converter")
-        != {
-            "distribution": UPSTREAM_GSPLAT_CONVERTER_DISTRIBUTION,
-            "version": UPSTREAM_GSPLAT_CONVERTER_VERSION,
-            "source_revision": UPSTREAM_GSPLAT_CONVERTER_REVISION,
-        }
         or manifest.get("manifest_digest")
         != canonical_digest(manifest, digest_field="manifest_digest")
     ):
@@ -179,19 +244,22 @@ def materialize_cached_particlefield(
     receipt_path = _safe_member(root, str(receipt_record.get("relative_path") or ""))
     if _identity(asset) != (asset_record.get("digest"), asset_record.get("size_bytes")):
         raise ValueError("particlefield_runtime_cache_asset_invalid")
-    _validate_particlefield_contract(asset)
+    _validate_particlefield_contract(
+        asset,
+        authoring_implementation=manifest_identity["implementation"],
+    )
     if _identity(receipt_path) != (
         receipt_record.get("digest"),
         receipt_record.get("size_bytes"),
     ):
         raise ValueError("particlefield_runtime_cache_receipt_invalid")
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt_identity = _validated_authoring_identity(receipt)
     if (
         receipt.get("source_sha256") != source_digest
         or receipt.get("output_sha256") != asset_record.get("digest")
         or receipt.get("output_bytes") != asset_record.get("size_bytes")
-        or receipt.get("particlefield_authoring_implementation")
-        != "nvidia_usd_convert_gsplat"
+        or receipt_identity != manifest_identity
         or receipt.get("particlefield_emissive_material_binding_authored") is not False
         or receipt.get("particlefield_custom_render_hints_authored") is not False
         or receipt.get("receipt_digest")
