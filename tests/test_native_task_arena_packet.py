@@ -1090,3 +1090,78 @@ def test_packet_hardlinks_verified_sources_only_inside_the_opted_in_tree(
     linked_collision = tmp_path / "linked" / "assets" / "scene_collision.usda"
     assert linked_collision.read_bytes() == collision_source.read_bytes()
     assert linked_collision.stat().st_ino == collision_source.stat().st_ino
+
+
+@pytest.mark.parametrize(
+    ("label", "accepted"),
+    [("mdl_defaults", True), ("display_referred_srgb", True), ("linear_scene_referred", False)],
+)
+def test_particlefield_receipt_admits_only_known_emissive_material_input_labels(
+    tmp_path: Path, label: str, accepted: bool
+) -> None:
+    """Sealed receipts say ``mdl_defaults``; new ones declare the sRGB contract."""
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    base = _request(evidence, articulated=True)
+    base["appearance_variant"] = {
+        "representation": "particlefield_3d_gaussian_splat",
+        "source_configured_appearance_digest": _sha("b"),
+        "representation_conversion_performed": True,
+        "exact_learned_arrays_preserved": True,
+    }
+    base["request_digest"] = canonical_digest(base, digest_field="request_digest")
+    base_path = tmp_path / "base_request.json"
+    base_path.write_text(json.dumps(base), encoding="utf-8")
+    asset = evidence / "particlefield" / "scene_appearance.usdc"
+    asset.parent.mkdir()
+    asset.write_bytes(b"particlefield fixture")
+    receipt = {
+        "schema_version": "particlefield_3dgs_authoring_receipt.v1",
+        "status": "completed",
+        "schema": "ParticleField3DGaussianSplat",
+        "output": str(asset),
+        "output_bytes": asset.stat().st_size,
+        "output_sha256": "sha256:" + sha256_file(asset),
+        "source_sha256": _sha("a"),
+        "splat_count": 1_000_000,
+        "sh_degree": 3,
+        "sh_primvar_element_size": 16,
+        "sh_primvar_interpolation": "vertex",
+        "display_color_fallback_authored": True,
+        "particlefield_emissive_material_binding_authored": True,
+        "particlefield_emissive_material_inputs": label,
+        "gaussian_field_quality": {
+            "schema_version": "gaussian_field_quality.v1",
+            "status": "qualified",
+            "blockers": [],
+            "learned_tensors_mutated": False,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path = tmp_path / "authoring_receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    output = tmp_path / "variant_request.json"
+
+    if not accepted:
+        with pytest.raises(
+            NativeTaskArenaPacketError,
+            match="native_task_arena_appearance_variant_receipt_invalid",
+        ):
+            materialize_native_task_arena_appearance_variant_request(
+                base_request_path=base_path,
+                appearance_authoring_receipt_path=receipt_path,
+                evidence_root=evidence,
+                output_path=output,
+            )
+        return
+
+    variant = materialize_native_task_arena_appearance_variant_request(
+        base_request_path=base_path,
+        appearance_authoring_receipt_path=receipt_path,
+        evidence_root=evidence,
+        output_path=output,
+    )
+
+    assert variant["appearance_variant"]["particlefield_emissive_material_inputs"] == label

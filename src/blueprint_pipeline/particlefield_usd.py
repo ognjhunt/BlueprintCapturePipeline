@@ -77,6 +77,17 @@ _GAUSSIAN_SURFLET_SCHEMA_MEMBERS = (
 # back as a display colour: colour = 0.5 + C0 * dc.
 SH_C0 = 0.28209479177387814
 
+#: Standard 3DGS / 2DGS spherical harmonics are display-referred sRGB.  The
+#: bound ParticleFieldEmissive shader must linearise them so RTX's display
+#: transform round-trips them; nothing inverse-tonemaps because ParticleField
+#: prims are composited after the tonemapper.
+PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS: dict[str, bool] = {
+    "apply_srgb_linear": True,
+    "apply_inverse_tonemap": False,
+}
+PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS_LABEL = "display_referred_srgb"
+
+
 # The structural Z extent, as a fraction of the smaller learned planar extent.
 # Flat has to be relative: a constant epsilon would be thicker than wide for the
 # smallest surfels in this field, which is the bug it replaces at a new scale.
@@ -408,11 +419,13 @@ def write_gaussian_surflet_particlefield_usd(
     shader.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set(
         "ParticleFieldEmissive"
     )
+    # Aura's 2DGS colours are trained on sRGB frames too: linearise them so
+    # the display transform round-trips them instead of encoding them twice.
     shader.CreateAttribute(
         "inputs:apply_inverse_tonemap", Sdf.ValueTypeNames.Bool, custom=True
-    ).Set(False)
+    ).Set(PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS["apply_inverse_tonemap"])
     shader.CreateAttribute("inputs:apply_srgb_linear", Sdf.ValueTypeNames.Bool, custom=True).Set(
-        False
+        PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS["apply_srgb_linear"]
     )
     shader.CreateAttribute("outputs:out", Sdf.ValueTypeNames.Token, custom=True)
     for output_name in ("mdl:displacement", "mdl:surface", "mdl:volume"):
@@ -447,9 +460,14 @@ def write_gaussian_surflet_particlefield_usd(
             "path": material_path,
             "shader": "ParticleFieldEmissive.mdl",
             "sub_identifier": "ParticleFieldEmissive",
-            "apply_inverse_tonemap": False,
-            "apply_srgb_linear": False,
+            "apply_inverse_tonemap": PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS[
+                "apply_inverse_tonemap"
+            ],
+            "apply_srgb_linear": PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS[
+                "apply_srgb_linear"
+            ],
             "basis": "official_isaac_lab_gaussian_camera_test_asset",
+            "colour_space": "display_referred_srgb",
         },
         "sealed_source_mutated": False,
         "proof_boundary": "OpenUSD Gaussian-surflet authoring only; live OVRTX rendering remains required.",
@@ -605,12 +623,18 @@ def write_particlefield_usd(
     )
     display_color.Set(vec3f(arr["display_colors"]))
 
-    # Match Isaac Lab's own known-working Gaussian camera fixture.  The
-    # ParticleField schema carries geometry/radiance attributes, but the RTX
-    # camera path still needs the emissive MDL bound to turn those attributes
-    # into renderable radiance.  Leave its inputs at MDL defaults: the Isaac
-    # Lab PPISP test overrides them only because that test installs a separate
-    # ISP authority, which this normal LDR camera path does not.
+    # Bind the emissive MDL Isaac Lab's Gaussian camera fixture binds, but
+    # declare the field's colour space on it.  Standard 3DGS spherical
+    # harmonics are trained on sRGB photographs and are display-referred;
+    # left at the MDL default the material emitted them as linear radiance
+    # and the display transform encoded them a second time (scene-839873
+    # f23e2100: rendered frames decoded once from sRGB matched the field's own
+    # DC luminance percentiles, while the raw frames were pale and washed
+    # out).  ``apply_srgb_linear`` makes the shader linearise the field so the
+    # display transform round-trips it; no inverse tonemap because RTX
+    # composites ParticleField prims after the tonemapper (as-is).  3dgrut's
+    # PPISP exporter sets the same flag False only because it converts the SH
+    # to linear itself first.
     material_path = f"{prim.GetParent().GetPath()}/Looks/ParticleFieldEmissive"
     shader_path = f"{material_path}/Shader"
     material = stage.DefinePrim(material_path, "Material")
@@ -622,6 +646,10 @@ def write_particlefield_usd(
     shader.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set(
         "ParticleFieldEmissive"
     )
+    for input_name, input_value in PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS.items():
+        shader.CreateAttribute(
+            f"inputs:{input_name}", Sdf.ValueTypeNames.Bool, custom=True
+        ).Set(input_value)
     shader.CreateAttribute("outputs:out", Sdf.ValueTypeNames.Token, custom=True)
     for output_name in ("mdl:displacement", "mdl:surface", "mdl:volume"):
         material.CreateAttribute(f"outputs:{output_name}", Sdf.ValueTypeNames.Token).AddConnection(
@@ -665,7 +693,12 @@ def write_particlefield_usd(
         "source_sh_rest_layout": arr["source_sh_rest_layout"],
         "display_color_fallback_authored": True,
         "particlefield_emissive_material_binding_authored": True,
-        "particlefield_emissive_material_inputs": "mdl_defaults",
+        "particlefield_emissive_material_inputs": (
+            PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS_LABEL
+        ),
+        "particlefield_emissive_material_input_values": dict(
+            PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS
+        ),
         "particlefield_emissive_material_path": material_path,
         "reference_converters": PARTICLEFIELD_REFERENCE_CONVERTERS,
         "prim_path": prim_path,
