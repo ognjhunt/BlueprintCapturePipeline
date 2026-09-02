@@ -69,7 +69,7 @@ try:  # flat provider-bundle layout
         DROID_OBSERVATION_SCHEMA_VERSION,
         DROID_WRIST_VIEW,
         DroidObservationError,
-        build_droid_observation,
+        build_droid_observation_from_inputs as _build_observation,
         describe_observation_conversion,
     )
 except ModuleNotFoundError:  # repository package
@@ -79,7 +79,7 @@ except ModuleNotFoundError:  # repository package
         DROID_OBSERVATION_SCHEMA_VERSION,
         DROID_WRIST_VIEW,
         DroidObservationError,
-        build_droid_observation,
+        build_droid_observation_from_inputs as _build_observation,
         describe_observation_conversion,
     )
 try:  # flat provider-bundle layout
@@ -597,15 +597,7 @@ def _prestart_episode_readiness(
     }
     policy_input_saturation = _evidence(policy_input_saturation_evidence, camera_rgb=camera_rgb)
     try:
-        observation = build_droid_observation(
-            candidate_id=candidate_id,
-            camera_rgb=camera_rgb,
-            joint_position=inputs["joint_position"],
-            gripper_position=inputs["gripper_position"],
-            prompt=prompt,
-            eef_9d=inputs.get("eef_9d"),
-            eef_9d_frame_provenance=inputs.get("eef_9d_frame_provenance"),
-        )
+        observation = _build_observation(candidate_id, camera_rgb, inputs, prompt)
     except (KeyError, DroidObservationError) as exc:
         raise PolicyEpisodeError(
             [f"{BLOCKER_PRESTART_READINESS}:policy_observation_invalid:{exc}"]
@@ -1083,16 +1075,8 @@ def run_policy_episode(
                     if view in terminal_inputs
                 }
                 try:
-                    terminal_policy_observation = build_droid_observation(
-                        candidate_id=candidate_id,
-                        camera_rgb=terminal_camera_rgb,
-                        joint_position=terminal_inputs["joint_position"],
-                        gripper_position=terminal_inputs["gripper_position"],
-                        prompt=prompt,
-                        eef_9d=terminal_inputs.get("eef_9d"),
-                        eef_9d_frame_provenance=terminal_inputs.get(
-                            "eef_9d_frame_provenance"
-                        ),
+                    terminal_policy_observation = _build_observation(
+                        candidate_id, terminal_camera_rgb, terminal_inputs, prompt
                     )
                 except KeyError as exc:
                     raise PolicyEpisodeError(
@@ -1368,15 +1352,7 @@ def run_policy_episode(
             raise PolicyEpisodeError([BLOCKER_SOURCE_RESOLUTION_UNMEASURED])
         phase_started = time.monotonic()
         try:
-            observation = build_droid_observation(
-                candidate_id=candidate_id,
-                camera_rgb=camera_rgb,
-                joint_position=inputs["joint_position"],
-                gripper_position=inputs["gripper_position"],
-                prompt=prompt,
-                eef_9d=inputs.get("eef_9d"),
-                eef_9d_frame_provenance=inputs.get("eef_9d_frame_provenance"),
-            )
+            observation = _build_observation(candidate_id, camera_rgb, inputs, prompt)
         except KeyError as exc:
             raise PolicyEpisodeError(
                 [f"{BLOCKER_ENVIRONMENT_CONTRACT}:{exc.args[0]}_missing"]
