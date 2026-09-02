@@ -838,6 +838,30 @@ def _finish_policy_canary_delivery(
     return receipt
 
 
+def _sealed_provider_zero(path: Path) -> dict[str, Any] | None:
+    """Reuse immutable terminal absence evidence across billing closeout resumes."""
+
+    if not path.is_file():
+        return None
+    try:
+        value = _read(path, code="policy_canary_materialized_provider_zero_invalid")
+    except TaskEvaluationPolicyCanaryDispatchError:
+        return None
+    if (
+        value.get("schema_version")
+        != "task_evaluation_policy_canary_vast_provider_zero.v1"
+        or value.get("status") != "provider_zero_confirmed"
+        or value.get("api_confirmed") is not True
+        or value.get("provider_zero_verified") is not True
+        or value.get("live_instance_count") != 0
+        or value.get("blockers") != []
+        or value.get("receipt_digest")
+        != canonical_digest(value, digest_field="receipt_digest")
+    ):
+        return None
+    return value
+
+
 def _resume_materialized_policy_canary_delivery(
     *,
     root: Path,
@@ -1249,8 +1273,10 @@ def dispatch_policy_canary_activation(
         return blocked
 
     provider_zero_path = root / "post_teardown_global_provider_zero.json"
-    provider_zero = dict(provider_zero_collector())
-    write_json(provider_zero_path, provider_zero)
+    provider_zero = _sealed_provider_zero(provider_zero_path)
+    if provider_zero is None:
+        provider_zero = dict(provider_zero_collector())
+        write_json(provider_zero_path, provider_zero)
     native_path = Path(str(adapter.get("native_control_result_path") or ""))
     if native_path.is_file():
         inner = _read(native_path, code="policy_canary_provider_result_missing")
