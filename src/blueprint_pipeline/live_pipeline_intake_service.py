@@ -99,6 +99,10 @@ from .live_pipeline_input_intake import (
 )
 from .core.security_controls import strict_identifier
 from .decision_evidence_contracts import canonical_digest
+from .control_plane_disk_budget import (
+    ControlPlaneDiskBudgetError,
+    disk_headroom,
+)
 from .scene_placement.robot_profile import default_robot_id_for_embodiment
 from .scene_object_discovery_contract import SceneObjectDiscoveryContractError
 from .scene_object_discovery_queue import (
@@ -200,6 +204,10 @@ TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV = (
 TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT"
 )
+CONTROL_PLANE_DISK_RESERVATION_ROOT_ENV = (
+    "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"
+)
+CONTROL_PLANE_DISK_TARGET_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_DISK_TARGET_ROOT"
 TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_QUEUE_ROOT"
 )
@@ -1621,6 +1629,40 @@ def running_source_commit(module_path: str | Path | None = None) -> str:
     return ""
 
 
+def _configured_disk_headroom() -> Dict[str, Any]:
+    reservation_root = _string(os.getenv(CONTROL_PLANE_DISK_RESERVATION_ROOT_ENV))
+    target_root = _string(os.getenv(CONTROL_PLANE_DISK_TARGET_ROOT_ENV))
+    if not reservation_root or not target_root:
+        return {
+            "schema_version": "control_plane_disk_headroom.v1",
+            "status": "unconfigured",
+            "refused_roles": [],
+        }
+    try:
+        return disk_headroom(
+            target_root=target_root,
+            reservation_root=reservation_root,
+        )
+    except (ControlPlaneDiskBudgetError, OSError):
+        return {
+            "schema_version": "control_plane_disk_headroom.v1",
+            "status": "unknown_fail_closed",
+            "refused_roles": [
+                "launch_preparation",
+                "episode_compilation",
+                "launch_activation",
+                "launch_dispatch",
+            ],
+        }
+
+
+def _disk_role_refused(deployment: Mapping[str, Any], role: str) -> bool:
+    headroom = deployment.get("disk_headroom")
+    return isinstance(headroom, Mapping) and role in (
+        headroom.get("refused_roles") or []
+    )
+
+
 def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[str, Any]:
     """Report which commit is running, and refuse to report a contradicted one.
 
@@ -1644,6 +1686,7 @@ def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[s
     }
     declared_valid = re.fullmatch(r"[0-9a-f]{40}", declared) is not None
     observed = running_source_commit(module_path)
+    headroom = _configured_disk_headroom()
     if observed and declared_valid and observed != declared:
         return {
             "schema_version": DEPLOYMENT_IDENTITY_SCHEMA_VERSION,
@@ -1654,6 +1697,7 @@ def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[s
             "blockers": ["deployment_identity_declared_commit_conflicts_with_running_checkout"],
             "claim_ceiling": "deployed_service_identity_only",
             "default_object_removal": removal_default,
+            "disk_headroom": headroom,
         }
     if observed:
         source_commit, source, proven = observed, "running_checkout", True
@@ -1670,6 +1714,7 @@ def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[s
         "blockers": [] if proven else ["deployment_identity_source_commit_unavailable"],
         "claim_ceiling": "deployed_service_identity_only",
         "default_object_removal": removal_default,
+        "disk_headroom": headroom,
     }
 
 
@@ -1810,6 +1855,22 @@ def create_app() -> FastAPI:
                     "status": "blocked",
                     "accepted": False,
                     "blockers": ["launch_preparation_production_commit_not_proven"],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "catalog_mutation_performed_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        if _disk_role_refused(deployment, "launch_preparation"):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": (
+                        "task_evaluation_launch_preparation_intake_receipt.v1"
+                    ),
+                    "status": "blocked",
+                    "accepted": False,
+                    "blockers": ["launch_preparation_disk_headroom_exhausted"],
+                    "disk_headroom": deployment.get("disk_headroom"),
                     "provider_mutation_performed_inside_http_request": False,
                     "catalog_mutation_performed_inside_http_request": False,
                     "paid_execution_requested": False,
@@ -2170,6 +2231,23 @@ def create_app() -> FastAPI:
                     "status": "blocked",
                     "accepted": False,
                     "blockers": ["launch_activation_production_commit_not_proven"],
+                    "provider_mutation_performed_inside_http_request": False,
+                    "catalog_mutation_performed_inside_http_request": False,
+                    "standing_authorization_published_inside_http_request": False,
+                    "paid_execution_requested": False,
+                },
+            )
+        if _disk_role_refused(deployment, "launch_activation"):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": (
+                        "task_evaluation_launch_activation_intake_receipt.v1"
+                    ),
+                    "status": "blocked",
+                    "accepted": False,
+                    "blockers": ["launch_activation_disk_headroom_exhausted"],
+                    "disk_headroom": deployment.get("disk_headroom"),
                     "provider_mutation_performed_inside_http_request": False,
                     "catalog_mutation_performed_inside_http_request": False,
                     "standing_authorization_published_inside_http_request": False,
@@ -2584,6 +2662,20 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid JSON body") from exc
         if not isinstance(payload, Mapping):
             raise HTTPException(status_code=400, detail="expected JSON object")
+        deployment = deployment_identity_payload()
+        if _disk_role_refused(deployment, "launch_dispatch"):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "schema_version": "task_evaluation_launch_intake_receipt.v1",
+                    "status": "blocked",
+                    "accepted": False,
+                    "blockers": ["task_evaluation_launch_disk_headroom_exhausted"],
+                    "disk_headroom": deployment.get("disk_headroom"),
+                    "provider_mutation_performed_inside_http_request": False,
+                    "canonical_allocator_required": True,
+                },
+            )
         catalog_value = _string(os.getenv(TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV))
         if not catalog_value:
             return JSONResponse(

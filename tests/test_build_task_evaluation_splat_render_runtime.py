@@ -62,8 +62,8 @@ def test_publishes_exact_release_renderer_with_full_byte_readback(
     node.write_bytes(b"linux-node")
     browser_root.mkdir()
     browser.write_bytes(b"linux-browser")
-    node.chmod(0o755)
-    browser.chmod(0o755)
+    node.chmod(0o555)
+    browser.chmod(0o555)
     modules = prerequisites / "node_modules"
     for package in (
         "@sparkjsdev/spark",
@@ -75,7 +75,9 @@ def test_publishes_exact_release_renderer_with_full_byte_readback(
         marker = modules / package / "index.js"
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(package, encoding="utf-8")
+        marker.chmod(0o444)
     (modules / "three/empty.js").write_bytes(b"")
+    (modules / "three/empty.js").chmod(0o444)
     destination = tmp_path / "system-runtimes" / "splat-render" / commit
 
     def readback(path: Path) -> bytes:
@@ -124,3 +126,8 @@ def test_publishes_exact_release_renderer_with_full_byte_readback(
     )
     assert destination.stat().st_mode & 0o222 == 0
     assert not any(path.is_symlink() for path in destination.rglob("*"))
+    assert (destination / "node/bin/node").stat().st_ino == node.stat().st_ino
+    assert (destination / "browser/chrome").stat().st_ino == browser.stat().st_ino
+    assert (
+        destination / "renderer/tools/splat_render/node_modules/three/index.js"
+    ).stat().st_ino == (modules / "three/index.js").stat().st_ino

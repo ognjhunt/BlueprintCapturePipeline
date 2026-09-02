@@ -43,6 +43,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT=/var/lib/blu
 Environment='BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON=["s3://blueprint/task-evaluation/production-inputs/","s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/configured-scenes/artifacts/","s3://blueprint/blueprint/arm-decision-proof-v1/configured-scenes/"]'
 Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations
 Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_OUTPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs/compiled-episodes
+Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_ROOT=/var/lib/blueprint/task-evaluation-inputs/launch-activations
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_SERVICE_ACCOUNT=blueprint

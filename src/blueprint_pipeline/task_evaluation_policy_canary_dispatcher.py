@@ -10,6 +10,7 @@ readback without ever invoking the allocator again.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -22,6 +23,10 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .control_plane_disk_budget import (
+    ControlPlaneDiskBudgetError,
+    reserve_control_plane_disk,
+)
 from .native_task_arena_policy_canary_bundle import (
     build_policy_canary_session_bundle,
 )
@@ -1534,6 +1539,7 @@ def process_policy_canary_dispatch_queue(
     blocked_sync_runner: SyncRunner = sync_policy_canary_preprovider_blocked_to_webapp,
     provider_zero_collector: ProviderZeroCollector = collect_policy_canary_vast_provider_zero,
     access: AccessChecker = _default_access_checker,
+    disk_reservation_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Consume the activation worker's sealed canary-only paid queue."""
 
@@ -1688,19 +1694,32 @@ def process_policy_canary_dispatch_queue(
             continue
         output = outputs / activation_id
         try:
-            result = dispatch_policy_canary_activation(
-                activation_result_path=activation_path,
-                execution_setup_path=setup_path,
-                output_root=output,
-                implementation_commit=implementation_commit,
-                execute=execute,
-                hotfix_overlay_path=hotfix_overlay_path,
-                machine_avoidlist_path=machine_avoidlist_path,
-                official_billing_receipt_path=(output / "official_billing_reconciliation.json"),
-                billing_audit_root=billing_audit_root,
-                access=access,
+            reservation = (
+                reserve_control_plane_disk(
+                    "policy_canary_dispatch",
+                    target_root=outputs,
+                    reservation_root=disk_reservation_root,
+                )
+                if disk_reservation_root is not None
+                else contextlib.nullcontext()
             )
-        except TaskEvaluationPolicyCanaryDispatchError as exc:
+            with reservation:
+                result = dispatch_policy_canary_activation(
+                    activation_result_path=activation_path,
+                    execution_setup_path=setup_path,
+                    output_root=output,
+                    implementation_commit=implementation_commit,
+                    execute=execute,
+                    hotfix_overlay_path=hotfix_overlay_path,
+                    machine_avoidlist_path=machine_avoidlist_path,
+                    official_billing_receipt_path=(output / "official_billing_reconciliation.json"),
+                    billing_audit_root=billing_audit_root,
+                    access=access,
+                )
+        except (
+            TaskEvaluationPolicyCanaryDispatchError,
+            ControlPlaneDiskBudgetError,
+        ) as exc:
             invocation_started = output / "allocator_invocation_started.json"
             if invocation_started.is_file():
                 try:
@@ -1800,6 +1819,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 billing_audit_root=args.billing_audit_root,
                 hotfix_overlay_path=args.hotfix_overlay,
                 machine_avoidlist_path=args.machine_avoidlist,
+                disk_reservation_root=os.getenv(
+                    "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"
+                ),
             )
             if queue_mode
             else process_policy_canary_activation_results(

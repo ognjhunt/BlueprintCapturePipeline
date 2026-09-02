@@ -118,3 +118,34 @@ def test_activation_api_fails_before_queue_on_stale_commit_or_host_path(
     assert response.status_code == 400
     assert response.json()["accepted"] is False
     assert not list((tmp_path / "activations" / "pending").glob("*.json"))
+
+
+def test_activation_api_refuses_exhausted_disk_before_queueing(
+    monkeypatch, tmp_path
+) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        service,
+        "deployment_identity_payload",
+        lambda: {
+            "commit_proven": True,
+            "source_commit": "a" * 40,
+            "blockers": [],
+            "disk_headroom": {
+                "status": "exhausted",
+                "refused_roles": ["launch_activation"],
+            },
+        },
+    )
+    body = json.dumps(request(), separators=(",", ":"))
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/task-evaluation-launch-activations",
+        data=body,
+        headers=signed_headers(body, nonce="activation-disk-001"),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["blockers"] == [
+        "launch_activation_disk_headroom_exhausted"
+    ]
+    assert not list((tmp_path / "activations" / "pending").glob("*.json"))

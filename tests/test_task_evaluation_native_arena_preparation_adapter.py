@@ -107,6 +107,46 @@ def test_builds_and_materializes_scene_neutral_native_arena_bundles(
     assert Path(result["runtime_source_receipt"]).is_file()
 
 
+def test_adapter_hardlinks_verified_members_from_shared_content_store(
+    tmp_path: Path,
+) -> None:
+    value, configured, construction_bundle, runtime_bundle = _bundles(tmp_path)
+    content_store = tmp_path / "compiled-content" / "sha256"
+
+    first = materialize_native_arena_adapter(
+        request=value,
+        compiled_episode_packet_path=construction_bundle,
+        compiled_episode_packet_reference=_identity(construction_bundle),
+        configured_revision=configured,
+        runtime_source_bundle_path=runtime_bundle,
+        output_root=tmp_path / "adapter-output-a",
+        content_store_root=content_store,
+    )
+    second = materialize_native_arena_adapter(
+        request=value,
+        compiled_episode_packet_path=construction_bundle,
+        compiled_episode_packet_reference=_identity(construction_bundle),
+        configured_revision=configured,
+        runtime_source_bundle_path=runtime_bundle,
+        output_root=tmp_path / "adapter-output-b",
+        content_store_root=content_store,
+    )
+
+    first_packet = (
+        Path(first["runtime_source_receipt"]).parent
+        / "native_task_runtime_sources.zip"
+    )
+    second_packet = (
+        Path(second["runtime_source_receipt"]).parent
+        / "native_task_runtime_sources.zip"
+    )
+    cached = content_store / hashlib.sha256(first_packet.read_bytes()).hexdigest()
+    assert cached.is_file()
+    assert first_packet.stat().st_ino == cached.stat().st_ino
+    assert second_packet.stat().st_ino == cached.stat().st_ino
+    assert cached.stat().st_nlink == 3
+
+
 def test_runtime_source_bundle_is_prelaunch_reusable_across_revision_digest(
     tmp_path: Path,
 ) -> None:

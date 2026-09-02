@@ -4,6 +4,10 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
+from blueprint_pipeline import task_evaluation_episode_compilation_worker as worker
+from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_episode_compilation_worker import (
     COMPILER_OUTPUT_SCHEMA_VERSION,
@@ -266,4 +270,35 @@ def test_compilation_reports_errno_and_removes_partial_output(
     assert result["status"] == "blocked"
     assert result["blockers"] == ["episode_compilation_failed:OSError:errno_28"]
     assert "/secret/host/path" not in json.dumps(result)
+    assert not (outputs / envelope["compilation_id"]).exists()
+
+
+def test_compilation_refuses_low_disk_before_creating_owned_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue, inputs, envelope = _stage(tmp_path)
+    outputs = tmp_path / "outputs"
+
+    def refuse(*_args, **_kwargs):
+        raise ControlPlaneDiskBudgetError(
+            "control_plane_disk_budget_exceeded:episode_compilation:"
+            "need_bytes=6:available_bytes=0:free_bytes=8:"
+            "floor_bytes=8:reserved_bytes=0"
+        )
+
+    monkeypatch.setattr(worker, "reserve_control_plane_disk", refuse)
+    run = process_episode_compilation_queue(
+        queue_root=queue,
+        input_root=inputs,
+        output_root=outputs,
+        source_commit=envelope["expected_production_commit"],
+        episode_compiler=lambda **_kwargs: pytest.fail("compiler must not run"),
+        disk_reservation_root=tmp_path / "reservations",
+    )
+
+    assert run["results"][0]["blockers"] == [
+        "control_plane_disk_budget_exceeded:episode_compilation:"
+        "need_bytes=6:available_bytes=0:free_bytes=8:"
+        "floor_bytes=8:reserved_bytes=0"
+    ]
     assert not (outputs / envelope["compilation_id"]).exists()

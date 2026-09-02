@@ -612,6 +612,7 @@ def compile_native_arena_episode(
             "execution_adapter.runtime_source_bundle",
         ),
         output_root=root / "native-arena-adapter",
+        content_store_root=root.parent / "content-addressed" / "adapter-members" / "sha256",
     )
     output: dict[str, Any] = {
         "schema_version": OUTPUT_SCHEMA_VERSION,

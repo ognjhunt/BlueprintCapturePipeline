@@ -11,6 +11,7 @@ and publishes an immutable runtime.  No scene bytes are involved.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -71,8 +72,24 @@ def _copy_file(source: Path, destination: Path, *, executable: bool) -> None:
     if source.is_symlink() or not source.is_file():
         raise ValueError("splat_render_runtime_prerequisite_invalid")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
-    destination.chmod(0o555 if executable else 0o444)
+    required_mode = 0o555 if executable else 0o444
+    linked = False
+    if source.stat().st_mode & 0o777 == required_mode:
+        try:
+            os.link(source, destination, follow_symlinks=False)
+            linked = True
+        except OSError as exc:
+            if exc.errno not in {
+                errno.EXDEV,
+                errno.EPERM,
+                errno.EACCES,
+                errno.EMLINK,
+                getattr(errno, "EOPNOTSUPP", errno.EPERM),
+            }:
+                raise
+    if not linked:
+        shutil.copyfile(source, destination)
+        destination.chmod(required_mode)
 
 
 def _copy_tree(source: Path, destination: Path) -> None:

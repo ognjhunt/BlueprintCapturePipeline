@@ -17,6 +17,7 @@ import re
 import shutil
 import stat
 import tempfile
+import uuid
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
@@ -336,6 +337,7 @@ def _extract_verified_bundle(
     expected_reference: Mapping[str, Any],
     role: str,
     destination: Path,
+    content_store_root: Path | None = None,
 ) -> tuple[dict[str, Any], Path]:
     if role not in _ROLES:
         raise TaskEvaluationNativeArenaAdapterError(
@@ -363,13 +365,49 @@ def _extract_verified_bundle(
             archive, request=request, expected_role=role
         )
         destination.mkdir(parents=True, exist_ok=False, mode=0o750)
+        content_root: Path | None = None
+        if content_store_root is not None:
+            content_root = content_store_root.expanduser()
+            if content_root.is_symlink():
+                raise TaskEvaluationNativeArenaAdapterError(
+                    "task_evaluation_adapter_content_store_unsafe"
+                )
+            content_root.mkdir(parents=True, exist_ok=True, mode=0o750)
+            content_root = content_root.resolve(strict=True)
         try:
             for row in manifest["entries"]:
                 relative = _validated_relative_path(row["relative_path"])
                 target = destination.joinpath(*relative.parts[1:])
                 target.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+                cached = (
+                    content_root / str(row["sha256"]).removeprefix("sha256:")
+                    if content_root is not None
+                    else target
+                )
+                if cached.is_symlink():
+                    raise TaskEvaluationNativeArenaAdapterError(
+                        "task_evaluation_adapter_content_store_unsafe"
+                    )
+                if cached.exists():
+                    if (
+                        not cached.is_file()
+                        or cached.stat().st_size != row["size_bytes"]
+                        or _sha256_file(cached) != row["sha256"]
+                    ):
+                        raise TaskEvaluationNativeArenaAdapterError(
+                            "task_evaluation_adapter_content_store_identity_mismatch"
+                        )
+                    if cached != target:
+                        os.link(cached, target, follow_symlinks=False)
+                    continue
+                temporary = (
+                    cached.parent
+                    / f".{cached.name}.partial-{os.getpid()}-{uuid.uuid4().hex}"
+                    if cached != target
+                    else target
+                )
                 descriptor = os.open(
-                    target,
+                    temporary,
                     os.O_WRONLY
                     | os.O_CREAT
                     | os.O_EXCL
@@ -400,9 +438,24 @@ def _extract_verified_bundle(
                     size != row["size_bytes"]
                     or "sha256:" + digest.hexdigest() != row["sha256"]
                 ):
+                    temporary.unlink(missing_ok=True)
                     raise TaskEvaluationNativeArenaAdapterError(
                         "task_evaluation_adapter_bundle_member_readback_mismatch"
                     )
+                if cached != target:
+                    try:
+                        os.link(temporary, cached, follow_symlinks=False)
+                    except FileExistsError:
+                        if (
+                            cached.stat().st_size != row["size_bytes"]
+                            or _sha256_file(cached) != row["sha256"]
+                        ):
+                            raise TaskEvaluationNativeArenaAdapterError(
+                                "task_evaluation_adapter_content_store_identity_mismatch"
+                            )
+                    finally:
+                        temporary.unlink(missing_ok=True)
+                    os.link(cached, target, follow_symlinks=False)
         except Exception:
             shutil.rmtree(destination, ignore_errors=True)
             raise
@@ -417,6 +470,7 @@ def materialize_native_arena_adapter(
     configured_revision: Mapping[str, Any],
     runtime_source_bundle_path: str | Path,
     output_root: str | Path,
+    content_store_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Extract and independently verify both native-Arena adapter bundles."""
 
@@ -463,6 +517,9 @@ def materialize_native_arena_adapter(
             expected_reference=compiled_episode_packet_reference,
             role="construction_packet",
             destination=root / "construction-packet",
+            content_store_root=(
+                Path(content_store_root) if content_store_root is not None else None
+            ),
         )
         runtime_manifest, runtime_root = _extract_verified_bundle(
             bundle_path=Path(runtime_source_bundle_path).expanduser(),
@@ -470,6 +527,9 @@ def materialize_native_arena_adapter(
             expected_reference=adapter["runtime_source_bundle"],
             role="runtime_source",
             destination=root / "runtime-source",
+            content_store_root=(
+                Path(content_store_root) if content_store_root is not None else None
+            ),
         )
         _packet_path, packet_receipt, _packet_rows = (
             verify_native_task_arena_packet(packet_root)

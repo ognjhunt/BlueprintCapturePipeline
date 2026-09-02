@@ -120,3 +120,34 @@ def test_preparation_api_rejects_stale_deployment_binding(monkeypatch, tmp_path)
         "launch_preparation_production_commit_mismatch"
     ]
     assert not list((tmp_path / "preparations" / "pending").glob("*.json"))
+
+
+def test_preparation_api_refuses_exhausted_disk_before_queueing(
+    monkeypatch, tmp_path
+) -> None:
+    configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        service,
+        "deployment_identity_payload",
+        lambda: {
+            "commit_proven": True,
+            "source_commit": "a" * 40,
+            "blockers": [],
+            "disk_headroom": {
+                "status": "exhausted",
+                "refused_roles": ["launch_preparation"],
+            },
+        },
+    )
+    body = json.dumps(request(), separators=(",", ":"))
+    response = TestClient(create_app()).post(
+        "/api/live-pipeline/task-evaluation-launch-preparations",
+        data=body,
+        headers=signed_headers(body, nonce="preparation-disk-001"),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["blockers"] == [
+        "launch_preparation_disk_headroom_exhausted"
+    ]
+    assert not list((tmp_path / "preparations" / "pending").glob("*.json"))

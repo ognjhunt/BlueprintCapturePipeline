@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import task_evaluation_launch_activation_worker as worker
+from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_activation_contract import (
     launch_activation_intent_digest,
@@ -71,6 +72,55 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 
 
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
+
+
+def test_activation_refuses_low_disk_before_loading_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = activation_request()
+    queue = tmp_path / "activation-queue"
+    stage_launch_activation_request(
+        value=request, queue_root=queue, submitted_by="blueprint-webapp"
+    )
+    preparation_queue = tmp_path / "preparation-queue"
+    preparation_inputs = tmp_path / "preparation-inputs"
+    preparation_queue.mkdir()
+    preparation_inputs.mkdir()
+
+    def refuse(*_args, **_kwargs):
+        raise ControlPlaneDiskBudgetError(
+            "control_plane_disk_budget_exceeded:launch_activation:"
+            "need_bytes=2:available_bytes=0:free_bytes=8:"
+            "floor_bytes=8:reserved_bytes=0"
+        )
+
+    monkeypatch.setattr(worker.disk_budget, "reserve_control_plane_disk", refuse)
+    run = process_launch_activation_queue(
+        queue_root=queue,
+        preparation_queue_root=preparation_queue,
+        preparation_input_root=preparation_inputs,
+        activation_root=tmp_path / "activations",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        service_group=SERVICE_ACCOUNT,
+        repository_root=tmp_path,
+        destination_prefix="s3://blueprint-production-inputs/activated",
+        release_window_prefix=(
+            "s3://blueprint-production-inputs/coordinator-release-windows/"
+        ),
+        profile_dir=tmp_path / "profiles",
+        webapp_catalog=tmp_path / "catalog.json",
+        standing_authorization_dir=tmp_path / "standing-authorizations",
+        source_commit=request["expected_production_commit"],
+        disk_reservation_root=tmp_path / "reservations",
+    )
+
+    assert run["results"][0]["blockers"] == [
+        "control_plane_disk_budget_exceeded:launch_activation:"
+        "need_bytes=2:available_bytes=0:free_bytes=8:"
+        "floor_bytes=8:reserved_bytes=0"
+    ]
+    assert not (tmp_path / "activations" / request["activation_id"]).exists()
 
 
 def test_control_search_requests_initial_warm_retention() -> None:

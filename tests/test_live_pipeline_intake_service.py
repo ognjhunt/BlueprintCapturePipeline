@@ -582,6 +582,11 @@ def test_deployment_identity_fails_closed_without_exact_source_commit(
             "maximum_replacement_objects": 5,
             "generated_appearance_is_physical_evidence": False,
         },
+        "disk_headroom": {
+            "schema_version": "control_plane_disk_headroom.v1",
+            "status": "unconfigured",
+            "refused_roles": [],
+        },
     }
 
     monkeypatch.setenv(service.PIPELINE_SOURCE_COMMIT_ENV, "not-a-commit")
