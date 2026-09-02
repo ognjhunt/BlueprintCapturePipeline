@@ -90,7 +90,6 @@ def _run_wrist_camera_mount_sweep(
         return None
     from PIL import Image
 
-    from blueprint_pipeline.common import write_json
     from blueprint_pipeline.native_task_wrist_camera_mount_sweep import (
         resolve_wrist_camera_mount_eyes,
         select_wrist_camera_mount_candidate,
@@ -185,8 +184,9 @@ def _run_wrist_camera_mount_sweep(
     selection["selection_digest"] = canonical_digest(
         selection, digest_field="selection_digest"
     )
-    write_json(
-        output_root / "wrist_camera_mount_selection.v1.json", selection
+    (output_root / "wrist_camera_mount_selection.v1.json").write_text(
+        json.dumps(selection, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
     selected = selection.get("selected_candidate")
     if not isinstance(selected, dict):
