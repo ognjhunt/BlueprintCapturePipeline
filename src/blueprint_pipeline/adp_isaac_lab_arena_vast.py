@@ -712,6 +712,7 @@ def run_arena_native_control_vast(
                 isaac_image=container_image,
                 ngc_image_login_mode="always",
                 provider_bundle=str(bundle_path),
+                expected_provider_bundle_sha256=str(bundle["bundle_sha256"]),
                 provider_bundle_url=bundle_url,
                 provider_output_put_url=output_put_url,
                 provider_output_get_url=output_get_url,

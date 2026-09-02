@@ -218,6 +218,28 @@ def test_groot_preflight_reconfirms_transport_without_inference() -> None:
     assert fake.requests == []
 
 
+def test_groot_preflight_resets_for_next_episode_after_prior_inference() -> None:
+    fake = _FakePolicyClient()
+    client = GrootN17DroidPolicyClient(
+        spec=GrootN17DroidPolicySpec(),
+        worker_identity_receipt=_receipt(),
+        host="127.0.0.1",
+        client_factory=lambda **kwargs: fake,
+    )
+    client.infer(_observation())
+
+    readiness = client.preflight_readiness()
+
+    assert readiness["identity_verified"] is True
+    assert readiness["candidate_policy_queried"] is False
+    assert readiness["candidate_inference_performed"] is False
+    assert readiness["prior_candidate_policy_query_observed"] is True
+    assert readiness["last_inference_evidence"] is None
+    assert client.candidate_policy_queried is True
+    assert fake.reset_calls == 1
+    assert len(fake.requests) == 1
+
+
 @pytest.mark.parametrize(
     "position_m",
     (

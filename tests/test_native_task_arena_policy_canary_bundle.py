@@ -109,6 +109,11 @@ def test_provider_entrypoint_provisions_both_servers_once_and_runs_one_worker() 
     groot_provision = script.index("adp009d_policy_provisioning.groot_n17_droid.sh")
     worker = script.index('"$RUNTIME_DIR/adp_arena_provider_runner.py"')
     assert pi_copy < pi_provision < groot_copy < groot_provision < worker
+    assert script.index("trap teardown_servers EXIT INT TERM HUP") < script.index(
+        "native_task_runtime_source_provision"
+    )
+    assert "policy_canary_runtime_source_provision_failed" in script
+    assert "write_fallback_result policy_canary_entrypoint_failed_without_result" in script
 
 
 def test_candidate_servers_have_distinct_transports_ports_and_receipts() -> None:
@@ -123,6 +128,15 @@ def test_candidate_servers_have_distinct_transports_ports_and_receipts() -> None
     assert CANDIDATE_DEFAULT_PORTS[transport_for("groot_n17_droid")] == 5555
     script = bundle._entrypoint()
     assert "adp009d_policy_server_receipt.$candidate.json" in script
+
+
+def test_provider_manifest_digest_is_revalidated_inside_shipped_worker() -> None:
+    source = (
+        Path(bundle.__file__).with_name("native_task_arena_policy_canary_worker.py")
+    ).read_text(encoding="utf-8")
+
+    assert "policy_canary_provider_manifest_invalid" in source
+    assert 'canonical_digest(manifest, digest_field="input_digest")' in source
 
 
 def test_provider_worker_has_one_simulation_launch_outside_episode_loop() -> None:
@@ -180,7 +194,12 @@ def test_episode_failure_gap_retains_safe_diagnostic_without_host_path(
     path = worker._write_episode_failure_gap(
         output_root=tmp_path,
         run_id="run-1",
-        context={"candidate_id": "pi05_droid", "cell_id": "anchor-1", "seed": 7},
+        context={
+            "candidate_id": "pi05_droid",
+            "cell_id": "anchor-1",
+            "seed": 7,
+            "resolved_scenario": {"family": "canonical_anchor", "ordinal": 0},
+        },
         failure=RuntimeError("camera failed at /workspace/private/runtime.py"),
     )
 
@@ -188,6 +207,13 @@ def test_episode_failure_gap_retains_safe_diagnostic_without_host_path(
     assert gap["failure_type"] == "RuntimeError"
     assert gap["failure_message"] == "camera failed at <path>"
     assert "/workspace" not in json.dumps(gap)
+    assert gap["reset_state_digest"] == canonical_digest(
+        {
+            "resolved_scenario": {"family": "canonical_anchor", "ordinal": 0},
+            "seed": 7,
+            "execution_performed": False,
+        }
+    )
     assert gap["gap_digest"] == canonical_digest(gap, digest_field="gap_digest")
 
 

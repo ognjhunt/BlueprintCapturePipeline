@@ -189,6 +189,30 @@ def _quaternion_product_xyzw(a: list[float], b: list[float]) -> list[float]:
     ]
 
 
+def _validate_provider_manifest(
+    value: Mapping[str, Any],
+    *,
+    runtime_inputs: Mapping[str, Any],
+    authority: Mapping[str, Any],
+) -> dict[str, Any]:
+    manifest = json.loads(json.dumps(dict(value), allow_nan=False))
+    if (
+        manifest.get("schema_version")
+        != "native_task_arena_policy_canary_provider_bundle.v1"
+        or manifest.get("execution_mode")
+        != "internal_policy_canary_paired_session"
+        or manifest.get("run_kind") != "internal_policy_canary"
+        or manifest.get("claim_ceiling") != "diagnostic_policy_execution"
+        or manifest.get("runtime_inputs_digest")
+        != runtime_inputs.get("runtime_inputs_digest")
+        or manifest.get("authority_digest") != authority.get("authority_digest")
+        or manifest.get("input_digest")
+        != canonical_digest(manifest, digest_field="input_digest")
+    ):
+        raise RuntimeError("policy_canary_provider_manifest_invalid")
+    return manifest
+
+
 def _resolved_scene_plan(base: Mapping[str, Any], cell: Mapping[str, Any]) -> dict[str, Any]:
     plan = deepcopy(dict(base))
     scenario = deepcopy(dict(cell["resolved_scenario"]))
@@ -379,6 +403,13 @@ def _write_episode_failure_gap(
         "candidate_id": context.get("candidate_id"),
         "cell_id": context.get("cell_id"),
         "seed": context.get("seed"),
+        "reset_state_digest": canonical_digest(
+            {
+                "resolved_scenario": context.get("resolved_scenario"),
+                "seed": context.get("seed"),
+                "execution_performed": False,
+            }
+        ),
         "candidate_policy_queried": False,
         "actions_reached_robot": False,
         "failure_type": type(failure).__name__,
@@ -830,6 +861,11 @@ def _run_selected_cell(
     )
     authority = validate_session_authority(
         _read(runtime / "runtime_inputs" / "policy_canary_session_authority.json")
+    )
+    _validate_provider_manifest(
+        _read(runtime / "adp_arena_provider_manifest.json"),
+        runtime_inputs=inputs,
+        authority=authority,
     )
     base_scene_plan = _read(
         runtime / "native_task_packet" / "native_task_arena_scene_plan.v1.json"

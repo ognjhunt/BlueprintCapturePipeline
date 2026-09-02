@@ -36,9 +36,26 @@ from blueprint_pipeline.vast_provider_adapter import (
     _url_secret_values,
     run_vast_provider_adapter,
 )
+from blueprint_pipeline.vast_provider_bundle_digest_guard import (
+    provider_bundle_digest_guard,
+)
 
 
 pytestmark = pytest.mark.slow
+
+
+def test_provider_bundle_digest_guard_fails_before_extraction() -> None:
+    guard = provider_bundle_digest_guard(
+        "sha256:" + "a" * 64,
+        '"$WORK_DIR/policy-canary.zip"',
+        "policy_canary_bundle_digest_mismatch",
+        "BLUEPRINT_POLICY_CANARY_BUNDLE_SHA256_VERIFIED",
+    )
+
+    assert "sha256sum" in guard
+    assert "policy_canary_bundle_digest_mismatch" in guard
+    assert "BLUEPRINT_POLICY_CANARY_BUNDLE_SHA256_VERIFIED" in guard
+    assert "bundle_digest_rc=86" in guard
 
 
 def _decoded_compressed_script(value: str) -> str:
@@ -6100,9 +6117,15 @@ def test_vast_adapter_small_provider_helper_edges(
         enable_isaac_smoke=True,
         enable_blueprint_bundle=True,
         provider_bundle_kind="native_task_arena_policy_canary_session",
+        expected_provider_bundle_sha256="sha256:" + "a" * 64,
     )
     assert "BLUEPRINT_RUNTIME_DEPENDENCY_URI" in policy_canary_script
     assert "native_task_runtime_dependency_cache" in policy_canary_script
+    assert "arena_bundle_digest_mismatch" in policy_canary_script
+    assert "BLUEPRINT_VAST_ARENA_BUNDLE_SHA256_VERIFIED" in policy_canary_script
+    assert policy_canary_script.index("arena_bundle_digest_mismatch") < (
+        policy_canary_script.index("-m zipfile -e")
+    )
     layered_env = vpa._probe_env(
         job_dir=tmp_path / "layered-arena",
         enable_isaac_smoke=True,

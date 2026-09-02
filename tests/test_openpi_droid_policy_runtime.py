@@ -182,6 +182,46 @@ def test_openpi_preflight_reconfirms_identity_without_inference(tmp_path: Path) 
     assert client._client.inference_calls == 0
 
 
+def test_openpi_preflight_reconfirms_identity_after_prior_episode(
+    tmp_path: Path,
+) -> None:
+    spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            self.metadata_reads = 0
+            self.inference_calls = 0
+
+        def get_server_metadata(self):
+            self.metadata_reads += 1
+            return _runtime_metadata(spec)
+
+        def infer(self, observation):
+            del observation
+            self.inference_calls += 1
+            return {"actions": np.zeros((10, 8))}
+
+    client = OpenPIWebsocketDroidPolicyClient(
+        spec=spec,
+        host="127.0.0.1",
+        port=8000,
+        client_factory=FakeClient,
+    )
+    client.infer({"prompt": "pick"})
+
+    readiness = client.preflight_readiness()
+
+    assert readiness["identity_verified"] is True
+    assert readiness["candidate_policy_queried"] is False
+    assert readiness["candidate_inference_performed"] is False
+    assert readiness["prior_candidate_policy_query_observed"] is True
+    assert readiness["last_inference_evidence"] is None
+    assert client.candidate_policy_queried is True
+    assert client._client.inference_calls == 1
+    assert client._client.metadata_reads == 2
+
+
 def test_websocket_client_records_completed_query_before_response_refusal(
     tmp_path: Path,
 ) -> None:

@@ -97,7 +97,7 @@ jobs:
 
       - name: Install portable review-video toolchain
         shell: bash
-        timeout-minutes: 4
+        timeout-minutes: 8
         run: |
           set -euo pipefail
           # The review-video tests need ffmpeg/ffprobe on PATH -- nothing more.
@@ -116,7 +116,8 @@ jobs:
           fi
           FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-amd64-static.tar.xz"
           FFMPEG_SHA256="abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67"
-          curl -fsSL --retry 3 --retry-connrefused -o /tmp/ffmpeg-static.tar.xz "${FFMPEG_URL}"
+          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 420 \
+            -o /tmp/ffmpeg-static.tar.xz "${FFMPEG_URL}"
           echo "${FFMPEG_SHA256}  /tmp/ffmpeg-static.tar.xz" | sha256sum -c -
           tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp
           sudo install -m 0755 /tmp/ffmpeg-7.0.2-amd64-static/ffmpeg /usr/local/bin/ffmpeg

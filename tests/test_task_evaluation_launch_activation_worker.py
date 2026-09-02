@@ -312,7 +312,13 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
         "request_digest": "sha256:" + "1" * 64,
         "result_digest": "sha256:" + "2" * 64,
     }
-    construction = {"schema_version": "native_task_arena_construction_result.v1"}
+    construction = {
+        "schema_version": "native_task_arena_construction_result.v1",
+        "status": "completed",
+        "construction_gate_qualified": True,
+        "candidate_policy_queried": False,
+        "blockers": [],
+    }
     construction["result_digest"] = canonical_digest(
         construction, digest_field="result_digest"
     )

@@ -556,6 +556,13 @@ def execute_paired_session(
                             "runtime_identity_digest": str(
                                 _mapping(policy).get("runtime_identity_digest") or ""
                             ),
+                            "reset_state_digest": canonical_digest(
+                                {
+                                    "resolved_scenario": cell["resolved_scenario"],
+                                    "seed": cell["seed"],
+                                    "execution_performed": False,
+                                }
+                            ),
                         }
                     observed.update(context)
                     observed["policy_outcome_interpretable"] = bool(

@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import signal
 import subprocess
 import sys
@@ -556,7 +557,16 @@ def _seal_ready_server_teardown(
             ],
         }
     destination = Path(result_path)
-    teardown_path = destination.parent / "adp009d_policy_server_teardown.v1.json"
+    candidate_id = str(teardown.get("candidate_id") or "unknown")
+    safe_candidate_id = (
+        candidate_id
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", candidate_id)
+        else "unknown"
+    )
+    teardown_path = (
+        destination.parent
+        / f"adp009d_policy_server_teardown.{safe_candidate_id}.v1.json"
+    )
     teardown["completed_at_unix_ns"] = time.time_ns()
     teardown["teardown_digest"] = _canonical_digest(
         teardown, digest_field="teardown_digest"
@@ -590,6 +600,11 @@ def _seal_ready_server_teardown(
         "teardown_receipt_sha256": "sha256:"
         + hashlib.sha256(teardown_path.read_bytes()).hexdigest(),
     }
+    teardowns = episode_result.get("policy_server_teardowns")
+    if not isinstance(teardowns, dict):
+        teardowns = {}
+    teardowns[safe_candidate_id] = bound_teardown
+    episode_result["policy_server_teardowns"] = teardowns
     episode_result["teardown"] = bound_teardown
     if teardown["policy_server_process_terminated"] is not True:
         episode_result["status"] = "blocked"

@@ -102,6 +102,12 @@ def _profile_and_request(tmp_path: Path) -> tuple[dict, dict]:
         "digest": "sha256:" + "9" * 64,
         "size_bytes": 3_821,
     }
+    def activation_ref(name: str, character: str) -> dict:
+        return {
+            "uri": f"s3://blueprint/policy-canary/activation/{name}.json",
+            "digest": "sha256:" + character * 64,
+            "size_bytes": 256,
+        }
     plan = {
         "schema_version": "task_evaluation_policy_canary_execution_plan.v1",
         "source_commit": COMMIT,
@@ -121,6 +127,32 @@ def _profile_and_request(tmp_path: Path) -> tuple[dict, dict]:
             "hard_ttl_seconds": 14_400,
             "maximum_provider_allocations": 1,
             "retry_cap": 0,
+        },
+        "activation_automation": {
+            "mode": "automatic_after_no_spend_compilation",
+            "release_window_template": activation_ref("release-window-template", "1"),
+            "lineage": {
+                "kind": "predecessor",
+                "prior_authority": activation_ref("prior-authority", "2"),
+                "prior_result": activation_ref("prior-result", "3"),
+                "prior_launch_receipt": activation_ref("prior-launch-receipt", "4"),
+                "prior_webapp_sync": activation_ref("prior-webapp-sync", "5"),
+                "prior_provider_zero": activation_ref("prior-provider-zero", "6"),
+                "prior_spend_reconciliation": activation_ref("prior-spend", "7"),
+                "construction_result": activation_ref("construction-result", "8"),
+            },
+            "authorization_template": {
+                "reference": "automatic policy-canary activation",
+                "authorized_by": "blueprint-policy-lead",
+                "profile_revision": "policy-canary-v1",
+                "valid_for_seconds": 3600,
+            },
+            "requested_mutations": {
+                "profile_publication": False,
+                "catalog_synchronization": False,
+                "standing_authorization": False,
+                "policy_campaign_queue": True,
+            },
         },
         "provider_mutation_performed": False,
         "paid_execution_requested": False,

@@ -103,16 +103,31 @@ mkdir -p "$OUT_DIR"
 SOURCE_RECEIPT="$RUNTIME_DIR/native_task_runtime_sources/native_task_runtime_source_packet.v1.json"
 SOURCE_PACKET="$RUNTIME_DIR/native_task_runtime_sources/native_task_runtime_sources.zip"
 cd "$RUNTIME_DIR"
-/isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision \
-  --source-receipt "$SOURCE_RECEIPT" --source-packet "$SOURCE_PACKET" \
-  --extraction-dir "$RUNTIME_DIR/provisioned_runtime_sources" \
-  --output "$OUT_DIR/native_task_runtime_source_provisioning.v1.json" \
-  --simulator-root /isaac-sim
-if [ $? -ne 0 ]; then exit 2; fi
+
+write_fallback_result() {{
+  fallback_reason="$1"
+  fallback_rc="$2"
+  if [ ! -f "$OUT_DIR/{PROVIDER_RESULT_FILENAME}" ]; then
+    /isaac-sim/python.sh - "$OUT_DIR/{PROVIDER_RESULT_FILENAME}" "$fallback_rc" "$fallback_reason" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({{
+  "schema_version": "native_task_arena_policy_canary_session_result.v1",
+  "status": "blocked",
+  "run_kind": "internal_policy_canary",
+  "claim_ceiling": "diagnostic_policy_execution",
+  "candidate_policy_queried": False,
+  "blockers": [sys.argv[3]],
+  "worker_exit_code": int(sys.argv[2]),
+}}, sort_keys=True) + "\\n", encoding="utf-8")
+PY
+  fi
+}}
 
 teardown_servers() {{
   original_rc=$?
   trap - EXIT INT TERM HUP
+  write_fallback_result policy_canary_entrypoint_failed_without_result "$original_rc"
   for candidate in pi05_droid groot_n17_droid; do
     /isaac-sim/python.sh "$RUNTIME_DIR/adp009d_policy_server_worker.py" \
       --terminate-ready-server \
@@ -123,6 +138,17 @@ teardown_servers() {{
   exit $original_rc
 }}
 trap teardown_servers EXIT INT TERM HUP
+
+/isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision \
+  --source-receipt "$SOURCE_RECEIPT" --source-packet "$SOURCE_PACKET" \
+  --extraction-dir "$RUNTIME_DIR/provisioned_runtime_sources" \
+  --output "$OUT_DIR/native_task_runtime_source_provisioning.v1.json" \
+  --simulator-root /isaac-sim
+source_rc=$?
+if [ $source_rc -ne 0 ]; then
+  write_fallback_result policy_canary_runtime_source_provision_failed "$source_rc"
+  exit $source_rc
+fi
 
 cp "$RUNTIME_DIR/runtime_inputs/policy_execution_spec.pi05_droid.json" \
   "$RUNTIME_DIR/{POLICY_EXECUTION_SPEC_STAGED_NAME}"
@@ -135,21 +161,7 @@ bash "$RUNTIME_DIR/adp009d_policy_provisioning.groot_n17_droid.sh" \
 
 /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
 runner_rc=$?
-if [ ! -f "$OUT_DIR/{PROVIDER_RESULT_FILENAME}" ]; then
-  /isaac-sim/python.sh - "$OUT_DIR/{PROVIDER_RESULT_FILENAME}" "$runner_rc" <<'PY'
-import json, sys
-from pathlib import Path
-Path(sys.argv[1]).write_text(json.dumps({{
-  "schema_version": "native_task_arena_policy_canary_session_result.v1",
-  "status": "blocked",
-  "run_kind": "internal_policy_canary",
-  "claim_ceiling": "diagnostic_policy_execution",
-  "candidate_policy_queried": False,
-  "blockers": ["policy_canary_worker_failed_without_result"],
-  "worker_exit_code": int(sys.argv[2]),
-}}, sort_keys=True) + "\\n", encoding="utf-8")
-PY
-fi
+write_fallback_result policy_canary_worker_failed_without_result "$runner_rc"
 exit $runner_rc
 '''
 

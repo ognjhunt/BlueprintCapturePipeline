@@ -10,6 +10,12 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import task_evaluation_configured_controls_autostart as autostart
 from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
+from blueprint_pipeline.task_evaluation_policy_canary_preparation_dispatch import (
+    maybe_dispatch_policy_canary_preparation,
+)
+from tests.test_task_evaluation_policy_canary_preparation_dispatch import (
+    _profile_and_request as policy_canary_profile_and_request,
+)
 
 
 SOURCE_CONFIGURATION_COMMIT = "c" * 40
@@ -114,6 +120,135 @@ def _window_publisher(path: Path, object_name: str) -> dict[str, object]:
 def _write(path: Path, value: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def test_compiled_policy_canary_automatically_queues_bound_activation(
+    tmp_path: Path,
+) -> None:
+    profile_root = tmp_path / "profile"
+    profile_root.mkdir()
+    profile, request = policy_canary_profile_and_request(profile_root)
+    launch_state_root = tmp_path / "launch-state"
+    preparation_queue = tmp_path / "preparations"
+    receipt = maybe_dispatch_policy_canary_preparation(
+        request=request,
+        profile=profile,
+        blockers=[],
+        state_root=launch_state_root,
+        preparation_queue_root=preparation_queue,
+    )
+    assert receipt is not None
+    assert receipt["status"] == "queued_for_no_spend_preparation"
+    preparation_id = receipt["preparation_queue"]["preparation_id"]
+    pending = next((preparation_queue / "pending").glob("*.json"))
+    materialized = preparation_queue / "materialized" / pending.name
+    materialized.parent.mkdir(parents=True, exist_ok=True)
+    pending.replace(materialized)
+    template: dict[str, object] = {
+        "schema_version": "task_evaluation_configured_controls_release_window_template.v1",
+        "status": "authorized_for_dynamic_release",
+        "team_namespace": request["team_namespace"],
+        "expected_production_commit": profile["source_commit"],
+        "allowed_mutations": [
+            "profile_publication",
+            "catalog_synchronization",
+            "standing_authorization",
+        ],
+        "provider_allowlist": ["vast"],
+        "maximum_hard_cap_usd": 4.0,
+        "valid_for_seconds": 3600,
+        "released_by": "blueprint-policy-lead",
+        "release_reference": "automatic policy-canary activation",
+        "provider_resource_allocation_allowed": False,
+        "paid_request_allowed": False,
+        "template_digest": "",
+    }
+    template["template_digest"] = canonical_digest(
+        template, digest_field="template_digest"
+    )
+    template_path = tmp_path / "materialized-release-window-template.json"
+    _write(template_path, template)
+    compilation_id = preparation_id
+    compilation_envelope_digest = "sha256:" + "b" * 64
+    preparation: dict[str, object] = {
+        "schema_version": "task_evaluation_launch_preparation_result.v1",
+        "status": "queued_for_production_episode_compilation",
+        "episode_compilation_id": compilation_id,
+        "episode_compilation_queue_envelope_digest": compilation_envelope_digest,
+        "references": [
+            {
+                "contract_path": "policy_canary_activation.release_window_template",
+                "materialized_path": str(template_path),
+                "digest": "sha256:" + hashlib.sha256(template_path.read_bytes()).hexdigest(),
+                "size_bytes": template_path.stat().st_size,
+            }
+        ],
+        "result_digest": "",
+    }
+    preparation["result_digest"] = canonical_digest(
+        preparation, digest_field="result_digest"
+    )
+    results = preparation_queue / "results"
+    results.mkdir(parents=True, exist_ok=True)
+    _write(results / materialized.name, preparation)
+    compilation: dict[str, object] = {
+        "schema_version": "task_evaluation_episode_compilation_result.v1",
+        "status": "compiled_for_production_launch",
+        "run_id": request["run_id"],
+        "source_commit": profile["source_commit"],
+        "result_digest": "",
+    }
+    compilation["result_digest"] = canonical_digest(
+        compilation, digest_field="result_digest"
+    )
+    compilation_results = tmp_path / "compilations" / "results"
+    compilation_results.mkdir(parents=True)
+    _write(
+        compilation_results
+        / f"{compilation_id}-{compilation_envelope_digest.removeprefix('sha256:')}.json",
+        compilation,
+    )
+
+    def publisher(*, path: Path, object_name: str):
+        payload = path.read_bytes()
+        digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+        return {
+            "uri": f"s3://blueprint/task-evaluation/production-inputs/coordinator-release-windows/{object_name}",
+            "digest": digest,
+            "size_bytes": len(payload),
+            "full_byte_service_account_readback_passed": True,
+            "readback_digest": digest,
+            "readback_size_bytes": len(payload),
+        }
+
+    activation_queue = tmp_path / "activations"
+    observed = worker.advance_policy_canary_activation(
+        run_root=launch_state_root / request["launch_id"],
+        preparation_queue_root=preparation_queue,
+        episode_compilation_queue_root=tmp_path / "compilations",
+        activation_queue_root=activation_queue,
+        progression_root=tmp_path / "progression",
+        release_window_publisher_factory=lambda: publisher,
+        now=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert observed["status"] == "policy_canary_activation_queued"
+    queued = list((activation_queue / "pending").glob("*.json"))
+    assert len(queued) == 1
+    activation = json.loads(queued[0].read_text(encoding="utf-8"))["request"]
+    assert activation["lane"] == "native_task_arena_policy_evaluation"
+    assert activation["run_kind"] == "internal_policy_canary"
+    assert activation["capture_session_id"] == profile[
+        "internal_policy_canary_execution_plan"
+    ]["configured_source_launch_id"]
+    assert activation["requested_mutations"] == {
+        "profile_publication": False,
+        "catalog_synchronization": False,
+        "standing_authorization": False,
+        "policy_campaign_queue": True,
+    }
+    assert observed["provider_mutation_performed"] is False
+    assert observed["paid_execution_requested"] is False
 
 
 def _digest(path: Path) -> str:
@@ -1098,6 +1233,11 @@ def test_systemd_worker_is_separate_from_reconciler_and_never_calls_allocator() 
     assert "paid_resource_allocator" not in service
     assert "vast_provider_adapter" not in service
     assert "--webapp-secret-file" in service
+    assert (
+        "Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT="
+        in service
+    )
+    assert "--episode-compilation-queue-root" in service
     assert "BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_PLAN_ROOT" in service
     assert (
         "BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE="

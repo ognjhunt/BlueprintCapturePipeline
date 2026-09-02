@@ -301,6 +301,17 @@ def _stage_runtime_root(tmp_path: Path) -> tuple[Path, Path]:
         hard_ttl_seconds=9_000,
     )
     _write(runtime / "runtime_inputs" / "policy_canary_session_authority.json", authority)
+    manifest: dict[str, Any] = {
+        "schema_version": "native_task_arena_policy_canary_provider_bundle.v1",
+        "execution_mode": "internal_policy_canary_paired_session",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "runtime_inputs_digest": inputs["runtime_inputs_digest"],
+        "authority_digest": authority["authority_digest"],
+        "input_digest": "",
+    }
+    manifest["input_digest"] = canonical_digest(manifest, digest_field="input_digest")
+    _write(runtime / "adp_arena_provider_manifest.json", manifest)
     _write(
         runtime / "runtime_inputs" / "policy_execution_spec.pi05_droid.json",
         _execution_spec("pi05_droid", port=8000),
@@ -787,5 +798,12 @@ def test_real_clients_refuse_a_second_readiness_preflight_after_inference(
         client = _real_policy_client(specs[candidate], groot_worker_identity_receipt=receipt)
         first = episode(client, candidate, "first")
         assert first["candidate_policy_queried"] is True
-        with pytest.raises(ValueError, match="preflight_after_inference_forbidden"):
+        # The client refuses the second readiness preflight outright, and the
+        # episode lifecycle refuses a readiness receipt from a queried client;
+        # whichever boundary fires first, a second episode on one client is
+        # a typed refusal, never a silent rollout.
+        with pytest.raises(
+            ValueError,
+            match="preflight_after_inference_forbidden|policy_episode_readiness_queried_candidate",
+        ):
             episode(client, candidate, "second")
