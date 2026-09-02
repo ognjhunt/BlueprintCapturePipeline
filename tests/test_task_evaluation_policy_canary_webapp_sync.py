@@ -210,7 +210,7 @@ def test_canary_sync_requires_website_notification_receipt(monkeypatch) -> None:
     assert "sync-secret" not in json.dumps(synced)
 
 
-def test_canary_sync_rejects_failed_website_notification(monkeypatch) -> None:
+def test_canary_sync_preserves_report_when_website_notification_fails(monkeypatch) -> None:
     delivery, result = _projection()
 
     class Response:
@@ -266,8 +266,9 @@ def test_canary_sync_rejects_failed_website_notification(monkeypatch) -> None:
         max_attempts=1,
     )
 
-    assert synced["status"] == "failed"
-    assert synced["reason"] == "response_binding_mismatch"
+    assert synced["status"] == "succeeded"
+    assert synced["notification_delivery"]["status"] == "failed"
+    assert synced["notification_delivery"]["failure_reason"] == "email_disabled"
 
 
 def test_preprovider_blocked_sync_requires_terminal_email_readback(
