@@ -167,6 +167,15 @@ dependent step as blocked instead of guessing.
     hosted-check completion, and merge to `main` are not prerequisites for the
     canary. Preserve failures and publish the encoded fix before a production
     release or terminal scientific claim.
+  - **Policy-canary worker, bundle, episode, or client changes:** the focused
+    hermetic tests are the lifecycle rehearsal
+    (`tests/test_native_task_arena_policy_canary_lifecycle_rehearsal.py`) and
+    the provider import-closure suite
+    (`tests/test_provider_runtime_import_closure.py`). Run both before any paid
+    Quick-10 attempt: they drive the real per-cell orchestration, episode
+    runner, and policy clients against a fake Isaac with production close and
+    rebuild semantics, and import the sealed bundle in an isolated interpreter.
+    A defect they can catch must never be discovered on a rented GPU.
   - **Build loop (target: under 2 minutes):** run only the deterministic tests,
     schema checks, replay fixtures, and changed-file lint that cover the edited
     surface. Do not run a repository-wide lane merely because a change is ready

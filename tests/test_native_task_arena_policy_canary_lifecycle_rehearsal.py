@@ -40,7 +40,10 @@ from blueprint_pipeline.groot_n17_droid_policy_runtime import (
     GrootN17DroidPolicyClient,
     GrootN17DroidPolicySpec,
 )
-from blueprint_pipeline import native_task_arena_policy_canary_worker as worker
+# Dotted import on purpose: the impacted-test selector maps a changed source
+# module to the tests whose source names it, so a worker-only change runs this
+# rehearsal (pinned in tests/test_impacted_test_selection.py).
+import blueprint_pipeline.native_task_arena_policy_canary_worker as worker
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     CANDIDATE_IDS,
     PROVIDER_RESULT_FILENAME,

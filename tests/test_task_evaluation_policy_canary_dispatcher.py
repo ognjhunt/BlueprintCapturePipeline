@@ -1345,3 +1345,87 @@ def test_paid_queue_retains_the_block_beside_the_queue_when_the_run_root_rejects
     assert observed["results"][0]["status"] == "blocked_before_paid_dispatch"
     assert (dispatches / "unwritable-runs" / "activation-1" / "preprovider_blocked.json").is_file()
     assert (queue / "blocked" / envelope_path.name).is_file()
+
+
+def test_legacy_activation_results_mode_honours_overlay_avoidlist_and_service_access(
+    tmp_path: Path,
+) -> None:
+    """The third CLI mode forwards the same operator inputs as the queue mode.
+
+    A flag the CLI accepts but one mode silently drops is a fail-open surface:
+    the operator believes the avoidlist or signed overlay applies when it does
+    not.  The access preflight names each role, which proves the path arrived.
+    """
+
+    import blueprint_pipeline.task_evaluation_policy_canary_dispatcher as module
+
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    results = tmp_path / "activation-results"
+    results.mkdir()
+    (results / "activation-1.json").write_bytes(activation_result.read_bytes())
+    setups = tmp_path / "setups"
+    setups.mkdir()
+    (setups / "activation-1.json").write_bytes(setup_path.read_bytes())
+    overlay = _write(tmp_path / "overlay.zip", {"fixture": True})
+    avoidlist = _write(tmp_path / "avoidlist.json", {"machine_ids": [144209]})
+
+    for role, unusable in (("hotfix_overlay", overlay), ("machine_avoidlist", avoidlist)):
+        with pytest.raises(
+            TaskEvaluationPolicyCanaryDispatchError,
+            match=(
+                "^policy_canary_dispatch_service_access_denied:"
+                f"policy_canary_dispatch_input_unreadable:{role}$"
+            ),
+        ):
+            module.process_policy_canary_activation_results(
+                activation_results_root=results,
+                execution_setup_root=setups,
+                dispatch_root=tmp_path / "dispatches",
+                implementation_commit=COMMIT,
+                execute=True,
+                hotfix_overlay_path=overlay,
+                machine_avoidlist_path=avoidlist,
+                access=_denying(unusable),
+            )
+        assert not (tmp_path / "dispatches" / "activation-1").exists()
+
+
+def test_cli_legacy_mode_forwards_overlay_avoidlist_and_billing_audit_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import blueprint_pipeline.task_evaluation_policy_canary_dispatcher as module
+
+    observed: dict[str, object] = {}
+
+    def fake_legacy(**kwargs):
+        observed.update(kwargs)
+        return {"status": "idle", "processed_count": 0, "results": []}
+
+    monkeypatch.setattr(module, "process_policy_canary_activation_results", fake_legacy)
+
+    exit_code = module.main(
+        [
+            "--activation-results-root",
+            str(tmp_path / "results"),
+            "--execution-setup-root",
+            str(tmp_path / "setups"),
+            "--dispatch-root",
+            str(tmp_path / "dispatches"),
+            "--implementation-commit",
+            COMMIT,
+            "--hotfix-overlay",
+            str(tmp_path / "overlay.zip"),
+            "--machine-avoidlist",
+            str(tmp_path / "avoidlist.json"),
+            "--billing-audit-root",
+            str(tmp_path / "billing-audit"),
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "idle"
+    assert observed["hotfix_overlay_path"] == str(tmp_path / "overlay.zip")
+    assert observed["machine_avoidlist_path"] == str(tmp_path / "avoidlist.json")
+    assert observed["billing_audit_root"] == str(tmp_path / "billing-audit")
+    assert observed["execute"] is True

@@ -12,7 +12,9 @@ import zipfile
 
 import pytest
 
-from blueprint_pipeline import native_task_arena_policy_canary_bundle as bundle
+# Dotted import on purpose: a bundle-only change must select this suite (pinned
+# in tests/test_impacted_test_selection.py).
+import blueprint_pipeline.native_task_arena_policy_canary_bundle as bundle
 from blueprint_pipeline import vast_provider_adapter
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_bundle import POLICY_RUNTIME_ROOT_MODULE_NAMES
