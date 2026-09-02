@@ -25,6 +25,7 @@ from .gaussian_field_quality import (
 )
 from .native_task_arena_packet import materialize_native_task_arena_packet
 from .particlefield_usd import write_particlefield_usd_from_nurec
+from .particlefield_runtime_asset_cache import materialize_cached_particlefield
 from .task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
@@ -42,6 +43,7 @@ from .task_evaluation_native_construction_feedback_controller import (
 
 
 OUTPUT_SCHEMA_VERSION = "task_evaluation_episode_compiler_output.v1"
+MAXIMUM_INLINE_NUREC_CONVERSION_BYTES = 32 * 1024 * 1024
 
 
 class TaskEvaluationNativeArenaEpisodeCompilerError(RuntimeError):
@@ -292,6 +294,40 @@ def _materialize_native_particlefield_appearance(
     if len(nurec_volumes) != 1 or particlefields:
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             "episode_compiler_configured_appearance_representation_unsupported"
+        )
+    try:
+        cached = materialize_cached_particlefield(
+            source_digest=source_digest,
+            output_root=output_root,
+        )
+    except ValueError as exc:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            f"episode_compiler_official_particlefield_cache_invalid:{exc}"
+        ) from exc
+    if cached is not None:
+        receipt = cached["authoring_receipt"]
+        return {
+            "status": "nurec_reused_cached_official_particlefield",
+            "path": cached["asset_path"],
+            "representation": "particlefield_3d_gaussian_splat",
+            "source_configured_appearance_digest": source_digest,
+            "source_configured_appearance_size_bytes": source_size,
+            "particlefield_digest": receipt["output_sha256"],
+            "particlefield_size_bytes": receipt["output_bytes"],
+            "particlefield_authoring_receipt_path": cached[
+                "authoring_receipt_path"
+            ],
+            "particlefield_authoring_receipt_digest": receipt["receipt_digest"],
+            "particlefield_runtime_cache_manifest_digest": cached[
+                "cache_manifest_digest"
+            ],
+            "representation_conversion_performed": True,
+            "exact_learned_arrays_preserved": True,
+            "gaussian_field_quality": receipt["gaussian_field_quality"],
+        }
+    if source_size > MAXIMUM_INLINE_NUREC_CONVERSION_BYTES:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_official_particlefield_cache_required"
         )
     output_root.mkdir(mode=0o750)
     output_path = output_root / "scene_appearance.usdc"
