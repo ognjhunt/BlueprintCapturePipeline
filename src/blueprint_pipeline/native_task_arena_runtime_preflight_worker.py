@@ -591,6 +591,9 @@ def main() -> int:
                     progress_callback=lambda row: _announce(
                         f"nurec_warmup_round_{row['round']}", "completed"
                     ),
+                    require_display_referred_particlefield=(
+                        render_path == "particlefield_3d_gaussian_splat"
+                    ),
                 )
             )
             if not result["official_nurec_render_setup"]["passed"]:

@@ -435,10 +435,18 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
         "focal_length_mm": fx * PINHOLE_HORIZONTAL_APERTURE_MM / width,
         "horizontal_aperture_mm": PINHOLE_HORIZONTAL_APERTURE_MM,
         "vertical_aperture_mm": PINHOLE_HORIZONTAL_APERTURE_MM * height / width,
+        # No ``rgb_hdr``: Isaac Lab's camera turns
+        # ``/rtx/rtpt/gaussian/skipTonemapping/enabled`` off whenever an HDR
+        # annotator or ISP is requested, which pushes the display-referred
+        # ParticleField splat through the HDR pipeline instead of compositing
+        # it as-is.  The ``rgb`` annotator is then a per-channel clamp of
+        # radiance up to 60x display white (scene-839873 r13), and that clamp
+        # is the exact frame ``read_policy_inputs`` hands the policies.  The
+        # retained-frame HDR display encode only ever masked it for reviewers.
         "data_types": (
-            ["rgb", "rgb_hdr", "distance_to_camera", "semantic_segmentation"]
+            ["rgb", "distance_to_camera", "semantic_segmentation"]
             if role in {"external", "wrist"}
-            else ["rgb", "rgb_hdr", "semantic_segmentation"]
+            else ["rgb", "semantic_segmentation"]
         ),
         "policy_input": bool(camera["policy_input"]),
         "review_only": bool(camera["review_only"]),

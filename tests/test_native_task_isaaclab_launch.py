@@ -609,3 +609,68 @@ def test_no_arena_worker_hardcodes_a_device_literal() -> None:
         assert '"cuda:0"' not in source, f"{module.__name__} hardcodes a device"
         assert "'cuda:0'" not in source, f"{module.__name__} hardcodes a device"
         assert "NATIVE_TASK_ARENA_DEVICE" in source, module.__name__
+
+
+_QUALIFIED_PROBE = {
+    "activation_method": "test_injected_post_launch_probe",
+    "extension_required": True,
+    "extension_was_enabled_before_probe": True,
+    "extension_enabled": True,
+    "nurec_utils_extension_enabled": True,
+    "renderer_hints": 3,
+    "ujitso_geometry_enabled": True,
+    "multi_gpu_enabled": False,
+    "schema_registered": False,
+}
+
+
+def _launch_with_probe(tmp_path: Path, probe: dict):
+    from blueprint_pipeline.native_task_isaaclab_launch import (
+        NATIVE_TASK_ARENA_GAUSSIAN_SKIP_TONEMAPPING_SETTING,
+    )
+
+    def factory(**kwargs):
+        return SimpleNamespace(app=SimpleNamespace(close=lambda: None))
+
+    _, receipt = launch_native_task_isaaclab(
+        _receipt(tmp_path),
+        device="cuda:0",
+        app_launcher_factory=factory,
+        nurec_renderer_probe_factory=lambda: probe,
+    )
+    assert receipt["nurec_renderer"]["gaussian_skip_tonemapping_setting"] == (
+        NATIVE_TASK_ARENA_GAUSSIAN_SKIP_TONEMAPPING_SETTING
+    )
+    return receipt
+
+
+def test_launch_never_forces_gaussian_tonemapping_off() -> None:
+    # Omniverse composites ParticleField prims as-is (display-referred sRGB)
+    # only while this flag stays at its engine default.  Forcing it off from
+    # 2026-08-20 rendered the sealed splat as radiance up to 60x display white
+    # and the LDR annotator clamped it into the chromatic confetti the
+    # scene-839873 r13 policy cells were fed.
+    assert "skipTonemapping" not in NATIVE_TASK_ARENA_KIT_ARGS
+    assert "--/renderer/multiGpu/enabled=false" in NATIVE_TASK_ARENA_KIT_ARGS.split()
+
+
+@pytest.mark.parametrize("value", [None, True])
+def test_launch_records_the_gaussian_tonemapping_flag_it_found(tmp_path, value) -> None:
+    probe = dict(_QUALIFIED_PROBE)
+    if value is not None:
+        probe["gaussian_skip_tonemapping_enabled"] = value
+
+    receipt = _launch_with_probe(tmp_path, probe)
+
+    assert receipt["nurec_renderer"]["gaussian_skip_tonemapping_enabled"] is value
+    assert receipt["nurec_renderer"]["status"] == "qualified"
+
+
+def test_launch_refuses_a_runtime_that_forces_gaussian_tonemapping_off(tmp_path) -> None:
+    probe = {**_QUALIFIED_PROBE, "gaussian_skip_tonemapping_enabled": False}
+
+    with pytest.raises(NativeTaskIsaacLabLaunchError) as failure:
+        _launch_with_probe(tmp_path, probe)
+
+    assert "native_task_isaaclab_gaussian_tonemapping_forced_off" in failure.value.errors
+    assert failure.value.diagnostics["gaussian_skip_tonemapping_enabled"] is False

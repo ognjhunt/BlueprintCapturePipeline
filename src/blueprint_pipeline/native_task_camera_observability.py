@@ -110,6 +110,31 @@ MINIMUM_LUMINANCE_STD = 1.0
 # receipt before it crosses anything.
 NEAR_BLACK_LUMINANCE_MAX = 2.0
 
+# --- policy-input saturation ----------------------------------------------
+#
+# A ParticleField splat is display-referred sRGB and Omniverse RTX composites
+# it as-is.  When the lane instead forced the splat through the HDR pipeline
+# (``/rtx/rtpt/gaussian/skipTonemapping/enabled=false``), the ``rgb``
+# annotator became a per-channel clamp of radiance up to 60x display white.
+# The scene-839873 r13 construction reset frames carried 22.5 percent
+# (external) and 24.0 percent (overview) of pixels with a channel above 1.0,
+# against 2.7 percent on the wrist camera that mostly framed the robot and
+# the table.  Under the clamp those pixels are white blobs with chromatic
+# fringes, and that exact frame was handed to both candidates as their
+# observation while every retained review PNG had been display-encoded from
+# the HDR buffer, so no upstream gate could see it.
+#
+# This gate reads the exact policy-input arrays, never a review encode, and
+# refuses the episode before any candidate query.  A ceiling of 0.10 sits
+# well above the 2.7 percent a robot-and-table frame measured and well below
+# the 22-24 percent the defect produced.
+MAXIMUM_POLICY_INPUT_SATURATED_PIXEL_FRACTION = 0.10
+SATURATED_CHANNEL_LEVEL = 255
+
+POLICY_INPUT_SATURATION_SCHEMA_VERSION = "native_task_policy_input_frame_saturation.v1"
+REFUSAL_POLICY_INPUT_FRAME_SATURATED = "native_task_policy_input_frame_saturated"
+REFUSAL_POLICY_INPUT_FRAMES_INVALID = "native_task_policy_input_frames_invalid"
+
 BLOCKER_FRAME_VOID = "native_task_camera_rgb_frame_void"
 BLOCKER_FRAME_UNIFORM = "native_task_camera_rgb_frame_uniform"
 BLOCKER_FRAME_TONAL_RANGE = "native_task_camera_rgb_frame_tonal_range_below_floor"
@@ -464,6 +489,11 @@ def measure_native_task_frame_render_evidence(
     )
     frame_statistics["luminance_min"] = float(luminance.min())
     frame_statistics["luminance_max"] = float(luminance.max())
+    # Reported here, gated on the exact policy-input frames: the fraction of
+    # pixels the LDR encode clipped in at least one channel.
+    frame_statistics["saturated_channel_pixel_fraction"] = float(
+        (frame >= SATURATED_CHANNEL_LEVEL).any(axis=-1).mean()
+    )
 
     mask = None
     if target_mask is not None:
@@ -691,13 +721,78 @@ def measure_native_task_camera_observability(
     }
 
 
+def measure_native_task_frame_saturation(*, rgb: Any) -> dict[str, Any]:
+    """Fraction of pixels the LDR encode clipped, in any and in every channel."""
+
+    import numpy as np
+
+    frame = _as_uint8_rgb(rgb)
+    saturated = frame >= SATURATED_CHANNEL_LEVEL
+    any_channel = saturated.any(axis=-1)
+    all_channels = saturated.all(axis=-1)
+    fraction = float(any_channel.mean())
+    return {
+        "schema_version": POLICY_INPUT_SATURATION_SCHEMA_VERSION,
+        "pixel_count": int(any_channel.size),
+        "saturated_channel_pixel_fraction": fraction,
+        "saturated_white_pixel_fraction": float(all_channels.mean()),
+        "chromatic_clip_pixel_fraction": float(
+            np.logical_and(any_channel, np.logical_not(all_channels)).mean()
+        ),
+        "maximum_saturated_channel_pixel_fraction": (
+            MAXIMUM_POLICY_INPUT_SATURATED_PIXEL_FRACTION
+        ),
+        "passed": fraction <= MAXIMUM_POLICY_INPUT_SATURATED_PIXEL_FRACTION,
+    }
+
+
+def validate_native_task_policy_input_frames(
+    frames: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Refuse policy-input frames the LDR encode has clipped into saturation.
+
+    ``frames`` maps a policy view name to the exact array the observation is
+    built from.  An unreadable frame is a refusal, not a pass.
+    """
+
+    if not isinstance(frames, Mapping) or not frames:
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_INPUT_FRAMES_INVALID])
+    errors: list[str] = []
+    views: dict[str, dict[str, Any]] = {}
+    for view, frame in frames.items():
+        name = str(view or "").strip()
+        if not name or name in views:
+            raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_INPUT_FRAMES_INVALID])
+        evidence = measure_native_task_frame_saturation(rgb=frame)
+        views[name] = evidence
+        if not evidence["passed"]:
+            errors.append(f"{REFUSAL_POLICY_INPUT_FRAME_SATURATED}:{name}")
+    if errors:
+        raise NativeTaskCameraObservabilityError(errors)
+    return {
+        "schema_version": POLICY_INPUT_SATURATION_SCHEMA_VERSION,
+        "maximum_saturated_channel_pixel_fraction": (
+            MAXIMUM_POLICY_INPUT_SATURATED_PIXEL_FRACTION
+        ),
+        "views": views,
+        "passed": True,
+    }
+
+
 __all__ = [
     "CLAIM_WITHOUT_SITE",
     "CLAIM_WITH_SITE",
     "MAXIMUM_SITE_DOMINANT_RGB_PIXEL_FRACTION",
     "MAXIMUM_SITE_VOID_PIXEL_FRACTION",
     "MINIMUM_DISTINCT_LUMINANCE_LEVELS",
+    "MAXIMUM_POLICY_INPUT_SATURATED_PIXEL_FRACTION",
     "MINIMUM_LUMINANCE_STD",
+    "POLICY_INPUT_SATURATION_SCHEMA_VERSION",
+    "REFUSAL_POLICY_INPUT_FRAMES_INVALID",
+    "REFUSAL_POLICY_INPUT_FRAME_SATURATED",
+    "SATURATED_CHANNEL_LEVEL",
+    "measure_native_task_frame_saturation",
+    "validate_native_task_policy_input_frames",
     "NativeTaskCameraObservabilityError",
     "POLICY_INPUT_CAMERA_ROLES",
     "POLICY_START_OBSERVABILITY_SCHEMA_VERSION",

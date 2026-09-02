@@ -140,6 +140,7 @@ try:  # flat provider-bundle layout
         BLOCKER_CLIENT_RETURNED_NOTHING,
         PolicyEpisodeEvidenceError,
         motion_and_command_evidence as _build_motion_and_command_evidence,
+        policy_input_saturation_evidence,
         prevalidation_vendor_action_evidence as _prevalidation_vendor_action_evidence,
         raw_policy_action_evidence as _raw_policy_action_evidence,
         terminal_class_for_policy_exception as _terminal_class_for_policy_exception,
@@ -150,6 +151,7 @@ except ModuleNotFoundError:  # repository package
         BLOCKER_CLIENT_RETURNED_NOTHING,
         PolicyEpisodeEvidenceError,
         motion_and_command_evidence as _build_motion_and_command_evidence,
+        policy_input_saturation_evidence,
         prevalidation_vendor_action_evidence as _prevalidation_vendor_action_evidence,
         raw_policy_action_evidence as _raw_policy_action_evidence,
         terminal_class_for_policy_exception as _terminal_class_for_policy_exception,
@@ -593,6 +595,7 @@ def _prestart_episode_readiness(
         for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
         if view in inputs
     }
+    policy_input_saturation = _evidence(policy_input_saturation_evidence, camera_rgb=camera_rgb)
     try:
         observation = build_droid_observation(
             candidate_id=candidate_id,
@@ -724,6 +727,7 @@ def _prestart_episode_readiness(
                 "joint_state_readback": True,
                 "task_state_readback": True,
                 "policy_observation_built": True,
+                "policy_input_frames_unsaturated": True,
                 "policy_control_plane_ready": True,
                 "evidence_storage_reserved": True,
                 "exact_media_write_readback": bool(exact_frame.get("png_sha256")),
@@ -738,6 +742,7 @@ def _prestart_episode_readiness(
                 "projection_is_conservative": True,
             },
             "policy_control_plane": policy_evidence,
+            "policy_input_frame_saturation": policy_input_saturation,
             "reset_joint_positions_rad": reset_joints,
             "probe_joint_positions_rad": probe_joints,
             "restored_joint_positions_rad": restored_joints,
@@ -752,18 +757,10 @@ def _prestart_episode_readiness(
     return readiness
 
 
-def _motion_and_command_evidence(
-    *,
-    joint_trace: Sequence[Sequence[float]],
-    commanded_actions: Sequence[Mapping[str, Any]],
-    command_response_rows: int,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+def _evidence(build: Callable[..., Any], **kwargs: Any) -> Any:
+    """Evidence builders refuse with PolicyEpisodeEvidenceError; raise the episode error."""
     try:
-        return _build_motion_and_command_evidence(
-            joint_trace=joint_trace,
-            commanded_actions=commanded_actions,
-            command_response_rows=command_response_rows,
-        )
+        return build(**kwargs)
     except PolicyEpisodeEvidenceError as exc:
         raise PolicyEpisodeError(exc.errors) from exc
 
@@ -1225,7 +1222,8 @@ def run_policy_episode(
         visual["episode_terminal_reason"] = f"{type(exc).__name__}:{exc}"
         episode_progress["visual_evidence"] = visual
 
-        motion_evidence, action_magnitudes = _motion_and_command_evidence(
+        motion_evidence, action_magnitudes = _evidence(
+            _build_motion_and_command_evidence,
             joint_trace=joint_trace,
             commanded_actions=commanded_actions,
             command_response_rows=command_response_rows,
@@ -1824,7 +1822,8 @@ def run_policy_episode(
                 "not scored, ranked, or qualified"
             ),
         }
-    motion_evidence, commanded_action_magnitudes = _motion_and_command_evidence(
+    motion_evidence, commanded_action_magnitudes = _evidence(
+        _build_motion_and_command_evidence,
         joint_trace=joint_trace,
         commanded_actions=commanded_actions,
         command_response_rows=command_response_rows,
