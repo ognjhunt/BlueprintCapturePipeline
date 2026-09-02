@@ -19,6 +19,28 @@ RESULT_FILENAME = "native_task_arena_runtime_preflight.v1.json"
 RESULT_SCHEMA_VERSION = "native_task_arena_runtime_preflight.v1"
 
 
+def _bind_measured_gripper_servo(
+    *,
+    env: Any,
+    robot: Any,
+    seed: int,
+    torch: Any,
+    gripper_probe: Any,
+    servo_factory: Any,
+) -> tuple[dict[str, Any], Any | None]:
+    """Mirror the construction/policy gripper binding before live pad reads."""
+
+    gripper = gripper_probe(env=env, robot=robot, seed=seed, torch=torch)
+    if gripper.get("status") != "measured":
+        return gripper, None
+    env.reset(seed=seed)
+    return gripper, servo_factory(
+        env=env,
+        robot=robot,
+        gripper_convention=gripper,
+    )
+
+
 def _robot_reset_task_space_readback(
     *,
     plan: dict[str, Any],
@@ -474,6 +496,7 @@ def main() -> int:
         from blueprint_pipeline.native_task_arena_construction_worker import (
             _articulation_device_binding,
             _camera_snapshot,
+            _gripper_convention_probe,
             _load_and_verify_manifest,
             preflight_native_dependency_matrix,
         )
@@ -640,7 +663,23 @@ def main() -> int:
         )
 
         robot = env.unwrapped.scene["robot"]
-        servo = NativeFrankaDifferentialIkServo(env=env, robot=robot)
+        _announce("gripper_convention")
+        gripper, servo = _bind_measured_gripper_servo(
+            env=env,
+            robot=robot,
+            seed=seed,
+            torch=torch,
+            gripper_probe=_gripper_convention_probe,
+            servo_factory=NativeFrankaDifferentialIkServo,
+        )
+        result["gripper_convention"] = gripper
+        result["blockers"].extend(gripper.get("blockers") or [])
+        if servo is None:
+            raise RuntimeError(
+                "native_task_arena_preflight_gripper_convention_unresolved"
+            )
+        result["phase_reached"] = "gripper_convention_measured"
+        _announce("gripper_convention", "completed")
         result["gripper_body_origin_axis_readback"] = (
             servo.current_gripper_frame_axis_readback()
         )

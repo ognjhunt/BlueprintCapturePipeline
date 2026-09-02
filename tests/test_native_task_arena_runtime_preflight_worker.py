@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
+    _bind_measured_gripper_servo,
     _gripper_pad_geometry_axis_readback,
     _particlefield_stage_readback,
     _robot_reset_task_space_readback,
@@ -13,6 +14,58 @@ from blueprint_pipeline.native_task_nurec_render_setup import (
 
 
 pxr = pytest.importorskip("pxr")
+
+
+def test_runtime_preflight_measures_gripper_before_live_pad_readback() -> None:
+    calls = []
+
+    class Env:
+        def reset(self, *, seed):
+            calls.append(("reset", seed))
+
+    measured = {"status": "measured", "blockers": [], "open_command": 0.0}
+
+    def probe(**kwargs):
+        calls.append(("probe", kwargs["seed"]))
+        return measured
+
+    def servo_factory(**kwargs):
+        calls.append(("servo", kwargs["gripper_convention"]))
+        return object()
+
+    gripper, servo = _bind_measured_gripper_servo(
+        env=Env(),
+        robot=object(),
+        seed=85423473,
+        torch=object(),
+        gripper_probe=probe,
+        servo_factory=servo_factory,
+    )
+
+    assert gripper is measured
+    assert servo is not None
+    assert calls == [
+        ("probe", 85423473),
+        ("reset", 85423473),
+        ("servo", measured),
+    ]
+
+
+def test_runtime_preflight_refuses_unmeasured_gripper_without_servo() -> None:
+    gripper, servo = _bind_measured_gripper_servo(
+        env=object(),
+        robot=object(),
+        seed=1,
+        torch=object(),
+        gripper_probe=lambda **_kwargs: {
+            "status": "blocked",
+            "blockers": ["probe_failed"],
+        },
+        servo_factory=lambda **_kwargs: pytest.fail("servo must not be built"),
+    )
+
+    assert gripper["blockers"] == ["probe_failed"]
+    assert servo is None
 
 
 def test_gripper_pad_geometry_uses_live_bounds_not_coincident_body_origins() -> None:
