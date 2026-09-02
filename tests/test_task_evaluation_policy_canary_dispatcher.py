@@ -393,6 +393,7 @@ def test_dispatcher_materializes_one_authority_bundle_and_allocator_call(
     activation_result, setup_path, _activation = _inputs(tmp_path)
     output = tmp_path / "dispatch"
     observed: dict[str, object] = {}
+    progress_updates = []
 
     def fake_bundle(**kwargs):
         observed["bundle"] = kwargs
@@ -425,6 +426,8 @@ def test_dispatcher_materializes_one_authority_bundle_and_allocator_call(
         output_root=output,
         implementation_commit=COMMIT,
         allocator_runner=fake_allocator,
+        progress_sync_runner=lambda **kwargs: progress_updates.append(kwargs["progress"])
+        or {"status": "succeeded"},
     )
 
     argv = observed["argv"]
@@ -435,6 +438,14 @@ def test_dispatcher_materializes_one_authority_bundle_and_allocator_call(
     assert receipt["retry_cap"] == 0
     assert receipt["provider_mutation_performed"] is False
     assert Path(observed["bundle"]["session_authority_path"]).is_file()
+    assert [update["phase"] for update in progress_updates] == [
+        "queued",
+        "preparing",
+        "preparing",
+        "provider_allocating",
+    ]
+    assert progress_updates[-1]["phase_status"] == "running"
+    assert (output / "status_progress_sync.jsonl").is_file()
 
 
 def test_dispatcher_refuses_absent_scene839873_setup_before_allocator(
@@ -634,7 +645,8 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
     assert first["allocator_invoked"] is True
     assert second["allocator_invoked"] is False
     assert first["website_progress_sync"]["status"] == "succeeded"
-    assert progress_updates[0]["phase"] == "awaiting_official_billing"
+    assert progress_updates[-1]["phase"] == "awaiting_official_billing"
+    assert "provider_allocating" in [update["phase"] for update in progress_updates]
     assert calls == {"allocator": 1, "bundle": 1}
 
     def post_billing(**kwargs):

@@ -216,7 +216,7 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
             )
 
 
-def _event(root: Path, *, stage: str, status: str, **details: Any) -> None:
+def _event(root: Path, *, stage: str, status: str, **details: Any) -> dict[str, Any]:
     path = root / "status_events.jsonl"
     sequence = 1
     previous_digest = None
@@ -225,11 +225,13 @@ def _event(root: Path, *, stage: str, status: str, **details: Any) -> None:
         sequence = len(rows) + 1
         if rows:
             previous_digest = json.loads(rows[-1]).get("event_digest")
+    observed_at = datetime.now(timezone.utc)
     event = {
         "schema_version": "task_evaluation_policy_canary_status_event.v1",
         "sequence": sequence,
         "stage": stage,
         "status": status,
+        "observed_at_iso": observed_at.isoformat(),
         "previous_event_digest": previous_digest,
         **details,
         "event_digest": "",
@@ -239,6 +241,87 @@ def _event(root: Path, *, stage: str, status: str, **details: Any) -> None:
         stream.write((json.dumps(event, sort_keys=True) + "\n").encode())
         stream.flush()
         os.fsync(stream.fileno())
+    return event
+
+
+def _sync_status_event_progress(
+    *,
+    root: Path,
+    event: Mapping[str, Any],
+    run_id: str,
+    request_digest: str,
+    runner: SyncRunner,
+) -> dict[str, Any]:
+    """Publish one real canary event without making progress authoritative."""
+
+    observed_at = str(event["observed_at_iso"])
+    elapsed_seconds = 0.0
+    try:
+        first_line = next(
+            line
+            for line in (root / "status_events.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line
+        )
+        first = json.loads(first_line)
+        started = datetime.fromisoformat(str(first["observed_at_iso"]))
+        observed = datetime.fromisoformat(observed_at)
+        elapsed_seconds = max(0.0, (observed - started).total_seconds())
+    except (OSError, StopIteration, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        # The event still carries a real timestamp; elapsed time is optional
+        # context and must never make status delivery affect execution.
+        elapsed_seconds = 0.0
+    progress = {
+        "schema_version": "task_evaluation_launch_progress.v1",
+        "launch_id": run_id,
+        "run_id": run_id,
+        "request_digest": request_digest,
+        "phase": str(event["stage"]),
+        "phase_status": str(event["status"]),
+        "observed_at_iso": observed_at,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+    }
+    try:
+        result = dict(runner(progress=progress))
+    except Exception as exc:  # noqa: BLE001 - observational delivery boundary
+        result = {"status": "failed", "reason": type(exc).__name__}
+    receipt = {
+        "schema_version": "task_evaluation_policy_canary_progress_sync.v1",
+        "event_digest": event["event_digest"],
+        "run_id": run_id,
+        "request_digest": request_digest,
+        "phase": progress["phase"],
+        "phase_status": progress["phase_status"],
+        "sync_status": str(result.get("status") or "failed"),
+        "sync_reason": str(result.get("reason") or "") or None,
+    }
+    with (root / "status_progress_sync.jsonl").open("ab") as stream:
+        stream.write((json.dumps(receipt, sort_keys=True) + "\n").encode())
+        stream.flush()
+        os.fsync(stream.fileno())
+    return result
+
+
+def _event_and_sync(
+    root: Path,
+    *,
+    stage: str,
+    status: str,
+    run_id: str,
+    request_digest: str,
+    runner: SyncRunner,
+    **details: Any,
+) -> dict[str, Any]:
+    event = _event(root, stage=stage, status=status, **details)
+    _sync_status_event_progress(
+        root=root,
+        event=event,
+        run_id=run_id,
+        request_digest=request_digest,
+        runner=runner,
+    )
+    return event
 
 
 def _default_allocator_runner(argv: Sequence[str]) -> int:
@@ -773,12 +856,20 @@ def _finish_policy_canary_delivery(
     delivery: Mapping[str, Any],
     closure: Mapping[str, Mapping[str, Any]],
     sync_runner: SyncRunner,
+    progress_sync_runner: SyncRunner,
     allocator_invoked: bool,
 ) -> dict[str, Any]:
     """Publish one already sealed delivery without re-entering provider closeout."""
 
     projection = _projection(setup=setup, result=joined, delivery=delivery)
-    _event(root, stage="report_generating", status="completed")
+    _event_and_sync(
+        root,
+        stage="report_generating",
+        status="completed",
+        run_id=str(joined["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
     sync = dict(
         sync_runner(
             capture_session_id=setup["capture_session_id"],
@@ -833,8 +924,22 @@ def _finish_policy_canary_delivery(
         receipt, digest_field="receipt_digest"
     )
     _write_exclusive(root / "dispatch_receipt.json", receipt)
-    _event(root, stage="billing_teardown", status="completed")
-    _event(root, stage=str(joined["status"]), status="completed")
+    _event_and_sync(
+        root,
+        stage="billing_teardown",
+        status="completed",
+        run_id=str(joined["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
+    _event_and_sync(
+        root,
+        stage=str(joined["status"]),
+        status="completed",
+        run_id=str(joined["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
     return receipt
 
 
@@ -847,6 +952,7 @@ def _resume_materialized_policy_canary_delivery(
     bundle: Mapping[str, Any],
     adapter: Mapping[str, Any],
     sync_runner: SyncRunner,
+    progress_sync_runner: SyncRunner = sync_launch_progress_to_webapp,
 ) -> dict[str, Any] | None:
     """Resume only Website publication after evidence packaging already sealed.
 
@@ -928,7 +1034,14 @@ def _resume_materialized_policy_canary_delivery(
             raise TaskEvaluationPolicyCanaryDispatchError(
                 f"policy_canary_materialized_closure_invalid:{role}"
             )
-    _event(root, stage="artifacts_syncing", status="resumed_from_sealed_delivery")
+    _event_and_sync(
+        root,
+        stage="artifacts_syncing",
+        status="resumed_from_sealed_delivery",
+        run_id=str(joined["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
     return _finish_policy_canary_delivery(
         root=root,
         setup=setup,
@@ -940,6 +1053,7 @@ def _resume_materialized_policy_canary_delivery(
         delivery=delivery,
         closure=closure,
         sync_runner=sync_runner,
+        progress_sync_runner=progress_sync_runner,
         allocator_invoked=False,
     )
 
@@ -1037,7 +1151,14 @@ def dispatch_policy_canary_activation(
         )
     root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    _event(root, stage="queued", status="completed", run_id=activation["run_id"])
+    _event_and_sync(
+        root,
+        stage="queued",
+        status="completed",
+        run_id=str(activation["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
     hotfix_manifest = (
         verify_canary_hotfix_overlay(hotfix_overlay_path)
         if hotfix_overlay_path is not None
@@ -1068,7 +1189,14 @@ def dispatch_policy_canary_activation(
     authority_path = root / "policy_canary_session_authority.json"
     _write_exclusive(authority_path, authority)
     records = setup["records"]
-    _event(root, stage="preparing", status="running")
+    _event_and_sync(
+        root,
+        stage="preparing",
+        status="running",
+        run_id=str(activation["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
     bundle_receipt_path = (
         root / "bundle" / "native_task_arena_policy_canary_session_bundle_receipt.v1.json"
     )
@@ -1090,10 +1218,13 @@ def dispatch_policy_canary_activation(
             implementation_commit=implementation_commit,
             hotfix_overlay_path=hotfix_overlay_path,
         )
-    _event(
+    _event_and_sync(
         root,
         stage="preparing",
         status="completed",
+        run_id=str(activation["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
         authority_digest=authority["authority_digest"],
         bundle_sha256=bundle["bundle_sha256"],
     )
@@ -1140,7 +1271,14 @@ def dispatch_policy_canary_activation(
             raise TaskEvaluationPolicyCanaryDispatchError(
                 "policy_canary_allocator_previous_invocation_without_result"
             )
-        _event(root, stage="provider_allocating", status="running")
+        _event_and_sync(
+            root,
+            stage="provider_allocating",
+            status="running",
+            run_id=str(activation["run_id"]),
+            request_digest=str(setup["request_digest"]),
+            runner=progress_sync_runner,
+        )
         if execute:
             argv.append("--execute")
         invocation_started = {
@@ -1209,6 +1347,7 @@ def dispatch_policy_canary_activation(
         bundle=bundle,
         adapter=adapter,
         sync_runner=sync_runner,
+        progress_sync_runner=progress_sync_runner,
     )
     if resumed is not None:
         return resumed
@@ -1339,10 +1478,13 @@ def dispatch_policy_canary_activation(
         for candidate in CANDIDATE_IDS
     }
     for candidate in CANDIDATE_IDS:
-        _event(
+        _event_and_sync(
             root,
             stage=f"policy_{candidate}_running",
             status="completed",
+            run_id=str(activation["run_id"]),
+            request_digest=str(setup["request_digest"]),
+            runner=progress_sync_runner,
             completed_episode_count=completed_by_candidate[candidate],
             expected_episode_count=10,
         )
@@ -1411,7 +1553,14 @@ def dispatch_policy_canary_activation(
             "provider_zero_verified": provider_zero.get("provider_zero_verified") is True,
         },
     }
-    _event(root, stage="artifacts_syncing", status="running")
+    _event_and_sync(
+        root,
+        stage="artifacts_syncing",
+        status="running",
+        run_id=str(activation["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
     try:
         delivery = materialize_policy_canary_result_delivery(
             run_root=root,
@@ -1434,6 +1583,7 @@ def dispatch_policy_canary_activation(
         delivery=delivery,
         closure=closure,
         sync_runner=sync_runner,
+        progress_sync_runner=progress_sync_runner,
         allocator_invoked=allocator_invoked,
     )
 
