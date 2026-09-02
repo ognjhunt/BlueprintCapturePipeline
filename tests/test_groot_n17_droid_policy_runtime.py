@@ -19,6 +19,11 @@ from blueprint_pipeline.groot_n17_droid_policy_runtime import (
     DROID_EEF_POSITION_OBSERVED_MAX_M,
     DROID_EEF_POSITION_OBSERVED_MIN_M,
     EMBODIMENT_TAG,
+    EEF_FRAME_BODY_NAME,
+    EEF_FRAME_BODY_SOURCE,
+    EEF_FRAME_PROVENANCE_KEY,
+    EEF_FRAME_PROVENANCE_SCHEMA_VERSION,
+    EEF_FRAME_STATE_SOURCE,
     FROZEN_VIDEO_DELTA_INDICES,
     GROOT_SOURCE_REVISION,
     LANGUAGE_KEY,
@@ -27,6 +32,7 @@ from blueprint_pipeline.groot_n17_droid_policy_runtime import (
     GrootN17DroidPolicySpec,
     droid_eef_9d,
 )
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.groot_n17_wire_client import (
     decode_wire_message,
     encode_wire_message,
@@ -87,16 +93,36 @@ class _FakePolicyClient:
         self.close_calls += 1
 
 
-def _observation() -> dict:
+def _eef_frame_provenance(position_m: list[float]) -> dict:
+    value = {
+        "schema_version": EEF_FRAME_PROVENANCE_SCHEMA_VERSION,
+        "state_frame": "robot_root",
+        "body_name": EEF_FRAME_BODY_NAME,
+        "body_source": EEF_FRAME_BODY_SOURCE,
+        "state_source": EEF_FRAME_STATE_SOURCE,
+        "position_robot_root_m": position_m,
+        "body_pose_world_xyzw": [*position_m, 0.0, 0.0, 0.0, 1.0],
+        "robot_root_pose_world_xyzw": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        "provenance_digest": "",
+    }
+    value["provenance_digest"] = canonical_digest(
+        value, digest_field="provenance_digest"
+    )
+    return value
+
+
+def _observation(*, position_m: list[float] | None = None) -> dict:
+    position = position_m or [0.5, 0.0, 0.3]
     return {
         "observation/exterior_image_1_left": np.full((180, 320, 3), 5, dtype=np.uint8),
         "observation/wrist_image_left": np.full((180, 320, 3), 7, dtype=np.uint8),
         "observation/joint_position": np.arange(7, dtype=float),
         "observation/gripper_position": np.asarray([0.25]),
         "observation/eef_9d": droid_eef_9d(
-            position_m=[0.5, 0.0, 0.3],
+            position_m=position,
             rotation_row_major=np.eye(3).reshape(-1),
         ),
+        EEF_FRAME_PROVENANCE_KEY: _eef_frame_provenance(position),
         "prompt": "Pick up the spray can and place it inside the marked tray.",
     }
 
@@ -181,7 +207,10 @@ def test_client_translates_existing_observation_and_returns_joint_chunk() -> Non
         "source": CHECKPOINT_STATISTICS_SOURCE,
         "source_sha256": CHECKPOINT_STATISTICS_SHA256,
         "source_git_blob_sha1": CHECKPOINT_STATISTICS_GIT_BLOB_SHA1,
-        "enforced_before_policy_query": True,
+        "enforced_before_policy_query": False,
+        "frame_provenance_enforced_before_policy_query": True,
+        "frozen_processor_use_percentiles": True,
+        "frozen_processor_clip_outliers": True,
     }
 
     client.reset()
@@ -240,17 +269,35 @@ def test_groot_preflight_resets_for_next_episode_after_prior_inference() -> None
     assert len(fake.requests) == 1
 
 
-@pytest.mark.parametrize(
-    "position_m",
-    (
-        [3.8094613552093506, 9.223036766052246, 0.5535212159156799],
-        [DROID_EEF_POSITION_OBSERVED_MIN_M[0] - 0.001, 0.0, 0.3],
-        [0.5, DROID_EEF_POSITION_OBSERVED_MAX_M[1] + 0.001, 0.3],
-    ),
-)
-def test_client_refuses_eef_positions_outside_exact_checkpoint_support_before_query(
-    position_m: list[float],
-) -> None:
+def test_client_queries_production_reset_outside_empirical_extrema_with_typed_evidence() -> None:
+    fake = _FakePolicyClient()
+    client = GrootN17DroidPolicyClient(
+        spec=GrootN17DroidPolicySpec(),
+        worker_identity_receipt=_receipt(),
+        host="127.0.0.1",
+        client_factory=lambda **kwargs: fake,
+    )
+    # Independent FK of the exact Scene 839873 task-aware reset.  NVIDIA's
+    # frozen processor clips this z value; statistics extrema are not an API
+    # support declaration and must not suppress a diagnostic policy query.
+    position = [0.16286441683769226, 0.0867096483707428, 1.0434999465942383]
+    result = client.infer(_observation(position_m=position))
+
+    assert result.shape == (40, 8)
+    assert len(fake.requests) == 1
+    support = client.last_inference_evidence()["eef_position_observed_support"]
+    assert support["inside_checkpoint_observed_extrema"] is False
+    assert support["above_maximum_by_m"][:2] == [0.0, 0.0]
+    assert support["above_maximum_by_m"][2] == pytest.approx(
+        position[2] - DROID_EEF_POSITION_OBSERVED_MAX_M[2], abs=1.0e-6
+    )
+    assert support["frozen_processor_use_percentiles"] is True
+    assert support["frozen_processor_clip_outliers"] is True
+    assert support["query_blocking"] is False
+
+
+@pytest.mark.parametrize("mutation", ("missing", "world_position", "digest"))
+def test_client_refuses_unproven_eef_frame_before_query(mutation: str) -> None:
     fake = _FakePolicyClient()
     client = GrootN17DroidPolicyClient(
         spec=GrootN17DroidPolicySpec(),
@@ -259,15 +306,16 @@ def test_client_refuses_eef_positions_outside_exact_checkpoint_support_before_qu
         client_factory=lambda **kwargs: fake,
     )
     observation = _observation()
-    observation["observation/eef_9d"] = droid_eef_9d(
-        position_m=position_m,
-        rotation_row_major=np.eye(3).reshape(-1),
-    )
+    if mutation == "missing":
+        observation.pop(EEF_FRAME_PROVENANCE_KEY)
+    elif mutation == "world_position":
+        observation[EEF_FRAME_PROVENANCE_KEY] = _eef_frame_provenance(
+            [3.8094613552093506, 9.223036766052246, 0.5535212159156799]
+        )
+    else:
+        observation[EEF_FRAME_PROVENANCE_KEY]["provenance_digest"] = "sha256:" + "0" * 64
 
-    with pytest.raises(
-        ValueError,
-        match="groot_droid_eef_position_outside_checkpoint_observed_support",
-    ):
+    with pytest.raises(ValueError, match="groot_droid_eef_frame_provenance_invalid"):
         client.infer(observation)
 
     assert fake.requests == []

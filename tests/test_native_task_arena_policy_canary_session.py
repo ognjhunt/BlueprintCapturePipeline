@@ -178,6 +178,9 @@ def test_executor_opens_one_session_loads_each_policy_once_and_runs_twenty(
             "candidate_policy_queried": True,
             "actions_reached_robot": True,
             "arm_moved": True,
+            "observation_support_qualified": (
+                policy["candidate_id"] == "pi05_droid"
+            ),
             "checkpoint_digest": policy["checkpoint_digest"],
             "runtime_identity_digest": policy["runtime_identity_digest"],
             "lossless_frame_manifest_digest": "sha256:" + "a" * 64,
@@ -221,7 +224,14 @@ def test_executor_opens_one_session_loads_each_policy_once_and_runs_twenty(
     assert len(result["episodes"]) == 20
     assert all(row["ranking_eligible"] is False for row in result["episodes"])
     assert all(
-        row["policy_outcome_interpretable"] is True for row in result["episodes"]
+        row["policy_outcome_interpretable"] is True
+        for row in result["episodes"]
+        if row["candidate_id"] == "pi05_droid"
+    )
+    assert all(
+        row["policy_outcome_interpretable"] is False
+        for row in result["episodes"]
+        if row["candidate_id"] == "groot_n17_droid"
     )
     assert result["provider_allocations_observed"] == 1
     assert validate_session_result(result)["result_digest"] == result["result_digest"]
