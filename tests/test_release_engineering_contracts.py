@@ -194,6 +194,10 @@ def test_core_workflows_use_nonexpiring_digest_pinned_ffmpeg_release() -> None:
         )
         assert expected_url in workflow
         assert expected_digest in workflow
+        if workflow_name == "ci.yml":
+            assert "for attempt in 1 2 3; do" in workflow
+            assert "if echo \"${FFMPEG_SHA256}" in workflow
+            assert 'test "${FFMPEG_VERIFIED}" = true' in workflow
         assert "BtbN/FFmpeg-Builds/releases/download/autobuild-" not in workflow
         assert (
             'BLUEPRINT_ARTIFACT_CACHE_ROOT=${RUNNER_TEMP}/blueprint-artifact-cache'
