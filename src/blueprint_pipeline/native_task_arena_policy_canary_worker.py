@@ -56,6 +56,7 @@ class CellRuntime:
     preflight_dependency_matrix: Callable[..., Mapping[str, Any]]
     prepare_preconstruction: Callable[..., Mapping[str, Any]]
     build_environment: Callable[..., Any]
+    prepare_appearance_renderer: Callable[..., Mapping[str, Any]]
     read_device_binding: Callable[..., Mapping[str, Any]]
     gripper_probe: Callable[..., Mapping[str, Any]]
     make_servo: Callable[..., Any]
@@ -100,6 +101,9 @@ def isaac_cell_runtime() -> CellRuntime:
     from blueprint_pipeline.native_task_arena_runtime import (
         build_native_task_arena_environment,
     )
+    from blueprint_pipeline.native_task_nurec_render_setup import (
+        prepare_site_appearance_renderer,
+    )
     from blueprint_pipeline.native_task_episode_environment import (
         build_native_task_episode_environment,
     )
@@ -121,6 +125,7 @@ def isaac_cell_runtime() -> CellRuntime:
         preflight_dependency_matrix=preflight_native_dependency_matrix,
         prepare_preconstruction=prepare_native_task_arena_preconstruction,
         build_environment=build_native_task_arena_environment,
+        prepare_appearance_renderer=prepare_site_appearance_renderer,
         read_device_binding=read_native_task_arena_device_binding,
         gripper_probe=gripper_probe,
         make_servo=NativeFrankaDifferentialIkServo,
@@ -953,8 +958,15 @@ def _run_selected_cell(
                 bundle_root=runtime / "native_task_packet",
                 preconstruction_receipt=preconstruction,
             )
+            appearance_renderer = bound_runtime.prepare_appearance_renderer(
+                simulation_app=current_session["simulation_app"],
+                plan=scene_plan,
+            )
+            if appearance_renderer.get("passed") is not True:
+                raise RuntimeError("policy_canary_appearance_renderer_unqualified")
             current_env["built"] = built
             current_env["cell_id"] = str(context["cell_id"])
+            current_env["appearance_renderer"] = dict(appearance_renderer)
         elif current_env.get("cell_id") != str(context["cell_id"]):
             raise RuntimeError("policy_canary_isolated_cell_environment_mismatch")
         device = bound_runtime.read_device_binding(
@@ -988,6 +1000,10 @@ def _run_selected_cell(
             task_readback=task_readback,
             to_tensor=bound_runtime.to_tensor,
         )
+        environment_receipt = {
+            **dict(environment_receipt),
+            "appearance_renderer": dict(current_env["appearance_renderer"]),
+        }
         tracker = _PolicyQueryTracker(policy["client"])
         spec = policy["spec"]
         episode_id = f"{authority['run_id']}--{context['cell_id']}--{context['candidate_id']}"
