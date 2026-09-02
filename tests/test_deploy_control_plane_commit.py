@@ -1983,3 +1983,136 @@ def test_release_retirement_is_skipped_without_protection_sources_and_applied_wi
     assert source.index("release_retirement = _retire_superseded_release_trees(") > source.index(
         "automation_unit_state_receipts = _restore_installed_path_units("
     )
+
+
+def _stage_real_units(tmp_path: Path) -> Path:
+    """A fake release carrying the repository's real unit files."""
+
+    release = tmp_path / "release"
+    unit_dir = release / "deploy" / "systemd"
+    unit_dir.mkdir(parents=True)
+    for source in (REPO_ROOT / "deploy" / "systemd").glob("blueprint-*"):
+        (unit_dir / source.name).write_bytes(source.read_bytes())
+    return release
+
+
+def test_unit_sandbox_paths_are_provisioned_from_the_staged_units(tmp_path: Path) -> None:
+    """The class that killed the preparation worker twice: a sandbox path no deploy created."""
+
+    release = _stage_real_units(tmp_path)
+    host = tmp_path / "host"
+    ids = (os.getuid(), os.getgid())
+
+    # Nothing exists yet: every path the deploy may not create is a blocker,
+    # and every one of them lives outside the service state tree.
+    with pytest.raises(deploy.ControlPlaneDeployError) as refused:
+        deploy._install_unit_sandbox_paths(release_path=release, root_prefix=host, owner_ids=ids)
+    blockers = str(refused.value).split(",")
+    assert blockers and all(row.startswith("deploy_unit_sandbox_path_missing:") for row in blockers)
+    missing_paths = {row.split(":", 2)[2] for row in blockers}
+    assert missing_paths and not any(
+        path.startswith("/var/lib/blueprint/") and not path.endswith((".json", ".lock", ".env", ".sqlite", ".log"))
+        for path in missing_paths
+    )
+    assert not (host / "var/lib/blueprint").exists()
+
+    for path in missing_paths:
+        target = host / path.lstrip("/")
+        if Path(path).suffix:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("{}", encoding="utf-8")
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+    # A directory that already exists keeps its owner and mode.
+    preexisting = host / "var/lib/blueprint/pipeline-control-plane/gpu_spend_guard"
+    preexisting.mkdir(parents=True)
+    preexisting.chmod(0o755)
+
+    receipt = deploy._install_unit_sandbox_paths(release_path=release, root_prefix=host, owner_ids=ids)
+
+    assert receipt["status"] == "ready"
+    assert receipt["created_count"] == len(receipt["created"]) > 0
+    created = {row["path"] for row in receipt["created"]}
+    for expected in (
+        "/var/lib/blueprint/pipeline-control-plane/disk-reservations",
+        "/var/lib/blueprint/pipeline-control-plane/storage-pins",
+        "/var/lib/blueprint/task-evaluation-inputs/compiled-episodes",
+        "/var/lib/blueprint/task-evaluation-inputs/launch-activations",
+    ):
+        assert expected in created, expected
+        assert (host / expected.lstrip("/")).is_dir()
+        assert (host / expected.lstrip("/")).stat().st_mode & 0o777 == 0o750
+    assert all(row["mode"] == "0750" and row["owner_uid"] == ids[0] for row in receipt["created"])
+    assert preexisting.stat().st_mode & 0o777 == 0o755
+    assert "/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard" not in created
+    # The optional catalog file is never created and never a blocker.
+    assert not (host / "var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json").exists()
+
+    # Idempotent: a second deploy verifies and creates nothing.
+    again = deploy._install_unit_sandbox_paths(release_path=release, root_prefix=host, owner_ids=ids)
+    assert again["created"] == [] and again["verified_count"] >= receipt["created_count"]
+
+
+def test_unit_sandbox_paths_are_classified_and_provisioned_before_the_release_moves() -> None:
+    from blueprint_pipeline.control_plane_storage_roots import classify_path
+
+    seen: set[str] = set()
+    for unit in sorted((REPO_ROOT / "deploy" / "systemd").glob("blueprint-*.service")):
+        for path, _optional, _directive in deploy._unit_sandbox_entries(
+            unit.read_text(encoding="utf-8")
+        ):
+            if path.startswith("/var/lib/blueprint/") or path.startswith("/opt/blueprint"):
+                root = classify_path(path)
+                assert root is not None, (unit.name, path)
+                seen.add(path)
+    assert seen
+
+    source = Path(deploy.__file__).read_text(encoding="utf-8")
+    assert source.index("unit_sandbox_paths = _install_unit_sandbox_paths(") < source.index(
+        "_move_source_checkout(source, source_commit)"
+    )
+    assert '"unit_sandbox_paths": unit_sandbox_paths,' in source
+    assert '"stage_timings_seconds": stage_timings,' in source
+
+
+def test_unit_sandbox_entries_parse_optional_and_multi_path_directives() -> None:
+    text = (
+        "[Service]\n"
+        "ReadWritePaths=/var/lib/blueprint /var/lib/blueprint/pipeline-control-plane/x/\n"
+        "ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/catalog.json /etc/blueprint/profiles\n"
+        "ExecStart=/bin/true\n"
+    )
+    assert deploy._unit_sandbox_entries(text) == [
+        ("/var/lib/blueprint", False, "ReadWritePaths"),
+        ("/var/lib/blueprint/pipeline-control-plane/x", False, "ReadWritePaths"),
+        ("/var/lib/blueprint/pipeline-control-plane/catalog.json", True, "ReadOnlyPaths"),
+        ("/etc/blueprint/profiles", False, "ReadOnlyPaths"),
+    ]
+
+
+def test_unit_sandbox_provisioning_skips_absent_release_units_and_needs_an_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    empty = tmp_path / "release"
+    (empty / "deploy" / "systemd").mkdir(parents=True)
+    receipt = deploy._install_unit_sandbox_paths(release_path=empty, root_prefix=tmp_path / "host")
+    assert receipt == {
+        "status": "ready",
+        "unit_count": len(deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS),
+        "verified_count": 0,
+        "created_count": 0,
+        "created": [],
+    }
+
+    release = tmp_path / "one-unit"
+    unit_dir = release / "deploy" / "systemd"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS[0]).write_text(
+        "[Service]\nReadWritePaths=/var/lib/blueprint/pipeline-control-plane/new-ledger\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(deploy, "_service_account_ids", lambda _account: None)
+    with pytest.raises(
+        deploy.ControlPlaneDeployError, match="deploy_unit_sandbox_account_missing:blueprint"
+    ):
+        deploy._install_unit_sandbox_paths(release_path=release, root_prefix=tmp_path / "host2")
