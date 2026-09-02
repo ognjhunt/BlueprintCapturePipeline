@@ -264,7 +264,10 @@ def _configured_runtime_documents(configured: dict[str, object]) -> dict[str, di
     }
 
 
-def test_closed_compiler_joins_revision_and_robot_team_inputs(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("policy_observation_override", [False, True])
+def test_closed_compiler_joins_revision_and_robot_team_inputs(
+    tmp_path: Path, monkeypatch, policy_observation_override: bool
+) -> None:
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     value = request()
@@ -315,7 +318,24 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(tmp_path: Path, mo
             "scene_camera_calibration_digest": configured["registration"]["camera_calibration"][
                 "digest"
             ],
-            "cameras": [{"role": "external"}],
+            "cameras": (
+                [
+                    {
+                        "role": role,
+                        "intrinsics": {
+                            "fx": 172.0,
+                            "fy": 172.0,
+                            "cx": 159.5,
+                            "cy": 89.5,
+                            "width": 320,
+                            "height": 180,
+                        },
+                    }
+                    for role in ("external", "wrist", "overview")
+                ]
+                if policy_observation_override
+                else [{"role": "external"}]
+            ),
         },
         "scene.configured_revision.task_template.definition": {
             "schema_version": "task_evaluation_rigid_relocation_template.v1",
@@ -425,6 +445,87 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(tmp_path: Path, mo
     for contract_path, path in document_paths.items():
         references[contract_path] = _record(path, contract_path)
 
+    if policy_observation_override:
+        appearance = inputs / "policy-observation.usdc"
+        appearance.write_bytes(b"verified policy observation particlefield")
+        receipt = {
+            "schema_version": "nvidia_3dgrut_particlefield_transcode.v1",
+            "status": "completed",
+            "schema": "ParticleField3DGaussianSplat",
+            "output": "/producer/path/not-present-on-control-plane.usdc",
+            "output_bytes": appearance.stat().st_size,
+            "output_sha256": "sha256:"
+            + hashlib.sha256(appearance.read_bytes()).hexdigest(),
+            "source_sha256": "sha256:" + "a" * 64,
+            "splat_count": 1_000_000,
+            "sh_degree": 3,
+            "sh_primvar_element_size": 16,
+            "sh_primvar_interpolation": "constant",
+            "display_color_fallback_authored": False,
+            "particlefield_emissive_material_binding_authored": False,
+            "particlefield_emissive_material_inputs": None,
+            "particlefield_custom_render_hints_authored": False,
+            "particlefield_authoring_implementation": (
+                "nvidia_3dgrut_direct_nurec_transcode"
+            ),
+            "upstream_converter": {
+                "repository": "https://github.com/nv-tlabs/3dgrut.git",
+                "source_revision": "a37ef721012dea0f29c0fcfff2d525023b4e854a",
+                "module": "threedgrut.export.scripts.transcode",
+                "module_sha256": "sha256:" + "b" * 64,
+                "source_identity_verified": True,
+            },
+            "upstream_projection_mode_hint": "perspective",
+            "upstream_sorting_mode_hint": "cameraDistance",
+            "upstream_color_space": "srgb_rec709_display",
+            "gaussian_field_quality": {
+                "schema_version": "gaussian_field_quality.v1",
+                "status": "qualified",
+                "blockers": [],
+                "learned_tensors_mutated": False,
+            },
+            "receipt_digest": "",
+        }
+        receipt["receipt_digest"] = canonical_digest(
+            receipt, digest_field="receipt_digest"
+        )
+        receipt_path = _write_json(inputs, "appearance-receipt.json", receipt)
+        registry_path = (
+            Path(__file__).resolve().parents[1]
+            / "docs/arm_decision_proof_v1/manifests/"
+            "franka_robotiq_policy_camera_mount_registry.v1.json"
+        )
+        observation_refs = {
+            "appearance_asset": _record(
+                appearance,
+                "execution_adapter.policy_observation_setup.appearance_asset",
+            ),
+            "appearance_authoring_receipt": _record(
+                receipt_path,
+                "execution_adapter.policy_observation_setup.appearance_authoring_receipt",
+            ),
+            "wrist_camera_mount_registry": _record(
+                registry_path,
+                "execution_adapter.policy_observation_setup.wrist_camera_mount_registry",
+            ),
+        }
+        value["execution_adapter"]["policy_observation_setup"] = {
+            "schema_version": "task_evaluation_policy_observation_setup.v1",
+            **{
+                key: {
+                    field: record[field]
+                    for field in ("uri", "digest", "size_bytes")
+                }
+                for key, record in observation_refs.items()
+            },
+            "fresh_native_mount_sweep_required": True,
+            "policy_master_resolution_wh": [640, 360],
+            "overview_review_resolution_wh": [1280, 720],
+        }
+        references.update(
+            {record["contract_path"]: record for record in observation_refs.values()}
+        )
+
     observed = {}
 
     def fake_materialize(*, request, evidence_root, output_dir, link_sources_within):
@@ -457,6 +558,7 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(tmp_path: Path, mo
         return result
 
     def fake_native_appearance(*, source_path, output_root):
+        observed["configured_appearance_materialized"] = True
         output_root.mkdir()
         output = output_root / "scene_appearance.usdc"
         output.write_bytes(Path(source_path).read_bytes())
@@ -542,23 +644,48 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(tmp_path: Path, mo
         if row["semantic_role"] == "scene_appearance"
     )
     assert appearance["filename"] == "scene_appearance.usdc"
-    assert observed["packet_request"]["appearance_variant"] == {
-        "representation": "particlefield_3d_gaussian_splat",
-        "source_configured_appearance_digest": result["native_scene_appearance"][
-            "source_configured_appearance_digest"
-        ],
-        "representation_conversion_performed": True,
-        "exact_learned_arrays_preserved": True,
-        "gaussian_field_quality": {
-            "schema_version": "gaussian_field_quality.v1",
-            "status": "qualified",
-            "blockers": [],
-            "learned_tensors_mutated": False,
-        },
-        "render_backend": result["native_scene_appearance"][
-            "appearance_render_backend"
-        ],
-    }
+    if policy_observation_override:
+        assert "configured_appearance_materialized" not in observed
+        assert result["native_scene_appearance"]["policy_observation_setup_bound"] is True
+        assert observed["packet_request"]["appearance_variant"][
+            "particlefield_authoring_implementation"
+        ] == "nvidia_3dgrut_direct_nurec_transcode"
+        assert observed["packet_request"]["appearance_variant"][
+            "source_gaussian_sha256"
+        ] == ("sha256:" + "a" * 64)
+        assert observed["packet_request"]["wrist_camera_mount_registry"][
+            "selection_authority"
+        ] == "native_render_measurements"
+        assert observed["packet_request"]["camera_resolution_contract"] == {
+            "policy_master_resolution_wh": [640, 360],
+            "overview_review_resolution_wh": [1280, 720],
+            "policy_preprocessing": (
+                "candidate_specific_aspect_preserving_resize_with_centred_black_pad"
+            ),
+            "source_request_digest": json.loads(
+                (tmp_path / "output/policy_observation_appearance_packet_request.v1.json")
+                .read_text(encoding="utf-8")
+            )["request_digest"],
+            "fresh_native_mount_sweep_required": True,
+        }
+    else:
+        assert observed["packet_request"]["appearance_variant"] == {
+            "representation": "particlefield_3d_gaussian_splat",
+            "source_configured_appearance_digest": result[
+                "native_scene_appearance"
+            ]["source_configured_appearance_digest"],
+            "representation_conversion_performed": True,
+            "exact_learned_arrays_preserved": True,
+            "gaussian_field_quality": {
+                "schema_version": "gaussian_field_quality.v1",
+                "status": "qualified",
+                "blockers": [],
+                "learned_tensors_mutated": False,
+            },
+            "render_backend": result["native_scene_appearance"][
+                "appearance_render_backend"
+            ],
+        }
     source_subject_id = configured["replacement"]["identity"]["id"]
     runtime_subject_id = source_subject_id.replace("-", "_")
     assert observed["packet_request"]["task_spec"]["subject_asset_id"] == (runtime_subject_id)

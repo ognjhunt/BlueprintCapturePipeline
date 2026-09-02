@@ -11,19 +11,30 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
 import stat
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .gaussian_field_quality import (
     gaussian_quality_is_qualified,
     measure_gaussian_field_quality,
 )
-from .native_task_arena_packet import materialize_native_task_arena_packet
+from .native_task_arena_packet import (
+    materialize_native_task_arena_appearance_variant_request,
+    materialize_native_task_arena_packet,
+)
+from .native_task_wrist_camera_mount_sweep import (
+    OVERVIEW_RENDER_RESOLUTION,
+    POLICY_RENDER_RESOLUTION,
+    materialize_wrist_camera_mount_sweep_request,
+)
 from .particlefield_usd import write_particlefield_usd_from_nurec
 from .particlefield_runtime_asset_cache import materialize_cached_particlefield
 from .task_evaluation_configured_scene_revision import (
@@ -138,6 +149,28 @@ def _reference_path(references: Mapping[str, Mapping[str, Any]], contract_path: 
             f"episode_compiler_reference_invalid:{contract_path}"
         )
     return path
+
+
+def _link_policy_observation_asset(*, source: Path, output_root: Path) -> Path:
+    """Put one verified immutable appearance inside the compiler evidence root."""
+
+    destination_root = output_root / "policy-observation-appearance"
+    destination_root.mkdir(mode=0o750)
+    destination = destination_root / "scene_appearance.usdc"
+    if destination.exists() or destination.is_symlink():
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_policy_observation_asset_output_conflict"
+        )
+    try:
+        os.link(source, destination, follow_symlinks=False)
+    except OSError:
+        shutil.copyfile(source, destination)
+        destination.chmod(0o440)
+    if _sha256_and_size(destination) != _sha256_and_size(source):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_policy_observation_asset_copy_mismatch"
+        )
+    return destination
 
 
 def _json_reference(
@@ -561,23 +594,53 @@ def compile_native_arena_episode(
         ),
         output_root=root,
     )
-    native_appearance = dict(
-        native_appearance_materializer(
-            source_path=configured_assets["appearance"],
-            output_root=root / "native-appearance",
-        )
+    policy_observation_setup = request["execution_adapter"].get(
+        "policy_observation_setup"
     )
-    native_appearance_path = Path(str(native_appearance.get("path") or ""))
-    if (
-        native_appearance.get("representation") != "particlefield_3d_gaussian_splat"
-        or native_appearance.get("exact_learned_arrays_preserved") is not True
-        or native_appearance_path.is_symlink()
-        or not native_appearance_path.is_file()
-        or (native_appearance_path != root and root not in native_appearance_path.resolve().parents)
-    ):
-        raise TaskEvaluationNativeArenaEpisodeCompilerError(
-            "episode_compiler_native_appearance_invalid"
+    if policy_observation_setup is not None:
+        if (
+            policy_observation_setup.get("schema_version")
+            != "task_evaluation_policy_observation_setup.v1"
+            or policy_observation_setup.get("fresh_native_mount_sweep_required")
+            is not True
+            or policy_observation_setup.get("policy_master_resolution_wh")
+            != list(POLICY_RENDER_RESOLUTION)
+            or policy_observation_setup.get("overview_review_resolution_wh")
+            != list(OVERVIEW_RENDER_RESOLUTION)
+        ):
+            raise TaskEvaluationNativeArenaEpisodeCompilerError(
+                "episode_compiler_policy_observation_setup_invalid"
+            )
+        native_appearance_path = _link_policy_observation_asset(
+            source=_reference_path(
+                materialized_references,
+                "execution_adapter.policy_observation_setup.appearance_asset",
+            ),
+            output_root=root,
         )
+        native_appearance: dict[str, Any] = {}
+    else:
+        native_appearance = dict(
+            native_appearance_materializer(
+                source_path=configured_assets["appearance"],
+                output_root=root / "native-appearance",
+            )
+        )
+        native_appearance_path = Path(str(native_appearance.get("path") or ""))
+        if (
+            native_appearance.get("representation")
+            != "particlefield_3d_gaussian_splat"
+            or native_appearance.get("exact_learned_arrays_preserved") is not True
+            or native_appearance_path.is_symlink()
+            or not native_appearance_path.is_file()
+            or (
+                native_appearance_path != root
+                and root not in native_appearance_path.resolve().parents
+            )
+        ):
+            raise TaskEvaluationNativeArenaEpisodeCompilerError(
+                "episode_compiler_native_appearance_invalid"
+            )
     object_pose = task_definition.get("task_object_pose_world")
     packet_assets = []
     for role, semantic_role in (
@@ -644,18 +707,26 @@ def compile_native_arena_episode(
         "scenario": execution.get("scenario"),
         "physics_frequency_hz": execution.get("physics_frequency_hz"),
         "configured_task_template_adapter": task_adapter,
-        "appearance_variant": {
-            "representation": "particlefield_3d_gaussian_splat",
-            "source_configured_appearance_digest": native_appearance[
-                "source_configured_appearance_digest"
-            ],
-            "representation_conversion_performed": native_appearance[
-                "representation_conversion_performed"
-            ],
-            "exact_learned_arrays_preserved": True,
-            "gaussian_field_quality": native_appearance["gaussian_field_quality"],
-            "render_backend": native_appearance["appearance_render_backend"],
-        },
+        "appearance_variant": (
+            {
+                "representation": "particlefield_3d_gaussian_splat",
+                "source_configured_appearance_digest": native_appearance[
+                    "source_configured_appearance_digest"
+                ],
+                "representation_conversion_performed": native_appearance[
+                    "representation_conversion_performed"
+                ],
+                "exact_learned_arrays_preserved": True,
+                "gaussian_field_quality": native_appearance[
+                    "gaussian_field_quality"
+                ],
+                "render_backend": native_appearance[
+                    "appearance_render_backend"
+                ],
+            }
+            if policy_observation_setup is None
+            else None
+        ),
         "native_construction_feedback": (
             {
                 "selected_placement_candidate_id": robot.get("selected_placement_candidate_id"),
@@ -681,6 +752,66 @@ def compile_native_arena_episode(
     packet_request["request_digest"] = canonical_digest(
         packet_request, digest_field="request_digest"
     )
+    if policy_observation_setup is not None:
+        base_request_path = root / "policy_observation_base_packet_request.v1.json"
+        write_json(base_request_path, packet_request)
+        receipt_path = _reference_path(
+            materialized_references,
+            "execution_adapter.policy_observation_setup.appearance_authoring_receipt",
+        )
+        packet_request = materialize_native_task_arena_appearance_variant_request(
+            base_request_path=base_request_path,
+            appearance_authoring_receipt_path=receipt_path,
+            appearance_asset_path=native_appearance_path,
+            evidence_root=root,
+            output_path=root / "policy_observation_appearance_packet_request.v1.json",
+        )
+        registry = _json_reference(
+            materialized_references,
+            "execution_adapter.policy_observation_setup.wrist_camera_mount_registry",
+            "policy_canary_wrist_camera_mount_registry.v1",
+        )
+        packet_request = materialize_wrist_camera_mount_sweep_request(
+            base_request=packet_request,
+            registry=registry,
+            output_path=root / "policy_observation_camera_packet_request.v1.json",
+        )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        appearance_variant = packet_request["appearance_variant"]
+        appearance_digest, appearance_size = _sha256_and_size(native_appearance_path)
+        native_appearance = {
+            "status": "policy_observation_override_materialized",
+            "path": str(native_appearance_path),
+            "representation": "particlefield_3d_gaussian_splat",
+            "source_configured_appearance_digest": appearance_variant[
+                "source_gaussian_sha256"
+            ],
+            "source_configured_appearance_size_bytes": None,
+            "particlefield_digest": appearance_digest,
+            "particlefield_size_bytes": appearance_size,
+            "representation_conversion_performed": True,
+            "exact_learned_arrays_preserved": True,
+            "gaussian_field_quality": appearance_variant["gaussian_field_quality"],
+            "appearance_render_backend": _appearance_render_backend(
+                kind=appearance_variant["particlefield_authoring_implementation"],
+                source_digest=appearance_variant["source_gaussian_sha256"],
+                particlefield_digest=appearance_digest,
+                authoring_receipt_digest=appearance_variant[
+                    "authoring_receipt_digest"
+                ],
+                upstream_converter=appearance_variant.get("upstream_converter"),
+                projection_mode_hint=appearance_variant.get(
+                    "upstream_projection_mode_hint"
+                ),
+                sorting_mode_hint=appearance_variant.get(
+                    "upstream_sorting_mode_hint"
+                ),
+                color_space=appearance_variant.get("upstream_color_space"),
+            ),
+            "policy_observation_setup_bound": True,
+            "appearance_authoring_receipt_digest": receipt["receipt_digest"],
+            "wrist_camera_mount_registry_digest": registry["registry_digest"],
+        }
     packet_root = root / "native-task-packet"
     # The extracted assets and the packet share this per-run root and are
     # retired together, so the packet hard-links the verified bytes instead of
