@@ -8,6 +8,7 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import (
+    _projection,
     TaskEvaluationPolicyCanaryDispatchError,
     dispatch_policy_canary_activation,
     process_policy_canary_dispatch_queue,
@@ -15,6 +16,88 @@ from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import (
 
 
 COMMIT = "a" * 40
+
+
+def _public_artifact(character: str, artifact_id: str) -> dict[str, object]:
+    return {
+        "artifact_id": artifact_id,
+        "digest": "sha256:" + character * 64,
+        "size_bytes": 10,
+    }
+
+
+def test_projection_derives_reset_identity_only_for_blocked_legacy_episodes() -> None:
+    episodes = []
+    for candidate_id in ("pi05_droid", "groot_n17_droid"):
+        for index in range(10):
+            episodes.append(
+                {
+                    "candidate_id": candidate_id,
+                    "cell_id": f"quick-cell-{index}",
+                    "seed": 3100 + index,
+                    "resolved_scenario": {
+                        "family": "canonical_anchor",
+                        "ordinal": index,
+                    },
+                    "status": "blocked",
+                    "candidate_policy_queried": False,
+                    "actions_reached_robot": False,
+                    "arm_moved": False,
+                    "policy_outcome_interpretable": False,
+                    "typed_harness_failure": "RuntimeError",
+                    "checkpoint_digest": "sha256:" + "a" * 64,
+                    "runtime_identity_digest": "sha256:" + "b" * 64,
+                    "visual_evidence": {
+                        "media_gap": {
+                            "type": "before_first_observation",
+                            "reason": "policy_canary_episode_runner_failed",
+                        }
+                    },
+                }
+            )
+    report = {
+        "run_id": "scene-839873-canary-legacy",
+        "result_status": "blocked",
+        "delivery_digest": "sha256:" + "c" * 64,
+        "report": {
+            "machine_readable_report": _public_artifact("d", "report"),
+            "evidence_manifest": _public_artifact("e", "manifest"),
+        },
+        "closure": {
+            "billing": _public_artifact("f", "billing"),
+            "teardown": _public_artifact("1", "teardown"),
+            "provider_zero": _public_artifact("2", "provider-zero"),
+        },
+        "candidate_results": [],
+        "artifacts": [],
+    }
+    result = {
+        "run_id": report["run_id"],
+        "configuration_digest": "sha256:" + "3" * 64,
+        "result_digest": "sha256:" + "4" * 64,
+        "status": "blocked",
+        "episodes": episodes,
+        "blockers": ["policy_canary_episode_runner_failed"],
+    }
+
+    projected = _projection(
+        setup={
+            "scene_id": "839873",
+            "request_digest": "sha256:" + "5" * 64,
+        },
+        result=result,
+        delivery=report,
+    )
+
+    expected = canonical_digest(
+        {
+            "resolved_scenario": episodes[0]["resolved_scenario"],
+            "seed": episodes[0]["seed"],
+            "execution_performed": False,
+        }
+    )
+    assert projected["episodes"][0]["evidence"]["reset_state_digest"] == expected
+    assert projected["counts"]["completed_learned_policy_rollout_count"] == 0
 
 
 def _sha(path: Path) -> str:
