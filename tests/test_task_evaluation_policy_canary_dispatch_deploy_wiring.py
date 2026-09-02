@@ -35,6 +35,16 @@ def test_canary_paid_dispatcher_is_installed_but_never_always_armed() -> None:
     assert "--hotfix-overlay" in service
     assert "BLUEPRINT_TASK_EVALUATION_CANARY_HOTFIX_OVERLAY" in service
     assert "--execute" in service
+    # Operator-staged inputs enter through canonical, access-checked arguments
+    # rather than files hand-placed inside the service account's run directory.
+    assert (
+        'ARGS+=(--hotfix-overlay "$${BLUEPRINT_TASK_EVALUATION_CANARY_HOTFIX_OVERLAY}")'
+        in service
+    )
+    assert (
+        'ARGS+=(--machine-avoidlist '
+        '"$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_MACHINE_AVOIDLIST}")'
+    ) in service
     assert "KillMode=process" in service
     assert (
         "PIPELINE_TASK_EVALUATION_RUN_WEBAPP_URL="

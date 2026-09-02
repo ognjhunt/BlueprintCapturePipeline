@@ -10,11 +10,13 @@ routed to the normal exact-main deployment instead.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+import grp
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import pwd
 import re
 import stat
 import subprocess
@@ -27,6 +29,13 @@ from .decision_evidence_contracts import canonical_digest
 
 
 SCHEMA_VERSION = "task_evaluation_canary_hotfix_overlay.v1"
+SERVICE_ACCESS_SCHEMA_VERSION = "task_evaluation_canary_hotfix_service_access.v1"
+# The hardened dispatcher unit runs as this identity with ProtectHome and
+# ProtectSystem=strict; anything it must read has to be readable by it.
+DEFAULT_SERVICE_USER = "blueprint"
+DEFAULT_SERVICE_GROUP = "blueprint"
+OVERLAY_DIRECTORY_MODE = 0o750
+OVERLAY_FILE_MODE = 0o640
 PLAN_SCHEMA_VERSION = "task_evaluation_canary_hotfix_overlay_plan.v1"
 TEST_RECEIPT_SCHEMA_VERSION = "task_evaluation_canary_hotfix_test_receipt.v1"
 APPLICATION_SCHEMA_VERSION = "task_evaluation_canary_hotfix_application.v1"
@@ -79,6 +88,143 @@ def _git(root: Path, *arguments: str) -> bytes:
         ).stdout
     except (OSError, subprocess.CalledProcessError) as exc:
         raise CanaryHotfixOverlayError(["canary_hotfix_git_query_failed"]) from exc
+
+
+def resolve_service_account(
+    *,
+    user: str = DEFAULT_SERVICE_USER,
+    group: str = DEFAULT_SERVICE_GROUP,
+    getpwnam: Callable[[str], Any] = pwd.getpwnam,
+    getgrnam: Callable[[str], Any] = grp.getgrnam,
+    getgrall: Callable[[], Sequence[Any]] = grp.getgrall,
+) -> dict[str, Any]:
+    """Resolve the dispatcher's runtime identity into uid and every effective gid."""
+
+    try:
+        passwd = getpwnam(str(user))
+        group_entry = getgrnam(str(group))
+    except KeyError as exc:
+        raise CanaryHotfixOverlayError(["canary_hotfix_service_account_unknown"]) from exc
+    group_ids = {int(passwd.pw_gid), int(group_entry.gr_gid)}
+    for entry in getgrall():
+        if str(user) in tuple(entry.gr_mem or ()):
+            group_ids.add(int(entry.gr_gid))
+    return {
+        "user": str(user),
+        "uid": int(passwd.pw_uid),
+        "group": str(group),
+        "gid": int(group_entry.gr_gid),
+        "group_ids": sorted(group_ids),
+    }
+
+
+def _service_account_has(
+    metadata: os.stat_result, *, account: Mapping[str, Any], read: bool, traverse: bool
+) -> bool:
+    mode = stat.S_IMODE(metadata.st_mode)
+    if metadata.st_uid == int(account["uid"]):
+        read_bit, traverse_bit = stat.S_IRUSR, stat.S_IXUSR
+    elif metadata.st_gid in set(int(value) for value in account["group_ids"]):
+        read_bit, traverse_bit = stat.S_IRGRP, stat.S_IXGRP
+    else:
+        read_bit, traverse_bit = stat.S_IROTH, stat.S_IXOTH
+    return (not read or bool(mode & read_bit)) and (
+        not traverse or bool(mode & traverse_bit)
+    )
+
+
+def service_account_access_blockers(
+    path: str | Path,
+    *,
+    account: Mapping[str, Any],
+    stat_reader: Callable[[Path], os.stat_result] = os.stat,
+) -> list[str]:
+    """Return why the service account could not open ``path`` for reading.
+
+    Every ancestor directory must be traversable and the target readable (and
+    traversable when it is a directory).  Blockers name only the last path
+    component, never a host path.  The paid run that motivated this check was
+    refused because the overlay's parent directory was ``0750 root:root``.
+    """
+
+    target = Path(path).expanduser().resolve()
+    blockers: list[str] = []
+    for ancestor in reversed(target.parents):
+        try:
+            metadata = stat_reader(ancestor)
+        except OSError:
+            blockers.append(f"canary_hotfix_service_account_cannot_stat:{ancestor.name or '/'}")
+            return blockers
+        if not _service_account_has(metadata, account=account, read=False, traverse=True):
+            blockers.append(
+                f"canary_hotfix_service_account_cannot_traverse:{ancestor.name or '/'}"
+            )
+    try:
+        metadata = stat_reader(target)
+    except OSError:
+        blockers.append(f"canary_hotfix_service_account_cannot_stat:{target.name}")
+        return blockers
+    is_directory = stat.S_ISDIR(metadata.st_mode)
+    if not _service_account_has(
+        metadata, account=account, read=True, traverse=is_directory
+    ):
+        blockers.append(f"canary_hotfix_service_account_cannot_read:{target.name}")
+    return blockers
+
+
+def bind_service_group(
+    paths: Sequence[Path],
+    *,
+    account: Mapping[str, Any],
+    chown: Callable[[Path, int, int], None] = os.chown,
+) -> list[dict[str, Any]]:
+    """Give the service group read (and directory traverse) access to ``paths``.
+
+    Ownership stays with the operator that prepared the overlay; only the
+    group changes, so the service account can read without gaining write.
+    """
+
+    rows: list[dict[str, Any]] = []
+    for raw in paths:
+        path = Path(raw)
+        if path.is_symlink():
+            raise CanaryHotfixOverlayError(["canary_hotfix_service_binding_symlink"])
+        mode = OVERLAY_DIRECTORY_MODE if path.is_dir() else OVERLAY_FILE_MODE
+        try:
+            chown(path, -1, int(account["gid"]))
+            path.chmod(mode)
+        except OSError as exc:
+            raise CanaryHotfixOverlayError(
+                ["canary_hotfix_service_group_binding_failed"]
+            ) from exc
+        rows.append({"name": path.name, "group": account["group"], "mode": f"{mode:04o}"})
+    return rows
+
+
+def _service_access_receipt(
+    paths: Sequence[Path],
+    *,
+    account: Mapping[str, Any],
+    bound: Sequence[Mapping[str, Any]] | None = None,
+    stat_reader: Callable[[Path], os.stat_result] = os.stat,
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    for path in paths:
+        blockers.extend(
+            service_account_access_blockers(path, account=account, stat_reader=stat_reader)
+        )
+    if blockers:
+        raise CanaryHotfixOverlayError(
+            ["canary_hotfix_overlay_unreadable_by_service_account", *blockers]
+        )
+    return {
+        "schema_version": SERVICE_ACCESS_SCHEMA_VERSION,
+        "status": "readable_by_service_account",
+        "service_user": account["user"],
+        "service_group": account["group"],
+        "verified_names": [Path(path).name for path in paths],
+        "group_bindings": [dict(row) for row in bound or ()],
+    }
 
 
 def _changed_paths(root: Path, *, base_commit: str, patch_commit: str) -> list[str]:
@@ -256,9 +402,17 @@ def prepare_canary_hotfix_overlay(
     base_commit: str,
     patch_commit: str,
     test_receipt: Mapping[str, Any],
+    service_user: str = DEFAULT_SERVICE_USER,
+    service_group: str = DEFAULT_SERVICE_GROUP,
+    account_resolver: Callable[..., Mapping[str, Any]] = resolve_service_account,
+    chown: Callable[[Path, int, int], None] = os.chown,
+    stat_reader: Callable[[Path], os.stat_result] = os.stat,
 ) -> dict[str, Any]:
     root = Path(repo_root).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
+    # Resolve the runtime identity before writing anything: an unknown service
+    # account is a deployment defect, not something to discover after sealing.
+    account = dict(account_resolver(user=service_user, group=service_group))
     strategy = choose_canary_iteration_strategy(
         repo_root=root, base_commit=base_commit, patch_commit=patch_commit
     )
@@ -320,6 +474,13 @@ def prepare_canary_hotfix_overlay(
             info,
             (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode(),
         )
+    # The dispatcher runs as the service account with a read-only view of this
+    # directory; bind the group now and prove readability before the plan is
+    # sealed, so a root-only overlay can never reach the paid queue.
+    bound = bind_service_group([output, archive_path], account=account, chown=chown)
+    service_access = _service_access_receipt(
+        [archive_path], account=account, bound=bound, stat_reader=stat_reader
+    )
     plan: dict[str, Any] = {
         "schema_version": PLAN_SCHEMA_VERSION,
         "status": "ready",
@@ -329,13 +490,20 @@ def prepare_canary_hotfix_overlay(
         "archive_path": str(archive_path),
         "archive_sha256": _sha256(archive_path),
         "archive_size_bytes": archive_path.stat().st_size,
+        "service_access": service_access,
         "provider_mutation_performed": False,
         "active_release_mutation_performed": False,
         "plan_digest": "",
     }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
-    write_json(output / "task_evaluation_canary_hotfix_overlay_plan.v1.json", plan)
-    write_json(output / "task_evaluation_canary_hotfix_test_receipt.v1.json", tests)
+    plan_path = output / "task_evaluation_canary_hotfix_overlay_plan.v1.json"
+    receipt_path = output / "task_evaluation_canary_hotfix_test_receipt.v1.json"
+    write_json(plan_path, plan)
+    write_json(receipt_path, tests)
+    bind_service_group([plan_path, receipt_path], account=account, chown=chown)
+    _service_access_receipt(
+        [plan_path, receipt_path], account=account, stat_reader=stat_reader
+    )
     return plan
 
 
@@ -470,7 +638,14 @@ def apply_canary_hotfix_overlay(
 
 
 def install_policy_canary_dispatcher_overlay(
-    *, plan_path: str | Path, drop_in_path: str | Path, receipt_path: str | Path
+    *,
+    plan_path: str | Path,
+    drop_in_path: str | Path,
+    receipt_path: str | Path,
+    service_user: str = DEFAULT_SERVICE_USER,
+    service_group: str = DEFAULT_SERVICE_GROUP,
+    account_resolver: Callable[..., Mapping[str, Any]] = resolve_service_account,
+    stat_reader: Callable[[Path], os.stat_result] = os.stat,
 ) -> dict[str, Any]:
     plan_file = Path(plan_path).expanduser().resolve()
     plan = json.loads(plan_file.read_text(encoding="utf-8"))
@@ -486,6 +661,13 @@ def install_policy_canary_dispatcher_overlay(
     ):
         raise CanaryHotfixOverlayError(["canary_hotfix_installation_plan_invalid"])
     verify_canary_hotfix_overlay(archive)
+    # The drop-in points the hardened dispatcher at this archive.  Prove the
+    # service account can actually open it (every ancestor traversable, the
+    # file readable) before the unit is told about it.
+    account = dict(account_resolver(user=service_user, group=service_group))
+    service_access = _service_access_receipt(
+        [archive, plan_file], account=account, stat_reader=stat_reader
+    )
     destination = Path(drop_in_path).expanduser().resolve()
     if destination.suffix != ".conf" or not destination.is_absolute():
         raise CanaryHotfixOverlayError(["canary_hotfix_drop_in_path_invalid"])
@@ -514,6 +696,7 @@ def install_policy_canary_dispatcher_overlay(
         "archive_sha256": plan["archive_sha256"],
         "drop_in_path": str(destination),
         "drop_in_sha256": _sha256(destination),
+        "service_access": service_access,
         "active_release_mutation_performed": False,
         "provider_mutation_performed": False,
         "normal_deployment_required_for_promotion": True,
@@ -540,10 +723,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     prepare.add_argument("--patch-commit", required=True)
     prepare.add_argument("--exact-failure-input", required=True)
     prepare.add_argument("--test-command-json", action="append", required=True)
+    prepare.add_argument("--service-user", default=DEFAULT_SERVICE_USER)
+    prepare.add_argument("--service-group", default=DEFAULT_SERVICE_GROUP)
     install = sub.add_parser("install")
     install.add_argument("--plan", required=True)
     install.add_argument("--drop-in", required=True)
     install.add_argument("--receipt", required=True)
+    install.add_argument("--service-user", default=DEFAULT_SERVICE_USER)
+    install.add_argument("--service-group", default=DEFAULT_SERVICE_GROUP)
     args = parser.parse_args(argv)
     if args.command == "route":
         print(
@@ -572,6 +759,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             base_commit=args.base_commit,
             patch_commit=args.patch_commit,
             test_receipt=tests,
+            service_user=args.service_user,
+            service_group=args.service_group,
         )
         print(json.dumps(plan, sort_keys=True))
         return 0
@@ -582,6 +771,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     plan_path=args.plan,
                     drop_in_path=args.drop_in,
                     receipt_path=args.receipt,
+                    service_user=args.service_user,
+                    service_group=args.service_group,
                 ),
                 sort_keys=True,
             )
@@ -592,15 +783,20 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "CanaryHotfixOverlayError",
+    "DEFAULT_SERVICE_GROUP",
+    "DEFAULT_SERVICE_USER",
     "DEFAULT_STRATEGY",
     "EVIDENCE_GRADE_CEILING",
     "FALLBACK_STRATEGY",
     "apply_canary_hotfix_overlay",
+    "bind_service_group",
     "canary_hotfix_execution_release",
     "choose_canary_iteration_strategy",
     "prepare_canary_hotfix_overlay",
     "install_policy_canary_dispatcher_overlay",
+    "resolve_service_account",
     "run_focused_hotfix_tests",
+    "service_account_access_blockers",
     "verify_canary_hotfix_overlay",
 ]
 

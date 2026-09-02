@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 import json
 import math
 import os
@@ -23,6 +24,9 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 )
 
 
+ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS = 900
+
+
 def _digest(value: Any) -> str:
     return canonical_digest({"value": value})
 
@@ -32,6 +36,101 @@ def _read(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"policy_canary_input_not_object:{path.name}")
     return value
+
+
+@dataclass(frozen=True)
+class CellRuntime:
+    """Every simulator, robot, and policy seam one isolated cell process touches.
+
+    Production binds these to Isaac Lab, the native arena runtime, and the two
+    frozen policy clients through :func:`isaac_cell_runtime`.  The hermetic
+    lifecycle rehearsal binds the same names to fakes that keep Isaac's real
+    semantics (``SimulationApp.close`` ends the interpreter, a closed
+    environment cannot be rebuilt in-process) while the policy clients stay
+    real and the episode runner stays real.  The orchestration code between
+    those seams is therefore exercised unchanged on every fast-lane run.
+    """
+
+    device: str
+    launch_isaac: Callable[..., tuple[Any, Mapping[str, Any]]]
+    preflight_dependency_matrix: Callable[..., Mapping[str, Any]]
+    prepare_preconstruction: Callable[..., Mapping[str, Any]]
+    build_environment: Callable[..., Any]
+    read_device_binding: Callable[..., Mapping[str, Any]]
+    gripper_probe: Callable[..., Mapping[str, Any]]
+    make_servo: Callable[..., Any]
+    make_task_readback: Callable[..., Any]
+    build_episode_environment: Callable[..., tuple[Any, Mapping[str, Any]]]
+    to_tensor: Callable[[Any], Any]
+    policy_client: Callable[..., Any]
+    groot_worker_identity: Callable[..., tuple[Mapping[str, Any], Mapping[str, Any]]]
+    run_policy_episode: Callable[..., Mapping[str, Any]]
+
+
+def isaac_cell_runtime() -> CellRuntime:
+    """Bind the production Isaac Lab, native arena, and policy client seams.
+
+    Imports stay lazy so the control plane, the bundle builder, and the
+    hermetic rehearsal never load Isaac or torch; the provider worker resolves
+    them once per isolated cell process.
+    """
+
+    from blueprint_pipeline.adp009d_policy_episode import run_policy_episode
+    from blueprint_pipeline.native_franka_pose_servo import (
+        NativeFrankaDifferentialIkServo,
+    )
+    from blueprint_pipeline.native_task_arena_construction_worker import (
+        _gripper_convention_probe,
+        preflight_native_dependency_matrix,
+    )
+    from blueprint_pipeline.native_task_arena_device_readback import (
+        read_native_task_arena_device_binding,
+    )
+    from blueprint_pipeline.native_task_arena_policy_worker import (
+        _policy_client,
+        _runtime_groot_worker_identity,
+        _to_tensor,
+    )
+    from blueprint_pipeline.native_task_arena_preconstruction import (
+        prepare_native_task_arena_preconstruction,
+    )
+    from blueprint_pipeline.native_task_arena_readback import (
+        NativeArticulatedTaskArenaReadback,
+    )
+    from blueprint_pipeline.native_task_arena_runtime import (
+        build_native_task_arena_environment,
+    )
+    from blueprint_pipeline.native_task_episode_environment import (
+        build_native_task_episode_environment,
+    )
+    from blueprint_pipeline.native_task_isaaclab_launch import (
+        NATIVE_TASK_ARENA_DEVICE,
+        launch_native_task_isaaclab,
+    )
+
+    def gripper_probe(*, env: Any, robot: Any, seed: int) -> Mapping[str, Any]:
+        # torch is resolved only once Isaac has launched and an environment
+        # exists, exactly where the pre-seam worker first imported it.
+        import torch
+
+        return _gripper_convention_probe(env=env, robot=robot, seed=seed, torch=torch)
+
+    return CellRuntime(
+        device=NATIVE_TASK_ARENA_DEVICE,
+        launch_isaac=launch_native_task_isaaclab,
+        preflight_dependency_matrix=preflight_native_dependency_matrix,
+        prepare_preconstruction=prepare_native_task_arena_preconstruction,
+        build_environment=build_native_task_arena_environment,
+        read_device_binding=read_native_task_arena_device_binding,
+        gripper_probe=gripper_probe,
+        make_servo=NativeFrankaDifferentialIkServo,
+        make_task_readback=NativeArticulatedTaskArenaReadback,
+        build_episode_environment=build_native_task_episode_environment,
+        to_tensor=_to_tensor,
+        policy_client=_policy_client,
+        groot_worker_identity=_runtime_groot_worker_identity,
+        run_policy_episode=run_policy_episode,
+    )
 
 
 def _construction_lineage_mode(
@@ -344,10 +443,20 @@ def _write_episode_json_artifact(
 def _bound_media_artifact(
     output_root: Path,
     *,
+    media_root: Path,
     artifacts: Any,
     role: str,
     role_match: Callable[[str], bool],
 ) -> dict[str, Any] | None:
+    """Bind one episode media artifact into run-root-relative evidence.
+
+    The episode runner records media rows relative to its ``media_output_dir``
+    (the run's ``episodes`` directory), not to the run root.  Resolving them
+    against the run root silently returned ``None`` for every frame manifest
+    and review video, so paid runs shipped episode evidence without either.
+    The hermetic lifecycle rehearsal pins the corrected binding.
+    """
+
     matches = [
         row
         for row in artifacts or []
@@ -356,7 +465,7 @@ def _bound_media_artifact(
     if not matches:
         return None
     row = matches[0]
-    path = (output_root / str(row.get("relative_path") or "")).resolve()
+    path = (media_root / str(row.get("relative_path") or "")).resolve()
     try:
         path.relative_to(output_root)
     except ValueError:
@@ -631,12 +740,45 @@ def _aggregate_isolated_cell_results(
     return result
 
 
-def _run_isolated_cell_processes() -> int:
-    runtime = Path(__file__).resolve().parent
+def _spawn_isolated_cell_process(
+    *, index: int, runtime_root: Path, output_root: Path, child_root: Path
+) -> int:
+    """Run exactly one matrix cell in a fresh interpreter (and a fresh Isaac)."""
+
+    child_log = child_root / "worker_console.log"
+    environment = dict(os.environ)
+    environment["BLUEPRINT_POLICY_CANARY_CELL_INDEX"] = str(index)
+    environment["BLUEPRINT_ADP_ARENA_PARENT_OUTPUT_DIR"] = str(output_root)
+    environment["BLUEPRINT_ADP_ARENA_OUTPUT_DIR"] = str(child_root)
+    with child_log.open("xb") as stream:
+        completed = subprocess.run(
+            [sys.executable, str(runtime_root / Path(__file__).name)],
+            env=environment,
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            timeout=ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS,
+            check=False,
+        )
+    return int(completed.returncode)
+
+
+def _run_isolated_cell_processes(
+    *,
+    runtime_root: Path | None = None,
+    output_root: Path | None = None,
+    run_cell_process: Callable[..., int] | None = None,
+) -> int:
+    runtime = (
+        Path(runtime_root).resolve()
+        if runtime_root is not None
+        else Path(__file__).resolve().parent
+    )
     output_root = Path(
-        os.environ.get("BLUEPRINT_ADP_ARENA_OUTPUT_DIR")
+        output_root
+        or os.environ.get("BLUEPRINT_ADP_ARENA_OUTPUT_DIR")
         or runtime.parent / "runtime_output"
     ).resolve()
+    spawn = run_cell_process or _spawn_isolated_cell_process
     output_root.mkdir(parents=True, exist_ok=True)
     inputs = validate_runtime_input_manifest(
         _read(runtime / "runtime_inputs" / "policy_canary_runtime_inputs.json")
@@ -659,25 +801,19 @@ def _run_isolated_cell_processes() -> int:
     for index in range(len(inputs["cells"])):
         child_root = output_root / "cell_runs" / f"{index:02d}"
         child_root.mkdir(parents=True, exist_ok=False)
-        child_log = child_root / "worker_console.log"
-        environment = dict(os.environ)
-        environment["BLUEPRINT_POLICY_CANARY_CELL_INDEX"] = str(index)
-        environment["BLUEPRINT_ADP_ARENA_PARENT_OUTPUT_DIR"] = str(output_root)
-        environment["BLUEPRINT_ADP_ARENA_OUTPUT_DIR"] = str(child_root)
-        with child_log.open("xb") as stream:
-            completed = subprocess.run(
-                [sys.executable, str(Path(__file__).resolve())],
-                env=environment,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                timeout=900,
-                check=False,
+        exit_code = int(
+            spawn(
+                index=index,
+                runtime_root=runtime,
+                output_root=output_root,
+                child_root=child_root,
             )
+        )
         child_result_path = child_root / PROVIDER_RESULT_FILENAME
         if not child_result_path.is_file():
             raise RuntimeError(
                 f"policy_canary_isolated_cell_result_missing:{index}:"
-                f"exit_{completed.returncode}"
+                f"exit_{exit_code}"
             )
         child_results.append(_read(child_result_path))
     result = _aggregate_isolated_cell_results(
@@ -694,15 +830,30 @@ def _run_isolated_cell_processes() -> int:
     return 0
 
 
-def _run_selected_cell(selected_cell_index: int) -> int:
-    runtime = Path(__file__).resolve().parent
+def _run_selected_cell(
+    selected_cell_index: int,
+    *,
+    runtime_root: Path | None = None,
+    output_root: Path | None = None,
+    provider_output_root: Path | None = None,
+    cell_runtime: CellRuntime | None = None,
+) -> int:
+    runtime = (
+        Path(runtime_root).resolve()
+        if runtime_root is not None
+        else Path(__file__).resolve().parent
+    )
     output_root = Path(
-        os.environ.get("BLUEPRINT_ADP_ARENA_OUTPUT_DIR")
+        output_root
+        or os.environ.get("BLUEPRINT_ADP_ARENA_OUTPUT_DIR")
         or runtime.parent / "runtime_output"
     ).resolve()
     provider_output_root = Path(
-        os.environ.get("BLUEPRINT_ADP_ARENA_PARENT_OUTPUT_DIR") or output_root
+        provider_output_root
+        or os.environ.get("BLUEPRINT_ADP_ARENA_PARENT_OUTPUT_DIR")
+        or output_root
     ).resolve()
+    bound_runtime = cell_runtime if cell_runtime is not None else isaac_cell_runtime()
     output_root.mkdir(parents=True, exist_ok=True)
     result_path = output_root / PROVIDER_RESULT_FILENAME
     inputs = validate_runtime_input_manifest(
@@ -741,14 +892,9 @@ def _run_selected_cell(selected_cell_index: int) -> int:
     current_session: dict[str, Any] = {}
 
     def open_session(_inputs: Mapping[str, Any]) -> dict[str, Any]:
-        from blueprint_pipeline.native_task_isaaclab_launch import (
-            NATIVE_TASK_ARENA_DEVICE,
-            launch_native_task_isaaclab,
-        )
-
-        simulation_app, launch = launch_native_task_isaaclab(
+        simulation_app, launch = bound_runtime.launch_isaac(
             provider_output_root / "native_task_runtime_source_provisioning.v1.json",
-            device=NATIVE_TASK_ARENA_DEVICE,
+            device=bound_runtime.device,
         )
         current_session["simulation_app"] = simulation_app
         return {
@@ -758,19 +904,14 @@ def _run_selected_cell(selected_cell_index: int) -> int:
         }
 
     def load_policy(_session: Mapping[str, Any], candidate: str) -> dict[str, Any]:
-        from blueprint_pipeline.native_task_arena_policy_worker import (
-            _policy_client,
-            _runtime_groot_worker_identity,
-        )
-
         spec = specs[candidate]
         groot_identity = None
         runtime_identity: Mapping[str, Any] = spec.get("runtime_identity") or {}
         if candidate == "groot_n17_droid":
-            groot_identity, runtime_identity = _runtime_groot_worker_identity(
+            groot_identity, runtime_identity = bound_runtime.groot_worker_identity(
                 output_root=provider_output_root, spec=spec
             )
-        client = _policy_client(
+        client = bound_runtime.policy_client(
             spec, groot_worker_identity_receipt=groot_identity
         )
         return {
@@ -789,54 +930,26 @@ def _run_selected_cell(selected_cell_index: int) -> int:
     ) -> dict[str, Any]:
         started_ns = time.time_ns()
         from blueprint_pipeline.adp009d_droid_action_execution import GripperConvention
-        from blueprint_pipeline.adp009d_policy_episode import run_policy_episode
-        from blueprint_pipeline.native_franka_pose_servo import (
-            NativeFrankaDifferentialIkServo,
-        )
-        from blueprint_pipeline.native_task_arena_construction_worker import (
-            _gripper_convention_probe,
-            preflight_native_dependency_matrix,
-        )
-        from blueprint_pipeline.native_task_arena_device_readback import (
-            read_native_task_arena_device_binding,
-        )
         from blueprint_pipeline.native_task_arena_policy_worker import (
             _PolicyQueryTracker,
-            _to_tensor,
         )
-        from blueprint_pipeline.native_task_arena_preconstruction import (
-            prepare_native_task_arena_preconstruction,
-        )
-        from blueprint_pipeline.native_task_arena_readback import (
-            NativeArticulatedTaskArenaReadback,
-        )
-        from blueprint_pipeline.native_task_arena_runtime import (
-            build_native_task_arena_environment,
-        )
-        from blueprint_pipeline.native_task_episode_environment import (
-            build_native_task_episode_environment,
-        )
-        from blueprint_pipeline.native_task_isaaclab_launch import (
-            NATIVE_TASK_ARENA_DEVICE,
-        )
-        import torch
 
         scene_plan = _resolved_scene_plan(base_scene_plan, context)
-        dependencies = preflight_native_dependency_matrix(
+        dependencies = bound_runtime.preflight_dependency_matrix(
             robot_id=str(scene_plan["robot"]["robot_id"])
         )
         if not dependencies["all_required_available"]:
             raise RuntimeError("policy_canary_dependency_preflight_failed")
-        preconstruction = prepare_native_task_arena_preconstruction(
-            expected_device=NATIVE_TASK_ARENA_DEVICE
+        preconstruction = bound_runtime.prepare_preconstruction(
+            expected_device=bound_runtime.device
         )
         if not preconstruction["passed"]:
             raise RuntimeError("policy_canary_preconstruction_failed")
         built = current_env.get("built")
         if built is None:
-            built = build_native_task_arena_environment(
+            built = bound_runtime.build_environment(
                 scene_plan,
-                device=NATIVE_TASK_ARENA_DEVICE,
+                device=bound_runtime.device,
                 bundle_root=runtime / "native_task_packet",
                 preconstruction_receipt=preconstruction,
             )
@@ -844,8 +957,8 @@ def _run_selected_cell(selected_cell_index: int) -> int:
             current_env["cell_id"] = str(context["cell_id"])
         elif current_env.get("cell_id") != str(context["cell_id"]):
             raise RuntimeError("policy_canary_isolated_cell_environment_mismatch")
-        device = read_native_task_arena_device_binding(
-            built, expected_device=NATIVE_TASK_ARENA_DEVICE
+        device = bound_runtime.read_device_binding(
+            built, expected_device=bound_runtime.device
         )
         if not device["passed"]:
             raise RuntimeError("policy_canary_device_binding_failed")
@@ -853,35 +966,33 @@ def _run_selected_cell(selected_cell_index: int) -> int:
         seed = int(context["seed"])
         env.reset(seed=seed)
         robot = env.unwrapped.scene["robot"]
-        gripper = _gripper_convention_probe(
-            env=env, robot=robot, seed=seed, torch=torch
-        )
+        gripper = bound_runtime.gripper_probe(env=env, robot=robot, seed=seed)
         if gripper["status"] != "measured":
             raise RuntimeError("policy_canary_gripper_unresolved")
         env.reset(seed=seed)
-        servo = NativeFrankaDifferentialIkServo(
+        servo = bound_runtime.make_servo(
             env=env, robot=robot, gripper_convention=gripper
         )
         task_readback = (
-            NativeArticulatedTaskArenaReadback(
+            bound_runtime.make_task_readback(
                 built,
                 grasp_frame_pose_callback=servo.current_grasp_frame_pose_world,
             )
             if scene_plan["task_kind"] == "articulated_open_close"
             else None
         )
-        episode_environment, environment_receipt = build_native_task_episode_environment(
+        episode_environment, environment_receipt = bound_runtime.build_episode_environment(
             built=built,
             gripper_convention=gripper,
             servo=servo,
             task_readback=task_readback,
-            to_tensor=_to_tensor,
+            to_tensor=bound_runtime.to_tensor,
         )
         tracker = _PolicyQueryTracker(policy["client"])
         spec = policy["spec"]
         episode_id = f"{authority['run_id']}--{context['cell_id']}--{context['candidate_id']}"
         try:
-            episode = run_policy_episode(
+            episode = bound_runtime.run_policy_episode(
                 environment=episode_environment,
                 policy=tracker,
                 candidate_id=str(context["candidate_id"]),
@@ -939,15 +1050,18 @@ def _run_selected_cell(selected_cell_index: int) -> int:
             ),
         }
         media_artifacts = episode.get("media_artifacts") or []
+        media_root = output_root / "episodes"
         evidence_artifacts = {
             "frame_manifest": _bound_media_artifact(
                 output_root,
+                media_root=media_root,
                 artifacts=media_artifacts,
                 role="lossless_frame_manifest",
                 role_match=lambda name: "frame_manifest" in name,
             ),
             "review_video": _bound_media_artifact(
                 output_root,
+                media_root=media_root,
                 artifacts=media_artifacts,
                 role="review_video",
                 role_match=lambda name: "video" in name,

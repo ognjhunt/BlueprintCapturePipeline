@@ -594,6 +594,168 @@ def _projection(
     return validate_policy_canary_result(value)
 
 
+AccessChecker = Callable[[Path, int], bool]
+
+
+def _default_access_checker(path: Path, mode: int) -> bool:
+    """Ask the kernel whether this process's effective identity may use ``path``."""
+
+    if os.access in os.supports_effective_ids:
+        return os.access(path, mode, effective_ids=True)
+    return os.access(path, mode)
+
+
+def _nearest_existing_ancestor(path: Path) -> Path:
+    candidate = path
+    while not candidate.exists():
+        parent = candidate.parent
+        if parent == candidate:
+            return candidate
+        candidate = parent
+    return candidate
+
+
+def service_access_blockers(
+    *,
+    readable_files: Mapping[str, Path],
+    readable_directories: Mapping[str, Path],
+    writable_directories: Mapping[str, Path],
+    access: AccessChecker = _default_access_checker,
+) -> list[str]:
+    """Return blockers for every input the dispatcher's own identity cannot use.
+
+    The dispatcher runs as a hardened service account.  Two paid attempts were
+    lost to inputs staged by root that this identity could not open (a signed
+    overlay archive, a run directory pre-created for a machine avoidlist).
+    Every role here is checked with the kernel's answer for the effective
+    identity, before any read, write, or allocator invocation, and each
+    blocker names the role rather than a host path.
+    """
+
+    blockers: list[str] = []
+
+    def parent_untraversable(target: Path) -> bool:
+        parent = _nearest_existing_ancestor(target.parent)
+        return parent.is_dir() and not access(parent, os.X_OK)
+
+    # Absent inputs are left to the dispatch's own typed schema and record
+    # errors; this check only speaks to what exists and cannot be used.
+    for role, path in sorted(readable_files.items()):
+        target = Path(path).expanduser()
+        if parent_untraversable(target):
+            blockers.append(f"policy_canary_dispatch_input_unreadable:{role}")
+        elif target.is_symlink():
+            blockers.append(f"policy_canary_dispatch_input_symlink:{role}")
+        elif target.is_file() and not access(target, os.R_OK):
+            blockers.append(f"policy_canary_dispatch_input_unreadable:{role}")
+    for role, path in sorted(readable_directories.items()):
+        target = Path(path).expanduser()
+        if parent_untraversable(target):
+            blockers.append(f"policy_canary_dispatch_input_unreadable:{role}")
+        elif target.is_dir() and not access(target, os.R_OK | os.X_OK):
+            blockers.append(f"policy_canary_dispatch_input_unreadable:{role}")
+    for role, path in sorted(writable_directories.items()):
+        target = _nearest_existing_ancestor(Path(path).expanduser().resolve())
+        if not target.is_dir():
+            blockers.append(f"policy_canary_dispatch_output_not_directory:{role}")
+        elif not access(target, os.W_OK | os.X_OK):
+            blockers.append(f"policy_canary_dispatch_output_unwritable:{role}")
+    return sorted(set(blockers))
+
+
+def _dispatch_input_access_blockers(
+    *,
+    execution_setup_path: Path,
+    activation_result_path: Path,
+    output_root: Path,
+    hotfix_overlay_path: Path | None,
+    machine_avoidlist_path: Path | None,
+    access: AccessChecker,
+) -> list[str]:
+    """Check every path the dispatch will touch, resolved from the two entry files.
+
+    Inputs are located exactly as the dispatch locates them, but read only
+    enough to find the next path; digests and schemas are verified by the
+    dispatch itself once access is proven.
+    """
+
+    readable_files: dict[str, Path] = {
+        "execution_setup": execution_setup_path,
+        "activation_result": activation_result_path,
+    }
+    readable_directories: dict[str, Path] = {}
+    if hotfix_overlay_path is not None:
+        readable_files["hotfix_overlay"] = hotfix_overlay_path
+    if machine_avoidlist_path is not None:
+        readable_files["machine_avoidlist"] = machine_avoidlist_path
+    blockers = service_access_blockers(
+        readable_files=readable_files,
+        readable_directories=readable_directories,
+        writable_directories={"output_root": output_root},
+        access=access,
+    )
+    if blockers:
+        return blockers
+
+    def _paths_from(mapping: Mapping[str, Any], roles: Mapping[str, str]) -> None:
+        for role, key in roles.items():
+            record = mapping.get(key)
+            raw = record.get("path") if isinstance(record, Mapping) else record
+            if isinstance(raw, str) and raw:
+                readable_files[role] = Path(raw)
+
+    try:
+        setup = json.loads(execution_setup_path.read_text(encoding="utf-8"))
+        activation_result = json.loads(activation_result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        # The dispatch reports the typed schema/digest failure itself.
+        return []
+    if isinstance(setup, Mapping) and isinstance(setup.get("records"), Mapping):
+        _paths_from(
+            setup["records"],
+            {
+                "pi05_execution_spec": "pi05_execution_spec",
+                "groot_execution_spec": "groot_execution_spec",
+                "pi05_checkpoint_inventory": "pi05_checkpoint_inventory",
+            },
+        )
+    runtime_inputs: Mapping[str, Any] | None = None
+    if isinstance(activation_result, Mapping):
+        raw_runtime = activation_result.get("policy_canary_runtime_inputs_path")
+        if isinstance(raw_runtime, str) and raw_runtime:
+            runtime_path = Path(raw_runtime).expanduser()
+            readable_files["runtime_inputs"] = runtime_path
+            readable_files["activation_manifest"] = runtime_path.parent / ACTIVATION_FILENAME
+            readable_directories["activation_root"] = runtime_path.parent
+            if runtime_path.is_file() and access(runtime_path, os.R_OK):
+                try:
+                    loaded = json.loads(runtime_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    loaded = None
+                runtime_inputs = loaded if isinstance(loaded, Mapping) else None
+    if runtime_inputs is not None:
+        _paths_from(
+            runtime_inputs,
+            {
+                "base_native_packet": "base_native_packet",
+                "runtime_source": "runtime_source",
+                "construction_result": "construction_result",
+            },
+        )
+        packet = readable_files.get("base_native_packet")
+        if packet is not None:
+            readable_directories["base_native_packet_dir"] = packet.parent
+        source = readable_files.get("runtime_source")
+        if source is not None:
+            readable_directories["runtime_source_dir"] = source.parent
+    return service_access_blockers(
+        readable_files=readable_files,
+        readable_directories=readable_directories,
+        writable_directories={"output_root": output_root},
+        access=access,
+    )
+
+
 def _finish_policy_canary_delivery(
     *,
     root: Path,
@@ -787,17 +949,40 @@ def dispatch_policy_canary_activation(
     official_billing_receipt_path: str | Path | None = None,
     billing_audit_root: str | Path | None = None,
     hotfix_overlay_path: str | Path | None = None,
+    machine_avoidlist_path: str | Path | None = None,
     allocator_runner: AllocatorRunner | None = None,
     provider_zero_collector: ProviderZeroCollector = collect_policy_canary_vast_provider_zero,
     sync_runner: SyncRunner = sync_task_evaluation_policy_canary_to_webapp,
     blocked_sync_runner: SyncRunner = sync_policy_canary_preprovider_blocked_to_webapp,
     progress_sync_runner: SyncRunner = sync_launch_progress_to_webapp,
+    access: AccessChecker = _default_access_checker,
 ) -> dict[str, Any]:
     """Dispatch or resume exactly one Scene 839873 policy canary."""
 
     if not re.fullmatch(r"[0-9a-f]{40}", implementation_commit):
         raise TaskEvaluationPolicyCanaryDispatchError(
             "policy_canary_dispatch_source_commit_invalid"
+        )
+    # Prove the service identity can use every input and the run directory
+    # before anything is read for real or written.  A denial here is a typed
+    # pre-provider blocker instead of an OSError after the allocator ran.
+    access_blockers = _dispatch_input_access_blockers(
+        execution_setup_path=Path(execution_setup_path).expanduser(),
+        activation_result_path=Path(activation_result_path).expanduser(),
+        output_root=Path(output_root).expanduser(),
+        hotfix_overlay_path=(
+            Path(hotfix_overlay_path).expanduser() if hotfix_overlay_path is not None else None
+        ),
+        machine_avoidlist_path=(
+            Path(machine_avoidlist_path).expanduser()
+            if machine_avoidlist_path is not None
+            else None
+        ),
+        access=access,
+    )
+    if access_blockers:
+        raise TaskEvaluationPolicyCanaryDispatchError(
+            "policy_canary_dispatch_service_access_denied:" + ",".join(access_blockers)
         )
     setup = validate_policy_canary_execution_setup(
         _read(
@@ -934,6 +1119,16 @@ def dispatch_policy_canary_activation(
         "--adapter-output",
         str(adapter_path),
     ]
+    if machine_avoidlist_path is not None:
+        # A canonical, access-checked avoidlist input replaces hand-staging a
+        # file inside the run directory (which root once created, locking the
+        # service account out of its own status journal).
+        argv.extend(
+            [
+                "--adp-machine-avoidlist",
+                str(Path(machine_avoidlist_path).expanduser().resolve()),
+            ]
+        )
     allocator_invoked = False
     if not adapter_path.is_file():
         if invocation_started_path.is_file():
@@ -1321,9 +1516,11 @@ def process_policy_canary_dispatch_queue(
     execution_setup_template_path: str | Path | None = None,
     billing_audit_root: str | Path | None = None,
     hotfix_overlay_path: str | Path | None = None,
+    machine_avoidlist_path: str | Path | None = None,
     max_messages: int = 1,
     blocked_sync_runner: SyncRunner = sync_policy_canary_preprovider_blocked_to_webapp,
     provider_zero_collector: ProviderZeroCollector = collect_policy_canary_vast_provider_zero,
+    access: AccessChecker = _default_access_checker,
 ) -> dict[str, Any]:
     """Consume the activation worker's sealed canary-only paid queue."""
 
@@ -1360,8 +1557,16 @@ def process_policy_canary_dispatch_queue(
             blocked, digest_field="blocked_result_digest"
         )
         blocked_root = outputs / activation_id
-        blocked_root.mkdir(parents=True, exist_ok=True)
-        write_json(blocked_root / "preprovider_blocked.json", blocked)
+        try:
+            blocked_root.mkdir(parents=True, exist_ok=True)
+            write_json(blocked_root / "preprovider_blocked.json", blocked)
+        except OSError:
+            # The run directory itself may be what the service account cannot
+            # use (root pre-created it).  Retain the typed block beside the
+            # queue instead of crashing before the Website is told.
+            blocked_root = outputs / "unwritable-runs" / activation_id
+            blocked_root.mkdir(parents=True, exist_ok=True)
+            write_json(blocked_root / "preprovider_blocked.json", blocked)
         sync = dict(
             blocked_sync_runner(
                 activation_id=activation_id,
@@ -1477,8 +1682,10 @@ def process_policy_canary_dispatch_queue(
                 implementation_commit=implementation_commit,
                 execute=execute,
                 hotfix_overlay_path=hotfix_overlay_path,
+                machine_avoidlist_path=machine_avoidlist_path,
                 official_billing_receipt_path=(output / "official_billing_reconciliation.json"),
                 billing_audit_root=billing_audit_root,
+                access=access,
             )
         except TaskEvaluationPolicyCanaryDispatchError as exc:
             invocation_started = output / "allocator_invocation_started.json"
@@ -1558,6 +1765,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--official-billing-receipt")
     parser.add_argument("--billing-audit-root")
     parser.add_argument("--hotfix-overlay")
+    parser.add_argument("--machine-avoidlist")
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -1578,6 +1786,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 execution_setup_template_path=args.execution_setup_template,
                 billing_audit_root=args.billing_audit_root,
                 hotfix_overlay_path=args.hotfix_overlay,
+                machine_avoidlist_path=args.machine_avoidlist,
             )
             if queue_mode
             else process_policy_canary_activation_results(
@@ -1597,6 +1806,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 official_billing_receipt_path=args.official_billing_receipt,
                 billing_audit_root=args.billing_audit_root,
                 hotfix_overlay_path=args.hotfix_overlay,
+                machine_avoidlist_path=args.machine_avoidlist,
             )
         )
     except (OSError, ValueError, TypeError, KeyError) as exc:
