@@ -118,6 +118,8 @@ def test_websocket_client_verifies_before_inference(tmp_path: Path) -> None:
     evidence = client.last_inference_evidence()
     assert evidence == {
         "server_response_received": True,
+        "transport_connection_generation": 1,
+        "server_identity_sha256": _runtime_metadata(spec)["identity_sha256"],
         "wire_response_type": "dict",
         "wire_response_keys": ["actions", "policy_timing", "server_timing"],
         "raw_vendor_action_response": {
@@ -149,13 +151,15 @@ def test_websocket_client_verifies_before_inference(tmp_path: Path) -> None:
 
 def test_openpi_preflight_reconfirms_identity_without_inference(tmp_path: Path) -> None:
     spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
+    clients = []
 
     class FakeClient:
-        metadata_reads = 0
-        inference_calls = 0
-
         def __init__(self, **kwargs) -> None:
             del kwargs
+            self.metadata_reads = 0
+            self.inference_calls = 0
+            self.closed = False
+            clients.append(self)
 
         def get_server_metadata(self):
             self.metadata_reads += 1
@@ -165,6 +169,9 @@ def test_openpi_preflight_reconfirms_identity_without_inference(tmp_path: Path) 
             del observation
             self.inference_calls += 1
             raise AssertionError("preflight_must_not_infer")
+
+        def close(self) -> None:
+            self.closed = True
 
     client = OpenPIWebsocketDroidPolicyClient(
         spec=spec,
@@ -178,20 +185,139 @@ def test_openpi_preflight_reconfirms_identity_without_inference(tmp_path: Path) 
     assert readiness["identity_verified"] is True
     assert readiness["candidate_policy_queried"] is False
     assert readiness["candidate_inference_performed"] is False
-    assert client._client.metadata_reads == 2
-    assert client._client.inference_calls == 0
+    assert readiness["connection_generation"] == 1
+    assert len(clients) == 1
+    assert clients[0].metadata_reads == 1
+    assert clients[0].inference_calls == 0
+    assert clients[0].closed is True
+    assert client._client is None
+
+
+def test_openpi_first_query_uses_fresh_connection_after_isaac_camera_idle(
+    tmp_path: Path,
+) -> None:
+    """Do not reuse a websocket opened before slow Isaac/camera initialization."""
+
+    spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
+    stage = {"value": "isaac_initializing"}
+    clients = []
+
+    class ConnectionClosedError(RuntimeError):
+        pass
+
+    class _Wire:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            self.opened_during = stage["value"]
+            # The pinned upstream OpenPI client has no public close method; its
+            # websocket is retained on this exact private attribute.
+            self._ws = _Wire()
+            clients.append(self)
+
+        def get_server_metadata(self):
+            return _runtime_metadata(spec)
+
+        def infer(self, observation):
+            del observation
+            if self.opened_during != "policy_query":
+                raise ConnectionClosedError(
+                    "sent 1011 (internal error) keepalive ping timeout; "
+                    "no close frame received"
+                )
+            return {"actions": np.zeros((10, 8))}
+
+    client = OpenPIWebsocketDroidPolicyClient(
+        spec=spec,
+        host="127.0.0.1",
+        port=8000,
+        client_factory=FakeClient,
+    )
+    assert clients == []
+
+    stage["value"] = "prestart_readiness"
+    readiness = client.preflight_readiness()
+    stage["value"] = "camera_evidence_persisting"
+    assert readiness["identity_verified"] is True
+    assert clients[0]._ws.closed is True
+
+    stage["value"] = "policy_query"
+    actions = client.infer({"prompt": "pick"})
+
+    assert actions.shape == (10, 8)
+    assert [item.opened_during for item in clients] == [
+        "prestart_readiness",
+        "policy_query",
+    ]
+    assert all(item._ws.closed for item in clients)
+    assert client.candidate_policy_queried is True
+    assert client.last_inference_evidence()["server_response_received"] is True
+
+
+def test_openpi_does_not_retry_an_ambiguous_failed_inference(tmp_path: Path) -> None:
+    """A transport failure after send may have reached the policy; never duplicate it."""
+
+    spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
+    clients = []
+
+    class ConnectionClosedError(RuntimeError):
+        pass
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            self.closed = False
+            clients.append(self)
+
+        def get_server_metadata(self):
+            return _runtime_metadata(spec)
+
+        def infer(self, observation):
+            del observation
+            raise ConnectionClosedError(
+                "sent 1011 (internal error) keepalive ping timeout; "
+                "no close frame received"
+            )
+
+        def close(self) -> None:
+            self.closed = True
+
+    client = OpenPIWebsocketDroidPolicyClient(
+        spec=spec,
+        host="127.0.0.1",
+        port=8000,
+        client_factory=FakeClient,
+    )
+
+    with pytest.raises(ConnectionClosedError, match="keepalive ping timeout"):
+        client.infer({"prompt": "pick"})
+
+    assert len(clients) == 1
+    assert clients[0].closed is True
+    assert client.candidate_policy_queried is False
+    with pytest.raises(ValueError, match="openpi_policy_inference_evidence_missing"):
+        client.last_inference_evidence()
 
 
 def test_openpi_preflight_reconfirms_identity_after_prior_episode(
     tmp_path: Path,
 ) -> None:
     spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
+    clients = []
 
     class FakeClient:
         def __init__(self, **kwargs) -> None:
             del kwargs
             self.metadata_reads = 0
             self.inference_calls = 0
+            self.closed = False
+            clients.append(self)
 
         def get_server_metadata(self):
             self.metadata_reads += 1
@@ -201,6 +327,9 @@ def test_openpi_preflight_reconfirms_identity_after_prior_episode(
             del observation
             self.inference_calls += 1
             return {"actions": np.zeros((10, 8))}
+
+        def close(self) -> None:
+            self.closed = True
 
     client = OpenPIWebsocketDroidPolicyClient(
         spec=spec,
@@ -217,9 +346,13 @@ def test_openpi_preflight_reconfirms_identity_after_prior_episode(
     assert readiness["candidate_inference_performed"] is False
     assert readiness["prior_candidate_policy_query_observed"] is True
     assert readiness["last_inference_evidence"] is None
+    assert readiness["connection_generation"] == 2
     assert client.candidate_policy_queried is True
-    assert client._client.inference_calls == 1
-    assert client._client.metadata_reads == 2
+    assert len(clients) == 2
+    assert [item.inference_calls for item in clients] == [1, 0]
+    assert [item.metadata_reads for item in clients] == [1, 1]
+    assert all(item.closed for item in clients)
+    assert client._client is None
 
 
 def test_websocket_client_records_completed_query_before_response_refusal(
@@ -251,6 +384,8 @@ def test_websocket_client_records_completed_query_before_response_refusal(
     evidence = client.last_inference_evidence()
     assert evidence == {
         "server_response_received": True,
+        "transport_connection_generation": 1,
+        "server_identity_sha256": _runtime_metadata(spec)["identity_sha256"],
         "wire_response_type": "dict",
         "wire_response_keys": ["action"],
         "raw_vendor_action_response": {"action": [[0.0] * 8] * 10},

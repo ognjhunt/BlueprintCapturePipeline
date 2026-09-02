@@ -1203,8 +1203,10 @@ def materialize_policy_canary_result_delivery(
         "candidate_results": candidate_rows,
         "matrix_digest": result.get("matrix_digest"),
         "reproducibility": {
-            "scene_revision_digest": first_episode.get("scene_revision_digest"),
-            "runtime_container_digest": first_episode.get("container_identity_digest"),
+            "scene_revision_digest": result.get("scene_revision_digest")
+            or first_episode.get("scene_revision_digest"),
+            "runtime_container_digest": result.get("runtime_container_digest")
+            or first_episode.get("container_identity_digest"),
             "scoring_version": str(
                 first_episode.get("scoring_version_digest") or "deterministic_simulator_state"
             ),
@@ -1214,6 +1216,12 @@ def materialize_policy_canary_result_delivery(
             "billing_receipt": closure["billing"],
             "teardown_receipt": closure["teardown"],
             "provider_zero_receipt": closure["provider_zero"],
+            "official_total_usd": result.get("official_total_usd"),
+            "started_at_iso": result.get("started_at_iso"),
+            "completed_at_iso": result.get("completed_at_iso"),
+            "duration_seconds": result.get("duration_seconds"),
+            "provider": result.get("provider"),
+            "provider_instance_ids": result.get("provider_instance_ids"),
         },
         "closure": closure,
         "proof_boundary": {

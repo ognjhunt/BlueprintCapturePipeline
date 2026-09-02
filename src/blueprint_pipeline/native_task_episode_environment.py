@@ -22,7 +22,7 @@ from .native_franka_pose_servo import (
 from .rigid_frame_transforms import apply_rigid_offset, rigid_offset_in_body_frame
 
 
-SCHEMA_VERSION = "native_task_episode_environment.v3"
+SCHEMA_VERSION = "native_task_episode_environment.v4"
 
 # A globally solved endpoint proves that the pose is reachable, but replaying
 # that endpoint as a bounded joint-space setpoint does not preserve the path of
@@ -117,6 +117,40 @@ def build_native_task_episode_environment(
         raise NativeTaskEpisodeEnvironmentError(
             ["native_task_episode_action_or_cadence_invalid"]
         )
+    rigid_task_scoring_frame_offset = None
+    if task_kind == "rigid_pick_place":
+        task_spec = plan.get("task_spec")
+        affordance = (
+            task_spec.get("interaction_affordance")
+            if isinstance(task_spec, Mapping)
+            else None
+        )
+        raw_offset = (
+            affordance.get("asset_root_from_scoring_frame")
+            if isinstance(affordance, Mapping)
+            else None
+        )
+        try:
+            if not isinstance(raw_offset, Mapping):
+                raise KeyError("asset_root_from_scoring_frame")
+            rigid_task_scoring_frame_offset = {
+                "position_m": [float(value) for value in raw_offset["position_m"]],
+                "orientation_xyzw": [
+                    float(value) for value in raw_offset["orientation_xyzw"]
+                ],
+            }
+            apply_rigid_offset(
+                body_position_world=[0.0, 0.0, 0.0],
+                body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+                offset_position_body=rigid_task_scoring_frame_offset["position_m"],
+                offset_quaternion_body_xyzw=rigid_task_scoring_frame_offset[
+                    "orientation_xyzw"
+                ],
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NativeTaskEpisodeEnvironmentError(
+                ["native_task_episode_rigid_scoring_frame_transform_invalid"]
+            ) from exc
     closed_command, closed_separation = _gripper_endpoint(
         gripper_convention, command_field="closed_command"
     )
@@ -600,6 +634,7 @@ def build_native_task_episode_environment(
         camera_scene_names=camera_scene_names,
         camera_pose_callback=live_camera_pose,
         joint_wrench_sensor=joint_wrench_sensor,
+        rigid_task_scoring_frame_offset=rigid_task_scoring_frame_offset,
     )
     receipt = {
         "schema_version": SCHEMA_VERSION,
@@ -639,6 +674,18 @@ def build_native_task_episode_environment(
             "native_articulated_task_readback"
             if task_kind == "articulated_open_close"
             else "native_rigid_body_readback"
+        ),
+        "rigid_task_pose_binding": (
+            {
+                "asset_root_pose_retained": True,
+                "task_object_pose_world_source": (
+                    "asset_root_pose_world_composed_with_interaction_affordance_"
+                    "asset_root_from_scoring_frame"
+                ),
+                "scoring_frame_offset": rigid_task_scoring_frame_offset,
+            }
+            if rigid_task_scoring_frame_offset is not None
+            else None
         ),
         "diagnostic_checkpoint_reset": {
             "available": True,

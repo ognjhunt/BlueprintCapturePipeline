@@ -408,7 +408,15 @@ def verify_local_checkpoint(
 
 
 class OpenPIWebsocketDroidPolicyClient:
-    """OpenPI websocket client with mandatory server-identity verification."""
+    """OpenPI websocket client with per-operation identity verification.
+
+    The pinned upstream client connects in its constructor and enables the
+    websockets keepalive defaults.  Opening it while Isaac is still building a
+    scene leaves the socket idle long enough to close before the first policy
+    query.  Keep only immutable endpoint inputs between operations; every
+    readiness handshake and inference opens a fresh connection, verifies the
+    exact server/checkpoint identity, and closes that connection immediately.
+    """
 
     learned_policy = True
 
@@ -435,47 +443,116 @@ class OpenPIWebsocketDroidPolicyClient:
         self.action_chunk_rows = spec.action_chunk_rows
         self.open_loop_horizon = spec.open_loop_horizon
         self._spec = spec
-        self._client = client_factory(host=host, port=int(port), api_key=api_key)
+        self._host = host
+        self._port = int(port)
+        self._api_key = api_key
+        self._client_factory = client_factory
+        self._client: Any | None = None
+        self._server_metadata: dict[str, Any] | None = None
+        self._connection_generation = 0
         self.candidate_policy_queried = False
-        raw_metadata = self._client.get_server_metadata()
-        if not isinstance(raw_metadata, Mapping):
-            raise ValueError("policy_server_metadata_not_object")
-        self.server_metadata = validate_server_metadata(raw_metadata, expected=spec)
         self._last_inference_evidence: dict[str, Any] | None = None
+
+    def _close_active_client(self) -> None:
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        closer = getattr(client, "close", None)
+        if not callable(closer):
+            # The exact pinned OpenPI client exposes its ClientConnection only
+            # through ``_ws`` and has no public close method.  That revision is
+            # identity-bound by the policy spec, so close the known transport
+            # rather than leaking one websocket per policy query.
+            closer = getattr(getattr(client, "_ws", None), "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                # Cleanup must not erase a decoded policy response or replace
+                # the original connection/query failure.
+                pass
+
+    def _open_verified_client(self) -> tuple[Any, dict[str, Any]]:
+        if self._client is not None:
+            raise RuntimeError("openpi_policy_client_concurrent_operation")
+        client = self._client_factory(
+            host=self._host,
+            port=self._port,
+            api_key=self._api_key,
+        )
+        self._client = client
+        try:
+            raw_metadata = client.get_server_metadata()
+            if not isinstance(raw_metadata, Mapping):
+                raise ValueError("policy_server_metadata_not_object")
+            metadata = validate_server_metadata(raw_metadata, expected=self._spec)
+        except BaseException:
+            self._close_active_client()
+            raise
+        self._server_metadata = metadata
+        self._connection_generation += 1
+        return client, metadata
+
+    @property
+    def server_metadata(self) -> dict[str, Any]:
+        if self._server_metadata is None:
+            try:
+                _, metadata = self._open_verified_client()
+            finally:
+                self._close_active_client()
+            return metadata
+        return self._server_metadata
 
     def infer(self, observation: Mapping[str, Any]) -> Any:
         """Extract the action chunk and retain truthful wire-response evidence."""
 
-        raw_response = self._client.infer(dict(observation))
-        retained_response = _json_safe_vendor_response(raw_response)
-        response_keys = (
-            sorted(str(key) for key in raw_response) if isinstance(raw_response, Mapping) else []
-        )
-        self._last_inference_evidence = {
-            "server_response_received": True,
-            "wire_response_type": type(raw_response).__name__,
-            "wire_response_keys": response_keys,
-            "raw_vendor_action_response": retained_response,
-            "raw_vendor_action_response_digest": (
-                "sha256:" + canonical_sha256({"raw_vendor_action_response": retained_response})
-            ),
-            "raw_vendor_action_response_role": (
-                "genuine_decoded_vendor_wire_response_before_candidate_normalization"
-            ),
-            "action_payload_returned": _action_payload_returned(raw_response),
-            "actions_extracted": False,
-        }
-        # A response from the frozen server is a completed candidate query even
-        # when the envelope is subsequently refused by our strict boundary.
-        self.candidate_policy_queried = True
-        actions = normalize_openpi_inference_response(raw_response)
-        self._last_inference_evidence.update(
-            {
-                "actions_extracted": True,
-                "action_chunk_shape": list(getattr(actions, "shape", ())),
+        # Evidence is scoped to this wire attempt. If a later connection fails
+        # before receiving a response, callers must not mistake a prior query's
+        # retained action for the failed attempt.
+        self._last_inference_evidence = None
+        client, _ = self._open_verified_client()
+        try:
+            raw_response = client.infer(dict(observation))
+            retained_response = _json_safe_vendor_response(raw_response)
+            response_keys = (
+                sorted(str(key) for key in raw_response)
+                if isinstance(raw_response, Mapping)
+                else []
+            )
+            self._last_inference_evidence = {
+                "server_response_received": True,
+                "transport_connection_generation": self._connection_generation,
+                "server_identity_sha256": self.server_metadata["identity_sha256"],
+                "wire_response_type": type(raw_response).__name__,
+                "wire_response_keys": response_keys,
+                "raw_vendor_action_response": retained_response,
+                "raw_vendor_action_response_digest": (
+                    "sha256:"
+                    + canonical_sha256(
+                        {"raw_vendor_action_response": retained_response}
+                    )
+                ),
+                "raw_vendor_action_response_role": (
+                    "genuine_decoded_vendor_wire_response_before_candidate_normalization"
+                ),
+                "action_payload_returned": _action_payload_returned(raw_response),
+                "actions_extracted": False,
             }
-        )
-        return actions
+            # A response from the frozen server is a completed candidate query
+            # even when the envelope is subsequently refused by our strict
+            # boundary.
+            self.candidate_policy_queried = True
+            actions = normalize_openpi_inference_response(raw_response)
+            self._last_inference_evidence.update(
+                {
+                    "actions_extracted": True,
+                    "action_chunk_shape": list(getattr(actions, "shape", ())),
+                }
+            )
+            return actions
+        finally:
+            self._close_active_client()
 
     def last_inference_evidence(self) -> dict[str, Any]:
         if self._last_inference_evidence is None:
@@ -494,14 +571,16 @@ class OpenPIWebsocketDroidPolicyClient:
         prior_query_observed = bool(
             self.candidate_policy_queried or self._last_inference_evidence is not None
         )
-        raw_metadata = self._client.get_server_metadata()
-        if not isinstance(raw_metadata, Mapping):
-            raise ValueError("policy_server_metadata_not_object")
-        metadata = validate_server_metadata(raw_metadata, expected=self._spec)
+        try:
+            _, metadata = self._open_verified_client()
+        finally:
+            self._close_active_client()
         return {
             "identity_verified": True,
             "transport": "openpi_websocket_msgpack_numpy",
             "readiness_method": "live_identity_handshake_without_inference",
+            "connection_mode": "fresh_identity_verified_connection_per_wire_operation",
+            "connection_generation": self._connection_generation,
             "candidate_policy_queried": False,
             "candidate_inference_performed": False,
             "policy_state_advanced": False,
@@ -511,15 +590,16 @@ class OpenPIWebsocketDroidPolicyClient:
         }
 
     def close(self) -> None:
-        closer = getattr(self._client, "close", None)
-        if callable(closer):
-            closer()
+        self._close_active_client()
 
     def evidence_summary(self) -> dict[str, Any]:
+        server_metadata = self.server_metadata
         return {
             "transport": "openpi_websocket_msgpack_numpy",
             "identity_verified": True,
-            "server_metadata": self.server_metadata,
+            "connection_mode": "fresh_identity_verified_connection_per_wire_operation",
+            "connection_generation": self._connection_generation,
+            "server_metadata": server_metadata,
             "last_inference_evidence": (
                 self.last_inference_evidence()
                 if self._last_inference_evidence is not None

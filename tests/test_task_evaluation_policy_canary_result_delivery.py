@@ -157,6 +157,14 @@ def _result(evidence: Path) -> dict[str, object]:
             }
         ],
         "matrix_digest": "sha256:" + "6" * 64,
+        "scene_revision_digest": "sha256:" + "7" * 64,
+        "runtime_container_digest": "sha256:" + "8" * 64,
+        "official_total_usd": 0.379,
+        "started_at_iso": "2026-09-02T04:03:45+00:00",
+        "completed_at_iso": "2026-09-02T04:49:54+00:00",
+        "duration_seconds": 2769.0,
+        "provider": "vast",
+        "provider_instance_ids": [49_609_705],
         "artifact_inventory": inventory,
         "result_digest": "",
     }
@@ -188,6 +196,15 @@ def test_canary_delivery_seals_downloads_and_terminal_closure(tmp_path: Path) ->
     assert delivery["summary"]["successful_episode_count"] == 1
     assert delivery["candidate_results"][0]["success_rate"] == 1.0
     assert delivery["matrix_digest"] == "sha256:" + "6" * 64
+    assert delivery["reproducibility"]["scene_revision_digest"] == (
+        "sha256:" + "7" * 64
+    )
+    assert delivery["reproducibility"]["runtime_container_digest"] == (
+        "sha256:" + "8" * 64
+    )
+    assert delivery["reproducibility"]["official_total_usd"] == 0.379
+    assert delivery["reproducibility"]["duration_seconds"] == 2769.0
+    assert delivery["reproducibility"]["provider_instance_ids"] == [49_609_705]
     assert delivery["closure"]["provider_zero"]["provider_zero_verified"] is True
     assert delivery["delivery_digest"] == cross_runtime_canonical_digest(
         delivery, digest_field="delivery_digest"

@@ -1113,6 +1113,7 @@ def build_native_microcheck_bundle(
         "adp009d_episode_batch.py",
         "adp009d_isaac_episode_adapter.py",
         "native_pose_transforms.py",
+        "rigid_frame_transforms.py",
         "adp009d_task_scoring.py",
         "adp_task_scoring.py",
         "articulation_graph_contract.py",

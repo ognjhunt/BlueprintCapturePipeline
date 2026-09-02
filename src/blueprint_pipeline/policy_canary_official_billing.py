@@ -24,11 +24,29 @@ def policy_canary_terminal_evidence(
     ):
         return None
     closeout = result.get("provider_closeout")
+    watchdog = result.get("independent_watchdog")
+    instance_ids = result.get("vast_instance_ids")
+    watchdog_instance_lineage_valid = True
+    if instance_ids is None and isinstance(watchdog, Mapping):
+        # The canonical paid allocator owns the provider identity and already
+        # seals it in the caller-surviving watchdog close receipt.  Early
+        # policy-canary results did not duplicate that identity at top level,
+        # so billing must consume the authoritative closure field instead of
+        # waiting forever for a redundant projection that cannot appear after
+        # teardown.
+        instance_ids = watchdog.get("instance_ids")
+        watchdog_instance_lineage_valid = bool(
+            watchdog.get("status") == "provider_terminal"
+            and watchdog.get("provider_absence_confirmed") is True
+        )
+    elif instance_ids is None:
+        watchdog_instance_lineage_valid = False
     if (
-        result.get("vast_instance_ids") != [instance_id]
+        instance_ids != [instance_id]
         or result.get("status") not in {"completed", "blocked"}
         or result.get("retry_cap") != 0
         or result.get("continuing_spend_from_this_run") is not False
+        or not watchdog_instance_lineage_valid
         or not isinstance(closeout, Mapping)
         or closeout.get("provider_zero_confirmed") is not True
         or closeout.get("warm_session_retained") is not False

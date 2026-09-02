@@ -40,7 +40,9 @@ from .native_task_arena_policy_canary_session import (
     validate_provider_bundle,
     validate_runtime_input_manifest,
 )
-from .task_evaluation_policy_canary_result import validate_policy_canary_result
+from .task_evaluation_policy_canary_result_projection import (
+    build_policy_canary_result_projection,
+)
 from .task_evaluation_canary_hotfix_overlay import (
     canary_hotfix_execution_release,
     verify_canary_hotfix_overlay,
@@ -216,7 +218,7 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
             )
 
 
-def _event(root: Path, *, stage: str, status: str, **details: Any) -> None:
+def _event(root: Path, *, stage: str, status: str, **details: Any) -> dict[str, Any]:
     path = root / "status_events.jsonl"
     sequence = 1
     previous_digest = None
@@ -225,11 +227,13 @@ def _event(root: Path, *, stage: str, status: str, **details: Any) -> None:
         sequence = len(rows) + 1
         if rows:
             previous_digest = json.loads(rows[-1]).get("event_digest")
+    observed_at = datetime.now(timezone.utc)
     event = {
         "schema_version": "task_evaluation_policy_canary_status_event.v1",
         "sequence": sequence,
         "stage": stage,
         "status": status,
+        "observed_at_iso": observed_at.isoformat(),
         "previous_event_digest": previous_digest,
         **details,
         "event_digest": "",
@@ -239,6 +243,87 @@ def _event(root: Path, *, stage: str, status: str, **details: Any) -> None:
         stream.write((json.dumps(event, sort_keys=True) + "\n").encode())
         stream.flush()
         os.fsync(stream.fileno())
+    return event
+
+
+def _sync_status_event_progress(
+    *,
+    root: Path,
+    event: Mapping[str, Any],
+    run_id: str,
+    request_digest: str,
+    runner: SyncRunner,
+) -> dict[str, Any]:
+    """Publish one real canary event without making progress authoritative."""
+
+    observed_at = str(event["observed_at_iso"])
+    elapsed_seconds = 0.0
+    try:
+        first_line = next(
+            line
+            for line in (root / "status_events.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line
+        )
+        first = json.loads(first_line)
+        started = datetime.fromisoformat(str(first["observed_at_iso"]))
+        observed = datetime.fromisoformat(observed_at)
+        elapsed_seconds = max(0.0, (observed - started).total_seconds())
+    except (OSError, StopIteration, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        # The event still carries a real timestamp; elapsed time is optional
+        # context and must never make status delivery affect execution.
+        elapsed_seconds = 0.0
+    progress = {
+        "schema_version": "task_evaluation_launch_progress.v1",
+        "launch_id": run_id,
+        "run_id": run_id,
+        "request_digest": request_digest,
+        "phase": str(event["stage"]),
+        "phase_status": str(event["status"]),
+        "observed_at_iso": observed_at,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+    }
+    try:
+        result = dict(runner(progress=progress))
+    except Exception as exc:  # noqa: BLE001 - observational delivery boundary
+        result = {"status": "failed", "reason": type(exc).__name__}
+    receipt = {
+        "schema_version": "task_evaluation_policy_canary_progress_sync.v1",
+        "event_digest": event["event_digest"],
+        "run_id": run_id,
+        "request_digest": request_digest,
+        "phase": progress["phase"],
+        "phase_status": progress["phase_status"],
+        "sync_status": str(result.get("status") or "failed"),
+        "sync_reason": str(result.get("reason") or "") or None,
+    }
+    with (root / "status_progress_sync.jsonl").open("ab") as stream:
+        stream.write((json.dumps(receipt, sort_keys=True) + "\n").encode())
+        stream.flush()
+        os.fsync(stream.fileno())
+    return result
+
+
+def _event_and_sync(
+    root: Path,
+    *,
+    stage: str,
+    status: str,
+    run_id: str,
+    request_digest: str,
+    runner: SyncRunner,
+    **details: Any,
+) -> dict[str, Any]:
+    event = _event(root, stage=stage, status=status, **details)
+    _sync_status_event_progress(
+        root=root,
+        event=event,
+        run_id=run_id,
+        request_digest=request_digest,
+        runner=runner,
+    )
+    return event
 
 
 def _default_allocator_runner(argv: Sequence[str]) -> int:
@@ -290,12 +375,28 @@ def collect_policy_canary_vast_provider_zero() -> dict[str, Any]:
     return value
 
 
+def _adapter_instance_ids(adapter: Mapping[str, Any]) -> list[int]:
+    values = adapter.get("vast_instance_ids")
+    watchdog = adapter.get("independent_watchdog")
+    if values is None and isinstance(watchdog, Mapping) and (
+        watchdog.get("status") == "provider_terminal"
+        and watchdog.get("provider_absence_confirmed") is True
+    ):
+        values = watchdog.get("instance_ids")
+    if not isinstance(values, list) or any(
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        for value in values
+    ):
+        return []
+    return list(values)
+
+
 def _join_session_closeout(
     *, inner: Mapping[str, Any], adapter: Mapping[str, Any], provider_zero: Mapping[str, Any]
 ) -> dict[str, Any]:
     value = json.loads(json.dumps(dict(inner), allow_nan=False))
     episodes = value.get("episodes")
-    instance_ids = adapter.get("vast_instance_ids") or []
+    instance_ids = _adapter_instance_ids(adapter)
     closeout = adapter.get("provider_closeout")
     teardown_complete = (
         isinstance(closeout, Mapping)
@@ -350,13 +451,8 @@ def _materialize_official_billing_if_posted(
     if output_path.is_file():
         validate_vast_official_same_goal_reconciliation(output_path)
         return True
-    instance_ids = adapter.get("vast_instance_ids")
-    if (
-        not isinstance(instance_ids, list)
-        or len(instance_ids) != 1
-        or isinstance(instance_ids[0], bool)
-        or not isinstance(instance_ids[0], int)
-    ):
+    instance_ids = _adapter_instance_ids(adapter)
+    if len(instance_ids) != 1:
         return False
     audit = Path(billing_audit_root).expanduser().resolve()
     if not audit.is_dir() or audit.is_symlink():
@@ -382,223 +478,12 @@ def _materialize_official_billing_if_posted(
 def _projection(
     *, setup: Mapping[str, Any], result: Mapping[str, Any], delivery: Mapping[str, Any]
 ) -> dict[str, Any]:
-    episodes = list(result.get("episodes") or [])
-
-    def compact_artifact(record: Mapping[str, Any]) -> dict[str, Any]:
-        return {key: record[key] for key in ("artifact_id", "digest", "size_bytes")}
-
-    report = {
-        "machine_readable_report": compact_artifact(delivery["report"]["machine_readable_report"]),
-        "evidence_manifest": compact_artifact(delivery["report"]["evidence_manifest"]),
-    }
-    public_artifacts = delivery.get("artifacts") or []
-
-    def bound_artifact(record: Any) -> dict[str, Any] | None:
-        if not isinstance(record, Mapping):
-            return None
-        matches = [
-            artifact
-            for artifact in public_artifacts
-            if artifact.get("role") == record.get("role")
-            and artifact.get("digest") == record.get("sha256")
-            and artifact.get("size_bytes") == record.get("size_bytes")
-        ]
-        if len(matches) != 1:
-            return None
-        return {key: matches[0][key] for key in ("artifact_id", "digest", "size_bytes")}
-
-    projected_episodes: list[dict[str, Any]] = []
-    for row in episodes:
-        candidate = str(row.get("candidate_id") or "")
-        cell_id = str(row.get("cell_id") or "")
-        episode_id = f"{result.get('run_id') or setup['scene_id']}--{cell_id}--{candidate}"
-        if len(episode_id) > 192:
-            episode_id = (
-                episode_id[:150] + "-" + hashlib.sha256(episode_id.encode()).hexdigest()[:32]
-            )
-        source_artifacts = row.get("evidence_artifacts")
-        source_artifacts = dict(source_artifacts) if isinstance(source_artifacts, Mapping) else {}
-        evidence_roles = {
-            "reset_state": "reset_state",
-            "frame_manifest": "frame_manifest",
-            "review_video": "review_video",
-            "policy_query_receipt": "policy_query_receipt",
-            "action_sequence": "action_sequence",
-            "action_delivery_readback": "action_delivery_readback",
-            "state_trace": "state_trace",
-            "contact_force_trace": "contact_force_trace",
-            "task_object_trajectory": "task_object_trajectory",
-            "score_receipt": "score_receipt",
-        }
-        bound = {
-            target: bound_artifact(source_artifacts.get(source))
-            for target, source in evidence_roles.items()
-        }
-        evidence_gaps = sorted(target for target, artifact in bound.items() if artifact is None)
-        if row.get("status") == "completed" and evidence_gaps:
-            raise TaskEvaluationPolicyCanaryDispatchError(
-                "policy_canary_completed_episode_evidence_missing:"
-                + episode_id
-                + ":"
-                + ",".join(evidence_gaps)
-            )
-        checkpoint_digest = row.get("checkpoint_digest")
-        runtime_identity_digest = row.get("runtime_identity_digest")
-        reset_state_digest = (
-            source_artifacts.get("reset_state", {}).get("sha256")
-            if isinstance(source_artifacts.get("reset_state"), Mapping)
-            else row.get("reset_state_digest")
-        )
-        if (
-            not _is_digest(reset_state_digest)
-            and row.get("status") != "completed"
-            and isinstance(row.get("resolved_scenario"), Mapping)
-            and isinstance(row.get("seed"), int)
-            and not isinstance(row.get("seed"), bool)
-        ):
-            # Older blocked provider results predate the explicit reset digest.
-            # Their immutable cell and seed still define the exact reset that was
-            # attempted, so derive the same failure-before-execution identity the
-            # current producer writes. Completed episodes may never use this
-            # fallback because their observed reset artifact is required.
-            reset_state_digest = canonical_digest(
-                {
-                    "resolved_scenario": row["resolved_scenario"],
-                    "seed": row["seed"],
-                    "execution_performed": False,
-                }
-            )
-        if not all(
-            _is_digest(value)
-            for value in (
-                checkpoint_digest,
-                runtime_identity_digest,
-                reset_state_digest,
-            )
-        ):
-            raise TaskEvaluationPolicyCanaryDispatchError(
-                "policy_canary_episode_identity_evidence_missing:" + episode_id
-            )
-        evidence = {
-            "checkpoint_digest": checkpoint_digest,
-            "runtime_identity_digest": runtime_identity_digest,
-            "reset_state_digest": reset_state_digest,
-            **bound,
-            "evidence_gaps": evidence_gaps,
-        }
-        gap = ((row.get("visual_evidence") or {}).get("media_gap") or {}).get("reason")
-        if gap:
-            evidence["typed_media_gap"] = str(gap)
-        projected_episodes.append(
-            {
-                "episode_id": episode_id,
-                "candidate_id": candidate,
-                "cell_id": cell_id,
-                "seed": row.get("seed"),
-                "terminal_state": ("completed" if row.get("status") == "completed" else "blocked"),
-                "candidate_policy_queried": row.get("candidate_policy_queried") is True,
-                "actions_reached_robot": row.get("actions_reached_robot") is True,
-                "arm_moved": row.get("arm_moved") is True,
-                "policy_outcome_interpretable": row.get("policy_outcome_interpretable") is True,
-                "failure_taxonomy": row.get("typed_harness_failure"),
-                "evidence": evidence,
-            }
-        )
-    candidate_results = []
-    delivered_candidate_results = {
-        row["candidate_id"]: row for row in delivery.get("candidate_results") or []
-    }
-    for candidate in CANDIDATE_IDS:
-        rows = [row for row in projected_episodes if row["candidate_id"] == candidate]
-        failures: dict[str, int] = {}
-        for row in rows:
-            if row["terminal_state"] != "completed":
-                name = str(row.get("failure_taxonomy") or "unclassified")
-                failures[name] = failures.get(name, 0) + 1
-        delivered_metrics = dict(delivered_candidate_results.get(candidate) or {})
-        candidate_results.append(
-            {
-                "candidate_id": candidate,
-                "episodes_completed": sum(row["terminal_state"] == "completed" for row in rows),
-                "interpretable_episode_count": sum(
-                    row["policy_outcome_interpretable"] for row in rows
-                ),
-                "actions_delivered_episode_count": sum(
-                    row["actions_reached_robot"] for row in rows
-                ),
-                "metrics": {
-                    key: value for key, value in delivered_metrics.items() if key != "candidate_id"
-                },
-                "failure_counts": failures,
-            }
-        )
-    cell_sets = [
-        {row["cell_id"] for row in projected_episodes if row["candidate_id"] == candidate}
-        for candidate in CANDIDATE_IDS
-    ]
-    result_status = str(delivery["result_status"])
-    value: dict[str, Any] = {
-        "schema_version": "task_evaluation_policy_canary_result_projection.v1",
-        "run_id": delivery["run_id"],
-        "request_digest": setup["request_digest"],
-        "configuration_digest": result["configuration_digest"],
-        "result_delivery_digest": delivery["delivery_digest"],
-        "run_kind": RUN_KIND,
-        "claim_ceiling": CLAIM_CEILING,
-        "scene_controls_status": "configured_controls_pending",
-        "result_status": result_status,
-        "warning": "Controls pending — results are unqualified.",
-        "counts": {
-            "policy_count": 2,
-            "episodes_per_policy": 10,
-            "learned_policy_rollout_count": 20,
-            "completed_learned_policy_rollout_count": sum(
-                row["terminal_state"] == "completed" for row in projected_episodes
-            ),
-            "diagnostic_control_rollout_count": 20,
-            "completed_diagnostic_control_rollout_count": 0,
-        },
-        "candidate_ids": list(CANDIDATE_IDS),
-        "candidate_results": candidate_results,
-        "episodes": projected_episodes,
-        "comparison": {
-            "matched_cell_count": len(cell_sets[0] & cell_sets[1]),
-            "winner_declared": False,
-            "official_ranking_contribution": False,
-        },
-        "report": {
-            "result_digest": result["result_digest"],
-            "permanent_result_path": f"/internal/task-evaluation-runs/{delivery['run_id']}",
-            **report,
-        },
-        "closure": {
-            "billing": compact_artifact(delivery["closure"]["billing"]),
-            "teardown": compact_artifact(delivery["closure"]["teardown"]),
-            "provider_zero": {
-                **compact_artifact(delivery["closure"]["provider_zero"]),
-                "provider_zero_verified": True,
-            },
-        },
-        "notification_delivery": {
-            "terminal_state": (
-                "completed" if result_status == "completed_unqualified" else result_status
-            ),
-            "status": "pending",
-            "attempts": 0,
-            "provider": "website_terminal_handler",
-            "message_id": None,
-            "delivered_at": None,
-            "run_result_digest": result["result_digest"],
-        },
-        "blockers": list(result.get("blockers") or []),
-        "projection_digest": "",
-    }
-    value["projection_digest"] = cross_runtime_canonical_digest(
-        value, digest_field="projection_digest"
+    return build_policy_canary_result_projection(
+        setup=setup,
+        result=result,
+        delivery=delivery,
+        error_factory=TaskEvaluationPolicyCanaryDispatchError,
     )
-    return validate_policy_canary_result(value)
-
-
 AccessChecker = Callable[[Path, int], bool]
 
 
@@ -773,12 +658,20 @@ def _finish_policy_canary_delivery(
     delivery: Mapping[str, Any],
     closure: Mapping[str, Mapping[str, Any]],
     sync_runner: SyncRunner,
+    progress_sync_runner: SyncRunner,
     allocator_invoked: bool,
 ) -> dict[str, Any]:
     """Publish one already sealed delivery without re-entering provider closeout."""
 
     projection = _projection(setup=setup, result=joined, delivery=delivery)
-    _event(root, stage="report_generating", status="completed")
+    _event_and_sync(
+        root,
+        stage="report_generating",
+        status="completed",
+        run_id=str(joined["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
     sync = dict(
         sync_runner(
             capture_session_id=setup["capture_session_id"],
@@ -833,9 +726,47 @@ def _finish_policy_canary_delivery(
         receipt, digest_field="receipt_digest"
     )
     _write_exclusive(root / "dispatch_receipt.json", receipt)
-    _event(root, stage="billing_teardown", status="completed")
-    _event(root, stage=str(joined["status"]), status="completed")
+    _event_and_sync(
+        root,
+        stage="billing_teardown",
+        status="completed",
+        run_id=str(joined["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
+    _event_and_sync(
+        root,
+        stage=str(joined["status"]),
+        status="completed",
+        run_id=str(joined["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
     return receipt
+
+
+def _sealed_provider_zero(path: Path) -> dict[str, Any] | None:
+    """Reuse immutable terminal absence evidence across billing closeout resumes."""
+
+    if not path.is_file():
+        return None
+    try:
+        value = _read(path, code="policy_canary_materialized_provider_zero_invalid")
+    except TaskEvaluationPolicyCanaryDispatchError:
+        return None
+    if (
+        value.get("schema_version")
+        != "task_evaluation_policy_canary_vast_provider_zero.v1"
+        or value.get("status") != "provider_zero_confirmed"
+        or value.get("api_confirmed") is not True
+        or value.get("provider_zero_verified") is not True
+        or value.get("live_instance_count") != 0
+        or value.get("blockers") != []
+        or value.get("receipt_digest")
+        != canonical_digest(value, digest_field="receipt_digest")
+    ):
+        return None
+    return value
 
 
 def _resume_materialized_policy_canary_delivery(
@@ -847,6 +778,7 @@ def _resume_materialized_policy_canary_delivery(
     bundle: Mapping[str, Any],
     adapter: Mapping[str, Any],
     sync_runner: SyncRunner,
+    progress_sync_runner: SyncRunner = sync_launch_progress_to_webapp,
 ) -> dict[str, Any] | None:
     """Resume only Website publication after evidence packaging already sealed.
 
@@ -928,7 +860,14 @@ def _resume_materialized_policy_canary_delivery(
             raise TaskEvaluationPolicyCanaryDispatchError(
                 f"policy_canary_materialized_closure_invalid:{role}"
             )
-    _event(root, stage="artifacts_syncing", status="resumed_from_sealed_delivery")
+    _event_and_sync(
+        root,
+        stage="artifacts_syncing",
+        status="resumed_from_sealed_delivery",
+        run_id=str(joined["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
     return _finish_policy_canary_delivery(
         root=root,
         setup=setup,
@@ -940,6 +879,7 @@ def _resume_materialized_policy_canary_delivery(
         delivery=delivery,
         closure=closure,
         sync_runner=sync_runner,
+        progress_sync_runner=progress_sync_runner,
         allocator_invoked=False,
     )
 
@@ -1037,7 +977,14 @@ def dispatch_policy_canary_activation(
         )
     root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    _event(root, stage="queued", status="completed", run_id=activation["run_id"])
+    _event_and_sync(
+        root,
+        stage="queued",
+        status="completed",
+        run_id=str(activation["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
     hotfix_manifest = (
         verify_canary_hotfix_overlay(hotfix_overlay_path)
         if hotfix_overlay_path is not None
@@ -1068,7 +1015,14 @@ def dispatch_policy_canary_activation(
     authority_path = root / "policy_canary_session_authority.json"
     _write_exclusive(authority_path, authority)
     records = setup["records"]
-    _event(root, stage="preparing", status="running")
+    _event_and_sync(
+        root,
+        stage="preparing",
+        status="running",
+        run_id=str(activation["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
     bundle_receipt_path = (
         root / "bundle" / "native_task_arena_policy_canary_session_bundle_receipt.v1.json"
     )
@@ -1090,10 +1044,13 @@ def dispatch_policy_canary_activation(
             implementation_commit=implementation_commit,
             hotfix_overlay_path=hotfix_overlay_path,
         )
-    _event(
+    _event_and_sync(
         root,
         stage="preparing",
         status="completed",
+        run_id=str(activation["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
         authority_digest=authority["authority_digest"],
         bundle_sha256=bundle["bundle_sha256"],
     )
@@ -1140,7 +1097,14 @@ def dispatch_policy_canary_activation(
             raise TaskEvaluationPolicyCanaryDispatchError(
                 "policy_canary_allocator_previous_invocation_without_result"
             )
-        _event(root, stage="provider_allocating", status="running")
+        _event_and_sync(
+            root,
+            stage="provider_allocating",
+            status="running",
+            run_id=str(activation["run_id"]),
+            request_digest=str(setup["request_digest"]),
+            runner=progress_sync_runner,
+        )
         if execute:
             argv.append("--execute")
         invocation_started = {
@@ -1209,6 +1173,7 @@ def dispatch_policy_canary_activation(
         bundle=bundle,
         adapter=adapter,
         sync_runner=sync_runner,
+        progress_sync_runner=progress_sync_runner,
     )
     if resumed is not None:
         return resumed
@@ -1249,8 +1214,10 @@ def dispatch_policy_canary_activation(
         return blocked
 
     provider_zero_path = root / "post_teardown_global_provider_zero.json"
-    provider_zero = dict(provider_zero_collector())
-    write_json(provider_zero_path, provider_zero)
+    provider_zero = _sealed_provider_zero(provider_zero_path)
+    if provider_zero is None:
+        provider_zero = dict(provider_zero_collector())
+        write_json(provider_zero_path, provider_zero)
     native_path = Path(str(adapter.get("native_control_result_path") or ""))
     if native_path.is_file():
         inner = _read(native_path, code="policy_canary_provider_result_missing")
@@ -1328,6 +1295,33 @@ def dispatch_policy_canary_activation(
     joined = _join_session_closeout(inner=inner, adapter=adapter, provider_zero=provider_zero)
     joined["run_id"] = activation["run_id"]
     joined["configuration_digest"] = runtime_inputs["configuration_digest"]
+    joined["scene_revision_digest"] = setup["scene_revision_digest"]
+    joined["provider"] = "vast"
+    joined["provider_instance_ids"] = list(adapter.get("vast_instance_ids") or [])
+    selected_container = str(adapter.get("selected_container_image") or "")
+    container_match = re.search(r"sha256:[0-9a-f]{64}", selected_container)
+    if container_match:
+        joined["runtime_container_digest"] = container_match.group(0)
+    started_at = str(adapter.get("generated_at") or "")
+    teardown_for_timing = Path(str(adapter.get("teardown_manifest_path") or ""))
+    completed_at = ""
+    if teardown_for_timing.is_file():
+        completed_at = str(
+            _read(teardown_for_timing, code="policy_canary_teardown_manifest_invalid").get(
+                "generated_at"
+            )
+            or ""
+        )
+    if started_at and completed_at:
+        joined["started_at_iso"] = started_at
+        joined["completed_at_iso"] = completed_at
+        joined["duration_seconds"] = max(
+            0.0,
+            (
+                datetime.fromisoformat(completed_at)
+                - datetime.fromisoformat(started_at)
+            ).total_seconds(),
+        )
     joined["result_digest"] = canonical_digest(joined, digest_field="result_digest")
     joined_path = root / "policy_canary_terminal_result.json"
     write_json(joined_path, joined)
@@ -1339,10 +1333,13 @@ def dispatch_policy_canary_activation(
         for candidate in CANDIDATE_IDS
     }
     for candidate in CANDIDATE_IDS:
-        _event(
+        _event_and_sync(
             root,
             stage=f"policy_{candidate}_running",
             status="completed",
+            run_id=str(activation["run_id"]),
+            request_digest=str(setup["request_digest"]),
+            runner=progress_sync_runner,
             completed_episode_count=completed_by_candidate[candidate],
             expected_episode_count=10,
         )
@@ -1402,6 +1399,14 @@ def dispatch_policy_canary_activation(
         write_json(root / "dispatch_pending.json", pending)
         return pending
     validate_vast_official_same_goal_reconciliation(billing_path)
+    billing = _read(billing_path, code="policy_canary_official_billing_invalid")
+    official_total_usd = billing.get("official_total_usd")
+    if isinstance(official_total_usd, (int, float)) and not isinstance(
+        official_total_usd, bool
+    ):
+        joined["official_total_usd"] = float(official_total_usd)
+        joined["result_digest"] = canonical_digest(joined, digest_field="result_digest")
+        write_json(joined_path, joined)
     teardown_path = Path(str(adapter.get("teardown_manifest_path") or "")).resolve()
     closure = {
         "billing": {**_record(billing_path), "official_billing_sealed": True},
@@ -1411,7 +1416,14 @@ def dispatch_policy_canary_activation(
             "provider_zero_verified": provider_zero.get("provider_zero_verified") is True,
         },
     }
-    _event(root, stage="artifacts_syncing", status="running")
+    _event_and_sync(
+        root,
+        stage="artifacts_syncing",
+        status="running",
+        run_id=str(activation["run_id"]),
+        request_digest=str(setup["request_digest"]),
+        runner=progress_sync_runner,
+    )
     try:
         delivery = materialize_policy_canary_result_delivery(
             run_root=root,
@@ -1434,6 +1446,7 @@ def dispatch_policy_canary_activation(
         delivery=delivery,
         closure=closure,
         sync_runner=sync_runner,
+        progress_sync_runner=progress_sync_runner,
         allocator_invoked=allocator_invoked,
     )
 

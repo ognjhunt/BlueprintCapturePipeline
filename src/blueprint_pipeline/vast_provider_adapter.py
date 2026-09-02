@@ -96,6 +96,11 @@ from .native_task_arena_execution_contract import (
 from .provider_output_disk_capacity import (
     download_provider_output_with_capacity_guard as _download_provider_output_with_capacity_guard,
 )
+from .provider_machine_avoidlist import (
+    avoidlist_machine_ids,
+    load_machine_avoidlist as _load_machine_avoidlist,
+    machine_avoidlist_ids as _machine_avoidlist_ids,
+)
 from .vast_independent_watchdog_control import write_started_vast_instance_id
 from .vast_attempt_preservation import (
     VAST_LIVE_ATTEMPT_ARTIFACT_NAMES,
@@ -1811,46 +1816,10 @@ def _offer_fits_total_cost_bound(
     )
 
 
-def _load_machine_avoidlist(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {
-            "schema_version": "vast_machine_avoidlist.v1",
-            "status": "empty",
-            "machine_ids": [],
-            "entries": [],
-            "raw_secret_values_recorded": False,
-        }
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return {
-            "schema_version": "vast_machine_avoidlist.v1",
-            "status": "blocked_parse_failed",
-            "machine_ids": [],
-            "entries": [],
-            "parse_error": f"{type(exc).__name__}:{str(exc)[:200]}",
-            "raw_secret_values_recorded": False,
-        }
-    return (
-        dict(data)
-        if isinstance(data, Mapping)
-        else {
-            "schema_version": "vast_machine_avoidlist.v1",
-            "status": "blocked_invalid_shape",
-            "machine_ids": [],
-            "entries": [],
-            "raw_secret_values_recorded": False,
-        }
-    )
-
-
 def _avoidlist_machine_ids(path: Path) -> set[int]:
-    data = _load_machine_avoidlist(path)
-    ids = _machine_id_set(data.get("machine_ids") or [])
-    for entry in data.get("entries") or []:
-        if isinstance(entry, Mapping):
-            ids.update(_machine_id_set([entry.get("machine_id")]))
-    return ids
+    """Compatibility seam for callers that inspect the adapter directly."""
+
+    return avoidlist_machine_ids(path)
 
 
 def _record_machine_avoidlist_entry(
@@ -1878,7 +1847,7 @@ def _record_machine_avoidlist_entry(
             "retry_policy": "exclude_persistently_across_sibling_jobs_until_manual_review",
         }
         entries.append(entry)
-    machine_ids = sorted(_avoidlist_machine_ids(path) | _machine_id_set([machine_id]))
+    machine_ids = sorted(_machine_avoidlist_ids(data) | _machine_id_set([machine_id]))
     payload = {
         "schema_version": "vast_machine_avoidlist.v1",
         "generated_at": generated_at,
@@ -7467,9 +7436,9 @@ def run_vast_provider_adapter(
         else bool(prefer_isaac_rt)
     )
     avoidlist = _load_machine_avoidlist(resolved_machine_avoidlist_path)
-    excluded_machine_ids = _avoidlist_machine_ids(
-        resolved_machine_avoidlist_path
-    ) | _machine_id_set(excluded_machine_ids)
+    excluded_machine_ids = _machine_avoidlist_ids(avoidlist) | _machine_id_set(
+        excluded_machine_ids
+    )
     resolved_allowed_machine_ids = _machine_id_set(allowed_machine_ids)
     resolved_allowed_active_instance_ids = _machine_id_set(allowed_active_instance_ids)
     launch_mode = _resolve_launch_mode(
@@ -10275,7 +10244,7 @@ def run_vast_provider_adapter(
                 blockers=current_blockers,
                 reason=avoidlist_reason,
             )
-            excluded_machine_ids = _machine_id_set(avoidlist.get("machine_ids") or [])
+            excluded_machine_ids = _machine_avoidlist_ids(avoidlist)
         base_result.update(
             {
                 "vast_instance_ids": instance_ids,

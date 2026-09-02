@@ -123,13 +123,23 @@ def _built(task_kind: str):
         ),
         reset=lambda *, seed: None,
     )
+    plan = {
+        "task_kind": task_kind,
+        "scenario": {"seed": 17},
+        "cadence": {"control_frequency_hz": 15.0},
+    }
+    if task_kind == "rigid_pick_place":
+        plan["task_spec"] = {
+            "interaction_affordance": {
+                "asset_root_from_scoring_frame": {
+                    "position_m": [0.0, 0.0, 0.06400000303983688],
+                    "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                }
+            }
+        }
     return SimpleNamespace(
         env=env,
-        plan={
-            "task_kind": task_kind,
-            "scenario": {"seed": 17},
-            "cadence": {"control_frequency_hz": 15.0},
-        },
+        plan=plan,
         scene_asset_names={"task_object": "bound_task_asset"},
         camera_scene_names={
             "external": "arena_external_sensor",
@@ -177,6 +187,23 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
     assert receipt["task_state_source"] == expected_source
     assert receipt["camera_scene_names"] == built.camera_scene_names
     assert adapter.kwargs["camera_scene_names"] == receipt["camera_scene_names"]
+    if task_kind == "rigid_pick_place":
+        expected_offset = {
+            "position_m": [0.0, 0.0, 0.06400000303983688],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        }
+        assert adapter.kwargs["rigid_task_scoring_frame_offset"] == expected_offset
+        assert receipt["rigid_task_pose_binding"] == {
+            "asset_root_pose_retained": True,
+            "task_object_pose_world_source": (
+                "asset_root_pose_world_composed_with_interaction_affordance_"
+                "asset_root_from_scoring_frame"
+            ),
+            "scoring_frame_offset": expected_offset,
+        }
+    else:
+        assert adapter.kwargs["rigid_task_scoring_frame_offset"] is None
+        assert receipt["rigid_task_pose_binding"] is None
     camera_pose = adapter.kwargs["camera_pose_callback"]
     assert camera_pose("arena_external_sensor") is None
     reset_camera_position, reset_camera_quaternion = camera_pose(
@@ -286,6 +313,34 @@ def test_factory_binds_original_and_articulated_fixtures_without_scene_names(
     assert servo.calls[-1]["preferred_posture_joint_positions_rad"] == [
         0.1
     ] * 7
+
+
+def test_rigid_factory_refuses_a_missing_scoring_frame_transform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import native_task_episode_environment as module
+
+    monkeypatch.setattr(module, "IsaacEpisodeAdapter", _Adapter)
+    built = _built("rigid_pick_place")
+    del built.plan["task_spec"]["interaction_affordance"][
+        "asset_root_from_scoring_frame"
+    ]
+
+    with pytest.raises(
+        NativeTaskEpisodeEnvironmentError,
+        match="native_task_episode_rigid_scoring_frame_transform_invalid",
+    ):
+        build_native_task_episode_environment(
+            built=built,
+            gripper_convention={
+                "closed_command": 1.0,
+                "open_command": 0.0,
+                "finger_separation_m": {"0.0": 0.08, "1.0": 0.01},
+            },
+            servo=_Servo(),
+            task_readback=None,
+            to_tensor=lambda value: value,
+        )
 
 
 def test_articulated_factory_requires_native_task_readback() -> None:

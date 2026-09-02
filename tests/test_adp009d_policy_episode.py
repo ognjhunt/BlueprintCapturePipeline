@@ -41,6 +41,10 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.groot_n17_droid_policy_runtime import (
     CHECKPOINT_REVISION,
     EMBODIMENT_TAG,
+    EEF_FRAME_BODY_NAME,
+    EEF_FRAME_BODY_SOURCE,
+    EEF_FRAME_PROVENANCE_SCHEMA_VERSION,
+    EEF_FRAME_STATE_SOURCE,
     GROOT_SOURCE_REVISION,
     LANGUAGE_KEY,
     MODEL_ID,
@@ -60,6 +64,24 @@ _DESTINATION = [3.750152333333333, -3.4074919, SUPPORT_PLANE_Z_M]
 _UPRIGHT_XYZW = (0.0, 0.0, 0.0, 1.0)
 _LIMITS = [[-2.9, 2.9]] * 7
 _CLOSED = 0.070
+
+
+def _eef_frame_provenance(position_m: list[float]) -> dict:
+    value = {
+        "schema_version": EEF_FRAME_PROVENANCE_SCHEMA_VERSION,
+        "state_frame": "robot_root",
+        "body_name": EEF_FRAME_BODY_NAME,
+        "body_source": EEF_FRAME_BODY_SOURCE,
+        "state_source": EEF_FRAME_STATE_SOURCE,
+        "position_robot_root_m": position_m,
+        "body_pose_world_xyzw": [*position_m, 0.0, 0.0, 0.0, 1.0],
+        "robot_root_pose_world_xyzw": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        "provenance_digest": "",
+    }
+    value["provenance_digest"] = canonical_digest(
+        value, digest_field="provenance_digest"
+    )
+    return value
 
 
 class _Environment:
@@ -85,12 +107,14 @@ class _Environment:
     def read_policy_inputs(self):
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
         frame[..., 0] = 128
+        eef_position = [0.0, 0.0, 0.0]
         return {
             DROID_EXTERIOR_VIEW_1: frame,
             DROID_WRIST_VIEW: frame,
             "joint_position": list(self._joints),
             "gripper_position": 0.04,
-            "eef_9d": [0.0, 0.0, 0.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0],
+            "eef_9d": [*eef_position, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0],
+            "eef_9d_frame_provenance": _eef_frame_provenance(eef_position),
         }
 
     def step(self, isaac_action):
@@ -2021,11 +2045,11 @@ def test_mixed_source_resolutions_refuse_a_single_conversion_claim() -> None:
 
 
 def test_the_shipped_openpi_client_satisfies_the_episode_loop_seam() -> None:
-    """No new client is needed: the existing one already fits the protocol.
+    """The identity-bound client directly fits the episode protocol.
 
     The loop asks for exactly one method, infer(observation) -> chunk.  The
     shipped OpenPI websocket client provides it and additionally verifies
-    server identity on construction, so binding it needs no adapter.
+    server identity on the fresh query connection, so binding needs no adapter.
     """
 
     import inspect
@@ -2037,11 +2061,15 @@ def test_the_shipped_openpi_client_satisfies_the_episode_loop_seam() -> None:
     assert hasattr(OpenPIWebsocketDroidPolicyClient, "infer")
     signature = inspect.signature(OpenPIWebsocketDroidPolicyClient.infer)
     assert list(signature.parameters) == ["self", "observation"]
-    # Identity verification is not optional: the constructor fetches and
-    # validates server metadata rather than trusting the endpoint.
-    source = inspect.getsource(OpenPIWebsocketDroidPolicyClient.__init__)
-    assert "get_server_metadata" in source
-    assert "validate_server_metadata" in source
+    # Identity verification is not optional: every query opens through the
+    # helper that fetches and validates metadata before inference.
+    infer_source = inspect.getsource(OpenPIWebsocketDroidPolicyClient.infer)
+    verifier_source = inspect.getsource(
+        OpenPIWebsocketDroidPolicyClient._open_verified_client
+    )
+    assert "_open_verified_client" in infer_source
+    assert "get_server_metadata" in verifier_source
+    assert "validate_server_metadata" in verifier_source
 
 
 def test_a_client_shaped_like_the_shipped_one_drives_a_full_episode() -> None:

@@ -63,8 +63,12 @@ try:  # flat provider-bundle layout
     from native_pose_transforms import pose_world_to_base
 except ModuleNotFoundError:  # repository package
     from .native_pose_transforms import pose_world_to_base
+try:  # flat provider-bundle layout
+    from rigid_frame_transforms import RigidFrameTransformError, apply_rigid_offset
+except ModuleNotFoundError:  # repository package
+    from .rigid_frame_transforms import RigidFrameTransformError, apply_rigid_offset
 
-ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v14"
+ADAPTER_SCHEMA_VERSION = "adp009d_isaac_episode_adapter.v15"
 ARM_DYNAMICS_OBSERVATION_SCHEMA_VERSION = "adp009d_arm_dynamics_observation.v2"
 DIRECT_GLOBAL_POSE_TARGET = "direct_global_pose_target"
 ORIENTATION_FIRST_BOUNDED_LOCAL_INCREMENT = (
@@ -605,6 +609,7 @@ class IsaacEpisodeAdapter:
         contact_envelope: Mapping[str, Any] | None = None,
         partner_contact_sensors: Mapping[str, Any] | None = None,
         backend_contact_configuration: Mapping[str, Any] | None = None,
+        rigid_task_scoring_frame_offset: Mapping[str, Any] | None = None,
         task_object_radius_m: float | None = None,
         task_object_height_m: float | None = None,
         sage_collision_contact_sensors: Mapping[str, Any] | None = None,
@@ -662,6 +667,31 @@ class IsaacEpisodeAdapter:
         if contact_blockers:
             raise IsaacEpisodeAdapterError(contact_blockers)
         self._backend_contact_configuration = dict(backend_contact_configuration)
+        self._rigid_task_scoring_frame_offset: dict[str, list[float]] | None = None
+        if rigid_task_scoring_frame_offset is not None:
+            try:
+                position = [
+                    float(value)
+                    for value in rigid_task_scoring_frame_offset["position_m"]
+                ]
+                orientation = [
+                    float(value)
+                    for value in rigid_task_scoring_frame_offset["orientation_xyzw"]
+                ]
+                apply_rigid_offset(
+                    body_position_world=[0.0, 0.0, 0.0],
+                    body_quaternion_world_xyzw=[0.0, 0.0, 0.0, 1.0],
+                    offset_position_body=position,
+                    offset_quaternion_body_xyzw=orientation,
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise IsaacEpisodeAdapterError(
+                    ["isaac_episode_rigid_scoring_frame_transform_invalid"]
+                ) from exc
+            self._rigid_task_scoring_frame_offset = {
+                "position_m": position,
+                "orientation_xyzw": orientation,
+            }
         self._partner_contact_sensors = dict(partner_contact_sensors or {})
         self._partner_filter_shapes: dict[str, int] = {}
         self._partner_filter_object_names: dict[str, list[str]] = {}
@@ -817,7 +847,9 @@ class IsaacEpisodeAdapter:
             inputs[view] = rgb_from_camera_output(frame)
         inputs["joint_position"] = self.read_arm_joint_positions()
         inputs["gripper_position"] = self._droid_gripper_position()
-        inputs["eef_9d"] = self._eef_9d()
+        eef_9d, eef_frame_provenance = self._eef_9d_with_frame_provenance()
+        inputs["eef_9d"] = eef_9d
+        inputs["eef_9d_frame_provenance"] = eef_frame_provenance
         return inputs
 
     def read_evaluation_camera_inputs(self) -> dict[str, Any]:
@@ -1326,6 +1358,25 @@ class IsaacEpisodeAdapter:
                 ["isaac_episode_rigid_task_object_missing"]
             )
         pose = self._to_torch(self._rigid_object.data.root_pose_w)[0]
+        asset_root_pose = [float(value) for value in pose[:7]]
+        task_scoring_pose = list(asset_root_pose)
+        if self._rigid_task_scoring_frame_offset is not None:
+            try:
+                scoring_position, scoring_orientation = apply_rigid_offset(
+                    body_position_world=asset_root_pose[:3],
+                    body_quaternion_world_xyzw=asset_root_pose[3:7],
+                    offset_position_body=self._rigid_task_scoring_frame_offset[
+                        "position_m"
+                    ],
+                    offset_quaternion_body_xyzw=self._rigid_task_scoring_frame_offset[
+                        "orientation_xyzw"
+                    ],
+                )
+            except RigidFrameTransformError as exc:
+                raise IsaacEpisodeAdapterError(
+                    ["isaac_episode_rigid_scoring_frame_transform_invalid"]
+                ) from exc
+            task_scoring_pose = [*scoring_position, *scoring_orientation]
         controlled_body_pose = self._to_torch(self._robot.data.body_pose_w)[
             0, self._end_effector_index, :7
         ]
@@ -1336,10 +1387,19 @@ class IsaacEpisodeAdapter:
             self._calibrated_gripper_width(raw_separation)
         )
         sample: dict[str, Any] = {
-            # Exact pinned IsaacLab root/body poses are already XYZ + XYZW.
-            # Keep both task-neutral and legacy aliases byte-for-byte aligned.
-            "task_object_pose_world": [float(v) for v in pose[:7]],
-            "can_pose_world": [float(v) for v in pose[:7]],
+            # The scorer's start/destination contract is in the task scoring
+            # frame, while Isaac exposes the imported asset root. Retain both
+            # and apply the same sealed transform as native task readback.
+            "asset_root_pose_world": asset_root_pose,
+            "task_scoring_pose_world": task_scoring_pose,
+            "task_object_pose_world": task_scoring_pose,
+            "can_pose_world": task_scoring_pose,
+            "task_object_pose_binding": (
+                "asset_root_pose_world_composed_with_interaction_affordance_"
+                "asset_root_from_scoring_frame"
+                if self._rigid_task_scoring_frame_offset is not None
+                else "isaac_asset_root_pose_world_legacy"
+            ),
             "gripper_width_m": width,
             "gripper_body_separation_m": raw_separation,
             "gripper_width_open_fraction_unclamped": unclamped_open_fraction,
@@ -1521,7 +1581,7 @@ class IsaacEpisodeAdapter:
         )
         return min(1.0, max(0.0, 1.0 - open_fraction))
 
-    def _eef_9d(self) -> Any:
+    def _eef_9d_with_frame_provenance(self) -> tuple[Any, dict[str, Any]]:
         end_effector_pose = self._to_torch(self._robot.data.body_pose_w)[
             0, self._droid_eef_body_index
         ]
@@ -1549,12 +1609,36 @@ class IsaacEpisodeAdapter:
             from groot_n17_droid_policy_runtime import droid_eef_9d
         except ModuleNotFoundError:  # repository package
             from .groot_n17_droid_policy_runtime import droid_eef_9d
-        return droid_eef_9d(
+        eef_9d = droid_eef_9d(
             position_m=position_root,
             rotation_row_major=rotation_row_major_from_quaternion_xyzw(
                 quaternion_root
             ),
         )
+        provenance = {
+            "schema_version": "droid_eef_frame_provenance.v1",
+            "state_frame": "robot_root",
+            "body_name": DROID_EEF_BODY_NAME,
+            "body_source": DROID_EEF_BODY_SOURCE,
+            "state_source": DROID_EEF_STATE_SOURCE,
+            "position_robot_root_m": [float(value) for value in position_root],
+            "body_pose_world_xyzw": end_effector_world,
+            "robot_root_pose_world_xyzw": root_world,
+            "provenance_digest": "",
+        }
+        try:  # flat provider bundle
+            from decision_evidence_contracts import canonical_digest
+        except ModuleNotFoundError:  # repository package
+            from .decision_evidence_contracts import canonical_digest
+        provenance["provenance_digest"] = canonical_digest(
+            provenance, digest_field="provenance_digest"
+        )
+        return eef_9d, provenance
+
+    def _eef_9d(self) -> Any:
+        """Backward-compatible value-only view for existing adapter callers."""
+
+        return self._eef_9d_with_frame_provenance()[0]
 
 
 def describe_adapter() -> dict[str, Any]:
@@ -1602,6 +1686,8 @@ def describe_adapter() -> dict[str, Any]:
         "gripper_physical_full_opening_m": GRIPPER_PHYSICAL_FULL_OPENING_M,
         "raw_gripper_body_separation_retained": True,
         "gripper_width_calibration_clamp_retained": True,
+        "rigid_task_scoring_frame_offset_supported": True,
+        "rigid_task_asset_root_pose_retained": True,
         "camera_alpha_dropped_at_boundary": True,
         "arm_joint_count": ARM_JOINT_COUNT,
         "isaaclab_pose_quaternion_order": "xyzw",
@@ -1691,6 +1777,10 @@ def validate_adapter_bindings(bindings: Mapping[str, Any]) -> list[str]:
         errors.append("isaac_episode_adapter_raw_gripper_measurement_not_retained")
     if bindings.get("gripper_width_calibration_clamp_retained") is not True:
         errors.append("isaac_episode_adapter_gripper_clamp_not_retained")
+    if bindings.get("rigid_task_scoring_frame_offset_supported") is not True:
+        errors.append("isaac_episode_adapter_rigid_scoring_frame_support_missing")
+    if bindings.get("rigid_task_asset_root_pose_retained") is not True:
+        errors.append("isaac_episode_adapter_rigid_asset_root_not_retained")
     if bindings.get("camera_alpha_dropped_at_boundary") is not True:
         errors.append("isaac_episode_adapter_alpha_not_dropped")
     if bindings.get("isaaclab_pose_quaternion_order") != "xyzw":

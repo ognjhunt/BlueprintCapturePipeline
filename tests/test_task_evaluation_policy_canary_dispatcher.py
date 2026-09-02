@@ -11,6 +11,7 @@ from blueprint_pipeline.decision_evidence_contracts import (
     cross_runtime_canonical_digest,
 )
 from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import (
+    _join_session_closeout,
     _projection,
     _resume_materialized_policy_canary_delivery,
     TaskEvaluationPolicyCanaryDispatchError,
@@ -20,6 +21,44 @@ from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import (
 
 
 COMMIT = "a" * 40
+
+
+def test_join_uses_terminal_watchdog_as_provider_allocation_lineage() -> None:
+    inner = {
+        "episodes": [
+            {"status": "blocked"}
+            for _ in range(20)
+        ],
+        "blockers": ["episode_gap"],
+    }
+    adapter = {
+        "continuing_spend_from_this_run": False,
+        "independent_watchdog": {
+            "status": "provider_terminal",
+            "instance_ids": [49_609_705],
+            "provider_absence_confirmed": True,
+        },
+        "provider_closeout": {
+            "provider_zero_confirmed": True,
+            "warm_session_retained": False,
+            "all_staged_objects_absent": True,
+        },
+    }
+    zero = {
+        "schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
+        "provider_zero_verified": True,
+        "live_instance_count": 0,
+        "blockers": [],
+    }
+
+    joined = _join_session_closeout(
+        inner=inner,
+        adapter=adapter,
+        provider_zero=zero,
+    )
+
+    assert joined["provider_allocations_observed"] == 1
+    assert "policy_canary_provider_allocation_count_invalid" not in joined["blockers"]
 
 
 def _public_artifact(character: str, artifact_id: str) -> dict[str, object]:
@@ -393,6 +432,7 @@ def test_dispatcher_materializes_one_authority_bundle_and_allocator_call(
     activation_result, setup_path, _activation = _inputs(tmp_path)
     output = tmp_path / "dispatch"
     observed: dict[str, object] = {}
+    progress_updates = []
 
     def fake_bundle(**kwargs):
         observed["bundle"] = kwargs
@@ -425,6 +465,8 @@ def test_dispatcher_materializes_one_authority_bundle_and_allocator_call(
         output_root=output,
         implementation_commit=COMMIT,
         allocator_runner=fake_allocator,
+        progress_sync_runner=lambda **kwargs: progress_updates.append(kwargs["progress"])
+        or {"status": "succeeded"},
     )
 
     argv = observed["argv"]
@@ -435,6 +477,14 @@ def test_dispatcher_materializes_one_authority_bundle_and_allocator_call(
     assert receipt["retry_cap"] == 0
     assert receipt["provider_mutation_performed"] is False
     assert Path(observed["bundle"]["session_authority_path"]).is_file()
+    assert [update["phase"] for update in progress_updates] == [
+        "queued",
+        "preparing",
+        "preparing",
+        "provider_allocating",
+    ]
+    assert progress_updates[-1]["phase_status"] == "running"
+    assert (output / "status_progress_sync.jsonl").is_file()
 
 
 def test_dispatcher_refuses_absent_scene839873_setup_before_allocator(
@@ -598,11 +648,19 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
     zero = {
         "schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
         "status": "provider_zero_confirmed",
+        "api_confirmed": True,
         "provider_zero_verified": True,
         "live_instance_count": 0,
         "blockers": [],
-        "receipt_digest": "sha256:" + "c" * 64,
+        "receipt_digest": "",
     }
+    zero["receipt_digest"] = canonical_digest(zero, digest_field="receipt_digest")
+    zero_collections = 0
+
+    def collect_zero():
+        nonlocal zero_collections
+        zero_collections += 1
+        return zero
     progress_updates = []
 
     def sync_progress(**kwargs):
@@ -616,7 +674,7 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
         implementation_commit=COMMIT,
         execute=True,
         allocator_runner=fake_allocator,
-        provider_zero_collector=lambda: zero,
+        provider_zero_collector=collect_zero,
         progress_sync_runner=sync_progress,
     )
     second = dispatch_policy_canary_activation(
@@ -626,7 +684,7 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
         implementation_commit=COMMIT,
         execute=True,
         allocator_runner=lambda _argv: pytest.fail("allocator invoked twice"),
-        provider_zero_collector=lambda: zero,
+        provider_zero_collector=collect_zero,
         progress_sync_runner=sync_progress,
     )
 
@@ -634,7 +692,8 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
     assert first["allocator_invoked"] is True
     assert second["allocator_invoked"] is False
     assert first["website_progress_sync"]["status"] == "succeeded"
-    assert progress_updates[0]["phase"] == "awaiting_official_billing"
+    assert progress_updates[-1]["phase"] == "awaiting_official_billing"
+    assert "provider_allocating" in [update["phase"] for update in progress_updates]
     assert calls == {"allocator": 1, "bundle": 1}
 
     def post_billing(**kwargs):
@@ -670,7 +729,7 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
         implementation_commit=COMMIT,
         execute=True,
         allocator_runner=lambda _argv: pytest.fail("allocator invoked on billing resume"),
-        provider_zero_collector=lambda: zero,
+        provider_zero_collector=collect_zero,
         sync_runner=lambda **_kwargs: {
             "status": "succeeded",
             "notification_delivery": {
@@ -685,6 +744,7 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
     assert third["notification_delivery"]["status"] == "failed"
     assert (output / "dispatch_receipt.json").is_file()
     assert calls == {"allocator": 1, "bundle": 1}
+    assert zero_collections == 1
 
 
 def test_invalid_envelope_is_quarantined_without_allocator(tmp_path: Path) -> None:
