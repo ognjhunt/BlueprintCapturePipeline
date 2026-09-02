@@ -10,10 +10,13 @@ from dataclasses import asdict
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
+import stat
+import subprocess  # nosec B404 - fixed runuser/sha256sum argv for service readback
 import tempfile
-from typing import Any
+from typing import Any, Callable
 
 from .adp009d_droid_observation import (
     CANDIDATE_REQUIRED_VIEWS,
@@ -28,6 +31,12 @@ from .decision_evidence_contracts import (
 )
 from .native_task_arena_policy_bundle import _candidate_runtime_binding
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
+from .host_resident_launch_inputs import PRODUCTION_LAUNCH_INPUT_ROOTS
+from .task_evaluation_canary_hotfix_overlay import (
+    CanaryHotfixOverlayError,
+    resolve_service_account,
+    service_account_access_blockers,
+)
 from .task_evaluation_policy_canary_setup import (
     policy_canary_setup_digest,
     validate_policy_canary_setup,
@@ -62,6 +71,10 @@ QUICK_FAMILY_COUNTS = {
 }
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_MATERIALIZATION_DIRECTORY_MODE = 0o750
+_MATERIALIZATION_FILE_MODE = 0o440
+_RUNUSER_PATH = "/usr/sbin/runuser"
+_SHA256SUM_PATH = "/usr/bin/sha256sum"
 
 
 class PolicyCanarySetupError(ValueError):
@@ -93,6 +106,145 @@ def _record(path: str | Path) -> dict[str, Any]:
     if source.is_symlink() or not source.is_file():
         raise PolicyCanarySetupError(["policy_canary_setup_record_missing"])
     return {"path": str(source), "size_bytes": source.stat().st_size, "sha256": _sha256(source)}
+
+
+def _under_production_root(path: Path) -> bool:
+    resolved = path.resolve()
+    return any(
+        resolved == Path(value).resolve() or Path(value).resolve() in resolved.parents
+        for value in PRODUCTION_LAUNCH_INPUT_ROOTS
+    )
+
+
+def _digest_as_service_account(path: Path, *, account: Mapping[str, Any]) -> str:
+    """Reopen exact bytes as the consumer rather than trusting chmod/chown."""
+
+    if os.geteuid() == int(account["uid"]):
+        return _sha256(path)
+    if os.geteuid() != 0:
+        return ""
+    try:
+        completed = subprocess.run(  # nosec B603 - fixed executable and argv
+            [
+                _RUNUSER_PATH,
+                "-u",
+                str(account["user"]),
+                "--",
+                _SHA256SUM_PATH,
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return ""
+    return "sha256:" + completed.stdout.split()[0]
+
+
+def _seal_presubmission_service_access(
+    *,
+    destination: Path,
+    artifacts: Mapping[str, Path],
+    account_resolver: Callable[[], Mapping[str, Any]] = resolve_service_account,
+    chown: Callable[[Path, int, int], None] = os.chown,
+    stat_reader: Callable[[Path], Any] = os.stat,
+    digest_reader: Callable[..., str] = _digest_as_service_account,
+    access_checker: Callable[..., list[str]] = service_account_access_blockers,
+) -> dict[str, Any]:
+    """Seal root-authored launch dependencies for the ``blueprint`` reader.
+
+    Only the newly materialized directory and its three named JSON children are
+    changed. Existing ancestors are never rechmodded recursively; if one hides
+    the bytes from the service account, materialization fails before profile
+    publication.
+    """
+
+    try:
+        account = dict(account_resolver())
+    except CanaryHotfixOverlayError as exc:
+        if _under_production_root(destination):
+            raise PolicyCanarySetupError(
+                ["policy_canary_materialization_service_account_unknown"]
+            ) from exc
+        return {
+            "status": "not_applicable_no_service_account",
+            "service_user": "blueprint",
+            "verified_roles": [],
+        }
+
+    expected = {
+        "setup",
+        "profile_materialization_input",
+        "execution_setup_template",
+    }
+    if set(artifacts) != expected:
+        raise PolicyCanarySetupError(
+            ["policy_canary_materialization_dependency_inventory_invalid"]
+        )
+    targets = {role: Path(path).resolve() for role, path in artifacts.items()}
+    if destination.is_symlink() or not destination.is_dir():
+        raise PolicyCanarySetupError(
+            ["policy_canary_materialization_destination_invalid"]
+        )
+    for path in targets.values():
+        if path.parent != destination or path.is_symlink() or not path.is_file():
+            raise PolicyCanarySetupError(
+                ["policy_canary_materialization_dependency_invalid"]
+            )
+
+    try:
+        chown(destination, -1, int(account["gid"]))
+        destination.chmod(_MATERIALIZATION_DIRECTORY_MODE)
+        for path in targets.values():
+            chown(path, -1, int(account["gid"]))
+            path.chmod(_MATERIALIZATION_FILE_MODE)
+    except OSError as exc:
+        raise PolicyCanarySetupError(
+            ["policy_canary_materialization_service_access_install_failed"]
+        ) from exc
+
+    destination_metadata = stat_reader(destination)
+    if (
+        destination_metadata.st_gid != int(account["gid"])
+        or stat.S_IMODE(destination_metadata.st_mode) != _MATERIALIZATION_DIRECTORY_MODE
+        or access_checker(destination, account=account, stat_reader=stat_reader)
+    ):
+        raise PolicyCanarySetupError(
+            ["policy_canary_materialization_service_access_denied:destination"]
+        )
+
+    verified: list[dict[str, Any]] = []
+    for role, path in targets.items():
+        metadata = stat_reader(path)
+        expected_digest = _sha256(path)
+        if (
+            metadata.st_gid != int(account["gid"])
+            or stat.S_IMODE(metadata.st_mode) != _MATERIALIZATION_FILE_MODE
+            or access_checker(path, account=account, stat_reader=stat_reader)
+            or digest_reader(path, account=account) != expected_digest
+        ):
+            raise PolicyCanarySetupError(
+                [f"policy_canary_materialization_service_access_denied:{role}"]
+            )
+        verified.append(
+            {
+                "role": role,
+                "name": path.name,
+                "mode": f"{_MATERIALIZATION_FILE_MODE:04o}",
+                "sha256": expected_digest,
+            }
+        )
+    return {
+        "status": "readable_by_service_account",
+        "service_user": account["user"],
+        "service_group": account["group"],
+        "directory_mode": f"{_MATERIALIZATION_DIRECTORY_MODE:04o}",
+        "verified_roles": verified,
+    }
 
 
 def _forbidden_scene_digest_blockers(
@@ -1079,6 +1231,14 @@ def materialize_policy_canary_presubmission_setup(
         "task_evaluation_policy_canary_execution_setup_template.v1.json"
     )
     write_json(execution_template_path, execution_template)
+    service_account_access = _seal_presubmission_service_access(
+        destination=destination,
+        artifacts={
+            "setup": setup_path,
+            "profile_materialization_input": wrapper_path,
+            "execution_setup_template": execution_template_path,
+        },
+    )
     return {
         "setup": setup,
         "setup_path": str(setup_path),
@@ -1086,6 +1246,7 @@ def materialize_policy_canary_presubmission_setup(
         "profile_materialization_input_path": str(wrapper_path),
         "execution_setup_template": execution_template,
         "execution_setup_template_path": str(execution_template_path),
+        "service_account_access": service_account_access,
     }
 
 
