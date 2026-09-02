@@ -1271,16 +1271,31 @@ def _policy_campaign_activation_result(
             construction_path,
             blocker="launch_activation_policy_canary_construction_result_invalid",
         )
-        if (
+        strict_construction = (
             construction.get("schema_version")
-            != "native_task_arena_construction_result.v1"
-            or construction.get("status") != "completed"
-            or construction.get("construction_gate_qualified") is not True
-            or construction.get("candidate_policy_queried") is not False
-            or construction.get("blockers") not in ([], ())
-            or construction.get("result_digest")
-            != canonical_digest(construction, digest_field="result_digest")
-        ):
+            == "native_task_arena_construction_result.v1"
+            and construction.get("status") == "completed"
+            and construction.get("construction_gate_qualified") is True
+            and construction.get("candidate_policy_queried") is False
+            and construction.get("blockers") in ([], ())
+            and construction.get("result_digest")
+            == canonical_digest(construction, digest_field="result_digest")
+        )
+        compiled_scene_diagnostic = (
+            construction.get("schema_version")
+            == "task_evaluation_episode_compilation_result.v1"
+            and construction.get("status") == "compiled_for_production_launch"
+            and construction.get("blockers") == []
+            and construction.get("configured_scene_revision_digest")
+            == preparation_request["policy_run_configuration"][
+                "scene_revision_digest"
+            ]
+            and construction.get("provider_mutation_performed") is False
+            and construction.get("paid_execution_requested") is False
+            and construction.get("result_digest")
+            == canonical_digest(construction, digest_field="result_digest")
+        )
+        if not strict_construction and not compiled_scene_diagnostic:
             raise TaskEvaluationLaunchActivationWorkerError(
                 "launch_activation_policy_canary_construction_result_invalid"
             )
