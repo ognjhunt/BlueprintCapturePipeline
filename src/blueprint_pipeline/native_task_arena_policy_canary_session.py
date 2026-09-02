@@ -43,6 +43,15 @@ class PolicyCanarySessionError(ValueError):
     """Raised before paid execution when the paired-session contract is invalid."""
 
 
+class PolicyCanaryEpisodeFailure(RuntimeError):
+    """Carry sealed partial episode evidence across the session callback seam."""
+
+    def __init__(self, *, cause: Exception, evidence: Mapping[str, Any]):
+        self.cause_type = type(cause).__name__
+        self.evidence = dict(evidence)
+        super().__init__(str(cause))
+
+
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     """Atomically retain provider output without importing host-only helpers."""
 
@@ -383,11 +392,65 @@ def _episode_evidence_valid(episode: Mapping[str, Any]) -> bool:
     visual = _mapping(episode.get("visual_evidence"))
     gap = _mapping(visual.get("media_gap"))
     if episode.get("status") != "completed":
-        return (
-            gap.get("type") == "before_first_observation"
-            and bool(str(gap.get("reason") or ""))
-            and episode.get("policy_outcome_interpretable") is False
-        )
+        if gap:
+            return (
+                gap.get("type") == "before_first_observation"
+                and bool(str(gap.get("reason") or ""))
+                and episode.get("candidate_policy_queried") is False
+                and episode.get("actions_reached_robot") is False
+                and episode.get("policy_outcome_interpretable") is False
+            )
+        failure_stage = episode.get("episode_failure_stage")
+        if failure_stage not in {
+            "after_first_observation",
+            "action_delivery_rejected",
+        }:
+            return False
+        if (
+            visual.get("status") != "complete"
+            or visual.get("episode_terminal_status")
+            != "failed_after_first_observation"
+            or visual.get("human_review_available") is not True
+            or visual.get("terminal_observation_invented") is not False
+            or episode.get("first_observation_retained") is not True
+            or not isinstance(episode.get("candidate_policy_queried"), bool)
+            or not isinstance(episode.get("actions_reached_robot"), bool)
+            or not isinstance(episode.get("arm_moved"), bool)
+            or episode.get("policy_outcome_interpretable") is not False
+            or not _digest(episode.get("lossless_frame_manifest_digest"))
+            or not _digest(episode.get("review_video_digest"))
+        ):
+            return False
+        if failure_stage == "action_delivery_rejected":
+            rejection = _mapping(episode.get("action_delivery_rejection"))
+            violations = rejection.get("violations")
+            raw_queries = episode.get("candidate_policy_action_queries")
+            return (
+                episode.get("candidate_policy_queried") is True
+                and episode.get("candidate_action_returned") is True
+                and episode.get("actions_reached_robot") is False
+                and episode.get("arm_moved") is False
+                and rejection.get("status") == "rejected_before_robot"
+                and rejection.get("reason") == "hard_joint_limit_violation"
+                and rejection.get("clamping_performed") is False
+                and isinstance(violations, list)
+                and bool(violations)
+                and all(
+                    str(item).startswith(
+                        "candidate_action_joint_position_bounds_invalid"
+                    )
+                    for item in violations
+                )
+                and rejection.get("rejection_digest")
+                == canonical_digest(rejection, digest_field="rejection_digest")
+                and isinstance(raw_queries, list)
+                and bool(raw_queries)
+                and episode.get("returned_action_sequence_digest")
+                == canonical_digest({"value": raw_queries})
+                and episode.get("action_delivery_readback_digest")
+                == rejection.get("rejection_digest")
+            )
+        return True
     required_digests = (
         "lossless_frame_manifest_digest",
         "review_video_digest",
@@ -537,8 +600,13 @@ def execute_paired_session(
                     }
                     try:
                         observed = dict(run_episode(session, policy, context))
-                    except Exception as exc:  # preserve the typed episode gap
-                        observed = {
+                    except Exception as exc:  # preserve typed partial evidence
+                        partial = (
+                            dict(exc.evidence)
+                            if isinstance(exc, PolicyCanaryEpisodeFailure)
+                            else None
+                        )
+                        observed = partial or {
                             "status": "blocked",
                             "candidate_policy_queried": False,
                             "actions_reached_robot": False,
@@ -564,6 +632,22 @@ def execute_paired_session(
                                 }
                             ),
                         }
+                        observed.setdefault(
+                            "typed_harness_failure",
+                            exc.cause_type
+                            if isinstance(exc, PolicyCanaryEpisodeFailure)
+                            else type(exc).__name__,
+                        )
+                        observed.setdefault(
+                            "checkpoint_digest",
+                            str(_mapping(policy).get("checkpoint_digest") or ""),
+                        )
+                        observed.setdefault(
+                            "runtime_identity_digest",
+                            str(
+                                _mapping(policy).get("runtime_identity_digest") or ""
+                            ),
+                        )
                     observed.update(context)
                     observed["policy_outcome_interpretable"] = bool(
                         observed.get("candidate_policy_queried") is True
@@ -650,6 +734,7 @@ __all__ = [
     "CANDIDATE_IDS",
     "CANONICAL_ALLOCATOR",
     "CLAIM_CEILING",
+    "PolicyCanaryEpisodeFailure",
     "PolicyCanarySessionError",
     "PROBE_KIND",
     "PROVIDER_BUNDLE_SCHEMA_VERSION",
