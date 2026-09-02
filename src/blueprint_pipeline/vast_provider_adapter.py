@@ -96,6 +96,11 @@ from .native_task_arena_execution_contract import (
 from .provider_output_disk_capacity import (
     download_provider_output_with_capacity_guard as _download_provider_output_with_capacity_guard,
 )
+from .provider_machine_avoidlist import (
+    avoidlist_machine_ids,
+    load_machine_avoidlist as _load_machine_avoidlist,
+    machine_avoidlist_ids as _machine_avoidlist_ids,
+)
 from .vast_independent_watchdog_control import write_started_vast_instance_id
 from .vast_attempt_preservation import (
     VAST_LIVE_ATTEMPT_ARTIFACT_NAMES,
@@ -1811,93 +1816,10 @@ def _offer_fits_total_cost_bound(
     )
 
 
-def _load_machine_avoidlist(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {
-            "schema_version": "vast_machine_avoidlist.v1",
-            "status": "empty",
-            "machine_ids": [],
-            "entries": [],
-            "raw_secret_values_recorded": False,
-        }
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return {
-            "schema_version": "vast_machine_avoidlist.v1",
-            "status": "blocked_parse_failed",
-            "machine_ids": [],
-            "entries": [],
-            "parse_error": f"{type(exc).__name__}:{str(exc)[:200]}",
-            "raw_secret_values_recorded": False,
-        }
-    return (
-        dict(data)
-        if isinstance(data, Mapping)
-        else {
-            "schema_version": "vast_machine_avoidlist.v1",
-            "status": "blocked_invalid_shape",
-            "machine_ids": [],
-            "entries": [],
-            "raw_secret_values_recorded": False,
-        }
-    )
-
-
-def _machine_avoidlist_ids(data: Mapping[str, Any]) -> set[int]:
-    """Read every admitted avoidlist shape without silently dropping bad rows."""
-
-    status = _string(data.get("status"))
-    if status.startswith("blocked_"):
-        raise ValueError(f"vast_machine_avoidlist_invalid:{status}")
-    schema_version = data.get("schema_version")
-    if schema_version not in (None, "vast_machine_avoidlist.v1"):
-        raise ValueError("vast_machine_avoidlist_invalid:schema_version")
-
-    def machine_id(value: Any, *, field: str) -> int:
-        if isinstance(value, bool):
-            raise ValueError(f"vast_machine_avoidlist_invalid:{field}")
-        if isinstance(value, int):
-            resolved = value
-        elif isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value.strip()):
-            resolved = int(value.strip())
-        else:
-            raise ValueError(f"vast_machine_avoidlist_invalid:{field}")
-        if resolved <= 0:
-            raise ValueError(f"vast_machine_avoidlist_invalid:{field}")
-        return resolved
-
-    ids: set[int] = set()
-    direct_ids = data.get("machine_ids")
-    if direct_ids is not None:
-        if not isinstance(direct_ids, list):
-            raise ValueError("vast_machine_avoidlist_invalid:machine_ids")
-        for index, value in enumerate(direct_ids):
-            ids.add(machine_id(value, field=f"machine_ids.{index}"))
-
-    # ``machines`` is the original v1 publication shape retained by the arena
-    # lane. ``entries`` is the current adapter-written shape. Both are valid
-    # inputs and carry the same provider machine identity.
-    for field in ("entries", "machines"):
-        rows = data.get(field)
-        if rows is None:
-            continue
-        if not isinstance(rows, list):
-            raise ValueError(f"vast_machine_avoidlist_invalid:{field}")
-        for index, row in enumerate(rows):
-            if not isinstance(row, Mapping):
-                raise ValueError(f"vast_machine_avoidlist_invalid:{field}.{index}")
-            ids.add(
-                machine_id(
-                    row.get("machine_id"),
-                    field=f"{field}.{index}.machine_id",
-                )
-            )
-    return ids
-
-
 def _avoidlist_machine_ids(path: Path) -> set[int]:
-    return _machine_avoidlist_ids(_load_machine_avoidlist(path))
+    """Compatibility seam for callers that inspect the adapter directly."""
+
+    return avoidlist_machine_ids(path)
 
 
 def _record_machine_avoidlist_entry(
