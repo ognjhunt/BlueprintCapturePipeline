@@ -359,6 +359,7 @@ def test_live_transport_emits_allocator_artifact_manifest(
         provider_runtime_environment={
             "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
         },
+        allowed_geolocation_country_codes=("US",),
     )
 
     assert result["status"] == "completed"
@@ -380,6 +381,7 @@ def test_live_transport_emits_allocator_artifact_manifest(
     assert observed_adapter["provider_runtime_environment"] == {
         "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
     }
+    assert observed_adapter["allowed_geolocation_country_codes"] == ("US",)
     manifest_path = Path(result["artifact_manifest_path"])
     manifest = json.loads(manifest_path.read_text())
     assert manifest["status"] == "completed"

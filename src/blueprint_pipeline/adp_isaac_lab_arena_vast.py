@@ -429,6 +429,7 @@ def run_arena_native_control_vast(
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
     provider_runtime_environment: Mapping[str, str] | None = None,
+    allowed_geolocation_country_codes: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog."""
 
@@ -763,6 +764,9 @@ def run_arena_native_control_vast(
                 retain_native_task_arena_warm_session=retain_warm_instance,
                 stale_offer_create_retry_limit=stale_offer_create_retry_limit,
                 provider_runtime_environment=provider_runtime_environment,
+                allowed_geolocation_country_codes=(
+                    allowed_geolocation_country_codes
+                ),
             )
     except (OSError, RuntimeError, ValueError) as exc:
         adapter = {
