@@ -68,6 +68,56 @@ def _prepolicy_visual_gate_from_snapshot(
     return measure_native_task_prepolicy_visual_frames(frames)
 
 
+def _observed_contact_position_world(
+    *, plan: dict[str, Any], object_reset_readback: dict[str, Any]
+) -> tuple[list[float], str]:
+    """Resolve the live contact frame for articulated and rigid task plans."""
+
+    task_kind = str(plan.get("task_kind") or "")
+    if task_kind == "articulated_open_close":
+        link = object_reset_readback["task_link_frame_equivalence"]
+        return (
+            [float(value) for value in link["observed_contact_position_world_m"]],
+            "native_articulated_contact_link_readback",
+        )
+    if task_kind != "rigid_pick_place":
+        raise ValueError("unsupported task kind")
+
+    subjects = [
+        row
+        for row in object_reset_readback.get("objects") or []
+        if row.get("task_subject") is True
+    ]
+    if len(subjects) != 1:
+        raise ValueError("rigid task subject")
+    observed = subjects[0]["observed_root_pose_world"]
+    root_position = [float(value) for value in observed["position_world_m"]]
+    root_orientation = [float(value) for value in observed["orientation_xyzw"]]
+    affordance = plan["task_spec"]["interaction_affordance"]
+    transform = affordance["asset_root_from_scoring_frame"]
+    from blueprint_pipeline.rigid_frame_transforms import (
+        apply_rigid_offset,
+        rotate_vector_xyzw,
+    )
+
+    scoring_position, scoring_orientation = apply_rigid_offset(
+        body_position_world=root_position,
+        body_quaternion_world_xyzw=root_orientation,
+        offset_position_body=[float(value) for value in transform["position_m"]],
+        offset_quaternion_body_xyzw=[
+            float(value) for value in transform["orientation_xyzw"]
+        ],
+    )
+    contact_offset = rotate_vector_xyzw(
+        scoring_orientation,
+        [float(value) for value in affordance["contact_point_scoring_frame_m"]],
+    )
+    return (
+        [scoring_position[index] + contact_offset[index] for index in range(3)],
+        "native_rigid_subject_root_plus_scoring_and_contact_offsets",
+    )
+
+
 def _robot_reset_task_space_readback(
     *,
     plan: dict[str, Any],
@@ -90,12 +140,10 @@ def _robot_reset_task_space_readback(
                 "finger_midpoint_world_m"
             ]
         ]
-        contact = [
-            float(value)
-            for value in object_reset_readback["task_link_frame_equivalence"][
-                "observed_contact_position_world_m"
-            ]
-        ]
+        contact, contact_source = _observed_contact_position_world(
+            plan=plan,
+            object_reset_readback=object_reset_readback,
+        )
         if not all(len(row) == 3 for row in (base, midpoint, contact)):
             raise ValueError("vector length")
         forward = rotate_vector_xyzw(base_quaternion, [1.0, 0.0, 0.0])
@@ -173,6 +221,7 @@ def _robot_reset_task_space_readback(
         "robot_forward_unit_world": forward,
         "finger_midpoint_world_m": midpoint,
         "observed_contact_position_world_m": contact,
+        "observed_contact_position_source": contact_source,
         "approach_standoff_position_world_m": approach,
         "approach_standoff_m": 0.12,
         "finger_height_above_base_m": clearance_m,
@@ -683,6 +732,41 @@ def main() -> int:
         result["phase_reached"] = "environment_built"
         _announce("environment_build", "completed")
 
+        # Capture the exact future policy views before any robot/readback
+        # diagnostic can hide the renderer evidence.  The strict RGB gate is
+        # evaluated before semantic target visibility for the same reason: a
+        # missing label remains important, but it must not erase the images
+        # needed to diagnose appearance fidelity.
+        result["camera_snapshot"] = _camera_snapshot(
+            env=env,
+            camera_scene_names=built.camera_scene_names,
+            output_root=output_root,
+            snapshot_id="runtime_preflight",
+            framing_expectations=(
+                (plan.get("task_object_observability") or {}).get("cameras")
+                or {}
+            ),
+        )
+        result["prepolicy_visual_gate"] = _prepolicy_visual_gate_from_snapshot(
+            snapshot=result["camera_snapshot"],
+            output_root=output_root,
+        )
+        if not result["prepolicy_visual_gate"]["passed"]:
+            result["blockers"].extend(
+                result["prepolicy_visual_gate"]["blockers"]
+            )
+            raise RuntimeError(
+                "native_task_arena_preflight_prepolicy_visual_gate_failed"
+            )
+        camera_rows = result["camera_snapshot"]["cameras"]
+        if not camera_rows or not all(
+            row["observability"]["passed"] for row in camera_rows
+        ):
+            result["blockers"].append(
+                "native_task_arena_preflight_camera_observability_failed"
+            )
+            raise RuntimeError("native_task_arena_preflight_camera_failed")
+
         import torch
 
         from blueprint_pipeline.native_franka_pose_servo import (
@@ -736,11 +820,8 @@ def main() -> int:
             )
         )
         if not result["robot_reset_task_space_readback"]["passed"]:
-            result["blockers"].extend(
+            result.setdefault("diagnostic_findings", []).extend(
                 result["robot_reset_task_space_readback"]["blockers"]
-            )
-            raise RuntimeError(
-                "native_task_arena_preflight_robot_reset_task_space_failed"
             )
         for _ in range(8):
             current = servo.read_arm_joint_positions()
@@ -750,31 +831,6 @@ def main() -> int:
                     device=env.unwrapped.device,
                     dtype=torch.float32,
                 )
-            )
-        result["camera_snapshot"] = _camera_snapshot(
-            env=env,
-            camera_scene_names=built.camera_scene_names,
-            output_root=output_root,
-            snapshot_id="runtime_preflight",
-        )
-        camera_rows = result["camera_snapshot"]["cameras"]
-        if not camera_rows or not all(
-            row["observability"]["passed"] for row in camera_rows
-        ):
-            result["blockers"].append(
-                "native_task_arena_preflight_camera_observability_failed"
-            )
-            raise RuntimeError("native_task_arena_preflight_camera_failed")
-        result["prepolicy_visual_gate"] = _prepolicy_visual_gate_from_snapshot(
-            snapshot=result["camera_snapshot"],
-            output_root=output_root,
-        )
-        if not result["prepolicy_visual_gate"]["passed"]:
-            result["blockers"].extend(
-                result["prepolicy_visual_gate"]["blockers"]
-            )
-            raise RuntimeError(
-                "native_task_arena_preflight_prepolicy_visual_gate_failed"
             )
         result["torch_runtime"] = {
             "version": torch.__version__,

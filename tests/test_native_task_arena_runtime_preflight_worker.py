@@ -5,6 +5,7 @@ import pytest
 from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
     _bind_measured_gripper_servo,
     _gripper_pad_geometry_axis_readback,
+    _observed_contact_position_world,
     _particlefield_stage_readback,
     _prepolicy_visual_gate_from_snapshot,
     _robot_reset_task_space_readback,
@@ -119,6 +120,38 @@ def test_runtime_preflight_visual_gate_refuses_dark_splat_signature(tmp_path) ->
 
     assert result["passed"] is False
     assert any("near_black_fraction_above_ceiling" in value for value in result["blockers"])
+
+
+def test_runtime_preflight_resolves_rigid_contact_from_live_subject_root() -> None:
+    contact, source = _observed_contact_position_world(
+        plan={
+            "task_kind": "rigid_pick_place",
+            "task_spec": {
+                "interaction_affordance": {
+                    "asset_root_from_scoring_frame": {
+                        "position_m": [0.0, 0.0, 0.064],
+                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    },
+                    "contact_point_scoring_frame_m": [-0.064, 0.0, 0.011],
+                }
+            },
+        },
+        object_reset_readback={
+            "task_link_frame_equivalence": None,
+            "objects": [
+                {
+                    "task_subject": True,
+                    "observed_root_pose_world": {
+                        "position_world_m": [2.974, -6.761, 0.755],
+                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    },
+                }
+            ],
+        },
+    )
+
+    assert contact == pytest.approx([2.91, -6.761, 0.83])
+    assert source == "native_rigid_subject_root_plus_scoring_and_contact_offsets"
 
 
 def test_gripper_pad_geometry_uses_live_bounds_not_coincident_body_origins() -> None:
@@ -307,6 +340,7 @@ def test_official_nurec_setup_refuses_a_non_nurec_stage() -> None:
 def _reset_task_space_result(midpoint) -> dict:
     return _robot_reset_task_space_readback(
         plan={
+            "task_kind": "articulated_open_close",
             "robot": {
                 "base_pose_world": {
                     "position_world_m": [3.7634863, 8.906664, 0.090782],
