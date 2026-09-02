@@ -50,6 +50,10 @@ def test_canary_paid_dispatcher_is_installed_but_never_always_armed() -> None:
         "PIPELINE_TASK_EVALUATION_RUN_WEBAPP_URL="
         "https://tryblueprint.io/api/internal/pipeline/capture-task-evaluation-runs"
     ) in service
+    assert (
+        "PIPELINE_TASK_EVALUATION_LAUNCH_PROGRESS_WEBAPP_URL="
+        "https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-progress"
+    ) in service
     assert "EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env" in service
     assert (
         "PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token"
