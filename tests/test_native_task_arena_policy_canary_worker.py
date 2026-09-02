@@ -115,6 +115,42 @@ def test_appearance_backend_is_sealed_from_the_plan_not_a_default() -> None:
     assert sealed["kind"] == "particlefield_3dgrut_transcode"
     assert sealed["development_only"] is False
 
+    packet_request = {
+        "appearance_variant": {
+            "representation": "particlefield_3d_gaussian_splat",
+            "source_gaussian_sha256": (
+                "sha256:9193a9de6bd81bd6348065b3cad46ad835b62dcfaa6212285a91bffd8a166445"
+            ),
+            "particlefield_authoring_implementation": "nvidia_3dgrut_direct_nurec_transcode",
+            "upstream_converter": {
+                "source_revision": "a37ef721012dea0f29c0fcfff2d525023b4e854a",
+                "source_identity_verified": True,
+            },
+        }
+    }
+    plan_without_alignment_identity = _plan_with_appearance()
+    plan_without_alignment_identity["appearance_frame_alignment"].pop("source_asset_sha256")
+    from_packet = appearance_render_backend_from_plan(
+        plan_without_alignment_identity, packet_request=packet_request
+    )
+    assert from_packet["kind"] == "particlefield_3dgrut_transcode"
+    assert from_packet["conversion_identity"] == (
+        "threedgrut.export.scripts.transcode@a37ef721012dea0f29c0fcfff2d525023b4e854a"
+    )
+    legacy_request = {
+        "appearance_variant": {
+            **packet_request["appearance_variant"],
+            "particlefield_authoring_implementation": "nvidia_usd_convert_gsplat",
+            "upstream_converter": {"version": "0.1.15"},
+        }
+    }
+    legacy = appearance_render_backend_from_plan(
+        plan_without_alignment_identity, packet_request=legacy_request
+    )
+    assert legacy["kind"] == "particlefield_blueprint_private_tensor_conversion"
+    assert legacy["development_only"] is True
+    assert legacy["conversion_identity"] == "nvidia_usd_convert_gsplat@0.1.15"
+
     native = _plan_with_appearance("nurec_volume")
     nurec = appearance_render_backend_from_plan(native)
     assert nurec["kind"] == "isaac_native_nurec"

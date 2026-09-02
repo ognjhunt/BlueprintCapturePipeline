@@ -704,6 +704,7 @@ def test_launch_requires_an_explicit_known_appearance_render_path(tmp_path: Path
     assert NATIVE_TASK_ARENA_APPEARANCE_RENDER_PATHS == {
         NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
         NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH,
+        "no_site_appearance",
     }
     launched: list[dict] = []
     with pytest.raises(NativeTaskIsaacLabLaunchError) as excinfo:

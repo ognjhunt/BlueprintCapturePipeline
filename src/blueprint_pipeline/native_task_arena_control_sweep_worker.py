@@ -14,6 +14,7 @@ from .native_task_isaaclab_control_sweep_runtime import (
 )
 from .native_task_isaaclab_launch import (
     NATIVE_TASK_ARENA_DEVICE,
+    NATIVE_TASK_ARENA_NO_APPEARANCE_RENDER_PATH,
     launch_native_task_isaaclab,
 )
 from .native_task_nurec_render_setup import appearance_render_path_from_plan
@@ -83,7 +84,13 @@ def run_control_sweep_worker(
         simulation_app, _launch_receipt = launch_native_task_isaaclab(
             provisioning_receipt_path,
             device=NATIVE_TASK_ARENA_DEVICE,
-            appearance_render_path=appearance_render_path_from_plan(scene_plan),
+            # A sealed sweep plan omits the site appearance (validated above);
+            # only a plan that composes one derives the path from the scene.
+            appearance_render_path=(
+                NATIVE_TASK_ARENA_NO_APPEARANCE_RENDER_PATH
+                if (plan.get("vector_sweep") or {}).get("appearance_mode") == "omitted"
+                else appearance_render_path_from_plan(scene_plan)
+            ),
         )
         runner = NativeIsaacLabControlSweepWaveRunner(
             plan=plan,

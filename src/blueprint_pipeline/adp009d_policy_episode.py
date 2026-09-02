@@ -544,8 +544,7 @@ def _prestart_episode_readiness(
     max_policy_queries: int,
     open_loop_horizon: int,
     settle_window_samples: int,
-    observation_integrity_authority: Mapping[str, Any] | None = None,
-    appearance_render_backend_receipt_digest: str | None = None,
+    observation_integrity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Exercise every predictable runtime seam, then restore canonical reset.
 
@@ -655,42 +654,13 @@ def _prestart_episode_readiness(
     prepolicy_frames.update(
         external=camera_rgb[DROID_EXTERIOR_VIEW_1], wrist=camera_rgb[DROID_WRIST_VIEW]
     )
-    # The candidate client is already loaded by the time an episode runs (the
-    # paired session loads each policy once, then runs its cells), so the
-    # receipt says so.  No query has been made: ``policy_evidence`` above
-    # refused a queried control plane before this point.
     prepolicy_visual_quality = _evidence(
         prepolicy_visual_readiness_evidence,
         camera_rgb=prepolicy_frames,
         candidate_policy_loaded=True,
-        candidate_policy_queried=bool(
-            getattr(policy, "candidate_policy_queried", False)
-        ),
-        observation_integrity_authority=observation_integrity_authority,
-        appearance_render_backend_receipt_digest=(
-            appearance_render_backend_receipt_digest
-        ),
+        candidate_policy_queried=bool(getattr(policy, "candidate_policy_queried", False)),
+        observation_integrity=observation_integrity,
     )
-    if not prepolicy_visual_quality["frame_structure_passed"]:
-        raise PolicyEpisodeError(
-            [
-                f"{BLOCKER_PRESTART_READINESS}:{blocker}"
-                for blocker in prepolicy_visual_quality["blockers"]
-            ]
-        )
-    # A structural pass is not observation integrity.  Scene 839873's frames
-    # passed every structural check and were visibly corrupt; only sealed
-    # same-pose parity bound to this backend plus human approval may unlock
-    # the first query.
-    if prepolicy_visual_quality["policy_observation_integrity_passed"] is not True:
-        raise PolicyEpisodeError(
-            [
-                f"{BLOCKER_PRESTART_READINESS}:{blocker}"
-                for blocker in prepolicy_visual_quality[
-                    "policy_observation_integrity_blockers"
-                ]
-            ]
-        )
 
     # Exercise the same step/readback seam the episode will use, while holding
     # the reset joint targets.  This is not a learned-policy action.
@@ -817,8 +787,7 @@ def run_policy_episode(
     scoring_authorized: bool = True,
     require_complete_multicamera_media: bool = False,
     require_prestart_readiness: bool = False,
-    observation_integrity_authority: Mapping[str, Any] | None = None,
-    appearance_render_backend_receipt_digest: str | None = None,
+    observation_integrity: Mapping[str, Any] | None = None,
     progress: dict[str, Any] | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -971,10 +940,7 @@ def run_policy_episode(
             max_policy_queries=int(max_policy_queries),
             open_loop_horizon=int(open_loop_horizon),
             settle_window_samples=int(settle_window_samples),
-            observation_integrity_authority=observation_integrity_authority,
-            appearance_render_backend_receipt_digest=(
-                appearance_render_backend_receipt_digest
-            ),
+            observation_integrity=observation_integrity,
         )
         episode_progress["prestart_readiness"] = prestart_readiness
         episode_progress["episode_readiness_verified"] = True

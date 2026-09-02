@@ -48,8 +48,15 @@ NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH = "particlefield_3d_gaussian_splat"
 #: canary worker launched with no path at all and inherited the legacy NuRec
 #: default, so the two receipts disagreed about which renderer a Website run
 #: would use.  A default argument must not select the scientific representation.
+#: A lane that composes no site appearance at all (control sweeps run with
+#: ``appearance_mode: omitted`` and cameras disabled) says so explicitly.
+NATIVE_TASK_ARENA_NO_APPEARANCE_RENDER_PATH = "no_site_appearance"
 NATIVE_TASK_ARENA_APPEARANCE_RENDER_PATHS = frozenset(
-    {NATIVE_TASK_ARENA_NUREC_RENDER_PATH, NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH}
+    {
+        NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
+        NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH,
+        NATIVE_TASK_ARENA_NO_APPEARANCE_RENDER_PATH,
+    }
 )
 NATIVE_TASK_ARENA_UJITSO_GEOMETRY_SETTING = "/UJITSO/geometry"
 # Omniverse RTX composites ParticleField prims "as-is": their light fields are
@@ -489,6 +496,7 @@ __all__ = [
     "NATIVE_TASK_ARENA_GAUSSIAN_SKIP_TONEMAPPING_SETTING",
     "NATIVE_TASK_ARENA_IMAGE",
     "NATIVE_TASK_ARENA_KIT_ARGS",
+    "NATIVE_TASK_ARENA_NO_APPEARANCE_RENDER_PATH",
     "NATIVE_TASK_ARENA_NUREC_EXTENSION",
     "NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH",
     "NATIVE_TASK_ARENA_NUREC_SCHEMA",

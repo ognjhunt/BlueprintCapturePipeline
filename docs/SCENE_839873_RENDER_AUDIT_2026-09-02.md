@@ -111,14 +111,18 @@ background layers, and (c) reinterprets a private format. It is therefore
 recorded in the new backend contract as
 `particlefield_blueprint_private_tensor_conversion`, `development_only=True`,
 never a production default. The production route is the pinned direct transcode
-wrapper (`isaac_nurec_export.transcode_nurec_usdz_to_particlefield`).
+adapter that PR #1567 landed on `main` during this audit
+(`nvidia_3dgrut_particlefield_transcode.write_direct_particlefield_from_nurec`,
+authoring identity `nvidia_3dgrut_direct_nurec_transcode`), which the policy
+canary worker now recognises from the packet request and seals as
+`particlefield_3dgrut_transcode`.
 
 ## Exact attributes, transforms and activations to compare
 
-Per-attribute digests are produced by both
-`validate_transcoded_particlefield` (direct transcode) and
-`particlefield_upstream_parity.attribute_digests` (reference model), so the
-comparison is a receipt diff, not a viewer session.
+Per-attribute digests are produced by
+`particlefield_upstream_parity.attribute_digests` from any ParticleField's
+arrays and from the reference model, so the comparison is a receipt diff, not
+a viewer session.
 
 | Item | Upstream (3DGRUT `a37ef72`) | Blueprint current | Status |
 |---|---|---|---|
@@ -149,7 +153,7 @@ importer already applies the authored Volume transform).
 | Critical | `native_task_camera_observability.py:790-862` | One overloaded `passed` covered blankness, clipping, near-black and duplicates only; it unlocked policy queries in `adp009d_policy_episode.py:656-664`. | Receipt v2 separates `frame_structure_passed`, `appearance_reference_parity_passed`, `human_visual_review_status`, `target_semantic_visibility_passed` (owned elsewhere) and `policy_observation_integrity_passed`; only the last unlocks a query. Parity and review come from a sealed `policy_observation_integrity_authority.v1` bound by digest to the session's backend. |
 | High | `native_task_camera_observability.py:854` (`"candidate_policy_loaded": False`) | Hard-coded while `execute_paired_session` (`native_task_arena_policy_canary_session.py:582-602`) loads each policy before its first episode. | `candidate_policy_loaded` is a required keyword; the episode passes `True`; a new optional pre-load hook in `execute_paired_session` runs before the first `load_policy` and the worker uses it to refuse a session with zero client loads when the authority is missing, unbound, failed, or unreviewed. |
 | High | `native_task_nurec_render_setup.py` `apply_display_referred_particlefield_material` | Refused any authored `projectionModeHint`/`sortingModeHint`, i.e. it would block NVIDIA's direct transcode output at runtime (found only by reading the code; would otherwise surface on the next GPU). | Accepts the upstream token sets; still refuses unknown tokens. |
-| Medium | `isaac_nurec_export.py` | Wrapped `transcode` for PLY input only; no NuRec-USDZ entry, no pinned revision, no output validation. | `transcode_nurec_usdz_to_particlefield`: digest check before any subprocess, pinned revision, whitelist-only environment (no NGC/cloud tokens forwarded), scrubbed stdout/stderr tails, output validation of counts/degree/hints/colour space/material/transform with per-attribute digests, sealed receipt, and `nurec_state_reinterpreted_by_blueprint=False`. |
+| Medium | `isaac_nurec_export.py` (at 418091d) | Wrapped `transcode` for PLY input only; no NuRec-USDZ entry, no pinned revision, no output validation. | Landed on `main` during this audit as PR #1567 (`nvidia_3dgrut_particlefield_transcode.py`: pinned `a37ef721`, hint and colour-space validation, `nvidia_3dgrut_direct_nurec_transcode` authoring identity). This PR binds that identity into the typed backend contract from the packet request and adds the per-attribute parity model; it adds no second wrapper. |
 | Medium | `particlefield_usd.py:747-914` | Correct arithmetic, but a private reinterpretation at the least-understood boundary; its output self-check refuses hints. | Left as the typed development comparator; parity pinned by `tests/test_particlefield_upstream_parity.py`. |
 | Low | `particlefield_usd.py` docstring | Still describes direct Blueprint authoring. | Not changed (documentation-only; follow-up). |
 
@@ -159,9 +163,9 @@ Mapping to the packet's twelve required tests:
 
 | # | Required test | Test |
 |---|---|---|
-| 1 | Direct-transcode command is digest-pinned and secret-free | `test_direct_transcode_command_is_pinned_and_carries_no_secrets`, `test_direct_transcode_forwards_only_the_environment_whitelist_and_scrubs_output` |
-| 2 | Source identity mismatch fails before invoking a container | `test_direct_transcode_refuses_identity_mismatch_before_invoking_anything` |
-| 3 | Wrong count / SH degree / hints / colour space fails | `test_direct_transcode_output_contract_drift_fails_closed` |
+| 1 | Direct-transcode command is digest-pinned and secret-free | PR #1567 `tests/test_nvidia_3dgrut_particlefield_transcode.py` (pinned revision, source identity) |
+| 2 | Source identity mismatch fails before invoking a container | PR #1567 `tests/test_nvidia_3dgrut_particlefield_transcode.py` |
+| 3 | Wrong count / SH degree / hints / colour space fails | PR #1567 validator; `test_full_production_converter_output_matches_upstream_reference` shows it refusing the legacy converter's prim while the attribute digests match |
 | 4 | Backend digest mismatch fails | `test_prepolicy_gate_unlocks_only_with_bound_parity_and_approved_review`, `test_preload_gate_requires_authority_bound_to_this_backend`, `test_unbound_failed_or_unreviewed_authority_keeps_the_episode_blocked` |
 | 5 | Launcher receives the backend explicitly; no default | `test_launch_requires_an_explicit_known_appearance_render_path`, `test_every_arena_worker_derives_the_render_path_from_its_plan`, rehearsal asserts `isaac.appearance_render_paths` |
 | 6 | Truthful loaded/query state | `test_prepolicy_gate_records_the_caller_supplied_policy_load_state`, `test_prestart_receipt_records_that_the_candidate_is_loaded_but_not_queried` |

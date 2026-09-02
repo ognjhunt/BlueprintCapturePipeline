@@ -182,7 +182,6 @@ def test_full_production_converter_output_matches_upstream_reference(tmp_path: P
 
     from blueprint_pipeline.aura_nurec_usdz import write_aura_nurec_usdz
     from blueprint_pipeline.common import sha256_file
-    from blueprint_pipeline.isaac_nurec_export import validate_transcoded_particlefield
     from blueprint_pipeline.particlefield_usd import write_particlefield_usd_from_nurec
 
     arrays = _nurec_arrays(256)
@@ -237,15 +236,19 @@ def test_full_production_converter_output_matches_upstream_reference(tmp_path: P
     report = compare_particlefield_attributes(candidate, reference, atol=1e-6)
     assert report["passed"] is True, report
 
-    # The production converter's prim carries none of the upstream hints or
-    # colour-space metadata; the direct-transcode validator therefore refuses
-    # it, which is the documented difference between the two routes.
-    validation = validate_transcoded_particlefield(out, expected_gaussian_count=256)
-    assert validation["passed"] is False
-    assert set(validation["blockers"]) == {
-        "nurec_transcode_projection_hint_unexpected",
-        "nurec_transcode_sorting_hint_unexpected",
-        "nurec_transcode_color_space_unexpected",
-    }
-    assert validation["attribute_digests"]["sh_coefficients"] == attribute_digests(reference)["sh_coefficients"]
-    assert validation["attribute_digests"]["positions"] == attribute_digests(reference)["positions"]
+    # The legacy converter's prim carries none of the upstream hints or
+    # colour-space metadata; the direct-transcode validator (PR #1567)
+    # therefore refuses it, which is the documented difference between the
+    # two routes.  The learned attributes are nevertheless digest-identical.
+    from blueprint_pipeline.nvidia_3dgrut_particlefield_transcode import (
+        Nvidia3DGrutTranscodeError,
+        validate_direct_particlefield,
+    )
+
+    with pytest.raises(Nvidia3DGrutTranscodeError):
+        validate_direct_particlefield(out)
+    # Positions and SH are bit-identical; the activated attributes agree to
+    # float32 rounding (asserted by the parity report above), so their byte
+    # digests may legitimately differ between the two routes.
+    for name in ("positions", "sh_coefficients"):
+        assert attribute_digests(candidate)[name] == attribute_digests(reference)[name]

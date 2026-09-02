@@ -40,7 +40,13 @@ def _sha256_prefixed(value: Any) -> str:
     return text if text.startswith("sha256:") else f"sha256:{text}"
 
 
-def appearance_render_backend_from_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
+PACKET_REQUEST_FILENAME = "native_task_arena_packet_request.v1.json"
+OFFICIAL_TRANSCODE_IMPLEMENTATION = "nvidia_3dgrut_direct_nurec_transcode"
+
+
+def appearance_render_backend_from_plan(
+    plan: Mapping[str, Any], *, packet_request: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """Seal the appearance backend the sealed scene plan actually composes.
 
     Scene 839873's render-only probe named the ParticleField path while this
@@ -48,6 +54,11 @@ def appearance_render_backend_from_plan(plan: Mapping[str, Any]) -> dict[str, An
     backend is now derived from the plan here, passed explicitly to the
     launcher, and carried by digest through the session receipt so a same-pose
     parity authority can be bound to exactly this renderer and conversion.
+
+    The packet request's ``appearance_variant`` (source Gaussian digest and
+    authoring implementation) is the preferred identity source; a plan whose
+    ``appearance_frame_alignment`` carries ``source_asset_sha256`` and
+    ``conversion_identity`` is accepted when no packet request is present.
     """
 
     from blueprint_pipeline.native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
@@ -69,12 +80,31 @@ def appearance_render_backend_from_plan(plan: Mapping[str, Any]) -> dict[str, An
         raise RuntimeError("policy_canary_scene_appearance_asset_not_exact")
     composed_digest = _sha256_prefixed(rows[0]["sha256"])
     alignment = dict(plan.get("appearance_frame_alignment") or {})
+    variant = (packet_request or {}).get("appearance_variant")
+    variant = dict(variant) if isinstance(variant, Mapping) else {}
     try:
         if render_path == "particlefield_3d_gaussian_splat":
-            source_digest = str(alignment.get("source_asset_sha256") or "").strip()
+            source_digest = str(
+                variant.get("source_gaussian_sha256")
+                or alignment.get("source_asset_sha256")
+                or ""
+            ).strip()
             if not source_digest:
                 raise RuntimeError("policy_canary_appearance_source_digest_missing")
-            conversion_identity = str(alignment.get("conversion_identity") or "").strip()
+            implementation = str(variant.get("particlefield_authoring_implementation") or "")
+            upstream = variant.get("upstream_converter")
+            upstream = dict(upstream) if isinstance(upstream, Mapping) else {}
+            if implementation == OFFICIAL_TRANSCODE_IMPLEMENTATION:
+                conversion_identity = (
+                    "threedgrut.export.scripts.transcode@"
+                    f"{upstream.get('source_revision') or 'unpinned'}"
+                )
+            elif implementation:
+                conversion_identity = (
+                    f"{implementation}@{upstream.get('version') or upstream.get('source_revision') or 'unpinned'}"
+                )
+            else:
+                conversion_identity = str(alignment.get("conversion_identity") or "").strip()
             official = conversion_identity.startswith("threedgrut.export.scripts.transcode")
             backend = build_appearance_render_backend(
                 kind=(
@@ -1222,7 +1252,11 @@ def _run_selected_cell(
     current_env: dict[str, Any] = {}
     current_session: dict[str, Any] = {}
 
-    appearance_render_backend = appearance_render_backend_from_plan(base_scene_plan)
+    packet_request_path = runtime / "native_task_packet" / PACKET_REQUEST_FILENAME
+    appearance_render_backend = appearance_render_backend_from_plan(
+        base_scene_plan,
+        packet_request=_read(packet_request_path) if packet_request_path.is_file() else None,
+    )
     authority_path = (
         runtime / "runtime_inputs" / OBSERVATION_INTEGRITY_AUTHORITY_FILENAME
     )
@@ -1368,10 +1402,12 @@ def _run_selected_cell(
                 scoring_authorized=True,
                 require_complete_multicamera_media=True,
                 require_prestart_readiness=True,
-                observation_integrity_authority=observation_integrity_authority,
-                appearance_render_backend_receipt_digest=(
-                    appearance_render_backend["receipt_digest"]
-                ),
+                observation_integrity={
+                    "authority": observation_integrity_authority,
+                    "appearance_render_backend_receipt_digest": (
+                        appearance_render_backend["receipt_digest"]
+                    ),
+                },
                 progress=episode_progress,
             )
         except Exception as exc:

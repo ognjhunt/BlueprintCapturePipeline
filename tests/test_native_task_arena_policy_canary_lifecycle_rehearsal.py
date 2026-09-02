@@ -1031,10 +1031,12 @@ def test_real_clients_refuse_a_second_readiness_preflight_after_inference(
             episode_id=f"{candidate}-{label}",
             require_complete_multicamera_media=True,
             require_prestart_readiness=True,
-            observation_integrity_authority=_observation_integrity_authority(),
-            appearance_render_backend_receipt_digest=(
-                worker.appearance_render_backend_from_plan(_scene_plan())["receipt_digest"]
-            ),
+            observation_integrity={
+                "authority": _observation_integrity_authority(),
+                "appearance_render_backend_receipt_digest": (
+                    worker.appearance_render_backend_from_plan(_scene_plan())["receipt_digest"]
+                ),
+            },
         )
 
     for candidate, receipt in (("pi05_droid", None), ("groot_n17_droid", groot_receipt)):

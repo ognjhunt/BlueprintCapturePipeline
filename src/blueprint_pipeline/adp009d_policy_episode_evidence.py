@@ -96,15 +96,20 @@ def prepolicy_visual_readiness_evidence(
     camera_rgb: Mapping[str, Any],
     candidate_policy_loaded: bool,
     candidate_policy_queried: bool = False,
-    observation_integrity_authority: Mapping[str, Any] | None = None,
-    appearance_render_backend_receipt_digest: str | None = None,
+    observation_integrity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Measure the exact three-camera reset domain before policy inference.
 
     ``candidate_policy_loaded`` is what the caller knows to be true: the
     paired session loads a candidate before its first episode, so an
     episode-level gate reports ``True`` even though no query has happened.
+    ``observation_integrity`` carries the sealed
+    ``policy_observation_integrity_authority.v1`` (``authority``) and the
+    session's ``appearance_render_backend_receipt_digest``; without both the
+    gate refuses before the first query.
     """
+
+    binding = dict(observation_integrity or {})
 
     try:  # flat provider-bundle layout
         from native_task_camera_observability import (
@@ -122,19 +127,37 @@ def prepolicy_visual_readiness_evidence(
                 [f"{PRESTART_READINESS_BLOCKER}:prepolicy_visual_gate_unavailable"]
             ) from exc
     try:
-        return measure_native_task_prepolicy_visual_frames(
+        receipt = measure_native_task_prepolicy_visual_frames(
             camera_rgb,
             candidate_policy_loaded=candidate_policy_loaded,
             candidate_policy_queried=candidate_policy_queried,
-            observation_integrity_authority=observation_integrity_authority,
-            appearance_render_backend_receipt_digest=(
-                appearance_render_backend_receipt_digest
+            observation_integrity_authority=binding.get("authority"),
+            appearance_render_backend_receipt_digest=binding.get(
+                "appearance_render_backend_receipt_digest"
             ),
         )
     except NativeTaskCameraObservabilityError as exc:
         raise PolicyEpisodeEvidenceError(
             [f"{PRESTART_READINESS_BLOCKER}:{error}" for error in exc.errors]
         ) from exc
+    # A structural pass is not observation integrity: Scene 839873's frames
+    # passed every structural check and were visibly corrupt.  Only sealed
+    # same-pose parity bound to this backend plus human approval may unlock
+    # the first query.
+    blockers = (
+        receipt["blockers"]
+        if not receipt["frame_structure_passed"]
+        else (
+            []
+            if receipt["policy_observation_integrity_passed"] is True
+            else receipt["policy_observation_integrity_blockers"]
+        )
+    )
+    if blockers:
+        raise PolicyEpisodeEvidenceError(
+            [f"{PRESTART_READINESS_BLOCKER}:{blocker}" for blocker in blockers]
+        )
+    return receipt
 
 
 def json_safe_policy_action(value: Any) -> Any:

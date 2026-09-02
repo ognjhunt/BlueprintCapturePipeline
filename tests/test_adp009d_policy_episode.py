@@ -195,6 +195,13 @@ def _observation_integrity_authority(
     )
 
 
+def _integrity(authority, *, backend_digest: str = _BACKEND_RECEIPT_DIGEST) -> dict:
+    return {
+        "authority": authority,
+        "appearance_render_backend_receipt_digest": backend_digest,
+    }
+
+
 def _run(environment=None, policy=None, **overrides):
     kwargs = dict(
         environment=environment or _Environment(),
@@ -206,12 +213,11 @@ def _run(environment=None, policy=None, **overrides):
         max_policy_queries=4,
         settle_window_samples=6,
     )
-    if overrides.get("require_prestart_readiness") and "observation_integrity_authority" not in overrides:
+    if overrides.get("require_prestart_readiness") and "observation_integrity" not in overrides:
         # Prestart readiness now also requires sealed observation integrity;
         # tests of the other prestart checks get an approved authority so they
         # keep exercising what they were written for.
-        kwargs["observation_integrity_authority"] = _observation_integrity_authority()
-        kwargs["appearance_render_backend_receipt_digest"] = _BACKEND_RECEIPT_DIGEST
+        kwargs["observation_integrity"] = _integrity(_observation_integrity_authority())
     kwargs.update(overrides)
     return run_policy_episode(**kwargs)
 
@@ -2262,8 +2268,7 @@ def test_structural_pass_without_sealed_observation_integrity_blocks_before_any_
             episode_id="lifecycle-no-authority",
             require_complete_multicamera_media=True,
             require_prestart_readiness=True,
-            observation_integrity_authority=None,
-            appearance_render_backend_receipt_digest=_BACKEND_RECEIPT_DIGEST,
+            observation_integrity=_integrity(None),
             progress=progress,
         )
     message = str(excinfo.value)
@@ -2297,8 +2302,7 @@ def test_unbound_failed_or_unreviewed_authority_keeps_the_episode_blocked(
             episode_id="lifecycle-authority-" + expected,
             require_complete_multicamera_media=True,
             require_prestart_readiness=True,
-            observation_integrity_authority=_observation_integrity_authority(**authority_kwargs),
-            appearance_render_backend_receipt_digest=_BACKEND_RECEIPT_DIGEST,
+            observation_integrity=_integrity(_observation_integrity_authority(**authority_kwargs)),
         )
     assert policy.observations == []
 

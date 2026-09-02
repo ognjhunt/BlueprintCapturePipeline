@@ -65,7 +65,10 @@ def _prepolicy_visual_gate_from_snapshot(
             )
         with Image.open(frame_path) as image:
             frames[role] = np.asarray(image.convert("RGB"))
-    return measure_native_task_prepolicy_visual_frames(frames)
+    # A render-only probe never constructs a policy client.
+    return measure_native_task_prepolicy_visual_frames(
+        frames, candidate_policy_loaded=False
+    )
 
 
 def _observed_contact_position_world(
