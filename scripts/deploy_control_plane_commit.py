@@ -69,6 +69,9 @@ from blueprint_pipeline.control_plane_disk_budget import (  # noqa: E402
     ControlPlaneDiskBudgetError,
     reserve_control_plane_disk,
 )
+from blueprint_pipeline.control_plane_storage_pins import (  # noqa: E402
+    DEFAULT_PINS_ROOT,
+)
 from blueprint_pipeline.control_plane_release_retirement import (  # noqa: E402
     ControlPlaneReleaseRetirementError,
     EXECUTE_ACK as RELEASE_RETIREMENT_ACK,
@@ -893,6 +896,69 @@ def _install_episode_compilation_runtime_directories(
             }
         )
     return receipts
+
+
+def _install_storage_pins_runtime_root(
+    *,
+    pins_root: str | Path = DEFAULT_PINS_ROOT,
+    account: str = DEFAULT_SERVICE_ACCOUNT,
+    chown: Any = os.chown,
+    stat_reader: Any = lambda path: path.stat(),
+) -> dict[str, Any]:
+    """Install the service-owned root required by every storage-pin writer."""
+
+    account_ids = _service_account_ids(account)
+    if account_ids is None:
+        raise ControlPlaneDeployError(
+            f"deploy_storage_pins_account_missing:{account}"
+        )
+    owner_uid, owner_gid = account_ids
+    root = Path(pins_root).expanduser()
+    if not root.is_absolute():
+        raise ControlPlaneDeployError("deploy_storage_pins_root_not_absolute")
+    if root.is_symlink():
+        raise ControlPlaneDeployError(
+            f"deploy_storage_pins_root_symlink:{root}"
+        )
+    try:
+        root.mkdir(parents=True, exist_ok=True, mode=0o750)
+        if root.is_symlink() or not root.is_dir():
+            raise ControlPlaneDeployError(
+                f"deploy_storage_pins_root_invalid:{root}"
+            )
+        metadata = stat_reader(root)
+        repaired = False
+        if metadata.st_uid != owner_uid or metadata.st_gid != owner_gid:
+            chown(root, owner_uid, owner_gid)
+            repaired = True
+            metadata = stat_reader(root)
+        if stat.S_IMODE(metadata.st_mode) != 0o750:
+            root.chmod(0o750)
+            repaired = True
+        readback = stat_reader(root)
+    except ControlPlaneDeployError:
+        raise
+    except OSError as exc:
+        raise ControlPlaneDeployError(
+            f"deploy_storage_pins_root_install_failed:{root}"
+        ) from exc
+    if (
+        readback.st_uid != owner_uid
+        or readback.st_gid != owner_gid
+        or stat.S_IMODE(readback.st_mode) != 0o750
+    ):
+        raise ControlPlaneDeployError(
+            f"deploy_storage_pins_root_readback_mismatch:{root}"
+        )
+    return {
+        "status": "ready",
+        "path": str(root),
+        "account": account,
+        "owner_uid": owner_uid,
+        "owner_gid": owner_gid,
+        "mode": "0750",
+        "repaired": repaired,
+    }
 
 
 def _install_configured_controls_runtime_prerequisites(
@@ -2051,6 +2117,7 @@ def deploy_control_plane_commit(
         episode_compilation_runtime_directories = (
             _install_episode_compilation_runtime_directories()
         )
+        storage_pins_runtime = _install_storage_pins_runtime_root()
         configured_controls_runtime = (
             _install_configured_controls_runtime_prerequisites()
         )
@@ -2131,6 +2198,7 @@ def deploy_control_plane_commit(
         "episode_compilation_runtime_directories": (
             episode_compilation_runtime_directories
         ),
+        "storage_pins_runtime": storage_pins_runtime,
         "configured_controls_runtime": configured_controls_runtime,
         "configured_controls_autostart_registry": (
             configured_controls_autostart_registry

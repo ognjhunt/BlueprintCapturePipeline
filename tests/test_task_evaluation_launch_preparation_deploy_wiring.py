@@ -388,6 +388,8 @@ def test_every_storage_pin_writer_has_exact_systemd_write_access() -> None:
             f"{unit} touches storage pins but its strict filesystem sandbox does not "
             "expose the pins ledger as an exact writable path"
         )
+    deploy_source = text("scripts/deploy_control_plane_commit.py")
+    assert "_install_storage_pins_runtime_root()" in deploy_source
 
 
 def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -> None:

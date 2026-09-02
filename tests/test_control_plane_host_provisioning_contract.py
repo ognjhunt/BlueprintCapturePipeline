@@ -120,6 +120,16 @@ def test_installer_reconciles_a_ledger_stranded_at_a_previous_root() -> None:
     )
 
 
+def test_installer_creates_the_storage_pins_root_before_units_start() -> None:
+    text = _installer()
+    assert '"${STATE_DIR}/storage-pins"' in text
+    creation = text.index('"${STATE_DIR}/storage-pins"')
+    daemon_reload = text.index("systemctl daemon-reload")
+    assert creation < daemon_reload
+    before = text[max(0, creation - 500) : creation]
+    assert 'install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}"' in before
+
+
 def test_installer_refuses_to_continue_when_reconciliation_fails() -> None:
     """Installing over an unadopted ledger ships a host with no single-use gate."""
     text = _installer()
