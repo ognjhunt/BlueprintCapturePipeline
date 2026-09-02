@@ -38,6 +38,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/Bluepr
 Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs/prepared-references
 Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_OUTPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs/compiled-episodes
+Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && source_commit="$$(git rev-parse --verify HEAD^{commit})" && test -z "$$(git status --porcelain --untracked-files=no)" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_episode_compilation_worker --source-commit "$${source_commit}" --max-messages 4'

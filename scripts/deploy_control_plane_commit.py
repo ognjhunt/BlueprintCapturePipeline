@@ -65,6 +65,10 @@ from blueprint_pipeline.task_evaluation_configured_controls_autostart import (  
     configured_controls_autostart_registry_name,
     validate_configured_controls_autostart_intent,
 )
+from blueprint_pipeline.control_plane_disk_budget import (  # noqa: E402
+    ControlPlaneDiskBudgetError,
+    reserve_control_plane_disk,
+)
 
 SCHEMA_VERSION = "control_plane_commit_deploy_receipt.v1"
 
@@ -1637,6 +1641,7 @@ def deploy_control_plane_commit(
     ),
     configured_controls_autostart_intent_sources: Sequence[str] = (),
     arm_path_units: bool = False,
+    disk_reservation_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both."""
 
@@ -1736,6 +1741,21 @@ def deploy_control_plane_commit(
         provenance_receipt = dict(provenance_receipt)
         provenance_receipt.setdefault("promotion_eligible", True)
 
+    disk_reservation = None
+    if disk_reservation_root is not None:
+        try:
+            disk_reservation = reserve_control_plane_disk(
+                "control_plane_deploy",
+                target_root=releases,
+                reservation_root=disk_reservation_root,
+            )
+        except ControlPlaneDiskBudgetError as exc:
+            raise ControlPlaneDeployError(
+                f"deploy_disk_budget_exceeded:{exc}"
+            ) from exc
+    disk_reservation_receipt = (
+        disk_reservation.receipt() if disk_reservation is not None else None
+    )
     automation_unit_names = [
         {"unit": unit}
         for unit in DEFAULT_DEPLOYED_SYSTEMD_UNITS
@@ -1746,6 +1766,7 @@ def deploy_control_plane_commit(
     # guard restores exact watcher intent before the paid locks are released if
     # any later deploy step fails.
     with (
+        disk_reservation or contextlib.nullcontext(),
         _holding_paid_launch_locks(paid_launch_locks),
         _restore_path_unit_states_on_deploy_failure(automation_unit_names) as (
             automation_unit_states_before,
@@ -1882,6 +1903,7 @@ def deploy_control_plane_commit(
         "schema_version": SCHEMA_VERSION,
         "status": "deployed",
         "source_commit": commit,
+        "disk_reservation": disk_reservation_receipt,
         "surfaces": [
             {"name": name, "path": str(path), "head": observed[name]}
             for name, path in sorted(surfaces.items())
@@ -2093,6 +2115,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.configured_controls_autostart_intent or ()
             ),
             arm_path_units=args.arm_path_units,
+            disk_reservation_root=(
+                Path(args.state_root).expanduser() / "disk-reservations"
+            ),
         )
     except (OSError, ValueError, ControlPlaneReleaseError) as exc:
         print(

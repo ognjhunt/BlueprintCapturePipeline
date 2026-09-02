@@ -24,6 +24,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .decision_evidence_contracts import canonical_digest
+from .control_plane_disk_budget import (
+    ControlPlaneDiskBudgetError,
+    DiskReservation,
+    reserve_control_plane_disk,
+)
 from .task_evaluation_launch_preparation_contract import (
     validate_launch_preparation_request,
 )
@@ -749,6 +754,7 @@ def process_launch_preparation_queue(
     ),
     construction_queue_root: str | Path | None = None,
     episode_compilation_queue_root: str | Path | None = None,
+    disk_reservation_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Claim and materialize bounded queue items without any paid mutation."""
 
@@ -782,8 +788,20 @@ def process_launch_preparation_queue(
             claimed.unlink(missing_ok=True)
             continue
         terminal_state = "materialized"
+        disk_reservation: DiskReservation | None = None
         try:
             envelope = _load_envelope(claimed)
+            if disk_reservation_root is not None:
+                try:
+                    disk_reservation = reserve_control_plane_disk(
+                        "launch_preparation",
+                        target_root=input_root,
+                        reservation_root=disk_reservation_root,
+                    )
+                except ControlPlaneDiskBudgetError as exc:
+                    raise TaskEvaluationLaunchPreparationWorkerError(
+                        str(exc)
+                    ) from exc
             result = materialize_preparation_references(
                 request=envelope["request"],
                 input_root=Path(input_root) / str(envelope["request"]["preparation_id"]),
@@ -1196,6 +1214,8 @@ def process_launch_preparation_queue(
             result["result_digest"] = canonical_digest(
                 result, digest_field="result_digest"
             )
+        if disk_reservation is not None:
+            disk_reservation.release()
         result_path = results_root / source.name
         try:
             write_launch_preparation_record_exclusive(result_path, result)
@@ -1308,6 +1328,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_messages=args.max_messages,
             construction_queue_root=args.construction_queue_root,
             episode_compilation_queue_root=args.episode_compilation_queue_root,
+            disk_reservation_root=os.getenv(
+                "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"
+            ),
         )
     except (
         TaskEvaluationLaunchPreparationWorkerError,

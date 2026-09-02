@@ -38,6 +38,8 @@ Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production
 Environment=PRIVACY_PIPELINE_ENABLED=true
 Environment=PRIVACY_FAIL_CLOSED=true
 Environment=PIPELINE_SYNC_REQUIRED=true
+Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
+Environment=BLUEPRINT_CONTROL_PLANE_DISK_TARGET_ROOT=/var/lib/blueprint/task-evaluation-inputs
 Environment=RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/

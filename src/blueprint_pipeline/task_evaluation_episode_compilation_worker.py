@@ -20,6 +20,11 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .control_plane_disk_budget import (
+    ControlPlaneDiskBudgetError,
+    DiskReservation,
+    reserve_control_plane_disk,
+)
 from .task_evaluation_episode_compilation_queue import ENVELOPE_SCHEMA_VERSION
 from .task_evaluation_launch_preparation_contract import (
     TaskEvaluationLaunchPreparationContractError,
@@ -235,6 +240,7 @@ def process_episode_compilation_queue(
     source_commit: str,
     episode_compiler: EpisodeCompiler = compile_native_arena_episode,
     max_messages: int = 1,
+    disk_reservation_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Compile queued Website evaluations without allocating a provider."""
 
@@ -275,6 +281,7 @@ def process_episode_compilation_queue(
             continue
         terminal_state = "completed"
         owned_output: Path | None = None
+        disk_reservation: DiskReservation | None = None
         try:
             envelope = _load_envelope(claimed)
             if envelope["expected_production_commit"] != source_commit:
@@ -282,6 +289,17 @@ def process_episode_compilation_queue(
                     "episode_compilation_source_commit_mismatch"
                 )
             references = _verified_references(envelope, input_root=inputs)
+            if disk_reservation_root is not None:
+                try:
+                    disk_reservation = reserve_control_plane_disk(
+                        "episode_compilation",
+                        target_root=outputs,
+                        reservation_root=disk_reservation_root,
+                    )
+                except ControlPlaneDiskBudgetError as exc:
+                    raise TaskEvaluationEpisodeCompilationWorkerError(
+                        str(exc)
+                    ) from exc
             owned_output = outputs / envelope["compilation_id"]
             owned_output.mkdir(mode=0o750, exist_ok=False)
             compiler_output = _validated_compiler_output(
@@ -366,6 +384,8 @@ def process_episode_compilation_queue(
                 "blockers": [primary_blocker, *cleanup_blockers],
                 "result_digest": "",
             }
+        if disk_reservation is not None:
+            disk_reservation.release()
         result["result_digest"] = canonical_digest(
             result, digest_field="result_digest"
         )
@@ -410,6 +430,9 @@ def main(argv: list[str] | None = None) -> int:
         output_root=args.output_root,
         source_commit=args.source_commit,
         max_messages=args.max_messages,
+        disk_reservation_root=os.getenv(
+            "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"
+        ),
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

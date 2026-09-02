@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
+from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_preparation_queue import (
     launch_preparation_status,
@@ -555,6 +557,42 @@ def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> Non
     )
     assert compilation["production_compiler_owns_episode_packet"] is True
     assert compilation["customer_supplied_prebuilt_episode_packet"] is False
+
+
+def test_worker_refuses_low_disk_before_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value, _payloads = request_with_fetchable_bytes()
+    queue = tmp_path / "queue"
+    stage_launch_preparation_request(
+        value=value, queue_root=queue, submitted_by="blueprint-webapp"
+    )
+
+    def refuse(*_args, **_kwargs):
+        raise ControlPlaneDiskBudgetError(
+            "control_plane_disk_budget_exceeded:launch_preparation:"
+            "need_bytes=6:available_bytes=0:free_bytes=8:"
+            "floor_bytes=8:reserved_bytes=0"
+        )
+
+    monkeypatch.setattr(worker, "reserve_control_plane_disk", refuse)
+    run = process_launch_preparation_queue(
+        queue_root=queue,
+        input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=lambda *_args: pytest.fail("fetcher must not run"),
+        episode_compilation_queue_root=tmp_path / "episode-compilation",
+        disk_reservation_root=tmp_path / "reservations",
+    )
+
+    assert run["results"][0]["blockers"] == [
+        "control_plane_disk_budget_exceeded:launch_preparation:"
+        "need_bytes=6:available_bytes=0:free_bytes=8:"
+        "floor_bytes=8:reserved_bytes=0"
+    ]
+    assert not (tmp_path / "inputs" / value["preparation_id"]).exists()
 
 
 def test_episode_evaluation_reuses_revision_built_by_older_release(tmp_path) -> None:

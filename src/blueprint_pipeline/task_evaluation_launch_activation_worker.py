@@ -27,6 +27,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .decision_evidence_contracts import canonical_digest
+from . import control_plane_disk_budget as disk_budget
 from .task_evaluation_configured_scene_revision import (
     TaskEvaluationConfiguredSceneRevisionError,
     validate_configured_scene_revision,
@@ -1534,6 +1535,7 @@ def process_launch_activation_queue(
     max_messages: int = 1,
     fetcher: ReferenceFetcher = default_reference_fetcher,
     preparer: ActivationPreparer = default_activation_preparer,
+    disk_reservation_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Claim and activate bounded queue items without paid execution."""
 
@@ -1576,7 +1578,7 @@ def process_launch_activation_queue(
             continue
         processing_leases.append(_acquire_processing_lease(claimed))
         terminal_state = "prepared"
-        request: dict[str, Any] | None = None
+        request, disk_reservation = None, None
         try:
             envelope = _load_sealed(
                 claimed,
@@ -1584,6 +1586,12 @@ def process_launch_activation_queue(
                 digest_field="envelope_digest",
             )
             request = validate_launch_activation_request(envelope["request"])
+            if disk_reservation_root is not None:
+                disk_reservation = disk_budget.reserve_control_plane_disk(
+                    "launch_activation",
+                    target_root=activation_base,
+                    reservation_root=disk_reservation_root,
+                )
             if request["expected_production_commit"] != observed_commit:
                 raise TaskEvaluationLaunchActivationWorkerError(
                     "launch_activation_worker_source_commit_mismatch"
@@ -1760,6 +1768,7 @@ def process_launch_activation_queue(
                             TaskEvaluationLaunchActivationWorkerError,
                             TaskEvaluationLaunchPreparationWorkerError,
                             TaskEvaluationSharedMutationWindowError,
+                            disk_budget.ControlPlaneDiskBudgetError,
                         ),
                     )
                     else (
@@ -1780,6 +1789,8 @@ def process_launch_activation_queue(
             result["result_digest"] = canonical_digest(
                 result, digest_field="result_digest"
             )
+        if disk_reservation is not None:
+            disk_reservation.release()
         result_path = results_root / source.name
         try:
             write_launch_preparation_record_exclusive(result_path, result)
@@ -1991,6 +2002,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             standing_authorization_dir=args.standing_authorization_dir,
             source_commit=running_worker_source_commit(),
             max_messages=args.max_messages,
+            disk_reservation_root=os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"),
         )
     except (TaskEvaluationLaunchActivationWorkerError, OSError) as exc:
         print(json.dumps({
@@ -2011,7 +2023,6 @@ __all__ = [
     "process_launch_activation_queue",
     "validate_release_window_uri",
 ]
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
