@@ -375,12 +375,28 @@ def collect_policy_canary_vast_provider_zero() -> dict[str, Any]:
     return value
 
 
+def _adapter_instance_ids(adapter: Mapping[str, Any]) -> list[int]:
+    values = adapter.get("vast_instance_ids")
+    watchdog = adapter.get("independent_watchdog")
+    if values is None and isinstance(watchdog, Mapping) and (
+        watchdog.get("status") == "provider_terminal"
+        and watchdog.get("provider_absence_confirmed") is True
+    ):
+        values = watchdog.get("instance_ids")
+    if not isinstance(values, list) or any(
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        for value in values
+    ):
+        return []
+    return list(values)
+
+
 def _join_session_closeout(
     *, inner: Mapping[str, Any], adapter: Mapping[str, Any], provider_zero: Mapping[str, Any]
 ) -> dict[str, Any]:
     value = json.loads(json.dumps(dict(inner), allow_nan=False))
     episodes = value.get("episodes")
-    instance_ids = adapter.get("vast_instance_ids") or []
+    instance_ids = _adapter_instance_ids(adapter)
     closeout = adapter.get("provider_closeout")
     teardown_complete = (
         isinstance(closeout, Mapping)
@@ -435,13 +451,8 @@ def _materialize_official_billing_if_posted(
     if output_path.is_file():
         validate_vast_official_same_goal_reconciliation(output_path)
         return True
-    instance_ids = adapter.get("vast_instance_ids")
-    if (
-        not isinstance(instance_ids, list)
-        or len(instance_ids) != 1
-        or isinstance(instance_ids[0], bool)
-        or not isinstance(instance_ids[0], int)
-    ):
+    instance_ids = _adapter_instance_ids(adapter)
+    if len(instance_ids) != 1:
         return False
     audit = Path(billing_audit_root).expanduser().resolve()
     if not audit.is_dir() or audit.is_symlink():
