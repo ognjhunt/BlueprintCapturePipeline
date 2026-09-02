@@ -69,6 +69,10 @@ from blueprint_pipeline.task_evaluation_policy_run_contract import (
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     validate_runtime_input_manifest,
 )
+from blueprint_pipeline.task_evaluation_native_arena_preparation_adapter import (
+    RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX,
+    build_task_evaluation_runtime_source_bundle,
+)
 
 
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
@@ -921,7 +925,9 @@ def _sealed_claim(schema: str, status: str, scene_id: str, field: str) -> bytes:
     return json.dumps(value, sort_keys=True).encode()
 
 
-def _stage_verified_preparation(tmp_path: Path):
+def _stage_verified_preparation(
+    tmp_path: Path, *, external_runtime_layer: bool = False
+):
     request = preparation_request()
     request["preparation_id"] = "preparation-scene-841007-v1"
     request["run_id"] = "run-scene-841007-v1"
@@ -1011,6 +1017,34 @@ def _stage_verified_preparation(tmp_path: Path):
     payloads[str(request["scene"]["configured_revision"]["uri"])] = (
         configured_bytes
     )
+    external_layers: list[dict[str, object]] = []
+    if external_runtime_layer:
+        runtime_source = tmp_path / "runtime-source-builder"
+        runtime_source.mkdir()
+        (runtime_source / "runtime-packet.zip").write_bytes(
+            b"external-runtime-packet"
+        )
+        built = build_task_evaluation_runtime_source_bundle(
+            source_root=runtime_source,
+            output_path=tmp_path / "runtime-source-wrapper.zip",
+            expected_production_commit=request["expected_production_commit"],
+            runtime_identity=request["runtime"]["identity"],
+            external_layer_store_root=tmp_path / "external-layer-store",
+            external_layer_uri_prefix=(
+                "s3://blueprint-production-inputs/runtime-source-layers"
+            ),
+            external_layer_min_bytes=1,
+        )
+        wrapper = Path(str(built["path"]))
+        wrapper_uri = request["execution_adapter"]["runtime_source_bundle"][
+            "uri"
+        ]
+        wrapper_bytes = wrapper.read_bytes()
+        request["execution_adapter"]["runtime_source_bundle"].update(
+            _reference(wrapper_uri, wrapper_bytes)
+        )
+        payloads[wrapper_uri] = wrapper_bytes
+        external_layers = list(built["external_layers"])
 
     queue = tmp_path / "preparation-queue"
     intake = stage_launch_preparation_request(
@@ -1048,6 +1082,23 @@ def _stage_verified_preparation(tmp_path: Path):
                 materialize(child, (*path, str(index)))
 
     materialize(request)
+    for index, layer in enumerate(external_layers):
+        target = preparation_root / str(layer["sha256"]).removeprefix(
+            "sha256:"
+        )
+        target.write_bytes(Path(str(layer["store_path"])).read_bytes())
+        reference_rows.append(
+            {
+                "contract_path": (
+                    f"{RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX}{index}"
+                ),
+                "uri": layer["uri"],
+                "digest": layer["sha256"],
+                "size_bytes": layer["size_bytes"],
+                "materialized_path": str(target),
+                "full_byte_service_account_readback_passed": True,
+            }
+        )
     transitive_references = [
         (
             "scene.configured_revision.configured_scene_bundle",
@@ -1153,6 +1204,92 @@ def _stage_verified_preparation(tmp_path: Path):
     write_launch_preparation_record_exclusive(queue / "results" / filename, result)
     assert intake["request_digest"] == launch_preparation_request_digest(request)
     return request, result, payloads, queue, input_root
+
+
+def test_activation_accepts_every_layer_declared_by_runtime_source_wrapper(
+    tmp_path: Path,
+) -> None:
+    preparation, result, _payloads, queue, input_root = (
+        _stage_verified_preparation(tmp_path, external_runtime_layer=True)
+    )
+    activation = {
+        "preparation": {
+            "preparation_id": preparation["preparation_id"],
+            "request_digest": launch_preparation_request_digest(preparation),
+            "result_digest": result["result_digest"],
+        },
+        "team_namespace": preparation["team_namespace"],
+        "expected_production_commit": preparation[
+            "expected_production_commit"
+        ],
+    }
+
+    _request, _result, _adapter, references = worker._load_verified_preparation(
+        activation_request=activation,
+        preparation_queue_root=queue,
+        preparation_input_root=input_root,
+    )
+
+    layer_paths = sorted(
+        path
+        for path in references
+        if path.startswith(RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX)
+    )
+    assert layer_paths == [f"{RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX}0"]
+    assert references[layer_paths[0]].read_bytes() == b"external-runtime-packet"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "blocker"),
+    [
+        ("uri", "launch_activation_preparation_reference_invalid"),
+        ("extra", "launch_activation_preparation_reference_set_invalid"),
+    ],
+)
+def test_activation_refuses_external_layer_uri_mismatch_or_extra_reference(
+    tmp_path: Path, mutation: str, blocker: str
+) -> None:
+    preparation, _result, _payloads, queue, input_root = (
+        _stage_verified_preparation(tmp_path, external_runtime_layer=True)
+    )
+    result_path = next((queue / "results").glob("*.json"))
+    sealed = json.loads(result_path.read_text(encoding="utf-8"))
+    if mutation == "uri":
+        layer = next(
+            row
+            for row in sealed["references"]
+            if row["contract_path"].startswith(
+                RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX
+            )
+        )
+        layer["uri"] = "s3://blueprint-production-inputs/substituted-layer"
+    else:
+        extra = dict(sealed["references"][0])
+        extra["contract_path"] = f"{RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX}99"
+        sealed["references"].append(extra)
+    sealed["result_digest"] = canonical_digest(
+        sealed, digest_field="result_digest"
+    )
+    result_path.chmod(0o640)
+    result_path.write_text(json.dumps(sealed), encoding="utf-8")
+    activation = {
+        "preparation": {
+            "preparation_id": preparation["preparation_id"],
+            "request_digest": launch_preparation_request_digest(preparation),
+            "result_digest": sealed["result_digest"],
+        },
+        "team_namespace": preparation["team_namespace"],
+        "expected_production_commit": preparation[
+            "expected_production_commit"
+        ],
+    }
+
+    with pytest.raises(TaskEvaluationLaunchActivationWorkerError, match=blocker):
+        worker._load_verified_preparation(
+            activation_request=activation,
+            preparation_queue_root=queue,
+            preparation_input_root=input_root,
+        )
 
 
 def _release_window(request: dict[str, object], now: datetime) -> bytes:
