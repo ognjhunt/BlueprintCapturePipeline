@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 from pathlib import Path
@@ -284,6 +285,43 @@ def test_canary_accepts_a_pushed_branch_commit(tmp_path: Path) -> None:
     # It fails later on this synthetic host, but NOT on reachability.
     assert "deploy_canary_commit_not_pushed_to_origin" not in message
     assert "deploy_iteration_commit_not_on_origin_main" not in message
+
+
+def test_canary_admission_is_preserved_at_stage_and_activation() -> None:
+    """Both release checks must admit the same pushed canary identity.
+
+    Deploy stages the release before building runtimes, moves the source
+    checkout, then calls the release helper again to activate it.  Omitting the
+    canary flag from that second call burned the full build time and refused a
+    correctly pushed experimental commit only at activation.
+    """
+
+    tree = ast.parse(
+        (REPO / "scripts" / "deploy_control_plane_commit.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "stage_task_evaluation_control_plane_release"
+    ]
+
+    assert len(calls) == 2
+    for call in calls:
+        keyword = next(
+            (
+                item
+                for item in call.keywords
+                if item.arg == "allow_unmerged_remote_commit"
+            ),
+            None,
+        )
+        assert keyword is not None
+        assert isinstance(keyword.value, ast.Name)
+        assert keyword.value.id == "canary"
 
 
 def test_canary_still_refuses_an_unpushed_commit(tmp_path: Path) -> None:
