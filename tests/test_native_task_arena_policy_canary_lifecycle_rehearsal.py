@@ -599,6 +599,117 @@ def test_selected_cell_queries_both_real_clients_and_seals_before_isaac_close(
     assert (child_root / "policy_canary_telemetry_index.json").is_file()
 
 
+def test_selected_cell_retains_real_policy_action_rejected_by_joint_limits(
+    tmp_path: Path,
+) -> None:
+    """Production regression for π0.5 cell 03's rejected joint-4 chunk."""
+
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    child_root = provider_output / "cell_runs" / "03"
+    child_root.mkdir(parents=True)
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    base_runtime = _rehearsal_runtime(isaac)
+
+    class _Scene839873Environment(_LifecycleEnvironment):
+        def reset(self) -> None:
+            super().reset()
+            self._joints[3] = -1.0
+
+        def joint_limits(self):
+            limits = [[-2.9, 2.9] for _ in range(7)]
+            limits[3] = [-3.0717999935150146, -0.0697999969124794]
+            return limits
+
+    class _RejectedOpenPIVendor(_OpenPIVendor):
+        def infer(self, observation: dict[str, Any]) -> dict[str, Any]:
+            response = super().infer(observation)
+            actions = response["actions"]
+            actions[0, 3] = -0.07
+            actions[1:8, 3] = -0.06750612128169087
+            actions[8:, 3] = -0.07
+            return response
+
+    def policy_client(spec: dict[str, Any], *, groot_worker_identity_receipt=None):
+        if spec["candidate_id"] != "pi05_droid":
+            return _real_policy_client(
+                spec,
+                groot_worker_identity_receipt=groot_worker_identity_receipt,
+            )
+        policy_spec = OpenPIDroidPolicySpec(**spec["policy_spec"])
+        endpoint = spec["policy_endpoint"]
+        return OpenPIWebsocketDroidPolicyClient(
+            spec=policy_spec,
+            host=str(endpoint["host"]),
+            port=int(endpoint["port"]),
+            client_factory=lambda **_kwargs: _RejectedOpenPIVendor(policy_spec),
+        )
+
+    runtime = worker.CellRuntime(
+        **{
+            **base_runtime.__dict__,
+            "build_episode_environment": lambda **kwargs: (
+                _Scene839873Environment(),
+                {
+                    "schema_version": "rehearsal_episode_environment.v1",
+                    "seed": kwargs["built"].env.reset_seeds[-1],
+                },
+            ),
+            "policy_client": policy_client,
+        }
+    )
+
+    with pytest.raises(SystemExit) as exited:
+        worker._run_selected_cell(
+            3,
+            runtime_root=runtime_root,
+            output_root=child_root,
+            provider_output_root=provider_output,
+            cell_runtime=runtime,
+        )
+
+    assert exited.value.code == 0
+    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+    rejected = next(
+        row for row in result["episodes"] if row["candidate_id"] == "pi05_droid"
+    )
+    assert rejected["status"] == "blocked"
+    assert rejected["candidate_policy_queried"] is True
+    assert rejected["candidate_action_returned"] is True
+    assert rejected["candidate_action_bounds_validated"] is False
+    assert rejected["actions_reached_robot"] is False
+    assert rejected["policy_outcome_interpretable"] is False
+    assert rejected["episode_failure_stage"] == "action_delivery_rejected"
+    assert rejected["visual_evidence"]["status"] == "complete"
+    assert rejected["visual_evidence"].get("media_gap") is None
+    rejection = rejected["action_delivery_rejection"]
+    assert rejection["status"] == "rejected_before_robot"
+    assert rejection["clamping_performed"] is False
+    assert rejection["delivery_attempted"] is False
+    assert rejection["violations"] == [
+        "candidate_action_joint_position_bounds_invalid:count=7:first_row=1:"
+        "first_dimension=3:value=-0.06750612128169087:"
+        "bounds=[-3.0717999935150146,-0.0697999969124794]"
+    ]
+    raw_queries = rejected["candidate_policy_action_queries"]
+    assert raw_queries[0]["raw_vendor_action_response"]["actions"][1][3] == (
+        -0.06750612128169087
+    )
+    assert rejected["evidence_artifacts"]["frame_manifest"] is not None
+    assert rejected["evidence_artifacts"]["review_video"] is not None
+    action_path = child_root / rejected["evidence_artifacts"]["action_sequence"][
+        "relative_path"
+    ]
+    assert action_path.is_file()
+    retained_action = json.loads(action_path.read_text(encoding="utf-8"))[0]
+    assert retained_action["raw_vendor_action_response"]["actions"][1][3] == (
+        -0.06750612128169087
+    )
+    completed = next(
+        row for row in result["episodes"] if row["candidate_id"] == "groot_n17_droid"
+    )
+    assert completed["status"] == "completed"
+
+
 def test_quick10_rehearsal_runs_twenty_real_client_rollouts_in_ten_isolated_processes(
     tmp_path: Path,
 ) -> None:
