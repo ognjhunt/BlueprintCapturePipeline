@@ -38,6 +38,69 @@ _SPEC.loader.exec_module(publisher)
 COMMIT = "0" * 40
 
 
+def _window_template(*, commit: str) -> dict[str, object]:
+    value: dict[str, object] = {
+        "schema_version": "task_evaluation_configured_controls_release_window_template.v1",
+        "status": "authorized_for_dynamic_release",
+        "team_namespace": "blueprint-adp",
+        "expected_production_commit": commit,
+        "allowed_mutations": [
+            "catalog_synchronization",
+            "profile_publication",
+            "standing_authorization",
+        ],
+        "provider_allowlist": ["vast"],
+        "maximum_hard_cap_usd": 4.0,
+        "valid_for_seconds": 3600,
+        "released_by": "Blueprint-owner",
+        "release_reference": "ADP-009D policy canary no-spend activation",
+        "provider_resource_allocation_allowed": False,
+        "paid_request_allowed": False,
+        "template_digest": "",
+    }
+    value["template_digest"] = canonical_digest(
+        value, digest_field="template_digest"
+    )
+    return value
+
+
+def test_policy_canary_profile_fetches_release_window_template_before_publication(
+    tmp_path: Path,
+) -> None:
+    template = _window_template(commit="1" * 40)
+    payload = (json.dumps(template, sort_keys=True) + "\n").encode()
+    profile = {
+        "source_commit": "2" * 40,
+        "task_evaluation_run": {"team_namespace": "blueprint-adp"},
+        "internal_policy_canary_execution_plan": {
+            "activation_automation": {
+                "release_window_template": {
+                    "uri": "s3://example/template.json",
+                    "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                    "size_bytes": len(payload),
+                }
+            }
+        },
+    }
+
+    with pytest.raises(
+        TaskEvaluationLaunchError,
+        match="launch_profile_policy_canary_release_window_template_invalid",
+    ):
+        publisher._validate_policy_canary_release_window_template_reference(
+            profile,
+            fetcher=lambda _uri, destination, _maximum: destination.write_bytes(
+                payload
+            ),
+        )
+
+    profile["source_commit"] = "1" * 40
+    publisher._validate_policy_canary_release_window_template_reference(
+        profile,
+        fetcher=lambda _uri, destination, _maximum: destination.write_bytes(payload),
+    )
+
+
 def _profile(tmp_path: Path, profile_id: str) -> dict:
     """A minimal profile that passes both fail-closed validators."""
     manifest = tmp_path / f"{profile_id}-source.json"
