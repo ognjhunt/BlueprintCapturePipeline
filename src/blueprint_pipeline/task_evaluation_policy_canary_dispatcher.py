@@ -1284,6 +1284,33 @@ def dispatch_policy_canary_activation(
     joined = _join_session_closeout(inner=inner, adapter=adapter, provider_zero=provider_zero)
     joined["run_id"] = activation["run_id"]
     joined["configuration_digest"] = runtime_inputs["configuration_digest"]
+    joined["scene_revision_digest"] = setup["scene_revision_digest"]
+    joined["provider"] = "vast"
+    joined["provider_instance_ids"] = list(adapter.get("vast_instance_ids") or [])
+    selected_container = str(adapter.get("selected_container_image") or "")
+    container_match = re.search(r"sha256:[0-9a-f]{64}", selected_container)
+    if container_match:
+        joined["runtime_container_digest"] = container_match.group(0)
+    started_at = str(adapter.get("generated_at") or "")
+    teardown_for_timing = Path(str(adapter.get("teardown_manifest_path") or ""))
+    completed_at = ""
+    if teardown_for_timing.is_file():
+        completed_at = str(
+            _read(teardown_for_timing, code="policy_canary_teardown_manifest_invalid").get(
+                "generated_at"
+            )
+            or ""
+        )
+    if started_at and completed_at:
+        joined["started_at_iso"] = started_at
+        joined["completed_at_iso"] = completed_at
+        joined["duration_seconds"] = max(
+            0.0,
+            (
+                datetime.fromisoformat(completed_at)
+                - datetime.fromisoformat(started_at)
+            ).total_seconds(),
+        )
     joined["result_digest"] = canonical_digest(joined, digest_field="result_digest")
     joined_path = root / "policy_canary_terminal_result.json"
     write_json(joined_path, joined)
@@ -1361,6 +1388,14 @@ def dispatch_policy_canary_activation(
         write_json(root / "dispatch_pending.json", pending)
         return pending
     validate_vast_official_same_goal_reconciliation(billing_path)
+    billing = _read(billing_path, code="policy_canary_official_billing_invalid")
+    official_total_usd = billing.get("official_total_usd")
+    if isinstance(official_total_usd, (int, float)) and not isinstance(
+        official_total_usd, bool
+    ):
+        joined["official_total_usd"] = float(official_total_usd)
+        joined["result_digest"] = canonical_digest(joined, digest_field="result_digest")
+        write_json(joined_path, joined)
     teardown_path = Path(str(adapter.get("teardown_manifest_path") or "")).resolve()
     closure = {
         "billing": {**_record(billing_path), "official_billing_sealed": True},

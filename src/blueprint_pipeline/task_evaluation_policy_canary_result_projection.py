@@ -212,6 +212,19 @@ def build_policy_canary_result_projection(
         for candidate in CANDIDATE_IDS
     ]
     result_status = str(delivery["result_status"])
+    delivery_reproducibility = dict(delivery.get("reproducibility") or {})
+    reproducibility_artifacts = {
+        "evidence_manifest": delivery_reproducibility.get("evidence_manifest")
+        or (delivery.get("report") or {}).get("evidence_manifest"),
+        "billing_receipt": delivery_reproducibility.get("billing_receipt")
+        or (delivery.get("closure") or {}).get("billing"),
+        "teardown_receipt": delivery_reproducibility.get("teardown_receipt")
+        or (delivery.get("closure") or {}).get("teardown"),
+        "provider_zero_receipt": delivery_reproducibility.get(
+            "provider_zero_receipt"
+        )
+        or (delivery.get("closure") or {}).get("provider_zero"),
+    }
     value: dict[str, Any] = {
         "schema_version": "task_evaluation_policy_canary_result_projection.v1",
         "run_id": delivery["run_id"],
@@ -223,6 +236,7 @@ def build_policy_canary_result_projection(
         "scene_controls_status": "configured_controls_pending",
         "result_status": result_status,
         "warning": "Controls pending — results are unqualified.",
+        "matrix_digest": delivery.get("matrix_digest"),
         "counts": {
             "policy_count": 2,
             "episodes_per_policy": 10,
@@ -270,6 +284,37 @@ def build_policy_canary_result_projection(
         "blockers": list(result.get("blockers") or []),
         "projection_digest": "",
     }
+    scene_revision_digest = setup.get("scene_revision_digest") or result.get(
+        "scene_revision_digest"
+    )
+    if _is_digest(scene_revision_digest) and all(
+        isinstance(record, Mapping) for record in reproducibility_artifacts.values()
+    ):
+        value["reproducibility"] = {
+            "scene_revision_digest": scene_revision_digest,
+            "runtime_container_digest": delivery_reproducibility.get(
+                "runtime_container_digest"
+            ),
+            "scoring_version": delivery_reproducibility.get("scoring_version"),
+            "observation_schema_id": delivery_reproducibility.get(
+                "observation_schema_id"
+            ),
+            "action_schema_id": delivery_reproducibility.get("action_schema_id"),
+            **{
+                name: compact_artifact(record)
+                for name, record in reproducibility_artifacts.items()
+            },
+            "official_total_usd": delivery_reproducibility.get(
+                "official_total_usd"
+            ),
+            "started_at_iso": delivery_reproducibility.get("started_at_iso"),
+            "completed_at_iso": delivery_reproducibility.get("completed_at_iso"),
+            "duration_seconds": delivery_reproducibility.get("duration_seconds"),
+            "provider": delivery_reproducibility.get("provider"),
+            "provider_instance_ids": delivery_reproducibility.get(
+                "provider_instance_ids"
+            ),
+        }
     value["projection_digest"] = cross_runtime_canonical_digest(
         value, digest_field="projection_digest"
     )
