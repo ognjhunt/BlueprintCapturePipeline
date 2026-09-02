@@ -155,6 +155,40 @@ def test_episode_compiler_has_hardened_no_network_service_and_path_unit() -> Non
     assert "compiled-episodes" in service
 
 
+def test_every_disk_reservation_worker_has_exact_systemd_write_access() -> None:
+    reservation_root = "/var/lib/blueprint/pipeline-control-plane/disk-reservations"
+    workers = {
+        "blueprint-task-evaluation-launch-preparation.service": (
+            "src/blueprint_pipeline/task_evaluation_launch_preparation_worker.py"
+        ),
+        "blueprint-task-evaluation-episode-compilation.service": (
+            "src/blueprint_pipeline/task_evaluation_episode_compilation_worker.py"
+        ),
+        "blueprint-task-evaluation-launch-activation.service": (
+            "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py"
+        ),
+        "blueprint-task-evaluation-policy-canary-dispatcher.service": (
+            "src/blueprint_pipeline/task_evaluation_policy_canary_dispatcher.py"
+        ),
+    }
+    for unit, module in workers.items():
+        assert "reserve_control_plane_disk(" in text(module)
+        service = text(f"deploy/systemd/{unit}")
+        assert (
+            f"Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT="
+            f"{reservation_root}"
+        ) in service
+        write_paths = next(
+            line.split("=", 1)[1].split()
+            for line in service.splitlines()
+            if line.startswith("ReadWritePaths=")
+        )
+        assert reservation_root in write_paths, (
+            f"{unit} calls disk reservation but its strict filesystem sandbox "
+            "does not expose the ledger as an exact writable path"
+        )
+
+
 def test_canonical_installer_installs_and_enables_episode_compilation_pair() -> None:
     installer = text("scripts/install_live_pipeline_control_plane.sh")
     for unit in (
