@@ -12,10 +12,9 @@ from blueprint_pipeline.adp009d_droid_observation import (
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_policy_canary_camera_reframe import (
+    MOUNT_CANDIDATE_SCHEMA_VERSION,
     OVERVIEW_RENDER_RESOLUTION,
     POLICY_RENDER_RESOLUTION,
-    WRIST_FORWARD_MOUNT_OFFSET_M,
-    WRIST_LATERAL_MOUNT_OFFSET_M,
     PolicyCanaryCameraReframeError,
     materialize_policy_canary_camera_reframe,
 )
@@ -83,6 +82,23 @@ def _preflight() -> dict:
     }
 
 
+def _mount_candidate() -> dict:
+    value = {
+        "schema_version": MOUNT_CANDIDATE_SCHEMA_VERSION,
+        "candidate_id": "franka_robotiq_wrist_side_mount_v1",
+        "source": "robot_preset_registry",
+        "target_binding": "task_start_position",
+        "forward_offset_m": 0.14,
+        "lateral_offset_m": 0.08,
+        "maximum_offset_m": 0.17,
+        "candidate_digest": "",
+    }
+    value["candidate_digest"] = canonical_digest(
+        value, digest_field="candidate_digest"
+    )
+    return value
+
+
 def test_reaims_only_wrist_rotation_and_increases_capture_resolution(
     tmp_path: Path,
 ) -> None:
@@ -90,6 +106,7 @@ def test_reaims_only_wrist_rotation_and_increases_capture_resolution(
     result = materialize_policy_canary_camera_reframe(
         base_request=base,
         runtime_preflight=_preflight(),
+        wrist_mount_candidate=_mount_candidate(),
         output_path=tmp_path / "request.json",
     )
 
@@ -113,8 +130,8 @@ def test_reaims_only_wrist_rotation_and_increases_capture_resolution(
     old_right = np.asarray([1.0, 0.0, 0.0])
     expected_position = (
         old_position
-        + WRIST_FORWARD_MOUNT_OFFSET_M * old_forward
-        + WRIST_LATERAL_MOUNT_OFFSET_M * old_right
+        + 0.14 * old_forward
+        + 0.08 * old_right
     )
     assert [wrist[3], wrist[7], wrist[11]] == pytest.approx(
         expected_position.tolist()
@@ -161,5 +178,24 @@ def test_reframe_refuses_incomplete_native_camera_readback(tmp_path: Path) -> No
         materialize_policy_canary_camera_reframe(
             base_request=_request(),
             runtime_preflight=preflight,
+            wrist_mount_candidate=_mount_candidate(),
+            output_path=tmp_path / "request.json",
+        )
+
+
+def test_reframe_refuses_mount_candidate_without_bound_registry_digest(
+    tmp_path: Path,
+) -> None:
+    candidate = _mount_candidate()
+    candidate["forward_offset_m"] = 0.19
+
+    with pytest.raises(
+        PolicyCanaryCameraReframeError,
+        match="policy_canary_camera_reframe_mount_candidate_invalid",
+    ):
+        materialize_policy_canary_camera_reframe(
+            base_request=_request(),
+            runtime_preflight=_preflight(),
+            wrist_mount_candidate=candidate,
             output_path=tmp_path / "request.json",
         )

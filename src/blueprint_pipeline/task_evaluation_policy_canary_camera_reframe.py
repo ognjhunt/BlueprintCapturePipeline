@@ -31,10 +31,9 @@ from .native_task_arena_packet import validate_native_task_arena_packet_request
 
 
 SCHEMA_VERSION = "task_evaluation_policy_canary_camera_reframe.v1"
+MOUNT_CANDIDATE_SCHEMA_VERSION = "policy_canary_wrist_camera_mount_candidate.v1"
 POLICY_RENDER_RESOLUTION = (640, 360)
 OVERVIEW_RENDER_RESOLUTION = (1280, 720)
-WRIST_FORWARD_MOUNT_OFFSET_M = 0.14
-WRIST_LATERAL_MOUNT_OFFSET_M = 0.08
 
 
 class PolicyCanaryCameraReframeError(ValueError):
@@ -196,10 +195,44 @@ def _scaled_intrinsics(
     return scaled
 
 
+def _mount_candidate(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise PolicyCanaryCameraReframeError(
+            "policy_canary_camera_reframe_mount_candidate_invalid"
+        )
+    candidate = json.loads(json.dumps(dict(value), allow_nan=False))
+    try:
+        forward = float(candidate["forward_offset_m"])
+        lateral = float(candidate["lateral_offset_m"])
+        maximum = float(candidate["maximum_offset_m"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PolicyCanaryCameraReframeError(
+            "policy_canary_camera_reframe_mount_candidate_invalid"
+        ) from exc
+    magnitude = math.hypot(forward, lateral)
+    if (
+        candidate.get("schema_version") != MOUNT_CANDIDATE_SCHEMA_VERSION
+        or not str(candidate.get("candidate_id") or "").strip()
+        or candidate.get("source") != "robot_preset_registry"
+        or candidate.get("target_binding") != "task_start_position"
+        or not 0.0 <= forward <= 0.20
+        or not -0.12 <= lateral <= 0.12
+        or not magnitude <= maximum <= 0.25
+        or candidate.get("candidate_digest")
+        != canonical_digest(candidate, digest_field="candidate_digest")
+    ):
+        raise PolicyCanaryCameraReframeError(
+            "policy_canary_camera_reframe_mount_candidate_invalid"
+        )
+    candidate["resolved_offset_magnitude_m"] = magnitude
+    return candidate
+
+
 def materialize_policy_canary_camera_reframe(
     *,
     base_request: Mapping[str, Any],
     runtime_preflight: Mapping[str, Any],
+    wrist_mount_candidate: Mapping[str, Any],
     output_path: str | Path,
 ) -> dict[str, Any]:
     """Write one digest-bound camera variant requiring fresh native review."""
@@ -233,6 +266,7 @@ def materialize_policy_canary_camera_reframe(
         blocker="policy_canary_camera_reframe_task_pose_invalid",
     )
     target = start_pose[:3]
+    mount = _mount_candidate(wrist_mount_candidate)
 
     for role, camera in by_role.items():
         width, height = (
@@ -265,8 +299,8 @@ def materialize_policy_canary_camera_reframe(
     forward = [initial_aim[row][2] for row in range(3)]
     desired_position = [
         old_position[index]
-        + WRIST_FORWARD_MOUNT_OFFSET_M * forward[index]
-        + WRIST_LATERAL_MOUNT_OFFSET_M * right[index]
+        + mount["forward_offset_m"] * forward[index]
+        + mount["lateral_offset_m"] * right[index]
         for index in range(3)
     ]
     desired_world = _look_at(desired_position, target)
@@ -277,9 +311,7 @@ def materialize_policy_canary_camera_reframe(
             for index in range(3)
         )
     )
-    expected_offset = math.hypot(
-        WRIST_FORWARD_MOUNT_OFFSET_M, WRIST_LATERAL_MOUNT_OFFSET_M
-    )
+    expected_offset = mount["resolved_offset_magnitude_m"]
     if not math.isclose(world_offset, expected_offset, abs_tol=1.0e-9):
         raise PolicyCanaryCameraReframeError(
             "policy_canary_camera_reframe_wrist_offset_invalid"
@@ -300,10 +332,13 @@ def materialize_policy_canary_camera_reframe(
         "policy_preprocessing_contract": (
             "candidate_specific_aspect_preserving_resize_with_centred_black_pad"
         ),
-        "wrist_forward_mount_offset_m": WRIST_FORWARD_MOUNT_OFFSET_M,
-        "wrist_lateral_mount_offset_m": WRIST_LATERAL_MOUNT_OFFSET_M,
+        "wrist_mount_candidate_id": mount["candidate_id"],
+        "wrist_mount_candidate_digest": mount["candidate_digest"],
+        "wrist_mount_candidate_source": mount["source"],
+        "wrist_forward_mount_offset_m": mount["forward_offset_m"],
+        "wrist_lateral_mount_offset_m": mount["lateral_offset_m"],
         "wrist_mount_offset_magnitude_m": world_offset,
-        "wrist_mount_offset_bounded": world_offset <= 0.17,
+        "wrist_mount_offset_bounded": world_offset <= mount["maximum_offset_m"],
         "wrist_rotation_aimed_at_task_start": True,
         "camera_configuration_qualified": False,
         "fresh_native_render_required": True,
@@ -323,11 +358,10 @@ def materialize_policy_canary_camera_reframe(
 
 
 __all__ = [
+    "MOUNT_CANDIDATE_SCHEMA_VERSION",
     "OVERVIEW_RENDER_RESOLUTION",
     "POLICY_RENDER_RESOLUTION",
     "PolicyCanaryCameraReframeError",
     "SCHEMA_VERSION",
-    "WRIST_FORWARD_MOUNT_OFFSET_M",
-    "WRIST_LATERAL_MOUNT_OFFSET_M",
     "materialize_policy_canary_camera_reframe",
 ]
