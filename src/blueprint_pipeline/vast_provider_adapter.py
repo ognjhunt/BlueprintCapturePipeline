@@ -1844,13 +1844,60 @@ def _load_machine_avoidlist(path: Path) -> dict[str, Any]:
     )
 
 
-def _avoidlist_machine_ids(path: Path) -> set[int]:
-    data = _load_machine_avoidlist(path)
-    ids = _machine_id_set(data.get("machine_ids") or [])
-    for entry in data.get("entries") or []:
-        if isinstance(entry, Mapping):
-            ids.update(_machine_id_set([entry.get("machine_id")]))
+def _machine_avoidlist_ids(data: Mapping[str, Any]) -> set[int]:
+    """Read every admitted avoidlist shape without silently dropping bad rows."""
+
+    status = _string(data.get("status"))
+    if status.startswith("blocked_"):
+        raise ValueError(f"vast_machine_avoidlist_invalid:{status}")
+    schema_version = data.get("schema_version")
+    if schema_version not in (None, "vast_machine_avoidlist.v1"):
+        raise ValueError("vast_machine_avoidlist_invalid:schema_version")
+
+    def machine_id(value: Any, *, field: str) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"vast_machine_avoidlist_invalid:{field}")
+        if isinstance(value, int):
+            resolved = value
+        elif isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value.strip()):
+            resolved = int(value.strip())
+        else:
+            raise ValueError(f"vast_machine_avoidlist_invalid:{field}")
+        if resolved <= 0:
+            raise ValueError(f"vast_machine_avoidlist_invalid:{field}")
+        return resolved
+
+    ids: set[int] = set()
+    direct_ids = data.get("machine_ids")
+    if direct_ids is not None:
+        if not isinstance(direct_ids, list):
+            raise ValueError("vast_machine_avoidlist_invalid:machine_ids")
+        for index, value in enumerate(direct_ids):
+            ids.add(machine_id(value, field=f"machine_ids.{index}"))
+
+    # ``machines`` is the original v1 publication shape retained by the arena
+    # lane. ``entries`` is the current adapter-written shape. Both are valid
+    # inputs and carry the same provider machine identity.
+    for field in ("entries", "machines"):
+        rows = data.get(field)
+        if rows is None:
+            continue
+        if not isinstance(rows, list):
+            raise ValueError(f"vast_machine_avoidlist_invalid:{field}")
+        for index, row in enumerate(rows):
+            if not isinstance(row, Mapping):
+                raise ValueError(f"vast_machine_avoidlist_invalid:{field}.{index}")
+            ids.add(
+                machine_id(
+                    row.get("machine_id"),
+                    field=f"{field}.{index}.machine_id",
+                )
+            )
     return ids
+
+
+def _avoidlist_machine_ids(path: Path) -> set[int]:
+    return _machine_avoidlist_ids(_load_machine_avoidlist(path))
 
 
 def _record_machine_avoidlist_entry(
@@ -1878,7 +1925,7 @@ def _record_machine_avoidlist_entry(
             "retry_policy": "exclude_persistently_across_sibling_jobs_until_manual_review",
         }
         entries.append(entry)
-    machine_ids = sorted(_avoidlist_machine_ids(path) | _machine_id_set([machine_id]))
+    machine_ids = sorted(_machine_avoidlist_ids(data) | _machine_id_set([machine_id]))
     payload = {
         "schema_version": "vast_machine_avoidlist.v1",
         "generated_at": generated_at,
@@ -7467,9 +7514,9 @@ def run_vast_provider_adapter(
         else bool(prefer_isaac_rt)
     )
     avoidlist = _load_machine_avoidlist(resolved_machine_avoidlist_path)
-    excluded_machine_ids = _avoidlist_machine_ids(
-        resolved_machine_avoidlist_path
-    ) | _machine_id_set(excluded_machine_ids)
+    excluded_machine_ids = _machine_avoidlist_ids(avoidlist) | _machine_id_set(
+        excluded_machine_ids
+    )
     resolved_allowed_machine_ids = _machine_id_set(allowed_machine_ids)
     resolved_allowed_active_instance_ids = _machine_id_set(allowed_active_instance_ids)
     launch_mode = _resolve_launch_mode(
@@ -10275,7 +10322,7 @@ def run_vast_provider_adapter(
                 blockers=current_blockers,
                 reason=avoidlist_reason,
             )
-            excluded_machine_ids = _machine_id_set(avoidlist.get("machine_ids") or [])
+            excluded_machine_ids = _machine_avoidlist_ids(avoidlist)
         base_result.update(
             {
                 "vast_instance_ids": instance_ids,
