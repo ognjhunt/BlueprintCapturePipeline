@@ -140,6 +140,7 @@ try:  # flat provider-bundle layout
         BLOCKER_CLIENT_RETURNED_NOTHING,
         PolicyEpisodeEvidenceError,
         motion_and_command_evidence as _build_motion_and_command_evidence,
+        policy_input_saturation_evidence,
         prevalidation_vendor_action_evidence as _prevalidation_vendor_action_evidence,
         raw_policy_action_evidence as _raw_policy_action_evidence,
         terminal_class_for_policy_exception as _terminal_class_for_policy_exception,
@@ -150,6 +151,7 @@ except ModuleNotFoundError:  # repository package
         BLOCKER_CLIENT_RETURNED_NOTHING,
         PolicyEpisodeEvidenceError,
         motion_and_command_evidence as _build_motion_and_command_evidence,
+        policy_input_saturation_evidence,
         prevalidation_vendor_action_evidence as _prevalidation_vendor_action_evidence,
         raw_policy_action_evidence as _raw_policy_action_evidence,
         terminal_class_for_policy_exception as _terminal_class_for_policy_exception,
@@ -531,45 +533,6 @@ def _project_media_reserve_bytes(
     )
 
 
-def _validate_policy_input_frame_saturation(
-    camera_rgb: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Refuse clipped policy-input frames before any candidate query.
-
-    The scene-839873 r13 cells fed both candidates frames whose captured site
-    was a per-channel clamp of radiance far above display white (white blobs
-    with chromatic fringes), while every retained review PNG had been
-    display-encoded from the HDR buffer, so nothing upstream could see it.
-    This reads the exact arrays the observation is built from.  A bundle that
-    cannot import the gate refuses rather than proceeding blind.
-    """
-
-    try:  # flat provider-bundle layout
-        from native_task_camera_observability import (
-            NativeTaskCameraObservabilityError,
-            validate_native_task_policy_input_frames,
-        )
-    except ModuleNotFoundError:  # repository package / arena bundle
-        try:
-            from .native_task_camera_observability import (
-                NativeTaskCameraObservabilityError,
-                validate_native_task_policy_input_frames,
-            )
-        except ImportError as exc:
-            raise PolicyEpisodeError(
-                [
-                    f"{BLOCKER_PRESTART_READINESS}:"
-                    "policy_input_saturation_gate_unavailable"
-                ]
-            ) from exc
-    try:
-        return validate_native_task_policy_input_frames(camera_rgb)
-    except NativeTaskCameraObservabilityError as exc:
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_PRESTART_READINESS}:{error}" for error in exc.errors]
-        ) from exc
-
-
 def _prestart_episode_readiness(
     *,
     environment: EpisodeEnvironment,
@@ -632,7 +595,7 @@ def _prestart_episode_readiness(
         for view in CANDIDATE_REQUIRED_VIEWS[candidate_id]
         if view in inputs
     }
-    policy_input_saturation = _validate_policy_input_frame_saturation(camera_rgb)
+    policy_input_saturation = _evidence(policy_input_saturation_evidence, camera_rgb=camera_rgb)
     try:
         observation = build_droid_observation(
             candidate_id=candidate_id,
@@ -794,18 +757,10 @@ def _prestart_episode_readiness(
     return readiness
 
 
-def _motion_and_command_evidence(
-    *,
-    joint_trace: Sequence[Sequence[float]],
-    commanded_actions: Sequence[Mapping[str, Any]],
-    command_response_rows: int,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+def _evidence(build: Callable[..., Any], **kwargs: Any) -> Any:
+    """Evidence builders refuse with PolicyEpisodeEvidenceError; raise the episode error."""
     try:
-        return _build_motion_and_command_evidence(
-            joint_trace=joint_trace,
-            commanded_actions=commanded_actions,
-            command_response_rows=command_response_rows,
-        )
+        return build(**kwargs)
     except PolicyEpisodeEvidenceError as exc:
         raise PolicyEpisodeError(exc.errors) from exc
 
@@ -1267,7 +1222,8 @@ def run_policy_episode(
         visual["episode_terminal_reason"] = f"{type(exc).__name__}:{exc}"
         episode_progress["visual_evidence"] = visual
 
-        motion_evidence, action_magnitudes = _motion_and_command_evidence(
+        motion_evidence, action_magnitudes = _evidence(
+            _build_motion_and_command_evidence,
             joint_trace=joint_trace,
             commanded_actions=commanded_actions,
             command_response_rows=command_response_rows,
@@ -1866,7 +1822,8 @@ def run_policy_episode(
                 "not scored, ranked, or qualified"
             ),
         }
-    motion_evidence, commanded_action_magnitudes = _motion_and_command_evidence(
+    motion_evidence, commanded_action_magnitudes = _evidence(
+        _build_motion_and_command_evidence,
         joint_trace=joint_trace,
         commanded_actions=commanded_actions,
         command_response_rows=command_response_rows,

@@ -2121,3 +2121,21 @@ def test_readiness_receipt_carries_the_policy_input_saturation_evidence(tmp_path
     assert saturation["passed"] is True
     assert set(saturation["views"]) == {DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW}
     assert saturation["views"][DROID_EXTERIOR_VIEW_1]["saturated_channel_pixel_fraction"] == 0.0
+
+
+def test_policy_input_saturation_evidence_carries_the_prestart_readiness_prefix() -> None:
+    from blueprint_pipeline.adp009d_policy_episode import BLOCKER_PRESTART_READINESS
+    from blueprint_pipeline.adp009d_policy_episode_evidence import (
+        PRESTART_READINESS_BLOCKER,
+        PolicyEpisodeEvidenceError,
+        policy_input_saturation_evidence,
+    )
+
+    assert PRESTART_READINESS_BLOCKER == BLOCKER_PRESTART_READINESS
+    clipped = np.full((24, 32, 3), 255, dtype=np.uint8)
+    with pytest.raises(PolicyEpisodeEvidenceError) as failure:
+        policy_input_saturation_evidence(camera_rgb={DROID_WRIST_VIEW: clipped})
+
+    assert failure.value.errors == [
+        f"{PRESTART_READINESS_BLOCKER}:native_task_policy_input_frame_saturated:{DROID_WRIST_VIEW}"
+    ]

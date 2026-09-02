@@ -43,6 +43,10 @@ except ModuleNotFoundError:  # repository package
 
 ARM_MOTION_EPSILON_RAD = 1e-6
 BLOCKER_CLIENT_RETURNED_NOTHING = "policy_episode_client_returned_no_chunk"
+PRESTART_READINESS_BLOCKER = "policy_episode_prestart_readiness_failed"
+BLOCKER_POLICY_INPUT_SATURATION_GATE_UNAVAILABLE = (
+    f"{PRESTART_READINESS_BLOCKER}:policy_input_saturation_gate_unavailable"
+)
 
 
 class PolicyEpisodeEvidenceError(ValueError):
@@ -51,6 +55,40 @@ class PolicyEpisodeEvidenceError(ValueError):
     def __init__(self, errors: Sequence[str]):
         self.errors = [str(error) for error in errors]
         super().__init__(";".join(self.errors))
+
+
+def policy_input_saturation_evidence(*, camera_rgb: Mapping[str, Any]) -> dict[str, Any]:
+    """Refuse clipped policy-input frames before any candidate query.
+
+    The scene-839873 r13 cells fed both candidates frames whose captured site
+    was a per-channel clamp of radiance far above display white (white blobs
+    with chromatic fringes), while every retained review PNG had been
+    display-encoded from the HDR buffer, so nothing upstream could see it.
+    This reads the exact arrays the observation is built from.  A bundle that
+    cannot import the gate refuses rather than proceeding blind.
+    """
+
+    try:  # flat provider-bundle layout
+        from native_task_camera_observability import (
+            NativeTaskCameraObservabilityError,
+            validate_native_task_policy_input_frames,
+        )
+    except ModuleNotFoundError:  # repository package / arena bundle
+        try:
+            from .native_task_camera_observability import (
+                NativeTaskCameraObservabilityError,
+                validate_native_task_policy_input_frames,
+            )
+        except ImportError as exc:
+            raise PolicyEpisodeEvidenceError(
+                [BLOCKER_POLICY_INPUT_SATURATION_GATE_UNAVAILABLE]
+            ) from exc
+    try:
+        return validate_native_task_policy_input_frames(camera_rgb)
+    except NativeTaskCameraObservabilityError as exc:
+        raise PolicyEpisodeEvidenceError(
+            [f"{PRESTART_READINESS_BLOCKER}:{error}" for error in exc.errors]
+        ) from exc
 
 
 def json_safe_policy_action(value: Any) -> Any:
@@ -325,6 +363,9 @@ def motion_and_command_evidence(
 
 
 __all__ = [
+    "BLOCKER_POLICY_INPUT_SATURATION_GATE_UNAVAILABLE",
+    "PRESTART_READINESS_BLOCKER",
+    "policy_input_saturation_evidence",
     "ARM_MOTION_EPSILON_RAD",
     "BLOCKER_CLIENT_RETURNED_NOTHING",
     "PolicyEpisodeEvidenceError",
