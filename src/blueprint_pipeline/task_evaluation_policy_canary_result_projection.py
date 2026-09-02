@@ -51,12 +51,16 @@ def build_policy_canary_result_projection(
     def bound_artifact(record: Any) -> dict[str, Any] | None:
         if not isinstance(record, Mapping):
             return None
+        relative_path = record.get("relative_path")
+        if not isinstance(relative_path, str) or not relative_path:
+            return None
         matches = [
             artifact
             for artifact in public_artifacts
             if artifact.get("role") == record.get("role")
             and artifact.get("digest") == record.get("sha256")
             and artifact.get("size_bytes") == record.get("size_bytes")
+            and artifact.get("relative_path") == relative_path
         ]
         if len(matches) != 1:
             return None

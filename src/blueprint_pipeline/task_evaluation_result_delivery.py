@@ -682,7 +682,7 @@ def materialize_policy_canary_result_delivery(
     delivery_root.mkdir(parents=True, exist_ok=True)
     registry_artifacts: list[dict[str, Any]] = []
     public_artifacts: list[dict[str, Any]] = []
-    public_artifacts_by_binding: dict[tuple[str, str, int], dict[str, Any]] = {}
+    public_artifacts_by_binding: dict[tuple[str, str, int, str], dict[str, Any]] = {}
 
     def add_artifact(*, role: str, path: Path, artifact_root: Path) -> dict[str, Any]:
         resolved = path.resolve()
@@ -710,7 +710,7 @@ def materialize_policy_canary_result_delivery(
             "access_mode": "authenticated_ticket",
         }
         public_artifacts.append(public)
-        public_artifacts_by_binding[(role, digest, resolved.stat().st_size)] = public
+        public_artifacts_by_binding[(role, digest, resolved.stat().st_size, relative)] = public
         registry_artifacts.append(
             {
                 **public,
@@ -731,9 +731,10 @@ def materialize_policy_canary_result_delivery(
         source_role = str(role or record.get("role") or "")
         digest = str(record.get("sha256") or record.get("digest") or "")
         size = record.get("size_bytes")
-        if not source_role or not isinstance(size, int):
+        relative = str(record.get("relative_path") or "")
+        if not source_role or not isinstance(size, int) or not relative:
             return None
-        return public_artifacts_by_binding.get((source_role, digest, size))
+        return public_artifacts_by_binding.get((source_role, digest, size, relative))
 
     def bound_artifact_by_digest(record: Any, *, role: str) -> dict[str, Any] | None:
         if not isinstance(record, Mapping):
