@@ -588,6 +588,108 @@ def _install_release_provenance_access(
         "verified_paths": [str(path) for path in targets],
     }
 
+
+def _install_disk_reservation_runtime_prerequisites(
+    reservation_root: str | Path,
+    *,
+    account: str = DEFAULT_SERVICE_ACCOUNT,
+    root_uid: int = 0,
+    chown: Any = os.chown,
+    stat_reader: Any = lambda path: path.stat(),
+) -> dict[str, Any]:
+    """Install the shared disk ledger so root and runtime workers can use it.
+
+    Deploy reserves disk as root, while every queue worker reserves disk as the
+    ``blueprint`` service account. Merely creating the ledger with mode 2770 is
+    insufficient: a root-created directory and lock retain ``root:root``
+    ownership, leaving the runtime unable to enter the directory or open the
+    lock after an otherwise successful deploy.
+
+    Reconcile both inodes before any service restart and verify their installed
+    ownership and modes instead of trusting the privileged mutations.
+    """
+
+    account_ids = _service_account_ids(account)
+    if account_ids is None:
+        raise ControlPlaneDeployError(
+            f"deploy_disk_reservation_account_missing:{account}"
+        )
+    _owner_uid, owner_gid = account_ids
+    root = Path(reservation_root).expanduser()
+    lock = root / ".lock"
+    if not root.is_absolute():
+        raise ControlPlaneDeployError(
+            "deploy_disk_reservation_directory_not_absolute"
+        )
+    if root.is_symlink() or lock.is_symlink():
+        raise ControlPlaneDeployError(
+            f"deploy_disk_reservation_runtime_symlink:{root}"
+        )
+
+    repaired: list[str] = []
+    try:
+        root.mkdir(parents=True, exist_ok=True, mode=0o2770)
+        if root.is_symlink() or not root.is_dir():
+            raise ControlPlaneDeployError(
+                f"deploy_disk_reservation_directory_invalid:{root}"
+            )
+        lock.touch(mode=0o660, exist_ok=True)
+        if lock.is_symlink() or not lock.is_file():
+            raise ControlPlaneDeployError(
+                f"deploy_disk_reservation_lock_invalid:{lock}"
+            )
+        for path, wanted_mode in ((root, 0o2770), (lock, 0o660)):
+            metadata = stat_reader(path)
+            changed = False
+            if metadata.st_uid != root_uid or metadata.st_gid != owner_gid:
+                chown(path, root_uid, owner_gid)
+                changed = True
+                metadata = stat_reader(path)
+            if stat.S_IMODE(metadata.st_mode) != wanted_mode:
+                path.chmod(wanted_mode)
+                changed = True
+            if changed:
+                repaired.append(str(path))
+    except ControlPlaneDeployError:
+        raise
+    except OSError as exc:
+        raise ControlPlaneDeployError(
+            f"deploy_disk_reservation_runtime_install_failed:{root}"
+        ) from exc
+
+    installed: list[dict[str, Any]] = []
+    for path, wanted_mode, kind in (
+        (root, 0o2770, "directory"),
+        (lock, 0o660, "lock"),
+    ):
+        metadata = stat_reader(path)
+        if (
+            metadata.st_uid != root_uid
+            or metadata.st_gid != owner_gid
+            or stat.S_IMODE(metadata.st_mode) != wanted_mode
+        ):
+            raise ControlPlaneDeployError(
+                f"deploy_disk_reservation_runtime_readback_mismatch:{path}"
+            )
+        installed.append(
+            {
+                "kind": kind,
+                "path": str(path),
+                "owner": "root",
+                "group": account,
+                "owner_uid": root_uid,
+                "owner_gid": owner_gid,
+                "mode": f"{wanted_mode:04o}",
+            }
+        )
+    return {
+        "status": "ready",
+        "account": account,
+        "repaired_paths": repaired,
+        "installed": installed,
+    }
+
+
 def _install_scene_object_discovery_runtime_directories(
     *,
     directories: Sequence[str] = DEFAULT_SCENE_OBJECT_DISCOVERY_RUNTIME_DIRECTORIES,
@@ -1748,7 +1850,11 @@ def deploy_control_plane_commit(
         provenance_receipt.setdefault("promotion_eligible", True)
 
     disk_reservation = None
+    disk_reservation_runtime = None
     if disk_reservation_root is not None:
+        disk_reservation_runtime = _install_disk_reservation_runtime_prerequisites(
+            disk_reservation_root
+        )
         try:
             disk_reservation = reserve_control_plane_disk(
                 "control_plane_deploy",
@@ -1910,6 +2016,7 @@ def deploy_control_plane_commit(
         "status": "deployed",
         "source_commit": commit,
         "disk_reservation": disk_reservation_receipt,
+        "disk_reservation_runtime": disk_reservation_runtime,
         "surfaces": [
             {"name": name, "path": str(path), "head": observed[name]}
             for name, path in sorted(surfaces.items())
