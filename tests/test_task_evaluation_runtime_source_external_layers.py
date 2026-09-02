@@ -375,10 +375,7 @@ def test_preparation_fetches_runtime_source_layers_once_into_the_content_store(
 ) -> None:
     value, payloads = request_with_fetchable_bytes()
     built, wrapper, packet = _v2_wrapper(
-        tmp_path,
-        value,
-        layer_store=tmp_path / "publisher-store",
-        prefix=f"s3://{BUCKET}/layers",
+        tmp_path, value, layer_store=tmp_path / "publisher-store"
     )
     wrapper_uri = f"s3://{BUCKET}/runtime-source-v2.zip"
     value["execution_adapter"]["runtime_source_bundle"] = {
@@ -627,3 +624,103 @@ def test_preparation_refuses_a_wrapper_archive_it_cannot_validate(tmp_path: Path
         episode_compilation_queue_root=tmp_path / "legacy-episode-compilation",
     )
     assert legacy_run["results"][0]["status"] != "blocked", legacy_run["results"][0]
+
+
+def test_layer_prefix_is_derived_from_the_object_store_contract(tmp_path: Path) -> None:
+    """A typed prefix that deviates from the publisher's key shape fails at build time."""
+
+    from blueprint_pipeline.task_evaluation_native_arena_preparation_adapter import (
+        external_layer_uri_prefix_for_bucket,
+    )
+
+    value, _configured, _construction, _v1 = _bundles(tmp_path)
+    receipt_path = _runtime_source_packet(tmp_path)
+    packet = receipt_path.parent / PACKET_NAME
+    assert external_layer_uri_prefix_for_bucket(BUCKET) == LAYER_PREFIX
+
+    derived, _wrapper, _packet = _v2_wrapper(tmp_path, value, layer_store=tmp_path / "derived", name="derived.zip")
+    by_bucket = build_task_evaluation_runtime_source_bundle(
+        source_root=receipt_path.parent,
+        output_path=tmp_path / "by-bucket.zip",
+        expected_production_commit=value["expected_production_commit"],
+        runtime_identity=value["runtime"]["identity"],
+        external_layer_store_root=tmp_path / "by-bucket-store",
+        external_layer_bucket=BUCKET,
+        external_layer_min_bytes=packet.stat().st_size,
+    )
+    assert by_bucket["external_layers"][0]["uri"] == derived["external_layers"][0]["uri"]
+    assert by_bucket["sha256"] == derived["sha256"]
+
+    for bad_prefix in (
+        LAYER_PREFIX.replace("native-runtime-source-layer", "native-runtime-source-layers"),
+        f"s3://{BUCKET}/native-runtime-source-layer",
+        LAYER_PREFIX + "/extra",
+    ):
+        with pytest.raises(
+            TaskEvaluationNativeArenaAdapterError,
+            match="task_evaluation_adapter_external_layer_prefix_contract_mismatch",
+        ):
+            build_task_evaluation_runtime_source_bundle(
+                source_root=receipt_path.parent,
+                output_path=tmp_path / "bad.zip",
+                expected_production_commit=value["expected_production_commit"],
+                runtime_identity=value["runtime"]["identity"],
+                external_layer_store_root=tmp_path / "bad-store",
+                external_layer_uri_prefix=bad_prefix,
+                external_layer_min_bytes=packet.stat().st_size,
+            )
+        assert not (tmp_path / "bad.zip").exists()
+    with pytest.raises(
+        TaskEvaluationNativeArenaAdapterError,
+        match="task_evaluation_adapter_external_layer_prefix_contract_mismatch",
+    ):
+        build_task_evaluation_runtime_source_bundle(
+            source_root=receipt_path.parent,
+            output_path=tmp_path / "mismatch.zip",
+            expected_production_commit=value["expected_production_commit"],
+            runtime_identity=value["runtime"]["identity"],
+            external_layer_store_root=tmp_path / "mismatch-store",
+            external_layer_bucket="other-bucket",
+            external_layer_uri_prefix=LAYER_PREFIX,
+            external_layer_min_bytes=packet.stat().st_size,
+        )
+    with pytest.raises(
+        TaskEvaluationNativeArenaAdapterError,
+        match="task_evaluation_adapter_external_layer_bucket_invalid",
+    ):
+        external_layer_uri_prefix_for_bucket("Not A Bucket")
+    with pytest.raises(
+        TaskEvaluationNativeArenaAdapterError,
+        match="task_evaluation_adapter_external_layer_configuration_invalid",
+    ):
+        build_task_evaluation_runtime_source_bundle(
+            source_root=receipt_path.parent,
+            output_path=tmp_path / "nothing.zip",
+            expected_production_commit=value["expected_production_commit"],
+            runtime_identity=value["runtime"]["identity"],
+            external_layer_store_root=tmp_path / "nothing-store",
+            external_layer_min_bytes=packet.stat().st_size,
+        )
+
+    code = adapter_main(
+        [
+            "build-runtime-source",
+            "--source-root",
+            str(receipt_path.parent),
+            "--output",
+            str(tmp_path / "cli-bucket.zip"),
+            "--expected-production-commit",
+            value["expected_production_commit"],
+            "--runtime-id",
+            value["runtime"]["identity"]["id"],
+            "--runtime-version",
+            value["runtime"]["identity"]["version"],
+            "--external-layer-store-root",
+            str(tmp_path / "cli-bucket-store"),
+            "--external-layer-bucket",
+            BUCKET,
+            "--external-layer-min-bytes",
+            str(packet.stat().st_size),
+        ]
+    )
+    assert code == 0

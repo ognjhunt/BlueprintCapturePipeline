@@ -1030,9 +1030,7 @@ def _stage_verified_preparation(
             expected_production_commit=request["expected_production_commit"],
             runtime_identity=request["runtime"]["identity"],
             external_layer_store_root=tmp_path / "external-layer-store",
-            external_layer_uri_prefix=(
-                "s3://blueprint-production-inputs/runtime-source-layers"
-            ),
+            external_layer_bucket="blueprint-production-inputs",
             external_layer_min_bytes=1,
         )
         wrapper = Path(str(built["path"]))
