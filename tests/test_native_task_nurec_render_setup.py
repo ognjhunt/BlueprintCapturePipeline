@@ -96,14 +96,18 @@ class _Stage:
 
 def _particlefield_stage(
     *, shader_attrs=None, source_asset="ParticleFieldEmissive.mdl", bound: bool = False,
-    hints: bool = False,
+    hints: bool | dict[str, str] = False,
 ):
+    if hints is True:
+        hint_attrs = {"projectionModeHint": _Attr("orthographic")}
+    elif hints:
+        hint_attrs = {name: _Attr(value) for name, value in hints.items()}
+    else:
+        hint_attrs = {}
     field = _Prim(
         "/World/envs/env_0/scene_appearance/CapturedScene/Gaussians",
         "ParticleField3DGaussianSplat",
-        attrs={
-            **({"projectionModeHint": _Attr("perspective")} if hints else {}),
-        },
+        attrs=hint_attrs,
         targets=(
             ["/World/envs/env_0/scene_appearance/CapturedScene/Looks/ParticleFieldEmissive"]
             if bound
@@ -323,6 +327,34 @@ def test_a_particlefield_with_custom_render_hints_is_refused() -> None:
     assert app.updates == 0
 
 
+@pytest.mark.parametrize(
+    "hints",
+    [
+        {"projectionModeHint": "perspective", "sortingModeHint": "cameraDistance"},
+        {"sortingModeHint": "zDepth"},
+        {"sortingModeHint": "rayHitDistance"},
+    ],
+)
+def test_upstream_native_particlefield_hints_are_accepted(hints: dict[str, str]) -> None:
+    """NVIDIA 3DGRUT's LightField writer authors these; refusing them would
+    block the official direct transcode at runtime (Scene 839873 audit)."""
+
+    stage, _ = _particlefield_stage(hints=hints)
+    receipt = apply_display_referred_particlefield_material(stage)
+
+    assert receipt["passed"] is True, receipt
+    row = receipt["particlefields"][0]
+    assert row["sorting_mode_hint"] == hints["sortingModeHint"]
+
+
+def test_a_nonstandard_sorting_hint_token_is_still_refused() -> None:
+    stage, _ = _particlefield_stage(hints={"sortingModeHint": "nearestFirst"})
+    receipt = apply_display_referred_particlefield_material(stage)
+
+    assert receipt["passed"] is False
+    assert receipt["blockers"] == [BLOCKER_PARTICLEFIELD_INPUTS_NOT_APPLIED]
+
+
 def test_a_stage_with_no_particlefield_cannot_claim_a_display_referred_splat() -> None:
     receipt = apply_display_referred_particlefield_material(_Stage())
 
@@ -369,3 +401,51 @@ def test_a_sealed_pxr_upstream_native_asset_is_not_mutated_on_the_live_stage() -
     assert receipt["particlefields"][0]["prim_path"] == "/World/scene_appearance/Gaussians"
     assert receipt["particlefields"][0]["material_binding_targets"] == []
     assert receipt["live_stage_mutated"] is False
+
+
+def test_appearance_render_path_is_derived_from_the_sealed_plan() -> None:
+    """The plan names the composed asset; the launcher must not choose one."""
+
+    from blueprint_pipeline.native_task_nurec_render_setup import (
+        appearance_render_path_from_plan,
+    )
+
+    particlefield = {
+        "appearance_frame_alignment": {
+            "status": "aligned",
+            "representation": "particlefield_3d_gaussian_splat",
+        }
+    }
+    nurec = {
+        "appearance_frame_alignment": {
+            "status": "aligned",
+            "representation": "nurec_volume",
+        }
+    }
+    assert appearance_render_path_from_plan(particlefield) == "particlefield_3d_gaussian_splat"
+    assert appearance_render_path_from_plan(nurec) == "plain_nurec_volume"
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        {},
+        {"appearance_frame_alignment": {"status": "aligned"}},
+        {"appearance_frame_alignment": {"status": "aligned", "representation": "mesh"}},
+        {
+            "appearance_frame_alignment": {
+                "status": "unaligned",
+                "representation": "particlefield_3d_gaussian_splat",
+            }
+        },
+    ],
+)
+def test_unresolved_appearance_representation_fails_closed(plan: dict) -> None:
+    from blueprint_pipeline.native_task_nurec_render_setup import (
+        AppearanceRenderPathError,
+        appearance_render_path_from_plan,
+    )
+
+    with pytest.raises(AppearanceRenderPathError) as excinfo:
+        appearance_render_path_from_plan(plan)
+    assert excinfo.value.errors == ("native_task_arena_appearance_render_path_unresolved",)

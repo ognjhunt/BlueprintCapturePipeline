@@ -44,6 +44,58 @@ BLOCKER_PARTICLEFIELD_MATERIAL_MISSING = (
 BLOCKER_PARTICLEFIELD_INPUTS_NOT_APPLIED = (
     "native_task_arena_particlefield_nonstandard_render_hint"
 )
+#: Hint tokens NVIDIA 3DGRUT's LightField writer may author
+#: (``threedgrut/export/usd/particle_field_hints.py`` at a37ef72).
+UPSTREAM_PROJECTION_MODE_HINTS = frozenset({"perspective"})
+UPSTREAM_SORTING_MODE_HINTS = frozenset({"zDepth", "cameraDistance", "rayHitDistance"})
+
+#: Scene-plan appearance representation -> Isaac launch render path.  The plan
+#: is the only authority on which asset the arena composes, so the launch
+#: receipt has to be derived from it rather than chosen by a function default.
+APPEARANCE_REPRESENTATION_RENDER_PATHS: dict[str, str] = {
+    "nurec_volume": "plain_nurec_volume",
+    "particlefield_3d_gaussian_splat": "particlefield_3d_gaussian_splat",
+}
+BLOCKER_APPEARANCE_RENDER_PATH_UNRESOLVED = (
+    "native_task_arena_appearance_render_path_unresolved"
+)
+
+
+class AppearanceRenderPathError(ValueError):
+    """The scene plan does not name a supported appearance backend."""
+
+    def __init__(self, errors: list[str], *, diagnostics: Mapping[str, Any] | None = None):
+        self.errors = tuple(sorted(set(errors)))
+        self.diagnostics = dict(diagnostics or {})
+        super().__init__(";".join(self.errors))
+
+
+def appearance_render_path_from_plan(plan: Mapping[str, Any]) -> str:
+    """Resolve the Isaac launch render path from the sealed scene plan.
+
+    The plan's ``appearance_frame_alignment.representation`` is what the arena
+    builds; every worker that launches Isaac for that plan must pass the same
+    value to the launcher so the launch receipt, the render probe, the policy
+    session and the Website report agree on the backend.  An unaligned or
+    unknown representation fails closed rather than falling back to a legacy
+    renderer name.
+    """
+
+    alignment = plan.get("appearance_frame_alignment") if isinstance(plan, Mapping) else None
+    alignment = alignment if isinstance(alignment, Mapping) else {}
+    representation = str(alignment.get("representation") or "")
+    status = str(alignment.get("status") or "")
+    render_path = APPEARANCE_REPRESENTATION_RENDER_PATHS.get(representation)
+    if render_path is None or status != "aligned":
+        raise AppearanceRenderPathError(
+            [BLOCKER_APPEARANCE_RENDER_PATH_UNRESOLVED],
+            diagnostics={
+                "representation": representation or None,
+                "alignment_status": status or None,
+                "supported_representations": sorted(APPEARANCE_REPRESENTATION_RENDER_PATHS),
+            },
+        )
+    return render_path
 
 
 def apply_display_referred_particlefield_material(stage: Any) -> dict[str, Any]:
@@ -66,16 +118,33 @@ def apply_display_referred_particlefield_material(stage: Any) -> dict[str, Any]:
             checker = getattr(attribute, "HasAuthoredValueOpinion", None)
             return bool(checker()) if callable(checker) else bool(attribute)
 
+        def value(name: str) -> Any:
+            attribute = prim.GetAttribute(name)
+            getter = getattr(attribute, "Get", None)
+            return getter() if authored(name) and callable(getter) else None
+
         row: dict[str, Any] = {
             "prim_path": str(prim.GetPath()),
             "material_binding_targets": targets,
             "projection_mode_hint_authored": authored("projectionModeHint"),
             "sorting_mode_hint_authored": authored("sortingModeHint"),
+            "projection_mode_hint": value("projectionModeHint"),
+            "sorting_mode_hint": value("sortingModeHint"),
         }
         rows.append(row)
         if targets:
             blockers.append(BLOCKER_PARTICLEFIELD_MATERIAL_MISSING)
-        if row["projection_mode_hint_authored"] or row["sorting_mode_hint_authored"]:
+        # NVIDIA's own LightField writer authors ``projectionModeHint`` and
+        # ``sortingModeHint`` (3DGRUT ``writers/lightfield.py``); Pixar's and
+        # NVIDIA's PLY converters author neither.  Both are upstream-native.
+        # Only a value outside the schema's documented tokens is nonstandard.
+        if (
+            row["projection_mode_hint_authored"]
+            and row["projection_mode_hint"] not in UPSTREAM_PROJECTION_MODE_HINTS
+        ) or (
+            row["sorting_mode_hint_authored"]
+            and row["sorting_mode_hint"] not in UPSTREAM_SORTING_MODE_HINTS
+        ):
             blockers.append(BLOCKER_PARTICLEFIELD_INPUTS_NOT_APPLIED)
     if not rows:
         blockers.append(BLOCKER_PARTICLEFIELD_PRIM_MISSING)
@@ -335,6 +404,9 @@ def setup_and_warm_native_nurec_renderer(
 
 
 __all__ = [
+    "APPEARANCE_REPRESENTATION_RENDER_PATHS",
+    "AppearanceRenderPathError",
+    "BLOCKER_APPEARANCE_RENDER_PATH_UNRESOLVED",
     "BLOCKER_PARTICLEFIELD_INPUTS_NOT_APPLIED",
     "BLOCKER_PARTICLEFIELD_MATERIAL_MISSING",
     "BLOCKER_PARTICLEFIELD_PRIM_MISSING",
@@ -345,6 +417,9 @@ __all__ = [
     "GAUSSIAN_SKIP_TONEMAPPING_SETTING",
     "OFFICIAL_NUREC_WARMUP_STEPS",
     "PARTICLEFIELD_EMISSIVE_SOURCE_ASSET",
+    "UPSTREAM_PROJECTION_MODE_HINTS",
+    "UPSTREAM_SORTING_MODE_HINTS",
+    "appearance_render_path_from_plan",
     "apply_display_referred_particlefield_material",
     "particlefield_display_referred_blockers",
     "prepare_site_appearance_renderer",

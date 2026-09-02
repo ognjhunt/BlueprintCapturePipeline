@@ -91,8 +91,20 @@ def policy_input_saturation_evidence(*, camera_rgb: Mapping[str, Any]) -> dict[s
         ) from exc
 
 
-def prepolicy_visual_readiness_evidence(*, camera_rgb: Mapping[str, Any]) -> dict[str, Any]:
-    """Measure the exact three-camera reset domain before policy inference."""
+def prepolicy_visual_readiness_evidence(
+    *,
+    camera_rgb: Mapping[str, Any],
+    candidate_policy_loaded: bool,
+    candidate_policy_queried: bool = False,
+    observation_integrity_authority: Mapping[str, Any] | None = None,
+    appearance_render_backend_receipt_digest: str | None = None,
+) -> dict[str, Any]:
+    """Measure the exact three-camera reset domain before policy inference.
+
+    ``candidate_policy_loaded`` is what the caller knows to be true: the
+    paired session loads a candidate before its first episode, so an
+    episode-level gate reports ``True`` even though no query has happened.
+    """
 
     try:  # flat provider-bundle layout
         from native_task_camera_observability import (
@@ -110,7 +122,15 @@ def prepolicy_visual_readiness_evidence(*, camera_rgb: Mapping[str, Any]) -> dic
                 [f"{PRESTART_READINESS_BLOCKER}:prepolicy_visual_gate_unavailable"]
             ) from exc
     try:
-        return measure_native_task_prepolicy_visual_frames(camera_rgb)
+        return measure_native_task_prepolicy_visual_frames(
+            camera_rgb,
+            candidate_policy_loaded=candidate_policy_loaded,
+            candidate_policy_queried=candidate_policy_queried,
+            observation_integrity_authority=observation_integrity_authority,
+            appearance_render_backend_receipt_digest=(
+                appearance_render_backend_receipt_digest
+            ),
+        )
     except NativeTaskCameraObservabilityError as exc:
         raise PolicyEpisodeEvidenceError(
             [f"{PRESTART_READINESS_BLOCKER}:{error}" for error in exc.errors]

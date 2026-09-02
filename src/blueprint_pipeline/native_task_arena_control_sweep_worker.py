@@ -16,6 +16,7 @@ from .native_task_isaaclab_launch import (
     NATIVE_TASK_ARENA_DEVICE,
     launch_native_task_isaaclab,
 )
+from .native_task_nurec_render_setup import appearance_render_path_from_plan
 from .task_evaluation_control_search_funnel import (
     validate_control_search_funnel_plan,
 )
@@ -82,6 +83,7 @@ def run_control_sweep_worker(
         simulation_app, _launch_receipt = launch_native_task_isaaclab(
             provisioning_receipt_path,
             device=NATIVE_TASK_ARENA_DEVICE,
+            appearance_render_path=appearance_render_path_from_plan(scene_plan),
         )
         runner = NativeIsaacLabControlSweepWaveRunner(
             plan=plan,

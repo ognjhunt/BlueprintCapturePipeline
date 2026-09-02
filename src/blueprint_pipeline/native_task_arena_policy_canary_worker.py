@@ -15,6 +15,13 @@ import time
 from typing import Any, Callable, Mapping
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.appearance_render_backend import (
+    BACKEND_ISAAC_NATIVE_NUREC,
+    BACKEND_PARTICLEFIELD_3DGRUT_TRANSCODE,
+    BACKEND_PARTICLEFIELD_BLUEPRINT_PRIVATE,
+    AppearanceRenderBackendError,
+    build_appearance_render_backend,
+)
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     CANDIDATE_IDS,
     PolicyCanaryEpisodeFailure,
@@ -26,6 +33,147 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 
 
 ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS = 900
+
+
+def _sha256_prefixed(value: Any) -> str:
+    text = str(value or "")
+    return text if text.startswith("sha256:") else f"sha256:{text}"
+
+
+def appearance_render_backend_from_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
+    """Seal the appearance backend the sealed scene plan actually composes.
+
+    Scene 839873's render-only probe named the ParticleField path while this
+    worker launched Isaac with no path and inherited a legacy default.  The
+    backend is now derived from the plan here, passed explicitly to the
+    launcher, and carried by digest through the session receipt so a same-pose
+    parity authority can be bound to exactly this renderer and conversion.
+    """
+
+    from blueprint_pipeline.native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
+    from blueprint_pipeline.native_task_nurec_render_setup import (
+        AppearanceRenderPathError,
+        appearance_render_path_from_plan,
+    )
+
+    try:
+        render_path = appearance_render_path_from_plan(plan)
+    except AppearanceRenderPathError as exc:
+        raise RuntimeError("policy_canary_appearance_render_path_unresolved") from exc
+    rows = [
+        row
+        for row in plan.get("objects") or []
+        if isinstance(row, Mapping) and row.get("semantic_role") == "scene_appearance"
+    ]
+    if len(rows) != 1 or not str(rows[0].get("sha256") or "").strip():
+        raise RuntimeError("policy_canary_scene_appearance_asset_not_exact")
+    composed_digest = _sha256_prefixed(rows[0]["sha256"])
+    alignment = dict(plan.get("appearance_frame_alignment") or {})
+    try:
+        if render_path == "particlefield_3d_gaussian_splat":
+            source_digest = str(alignment.get("source_asset_sha256") or "").strip()
+            if not source_digest:
+                raise RuntimeError("policy_canary_appearance_source_digest_missing")
+            conversion_identity = str(alignment.get("conversion_identity") or "").strip()
+            official = conversion_identity.startswith("threedgrut.export.scripts.transcode")
+            backend = build_appearance_render_backend(
+                kind=(
+                    BACKEND_PARTICLEFIELD_3DGRUT_TRANSCODE
+                    if official
+                    else BACKEND_PARTICLEFIELD_BLUEPRINT_PRIVATE
+                ),
+                source_asset_digest=_sha256_prefixed(source_digest),
+                derived_asset_digest=composed_digest,
+                renderer_identity=NATIVE_TASK_ARENA_IMAGE,
+                conversion_identity=(
+                    conversion_identity
+                    or "blueprint_pipeline.particlefield_usd.write_particlefield_usd_from_nurec"
+                    "+usd-convert-gsplat:0.1.15"
+                ),
+                camera_frame_contract="registered_world",
+                development_only=not official,
+            )
+        else:
+            backend = build_appearance_render_backend(
+                kind=BACKEND_ISAAC_NATIVE_NUREC,
+                source_asset_digest=composed_digest,
+                derived_asset_digest=None,
+                renderer_identity=NATIVE_TASK_ARENA_IMAGE,
+                conversion_identity=None,
+                camera_frame_contract="registered_world",
+            )
+    except AppearanceRenderBackendError as exc:
+        raise RuntimeError("policy_canary_appearance_render_backend_invalid") from exc
+    if backend["launch_render_path"] != render_path:
+        raise RuntimeError("policy_canary_appearance_render_backend_mismatch")
+    return backend
+
+
+OBSERVATION_INTEGRITY_AUTHORITY_FILENAME = "policy_observation_integrity_authority.v1.json"
+
+
+def preload_observation_integrity_gate(
+    authority: Mapping[str, Any] | None,
+    *,
+    appearance_render_backend: Mapping[str, Any],
+    authority_path: Path | None = None,
+) -> dict[str, Any]:
+    """Decide, before any candidate client is loaded, whether observations may be used.
+
+    No frames exist yet at this point in the session, so this gate checks the
+    sealed authority alone: it must be present, valid, bound by digest to the
+    exact backend this session launched with, carry a passed same-pose
+    reference parity, and an approved human review.  The per-episode gate
+    re-checks the same authority against the live frames' structure.
+    """
+
+    from blueprint_pipeline.native_task_camera_observability import (
+        BLOCKER_APPEARANCE_REFERENCE_PARITY_BACKEND_MISMATCH,
+        BLOCKER_APPEARANCE_REFERENCE_PARITY_FAILED,
+        BLOCKER_APPEARANCE_REFERENCE_PARITY_MISSING,
+        BLOCKER_HUMAN_VISUAL_REVIEW_NOT_APPROVED,
+        NativeTaskCameraObservabilityError,
+        validate_policy_observation_integrity_authority,
+    )
+
+    backend_digest = str(appearance_render_backend.get("receipt_digest") or "")
+    receipt: dict[str, Any] = {
+        "schema_version": "policy_canary_preload_observation_integrity_gate.v1",
+        "authority_path": str(authority_path) if authority_path is not None else None,
+        "authority_present": authority is not None,
+        "session_backend_receipt_digest": backend_digest,
+        "candidate_policy_loaded": False,
+        "candidate_policy_queried": False,
+        "blockers": [],
+        "policy_observation_integrity_passed": False,
+    }
+    if authority is None:
+        receipt["blockers"] = [
+            BLOCKER_APPEARANCE_REFERENCE_PARITY_MISSING,
+            BLOCKER_HUMAN_VISUAL_REVIEW_NOT_APPROVED,
+        ]
+        return receipt
+    try:
+        sealed = validate_policy_observation_integrity_authority(authority)
+    except NativeTaskCameraObservabilityError as exc:
+        receipt["blockers"] = list(exc.errors)
+        return receipt
+    blockers: list[str] = []
+    receipt["authority_digest"] = sealed.get("authority_digest")
+    receipt["authority_backend_receipt_digest"] = sealed[
+        "appearance_render_backend_receipt_digest"
+    ]
+    if sealed["appearance_render_backend_receipt_digest"] != backend_digest:
+        blockers.append(BLOCKER_APPEARANCE_REFERENCE_PARITY_BACKEND_MISMATCH)
+    elif sealed["appearance_reference_parity"].get("passed") is not True:
+        blockers.append(BLOCKER_APPEARANCE_REFERENCE_PARITY_FAILED)
+    review_status = str(sealed["human_visual_review"].get("status"))
+    receipt["human_visual_review_status"] = review_status
+    if review_status != "approved":
+        blockers.append(BLOCKER_HUMAN_VISUAL_REVIEW_NOT_APPROVED)
+    receipt["blockers"] = sorted(set(blockers))
+    receipt["policy_observation_integrity_passed"] = not blockers
+    return receipt
 
 
 def _digest(value: Any) -> str:
@@ -1074,16 +1222,28 @@ def _run_selected_cell(
     current_env: dict[str, Any] = {}
     current_session: dict[str, Any] = {}
 
+    appearance_render_backend = appearance_render_backend_from_plan(base_scene_plan)
+    authority_path = (
+        runtime / "runtime_inputs" / OBSERVATION_INTEGRITY_AUTHORITY_FILENAME
+    )
+    observation_integrity_authority = (
+        _read(authority_path) if authority_path.is_file() else None
+    )
+
     def open_session(_inputs: Mapping[str, Any]) -> dict[str, Any]:
         simulation_app, launch = bound_runtime.launch_isaac(
             provider_output_root / "native_task_runtime_source_provisioning.v1.json",
             device=bound_runtime.device,
+            appearance_render_path=appearance_render_backend["launch_render_path"],
         )
         current_session["simulation_app"] = simulation_app
         return {
             "simulation_app": simulation_app,
             "launch": launch,
-            "provider_session_identity": _digest(launch),
+            "appearance_render_backend": dict(appearance_render_backend),
+            "provider_session_identity": _digest(
+                {"launch": launch, "appearance_render_backend": appearance_render_backend}
+            ),
         }
 
     def load_policy(_session: Mapping[str, Any], candidate: str) -> dict[str, Any]:
@@ -1208,6 +1368,10 @@ def _run_selected_cell(
                 scoring_authorized=True,
                 require_complete_multicamera_media=True,
                 require_prestart_readiness=True,
+                observation_integrity_authority=observation_integrity_authority,
+                appearance_render_backend_receipt_digest=(
+                    appearance_render_backend["receipt_digest"]
+                ),
                 progress=episode_progress,
             )
         except Exception as exc:
@@ -1426,6 +1590,13 @@ def _run_selected_cell(
             "provider_closeout_pending": True,
         }
 
+    def prepolicy_observation_gate(session: Mapping[str, Any]) -> dict[str, Any]:
+        return preload_observation_integrity_gate(
+            observation_integrity_authority,
+            appearance_render_backend=dict(session["appearance_render_backend"]),
+            authority_path=authority_path,
+        )
+
     result = execute_paired_session(
         authority=authority,
         runtime_inputs=inputs,
@@ -1437,7 +1608,9 @@ def _run_selected_cell(
         output_path=result_path,
         provider_closeout_pending=True,
         selected_cell_index=selected_cell_index,
+        prepolicy_observation_gate=prepolicy_observation_gate,
     )
+    result["appearance_render_backend"] = dict(appearance_render_backend)
     telemetry_index, telemetry_artifacts = _write_indexed_telemetry(
         output_root, result["episodes"]
     )

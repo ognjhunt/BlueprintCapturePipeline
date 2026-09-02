@@ -787,19 +787,205 @@ def validate_native_task_policy_input_frames(
     }
 
 
-def measure_native_task_prepolicy_visual_frames(
-    frames: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Gate all reset cameras before either learned-policy client is loaded.
+POLICY_OBSERVATION_INTEGRITY_AUTHORITY_SCHEMA_VERSION = (
+    "policy_observation_integrity_authority.v1"
+)
+PREPOLICY_VISUAL_GATE_SCHEMA_VERSION = "native_task_prepolicy_visual_gate.v2"
+HUMAN_VISUAL_REVIEW_STATUSES = frozenset({"approved", "failed", "pending"})
+#: Diagnostic-only chromatic descriptors.  Scene 839873's three failing frames
+#: measured 5.16 / 5.10 / 2.14 percent of pixels with an RGB channel spread
+#: above 64 levels; the values are reported so a calibration set can be built
+#: from known-good and known-bad scenes.  They gate nothing until that set and
+#: its thresholds are preregistered.
+CHROMATIC_SPREAD_LEVEL = 64
+LOCAL_CHROMA_WINDOW = 3
+LOCAL_CHROMA_OUTLIER_LEVEL = 48
+REFUSAL_OBSERVATION_INTEGRITY_AUTHORITY_INVALID = (
+    "native_task_policy_observation_integrity_authority_invalid"
+)
+BLOCKER_APPEARANCE_REFERENCE_PARITY_MISSING = (
+    "native_task_appearance_reference_parity_missing"
+)
+BLOCKER_APPEARANCE_REFERENCE_PARITY_FAILED = (
+    "native_task_appearance_reference_parity_failed"
+)
+BLOCKER_APPEARANCE_REFERENCE_PARITY_BACKEND_MISMATCH = (
+    "native_task_appearance_reference_parity_backend_mismatch"
+)
+BLOCKER_HUMAN_VISUAL_REVIEW_NOT_APPROVED = (
+    "native_task_human_visual_review_not_approved"
+)
+BLOCKER_FRAME_STRUCTURE_FAILED = "native_task_prepolicy_frame_structure_failed"
 
-    This is deliberately stricter than the historical saturation-only check.
-    Scene 839873 produced frames with zero clipped pixels that were nevertheless
-    58-75% near black and visibly contained only scattered chromatic splats.
-    A policy must not be queried against that observation domain.
+
+def measure_native_task_frame_chromatic_diagnostics(rgb: Any) -> dict[str, Any]:
+    """Diagnostic chromatic descriptors of one uint8 RGB frame (never a gate).
+
+    ``rgb_spread_pixel_fraction`` is the share of pixels whose max-min channel
+    difference exceeds :data:`CHROMATIC_SPREAD_LEVEL`.  ``local_chroma_outlier_fraction``
+    is the share of pixels whose chroma (max-min) differs from the mean chroma
+    of their 3x3 neighbourhood by more than :data:`LOCAL_CHROMA_OUTLIER_LEVEL`,
+    which is what isolated saturated splats look like against a coherent
+    surface.  ``mean_channel_value`` is retained for exposure comparison with
+    the audited frames.
     """
 
     import numpy as np
 
+    frame = _as_uint8_rgb(rgb).astype(np.int16)
+    chroma = frame.max(axis=-1) - frame.min(axis=-1)
+    spread_fraction = float((chroma > CHROMATIC_SPREAD_LEVEL).mean())
+    pad = LOCAL_CHROMA_WINDOW // 2
+    padded = np.pad(chroma.astype(np.float64), pad, mode="edge")
+    height, width = chroma.shape
+    neighbourhood = np.zeros((height, width), dtype=np.float64)
+    for dy in range(LOCAL_CHROMA_WINDOW):
+        for dx in range(LOCAL_CHROMA_WINDOW):
+            neighbourhood += padded[dy : dy + height, dx : dx + width]
+    neighbourhood = (neighbourhood - chroma) / (LOCAL_CHROMA_WINDOW**2 - 1)
+    outlier_fraction = float(
+        (np.abs(chroma - neighbourhood) > LOCAL_CHROMA_OUTLIER_LEVEL).mean()
+    )
+    return {
+        "rgb_spread_level": CHROMATIC_SPREAD_LEVEL,
+        "rgb_spread_pixel_fraction": spread_fraction,
+        "local_chroma_outlier_level": LOCAL_CHROMA_OUTLIER_LEVEL,
+        "local_chroma_outlier_fraction": outlier_fraction,
+        "mean_channel_value": float(frame.mean()),
+        "gating": "diagnostic_only_until_calibration_set_preregistered",
+    }
+
+
+def validate_policy_observation_integrity_authority(value: Any) -> dict[str, Any]:
+    """Validate a sealed same-pose parity plus human-review authority.
+
+    The authority binds the backend it was measured against by receipt digest,
+    the reference renderer identity, per-view reference/candidate PNG digests,
+    and an explicit human review state.  A structurally valid authority is not
+    yet a pass: :func:`measure_native_task_prepolicy_visual_frames` still
+    checks that its backend digest equals the live session's.
+    """
+
+    if not isinstance(value, Mapping):
+        raise NativeTaskCameraObservabilityError(
+            [REFUSAL_OBSERVATION_INTEGRITY_AUTHORITY_INVALID]
+        )
+    authority = dict(value)
+    errors: list[str] = []
+    if (
+        authority.get("schema_version")
+        != POLICY_OBSERVATION_INTEGRITY_AUTHORITY_SCHEMA_VERSION
+    ):
+        errors.append("schema_version")
+    backend_digest = str(authority.get("appearance_render_backend_receipt_digest") or "")
+    if not backend_digest.startswith("sha256:") or len(backend_digest) != 71:
+        errors.append("appearance_render_backend_receipt_digest")
+    parity = authority.get("appearance_reference_parity")
+    if not isinstance(parity, Mapping) or not isinstance(parity.get("passed"), bool):
+        errors.append("appearance_reference_parity")
+    else:
+        reference = str(parity.get("reference_renderer_identity") or "")
+        source = str(parity.get("reference_source_sha256") or "")
+        views = parity.get("views")
+        if not reference or not source.startswith("sha256:"):
+            errors.append("appearance_reference_parity.reference")
+        if not isinstance(views, Mapping) or set(views) != PREPOLICY_VISUAL_REQUIRED_VIEWS:
+            errors.append("appearance_reference_parity.views")
+        else:
+            for view, row in views.items():
+                if not isinstance(row, Mapping) or not all(
+                    str(row.get(key) or "").startswith("sha256:")
+                    for key in ("reference_png_sha256", "candidate_png_sha256")
+                ):
+                    errors.append(f"appearance_reference_parity.views.{view}")
+    review = authority.get("human_visual_review")
+    if (
+        not isinstance(review, Mapping)
+        or review.get("status") not in HUMAN_VISUAL_REVIEW_STATUSES
+        or not str(review.get("reviewer") or "").strip()
+        or not str(review.get("contact_sheet_sha256") or "").startswith("sha256:")
+    ):
+        errors.append("human_visual_review")
+    if errors:
+        raise NativeTaskCameraObservabilityError(
+            [f"{REFUSAL_OBSERVATION_INTEGRITY_AUTHORITY_INVALID}:{field}" for field in errors]
+        )
+    return authority
+
+
+def build_policy_observation_integrity_authority(
+    *,
+    appearance_render_backend_receipt_digest: str,
+    reference_renderer_identity: str,
+    reference_source_sha256: str,
+    views: Mapping[str, Mapping[str, Any]],
+    parity_passed: bool,
+    parity_metrics: Mapping[str, Any] | None = None,
+    human_review_status: str,
+    reviewer: str,
+    contact_sheet_sha256: str,
+    reviewed_at: str | None = None,
+) -> dict[str, Any]:
+    """Seal a same-pose parity plus human-review authority for one backend.
+
+    This is authored by the render-comparison step (native NRE reference
+    versus the candidate backend at the exact policy poses) and by a named
+    human reviewer of the three-frame contact sheet.  No policy participates.
+    """
+
+    from .decision_evidence_contracts import canonical_digest
+
+    authority = {
+        "schema_version": POLICY_OBSERVATION_INTEGRITY_AUTHORITY_SCHEMA_VERSION,
+        "appearance_render_backend_receipt_digest": appearance_render_backend_receipt_digest,
+        "appearance_reference_parity": {
+            "passed": bool(parity_passed),
+            "reference_renderer_identity": reference_renderer_identity,
+            "reference_source_sha256": reference_source_sha256,
+            "views": {view: dict(row) for view, row in views.items()},
+            "metrics": dict(parity_metrics or {}),
+        },
+        "human_visual_review": {
+            "status": human_review_status,
+            "reviewer": reviewer,
+            "contact_sheet_sha256": contact_sheet_sha256,
+            "reviewed_at": reviewed_at,
+        },
+    }
+    authority["authority_digest"] = canonical_digest(authority, digest_field="authority_digest")
+    return validate_policy_observation_integrity_authority(authority)
+
+
+def measure_native_task_prepolicy_visual_frames(
+    frames: Mapping[str, Any],
+    *,
+    candidate_policy_loaded: bool,
+    candidate_policy_queried: bool = False,
+    observation_integrity_authority: Mapping[str, Any] | None = None,
+    appearance_render_backend_receipt_digest: str | None = None,
+) -> dict[str, Any]:
+    """Gate all reset cameras before either learned policy may be queried.
+
+    Scene 839873 (2026-09-02): three frames passed the structural checks
+    (nonblank, unclipped, not near-black, distinct) and were visibly unusable,
+    with severe chromatic splat breakup.  A structural pass is therefore
+    reported as ``frame_structure_passed`` and nothing more.  The field that
+    may unlock a policy query, ``policy_observation_integrity_passed``, is the
+    conjunction of the structural pass, a sealed same-pose reference parity
+    bound to this session's exact appearance backend, and an explicit human
+    approval of the three-frame contact sheet.
+
+    ``candidate_policy_loaded`` is required because the receipt used to
+    hard-code ``False`` while the real session loads each policy before its
+    first episode; the value must come from the caller that knows.
+    """
+
+    import numpy as np
+
+    if not isinstance(candidate_policy_loaded, bool) or not isinstance(
+        candidate_policy_queried, bool
+    ):
+        raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_INPUT_FRAMES_INVALID])
     if not isinstance(frames, Mapping) or set(frames) != PREPOLICY_VISUAL_REQUIRED_VIEWS:
         raise NativeTaskCameraObservabilityError([REFUSAL_POLICY_INPUT_FRAMES_INVALID])
     blockers: list[str] = []
@@ -835,6 +1021,7 @@ def measure_native_task_prepolicy_visual_frames(
             "maximum_near_black_pixel_fraction": (
                 MAXIMUM_PREPOLICY_NEAR_BLACK_PIXEL_FRACTION
             ),
+            "chromatic_diagnostics": measure_native_task_frame_chromatic_diagnostics(frame),
             "blockers": view_blockers,
             "passed": not view_blockers,
         }
@@ -847,17 +1034,73 @@ def measure_native_task_prepolicy_visual_frames(
                 f"{REFUSAL_PREPOLICY_VISUAL_FRAME_DUPLICATE}:"
                 + ",".join(sorted(duplicate_views))
             )
+    frame_structure_passed = not blockers
+
+    integrity_blockers: list[str] = []
+    if not frame_structure_passed:
+        integrity_blockers.append(BLOCKER_FRAME_STRUCTURE_FAILED)
+    parity_passed = False
+    parity_binding: dict[str, Any] = {
+        "authority_present": observation_integrity_authority is not None,
+        "session_backend_receipt_digest": appearance_render_backend_receipt_digest,
+        "authority_backend_receipt_digest": None,
+        "backend_bound": False,
+    }
+    review_status = "pending"
+    review: dict[str, Any] = {"status": review_status, "reviewer": None}
+    if observation_integrity_authority is None:
+        integrity_blockers.append(BLOCKER_APPEARANCE_REFERENCE_PARITY_MISSING)
+        integrity_blockers.append(BLOCKER_HUMAN_VISUAL_REVIEW_NOT_APPROVED)
+    else:
+        authority = validate_policy_observation_integrity_authority(
+            observation_integrity_authority
+        )
+        authority_digest = authority["appearance_render_backend_receipt_digest"]
+        parity_binding["authority_backend_receipt_digest"] = authority_digest
+        bound = (
+            appearance_render_backend_receipt_digest is not None
+            and authority_digest == appearance_render_backend_receipt_digest
+        )
+        parity_binding["backend_bound"] = bound
+        parity_row = dict(authority["appearance_reference_parity"])
+        if not bound:
+            integrity_blockers.append(BLOCKER_APPEARANCE_REFERENCE_PARITY_BACKEND_MISMATCH)
+        elif parity_row.get("passed") is not True:
+            integrity_blockers.append(BLOCKER_APPEARANCE_REFERENCE_PARITY_FAILED)
+        else:
+            parity_passed = True
+        review = dict(authority["human_visual_review"])
+        review_status = str(review["status"])
+        if review_status != "approved":
+            integrity_blockers.append(BLOCKER_HUMAN_VISUAL_REVIEW_NOT_APPROVED)
+    integrity_passed = (
+        frame_structure_passed and parity_passed and review_status == "approved"
+    )
     return {
-        "schema_version": "native_task_prepolicy_visual_gate.v1",
+        "schema_version": PREPOLICY_VISUAL_GATE_SCHEMA_VERSION,
         "required_views": sorted(PREPOLICY_VISUAL_REQUIRED_VIEWS),
         "views": views,
-        "candidate_policy_loaded": False,
-        "candidate_policy_queried": False,
+        "candidate_policy_loaded": candidate_policy_loaded,
+        "candidate_policy_queried": candidate_policy_queried,
         "blockers": sorted(set(blockers)),
-        "passed": not blockers,
+        # ``passed`` is the structural verdict only.  It is kept under this
+        # name for the render-only preflight probe, which never loads a policy.
+        "passed": frame_structure_passed,
+        "frame_structure_passed": frame_structure_passed,
+        # Measured by the semantic camera-observability gate, not here.
+        "target_semantic_visibility_passed": None,
+        "appearance_reference_parity_passed": parity_passed,
+        "appearance_reference_parity_binding": parity_binding,
+        "human_visual_review_status": review_status,
+        "human_visual_review": review,
+        "policy_observation_integrity_passed": integrity_passed,
+        "policy_observation_integrity_blockers": sorted(set(integrity_blockers)),
         "measurement_authority": "exact_reset_policy_and_review_rgb_frames",
         "quality_boundary": (
-            "structural_and_exposure_gate_only;official_same_pose_nre_parity_pending"
+            "frame_structure_passed is structural and exposure only; "
+            "policy_observation_integrity_passed additionally requires sealed "
+            "same-pose reference parity bound to this session's appearance "
+            "backend and an approved human contact-sheet review"
         ),
     }
 
@@ -874,8 +1117,18 @@ __all__ = [
     "REFUSAL_POLICY_INPUT_FRAMES_INVALID",
     "REFUSAL_POLICY_INPUT_FRAME_SATURATED",
     "SATURATED_CHANNEL_LEVEL",
+    "BLOCKER_APPEARANCE_REFERENCE_PARITY_BACKEND_MISMATCH",
+    "BLOCKER_APPEARANCE_REFERENCE_PARITY_FAILED",
+    "BLOCKER_APPEARANCE_REFERENCE_PARITY_MISSING",
+    "BLOCKER_FRAME_STRUCTURE_FAILED",
+    "BLOCKER_HUMAN_VISUAL_REVIEW_NOT_APPROVED",
+    "POLICY_OBSERVATION_INTEGRITY_AUTHORITY_SCHEMA_VERSION",
+    "PREPOLICY_VISUAL_GATE_SCHEMA_VERSION",
+    "build_policy_observation_integrity_authority",
+    "measure_native_task_frame_chromatic_diagnostics",
     "measure_native_task_frame_saturation",
     "measure_native_task_prepolicy_visual_frames",
+    "validate_policy_observation_integrity_authority",
     "validate_native_task_policy_input_frames",
     "NativeTaskCameraObservabilityError",
     "POLICY_INPUT_CAMERA_ROLES",

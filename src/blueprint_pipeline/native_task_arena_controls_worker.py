@@ -3436,10 +3436,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_TASK_ARENA_DEVICE,
             launch_native_task_isaaclab,
         )
+        from blueprint_pipeline.native_task_nurec_render_setup import (
+            appearance_render_path_from_plan,
+        )
 
         simulation_app, launch_receipt = launch_native_task_isaaclab(
             output_root / "native_task_runtime_source_provisioning.v1.json",
             device=NATIVE_TASK_ARENA_DEVICE,
+            appearance_render_path=appearance_render_path_from_plan(scene_plan),
         )
         result["isaaclab_launch"] = launch_receipt
         _announce("simulation_app", "completed")

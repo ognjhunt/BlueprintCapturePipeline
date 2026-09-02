@@ -793,10 +793,13 @@ def test_prepolicy_visual_gate_refuses_scene839873_dark_splat_signature() -> Non
     dark = np.zeros((180, 320, 3), dtype=np.uint8)
     dark[:, :80] = _textured((180, 80), low=8, high=70)
     receipt = measure_native_task_prepolicy_visual_frames(
-        {"external": dark, "wrist": np.roll(dark, 1, axis=1), "overview": np.roll(dark, 2, axis=1)}
+        {"external": dark, "wrist": np.roll(dark, 1, axis=1), "overview": np.roll(dark, 2, axis=1)},
+        candidate_policy_loaded=False,
     )
 
     assert receipt["passed"] is False
+    assert receipt["frame_structure_passed"] is False
+    assert receipt["policy_observation_integrity_passed"] is False
     assert all(
         any(REFUSAL_PREPOLICY_VISUAL_FRAME_NEAR_BLACK in blocker for blocker in row["blockers"])
         for row in receipt["views"].values()
@@ -815,9 +818,193 @@ def test_prepolicy_visual_gate_accepts_three_distinct_structured_views() -> None
             "external": _textured((24, 32), low=30, high=180),
             "wrist": np.roll(_textured((24, 32), low=35, high=185), 1, axis=1),
             "overview": np.roll(_textured((24, 32), low=40, high=190), 2, axis=0),
-        }
+        },
+        candidate_policy_loaded=False,
     )
 
     assert receipt["passed"] is True
+    assert receipt["frame_structure_passed"] is True
     assert receipt["blockers"] == []
     assert len({row["frame_digest"] for row in receipt["views"].values()}) == 3
+    # Structural only: nothing here may unlock a policy query.
+    assert receipt["policy_observation_integrity_passed"] is False
+    assert receipt["appearance_reference_parity_passed"] is False
+    assert receipt["human_visual_review_status"] == "pending"
+    assert receipt["policy_observation_integrity_blockers"] == [
+        "native_task_appearance_reference_parity_missing",
+        "native_task_human_visual_review_not_approved",
+    ]
+
+
+def _three_views() -> dict[str, np.ndarray]:
+    return {
+        "external": _textured((24, 32), low=30, high=180),
+        "wrist": np.roll(_textured((24, 32), low=35, high=185), 1, axis=1),
+        "overview": np.roll(_textured((24, 32), low=40, high=190), 2, axis=0),
+    }
+
+
+def _authority(*, backend: str, status: str = "approved", parity: bool = True) -> dict:
+    from blueprint_pipeline.native_task_camera_observability import (
+        build_policy_observation_integrity_authority,
+    )
+
+    return build_policy_observation_integrity_authority(
+        appearance_render_backend_receipt_digest=backend,
+        reference_renderer_identity="nvcr.io/nvidia/nre/nre@sha256:pinned",
+        reference_source_sha256="sha256:" + "9" * 64,
+        views={
+            view: {
+                "reference_png_sha256": "sha256:" + "1" * 64,
+                "candidate_png_sha256": "sha256:" + "2" * 64,
+            }
+            for view in ("external", "wrist", "overview")
+        },
+        parity_passed=parity,
+        human_review_status=status,
+        reviewer="reviewer",
+        contact_sheet_sha256="sha256:" + "3" * 64,
+    )
+
+
+def test_prepolicy_gate_records_the_caller_supplied_policy_load_state() -> None:
+    from blueprint_pipeline.native_task_camera_observability import (
+        NativeTaskCameraObservabilityError,
+        measure_native_task_prepolicy_visual_frames,
+    )
+
+    loaded = measure_native_task_prepolicy_visual_frames(
+        _three_views(), candidate_policy_loaded=True
+    )
+    assert loaded["candidate_policy_loaded"] is True
+    assert loaded["candidate_policy_queried"] is False
+    with pytest.raises(TypeError):
+        measure_native_task_prepolicy_visual_frames(_three_views())  # type: ignore[call-arg]
+    with pytest.raises(NativeTaskCameraObservabilityError):
+        measure_native_task_prepolicy_visual_frames(
+            _three_views(), candidate_policy_loaded="no"  # type: ignore[arg-type]
+        )
+
+
+def test_prepolicy_gate_unlocks_only_with_bound_parity_and_approved_review() -> None:
+    from blueprint_pipeline.native_task_camera_observability import (
+        measure_native_task_prepolicy_visual_frames,
+    )
+
+    backend = "sha256:" + "b" * 64
+    passing = measure_native_task_prepolicy_visual_frames(
+        _three_views(),
+        candidate_policy_loaded=True,
+        observation_integrity_authority=_authority(backend=backend),
+        appearance_render_backend_receipt_digest=backend,
+    )
+    assert passing["policy_observation_integrity_passed"] is True
+    assert passing["policy_observation_integrity_blockers"] == []
+    assert passing["appearance_reference_parity_binding"]["backend_bound"] is True
+
+    unbound = measure_native_task_prepolicy_visual_frames(
+        _three_views(),
+        candidate_policy_loaded=True,
+        observation_integrity_authority=_authority(backend=backend),
+        appearance_render_backend_receipt_digest="sha256:" + "c" * 64,
+    )
+    assert unbound["policy_observation_integrity_passed"] is False
+    assert unbound["policy_observation_integrity_blockers"] == [
+        "native_task_appearance_reference_parity_backend_mismatch"
+    ]
+
+    failed_parity = measure_native_task_prepolicy_visual_frames(
+        _three_views(),
+        candidate_policy_loaded=True,
+        observation_integrity_authority=_authority(backend=backend, parity=False),
+        appearance_render_backend_receipt_digest=backend,
+    )
+    assert failed_parity["policy_observation_integrity_blockers"] == [
+        "native_task_appearance_reference_parity_failed"
+    ]
+
+    unreviewed = measure_native_task_prepolicy_visual_frames(
+        _three_views(),
+        candidate_policy_loaded=True,
+        observation_integrity_authority=_authority(backend=backend, status="pending"),
+        appearance_render_backend_receipt_digest=backend,
+    )
+    assert unreviewed["human_visual_review_status"] == "pending"
+    assert unreviewed["policy_observation_integrity_blockers"] == [
+        "native_task_human_visual_review_not_approved"
+    ]
+
+
+def test_structural_failure_keeps_integrity_false_even_with_a_perfect_authority() -> None:
+    from blueprint_pipeline.native_task_camera_observability import (
+        measure_native_task_prepolicy_visual_frames,
+    )
+
+    backend = "sha256:" + "b" * 64
+    dark = np.zeros((180, 320, 3), dtype=np.uint8)
+    dark[:, :80] = _textured((180, 80), low=8, high=70)
+    receipt = measure_native_task_prepolicy_visual_frames(
+        {"external": dark, "wrist": np.roll(dark, 1, axis=1), "overview": np.roll(dark, 2, axis=1)},
+        candidate_policy_loaded=True,
+        observation_integrity_authority=_authority(backend=backend),
+        appearance_render_backend_receipt_digest=backend,
+    )
+    assert receipt["frame_structure_passed"] is False
+    assert receipt["appearance_reference_parity_passed"] is True
+    assert receipt["policy_observation_integrity_passed"] is False
+    assert "native_task_prepolicy_frame_structure_failed" in receipt[
+        "policy_observation_integrity_blockers"
+    ]
+
+
+def test_invalid_authority_is_a_typed_refusal() -> None:
+    from blueprint_pipeline.native_task_camera_observability import (
+        NativeTaskCameraObservabilityError,
+        measure_native_task_prepolicy_visual_frames,
+        validate_policy_observation_integrity_authority,
+    )
+
+    with pytest.raises(NativeTaskCameraObservabilityError) as excinfo:
+        validate_policy_observation_integrity_authority({"schema_version": "wrong"})
+    assert all(
+        error.startswith("native_task_policy_observation_integrity_authority_invalid:")
+        for error in excinfo.value.errors
+    )
+    with pytest.raises(NativeTaskCameraObservabilityError):
+        measure_native_task_prepolicy_visual_frames(
+            _three_views(),
+            candidate_policy_loaded=True,
+            observation_integrity_authority={"schema_version": "wrong"},
+            appearance_render_backend_receipt_digest="sha256:" + "b" * 64,
+        )
+
+
+def test_chromatic_diagnostics_describe_scattered_saturated_splats_without_gating() -> None:
+    """Diagnostic descriptors that separate a coherent surface from splat breakup.
+
+    The three Scene 839873 failing frames measured 5.16 / 5.10 / 2.14 percent
+    of pixels with RGB spread above 64; a grey textured surface measures zero.
+    Thresholds stay uncalibrated until a known-good/known-bad set exists.
+    """
+
+    from blueprint_pipeline.native_task_camera_observability import (
+        measure_native_task_frame_chromatic_diagnostics,
+    )
+
+    grey = np.repeat(_textured((64, 64), low=60, high=200)[..., :1], 3, axis=-1)
+    coherent = measure_native_task_frame_chromatic_diagnostics(grey)
+    assert coherent["rgb_spread_pixel_fraction"] == 0.0
+    assert coherent["local_chroma_outlier_fraction"] == 0.0
+    assert coherent["gating"] == "diagnostic_only_until_calibration_set_preregistered"
+
+    rainbow = grey.copy()
+    rng = np.random.default_rng(3)
+    rows = rng.integers(0, 64, 120)
+    cols = rng.integers(0, 64, 120)
+    rainbow[rows, cols] = rng.choice(
+        np.array([[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 0, 255]], dtype=np.uint8), 120
+    )
+    broken = measure_native_task_frame_chromatic_diagnostics(rainbow)
+    assert broken["rgb_spread_pixel_fraction"] > 0.02
+    assert broken["local_chroma_outlier_fraction"] > 0.02
+    assert broken["local_chroma_outlier_fraction"] > coherent["local_chroma_outlier_fraction"]

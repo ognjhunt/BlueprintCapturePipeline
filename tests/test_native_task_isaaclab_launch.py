@@ -10,6 +10,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_isaaclab_launch import (
     NATIVE_TASK_ARENA_IMAGE,
     NATIVE_TASK_ARENA_KIT_ARGS,
+    NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
     NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH,
     NativeTaskIsaacLabLaunchError,
     launch_native_task_isaaclab,
@@ -135,6 +136,7 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
 
     app, receipt = launch_native_task_isaaclab(
         _receipt(tmp_path),
+        appearance_render_path=NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
         device="cuda:0",
         app_launcher_factory=factory,
         nurec_renderer_probe_factory=lambda: {
@@ -288,6 +290,7 @@ def test_nurec_renderer_runtime_readback_fails_closed(
     with pytest.raises(NativeTaskIsaacLabLaunchError, match=error):
         launch_native_task_isaaclab(
             _receipt(tmp_path),
+            appearance_render_path=NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
             device="cuda:0",
             app_launcher_factory=factory,
             nurec_renderer_probe_factory=lambda: readback,
@@ -312,6 +315,7 @@ def test_nurec_renderer_readback_error_defers_close_until_receipt(
     ):
         launch_native_task_isaaclab(
             _receipt(tmp_path),
+            appearance_render_path=NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
             device="cuda:0",
             app_launcher_factory=factory,
             nurec_renderer_probe_factory=broken_probe,
@@ -361,6 +365,7 @@ def test_nurec_renderer_failure_retains_raw_diagnostics(tmp_path: Path) -> None:
     with pytest.raises(NativeTaskIsaacLabLaunchError) as excinfo:
         launch_native_task_isaaclab(
             _receipt(tmp_path),
+            appearance_render_path=NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
             device="cuda:0",
             app_launcher_factory=lambda **_kwargs: SimpleNamespace(
                 app=SimpleNamespace(close=lambda: None)
@@ -449,7 +454,8 @@ def test_missing_external_warp_fails_before_simulation_app_factory(
         match="native_task_isaaclab_external_warp_import_unqualified",
     ):
         launch_native_task_isaaclab(
-            receipt_path, device="cuda:0", app_launcher_factory=forbidden_factory
+            receipt_path, appearance_render_path=NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
+            device="cuda:0", app_launcher_factory=forbidden_factory
         )
     assert called is False
 
@@ -550,7 +556,8 @@ def test_launch_refuses_an_empty_device(tmp_path: Path) -> None:
 
     with pytest.raises(NativeTaskIsaacLabLaunchError) as excinfo:
         launch_native_task_isaaclab(
-            _receipt(tmp_path), device="  ", app_launcher_factory=forbidden
+            _receipt(tmp_path), appearance_render_path=NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
+            device="  ", app_launcher_factory=forbidden
         )
 
     assert "native_task_isaaclab_device_missing" in excinfo.value.errors
@@ -634,6 +641,7 @@ def _launch_with_probe(tmp_path: Path, probe: dict):
 
     _, receipt = launch_native_task_isaaclab(
         _receipt(tmp_path),
+        appearance_render_path=NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
         device="cuda:0",
         app_launcher_factory=factory,
         nurec_renderer_probe_factory=lambda: probe,
@@ -674,3 +682,72 @@ def test_launch_refuses_a_runtime_that_forces_gaussian_tonemapping_off(tmp_path)
 
     assert "native_task_isaaclab_gaussian_tonemapping_forced_off" in failure.value.errors
     assert failure.value.diagnostics["gaussian_skip_tonemapping_enabled"] is False
+
+
+def test_launch_requires_an_explicit_known_appearance_render_path(tmp_path: Path) -> None:
+    """Scene 839873: the probe and the policy worker launched different backends.
+
+    The launcher used to default to the legacy NuRec path, so a worker that
+    forgot the argument produced a receipt naming a renderer the stage never
+    composed.  The argument is now required and must be a known backend.
+    """
+
+    import inspect
+
+    from blueprint_pipeline.native_task_isaaclab_launch import (
+        NATIVE_TASK_ARENA_APPEARANCE_RENDER_PATHS,
+        NativeTaskIsaacLabLaunchError,
+    )
+
+    signature = inspect.signature(launch_native_task_isaaclab)
+    assert signature.parameters["appearance_render_path"].default is inspect.Parameter.empty
+    assert NATIVE_TASK_ARENA_APPEARANCE_RENDER_PATHS == {
+        NATIVE_TASK_ARENA_NUREC_RENDER_PATH,
+        NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH,
+    }
+    launched: list[dict] = []
+    with pytest.raises(NativeTaskIsaacLabLaunchError) as excinfo:
+        launch_native_task_isaaclab(
+            _receipt(tmp_path),
+            device="cuda:0",
+            appearance_render_path="nurec_volume",
+            app_launcher_factory=lambda **kwargs: launched.append(kwargs),
+            nurec_renderer_probe_factory=lambda: {},
+        )
+    assert excinfo.value.errors == ("native_task_isaaclab_appearance_render_path_invalid",)
+    assert launched == []
+
+
+def test_every_arena_worker_derives_the_render_path_from_its_plan() -> None:
+    """No worker may pick the appearance backend by omission."""
+
+    import inspect
+
+    from blueprint_pipeline import (
+        native_task_arena_construction_worker,
+        native_task_arena_control_sweep_worker,
+        native_task_arena_controls_worker,
+        native_task_arena_policy_canary_worker,
+        native_task_arena_policy_worker,
+        native_task_arena_runtime_preflight_worker,
+    )
+
+    for module in (
+        native_task_arena_construction_worker,
+        native_task_arena_control_sweep_worker,
+        native_task_arena_controls_worker,
+        native_task_arena_policy_canary_worker,
+        native_task_arena_policy_worker,
+        native_task_arena_runtime_preflight_worker,
+    ):
+        source = inspect.getsource(module)
+        calls = [
+            index
+            for index in range(len(source))
+            if source.startswith("launch_isaac(", index)
+            or source.startswith("launch_native_task_isaaclab(", index)
+        ]
+        assert calls, module.__name__
+        for index in calls:
+            window = source[index : index + 400]
+            assert "appearance_render_path=" in window, (module.__name__, window)
