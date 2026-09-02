@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
+from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -23,6 +25,8 @@ SELECTION_SCHEMA_VERSION = "policy_canary_wrist_camera_mount_selection.v1"
 MINIMUM_TASK_PIXELS = 120
 MINIMUM_TASK_PIXEL_FRACTION = 0.002
 MAXIMUM_ROBOT_PIXEL_FRACTION = 0.30
+POLICY_RENDER_RESOLUTION = (640, 360)
+OVERVIEW_RENDER_RESOLUTION = (1280, 720)
 
 
 class WristCameraMountSweepError(ValueError):
@@ -100,6 +104,83 @@ def validate_wrist_camera_mount_registry(value: Any) -> dict[str, Any]:
             raise WristCameraMountSweepError("wrist_camera_mount_candidate_invalid")
         seen.add(candidate_id)
     return registry
+
+
+def _scaled_intrinsics(
+    value: Any, *, width: int, height: int
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise WristCameraMountSweepError("wrist_camera_mount_intrinsics_invalid")
+    try:
+        old_width = int(value["width"])
+        old_height = int(value["height"])
+        fx = float(value["fx"])
+        fy = float(value["fy"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise WristCameraMountSweepError(
+            "wrist_camera_mount_intrinsics_invalid"
+        ) from exc
+    if old_width < 1 or old_height < 1 or width % old_width or height % old_height:
+        raise WristCameraMountSweepError("wrist_camera_mount_resolution_invalid")
+    result = json.loads(json.dumps(dict(value), allow_nan=False))
+    result.update(
+        fx=fx * width / old_width,
+        fy=fy * height / old_height,
+        cx=(width - 1) / 2.0,
+        cy=(height - 1) / 2.0,
+        width=width,
+        height=height,
+    )
+    return result
+
+
+def materialize_wrist_camera_mount_sweep_request(
+    *,
+    base_request: Mapping[str, Any],
+    registry: Mapping[str, Any],
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Bind one robot registry and review-quality render sizes to a request."""
+
+    from .native_task_arena_packet import validate_native_task_arena_packet_request
+
+    request = validate_native_task_arena_packet_request(base_request)
+    validated_registry = validate_wrist_camera_mount_registry(registry)
+    cameras = [dict(row) for row in request.get("cameras") or []]
+    by_role = {str(row.get("role") or ""): row for row in cameras}
+    if set(by_role) != {"external", "wrist", "overview"}:
+        raise WristCameraMountSweepError("wrist_camera_mount_camera_roles_invalid")
+    for role, camera in by_role.items():
+        width, height = (
+            OVERVIEW_RENDER_RESOLUTION
+            if role == "overview"
+            else POLICY_RENDER_RESOLUTION
+        )
+        camera["intrinsics"] = _scaled_intrinsics(
+            camera.get("intrinsics"), width=width, height=height
+        )
+    source_request_digest = request["request_digest"]
+    request["cameras"] = [by_role[role] for role in ("external", "wrist", "overview")]
+    request["wrist_camera_mount_registry"] = validated_registry
+    request["camera_resolution_contract"] = {
+        "policy_master_resolution_wh": list(POLICY_RENDER_RESOLUTION),
+        "overview_review_resolution_wh": list(OVERVIEW_RENDER_RESOLUTION),
+        "policy_preprocessing": (
+            "candidate_specific_aspect_preserving_resize_with_centred_black_pad"
+        ),
+        "source_request_digest": source_request_digest,
+        "fresh_native_mount_sweep_required": True,
+    }
+    request["request_digest"] = ""
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+    destination = Path(output_path).expanduser()
+    if destination.exists() or destination.is_symlink():
+        raise WristCameraMountSweepError("wrist_camera_mount_request_output_exists")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    write_json(destination, request)
+    return json.loads(json.dumps(request))
 
 
 def resolve_wrist_camera_mount_eyes(
@@ -239,9 +320,12 @@ __all__ = [
     "MAXIMUM_ROBOT_PIXEL_FRACTION",
     "MINIMUM_TASK_PIXEL_FRACTION",
     "MINIMUM_TASK_PIXELS",
+    "OVERVIEW_RENDER_RESOLUTION",
+    "POLICY_RENDER_RESOLUTION",
     "REGISTRY_SCHEMA_VERSION",
     "SELECTION_SCHEMA_VERSION",
     "WristCameraMountSweepError",
+    "materialize_wrist_camera_mount_sweep_request",
     "resolve_wrist_camera_mount_eyes",
     "select_wrist_camera_mount_candidate",
     "validate_wrist_camera_mount_registry",

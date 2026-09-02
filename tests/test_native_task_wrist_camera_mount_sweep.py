@@ -13,7 +13,10 @@ from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
     _run_wrist_camera_mount_sweep,
 )
 from blueprint_pipeline.native_task_wrist_camera_mount_sweep import (
+    OVERVIEW_RENDER_RESOLUTION,
+    POLICY_RENDER_RESOLUTION,
     WristCameraMountSweepError,
+    materialize_wrist_camera_mount_sweep_request,
     resolve_wrist_camera_mount_eyes,
     select_wrist_camera_mount_candidate,
     validate_wrist_camera_mount_registry,
@@ -29,6 +32,62 @@ REGISTRY = (
 
 def _registry() -> dict:
     return json.loads(REGISTRY.read_text())
+
+
+def _packet_request() -> dict:
+    camera = {
+        "policy_input": True,
+        "review_only": False,
+        "intrinsics": {
+            "fx": 172.8,
+            "fy": 172.8,
+            "cx": 159.5,
+            "cy": 89.5,
+            "width": 320,
+            "height": 180,
+        },
+    }
+    value = {
+        "schema_version": "native_task_arena_packet_request.v1",
+        "cameras": [
+            {**camera, "role": "external"},
+            {**camera, "role": "wrist"},
+            {
+                **camera,
+                "role": "overview",
+                "policy_input": False,
+                "review_only": True,
+            },
+        ],
+        "request_digest": "",
+    }
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    value["request_digest"] = canonical_digest(value, digest_field="request_digest")
+    return value
+
+
+def test_request_materializer_binds_registry_and_distinct_review_resolution(
+    tmp_path: Path,
+) -> None:
+    result = materialize_wrist_camera_mount_sweep_request(
+        base_request=_packet_request(),
+        registry=_registry(),
+        output_path=tmp_path / "request.json",
+    )
+
+    by_role = {row["role"]: row for row in result["cameras"]}
+    assert (
+        by_role["external"]["intrinsics"]["width"],
+        by_role["external"]["intrinsics"]["height"],
+    ) == POLICY_RENDER_RESOLUTION
+    assert (
+        by_role["overview"]["intrinsics"]["width"],
+        by_role["overview"]["intrinsics"]["height"],
+    ) == OVERVIEW_RENDER_RESOLUTION
+    assert result["wrist_camera_mount_registry"]["registry_digest"] == _registry()[
+        "registry_digest"
+    ]
 
 
 def _observation(row: dict, *, task_pixels: int, robot_fraction: float) -> dict:
