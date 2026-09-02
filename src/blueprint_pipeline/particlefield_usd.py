@@ -45,6 +45,8 @@ from .nurec_volume_codec import (
 
 PARTICLEFIELD_SCHEMA = "ParticleField3DGaussianSplat"
 PARTICLEFIELD_RECEIPT_SCHEMA_VERSION = "particlefield_3dgs_authoring_receipt.v1"
+SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR = "inria_channel_major"
+SH_REST_LAYOUT_COEFFICIENT_MAJOR = "coefficient_major_rgb_triplets"
 PARTICLEFIELD_REFERENCE_CONVERTERS = {
     "openusd_py3dgs_ply_to_usd": (
         "https://github.com/PixarAnimationStudios/OpenUSD/blob/"
@@ -94,11 +96,17 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
     return np.where(np.isneginf(x), 0.0, result)
 
 
-def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None = None) -> dict:
+def build_particlefield_arrays(
+    splat: SplatData,
+    *,
+    sh_rest: np.ndarray | None = None,
+    sh_rest_layout: str = SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR,
+) -> dict:
     """Compute the ParticleField attribute arrays from standard 3DGS data (pure numpy).
 
-    Returns float32 arrays ready for USD authoring. ``sh_rest`` (N, 45) higher-order SH,
-    INRIA channel-major layout, is optional; without it the field is degree-0 (DC only).
+    Returns float32 arrays ready for USD authoring. ``sh_rest`` (N, 45)
+    higher-order SH is optional and its source layout must be declared when it
+    is not INRIA PLY channel-major; without it the field is degree-0 (DC only).
     """
     if isinstance(splat.count, bool) or splat.count < 1:
         raise ValueError("particlefield_splat_count_invalid")
@@ -135,8 +143,18 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
         if rest.ndim != 2 or rest.shape[0] != n or rest.shape[1] % 3 or not np.isfinite(rest).all():
             raise ValueError("particlefield_sh_rest_invalid")
         n_rest = rest.shape[1] // 3
-        # INRIA f_rest is channel-major: [R*n_rest, G*n_rest, B*n_rest] -> (n, n_rest, 3)
-        rest = rest.reshape(n, 3, n_rest).transpose(0, 2, 1)
+        if sh_rest_layout == SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR:
+            # INRIA PLY f_rest is channel-major:
+            # [R*n_rest, G*n_rest, B*n_rest] -> (n, n_rest, 3).
+            rest = rest.reshape(n, 3, n_rest).transpose(0, 2, 1)
+        elif sh_rest_layout == SH_REST_LAYOUT_COEFFICIENT_MAJOR:
+            # NuRec stores the model tensor directly as RGB triplets per SH
+            # coefficient. Applying the INRIA transpose to this array moves
+            # channels and coefficients, producing view-dependent chromatic
+            # splat artifacts even though every scalar value is preserved.
+            rest = rest.reshape(n, n_rest, 3)
+        else:
+            raise ValueError("particlefield_sh_rest_layout_invalid")
         coeffs = np.concatenate([dc, rest], axis=1)  # (n, 1+n_rest, 3)
         total = coeffs.shape[1]
         degree = int(round(total ** 0.5)) - 1
@@ -162,6 +180,9 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
         "sh_coefficients": sh,
         "sh_degree": degree,
         "sh_element_size": int((degree + 1) ** 2),
+        "source_sh_rest_layout": (
+            sh_rest_layout if sh_rest is not None and np.asarray(sh_rest).size else None
+        ),
         "display_colors": display_colors,
         "extent": extent,
         "positive_infinite_opacity_logit_count": int(np.isposinf(raw_opacity).sum()),
@@ -444,6 +465,7 @@ def write_particlefield_usd(
     out_path: str | Path,
     *,
     sh_rest: np.ndarray | None = None,
+    sh_rest_layout: str = SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR,
     prim_path: str = "/World/CapturedScene/Gaussians",
     up_axis: str = "Z",
     sorting_mode: str = "zDepth",
@@ -484,7 +506,11 @@ def write_particlefield_usd(
             }
     splat = source if isinstance(source, SplatData) else read_standard_3dgs_ply(source_path)
     effective_sh_rest = sh_rest if sh_rest is not None else splat.sh_rest
-    arr = build_particlefield_arrays(splat, sh_rest=effective_sh_rest)
+    arr = build_particlefield_arrays(
+        splat,
+        sh_rest=effective_sh_rest,
+        sh_rest_layout=sh_rest_layout,
+    )
     field_quality = measure_gaussian_field_quality(
         positions=arr["positions"],
         activated_scales=arr["scales"],
@@ -636,6 +662,7 @@ def write_particlefield_usd(
         "sh_degree": arr["sh_degree"],
         "sh_primvar_element_size": arr["sh_element_size"],
         "sh_primvar_interpolation": "vertex",
+        "source_sh_rest_layout": arr["source_sh_rest_layout"],
         "display_color_fallback_authored": True,
         "particlefield_emissive_material_binding_authored": True,
         "particlefield_emissive_material_inputs": "mdl_defaults",
@@ -773,6 +800,7 @@ def write_particlefield_usd_from_nurec(
         splat,
         out_path,
         sh_rest=splat.sh_rest,
+        sh_rest_layout=SH_REST_LAYOUT_COEFFICIENT_MAJOR,
         layer_transform_row_major=transform,
     )
     if result.get("status") != "completed":
@@ -783,6 +811,7 @@ def write_particlefield_usd_from_nurec(
         source_nurec_payload_sha256=_sha256_bytes(payload),
         source_nurec_prim_path=source_prim_path,
         source_nurec_description=description,
+        source_nurec_sh_rest_layout=SH_REST_LAYOUT_COEFFICIENT_MAJOR,
         exact_learned_arrays_preserved=True,
         representation_conversion_only=True,
         proof_boundary=(
