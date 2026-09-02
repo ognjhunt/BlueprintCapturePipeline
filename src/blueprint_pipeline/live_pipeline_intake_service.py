@@ -128,9 +128,10 @@ from .task_evaluation_run_state import (
     TaskEvaluationRunStateError,
     TaskEvaluationRunStateStore,
 )
-from .task_evaluation_result_delivery import (
+from .live_pipeline_result_artifact_resolution import (
+    TASK_EVALUATION_POLICY_CANARY_RESULT_ROOT_ENV,
     TaskEvaluationResultDeliveryError,
-    resolve_task_evaluation_result_artifact,
+    resolve_live_pipeline_result_artifact,
 )
 from .task_evaluation_configured_scene_object_store import (
     TaskEvaluationConfiguredSceneObjectStoreError,
@@ -2964,10 +2965,12 @@ def create_app() -> FastAPI:
     )
     async def read_task_evaluation_result_artifact(run_id: str, artifact_id: str) -> FileResponse:
         manifest_path = _manifest_path().resolve()
-        state_root = _task_evaluation_run_root(manifest_path)
         try:
-            path, record = resolve_task_evaluation_result_artifact(
-                run_root=Path(state_root).resolve() / "runs" / run_id,
+            path, record = resolve_live_pipeline_result_artifact(
+                legacy_state_root=_task_evaluation_run_root(manifest_path),
+                policy_canary_result_root=os.getenv(
+                    TASK_EVALUATION_POLICY_CANARY_RESULT_ROOT_ENV
+                ),
                 run_id=run_id,
                 artifact_id=artifact_id,
             )

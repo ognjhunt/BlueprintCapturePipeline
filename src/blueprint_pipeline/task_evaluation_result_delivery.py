@@ -759,8 +759,17 @@ def resolve_task_evaluation_result_artifact(
 
     run = strict_identifier(run_id, field="run_id", max_length=192)
     requested = strict_identifier(artifact_id, field="artifact_id", max_length=64)
-    root = Path(run_root).expanduser().resolve()
+    unresolved_root = Path(run_root).expanduser()
+    if unresolved_root.is_symlink():
+        raise TaskEvaluationResultDeliveryError(
+            "result_delivery_run_root_symlink_forbidden"
+        )
+    root = unresolved_root.resolve()
     registry_path = root / "artifacts" / "result_delivery" / "artifact_registry.json"
+    if registry_path.is_symlink():
+        raise TaskEvaluationResultDeliveryError(
+            "result_delivery_registry_symlink_forbidden"
+        )
     if not registry_path.is_file():
         raise TaskEvaluationResultDeliveryError("result_delivery_registry_missing")
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
@@ -770,11 +779,27 @@ def resolve_task_evaluation_result_artifact(
         raise TaskEvaluationResultDeliveryError("result_delivery_registry_invalid")
     if registry.get("run_id") != run:
         raise TaskEvaluationResultDeliveryError("result_delivery_registry_run_mismatch")
-    matches = [row for row in registry.get("artifacts", []) if row.get("artifact_id") == requested]
+    artifacts = registry.get("artifacts")
+    if not isinstance(artifacts, list) or any(
+        not isinstance(row, Mapping) for row in artifacts
+    ):
+        raise TaskEvaluationResultDeliveryError("result_delivery_registry_invalid")
+    matches = [row for row in artifacts if row.get("artifact_id") == requested]
     if len(matches) != 1:
         raise TaskEvaluationResultDeliveryError("result_delivery_artifact_not_found")
     record = matches[0]
-    evidence_root = Path(str(record.get("evidence_root") or "")).resolve()
+    unresolved_evidence_root = Path(str(record.get("evidence_root") or ""))
+    if unresolved_evidence_root.is_symlink():
+        raise TaskEvaluationResultDeliveryError(
+            "result_delivery_evidence_root_symlink_forbidden"
+        )
+    evidence_root = unresolved_evidence_root.resolve()
+    try:
+        evidence_root.relative_to(root)
+    except ValueError as exc:
+        raise TaskEvaluationResultDeliveryError(
+            "result_delivery_evidence_root_outside_run"
+        ) from exc
     path = _inside(evidence_root, str(record.get("relative_path") or ""), role=requested)
     if _sha256(path) != record.get("sha256") or path.stat().st_size != record.get("size_bytes"):
         raise TaskEvaluationResultDeliveryError("result_delivery_artifact_reverification_failed")

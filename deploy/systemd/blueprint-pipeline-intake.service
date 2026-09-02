@@ -40,6 +40,7 @@ Environment=PRIVACY_FAIL_CLOSED=true
 Environment=PIPELINE_SYNC_REQUIRED=true
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_TARGET_ROOT=/var/lib/blueprint/task-evaluation-inputs
+Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_RESULT_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries
 Environment=RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
