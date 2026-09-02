@@ -17,8 +17,9 @@ import os
 import pwd
 import stat
 import subprocess  # nosec B404 - fixed runuser/sha256sum argv over validated paths
+import tempfile
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from blueprint_pipeline.host_resident_launch_inputs import PRODUCTION_LAUNCH_INPUT_ROOTS
 from blueprint_pipeline.task_evaluation_launch_catalog import build_catalog_payload
@@ -35,6 +36,7 @@ DEFAULT_SERVICE_ACCOUNT = "blueprint"
 DEFAULT_SERVICE_GROUP = "blueprint"
 RUNUSER_PATH = "/usr/sbin/runuser"
 SHA256SUM_PATH = "/usr/bin/sha256sum"
+ReferenceFetcher = Callable[[str, Path, int], None]
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -268,6 +270,71 @@ def _seal_immutable_input_permissions(
             )
 
 
+def _validate_policy_canary_release_window_template_reference(
+    profile: Mapping[str, Any], *, fetcher: ReferenceFetcher | None = None
+) -> None:
+    plan = profile.get("internal_policy_canary_execution_plan")
+    if not isinstance(plan, Mapping):
+        return
+    automation = plan.get("activation_automation")
+    reference = (
+        automation.get("release_window_template")
+        if isinstance(automation, Mapping)
+        else None
+    )
+    if not isinstance(reference, Mapping):
+        raise TaskEvaluationLaunchError(
+            "launch_profile_policy_canary_release_window_template_invalid"
+        )
+    uri = str(reference.get("uri") or "")
+    digest = str(reference.get("digest") or "")
+    size = reference.get("size_bytes")
+    if (
+        not uri.startswith(("s3://", "gs://", "https://"))
+        or not digest.startswith("sha256:")
+        or not isinstance(size, int)
+        or isinstance(size, bool)
+        or size <= 0
+    ):
+        raise TaskEvaluationLaunchError(
+            "launch_profile_policy_canary_release_window_template_invalid"
+        )
+    if fetcher is None:
+        from blueprint_pipeline.task_evaluation_launch_preparation_worker import (
+            default_reference_fetcher,
+        )
+
+        fetcher = default_reference_fetcher
+    try:
+        with tempfile.TemporaryDirectory(prefix="launch-profile-window-template-") as raw:
+            path = Path(raw) / "template.json"
+            fetcher(uri, path, size)
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or path.stat().st_size != size
+                or "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest() != digest
+            ):
+                raise ValueError("identity_mismatch")
+            template = _read(path)
+            from blueprint_pipeline.task_evaluation_shared_mutation_window import (
+                validate_shared_mutation_window_template,
+            )
+
+            validate_shared_mutation_window_template(
+                template,
+                team_namespace=str(
+                    (profile.get("task_evaluation_run") or {}).get("team_namespace")
+                    or ""
+                ),
+                expected_production_commit=str(profile.get("source_commit") or ""),
+            )
+    except (OSError, ValueError) as exc:
+        raise TaskEvaluationLaunchError(
+            "launch_profile_policy_canary_release_window_template_invalid"
+        ) from exc
+
+
 def _publish_profiles_locked(
     *,
     profile_paths: Sequence[str | Path],
@@ -295,6 +362,7 @@ def _publish_profiles_locked(
         blockers.extend(verify_profile_immutable_inputs(profile))
         if blockers:
             raise TaskEvaluationLaunchError(",".join(sorted(set(blockers))))
+        _validate_policy_canary_release_window_template_reference(profile)
         _seal_immutable_input_permissions(
             profile,
             target_root=target_root,
