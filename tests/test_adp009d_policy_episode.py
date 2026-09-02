@@ -2021,11 +2021,11 @@ def test_mixed_source_resolutions_refuse_a_single_conversion_claim() -> None:
 
 
 def test_the_shipped_openpi_client_satisfies_the_episode_loop_seam() -> None:
-    """No new client is needed: the existing one already fits the protocol.
+    """The identity-bound client directly fits the episode protocol.
 
     The loop asks for exactly one method, infer(observation) -> chunk.  The
     shipped OpenPI websocket client provides it and additionally verifies
-    server identity on construction, so binding it needs no adapter.
+    server identity on the fresh query connection, so binding needs no adapter.
     """
 
     import inspect
@@ -2037,11 +2037,15 @@ def test_the_shipped_openpi_client_satisfies_the_episode_loop_seam() -> None:
     assert hasattr(OpenPIWebsocketDroidPolicyClient, "infer")
     signature = inspect.signature(OpenPIWebsocketDroidPolicyClient.infer)
     assert list(signature.parameters) == ["self", "observation"]
-    # Identity verification is not optional: the constructor fetches and
-    # validates server metadata rather than trusting the endpoint.
-    source = inspect.getsource(OpenPIWebsocketDroidPolicyClient.__init__)
-    assert "get_server_metadata" in source
-    assert "validate_server_metadata" in source
+    # Identity verification is not optional: every query opens through the
+    # helper that fetches and validates metadata before inference.
+    infer_source = inspect.getsource(OpenPIWebsocketDroidPolicyClient.infer)
+    verifier_source = inspect.getsource(
+        OpenPIWebsocketDroidPolicyClient._open_verified_client
+    )
+    assert "_open_verified_client" in infer_source
+    assert "get_server_metadata" in verifier_source
+    assert "validate_server_metadata" in verifier_source
 
 
 def test_a_client_shaped_like_the_shipped_one_drives_a_full_episode() -> None:
