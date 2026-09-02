@@ -609,11 +609,19 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
     zero = {
         "schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
         "status": "provider_zero_confirmed",
+        "api_confirmed": True,
         "provider_zero_verified": True,
         "live_instance_count": 0,
         "blockers": [],
-        "receipt_digest": "sha256:" + "c" * 64,
+        "receipt_digest": "",
     }
+    zero["receipt_digest"] = canonical_digest(zero, digest_field="receipt_digest")
+    zero_collections = 0
+
+    def collect_zero():
+        nonlocal zero_collections
+        zero_collections += 1
+        return zero
     progress_updates = []
 
     def sync_progress(**kwargs):
@@ -627,7 +635,7 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
         implementation_commit=COMMIT,
         execute=True,
         allocator_runner=fake_allocator,
-        provider_zero_collector=lambda: zero,
+        provider_zero_collector=collect_zero,
         progress_sync_runner=sync_progress,
     )
     second = dispatch_policy_canary_activation(
@@ -637,7 +645,7 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
         implementation_commit=COMMIT,
         execute=True,
         allocator_runner=lambda _argv: pytest.fail("allocator invoked twice"),
-        provider_zero_collector=lambda: zero,
+        provider_zero_collector=collect_zero,
         progress_sync_runner=sync_progress,
     )
 
@@ -682,7 +690,7 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
         implementation_commit=COMMIT,
         execute=True,
         allocator_runner=lambda _argv: pytest.fail("allocator invoked on billing resume"),
-        provider_zero_collector=lambda: zero,
+        provider_zero_collector=collect_zero,
         sync_runner=lambda **_kwargs: {
             "status": "succeeded",
             "notification_delivery": {
@@ -697,6 +705,7 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
     assert third["notification_delivery"]["status"] == "failed"
     assert (output / "dispatch_receipt.json").is_file()
     assert calls == {"allocator": 1, "bundle": 1}
+    assert zero_collections == 1
 
 
 def test_invalid_envelope_is_quarantined_without_allocator(tmp_path: Path) -> None:
