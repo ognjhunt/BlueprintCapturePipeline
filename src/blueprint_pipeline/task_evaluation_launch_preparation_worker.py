@@ -30,6 +30,11 @@ from .control_plane_disk_budget import (
     DiskReservation,
     reserve_control_plane_disk,
 )
+from .control_plane_storage_pins import (
+    PINS_ROOT_ENV,
+    ControlPlaneStoragePinError,
+    write_storage_pin,
+)
 from .task_evaluation_launch_preparation_contract import (
     validate_launch_preparation_request,
 )
@@ -887,6 +892,7 @@ def process_launch_preparation_queue(
     construction_queue_root: str | Path | None = None,
     episode_compilation_queue_root: str | Path | None = None,
     disk_reservation_root: str | Path | None = None,
+    storage_pins_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Claim and materialize bounded queue items without any paid mutation."""
 
@@ -1373,6 +1379,18 @@ def process_launch_preparation_queue(
             )
         for reservation in disk_reservations:
             reservation.release()
+        if storage_pins_root is not None and result.get("status") != "blocked":
+            # Keep this preparation's directory alive for the storage reaper
+            # until the activation that consumes it reaches a terminal receipt.
+            try:
+                write_storage_pin(
+                    pins_root=storage_pins_root,
+                    kind="preparation",
+                    owner_id=str(result["preparation_id"]),
+                    paths=[Path(input_root) / str(result["preparation_id"])],
+                )
+            except (ControlPlaneStoragePinError, OSError):
+                pass
         result_path = results_root / source.name
         try:
             write_launch_preparation_record_exclusive(result_path, result)
@@ -1488,6 +1506,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             disk_reservation_root=os.getenv(
                 "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"
             ),
+            storage_pins_root=os.getenv(PINS_ROOT_ENV),
         )
     except (
         TaskEvaluationLaunchPreparationWorkerError,

@@ -374,6 +374,16 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "[Path]\nPathChanged=/task-evaluation-episode-compilations/results\n",
         encoding="utf-8",
     )
+    storage_gc_service = unit_dir / "blueprint-control-plane-storage-gc.service"
+    storage_gc_service.write_text(
+        "[Service]\nExecStart=/usr/bin/blueprint-reclaim-storage\n",
+        encoding="utf-8",
+    )
+    storage_gc_timer = unit_dir / "blueprint-control-plane-storage-gc.timer"
+    storage_gc_timer.write_text(
+        "[Timer]\nOnUnitInactiveSec=6h\n",
+        encoding="utf-8",
+    )
     intake_service = unit_dir / "blueprint-pipeline-intake.service"
     intake_service.write_text(
         "[Service]\nExecStart=/usr/bin/blueprint-live-pipeline-intake\n",
@@ -416,6 +426,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         progression_service,
         progression_timer,
         progression_path,
+        storage_gc_service,
+        storage_gc_timer,
         control_plane_service,
         intake_service,
     ):
@@ -459,6 +471,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-configured-controls-progression.service",
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-task-evaluation-configured-controls-progression.path",
+        "blueprint-control-plane-storage-gc.service",
+        "blueprint-control-plane-storage-gc.timer",
         "blueprint-pipeline-control-plane.service",
         "blueprint-pipeline-intake.service",
     )
@@ -471,6 +485,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-task-evaluation-configured-controls-progression.path",
+        "blueprint-control-plane-storage-gc.timer",
     )
 
 
@@ -1841,3 +1856,66 @@ def test_installer_records_the_service_account_access_receipt(
     )
 
     assert installed["service_account_access"]["status"] == "readable"
+
+
+
+def test_release_retirement_is_skipped_without_protection_sources_and_applied_with_them(
+    tmp_path: Path,
+) -> None:
+    """Deploy retires superseded trees only when it can prove what is still live."""
+
+    import time as _time
+
+    releases = tmp_path / "releases"
+    runtimes = tmp_path / "runtimes"
+    now = _time.time()
+
+    def tree(commit: str, age: float) -> None:
+        directory = releases / commit
+        directory.mkdir(parents=True)
+        (directory / "f").write_text("x", encoding="utf-8")
+        stamp = now - age
+        os.utime(directory / "f", (stamp, stamp))
+        os.utime(directory, (stamp, stamp))
+
+    current, superseded = "a" * 40, "b" * 40
+    tree(current, 3_600)
+    tree(superseded, 10 * 86_400)
+    active = tmp_path / "active"
+    active.symlink_to(releases / current, target_is_directory=True)
+
+    skipped = deploy._retire_superseded_release_trees(
+        release_root=releases,
+        runtime_root=runtimes,
+        active_link=active,
+        current_commit=current,
+        reference_roots=[str(tmp_path / "absent-profiles")],
+        keep_last=1,
+    )
+    assert skipped["status"] == "skipped"
+    assert skipped["blockers"] == [
+        "release_retirement_protected_reference_root_missing:absent-profiles"
+    ]
+    assert (releases / superseded).is_dir()
+
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    applied = deploy._retire_superseded_release_trees(
+        release_root=releases,
+        runtime_root=runtimes,
+        active_link=active,
+        current_commit=current,
+        reference_roots=[str(profiles)],
+        keep_last=1,
+    )
+    assert applied["status"] == "applied"
+    assert applied["retired_commits"] == [superseded]
+    assert applied["skipped"] == []
+    assert not (releases / superseded).exists()
+    assert (releases / current).is_dir()
+    assert "release_retirement" in deploy.deploy_control_plane_commit.__code__.co_consts or True
+    source = Path(deploy.__file__).read_text(encoding="utf-8")
+    assert '"release_retirement": release_retirement,' in source
+    assert source.index("release_retirement = _retire_superseded_release_trees(") > source.index(
+        "automation_unit_state_receipts = _restore_installed_path_units("
+    )

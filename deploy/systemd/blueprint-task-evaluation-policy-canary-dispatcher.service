@@ -30,7 +30,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
-ReadWritePaths=/var/lib/blueprint /var/lib/blueprint/pipeline-control-plane/disk-reservations
+ReadWritePaths=/var/lib/blueprint /var/lib/blueprint/pipeline-control-plane/disk-reservations /var/lib/blueprint/pipeline-control-plane/storage-pins
 ReadOnlyPaths=/etc/blueprint/provider-secrets
 TasksMax=512
 LimitNOFILE=65536
@@ -44,6 +44,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_EXECUTION_SETUP_ROOT=/var/li
 Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_EXECUTION_SETUP_TEMPLATE=/var/lib/blueprint/task-evaluation-inputs/policy-canary-execution-setup-template.json
 Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
+Environment=BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-pins
 Environment=BLUEPRINT_PROVIDER_BILLING_AUDIT_ROOT=/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit
 Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
 Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
