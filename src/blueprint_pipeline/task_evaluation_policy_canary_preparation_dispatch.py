@@ -12,6 +12,9 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .task_evaluation_launch_preparation_queue import stage_launch_preparation_request
+from .task_evaluation_launch_preparation_contract import (
+    validate_launch_preparation_request,
+)
 from .task_evaluation_launch_webapp_sync import sync_launch_receipt_to_webapp
 from .task_evaluation_policy_canary_setup import validate_policy_canary_setup
 from .task_evaluation_policy_run_contract import (
@@ -51,6 +54,58 @@ def _reference(value: Any) -> bool:
         and not isinstance(row.get("size_bytes"), bool)
         and row["size_bytes"] > 0
     )
+
+
+def _validate_activation_automation(value: Any) -> dict[str, Any]:
+    automation = _mapping(value)
+    lineage = _mapping(automation.get("lineage"))
+    authorization = _mapping(automation.get("authorization_template"))
+    requested = _mapping(automation.get("requested_mutations"))
+    required_lineage = {
+        "kind",
+        "prior_authority",
+        "prior_result",
+        "prior_launch_receipt",
+        "prior_webapp_sync",
+        "prior_provider_zero",
+        "prior_spend_reconciliation",
+        "construction_result",
+    }
+    if (
+        set(automation)
+        != {
+            "mode",
+            "release_window_template",
+            "lineage",
+            "authorization_template",
+            "requested_mutations",
+        }
+        or automation.get("mode") != "automatic_after_no_spend_compilation"
+        or not _reference(automation.get("release_window_template"))
+        or set(lineage) != required_lineage
+        or lineage.get("kind") != "predecessor"
+        or any(not _reference(lineage.get(name)) for name in required_lineage - {"kind"})
+        or set(authorization)
+        != {"reference", "authorized_by", "profile_revision", "valid_for_seconds"}
+        or any(
+            not str(authorization.get(name) or "")
+            for name in ("reference", "authorized_by", "profile_revision")
+        )
+        or not isinstance(authorization.get("valid_for_seconds"), int)
+        or isinstance(authorization.get("valid_for_seconds"), bool)
+        or not 300 <= authorization["valid_for_seconds"] <= 86_400
+        or requested
+        != {
+            "profile_publication": False,
+            "catalog_synchronization": False,
+            "standing_authorization": False,
+            "policy_campaign_queue": True,
+        }
+    ):
+        raise PolicyCanaryPreparationDispatchError(
+            "policy_canary_activation_automation_invalid"
+        )
+    return automation
 
 
 def validate_policy_canary_execution_plan(
@@ -96,6 +151,7 @@ def validate_policy_canary_execution_plan(
         raise PolicyCanaryPreparationDispatchError(
             "policy_canary_execution_plan_invalid"
         )
+    _validate_activation_automation(plan.get("activation_automation"))
     quick = legacy["presets"][0]
     if quick.get("preset_id") != "quick_10" or quick.get("availability") != "enabled":
         raise PolicyCanaryPreparationDispatchError(
@@ -301,6 +357,8 @@ def maybe_dispatch_policy_canary_preparation(
             run_id=request["run_id"],
             preparation_id=preparation_id,
         )
+        preparation["policy_canary_activation"] = plan["activation_automation"]
+        preparation = validate_launch_preparation_request(preparation)
         queue_receipt = stage_launch_preparation_request(
             value=preparation,
             queue_root=preparation_queue_root,

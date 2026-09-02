@@ -53,10 +53,10 @@
     "provider_use_status": "internal service execution only",
     "redistribution_status": "do_not_redistribute",
     "modules": [
-      {"path": "src/blueprint_pipeline/openpi_droid_policy_runtime.py", "sha256": "sha256:6f607ca30e8c81e2546e7d9a86c8bdc49f1de48d5b93bd36f036770b7b5e36d3"},
-      {"path": "src/blueprint_pipeline/groot_n17_droid_policy_runtime.py", "sha256": "sha256:5c8fca6f0048a646e970dde38c9336b28974a6578866b33df512feb5f979a17d"},
+      {"path": "src/blueprint_pipeline/openpi_droid_policy_runtime.py", "sha256": "sha256:a590fbb7ec45c96b676c7711f2b9bcece1584ef5783681fe791a16ce7b1b1222"},
+      {"path": "src/blueprint_pipeline/groot_n17_droid_policy_runtime.py", "sha256": "sha256:391c0494f7d61aea2fca4acc1087a8a8c3808ca3a1a0b7faf0c56b67c469e633"},
       {"path": "src/blueprint_pipeline/adp009d_droid_action_execution.py", "sha256": "sha256:ab32144814d442cab20397e9e6b9d26ce68395deaf436a2d9bf6ce4721e75eec"},
-      {"path": "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py", "sha256": "sha256:3f51c21bddd99ef006b3b50fc036671a9b347d2e3f4437b4cd0b9aaf79e5242a"},
+      {"path": "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py", "sha256": "sha256:a50e3e972b0e7f8552a9a0588eb020dc2022cdda0254ab0983d07bea32c3d3b5"},
       {"path": "src/blueprint_pipeline/adp009d_policy_episode.py", "sha256": "sha256:6f020f63468da8a62bde6c3cfeb6619c2d3c1207f5ceaad2adc9b2f13b95ed5f"},
       {"path": "src/blueprint_pipeline/policy_episode_trace_evidence.py", "sha256": "sha256:81b920384f0029c788d5872738e157df6b24027539ffc0e819599b964f3b18a3"}
     ]
@@ -72,5 +72,5 @@
   "official_ranking_permitted": false,
   "scene_promotion_permitted": false,
   "secret_material_recorded": false,
-  "rights_digest": "sha256:8f2024cd94671b67947ffb7c630357fd900107be07f30f36e9cf07c2546dedbc"
+  "rights_digest": "sha256:74ba4c38eabc6716f912a75548ea40eba32c2b7f2dde4404dffb90b0e22b74dc"
 }

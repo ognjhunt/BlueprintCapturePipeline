@@ -49,6 +49,7 @@
     "policy_run_setup": {"type": "object"},
     "policy_run_selection": {"type": "object"},
     "policy_run_configuration": {"type": "object"},
+    "policy_canary_activation": {"type": "object"},
     "scene": {
       "oneOf": [
         {

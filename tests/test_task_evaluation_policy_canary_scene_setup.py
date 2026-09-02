@@ -149,6 +149,12 @@ def _inputs(tmp_path: Path) -> dict[str, Path]:
 def _kwargs(tmp_path: Path) -> dict:
     inputs = _inputs(tmp_path)
     root = Path(__file__).resolve().parents[1]
+    def activation_ref(name: str, character: str) -> dict:
+        return {
+            "uri": f"s3://blueprint/policy-canary/activation/{name}.json",
+            "digest": "sha256:" + character * 64,
+            "size_bytes": 256,
+        }
     return {
         "source_commit": COMMIT,
         "configured_source_launch_id": "scene839873-configured-source",
@@ -167,6 +173,23 @@ def _kwargs(tmp_path: Path) -> dict:
         / "docs/arm_decision_proof_v1/manifests/adp009d_scene_840920_policy_readiness.v1.json",
         "pi05_checkpoint_inventory_path": root
         / "docs/experiments/policy_ranking_thesis_20260726/openpi_polaris_checkpoint_inventory.json",
+        "activation_release_window_template": activation_ref("release-window-template", "1"),
+        "activation_lineage": {
+            "kind": "predecessor",
+            "prior_authority": activation_ref("prior-authority", "2"),
+            "prior_result": activation_ref("prior-result", "3"),
+            "prior_launch_receipt": activation_ref("prior-launch-receipt", "4"),
+            "prior_webapp_sync": activation_ref("prior-webapp-sync", "5"),
+            "prior_provider_zero": activation_ref("prior-provider-zero", "6"),
+            "prior_spend_reconciliation": activation_ref("prior-spend", "7"),
+            "construction_result": activation_ref("construction-result", "8"),
+        },
+        "activation_authorization": {
+            "reference": "automatic policy-canary activation",
+            "authorized_by": "blueprint-policy-lead",
+            "profile_revision": "policy-canary-v1",
+            "valid_for_seconds": 3600,
+        },
         "output_dir": tmp_path / "output",
     }
 
@@ -369,6 +392,9 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     assert len(plan["resolved_scenarios"]) == 10
     assert all(isinstance(row["seed"], int) for row in plan["resolved_scenarios"])
     assert plan["configured_offering_configuration_run_id"] == ("scene839873-configuration")
+    assert plan["activation_automation"]["mode"] == (
+        "automatic_after_no_spend_compilation"
+    )
     assert plan["lineage_aliases"] == {
         "capture_session_id": "scene839873-configured-source",
         "capture_session_id_semantics": (

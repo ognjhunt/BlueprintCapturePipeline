@@ -483,10 +483,17 @@ class OpenPIWebsocketDroidPolicyClient:
         return json.loads(json.dumps(self._last_inference_evidence, allow_nan=False))
 
     def preflight_readiness(self) -> dict[str, Any]:
-        """Re-read exact server identity without advancing policy state."""
+        """Re-read exact server identity without advancing policy state.
 
-        if self.candidate_policy_queried or self._last_inference_evidence is not None:
-            raise ValueError("openpi_policy_preflight_after_inference_forbidden")
+        Readiness is scoped to the episode about to start.  A warm Quick-10
+        session is expected to have served earlier episodes; that historical
+        fact is retained separately and must not prevent an outcome-blind
+        metadata handshake for the next episode.
+        """
+
+        prior_query_observed = bool(
+            self.candidate_policy_queried or self._last_inference_evidence is not None
+        )
         raw_metadata = self._client.get_server_metadata()
         if not isinstance(raw_metadata, Mapping):
             raise ValueError("policy_server_metadata_not_object")
@@ -499,6 +506,7 @@ class OpenPIWebsocketDroidPolicyClient:
             "candidate_inference_performed": False,
             "policy_state_advanced": False,
             "last_inference_evidence": None,
+            "prior_candidate_policy_query_observed": prior_query_observed,
             "server_metadata": metadata,
         }
 

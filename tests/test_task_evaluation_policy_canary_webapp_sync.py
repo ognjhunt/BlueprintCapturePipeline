@@ -210,6 +210,66 @@ def test_canary_sync_requires_website_notification_receipt(monkeypatch) -> None:
     assert "sync-secret" not in json.dumps(synced)
 
 
+def test_canary_sync_rejects_failed_website_notification(monkeypatch) -> None:
+    delivery, result = _projection()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "schema_version": (
+                        "capture_task_evaluation_policy_canary_publication_receipt.v1"
+                    ),
+                    "status": "blocked",
+                    "already_exists": False,
+                    "capture_session_id": "capture-839873",
+                    "intake_id": "intake-839873",
+                    "run_id": result["run_id"],
+                    "request_digest": result["request_digest"],
+                    "configuration_digest": result["configuration_digest"],
+                    "result_delivery_digest": delivery["delivery_digest"],
+                    "policy_canary_projection_digest": result["projection_digest"],
+                    "notification_delivery": {
+                        "terminal_state": "blocked",
+                        "status": "failed",
+                        "attempts": 1,
+                        "provider": "website_transactional_email",
+                        "message_id": None,
+                        "failure_reason": "email_disabled",
+                        "run_result_digest": result["projection_digest"],
+                    },
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_run_webapp_sync.urllib_request.urlopen",
+        lambda *_args, **_kwargs: Response(),
+    )
+
+    synced = sync_task_evaluation_policy_canary_to_webapp(
+        capture_session_id="capture-839873",
+        intake_id="intake-839873",
+        run_id=str(result["run_id"]),
+        request_digest=str(result["request_digest"]),
+        configuration_digest=str(result["configuration_digest"]),
+        result_status="blocked",
+        result_delivery=delivery,
+        policy_canary_result=result,
+        endpoint_url="https://webapp.example/api/internal/pipeline/task-evaluation-runs",
+        token="sync-secret",
+        max_attempts=1,
+    )
+
+    assert synced["status"] == "failed"
+    assert synced["reason"] == "response_binding_mismatch"
+
+
 def test_preprovider_blocked_sync_requires_terminal_email_readback(
     tmp_path,
     monkeypatch,

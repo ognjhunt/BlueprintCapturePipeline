@@ -18,7 +18,7 @@ import stat
 import subprocess  # nosec B404 - fixed repository-owned launch-only client
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +34,17 @@ from .task_evaluation_configured_controls_progression import (
 )
 from .task_evaluation_launch_activation_contract import (
     launch_activation_intent_digest,
+    validate_launch_activation_request,
 )
+from .task_evaluation_launch_activation_queue import stage_launch_activation_request
+from .task_evaluation_launch_preparation_contract import (
+    TaskEvaluationLaunchPreparationContractError,
+    validate_launch_preparation_request,
+)
+from .task_evaluation_policy_canary_preparation_dispatch import (
+    validate_policy_canary_execution_plan,
+)
+from .task_evaluation_policy_canary_setup import validate_policy_canary_setup
 from .task_evaluation_shared_mutation_window import (
     TaskEvaluationSharedMutationWindowError,
     materialize_shared_mutation_window,
@@ -44,7 +54,10 @@ from .task_evaluation_shared_mutation_window import (
 from .task_evaluation_configured_scene_object_store import (
     configured_scene_object_store_publisher,
 )
-from .task_evaluation_launch_dispatcher import LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+from .task_evaluation_launch_dispatcher import (
+    LAUNCH_RECEIPT_DIGEST_CANONICALIZATION,
+    validate_launch_request,
+)
 from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_row
 
 
@@ -444,6 +457,271 @@ def _queue_result(queue_root: Path, preparation_id: str) -> dict[str, Any] | Non
             "configured_controls_worker_preparation_result_ambiguous"
         )
     return _load(matches[0], blocker="configured_controls_worker_preparation_result_invalid")
+
+
+def _policy_canary_activation_id(run_id: str) -> str:
+    proposed = f"{run_id}-activation"
+    if len(proposed) <= 192 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", proposed):
+        return proposed
+    return "policy-canary-activation-" + hashlib.sha256(run_id.encode()).hexdigest()[:32]
+
+
+def advance_policy_canary_activation(
+    *,
+    run_root: Path,
+    preparation_queue_root: str | Path,
+    episode_compilation_queue_root: str | Path,
+    activation_queue_root: str | Path,
+    progression_root: str | Path,
+    release_window_publisher_factory: PublisherFactory = (
+        configured_controls_release_window_publisher
+    ),
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Turn a compiled no-spend canary request into one activation queue item."""
+
+    request = _load(
+        run_root / "launch_request.json",
+        blocker="policy_canary_activation_launch_request_invalid",
+    )
+    profile = _load(
+        run_root / "launch_profile.json",
+        blocker="policy_canary_activation_launch_profile_invalid",
+    )
+    receipt = _load(
+        run_root / "launch_receipt.json",
+        blocker="policy_canary_activation_launch_receipt_invalid",
+    )
+    expected_receipt_digest = (
+        cross_runtime_canonical_digest(receipt, digest_field="receipt_digest")
+        if receipt.get("receipt_digest_canonicalization")
+        == LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+        else canonical_digest(receipt, digest_field="receipt_digest")
+    )
+    if (
+        validate_launch_request(request)
+        or request.get("run_kind") != "internal_policy_canary"
+        or profile.get("profile_digest")
+        != canonical_digest(profile, digest_field="profile_digest")
+        or receipt.get("status") != "queued_for_no_spend_preparation"
+        or receipt.get("request_digest") != request.get("request_digest")
+        or receipt.get("receipt_digest") != expected_receipt_digest
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_launch_binding_invalid"
+        )
+    setup = validate_policy_canary_setup(profile.get("internal_policy_canary_setup") or {})
+    plan = validate_policy_canary_execution_plan(
+        profile.get("internal_policy_canary_execution_plan") or {},
+        public_setup=setup,
+    )
+    preparation_binding = receipt.get("preparation_queue")
+    if not isinstance(preparation_binding, Mapping):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_preparation_binding_invalid"
+        )
+    preparation_id = str(preparation_binding.get("preparation_id") or "")
+    preparation = _queue_result(Path(preparation_queue_root), preparation_id)
+    if preparation is None:
+        return {"status": "awaiting_policy_canary_preparation", "run_id": request["run_id"]}
+    if preparation.get("status") != "queued_for_production_episode_compilation":
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_preparation_invalid"
+        )
+    if preparation.get("result_digest") != canonical_digest(
+        preparation, digest_field="result_digest"
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_preparation_invalid"
+        )
+    preparation_filename = (
+        f"{preparation_id}-"
+        f"{str(preparation_binding.get('request_digest') or '').removeprefix('sha256:')}.json"
+    )
+    preparation_envelope = _load(
+        Path(preparation_queue_root) / "materialized" / preparation_filename,
+        blocker="policy_canary_activation_preparation_envelope_invalid",
+    )
+    preparation_request = preparation_envelope.get("request")
+    if (
+        not isinstance(preparation_request, Mapping)
+        or preparation_envelope.get("envelope_digest")
+        != canonical_digest(preparation_envelope, digest_field="envelope_digest")
+        or preparation_envelope.get("request_digest")
+        != preparation_binding.get("request_digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_preparation_envelope_invalid"
+        )
+    try:
+        preparation_request = validate_launch_preparation_request(preparation_request)
+    except TaskEvaluationLaunchPreparationContractError as exc:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_preparation_envelope_invalid"
+        ) from exc
+    compilation_id = str(preparation.get("episode_compilation_id") or "")
+    envelope_digest = str(
+        preparation.get("episode_compilation_queue_envelope_digest") or ""
+    )
+    compilation_path = (
+        Path(episode_compilation_queue_root)
+        / "results"
+        / f"{compilation_id}-{envelope_digest.removeprefix('sha256:')}.json"
+    )
+    if not compilation_path.is_file():
+        return {"status": "awaiting_policy_canary_compilation", "run_id": request["run_id"]}
+    compilation = _load(
+        compilation_path,
+        blocker="policy_canary_activation_compilation_invalid",
+    )
+    if (
+        compilation.get("status") != "compiled_for_production_launch"
+        or compilation.get("run_id") != request.get("run_id")
+        or compilation.get("source_commit") != plan.get("source_commit")
+        or compilation.get("result_digest")
+        != canonical_digest(compilation, digest_field="result_digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_compilation_invalid"
+        )
+    state_root = (
+        Path(progression_root)
+        / "policy-canary-activations"
+        / str(request["run_id"])
+    )
+    state_root.mkdir(parents=True, exist_ok=True, mode=0o750)
+    state_path = state_root / "activation_progression.json"
+    if state_path.is_file():
+        existing = _load(
+            state_path,
+            blocker="policy_canary_activation_progression_invalid",
+        )
+        if existing.get("progression_digest") != canonical_digest(
+            existing, digest_field="progression_digest"
+        ) or any(
+            existing.get(field) != expected
+            for field, expected in (
+                ("schema_version", "task_evaluation_policy_canary_activation_progression.v1"),
+                ("status", "policy_canary_activation_queued"),
+                ("run_id", request["run_id"]),
+                ("preparation_result_digest", preparation["result_digest"]),
+                ("compilation_result_digest", compilation["result_digest"]),
+            )
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "policy_canary_activation_progression_invalid"
+            )
+        return existing
+    automation = plan["activation_automation"]
+    template_rows = [
+        row
+        for row in preparation.get("references") or []
+        if isinstance(row, Mapping)
+        and row.get("contract_path")
+        == "policy_canary_activation.release_window_template"
+    ]
+    if len(template_rows) != 1:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_window_template_missing"
+        )
+    template_path = Path(str(template_rows[0].get("materialized_path") or ""))
+    template = validate_shared_mutation_window_template(
+        _load(
+            template_path,
+            blocker="policy_canary_activation_window_template_invalid",
+        ),
+        team_namespace=str(request["team_namespace"]),
+        expected_production_commit=str(plan["source_commit"]),
+    )
+    observed_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    authorization_template = automation["authorization_template"]
+    valid_for_seconds = int(authorization_template["valid_for_seconds"])
+    authorization = {
+        "reference": authorization_template["reference"],
+        "authorized_by": authorization_template["authorized_by"],
+        "authorized_on": observed_now.isoformat(),
+        "standing_authorization_expires_at": (
+            observed_now + timedelta(seconds=valid_for_seconds)
+        ).isoformat(),
+        "profile_revision": authorization_template["profile_revision"],
+    }
+    placeholder = {
+        "uri": "https://tryblueprint.io/internal/release-window-placeholder",
+        "digest": "sha256:" + "0" * 64,
+        "size_bytes": 1,
+    }
+    base_request = {
+        "schema_version": "task_evaluation_launch_activation_request.v1",
+        "expected_production_commit": plan["source_commit"],
+        "activation_id": _policy_canary_activation_id(str(request["run_id"])),
+        "team_namespace": request["team_namespace"],
+        "run_kind": "internal_policy_canary",
+        "capture_session_id": plan["configured_source_launch_id"],
+        "intake_id": plan["configured_offering_configuration_run_id"],
+        "lane": "native_task_arena_policy_evaluation",
+        "preparation": {
+            "preparation_id": preparation_id,
+            "request_digest": preparation_binding["request_digest"],
+            "result_digest": preparation["result_digest"],
+        },
+        "release_window": placeholder,
+        "lineage": automation["lineage"],
+        "authorization": authorization,
+        "requested_mutations": automation["requested_mutations"],
+    }
+    base_request = validate_launch_activation_request(base_request)
+    window = materialize_shared_mutation_window(
+        template,
+        activation_request=base_request,
+        provider_allowlist=list(preparation_request["spend"]["provider_allowlist"]),
+        hard_cap_usd=float(preparation_request["spend"]["hard_cap_usd"]),
+        now=observed_now,
+    )
+    window_path = state_root / f"{window['window_id']}.json"
+    _write_immutable(window_path, window)
+    window_reference = _publish_materialized_file(
+        path=window_path,
+        object_name=(
+            f"release-windows/{base_request['activation_id']}/"
+            f"{window['window_digest'].removeprefix('sha256:')}.json"
+        ),
+        publisher=release_window_publisher_factory(),
+    )
+    activation_request = validate_launch_activation_request(
+        {**base_request, "release_window": window_reference}
+    )
+    intake = stage_launch_activation_request(
+        value=activation_request,
+        queue_root=activation_queue_root,
+        submitted_by=str((request.get("authorization") or {}).get("actor", {}).get("id") or "blueprint-policy-canary-automation"),
+    )
+    if (
+        intake.get("status") != "queued_for_authority_gated_activation"
+        or intake.get("accepted") is not True
+        or intake.get("activation_id") != activation_request["activation_id"]
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "policy_canary_activation_intake_invalid"
+        )
+    result = {
+        "schema_version": "task_evaluation_policy_canary_activation_progression.v1",
+        "status": "policy_canary_activation_queued",
+        "run_id": request["run_id"],
+        "activation_id": activation_request["activation_id"],
+        "preparation_result_digest": preparation["result_digest"],
+        "compilation_result_digest": compilation["result_digest"],
+        "release_window_digest": window["window_digest"],
+        "activation_request_digest": canonical_digest(activation_request),
+        "activation_intake_receipt_digest": intake["receipt_digest"],
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "progression_digest": "",
+    }
+    result["progression_digest"] = canonical_digest(
+        result, digest_field="progression_digest"
+    )
+    _write_immutable(state_path, result)
+    return result
 
 
 def _activation_authority(
@@ -982,6 +1260,48 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
     for run_root in sorted(launch_state_root.iterdir()) if launch_state_root.is_dir() else []:
         if not run_root.is_dir() or run_root.is_symlink():
             continue
+        launch_request_path = run_root / "launch_request.json"
+        if launch_request_path.is_file() and not launch_request_path.is_symlink():
+            try:
+                launch_request = _load(
+                    launch_request_path,
+                    blocker="policy_canary_activation_launch_request_invalid",
+                )
+            except TaskEvaluationConfiguredControlsProgressionWorkerError as exc:
+                rows.append(
+                    {
+                        "status": "blocked",
+                        "source_launch_id": run_root.name,
+                        "blockers": [str(exc)],
+                    }
+                )
+                continue
+            if launch_request.get("run_kind") == "internal_policy_canary":
+                try:
+                    rows.append(
+                        advance_policy_canary_activation(
+                            run_root=run_root,
+                            preparation_queue_root=kwargs["preparation_queue_root"],
+                            episode_compilation_queue_root=kwargs[
+                                "episode_compilation_queue_root"
+                            ],
+                            activation_queue_root=kwargs["activation_queue_root"],
+                            progression_root=kwargs["progression_root"],
+                        )
+                    )
+                except (
+                    TaskEvaluationConfiguredControlsProgressionWorkerError,
+                    ValueError,
+                    OSError,
+                ) as exc:
+                    rows.append(
+                        {
+                            "status": "blocked",
+                            "source_launch_id": run_root.name,
+                            "blockers": [str(exc)],
+                        }
+                    )
+                continue
         profile_path = run_root / "launch_profile.json"
         receipt_path = run_root / "launch_receipt.json"
         if not profile_path.is_file() or not receipt_path.is_file():
@@ -1109,6 +1429,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--launch-state-root", required=True)
     parser.add_argument("--progression-root", required=True)
     parser.add_argument("--preparation-queue-root", required=True)
+    parser.add_argument("--episode-compilation-queue-root", required=True)
     parser.add_argument("--activation-queue-root", required=True)
     parser.add_argument("--autostart-intent-root", required=True)
     parser.add_argument("--repo-root", required=True)
