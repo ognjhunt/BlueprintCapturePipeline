@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import blueprint_pipeline.vast_provider_adapter as vpa
+from blueprint_pipeline.provider_machine_avoidlist import avoidlist_machine_ids
 
 
 def _write(path: Path, value: object) -> Path:
@@ -41,7 +42,7 @@ def test_published_machines_shape_excludes_known_bad_machine(tmp_path: Path) -> 
         },
     )
 
-    excluded = vpa._avoidlist_machine_ids(avoidlist)
+    excluded = avoidlist_machine_ids(avoidlist)
 
     assert excluded == {144209}
     selected = vpa._select_offer(
@@ -76,7 +77,7 @@ def test_current_machine_ids_and_entries_shapes_remain_supported(tmp_path: Path)
         },
     )
 
-    assert vpa._avoidlist_machine_ids(avoidlist) == {5, 6}
+    assert avoidlist_machine_ids(avoidlist) == {5, 6}
 
 
 @pytest.mark.parametrize(
@@ -92,7 +93,7 @@ def test_invalid_avoidlist_shape_fails_closed(tmp_path: Path, value: object) -> 
     avoidlist = _write(tmp_path / "vast_machine_avoidlist.json", value)
 
     with pytest.raises(ValueError, match="vast_machine_avoidlist_invalid"):
-        vpa._avoidlist_machine_ids(avoidlist)
+        avoidlist_machine_ids(avoidlist)
 
 
 def test_unparseable_avoidlist_fails_closed(tmp_path: Path) -> None:
@@ -103,4 +104,4 @@ def test_unparseable_avoidlist_fails_closed(tmp_path: Path) -> None:
         ValueError,
         match="vast_machine_avoidlist_invalid:blocked_parse_failed",
     ):
-        vpa._avoidlist_machine_ids(avoidlist)
+        avoidlist_machine_ids(avoidlist)
