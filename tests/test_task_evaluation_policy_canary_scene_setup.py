@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +17,7 @@ from blueprint_pipeline import (
 from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import (
     QUICK_FAMILY_COUNTS,
     _quick_cells,
+    _seal_presubmission_service_access,
     materialize_policy_canary_presubmission_setup,
     materialize_scene839873_policy_canary_setup,
     materialize_scene839873_policy_canary_setup_from_template,
@@ -67,6 +71,141 @@ def test_cli_routes_both_public_materializers(tmp_path: Path, monkeypatch, capsy
 def _write(path: Path, value: dict) -> Path:
     write_json(path, value)
     return path
+
+
+def _root_materialization_stat_reader(
+    *,
+    destination: Path,
+    artifacts: dict[str, Path],
+    service_uid: int,
+    installed_groups: dict[Path, int],
+):
+    owned = {destination.resolve(), *(path.resolve() for path in artifacts.values())}
+
+    def read(path: Path):
+        resolved = Path(path).resolve()
+        observed = os.stat(resolved)
+        return SimpleNamespace(
+            st_mode=observed.st_mode,
+            st_uid=0 if resolved in owned else service_uid,
+            st_gid=installed_groups.get(resolved, 0),
+        )
+
+    return read
+
+
+def test_root_presubmission_materialization_is_sealed_for_blueprint(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "root-authored"
+    destination.mkdir(mode=0o700)
+    artifacts = {
+        "setup": _write(destination / "setup.json", {"role": "setup"}),
+        "profile_materialization_input": _write(
+            destination / "wrapper.json", {"role": "wrapper"}
+        ),
+        "execution_setup_template": _write(
+            destination / "template.json", {"role": "template"}
+        ),
+    }
+    for path in artifacts.values():
+        path.chmod(0o600)
+    account = {
+        "user": "blueprint",
+        "uid": 4242,
+        "group": "blueprint",
+        "gid": 4343,
+        "group_ids": [4343],
+    }
+    installed_groups: dict[Path, int] = {}
+
+    def install_group(path: Path, uid: int, gid: int) -> None:
+        assert uid == -1
+        installed_groups[Path(path).resolve()] = gid
+
+    stat_reader = _root_materialization_stat_reader(
+        destination=destination,
+        artifacts=artifacts,
+        service_uid=account["uid"],
+        installed_groups=installed_groups,
+    )
+
+    receipt = _seal_presubmission_service_access(
+        destination=destination,
+        artifacts=artifacts,
+        account_resolver=lambda: account,
+        chown=install_group,
+        stat_reader=stat_reader,
+        digest_reader=lambda path, *, account: "sha256:"
+        + hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+    )
+
+    assert receipt["status"] == "readable_by_service_account"
+    assert receipt["service_user"] == "blueprint"
+    assert {row["role"] for row in receipt["verified_roles"]} == set(artifacts)
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o750
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o440 for path in artifacts.values())
+    assert installed_groups == {
+        destination.resolve(): account["gid"],
+        **{path.resolve(): account["gid"] for path in artifacts.values()},
+    }
+
+
+def test_presubmission_materialization_fails_closed_when_wrapper_stays_unreadable(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "root-authored"
+    destination.mkdir(mode=0o700)
+    artifacts = {
+        "setup": _write(destination / "setup.json", {"role": "setup"}),
+        "profile_materialization_input": _write(
+            destination / "wrapper.json", {"role": "wrapper"}
+        ),
+        "execution_setup_template": _write(
+            destination / "template.json", {"role": "template"}
+        ),
+    }
+    account = {
+        "user": "blueprint",
+        "uid": 4242,
+        "group": "blueprint",
+        "gid": 4343,
+        "group_ids": [4343],
+    }
+    installed_groups: dict[Path, int] = {}
+    unreadable = artifacts["profile_materialization_input"].resolve()
+
+    def partially_install_group(path: Path, uid: int, gid: int) -> None:
+        assert uid == -1
+        resolved = Path(path).resolve()
+        if resolved != unreadable:
+            installed_groups[resolved] = gid
+
+    stat_reader = _root_materialization_stat_reader(
+        destination=destination,
+        artifacts=artifacts,
+        service_uid=account["uid"],
+        installed_groups=installed_groups,
+    )
+
+    with pytest.raises(
+        canary_setup_module.PolicyCanarySetupError,
+        match=(
+            "^policy_canary_materialization_service_access_denied:"
+            "profile_materialization_input$"
+        ),
+    ) as denied:
+        _seal_presubmission_service_access(
+            destination=destination,
+            artifacts=artifacts,
+            account_resolver=lambda: account,
+            chown=partially_install_group,
+            stat_reader=stat_reader,
+            digest_reader=lambda path, *, account: "sha256:"
+            + hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+        )
+
+    assert str(unreadable) not in str(denied.value)
 
 
 def _inputs(tmp_path: Path) -> dict[str, Path]:
