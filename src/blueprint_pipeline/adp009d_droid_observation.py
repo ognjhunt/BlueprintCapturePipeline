@@ -109,6 +109,7 @@ def build_droid_observation(
     gripper_position: float,
     prompt: str,
     eef_9d: Sequence[float] | None = None,
+    eef_9d_frame_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble one candidate's DROID observation from Isaac camera frames.
 
@@ -160,6 +161,10 @@ def build_droid_observation(
     observation["observation/gripper_position"] = gripper
     if eef is not None:
         observation["observation/eef_9d"] = eef
+        if isinstance(eef_9d_frame_provenance, Mapping):
+            observation["observation/eef_9d_frame_provenance"] = dict(
+                eef_9d_frame_provenance
+            )
     observation["prompt"] = str(prompt)
     return observation
 

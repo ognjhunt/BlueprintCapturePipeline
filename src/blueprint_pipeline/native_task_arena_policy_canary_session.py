@@ -569,6 +569,8 @@ def execute_paired_session(
                         observed.get("candidate_policy_queried") is True
                         and observed.get("actions_reached_robot") is True
                         and observed.get("arm_moved") is True
+                        and observed.get("observation_support_qualified", True)
+                        is True
                         and observed.get("scoring_authority")
                         == "deterministic_simulator_state"
                     )

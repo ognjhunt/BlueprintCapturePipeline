@@ -604,6 +604,7 @@ def _prestart_episode_readiness(
             gripper_position=inputs["gripper_position"],
             prompt=prompt,
             eef_9d=inputs.get("eef_9d"),
+            eef_9d_frame_provenance=inputs.get("eef_9d_frame_provenance"),
         )
     except (KeyError, DroidObservationError) as exc:
         raise PolicyEpisodeError(
@@ -1089,6 +1090,9 @@ def run_policy_episode(
                         gripper_position=terminal_inputs["gripper_position"],
                         prompt=prompt,
                         eef_9d=terminal_inputs.get("eef_9d"),
+                        eef_9d_frame_provenance=terminal_inputs.get(
+                            "eef_9d_frame_provenance"
+                        ),
                     )
                 except KeyError as exc:
                     raise PolicyEpisodeError(
@@ -1371,6 +1375,7 @@ def run_policy_episode(
                 gripper_position=inputs["gripper_position"],
                 prompt=prompt,
                 eef_9d=inputs.get("eef_9d"),
+                eef_9d_frame_provenance=inputs.get("eef_9d_frame_provenance"),
             )
         except KeyError as exc:
             raise PolicyEpisodeError(
@@ -1465,6 +1470,12 @@ def run_policy_episode(
                 )
             except (TypeError, ValueError):
                 failure_inference_evidence = None
+            if isinstance(failure_inference_evidence, Mapping):
+                # Pre-query compatibility and transport context is still
+                # evidence even when no vendor action payload returned.
+                episode_progress["policy_inference_evidence"] = dict(
+                    failure_inference_evidence
+                )
             vendor_action_evidence = _prevalidation_vendor_action_evidence(
                 failure_inference_evidence, query_index=query_index
             )

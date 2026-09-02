@@ -63,6 +63,16 @@ DROID_EEF_POSITION_OBSERVED_MAX_M = (
     0.8196876049041748,
     1.0066224336624146,
 )
+EEF_FRAME_PROVENANCE_SCHEMA_VERSION = "droid_eef_frame_provenance.v1"
+EEF_FRAME_PROVENANCE_KEY = "observation/eef_9d_frame_provenance"
+EEF_FRAME_BODY_NAME = "panda_link8"
+EEF_FRAME_BODY_SOURCE = (
+    "droid-dataset/droid@ba46d4af805bce44e6a40cff10ed094ee5090ab8:"
+    "config/panda/franka_panda.yaml:ee_link_name"
+)
+EEF_FRAME_STATE_SOURCE = (
+    "live_panda_link8_pose_world_transformed_by_live_robot_root_pose"
+)
 
 
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
@@ -141,6 +151,77 @@ def droid_eef_9d(*, position_m: Sequence[float], rotation_row_major: Sequence[fl
     )
     corrected = rotation @ correction
     return np.concatenate((position, corrected[:2, :].reshape(6))).astype(np.float32)
+
+
+def _validated_eef_frame_provenance(
+    value: Any, *, eef_position_m: Any
+) -> dict[str, Any]:
+    """Require explicit frame proof instead of guessing it from coordinate size."""
+
+    import numpy as np
+
+    if not isinstance(value, Mapping):
+        raise ValueError("groot_droid_eef_frame_provenance_invalid")
+    try:
+        provenance = json.loads(json.dumps(dict(value), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("groot_droid_eef_frame_provenance_invalid") from exc
+    position = np.asarray(provenance.get("position_robot_root_m"), dtype=np.float64)
+    if (
+        provenance.get("schema_version") != EEF_FRAME_PROVENANCE_SCHEMA_VERSION
+        or provenance.get("state_frame") != "robot_root"
+        or provenance.get("body_name") != EEF_FRAME_BODY_NAME
+        or provenance.get("body_source") != EEF_FRAME_BODY_SOURCE
+        or provenance.get("state_source") != EEF_FRAME_STATE_SOURCE
+        or position.shape != (3,)
+        or not np.isfinite(position).all()
+        or not np.allclose(position, eef_position_m, rtol=0.0, atol=1.0e-6)
+        or provenance.get("provenance_digest")
+        != "sha256:"
+        + _canonical_sha256(
+            {
+                key: item
+                for key, item in provenance.items()
+                if key != "provenance_digest"
+            }
+        )
+    ):
+        raise ValueError("groot_droid_eef_frame_provenance_invalid")
+    return provenance
+
+
+def _eef_position_support_evidence(position_m: Any) -> dict[str, Any]:
+    """Describe checkpoint-range clipping without mislabeling it as incompatibility."""
+
+    import numpy as np
+
+    position = np.asarray(position_m, dtype=np.float64)
+    minimum = np.asarray(DROID_EEF_POSITION_OBSERVED_MIN_M, dtype=np.float64)
+    maximum = np.asarray(DROID_EEF_POSITION_OBSERVED_MAX_M, dtype=np.float64)
+    below = np.maximum(minimum - position, 0.0)
+    above = np.maximum(position - maximum, 0.0)
+    return {
+        "position_m": position.tolist(),
+        "minimum_m": minimum.tolist(),
+        "maximum_m": maximum.tolist(),
+        "inside_checkpoint_observed_extrema": bool(
+            np.all(below == 0.0) and np.all(above == 0.0)
+        ),
+        "below_minimum_by_m": below.tolist(),
+        "above_maximum_by_m": above.tolist(),
+        "maximum_excess_m": float(max(np.max(below), np.max(above))),
+        "source": CHECKPOINT_STATISTICS_SOURCE,
+        "source_sha256": CHECKPOINT_STATISTICS_SHA256,
+        "source_git_blob_sha1": CHECKPOINT_STATISTICS_GIT_BLOB_SHA1,
+        "frozen_processor_use_percentiles": True,
+        "frozen_processor_clip_outliers": True,
+        "query_blocking": False,
+        "interpretation": (
+            "inside_checkpoint_observed_extrema"
+            if np.all(below == 0.0) and np.all(above == 0.0)
+            else "outside_checkpoint_observed_extrema_clipped_by_frozen_processor"
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -339,6 +420,9 @@ class GrootN17DroidPolicyClient:
     def infer(self, observation: Mapping[str, Any]) -> Any:
         import numpy as np
 
+        # Never let a refused observation inherit a prior episode's successful
+        # response receipt when the warm client is reused.
+        self._last_inference_evidence = None
         exterior = _resize_with_pad(observation.get("observation/exterior_image_1_left"))
         wrist = _resize_with_pad(observation.get("observation/wrist_image_left"))
         joints = np.asarray(observation.get("observation/joint_position"), dtype=np.float32)
@@ -353,18 +437,22 @@ class GrootN17DroidPolicyClient:
             and np.isfinite(eef).all()
         ):
             raise ValueError("groot_droid_observation_state_nonfinite")
-        eef_position_min = np.asarray(
-            DROID_EEF_POSITION_OBSERVED_MIN_M, dtype=np.float32
+        frame_provenance = _validated_eef_frame_provenance(
+            observation.get(EEF_FRAME_PROVENANCE_KEY), eef_position_m=eef[:3]
         )
-        eef_position_max = np.asarray(
-            DROID_EEF_POSITION_OBSERVED_MAX_M, dtype=np.float32
-        )
-        if np.any(eef[:3] < eef_position_min) or np.any(
-            eef[:3] > eef_position_max
-        ):
-            raise ValueError(
-                "groot_droid_eef_position_outside_checkpoint_observed_support"
-            )
+        support_evidence = _eef_position_support_evidence(eef[:3])
+        # The frozen processor uses percentile normalization and clips outliers.
+        # Its statistics are empirical normalization data, not a declared API
+        # support boundary.  Preserve an excursion as unqualified diagnostic
+        # evidence, while the explicit frame provenance above remains the
+        # fail-closed protection against accidentally sending scene/world XYZ.
+        self._last_inference_evidence = {
+            "server_response_received": False,
+            "action_payload_returned": False,
+            "actions_extracted": False,
+            "eef_frame_provenance": frame_provenance,
+            "eef_position_observed_support": support_evidence,
+        }
         exterior_video = exterior[None, None, ...]
         wrist_video = wrist[None, None, ...]
         request = {
@@ -381,7 +469,7 @@ class GrootN17DroidPolicyClient:
         }
         response = self._client.get_action(request)
         retained_response = _json_safe_vendor_response(response)
-        self._last_inference_evidence = {
+        self._last_inference_evidence.update({
             "server_response_received": True,
             "wire_response_type": type(response).__name__,
             "raw_vendor_action_response": retained_response,
@@ -396,7 +484,7 @@ class GrootN17DroidPolicyClient:
             ),
             "action_payload_returned": True,
             "actions_extracted": False,
-        }
+        })
         self.candidate_policy_queried = True
         if not isinstance(response, Sequence) or len(response) != 2:
             raise ValueError("groot_policy_response_invalid")
@@ -507,7 +595,10 @@ class GrootN17DroidPolicyClient:
                 "source": CHECKPOINT_STATISTICS_SOURCE,
                 "source_sha256": CHECKPOINT_STATISTICS_SHA256,
                 "source_git_blob_sha1": CHECKPOINT_STATISTICS_GIT_BLOB_SHA1,
-                "enforced_before_policy_query": True,
+                "enforced_before_policy_query": False,
+                "frame_provenance_enforced_before_policy_query": True,
+                "frozen_processor_use_percentiles": True,
+                "frozen_processor_clip_outliers": True,
             },
             "action_chunk_rows": self.action_chunk_rows,
             "last_inference_evidence": (
@@ -531,5 +622,7 @@ __all__ = [
     "CHECKPOINT_STATISTICS_SOURCE",
     "DROID_EEF_POSITION_OBSERVED_MAX_M",
     "DROID_EEF_POSITION_OBSERVED_MIN_M",
+    "EEF_FRAME_PROVENANCE_KEY",
+    "EEF_FRAME_PROVENANCE_SCHEMA_VERSION",
     "validate_worker_identity_receipt",
 ]

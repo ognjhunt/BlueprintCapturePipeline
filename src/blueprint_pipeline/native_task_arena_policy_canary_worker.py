@@ -1067,6 +1067,23 @@ def _run_selected_cell(
         }
         media_artifacts = episode.get("media_artifacts") or []
         media_root = output_root / "episodes"
+        observation_support_rows = [
+            ((row.get("policy_inference_evidence") or {}).get(
+                "eef_position_observed_support"
+            ) or {})
+            for row in episode.get("queries") or []
+            if isinstance(row, Mapping)
+        ]
+        observation_support_qualified = bool(
+            str(context["candidate_id"]) != "groot_n17_droid"
+            or (
+                observation_support_rows
+                and all(
+                    row.get("inside_checkpoint_observed_extrema") is True
+                    for row in observation_support_rows
+                )
+            )
+        )
         evidence_artifacts = {
             "frame_manifest": _bound_media_artifact(
                 output_root,
@@ -1096,6 +1113,13 @@ def _run_selected_cell(
                     "candidate_policy_queried": tracker.candidate_policy_queried,
                     "policy_queries": episode.get("policy_queries"),
                     "policy_query_latency": episode.get("policy_query_latency"),
+                    "queries": episode.get("queries"),
+                    "candidate_policy_action_queries": episode.get(
+                        "candidate_policy_action_queries"
+                    ),
+                    "observation_support_qualified": (
+                        observation_support_qualified
+                    ),
                 },
             ),
             "action_sequence": _write_episode_json_artifact(
@@ -1140,6 +1164,7 @@ def _run_selected_cell(
             "candidate_policy_queried": tracker.candidate_policy_queried,
             "actions_reached_robot": bool(motion.get("actions_reached_robot")),
             "arm_moved": bool(motion.get("arm_moved")),
+            "observation_support_qualified": observation_support_qualified,
             "checkpoint_digest": policy["checkpoint_digest"],
             "runtime_identity_digest": policy["runtime_identity_digest"],
             "lossless_frame_manifest_digest": _digest(visual),
