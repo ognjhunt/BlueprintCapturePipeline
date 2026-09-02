@@ -12,8 +12,11 @@ from blueprint_pipeline.decision_evidence_contracts import (
     cross_runtime_canonical_digest,
 )
 from blueprint_pipeline.task_evaluation_result_delivery import (
+    POLICY_CANARY_INLINE_TIMELINE_MAX_SAMPLES,
     TaskEvaluationResultDeliveryError,
+    compact_policy_canary_website_delivery,
     materialize_policy_canary_result_delivery,
+    materialize_policy_canary_website_delivery,
     resolve_task_evaluation_result_artifact,
 )
 from blueprint_pipeline.task_evaluation_policy_canary_result_projection import (
@@ -332,6 +335,85 @@ def test_canary_delivery_projects_path_distinct_byte_identical_episode_evidence(
         ]
         assert delivered[0]["digest"] == delivered[1]["digest"]
         assert delivered[0]["artifact_id"] != delivered[1]["artifact_id"]
+
+
+def test_canary_website_delivery_compacts_only_inline_bulk_evidence(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = _result(evidence)
+    closure = {
+        "billing": _closure(tmp_path / "billing.json", flag="official_billing_sealed"),
+        "teardown": _closure(tmp_path / "teardown.json", flag="teardown_completed"),
+        "provider_zero": _closure(tmp_path / "provider-zero.json", flag="provider_zero_verified"),
+    }
+    full = materialize_policy_canary_result_delivery(
+        run_root=tmp_path,
+        run_id="scene-839873-canary-compact",
+        result_status="completed_unqualified",
+        session_result=result,
+        evidence_root=evidence,
+        closure_records=closure,
+    )
+    full = deepcopy(full)
+    full["artifacts"].extend(
+        {
+            "artifact_id": f"frame-{index}",
+            "role": "episode_evidence",
+            "digest": "sha256:" + f"{index:064x}",
+            "size_bytes": 10,
+        }
+        for index in range(100)
+    )
+    full["episodes"][0]["timeline"] = [
+        {
+            "time_seconds": index / 15,
+            "action": "action" if 0 < index < 199 else None,
+            "force_newtons": None,
+            "scoring_state": "placed" if index == 137 else None,
+        }
+        for index in range(200)
+    ]
+    full["delivery_digest"] = cross_runtime_canonical_digest(
+        full, digest_field="delivery_digest"
+    )
+    source = deepcopy(full)
+
+    compact = materialize_policy_canary_website_delivery(
+        run_root=tmp_path,
+        delivery=full,
+    )
+
+    assert full == source
+    assert all(row["role"] != "episode_evidence" for row in compact["artifacts"])
+    assert len(compact["artifacts"]) == len(full["artifacts"]) - 100
+    timeline = compact["episodes"][0]["timeline"]
+    assert len(timeline) == POLICY_CANARY_INLINE_TIMELINE_MAX_SAMPLES
+    assert timeline[0] == full["episodes"][0]["timeline"][0]
+    assert timeline[-1] == full["episodes"][0]["timeline"][-1]
+    assert any(row["scoring_state"] == "placed" for row in timeline)
+    assert compact["inline_compaction"] == {
+        "schema_version": "task_evaluation_policy_canary_inline_compaction.v1",
+        "source_delivery_digest": full["delivery_digest"],
+        "omitted_artifact_roles": ["episode_evidence"],
+        "source_artifact_count": len(full["artifacts"]),
+        "inline_artifact_count": len(compact["artifacts"]),
+        "omitted_artifact_count": 100,
+        "source_timeline_sample_count": 200,
+        "inline_timeline_sample_count": 64,
+        "full_artifact_inventory": "report.evidence_manifest",
+        "full_artifact_registry": "artifact_registry.json",
+    }
+    assert compact["delivery_digest"] == cross_runtime_canonical_digest(
+        compact, digest_field="delivery_digest"
+    )
+    assert compact_policy_canary_website_delivery(compact) == compact
+    assert json.loads(
+        (tmp_path / "artifacts/result_delivery/website_delivery.json").read_text()
+    ) == compact
+    assert (tmp_path / "artifacts/result_delivery/delivery.json").is_file()
+    assert (tmp_path / "artifacts/result_delivery/artifact_registry.json").is_file()
 
 
 def test_canary_delivery_refuses_estimated_cost_as_official_billing(
