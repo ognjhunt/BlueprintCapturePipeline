@@ -169,6 +169,25 @@ def build_droid_observation(
     return observation
 
 
+def build_droid_observation_from_inputs(
+    candidate_id: str,
+    camera_rgb: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+    prompt: str,
+) -> dict[str, Any]:
+    """Bind one episode-environment read to the candidate observation contract."""
+
+    return build_droid_observation(
+        candidate_id=candidate_id,
+        camera_rgb=camera_rgb,
+        joint_position=inputs["joint_position"],
+        gripper_position=inputs["gripper_position"],
+        prompt=prompt,
+        eef_9d=inputs.get("eef_9d"),
+        eef_9d_frame_provenance=inputs.get("eef_9d_frame_provenance"),
+    )
+
+
 def describe_observation_conversion(
     candidate_id: str,
     *,
@@ -221,6 +240,7 @@ __all__ = [
     "DROID_WRIST_VIEW",
     "DroidObservationError",
     "build_droid_observation",
+    "build_droid_observation_from_inputs",
     "describe_observation_conversion",
     "resize_with_pad",
 ]
