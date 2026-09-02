@@ -26,6 +26,32 @@ def _is_digest(value: Any) -> bool:
     return bool(re.fullmatch(r"sha256:[0-9a-f]{64}", str(value or "")))
 
 
+def derive_policy_canary_episode_blockers(episodes: Any) -> list[str]:
+    """Lift retained blocked-episode taxonomy into stable run blockers."""
+
+    if not isinstance(episodes, list):
+        return []
+    blockers: set[str] = set()
+    for row in episodes:
+        if not isinstance(row, Mapping) or row.get("status") == "completed":
+            continue
+        failure = row.get("typed_harness_failure")
+        if isinstance(failure, str) and re.fullmatch(
+            r"[A-Za-z][A-Za-z0-9_.-]{0,127}", failure
+        ):
+            blockers.add(f"policy_canary_episode_failure:{failure}")
+            continue
+        score = (row.get("episode") or {}).get("score")
+        if not isinstance(score, Mapping):
+            continue
+        for blocker in score.get("blockers") or []:
+            if isinstance(blocker, str) and re.fullmatch(
+                r"[a-z0-9][a-z0-9_.:-]{0,191}", blocker
+            ):
+                blockers.add(f"policy_canary_episode_blocker:{blocker}")
+    return sorted(blockers)
+
+
 def build_policy_canary_result_projection(
     *,
     setup: Mapping[str, Any],
@@ -51,12 +77,16 @@ def build_policy_canary_result_projection(
     def bound_artifact(record: Any) -> dict[str, Any] | None:
         if not isinstance(record, Mapping):
             return None
+        relative_path = record.get("relative_path")
+        if not isinstance(relative_path, str) or not relative_path:
+            return None
         matches = [
             artifact
             for artifact in public_artifacts
             if artifact.get("role") == record.get("role")
             and artifact.get("digest") == record.get("sha256")
             and artifact.get("size_bytes") == record.get("size_bytes")
+            and artifact.get("relative_path") == relative_path
         ]
         if len(matches) != 1:
             return None
@@ -212,6 +242,9 @@ def build_policy_canary_result_projection(
         for candidate in CANDIDATE_IDS
     ]
     result_status = str(delivery["result_status"])
+    blockers = [str(item) for item in result.get("blockers") or [] if str(item)]
+    if result_status != "completed_unqualified":
+        blockers.extend(derive_policy_canary_episode_blockers(episodes))
     delivery_reproducibility = dict(delivery.get("reproducibility") or {})
     reproducibility_artifacts = {
         "evidence_manifest": delivery_reproducibility.get("evidence_manifest")
@@ -281,7 +314,7 @@ def build_policy_canary_result_projection(
             "delivered_at": None,
             "run_result_digest": result["result_digest"],
         },
-        "blockers": list(result.get("blockers") or []),
+        "blockers": sorted(set(blockers)),
         "projection_digest": "",
     }
     scene_revision_digest = setup.get("scene_revision_digest") or result.get(
@@ -321,4 +354,7 @@ def build_policy_canary_result_projection(
     return validate_policy_canary_result(value)
 
 
-__all__ = ["build_policy_canary_result_projection"]
+__all__ = [
+    "build_policy_canary_result_projection",
+    "derive_policy_canary_episode_blockers",
+]

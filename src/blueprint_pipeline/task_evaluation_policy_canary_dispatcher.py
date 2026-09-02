@@ -42,6 +42,7 @@ from .native_task_arena_policy_canary_session import (
 )
 from .task_evaluation_policy_canary_result_projection import (
     build_policy_canary_result_projection,
+    derive_policy_canary_episode_blockers,
 )
 from .task_evaluation_canary_hotfix_overlay import (
     canary_hotfix_execution_release,
@@ -429,6 +430,8 @@ def _join_session_closeout(
         else "blocked"
     )
     blockers = [str(item) for item in value.get("blockers") or [] if str(item)]
+    if not completed:
+        blockers.extend(derive_policy_canary_episode_blockers(episodes))
     if len(instance_ids) != 1:
         blockers.append("policy_canary_provider_allocation_count_invalid")
     if not teardown_complete:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,9 @@ from blueprint_pipeline.task_evaluation_result_delivery import (
     TaskEvaluationResultDeliveryError,
     materialize_policy_canary_result_delivery,
     resolve_task_evaluation_result_artifact,
+)
+from blueprint_pipeline.task_evaluation_policy_canary_result_projection import (
+    build_policy_canary_result_projection,
 )
 
 
@@ -238,6 +242,96 @@ def test_canary_delivery_seals_downloads_and_terminal_closure(tmp_path: Path) ->
     )
     assert path.name == "policy_canary_full_report.json"
     assert record["sha256"] == report["digest"]
+
+
+def test_canary_delivery_projects_path_distinct_byte_identical_episode_evidence(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = _result(evidence)
+    first = result["episodes"][0]
+    first["evidence_artifacts"]["review_video"] = next(
+        artifact
+        for artifact in result["artifact_inventory"]
+        if artifact["role"] == "review_video"
+    )
+    second = deepcopy(first)
+    second["candidate_id"] = "groot_n17_droid"
+    second["cell_id"] = "quick-cell-1"
+    second["seed"] = 3101
+    second["episode"]["episode_id"] = "episode-two"
+
+    ambiguous_roles = ("reset_state", "score_receipt", "task_object_trajectory")
+    for role in ambiguous_roles:
+        original = first["evidence_artifacts"][role]
+        source = evidence / original["relative_path"]
+        result["artifact_inventory"].remove(original)
+        for cell_index, row in enumerate((first, second)):
+            path = (
+                evidence
+                / "cell_runs"
+                / f"{cell_index:02d}"
+                / "episodes"
+                / f"episode-{cell_index + 1}.{role}.json"
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(source.read_bytes())
+            record = {
+                "role": role,
+                "relative_path": path.relative_to(evidence).as_posix(),
+                "media_type": "application/json",
+                "size_bytes": path.stat().st_size,
+                "sha256": _sha(path),
+            }
+            row["evidence_artifacts"][role] = record
+            result["artifact_inventory"].append(record)
+
+    result["run_id"] = "scene-839873-provider-shaped"
+    result["configuration_digest"] = "sha256:" + "9" * 64
+    result["status"] = "blocked"
+    result["blockers"] = ["remaining_cells_incomplete"]
+    result["episodes"] = [first, second]
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    closure = {
+        "billing": _closure(tmp_path / "billing.json", flag="official_billing_sealed"),
+        "teardown": _closure(tmp_path / "teardown.json", flag="teardown_completed"),
+        "provider_zero": _closure(tmp_path / "provider-zero.json", flag="provider_zero_verified"),
+    }
+
+    delivery = materialize_policy_canary_result_delivery(
+        run_root=tmp_path,
+        run_id=result["run_id"],
+        result_status="blocked",
+        session_result=result,
+        evidence_root=evidence,
+        closure_records=closure,
+    )
+    projection = build_policy_canary_result_projection(
+        setup={
+            "scene_id": "839873",
+            "request_digest": "sha256:" + "a" * 64,
+            "scene_revision_digest": result["scene_revision_digest"],
+        },
+        result=result,
+        delivery=delivery,
+    )
+
+    for role in ambiguous_roles:
+        delivered = [
+            next(
+                artifact
+                for artifact in delivery["artifacts"]
+                if artifact["artifact_id"] == episode["evidence"][role]["artifact_id"]
+            )
+            for episode in projection["episodes"]
+        ]
+        assert [artifact["relative_path"] for artifact in delivered] == [
+            first["evidence_artifacts"][role]["relative_path"],
+            second["evidence_artifacts"][role]["relative_path"],
+        ]
+        assert delivered[0]["digest"] == delivered[1]["digest"]
+        assert delivered[0]["artifact_id"] != delivered[1]["artifact_id"]
 
 
 def test_canary_delivery_refuses_estimated_cost_as_official_billing(

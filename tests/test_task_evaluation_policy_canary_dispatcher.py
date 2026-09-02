@@ -61,6 +61,49 @@ def test_join_uses_terminal_watchdog_as_provider_allocation_lineage() -> None:
     assert "policy_canary_provider_allocation_count_invalid" not in joined["blockers"]
 
 
+def test_join_lifts_exact_mixed_episode_failure_taxonomy_to_run_blockers() -> None:
+    episodes = [{"status": "completed"} for _ in range(12)]
+    episodes.extend(
+        {
+            "status": "blocked",
+            "typed_harness_failure": "TaskNeutralScoringError",
+            "episode": {"score": {"blockers": ["policy_outcome_uninterpretable"]}},
+        }
+        for _ in range(7)
+    )
+    episodes.append(
+        {
+            "status": "blocked",
+            "typed_harness_failure": "DroidActionExecutionError",
+            "episode": {"score": {"blockers": ["policy_outcome_uninterpretable"]}},
+        }
+    )
+    joined = _join_session_closeout(
+        inner={"episodes": episodes, "blockers": []},
+        adapter={
+            "vast_instance_ids": [49_629_253],
+            "continuing_spend_from_this_run": False,
+            "provider_closeout": {
+                "provider_zero_confirmed": True,
+                "warm_session_retained": False,
+                "all_staged_objects_absent": True,
+            },
+        },
+        provider_zero={
+            "schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
+            "provider_zero_verified": True,
+            "live_instance_count": 0,
+            "blockers": [],
+        },
+    )
+
+    assert joined["status"] == "blocked"
+    assert joined["blockers"] == [
+        "policy_canary_episode_failure:DroidActionExecutionError",
+        "policy_canary_episode_failure:TaskNeutralScoringError",
+    ]
+
+
 def _public_artifact(character: str, artifact_id: str) -> dict[str, object]:
     return {
         "artifact_id": artifact_id,
