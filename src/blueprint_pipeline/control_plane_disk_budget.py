@@ -30,10 +30,14 @@ DEFAULT_RESERVATION_ROOT = Path(
 DEFAULT_FLOOR_BYTES = 8 * GIB
 DEFAULT_FLOOR_FRACTION = 0.05
 DEFAULT_TTL_SECONDS = 2 * 60 * 60
+# Admission floors per role.  Preparation and compilation reserve their exact
+# miss bytes at run time (references or runtime members the content stores do
+# not already hold); these values are the typical hit-path footprint the intake
+# checks before accepting a submission.
 ROLE_FOOTPRINT_BYTES: Mapping[str, int] = {
     "control_plane_deploy": 2 * GIB,
-    "launch_preparation": 6 * GIB,
-    "episode_compilation": 6 * GIB,
+    "launch_preparation": 2 * GIB,
+    "episode_compilation": 2 * GIB,
     "launch_activation": 2 * GIB,
     "launch_dispatch": 2 * GIB,
     "policy_canary_dispatch": 2 * GIB,

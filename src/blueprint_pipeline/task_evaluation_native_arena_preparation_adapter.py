@@ -10,6 +10,7 @@ standing authorization, allocator call, or provider mutation.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -22,6 +23,7 @@ import zipfile
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlparse
 
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_bundle import (
@@ -52,6 +54,19 @@ PAYLOAD_PREFIX = "payload/"
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024 * 1024
 _ROLES = frozenset({"construction_packet", "runtime_source"})
+# A wrapper member above this size is published once, by content digest, as an
+# external layer; the wrapper archive keeps only its digest, size, and URI.
+# The 4.29 GB runtime-source packet is byte-identical across releases, while
+# the wrapper's identity bindings change per release; carrying the packet
+# inside every wrapper minted one 4.29 GB content-store blob per deploy.
+EXTERNAL_LAYER_TRANSPORT = "content_addressed_external_layer.v1"
+# Preparation records each fetched layer under this contract-path prefix; the
+# compiler hands every such row to the adapter as a resolvable layer.
+RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX = (
+    "execution_adapter.runtime_source_bundle.external_layers."
+)
+DEFAULT_EXTERNAL_LAYER_MIN_BYTES = 64 * 1024 * 1024
+_LAYER_URI_SCHEMES = frozenset({"s3", "gs", "https"})
 
 
 class TaskEvaluationNativeArenaAdapterError(RuntimeError):
@@ -250,6 +265,60 @@ def _validated_relative_path(value: Any) -> PurePosixPath:
     return relative
 
 
+def _valid_layer_uri(value: Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    parsed = urlparse(value)
+    return bool(
+        parsed.scheme in _LAYER_URI_SCHEMES
+        and parsed.netloc
+        and "@" not in parsed.netloc
+        and parsed.path
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def _valid_external_layer(value: Any) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and set(value) == {"transport", "uri"}
+        and value.get("transport") == EXTERNAL_LAYER_TRANSPORT
+        and _valid_layer_uri(value.get("uri"))
+    )
+
+
+def _external_layer_source(
+    row: Mapping[str, Any], external_layers: Mapping[str, str | Path] | None
+) -> Path:
+    """Locate the verified local bytes of one external layer, or refuse."""
+
+    name = PurePosixPath(str(row.get("relative_path") or "")).name
+    candidate = (external_layers or {}).get(str(row.get("sha256") or ""))
+    if candidate is None:
+        raise TaskEvaluationNativeArenaAdapterError(
+            f"task_evaluation_adapter_external_layer_missing:{name}"
+        )
+    path = Path(candidate).expanduser()
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_size != int(row["size_bytes"])
+    ):
+        raise TaskEvaluationNativeArenaAdapterError(
+            f"task_evaluation_adapter_external_layer_invalid:{name}"
+        )
+    return path
+
+
+def _member_stream(
+    archive: zipfile.ZipFile, relative: PurePosixPath, layer_source: Path | None
+) -> Any:
+    if layer_source is None:
+        return archive.open(relative.as_posix(), "r")
+    return layer_source.open("rb")
+
+
 def _manifest_from_archive(
     archive: zipfile.ZipFile,
     *,
@@ -313,6 +382,7 @@ def _manifest_from_archive(
             "task_evaluation_adapter_bundle_manifest_invalid"
         )
     expected_names = {MANIFEST_NAME}
+    external_names: set[str] = set()
     total_size = 0
     for row in rows:
         if not isinstance(row, Mapping):
@@ -332,10 +402,25 @@ def _manifest_from_archive(
             raise TaskEvaluationNativeArenaAdapterError(
                 "task_evaluation_adapter_bundle_manifest_invalid"
             ) from exc
-        info = archive.getinfo(name)
+        layer = row.get("external_layer")
+        if layer is not None:
+            # The bytes live in a content store keyed by this row's digest,
+            # never inside the archive; the row still pins digest and size.
+            if not _valid_external_layer(layer) or name in names:
+                raise TaskEvaluationNativeArenaAdapterError(
+                    "task_evaluation_adapter_bundle_external_layer_invalid"
+                )
+            external_names.add(name)
+            member_size = declared_size
+        elif name in names:
+            member_size = archive.getinfo(name).file_size
+        else:
+            raise TaskEvaluationNativeArenaAdapterError(
+                "task_evaluation_adapter_bundle_member_set_invalid"
+            )
         if (
             declared_size <= 0
-            or declared_size != info.file_size
+            or declared_size != member_size
             or not isinstance(row.get("sha256"), str)
             or not str(row["sha256"]).startswith("sha256:")
         ):
@@ -347,7 +432,7 @@ def _manifest_from_archive(
         MAX_UNCOMPRESSED_BYTES,
         int(float(request["runtime"]["requirements"]["disk_gib"]) * 1024**3),
     )
-    if expected_names != set(names) or total_size > disk_bound:
+    if expected_names - external_names != set(names) or total_size > disk_bound:
         raise TaskEvaluationNativeArenaAdapterError(
             "task_evaluation_adapter_bundle_member_set_invalid"
         )
@@ -362,6 +447,7 @@ def _extract_verified_bundle(
     role: str,
     destination: Path,
     content_store_root: Path | None = None,
+    external_layers: Mapping[str, str | Path] | None = None,
 ) -> tuple[dict[str, Any], Path]:
     if role not in _ROLES:
         raise TaskEvaluationNativeArenaAdapterError(
@@ -424,6 +510,11 @@ def _extract_verified_bundle(
                     if cached != target:
                         os.link(cached, target, follow_symlinks=False)
                     continue
+                layer_source = (
+                    _external_layer_source(row, external_layers)
+                    if row.get("external_layer") is not None
+                    else None
+                )
                 temporary = (
                     cached.parent
                     / f".{cached.name}.partial-{os.getpid()}-{uuid.uuid4().hex}"
@@ -442,7 +533,7 @@ def _extract_verified_bundle(
                 try:
                     digest = hashlib.sha256()
                     size = 0
-                    with archive.open(relative.as_posix(), "r") as source:
+                    with _member_stream(archive, relative, layer_source) as source:
                         while True:
                             chunk = source.read(1024 * 1024)
                             if not chunk:
@@ -495,6 +586,7 @@ def materialize_native_arena_adapter(
     runtime_source_bundle_path: str | Path,
     output_root: str | Path,
     content_store_root: str | Path | None = None,
+    external_layers: Mapping[str, str | Path] | None = None,
 ) -> dict[str, Any]:
     """Extract and independently verify both native-Arena adapter bundles."""
 
@@ -544,6 +636,7 @@ def materialize_native_arena_adapter(
             content_store_root=(
                 Path(content_store_root) if content_store_root is not None else None
             ),
+            external_layers=external_layers,
         )
         runtime_manifest, runtime_root = _extract_verified_bundle(
             bundle_path=Path(runtime_source_bundle_path).expanduser(),
@@ -554,6 +647,7 @@ def materialize_native_arena_adapter(
             content_store_root=(
                 Path(content_store_root) if content_store_root is not None else None
             ),
+            external_layers=external_layers,
         )
         _packet_path, packet_receipt, _packet_rows = (
             verify_native_task_arena_packet(packet_root)
@@ -627,12 +721,89 @@ def materialize_native_arena_adapter(
         raise
 
 
+def _external_layer_store(
+    root: str | Path | None, *, uri_prefix: str | None, minimum_bytes: int
+) -> tuple[Path | None, str]:
+    if root is None:
+        return None, ""
+    if (
+        not _valid_layer_uri(str(uri_prefix or ""))
+        or not isinstance(minimum_bytes, int)
+        or isinstance(minimum_bytes, bool)
+        or minimum_bytes <= 0
+    ):
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_external_layer_configuration_invalid"
+        )
+    store = Path(root).expanduser()
+    if store.is_symlink():
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_external_layer_store_unsafe"
+        )
+    store.mkdir(parents=True, exist_ok=True, mode=0o750)
+    return store.resolve(strict=True), str(uri_prefix).rstrip("/")
+
+
+def _store_external_layer(
+    path: Path, *, store: Path, sha256: str, size_bytes: int
+) -> Path:
+    """Place one immutable member in the local layer store by its digest."""
+
+    directory = store / "sha256" / sha256.removeprefix("sha256:")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o750)
+    destination = directory / path.name
+    if destination.is_symlink():
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_external_layer_store_unsafe"
+        )
+    if destination.exists():
+        if (
+            not destination.is_file()
+            or destination.stat().st_size != size_bytes
+            or _sha256_file(destination) != sha256
+        ):
+            raise TaskEvaluationNativeArenaAdapterError(
+                "task_evaluation_adapter_external_layer_store_identity_mismatch"
+            )
+        return destination
+    temporary = directory / f".{path.name}.partial-{os.getpid()}-{uuid.uuid4().hex}"
+    try:
+        # A hardlink shares the source inode, so its mode is only adopted when
+        # the source is already immutable; otherwise copy and seal the copy.
+        linked = False
+        if stat.S_IMODE(path.stat().st_mode) & 0o222 == 0:
+            try:
+                os.link(path, temporary, follow_symlinks=False)
+                linked = True
+            except OSError:
+                linked = False
+        if not linked:
+            shutil.copyfile(path, temporary)
+            os.chmod(temporary, 0o440)
+        try:
+            os.link(temporary, destination, follow_symlinks=False)
+        except FileExistsError:
+            if (
+                destination.stat().st_size != size_bytes
+                or _sha256_file(destination) != sha256
+            ):
+                raise TaskEvaluationNativeArenaAdapterError(
+                    "task_evaluation_adapter_external_layer_store_identity_mismatch"
+                ) from None
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
+
+
 def _build_task_evaluation_adapter_bundle(
     *,
     source_root: str | Path,
     output_path: str | Path,
     role: str,
     identity_bindings: Mapping[str, Any],
+    external_layer_store_root: str | Path | None = None,
+    external_layer_uri_prefix: str | None = None,
+    external_layer_min_bytes: int = DEFAULT_EXTERNAL_LAYER_MIN_BYTES,
 ) -> dict[str, Any]:
     """Build deterministic bytes after the caller validates their identity."""
 
@@ -651,8 +822,14 @@ def _build_task_evaluation_adapter_bundle(
         raise TaskEvaluationNativeArenaAdapterError(
             "task_evaluation_adapter_bundle_build_input_invalid"
         )
+    layer_store, layer_prefix = _external_layer_store(
+        external_layer_store_root,
+        uri_prefix=external_layer_uri_prefix,
+        minimum_bytes=external_layer_min_bytes,
+    )
     rows: list[dict[str, Any]] = []
     sources: list[tuple[str, Path]] = []
+    layers: list[dict[str, Any]] = []
     for path in sorted(source.rglob("*")):
         if path.is_dir():
             continue
@@ -662,14 +839,31 @@ def _build_task_evaluation_adapter_bundle(
             )
         relative = path.relative_to(source).as_posix()
         archive_path = f"{PAYLOAD_PREFIX}{relative}"
-        rows.append(
-            {
-                "relative_path": archive_path,
-                "size_bytes": path.stat().st_size,
-                "sha256": _sha256_file(path),
-            }
-        )
-        sources.append((archive_path, path))
+        size_bytes = path.stat().st_size
+        sha256 = _sha256_file(path)
+        row: dict[str, Any] = {
+            "relative_path": archive_path,
+            "size_bytes": size_bytes,
+            "sha256": sha256,
+        }
+        if layer_store is not None and size_bytes >= external_layer_min_bytes:
+            store_path = _store_external_layer(
+                path, store=layer_store, sha256=sha256, size_bytes=size_bytes
+            )
+            uri = f"{layer_prefix}/sha256/{sha256.removeprefix('sha256:')}/{path.name}"
+            row["external_layer"] = {"transport": EXTERNAL_LAYER_TRANSPORT, "uri": uri}
+            layers.append(
+                {
+                    "relative_path": archive_path,
+                    "sha256": sha256,
+                    "size_bytes": size_bytes,
+                    "uri": uri,
+                    "store_path": str(store_path),
+                }
+            )
+        else:
+            sources.append((archive_path, path))
+        rows.append(row)
     if not rows:
         raise TaskEvaluationNativeArenaAdapterError(
             "task_evaluation_adapter_bundle_build_input_invalid"
@@ -739,6 +933,8 @@ def _build_task_evaluation_adapter_bundle(
         "size_bytes": output.stat().st_size,
         "sha256": _sha256_file(output),
         "manifest_digest": manifest["manifest_digest"],
+        "external_layer_count": len(layers),
+        "external_layers": layers,
     }
 
 
@@ -766,8 +962,17 @@ def build_task_evaluation_runtime_source_bundle(
     output_path: str | Path,
     expected_production_commit: str,
     runtime_identity: Mapping[str, Any],
+    external_layer_store_root: str | Path | None = None,
+    external_layer_uri_prefix: str | None = None,
+    external_layer_min_bytes: int = DEFAULT_EXTERNAL_LAYER_MIN_BYTES,
 ) -> dict[str, Any]:
-    """Build reusable runtime bytes before a configured revision exists."""
+    """Build reusable runtime bytes before a configured revision exists.
+
+    With an external layer store, members at or above ``external_layer_min_bytes``
+    are stored once by digest and referenced from the wrapper by URI, so the
+    wrapper itself stays a few kilobytes and the same runtime packet is never
+    stored twice however many releases bind it.
+    """
 
     identity = dict(runtime_identity) if isinstance(runtime_identity, Mapping) else {}
     if (
@@ -790,7 +995,100 @@ def build_task_evaluation_runtime_source_bundle(
             "expected_production_commit": expected_production_commit,
             "runtime": identity,
         },
+        external_layer_store_root=external_layer_store_root,
+        external_layer_uri_prefix=external_layer_uri_prefix,
+        external_layer_min_bytes=external_layer_min_bytes,
     )
+
+
+def read_runtime_source_external_layers(
+    *, bundle_path: str | Path, request: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """List the external layers a runtime-source wrapper declares, without extracting it.
+
+    The wrapper is validated exactly as materialization validates it (identity
+    bindings, member set, digests), so preparation can fetch every layer into
+    its content store before any compile step needs them.
+    """
+
+    validated = validate_launch_preparation_request(request)
+    path = Path(bundle_path).expanduser()
+    if path.is_symlink() or not path.is_file():
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_bundle_source_invalid"
+        )
+    try:
+        archive = zipfile.ZipFile(path)
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_bundle_archive_invalid"
+        ) from exc
+    with archive:
+        manifest = _manifest_from_archive(
+            archive, request=validated, expected_role="runtime_source"
+        )
+    return [
+        {
+            "relative_path": str(row["relative_path"]),
+            "sha256": str(row["sha256"]),
+            "size_bytes": int(row["size_bytes"]),
+            "uri": str(row["external_layer"]["uri"]),
+        }
+        for row in manifest["entries"]
+        if row.get("external_layer") is not None
+    ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Build a runtime-source wrapper, or publish the layers its receipt names."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    build = commands.add_parser("build-runtime-source")
+    build.add_argument("--source-root", required=True)
+    build.add_argument("--output", required=True)
+    build.add_argument("--expected-production-commit", required=True)
+    build.add_argument("--runtime-id", required=True)
+    build.add_argument("--runtime-version", required=True)
+    build.add_argument("--external-layer-store-root")
+    build.add_argument("--external-layer-uri-prefix")
+    build.add_argument(
+        "--external-layer-min-bytes", type=int, default=DEFAULT_EXTERNAL_LAYER_MIN_BYTES
+    )
+    build.add_argument("--receipt-out")
+    publish = commands.add_parser("publish-runtime-source-layers")
+    publish.add_argument("--receipt", required=True)
+    publish.add_argument("--receipt-out")
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "build-runtime-source":
+            receipt = build_task_evaluation_runtime_source_bundle(
+                source_root=args.source_root,
+                output_path=args.output,
+                expected_production_commit=args.expected_production_commit,
+                runtime_identity={"id": args.runtime_id, "version": args.runtime_version},
+                external_layer_store_root=args.external_layer_store_root,
+                external_layer_uri_prefix=args.external_layer_uri_prefix,
+                external_layer_min_bytes=args.external_layer_min_bytes,
+            )
+        else:
+            from .task_evaluation_configured_scene_object_store import (
+                publish_runtime_source_external_layers,
+            )
+
+            build_receipt = json.loads(
+                Path(args.receipt).expanduser().read_text(encoding="utf-8")
+            )
+            receipt = publish_runtime_source_external_layers(build_receipt)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(json.dumps({"status": "blocked", "blockers": [str(exc)]}, sort_keys=True))
+        return 2
+    if args.receipt_out:
+        Path(args.receipt_out).expanduser().write_text(
+            json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    print(json.dumps(receipt, sort_keys=True))
+    return 0
 
 
 __all__ = [
@@ -801,5 +1099,13 @@ __all__ = [
     "build_task_evaluation_adapter_bundle",
     "build_task_evaluation_runtime_source_bundle",
     "control_search_warm_retention_requested",
+    "DEFAULT_EXTERNAL_LAYER_MIN_BYTES",
+    "EXTERNAL_LAYER_TRANSPORT",
+    "RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX",
     "materialize_native_arena_adapter",
+    "read_runtime_source_external_layers",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through module CLI
+    raise SystemExit(main())
