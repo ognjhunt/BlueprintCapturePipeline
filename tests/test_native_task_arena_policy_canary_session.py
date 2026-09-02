@@ -327,6 +327,13 @@ def test_episode_failure_is_preserved_and_does_not_cancel_remaining_rollouts(
     assert result["episodes"][0]["visual_evidence"]["media_gap"]["type"] == (
         "before_first_observation"
     )
+    assert result["episodes"][0]["reset_state_digest"] == canonical_digest(
+        {
+            "resolved_scenario": inputs["cells"][0]["resolved_scenario"],
+            "seed": inputs["cells"][0]["seed"],
+            "execution_performed": False,
+        }
+    )
     assert result["episodes"][1]["status"] == "completed"
     assert result["status"] == "blocked"
     assert validate_session_result(result)["status"] == "blocked"

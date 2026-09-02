@@ -176,7 +176,12 @@ def test_episode_failure_gap_retains_safe_diagnostic_without_host_path(
     path = worker._write_episode_failure_gap(
         output_root=tmp_path,
         run_id="run-1",
-        context={"candidate_id": "pi05_droid", "cell_id": "anchor-1", "seed": 7},
+        context={
+            "candidate_id": "pi05_droid",
+            "cell_id": "anchor-1",
+            "seed": 7,
+            "resolved_scenario": {"family": "canonical_anchor", "ordinal": 0},
+        },
         failure=RuntimeError("camera failed at /workspace/private/runtime.py"),
     )
 
@@ -184,6 +189,13 @@ def test_episode_failure_gap_retains_safe_diagnostic_without_host_path(
     assert gap["failure_type"] == "RuntimeError"
     assert gap["failure_message"] == "camera failed at <path>"
     assert "/workspace" not in json.dumps(gap)
+    assert gap["reset_state_digest"] == canonical_digest(
+        {
+            "resolved_scenario": {"family": "canonical_anchor", "ordinal": 0},
+            "seed": 7,
+            "execution_performed": False,
+        }
+    )
     assert gap["gap_digest"] == canonical_digest(gap, digest_field="gap_digest")
 
 

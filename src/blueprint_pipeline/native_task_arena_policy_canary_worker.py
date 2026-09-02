@@ -280,6 +280,13 @@ def _write_episode_failure_gap(
         "candidate_id": context.get("candidate_id"),
         "cell_id": context.get("cell_id"),
         "seed": context.get("seed"),
+        "reset_state_digest": canonical_digest(
+            {
+                "resolved_scenario": context.get("resolved_scenario"),
+                "seed": context.get("seed"),
+                "execution_performed": False,
+            }
+        ),
         "candidate_policy_queried": False,
         "actions_reached_robot": False,
         "failure_type": type(failure).__name__,

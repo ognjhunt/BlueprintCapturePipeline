@@ -406,6 +406,25 @@ def _projection(
             if isinstance(source_artifacts.get("reset_state"), Mapping)
             else row.get("reset_state_digest")
         )
+        if (
+            not _is_digest(reset_state_digest)
+            and row.get("status") != "completed"
+            and isinstance(row.get("resolved_scenario"), Mapping)
+            and isinstance(row.get("seed"), int)
+            and not isinstance(row.get("seed"), bool)
+        ):
+            # Older blocked provider results predate the explicit reset digest.
+            # Their immutable cell and seed still define the exact reset that was
+            # attempted, so derive the same failure-before-execution identity the
+            # current producer writes. Completed episodes may never use this
+            # fallback because their observed reset artifact is required.
+            reset_state_digest = canonical_digest(
+                {
+                    "resolved_scenario": row["resolved_scenario"],
+                    "seed": row["seed"],
+                    "execution_performed": False,
+                }
+            )
         if not all(
             _is_digest(value)
             for value in (
