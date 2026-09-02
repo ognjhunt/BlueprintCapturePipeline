@@ -90,7 +90,7 @@ def _load_pinned_transcode(
 def validate_direct_particlefield(path: str | Path) -> dict[str, Any]:
     """Validate the exact LightField contract authored by pinned 3DGRUT."""
 
-    from pxr import Usd
+    from pxr import Usd, UsdGeom
 
     asset = Path(path).expanduser().resolve()
     stage = Usd.Stage.Open(str(asset)) if asset.is_file() else None
@@ -171,7 +171,11 @@ def validate_direct_particlefield(path: str | Path) -> dict[str, Any]:
         "sh_degree": degree,
         "sh_coefficient_count": len(coefficients),
         "sh_primvar_element_size": 16,
-        "sh_primvar_interpolation": "vertex",
+        "sh_primvar_interpolation": str(
+            UsdGeom.Primvar(
+                field.GetAttribute("radiance:sphericalHarmonicsCoefficients")
+            ).GetInterpolation()
+        ),
         "particlefield_emissive_material_binding_authored": False,
         "particlefield_custom_render_hints_authored": False,
         "upstream_projection_mode_hint": projection.Get(),
@@ -289,6 +293,167 @@ def write_direct_particlefield_from_nurec(
     return result
 
 
+def _standard_3dgs_ply_vertex_count(path: Path) -> int:
+    """Read only the bounded PLY header required by NVIDIA's importer."""
+
+    required = {
+        "x",
+        "y",
+        "z",
+        "rot_0",
+        "rot_1",
+        "rot_2",
+        "rot_3",
+        "scale_0",
+        "scale_1",
+        "scale_2",
+        "opacity",
+        "f_dc_0",
+        "f_dc_1",
+        "f_dc_2",
+    }
+    names: set[str] = set()
+    count: int | None = None
+    file_format: str | None = None
+    try:
+        with path.open("rb") as stream:
+            if stream.readline().strip() != b"ply":
+                raise Nvidia3DGrutTranscodeError(
+                    "nvidia_3dgrut_standard_ply_header_invalid"
+                )
+            for _ in range(256):
+                line = stream.readline()
+                if not line or len(line) > 1024:
+                    break
+                text = line.decode("ascii").strip()
+                if text.startswith("format "):
+                    file_format = text.split()[1]
+                elif text.startswith("element vertex "):
+                    count = int(text.split()[-1])
+                elif text.startswith("property "):
+                    names.add(text.split()[-1])
+                elif text == "end_header":
+                    break
+            else:
+                raise Nvidia3DGrutTranscodeError(
+                    "nvidia_3dgrut_standard_ply_header_invalid"
+                )
+    except (OSError, UnicodeDecodeError, ValueError, IndexError) as exc:
+        raise Nvidia3DGrutTranscodeError(
+            "nvidia_3dgrut_standard_ply_header_invalid"
+        ) from exc
+    if file_format != "binary_little_endian" or not count or not required <= names:
+        raise Nvidia3DGrutTranscodeError(
+            "nvidia_3dgrut_standard_ply_contract_invalid"
+        )
+    return count
+
+
+def write_direct_particlefield_from_ply(
+    source_path: str | Path,
+    output_path: str | Path,
+    *,
+    expected_source_sha256: str,
+    receipt_path: str | Path | None = None,
+    source_root: str | Path | None = None,
+    transcode_runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Transcode a digest-bound standard 3DGS PLY with NVIDIA's writer.
+
+    This is the non-learned fallback used when a scene-specific appearance
+    edit corrupts radiance outside its intended support.  The source PLY stays
+    immutable and the receipt distinguishes it from the NuRec-USDZ route.
+    """
+
+    source = Path(source_path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    observed_source_sha256 = (
+        "sha256:" + sha256_file(source) if source.is_file() else None
+    )
+    if (
+        source.is_symlink()
+        or not source.is_file()
+        or observed_source_sha256 != expected_source_sha256
+        or output.exists()
+        or output.is_symlink()
+    ):
+        return {
+            "status": "blocked",
+            "blockers": ["nvidia_3dgrut_transcode_input_or_output_invalid"],
+            "source_sha256": observed_source_sha256,
+            "provider_mutation_performed": False,
+        }
+    try:
+        source_count = _standard_3dgs_ply_vertex_count(source)
+        if transcode_runner is None:
+            transcode_runner, upstream = _load_pinned_transcode(
+                source_root=source_root
+            )
+        else:
+            upstream = {
+                "repository": UPSTREAM_REPOSITORY,
+                "source_revision": UPSTREAM_SOURCE_REVISION,
+                "module": UPSTREAM_MODULE,
+                "module_sha256": None,
+                "source_identity_verified": False,
+                "test_injected_runner": True,
+            }
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="nvidia-3dgrut-transcode-", dir=output.parent
+        ) as temporary_directory:
+            candidate = Path(temporary_directory) / "scene.lightfield.usdc"
+            transcode_runner(
+                source,
+                candidate,
+                output_format=OUTPUT_FORMAT,
+                render_order_hint=SORTING_MODE_HINT,
+                validate_usd=True,
+            )
+            contract = validate_direct_particlefield(candidate)
+            if contract["splat_count"] != source_count:
+                raise Nvidia3DGrutTranscodeError(
+                    "nvidia_3dgrut_particlefield_count_mismatch"
+                )
+            os.replace(candidate, output)
+        contract = validate_direct_particlefield(output)
+    except Exception as exc:  # noqa: BLE001 - typed authoring refusal
+        return {
+            "status": "blocked",
+            "blockers": [
+                f"nvidia_3dgrut_direct_transcode_failed:{type(exc).__name__}:{exc}"
+            ],
+            "source_sha256": observed_source_sha256,
+            "provider_mutation_performed": False,
+        }
+
+    result: dict[str, Any] = {
+        "schema_version": RECEIPT_SCHEMA_VERSION,
+        "status": "completed",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_sha256": observed_source_sha256,
+        "source_kind": "standard_3dgs_ply",
+        "source_vertex_count": source_count,
+        "output": str(output),
+        **contract,
+        "particlefield_authoring_implementation": AUTHORING_IMPLEMENTATION,
+        "upstream_converter": upstream,
+        "exact_learned_arrays_preserved": True,
+        "representation_conversion_only": True,
+        "provider_mutation_performed": False,
+        "proof_boundary": (
+            "NVIDIA 3DGRUT direct standard-PLY-to-LightField transcode and "
+            "structural validation only; live Isaac camera fidelity remains required."
+        ),
+    }
+    result["receipt_digest"] = canonical_digest(
+        result, digest_field="receipt_digest"
+    )
+    if receipt_path is not None:
+        write_json(Path(receipt_path), result)
+    return result
+
+
 __all__ = [
     "AUTHORING_IMPLEMENTATION",
     "COLOR_SPACE",
@@ -300,4 +465,5 @@ __all__ = [
     "UPSTREAM_SOURCE_REVISION",
     "validate_direct_particlefield",
     "write_direct_particlefield_from_nurec",
+    "write_direct_particlefield_from_ply",
 ]

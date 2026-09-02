@@ -2816,6 +2816,7 @@ def test_each_native_task_arena_stage_requires_its_exact_watchdog_scope(
 
     assert observed["require_independent_watchdog"] is True
     assert observed["instance_label_prefix"] == expected_prefix
+    assert observed["allowed_geolocation_country_codes"] == ("US",)
     if execution_mode in {"construction_canary", "controls"}:
         assert observed["min_gpu_ram_mb"] == 24_000
         assert "RTX 4090" in observed["preferred_gpu_keywords"]

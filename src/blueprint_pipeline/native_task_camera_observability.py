@@ -372,6 +372,50 @@ def _semantic_identifier_candidates(identifier: Any) -> list[int]:
     return sorted({packed, signed})
 
 
+def measure_native_task_semantic_label_pixels(
+    *, semantic_ids: Any, id_to_labels: Mapping[str, Any], target_label: str
+) -> dict[str, Any]:
+    """Count one exact semantic class without applying a visibility verdict."""
+
+    import numpy as np
+
+    semantic = np.asarray(semantic_ids)
+    if semantic.ndim == 3 and semantic.shape[-1] == 1:
+        semantic = semantic[..., 0]
+    if semantic.ndim != 2 or not semantic.size or not str(target_label or "").strip():
+        raise NativeTaskCameraObservabilityError(
+            ["native_task_camera_semantic_shape_invalid"]
+        )
+    target_ids: list[int] = []
+    for identifier, entry in id_to_labels.items():
+        label = entry.get("class") if isinstance(entry, Mapping) else entry
+        if label != target_label:
+            continue
+        candidates = _semantic_identifier_candidates(identifier)
+        if not candidates:
+            raise NativeTaskCameraObservabilityError(
+                ["native_task_camera_semantic_identifier_invalid"]
+            )
+        target_ids.extend(candidates)
+    target_ids = sorted(set(target_ids))
+    mask = np.isin(semantic.astype(np.int64), target_ids)
+    count = int(mask.sum())
+    height, width = (int(value) for value in mask.shape)
+    bbox = None
+    if count:
+        ys, xs = np.nonzero(mask)
+        bbox = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+    return {
+        "target_label": target_label,
+        "target_semantic_ids": target_ids,
+        "pixel_count": count,
+        "pixel_fraction": count / float(height * width),
+        "bbox_xyxy": bbox,
+        "frame_resolution_hw": [height, width],
+        "measurement_authority": "native_semantic_segmentation_aov",
+    }
+
+
 def _as_uint8_rgb(rgb: Any) -> Any:
     """Normalise a native RGB(A) frame to HxWx3 uint8, or refuse.
 
@@ -1138,6 +1182,7 @@ __all__ = [
     "RENDER_EVIDENCE_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "measure_native_task_camera_observability",
+    "measure_native_task_semantic_label_pixels",
     "measure_native_task_frame_render_evidence",
     "validate_native_task_policy_start_camera_observability",
 ]

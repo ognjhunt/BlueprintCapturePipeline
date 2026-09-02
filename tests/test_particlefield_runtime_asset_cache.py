@@ -52,7 +52,7 @@ def _upstream_asset(root: Path, source_digest: str) -> tuple[Path, Path]:
 
 
 def _direct_transcode_asset(root: Path, source_digest: str) -> tuple[Path, Path]:
-    from pxr import Usd
+    from pxr import Usd, UsdGeom
 
     asset, receipt_path = _upstream_asset(root, source_digest)
     stage = Usd.Stage.Open(str(asset))
@@ -62,6 +62,9 @@ def _direct_transcode_asset(root: Path, source_digest: str) -> tuple[Path, Path]
         if prim.GetTypeName() == "ParticleField3DGaussianSplat"
     )
     field.GetAttribute("primvars:displayColor").Clear()
+    UsdGeom.Primvar(
+        field.GetAttribute("radiance:sphericalHarmonicsCoefficients")
+    ).SetInterpolation("constant")
     field.GetAttribute("projectionModeHint").Set("perspective")
     field.GetAttribute("sortingModeHint").Set("cameraDistance")
     Usd.ColorSpaceAPI.Apply(field).CreateColorSpaceNameAttr().Set(

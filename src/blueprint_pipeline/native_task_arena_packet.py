@@ -172,6 +172,13 @@ def materialize_native_task_arena_appearance_variant_request(
         if isinstance(sh_degree, int) and not isinstance(sh_degree, bool) and 0 <= sh_degree <= 3
         else None
     )
+    direct_interpolation = (
+        appearance.get("particlefield_authoring_implementation")
+        == NVIDIA_3DGRUT_AUTHORING_IMPLEMENTATION
+    )
+    expected_sh_interpolation = (
+        "constant" if direct_interpolation else "vertex"
+    )
     official_upstream = (
         appearance.get("particlefield_authoring_implementation")
         == "nvidia_usd_convert_gsplat"
@@ -219,7 +226,8 @@ def materialize_native_task_arena_appearance_variant_request(
         or appearance.get("status") != "completed"
         or appearance.get("schema") != "ParticleField3DGaussianSplat"
         or appearance.get("sh_primvar_element_size") != sh_element_size
-        or appearance.get("sh_primvar_interpolation") != "vertex"
+        or appearance.get("sh_primvar_interpolation")
+        != expected_sh_interpolation
         or appearance.get("display_color_fallback_authored")
         is not (False if direct_3dgrut else True)
         or not (official_upstream or direct_3dgrut or legacy_material)
@@ -261,7 +269,7 @@ def materialize_native_task_arena_appearance_variant_request(
         "splat_count": appearance.get("splat_count"),
         "sh_degree": sh_degree,
         "sh_primvar_element_size": sh_element_size,
-        "sh_primvar_interpolation": "vertex",
+        "sh_primvar_interpolation": expected_sh_interpolation,
         "display_color_fallback_authored": appearance.get(
             "display_color_fallback_authored"
         ),

@@ -71,6 +71,130 @@ def _prepolicy_visual_gate_from_snapshot(
     )
 
 
+def _run_wrist_camera_mount_sweep(
+    *,
+    simulation_app: Any,
+    env: Any,
+    built: Any,
+    packet_request: dict[str, Any],
+    plan: dict[str, Any],
+    output_root: Path,
+    torch: Any,
+    body_pose_reader: Any,
+    camera_snapshot: Any,
+) -> dict[str, Any] | None:
+    """Render every registry mount through Isaac's own look-at convention."""
+
+    registry = packet_request.get("wrist_camera_mount_registry")
+    if registry is None:
+        return None
+    from PIL import Image
+
+    from blueprint_pipeline.common import write_json
+    from blueprint_pipeline.native_task_wrist_camera_mount_sweep import (
+        resolve_wrist_camera_mount_eyes,
+        select_wrist_camera_mount_candidate,
+        validate_wrist_camera_mount_registry,
+    )
+
+    registry = validate_wrist_camera_mount_registry(registry)
+    wrist_rows = [
+        row
+        for row in packet_request.get("cameras") or []
+        if isinstance(row, dict) and row.get("role") == "wrist"
+    ]
+    if len(wrist_rows) != 1:
+        raise RuntimeError("native_task_wrist_camera_mount_role_invalid")
+    body_name = str(wrist_rows[0].get("parent_prim_path") or "").rsplit("/", 1)[-1]
+    robot = env.unwrapped.scene["robot"]
+    body_pose = body_pose_reader(robot, body_name=body_name, torch=torch)
+    target = [float(value) for value in plan["task_spec"]["start_pose_world"][:3]]
+    resolved = resolve_wrist_camera_mount_eyes(
+        registry=registry,
+        controlled_body_position_world_m=body_pose[:3],
+        task_target_position_world_m=target,
+    )
+    camera = env.unwrapped.scene[built.camera_scene_names["wrist"]]
+    observations: list[dict[str, Any]] = []
+    contact_frames: list[Path] = []
+
+    def apply(row: dict[str, Any]) -> None:
+        camera.set_world_poses_from_view(
+            eyes=[row["eye_position_world_m"]],
+            targets=[row["target_position_world_m"]],
+        )
+        for _ in range(6):
+            simulation_app.update()
+        camera.update(0.0, force_recompute=True)
+
+    for row in resolved:
+        apply(row)
+        candidate_root = output_root / "wrist_mount_sweep" / row["candidate_id"]
+        snapshot = camera_snapshot(
+            env=env,
+            camera_scene_names={"wrist": built.camera_scene_names["wrist"]},
+            output_root=candidate_root,
+            snapshot_id="candidate",
+        )
+        measured = snapshot["cameras"][0]
+        frame = candidate_root / measured["rgb_png"]["path"]
+        contact_frames.append(frame)
+        observations.append(
+            {
+                **row,
+                "frame_png": {
+                    "path": str(frame.relative_to(output_root)),
+                    "sha256": measured["rgb_png"]["sha256"],
+                },
+                "task_object": measured["semantic_label_pixels"]["task_object"],
+                "robot": measured["semantic_label_pixels"]["robot"],
+                "frame_structure_passed": bool(
+                    measured["observability"]["render_passed"]
+                ),
+            }
+        )
+    selection = select_wrist_camera_mount_candidate(
+        registry=registry, observations=observations
+    )
+    columns = 3
+    opened = [Image.open(path).convert("RGB") for path in contact_frames]
+    width = max(image.width for image in opened)
+    height = max(image.height for image in opened)
+    sheet = Image.new(
+        "RGB",
+        (columns * width, math.ceil(len(opened) / columns) * height),
+        color=(0, 0, 0),
+    )
+    for index, image in enumerate(opened):
+        sheet.paste(image, ((index % columns) * width, (index // columns) * height))
+        image.close()
+    contact_path = output_root / "wrist_mount_sweep" / "contact_sheet.png"
+    contact_path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(contact_path, format="PNG", compress_level=9)
+    sheet.close()
+    import hashlib
+
+    selection["contact_sheet"] = {
+        "path": str(contact_path.relative_to(output_root)),
+        "sha256": "sha256:" + hashlib.sha256(contact_path.read_bytes()).hexdigest(),
+        "candidate_order": [row["candidate_id"] for row in resolved],
+    }
+    selection["selection_digest"] = ""
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    selection["selection_digest"] = canonical_digest(
+        selection, digest_field="selection_digest"
+    )
+    write_json(
+        output_root / "wrist_camera_mount_selection.v1.json", selection
+    )
+    selected = selection.get("selected_candidate")
+    if not isinstance(selected, dict):
+        return selection
+    apply(selected)
+    return selection
+
+
 def _observed_contact_position_world(
     *, plan: dict[str, Any], object_reset_readback: dict[str, Any]
 ) -> tuple[list[float], str]:
@@ -319,7 +443,9 @@ def _gripper_pad_geometry_axis_readback(
     }
 
 
-def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
+def _particlefield_stage_readback(
+    stage: Any, *, authoring_implementation: str | None = None
+) -> dict[str, Any]:
     """Measure whether one conforming ParticleField actually composed live."""
 
     from pxr import UsdGeom
@@ -390,6 +516,12 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
             "sh_element_size": sh_primvar.GetElementSize(),
             "sh_interpolation": str(sh_primvar.GetInterpolation()),
             "expected_sh_element_size": expected_element_size,
+            "expected_sh_interpolation": (
+                "constant"
+                if authoring_implementation
+                == "nvidia_3dgrut_direct_nurec_transcode"
+                else "vertex"
+            ),
             "extent": extent,
             "material_binding_targets": material_targets,
             "material_prim_valid": bool(material),
@@ -404,6 +536,23 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
                 if shader
                 else None
             ),
+            "projection_mode_hint": prim.GetAttribute(
+                "projectionModeHint"
+            ).Get(),
+            "projection_mode_hint_authored": prim.GetAttribute(
+                "projectionModeHint"
+            ).HasAuthoredValueOpinion(),
+            "sorting_mode_hint": prim.GetAttribute("sortingModeHint").Get(),
+            "sorting_mode_hint_authored": prim.GetAttribute(
+                "sortingModeHint"
+            ).HasAuthoredValueOpinion(),
+            "color_space": prim.GetAttribute("colorSpace:name").Get(),
+            "color_space_authored": prim.GetAttribute(
+                "colorSpace:name"
+            ).HasAuthoredValueOpinion(),
+            "display_color_authored": prim.GetAttribute(
+                "primvars:displayColor"
+            ).HasAuthoredValueOpinion(),
         }
         upstream_native_material = (
             not material_targets
@@ -424,6 +573,20 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
             if legacy_emissive_material
             else "invalid"
         )
+        direct_3dgrut_contract = (
+            authoring_implementation
+            == "nvidia_3dgrut_direct_nurec_transcode"
+            and row["projection_mode_hint_authored"]
+            and row["projection_mode_hint"] == "perspective"
+            and row["sorting_mode_hint_authored"]
+            and row["sorting_mode_hint"] == "cameraDistance"
+            and row["color_space_authored"]
+            and row["color_space"] == "srgb_rec709_display"
+            and not row["display_color_authored"]
+        )
+        legacy_or_generic_contract = authoring_implementation != (
+            "nvidia_3dgrut_direct_nurec_transcode"
+        )
         row["passed"] = bool(
             row["active"]
             and row["defined"]
@@ -435,12 +598,14 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
             and row["opacity_count"] == position_count
             and expected_element_size is not None
             and row["sh_element_size"] == expected_element_size
-            and row["sh_interpolation"] == "vertex"
+            and row["sh_interpolation"]
+            == row["expected_sh_interpolation"]
             and row["sh_coefficient_count"]
             == position_count * expected_element_size
             and isinstance(row["extent"], list)
             and len(row["extent"]) == 2
             and (upstream_native_material or legacy_emissive_material)
+            and (direct_3dgrut_contract or legacy_or_generic_contract)
         )
         rows.append(row)
     if len(rows) != 1:
@@ -574,6 +739,7 @@ def main() -> int:
     try:
         from blueprint_pipeline.native_task_arena_construction_worker import (
             _articulation_device_binding,
+            _body_pose_world,
             _camera_snapshot,
             _gripper_convention_probe,
             _load_and_verify_manifest,
@@ -587,6 +753,11 @@ def main() -> int:
         packet = runtime / "native_task_packet"
         plan = json.loads(
             (packet / "native_task_arena_scene_plan.v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        packet_request = json.loads(
+            (packet / "native_task_arena_packet_request.v1.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -683,7 +854,13 @@ def main() -> int:
 
             result["particlefield_stage_readback"] = (
                 _particlefield_stage_readback(
-                    omni.usd.get_context().get_stage()
+                    omni.usd.get_context().get_stage(),
+                    authoring_implementation=str(
+                        (packet_request.get("appearance_variant") or {}).get(
+                            "particlefield_authoring_implementation"
+                        )
+                        or ""
+                    ),
                 )
             )
             if not result["particlefield_stage_readback"]["passed"]:
@@ -735,6 +912,33 @@ def main() -> int:
         result["phase_reached"] = "environment_built"
         _announce("environment_build", "completed")
 
+        import torch
+
+        result["wrist_camera_mount_selection"] = (
+            _run_wrist_camera_mount_sweep(
+                simulation_app=simulation_app,
+                env=env,
+                built=built,
+                packet_request=packet_request,
+                plan=plan,
+                output_root=output_root,
+                torch=torch,
+                body_pose_reader=_body_pose_world,
+                camera_snapshot=_camera_snapshot,
+            )
+        )
+        if (
+            result["wrist_camera_mount_selection"] is not None
+            and result["wrist_camera_mount_selection"].get("status")
+            != "selected"
+        ):
+            result["blockers"].extend(
+                result["wrist_camera_mount_selection"].get("blockers") or []
+            )
+            raise RuntimeError(
+                "native_task_arena_preflight_wrist_camera_mount_sweep_failed"
+            )
+
         # Capture the exact future policy views before any robot/readback
         # diagnostic can hide the renderer evidence.  The strict RGB gate is
         # evaluated before semantic target visibility for the same reason: a
@@ -769,8 +973,6 @@ def main() -> int:
                 "native_task_arena_preflight_camera_observability_failed"
             )
             raise RuntimeError("native_task_arena_preflight_camera_failed")
-
-        import torch
 
         from blueprint_pipeline.native_franka_pose_servo import (
             NativeFrankaDifferentialIkServo,

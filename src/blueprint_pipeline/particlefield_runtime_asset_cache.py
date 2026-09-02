@@ -115,6 +115,13 @@ def _validate_particlefield_contract(
     sorting = field.GetAttribute("sortingModeHint")
     color_space = field.GetAttribute("colorSpace:name")
     display_color = field.GetAttribute("primvars:displayColor")
+    from pxr import UsdGeom
+
+    sh_interpolation = str(
+        UsdGeom.Primvar(
+            field.GetAttribute("radiance:sphericalHarmonicsCoefficients")
+        ).GetInterpolation()
+    )
     if authoring_implementation == LEGACY_AUTHORING_IMPLEMENTATION:
         if projection.HasAuthoredValueOpinion() or sorting.HasAuthoredValueOpinion():
             raise ValueError("particlefield_runtime_cache_asset_nonstandard")
@@ -127,6 +134,7 @@ def _validate_particlefield_contract(
         or not color_space.HasAuthoredValueOpinion()
         or color_space.Get() != NVIDIA_3DGRUT_COLOR_SPACE
         or display_color.HasAuthoredValueOpinion()
+        or sh_interpolation != "constant"
     ):
         raise ValueError("particlefield_runtime_cache_asset_nonstandard")
 

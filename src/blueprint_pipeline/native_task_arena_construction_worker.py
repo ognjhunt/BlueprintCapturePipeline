@@ -844,6 +844,7 @@ def _camera_snapshot(
 
     from blueprint_pipeline.native_task_camera_observability import (
         measure_native_task_camera_observability,
+        measure_native_task_semantic_label_pixels,
     )
     from blueprint_pipeline.native_task_frame_display_encoding import (
         display_encode_hdr,
@@ -983,6 +984,14 @@ def _camera_snapshot(
                     camera.data.quat_w_opengl
                 )[0],
                 "observability": observability,
+                "semantic_label_pixels": {
+                    label: measure_native_task_semantic_label_pixels(
+                        semantic_ids=semantic,
+                        id_to_labels=labels,
+                        target_label=label,
+                    )
+                    for label in ("task_object", "robot")
+                },
                 "semantic_id_to_labels": labels,
                 "raw_shapes": diagnostics["cameras"][-1],
                 "native_sensor_timestamp": _jsonable(

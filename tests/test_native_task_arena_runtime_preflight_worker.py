@@ -257,6 +257,34 @@ def test_live_particlefield_readback_accepts_official_layout() -> None:
     assert row["material_binding_targets"] == []
 
 
+def test_live_particlefield_readback_accepts_direct_3dgrut_layout() -> None:
+    stage = _stage(interpolation="constant")
+    prim = next(
+        value
+        for value in stage.Traverse()
+        if value.GetTypeName() == "ParticleField3DGaussianSplat"
+    )
+    prim.GetAttribute("projectionModeHint").Set("perspective")
+    prim.GetAttribute("sortingModeHint").Set("cameraDistance")
+    from pxr import Usd
+
+    Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set(
+        "srgb_rec709_display"
+    )
+
+    result = _particlefield_stage_readback(
+        stage,
+        authoring_implementation="nvidia_3dgrut_direct_nurec_transcode",
+    )
+
+    assert result["passed"] is True
+    row = result["particlefields"][0]
+    assert row["sh_interpolation"] == "constant"
+    assert row["expected_sh_interpolation"] == "constant"
+    assert row["sorting_mode_hint"] == "cameraDistance"
+    assert row["color_space"] == "srgb_rec709_display"
+
+
 def test_live_particlefield_readback_preserves_legacy_replay_compatibility() -> None:
     result = _particlefield_stage_readback(_stage(legacy_material=True))
 

@@ -44,6 +44,13 @@ DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/native-task-arena"
 MINIMUM_DRIVER_VERSION = "580.65.06"
 NO_POLICY_MIN_GPU_RAM_MB = 24_000
 NO_POLICY_PREFERRED_GPU_KEYWORDS = ("L40S", "RTX 6000 Ada", "RTX 4090")
+# Runtime layers and evidence are served from Blueprint's US object store.
+# A soft geolocation preference selected Chile and North Macedonia twice,
+# consuming most of a 30-minute render probe before the 4.09 GB layer arrived.
+# Keep every native-task allocation in the same country as those immutable
+# inputs; the state-level regex remains a ranking preference inside this hard
+# boundary.
+NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES = ("US",)
 # Policy provisioning still fetches a revision-pinned source tree and locked
 # packages outside the sealed checkpoint/runtime packets.  The completed pi0.5
 # episode used 4.66 GB beyond its three immutable byte sources.  Reserve 8 GB
@@ -200,6 +207,9 @@ def run_native_task_arena_vast(
         preferred_gpu_keywords=NO_POLICY_PREFERRED_GPU_KEYWORDS,
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
+        allowed_geolocation_country_codes=(
+            NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
         authorization_consumption=consumption,
         retain_warm_instance=retain_warm_instance,
     )
@@ -270,6 +280,9 @@ def run_native_task_arena_runtime_preflight_vast(
         },
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
+        allowed_geolocation_country_codes=(
+            NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
     )
 
 
@@ -355,6 +368,9 @@ def run_native_task_arena_controls_vast(
         preferred_gpu_keywords=NO_POLICY_PREFERRED_GPU_KEYWORDS,
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
+        allowed_geolocation_country_codes=(
+            NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
         authorization_consumption=consumption,
         retain_warm_instance=retain_warm_instance,
     )
@@ -516,6 +532,9 @@ def run_native_task_arena_policy_canary_session_vast(
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
+        allowed_geolocation_country_codes=(
+            NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
         authorization_consumption=consumption,
         stale_offer_create_retry_limit=0,
         expected_provider_download_bytes=pi_download + groot_download,
@@ -638,6 +657,9 @@ def _run_native_task_arena_policy_vast(
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
+        allowed_geolocation_country_codes=(
+            NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
         authorization_consumption=consumption,
         # The paid authority is retry-0. Vast's ordinary convenience retry for
         # a stale offer is therefore disabled explicitly for every policy
@@ -654,6 +676,7 @@ __all__ = [
     "MINIMUM_DRIVER_VERSION",
     "NO_POLICY_MIN_GPU_RAM_MB",
     "NO_POLICY_PREFERRED_GPU_KEYWORDS",
+    "NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES",
     "POLICY_CAMERA_RESOLUTION_ENV",
     "POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES",
     "POLICY_MIN_COMPUTE_CAP",
