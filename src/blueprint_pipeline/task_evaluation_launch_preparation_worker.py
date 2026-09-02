@@ -17,6 +17,7 @@ import re
 import stat
 import urllib.request
 import uuid
+import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,7 +47,11 @@ from .task_evaluation_episode_compilation_queue import (
     stage_episode_compilation,
 )
 from .task_evaluation_native_arena_preparation_adapter import (
+    MANIFEST_NAME as ADAPTER_MANIFEST_NAME,
+    RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX,
+    TaskEvaluationNativeArenaAdapterError,
     materialize_native_arena_adapter,
+    read_runtime_source_external_layers,
 )
 from .task_evaluation_scene_configuration_disclosure import (
     RENDER_INPUT_STATUSES,
@@ -739,6 +744,133 @@ def _validated_configured_scene_revision(
     return revision
 
 
+# Small JSON references and the configured-revision inputs materialized later in
+# the same message; the large runtime-source layer is reserved separately once
+# the wrapper names it.
+PREPARATION_RESERVATION_MARGIN_BYTES = 512 * 1024**2
+
+
+def _missing_reference_bytes(
+    references: Sequence[Mapping[str, Any]], content_store_root: str | Path
+) -> int:
+    """Bytes this preparation must still fetch: references absent from the store."""
+
+    store = Path(content_store_root)
+    seen: set[tuple[str, int]] = set()
+    total = 0
+    for reference in references:
+        identity = (str(reference["digest"]), int(reference["size_bytes"]))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if not (store / identity[0].removeprefix("sha256:")).is_file():
+            total += identity[1]
+    return total
+
+
+def _reserve_preparation_disk(
+    *,
+    expected_bytes: int,
+    input_root: str | Path,
+    disk_reservation_root: str | Path,
+    disk_reservations: list[DiskReservation],
+) -> None:
+    try:
+        disk_reservations.append(
+            reserve_control_plane_disk(
+                "launch_preparation",
+                target_root=input_root,
+                expected_bytes=max(1, int(expected_bytes)),
+                reservation_root=disk_reservation_root,
+            )
+        )
+    except ControlPlaneDiskBudgetError as exc:
+        raise TaskEvaluationLaunchPreparationWorkerError(str(exc)) from exc
+
+
+def _declares_external_layers(bundle_path: Path) -> bool:
+    """Cheaply answer whether a wrapper manifest names any external layer."""
+
+    if not zipfile.is_zipfile(bundle_path):
+        return False
+    try:
+        with zipfile.ZipFile(bundle_path) as archive:
+            if ADAPTER_MANIFEST_NAME not in archive.namelist():
+                return False
+            manifest = json.loads(archive.read(ADAPTER_MANIFEST_NAME).decode("utf-8"))
+    except (OSError, ValueError, zipfile.BadZipFile):
+        return False
+    entries = manifest.get("entries") if isinstance(manifest, Mapping) else None
+    return isinstance(entries, list) and any(
+        isinstance(row, Mapping) and row.get("external_layer") is not None
+        for row in entries
+    )
+
+
+def _materialize_runtime_source_external_layers(
+    *,
+    request: Mapping[str, Any],
+    runtime_source: Mapping[str, Any],
+    input_root: Path,
+    content_store_root: Path,
+    allowed_uri_prefixes: Sequence[str],
+    fetcher: ReferenceFetcher,
+    disk_reservation_root: str | Path | None,
+    disk_reservations: list[DiskReservation],
+) -> list[dict[str, Any]]:
+    """Fetch the layers a runtime-source wrapper declares, once, by digest.
+
+    The wrapper is a few kilobytes and binds the release; its payload is an
+    external layer whose digest is stable across releases, so the content
+    store holds one copy however many wrappers reference it.
+    """
+
+    bundle_path = Path(str(runtime_source["materialized_path"]))
+    # Validation of the wrapper belongs to the compile step; preparation only
+    # engages when a wrapper declares external layers, because then the bytes
+    # to fetch are named by the manifest and a broken declaration must fail
+    # before any fetch.  Wrappers without declared layers keep their contract.
+    if not _declares_external_layers(bundle_path):
+        return []
+    try:
+        layers = read_runtime_source_external_layers(
+            bundle_path=bundle_path,
+            request=request,
+        )
+    except TaskEvaluationNativeArenaAdapterError as exc:
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            f"launch_preparation_runtime_source_bundle_invalid:{exc}"
+        ) from exc
+    if not layers:
+        return []
+    references = [
+        {
+            "contract_path": f"{RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX}{index}",
+            "uri": layer["uri"],
+            "digest": layer["sha256"],
+            "size_bytes": int(layer["size_bytes"]),
+        }
+        for index, layer in enumerate(layers)
+    ]
+    if disk_reservation_root is not None:
+        missing = _missing_reference_bytes(references, content_store_root)
+        if missing > 0:
+            _reserve_preparation_disk(
+                expected_bytes=missing,
+                input_root=input_root,
+                disk_reservation_root=disk_reservation_root,
+                disk_reservations=disk_reservations,
+            )
+    rows, _ = _materialize_reference_records(
+        references=references,
+        input_root=input_root,
+        content_store_root=content_store_root,
+        allowed_uri_prefixes=validate_allowed_uri_prefixes(allowed_uri_prefixes),
+        fetcher=fetcher,
+    )
+    return rows
+
+
 def process_launch_preparation_queue(
     *,
     queue_root: str | Path,
@@ -788,20 +920,23 @@ def process_launch_preparation_queue(
             claimed.unlink(missing_ok=True)
             continue
         terminal_state = "materialized"
-        disk_reservation: DiskReservation | None = None
+        disk_reservations: list[DiskReservation] = []
         try:
             envelope = _load_envelope(claimed)
             if disk_reservation_root is not None:
-                try:
-                    disk_reservation = reserve_control_plane_disk(
-                        "launch_preparation",
-                        target_root=input_root,
-                        reservation_root=disk_reservation_root,
+                # Reserve what this message will actually fetch: references the
+                # content store does not already hold, plus a margin for the
+                # small revision inputs materialized later in the message.
+                _reserve_preparation_disk(
+                    expected_bytes=_missing_reference_bytes(
+                        collect_preparation_references(envelope["request"]),
+                        content_store_root,
                     )
-                except ControlPlaneDiskBudgetError as exc:
-                    raise TaskEvaluationLaunchPreparationWorkerError(
-                        str(exc)
-                    ) from exc
+                    + PREPARATION_RESERVATION_MARGIN_BYTES,
+                    input_root=input_root,
+                    disk_reservation_root=disk_reservation_root,
+                    disk_reservations=disk_reservations,
+                )
             result = materialize_preparation_references(
                 request=envelope["request"],
                 input_root=Path(input_root) / str(envelope["request"]["preparation_id"]),
@@ -840,6 +975,28 @@ def process_launch_preparation_queue(
                 raise TaskEvaluationLaunchPreparationWorkerError(
                     "launch_preparation_execution_adapter_inputs_missing"
                 )
+            layer_rows = _materialize_runtime_source_external_layers(
+                request=envelope["request"],
+                runtime_source=runtime_source,
+                input_root=Path(input_root) / str(envelope["request"]["preparation_id"]),
+                content_store_root=content_store_root,
+                allowed_uri_prefixes=allowed_uri_prefixes,
+                fetcher=fetcher,
+                disk_reservation_root=disk_reservation_root,
+                disk_reservations=disk_reservations,
+            )
+            if layer_rows:
+                result["references"].extend(layer_rows)
+                result["reference_count"] = len(result["references"])
+                result["unique_object_count"] = len(
+                    {(row["digest"], row["size_bytes"]) for row in result["references"]}
+                )
+                result["content_addressed_reuse_count"] = sum(
+                    row["content_addressed_reuse"] for row in result["references"]
+                )
+                references_by_path = {
+                    row["contract_path"]: row for row in result["references"]
+                }
             if construction_mode == "reuse_configured_scene":
                 configured_revision_record = references_by_path.get(
                     "scene.configured_revision"
@@ -1214,8 +1371,8 @@ def process_launch_preparation_queue(
             result["result_digest"] = canonical_digest(
                 result, digest_field="result_digest"
             )
-        if disk_reservation is not None:
-            disk_reservation.release()
+        for reservation in disk_reservations:
+            reservation.release()
         result_path = results_root / source.name
         try:
             write_launch_preparation_record_exclusive(result_path, result)

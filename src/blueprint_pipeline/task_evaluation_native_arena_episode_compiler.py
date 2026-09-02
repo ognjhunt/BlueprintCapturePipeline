@@ -29,6 +29,7 @@ from .task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
 from .task_evaluation_native_arena_preparation_adapter import (
+    RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX,
     build_task_evaluation_adapter_bundle,
     materialize_native_arena_adapter,
 )
@@ -617,6 +618,11 @@ def compile_native_arena_episode(
         ),
         output_root=root / "native-arena-adapter",
         content_store_root=root.parent / "content-addressed" / "adapter-members" / "sha256",
+        external_layers={
+            str(row["digest"]): Path(str(row["materialized_path"]))
+            for contract_path, row in materialized_references.items()
+            if contract_path.startswith(RUNTIME_SOURCE_LAYER_CONTRACT_PREFIX)
+        },
     )
     output: dict[str, Any] = {
         "schema_version": OUTPUT_SCHEMA_VERSION,

@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import zipfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ from .task_evaluation_native_arena_episode_compiler import (
     compile_native_arena_episode,
 )
 from .task_evaluation_native_arena_preparation_adapter import (
+    MANIFEST_NAME,
     TaskEvaluationNativeArenaAdapterError,
 )
 
@@ -232,6 +234,41 @@ def _validated_compiler_output(
     return output
 
 
+# Packet materialization, the built construction archive, and adapter receipts;
+# runtime members are counted only when the shared member store lacks them.
+COMPILATION_RESERVATION_MARGIN_BYTES = 2 * 1024**3
+
+
+def _expected_compilation_bytes(
+    references: Mapping[str, Mapping[str, Any]], *, content_store_root: Path
+) -> int:
+    """Bytes this compile will write: runtime members the member store lacks."""
+
+    total = COMPILATION_RESERVATION_MARGIN_BYTES
+    row = references.get("execution_adapter.runtime_source_bundle")
+    if row is None:
+        return total
+    fallback = total + int(row.get("size_bytes") or 0)
+    try:
+        with zipfile.ZipFile(Path(str(row["materialized_path"]))) as archive:
+            manifest = json.loads(archive.read(MANIFEST_NAME).decode("utf-8"))
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+        return fallback
+    entries = manifest.get("entries") if isinstance(manifest, Mapping) else None
+    if not isinstance(entries, list):
+        return fallback
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        digest = str(entry.get("sha256") or "").removeprefix("sha256:")
+        size = entry.get("size_bytes")
+        if not digest or not isinstance(size, int) or isinstance(size, bool):
+            continue
+        if not (content_store_root / digest).is_file():
+            total += size
+    return total
+
+
 def process_episode_compilation_queue(
     *,
     queue_root: str | Path,
@@ -294,6 +331,12 @@ def process_episode_compilation_queue(
                     disk_reservation = reserve_control_plane_disk(
                         "episode_compilation",
                         target_root=outputs,
+                        expected_bytes=_expected_compilation_bytes(
+                            references,
+                            content_store_root=(
+                                outputs / "content-addressed" / "adapter-members" / "sha256"
+                            ),
+                        ),
                         reservation_root=disk_reservation_root,
                     )
                 except ControlPlaneDiskBudgetError as exc:

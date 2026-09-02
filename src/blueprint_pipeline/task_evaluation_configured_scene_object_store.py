@@ -18,6 +18,9 @@ from urllib.parse import urlsplit
 
 DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/configured-scenes"
 LARGE_ARTIFACT_KEY_PREFIX = f"{DEFAULT_KEY_PREFIX}/artifacts"
+# Runtime-source wrapper layers are published under this artifact kind; the
+# wrapper builder embeds the resulting URI, so the two must agree exactly.
+EXTERNAL_LAYER_ARTIFACT_KIND = "native-runtime-source-layer"
 _SAFE_KEY_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,191}")
 
 _ARTIFACT_STORE_FILE_ENV = {
@@ -341,6 +344,58 @@ def publish_configured_scene_artifact(
         "remote_verified_at": remote_verified_at.isoformat().replace("+00:00", "Z"),
         "readback_digest": readback_digest,
         "readback_size_bytes": readback_size,
+        "raw_secret_values_recorded": False,
+    }
+
+
+def publish_runtime_source_external_layers(
+    receipt: Mapping[str, Any],
+    *,
+    client: Any | None = None,
+    bucket: str | None = None,
+) -> dict[str, Any]:
+    """Publish every external layer a runtime-source build receipt names.
+
+    Each layer must land at exactly the URI the wrapper embeds; a bucket or
+    prefix that disagrees with the build is refused rather than republished.
+    """
+
+    layers = receipt.get("external_layers") if isinstance(receipt, Mapping) else None
+    if (
+        receipt.get("schema_version") != "task_evaluation_adapter_bundle_build_receipt.v1"
+        or receipt.get("role") != "runtime_source"
+        or not isinstance(layers, list)
+    ):
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_runtime_source_receipt_invalid"
+        )
+    published: list[dict[str, Any]] = []
+    for row in layers:
+        if not isinstance(row, Mapping):
+            raise TaskEvaluationConfiguredSceneObjectStoreError(
+                "configured_scene_runtime_source_receipt_invalid"
+            )
+        reference = publish_configured_scene_artifact(
+            path=str(row.get("store_path") or ""),
+            artifact_kind=EXTERNAL_LAYER_ARTIFACT_KIND,
+            client=client,
+            bucket=bucket,
+        )
+        if (
+            reference["uri"] != row.get("uri")
+            or reference["digest"] != row.get("sha256")
+            or reference["size_bytes"] != row.get("size_bytes")
+        ):
+            raise TaskEvaluationConfiguredSceneObjectStoreError(
+                "configured_scene_runtime_source_layer_uri_mismatch"
+            )
+        published.append({**reference, "relative_path": row.get("relative_path")})
+    return {
+        "schema_version": "task_evaluation_runtime_source_layer_publication.v1",
+        "status": "remote_verified",
+        "wrapper_sha256": receipt.get("sha256"),
+        "layer_count": len(published),
+        "layers": published,
         "raw_secret_values_recorded": False,
     }
 
@@ -714,12 +769,14 @@ def main(argv: list[str] | None = None) -> int:
 
 __all__ = [
     "DEFAULT_KEY_PREFIX",
+    "EXTERNAL_LAYER_ARTIFACT_KIND",
     "LARGE_ARTIFACT_KEY_PREFIX",
     "TaskEvaluationConfiguredSceneObjectStoreError",
     "configured_scene_object_store_publisher",
     "materialize_configured_scene_artifact",
     "presign_configured_scene_artifact",
     "publish_configured_scene_artifact",
+    "publish_runtime_source_external_layers",
     "read_configured_scene_object",
     "validate_configured_scene_object_store_configuration",
 ]
