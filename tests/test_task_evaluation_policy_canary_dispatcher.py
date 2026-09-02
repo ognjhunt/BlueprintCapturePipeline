@@ -786,3 +786,269 @@ def test_paid_queue_materializes_setup_from_staged_template_before_dispatch(
     ).is_file()
     assert not pending.exists()
     assert (queue / "completed" / pending.name).is_file()
+
+
+def _denying(*unusable: Path):
+    """An access checker that refuses exactly the given paths for the service identity."""
+
+    refused = {Path(path).resolve() for path in unusable}
+
+    def access(path: Path, mode: int) -> bool:
+        del mode
+        return Path(path).resolve() not in refused
+
+    return access
+
+
+def test_service_access_preflight_blocks_unreadable_inputs_before_the_allocator(
+    tmp_path: Path,
+) -> None:
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    setup = json.loads(setup_path.read_text(encoding="utf-8"))
+    runtime_inputs_path = Path(
+        json.loads(activation_result.read_text(encoding="utf-8"))[
+            "policy_canary_runtime_inputs_path"
+        ]
+    )
+    overlay = _write(tmp_path / "overlay.zip", {"fixture": True})
+    avoidlist = _write(tmp_path / "avoidlist.json", {"machine_ids": [144209]})
+    cases = {
+        "execution_setup": setup_path,
+        "activation_result": activation_result,
+        "runtime_inputs": runtime_inputs_path,
+        "pi05_checkpoint_inventory": Path(setup["records"]["pi05_checkpoint_inventory"]["path"]),
+        "hotfix_overlay": overlay,
+        "machine_avoidlist": avoidlist,
+    }
+    for role, unusable in cases.items():
+        with pytest.raises(TaskEvaluationPolicyCanaryDispatchError) as denied:
+            dispatch_policy_canary_activation(
+                activation_result_path=activation_result,
+                execution_setup_path=setup_path,
+                output_root=tmp_path / f"dispatch-{role}",
+                implementation_commit=COMMIT,
+                execute=True,
+                hotfix_overlay_path=overlay,
+                machine_avoidlist_path=avoidlist,
+                allocator_runner=lambda _argv: pytest.fail("allocator must not run"),
+                access=_denying(unusable),
+            )
+        assert str(denied.value) == (
+            "policy_canary_dispatch_service_access_denied:"
+            f"policy_canary_dispatch_input_unreadable:{role}"
+        ), role
+        assert not (tmp_path / f"dispatch-{role}").exists()
+        assert str(unusable) not in str(denied.value)
+
+
+def test_service_access_preflight_blocks_an_unwritable_run_directory(
+    tmp_path: Path,
+) -> None:
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    output = tmp_path / "dispatch"
+    output.mkdir()
+
+    with pytest.raises(
+        TaskEvaluationPolicyCanaryDispatchError,
+        match=(
+            "^policy_canary_dispatch_service_access_denied:"
+            "policy_canary_dispatch_output_unwritable:output_root$"
+        ),
+    ):
+        dispatch_policy_canary_activation(
+            activation_result_path=activation_result,
+            execution_setup_path=setup_path,
+            output_root=output,
+            implementation_commit=COMMIT,
+            execute=True,
+            allocator_runner=lambda _argv: pytest.fail("allocator must not run"),
+            access=_denying(output),
+        )
+
+    assert not (output / "status_events.jsonl").exists()
+
+
+def test_missing_setup_still_reports_its_own_typed_code_after_the_access_preflight(
+    tmp_path: Path,
+) -> None:
+    activation_result, _setup_path, _activation = _inputs(tmp_path)
+    with pytest.raises(
+        TaskEvaluationPolicyCanaryDispatchError,
+        match="^policy_canary_scene839873_setup_receipt_missing$",
+    ):
+        dispatch_policy_canary_activation(
+            activation_result_path=activation_result,
+            execution_setup_path=tmp_path / "absent-setup.json",
+            output_root=tmp_path / "dispatch",
+            implementation_commit=COMMIT,
+            allocator_runner=lambda _argv: pytest.fail("allocator must not run"),
+        )
+
+
+def test_machine_avoidlist_is_forwarded_to_the_allocator_after_access_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    avoidlist = _write(tmp_path / "avoidlist.json", {"machine_ids": [144209]})
+    observed: dict[str, object] = {}
+
+    def fake_bundle(**kwargs):
+        job = Path(kwargs["job_dir"])
+        job.mkdir(parents=True, exist_ok=True)
+        receipt = {"bundle_sha256": "sha256:" + "b" * 64, "bundle_path": str(job / "b.zip")}
+        _write(job / "native_task_arena_policy_canary_session_bundle_receipt.v1.json", receipt)
+        return receipt
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.build_policy_canary_session_bundle",
+        fake_bundle,
+    )
+
+    def fake_allocator(argv):
+        observed["argv"] = list(argv)
+        adapter = Path(argv[argv.index("--adapter-output") + 1])
+        _write(adapter, {"status": "dry_run_ready", "provider_mutations_performed": 0})
+        return 0
+
+    receipt = dispatch_policy_canary_activation(
+        activation_result_path=activation_result,
+        execution_setup_path=setup_path,
+        output_root=tmp_path / "dispatch",
+        implementation_commit=COMMIT,
+        machine_avoidlist_path=avoidlist,
+        allocator_runner=fake_allocator,
+    )
+
+    argv = observed["argv"]
+    assert receipt["status"] == "prepared_no_execution"
+    assert argv[argv.index("--adp-machine-avoidlist") + 1] == str(avoidlist.resolve())
+    assert argv.count("--adp-machine-avoidlist") == 1
+
+
+def test_paid_queue_reports_service_access_denial_as_a_pre_provider_block(
+    tmp_path: Path,
+) -> None:
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    queue = tmp_path / "queue"
+    for name in ("pending", "processing", "completed", "blocked"):
+        (queue / name).mkdir(parents=True, exist_ok=True)
+    envelope = {
+        "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
+        "activation_id": "activation-1",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "source_commit": COMMIT,
+        "activation_result": _record(activation_result),
+        "capture_session_id": "capture-839873",
+        "intake_id": "intake-839873",
+        "request_digest": "sha256:" + "7" * 64,
+        "maximum_provider_allocations": 1,
+        "retry_cap": 0,
+        "automatic_retry_authorized": False,
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "envelope_digest": "",
+    }
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    envelope_path = _write(queue / "pending" / "activation-1.json", envelope)
+    setups = tmp_path / "setups"
+    setups.mkdir()
+    (setups / "activation-1.json").write_bytes(setup_path.read_bytes())
+    dispatches = tmp_path / "dispatches"
+    # The exact production failure: the run directory pre-created by root.
+    run_root = dispatches / "activation-1"
+    run_root.mkdir(parents=True)
+    synced: list[dict[str, object]] = []
+
+    def blocked_sync(**kwargs):
+        synced.append(dict(kwargs))
+        return {
+            "status": "succeeded",
+            "notification_delivery": {"status": "accepted", "terminal_state": "blocked"},
+        }
+
+    observed = process_policy_canary_dispatch_queue(
+        dispatch_queue_root=queue,
+        execution_setup_root=setups,
+        dispatch_root=dispatches,
+        implementation_commit=COMMIT,
+        execute=True,
+        blocked_sync_runner=blocked_sync,
+        access=_denying(run_root),
+    )
+
+    result = observed["results"][0]
+    assert result["status"] == "blocked_before_paid_dispatch"
+    assert result["allocator_invoked"] is False
+    assert result["blockers"] == [
+        "policy_canary_dispatch_service_access_denied:"
+        "policy_canary_dispatch_output_unwritable:output_root"
+    ]
+    assert synced[0]["blockers"] == result["blockers"]
+    assert not envelope_path.exists()
+    assert (queue / "blocked" / envelope_path.name).is_file()
+    assert (run_root / "preprovider_blocked.json").is_file()
+
+
+def test_paid_queue_retains_the_block_beside_the_queue_when_the_run_root_rejects_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    queue = tmp_path / "queue"
+    for name in ("pending", "processing", "completed", "blocked"):
+        (queue / name).mkdir(parents=True, exist_ok=True)
+    envelope = {
+        "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
+        "activation_id": "activation-1",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "source_commit": COMMIT,
+        "activation_result": _record(activation_result),
+        "capture_session_id": "capture-839873",
+        "intake_id": "intake-839873",
+        "request_digest": "sha256:" + "7" * 64,
+        "maximum_provider_allocations": 1,
+        "retry_cap": 0,
+        "automatic_retry_authorized": False,
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "envelope_digest": "",
+    }
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    envelope_path = _write(queue / "pending" / "activation-1.json", envelope)
+    setups = tmp_path / "setups"
+    setups.mkdir()
+    (setups / "activation-1.json").write_bytes(setup_path.read_bytes())
+    dispatches = tmp_path / "dispatches"
+    run_root = dispatches / "activation-1"
+    run_root.mkdir(parents=True)
+    real_write_json = json.dumps
+
+    import blueprint_pipeline.task_evaluation_policy_canary_dispatcher as module
+
+    original = module.write_json
+
+    def rejecting_write(path, value):
+        if Path(path).parent == run_root:
+            raise PermissionError(str(path))
+        return original(path, value)
+
+    monkeypatch.setattr(module, "write_json", rejecting_write)
+    del real_write_json
+
+    observed = process_policy_canary_dispatch_queue(
+        dispatch_queue_root=queue,
+        execution_setup_root=setups,
+        dispatch_root=dispatches,
+        implementation_commit=COMMIT,
+        execute=True,
+        blocked_sync_runner=lambda **_kwargs: {
+            "status": "succeeded",
+            "notification_delivery": {"status": "accepted", "terminal_state": "blocked"},
+        },
+        access=_denying(run_root),
+    )
+
+    assert observed["results"][0]["status"] == "blocked_before_paid_dispatch"
+    assert (dispatches / "unwritable-runs" / "activation-1" / "preprovider_blocked.json").is_file()
+    assert (queue / "blocked" / envelope_path.name).is_file()

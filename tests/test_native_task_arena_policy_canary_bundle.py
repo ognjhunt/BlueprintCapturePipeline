@@ -130,8 +130,12 @@ def test_provider_worker_has_one_simulation_launch_outside_episode_loop() -> Non
         Path(bundle.__file__).with_name("native_task_arena_policy_canary_worker.py")
     ).read_text(encoding="utf-8")
 
-    assert source.count("launch_native_task_isaaclab(") == 1
-    assert source.count("run_policy_episode(") == 1
+    # One simulator launch per isolated cell process, bound through the
+    # injectable runtime seam so the hermetic rehearsal drives the same code.
+    assert source.count("bound_runtime.launch_isaac(") == 1
+    assert source.count("bound_runtime.run_policy_episode(") == 1
+    assert source.count("launch_isaac=launch_native_task_isaaclab,") == 1
+    assert source.count("run_policy_episode=run_policy_episode,") == 1
     assert "execute_paired_session(" in source
     assert "provider_closeout_pending=True" in source
     assert "policy_canary_telemetry.jsonl" in source

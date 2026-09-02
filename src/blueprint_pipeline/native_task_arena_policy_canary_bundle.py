@@ -26,6 +26,7 @@ from .native_task_arena_bundle import (
     build_native_task_arena_bundle,
 )
 from .native_task_arena_execution_contract import POLICY_RUNTIME_MODULE_NAMES
+from .provider_runtime_import_closure import assert_provider_runtime_import_closure
 from .native_task_arena_policy_canary_session import (
     CANDIDATE_IDS,
     CLAIM_CEILING,
@@ -217,6 +218,18 @@ def build_policy_canary_session_bundle(
             package / "native_task_arena_policy_worker.py",
             package / "native_task_arena_policy_canary_session.py",
         )
+    )
+    # Refuse to seal a bundle whose shipped package cannot satisfy its own
+    # imports; the alternative is discovering it on a rented GPU after both
+    # policy servers are up.  The worker itself ships at the runtime root, so
+    # its ``blueprint_pipeline.*`` imports are checked against the same set.
+    assert_provider_runtime_import_closure(
+        package_source_dir=package,
+        shipped_module_names=sorted(
+            {path.name for path in runtime_modules}
+            | {"native_task_arena_policy_canary_worker.py"}
+        ),
+        code="policy_canary_bundle_import_closure_incomplete",
     )
     job = Path(job_dir).expanduser().resolve()
     base = build_native_task_arena_bundle(

@@ -143,6 +143,10 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "adp009d_policy_episode.py",
     "adp009d_policy_episode_evidence.py",
     "adp009d_droid_action_execution.py",
+    # Imported as ``.adp009d_groot_worker_identity`` by the GR00T runtime and
+    # by the rights module inside the package; the flat root copy used by the
+    # provisioning script does not satisfy a package-relative import.
+    "adp009d_groot_worker_identity.py",
     "adp009d_policy_rights.py",
     "droid_policy_bridge.py",
     "groot_n17_wire_client.py",
