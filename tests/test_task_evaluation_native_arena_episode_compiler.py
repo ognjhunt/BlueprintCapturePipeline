@@ -5,6 +5,7 @@ import json
 import zipfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -13,8 +14,11 @@ from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import (
     TaskEvaluationNativeArenaEpisodeCompilerError,
     _json_reference,
     _reference_path,
+    _materialize_native_particlefield_appearance,
     compile_native_arena_episode,
 )
+from blueprint_pipeline.aura_nurec_usdz import write_aura_nurec_usdz
+from blueprint_pipeline.nurec_volume_codec import build_state_dict
 from tests.test_task_evaluation_configured_scene_revision import revision
 from tests.test_task_evaluation_launch_preparation_contract import request
 
@@ -35,6 +39,57 @@ def _write_json(root: Path, name: str, value: dict) -> Path:
     path = root / name
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def test_large_nurec_requires_a_cached_official_particlefield(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    arrays = {
+        "positions": np.zeros((2, 3), dtype=np.float32),
+        "rotations": np.asarray([[1.0, 0.0, 0.0, 0.0]] * 2, dtype=np.float32),
+        "scales": np.full((2, 3), -2.0, dtype=np.float32),
+        "densities": np.zeros((2, 1), dtype=np.float32),
+        "features_albedo": np.zeros((2, 3), dtype=np.float32),
+        "features_specular": np.zeros((2, 45), dtype=np.float32),
+    }
+    document = {
+        "version": "0.2.576",
+        "model": "nre",
+        "config": {
+            "layers": {
+                "gaussians": {
+                    "precision": 32,
+                    "density_activation": "sigmoid",
+                    "scale_activation": "exp",
+                    "rotation_activation": "normalize",
+                    "particle": {"density_kernel_planar": False, "radiance_sph_degree": 3},
+                }
+            },
+            "renderer": {"name": "3dgut-nrend"},
+        },
+        "state_dict": build_state_dict(arrays, precision=32),
+    }
+    source = tmp_path / "appearance.usdz"
+    write_aura_nurec_usdz(document, source)
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_native_arena_episode_compiler."
+        "materialize_cached_particlefield",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_native_arena_episode_compiler."
+        "MAXIMUM_INLINE_NUREC_CONVERSION_BYTES",
+        0,
+    )
+
+    with pytest.raises(
+        TaskEvaluationNativeArenaEpisodeCompilerError,
+        match="episode_compiler_official_particlefield_cache_required",
+    ):
+        _materialize_native_particlefield_appearance(
+            source_path=source,
+            output_root=tmp_path / "native-appearance",
+        )
 
 
 def test_policy_canary_keeps_registry_out_of_native_controller_slot() -> None:
