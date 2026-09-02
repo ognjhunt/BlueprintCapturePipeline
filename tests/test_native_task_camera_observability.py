@@ -782,3 +782,42 @@ def test_render_evidence_reports_the_clipped_fraction_for_construction_receipts(
     )
 
     assert evidence["frame"]["saturated_channel_pixel_fraction"] == pytest.approx(0.25)
+
+
+def test_prepolicy_visual_gate_refuses_scene839873_dark_splat_signature() -> None:
+    from blueprint_pipeline.native_task_camera_observability import (
+        REFUSAL_PREPOLICY_VISUAL_FRAME_NEAR_BLACK,
+        measure_native_task_prepolicy_visual_frames,
+    )
+
+    dark = np.zeros((180, 320, 3), dtype=np.uint8)
+    dark[:, :80] = _textured((180, 80), low=8, high=70)
+    receipt = measure_native_task_prepolicy_visual_frames(
+        {"external": dark, "wrist": np.roll(dark, 1, axis=1), "overview": np.roll(dark, 2, axis=1)}
+    )
+
+    assert receipt["passed"] is False
+    assert all(
+        any(REFUSAL_PREPOLICY_VISUAL_FRAME_NEAR_BLACK in blocker for blocker in row["blockers"])
+        for row in receipt["views"].values()
+    )
+    assert receipt["candidate_policy_loaded"] is False
+    assert receipt["candidate_policy_queried"] is False
+
+
+def test_prepolicy_visual_gate_accepts_three_distinct_structured_views() -> None:
+    from blueprint_pipeline.native_task_camera_observability import (
+        measure_native_task_prepolicy_visual_frames,
+    )
+
+    receipt = measure_native_task_prepolicy_visual_frames(
+        {
+            "external": _textured((24, 32), low=30, high=180),
+            "wrist": np.roll(_textured((24, 32), low=35, high=185), 1, axis=1),
+            "overview": np.roll(_textured((24, 32), low=40, high=190), 2, axis=0),
+        }
+    )
+
+    assert receipt["passed"] is True
+    assert receipt["blockers"] == []
+    assert len({row["frame_digest"] for row in receipt["views"].values()}) == 3

@@ -91,6 +91,32 @@ def policy_input_saturation_evidence(*, camera_rgb: Mapping[str, Any]) -> dict[s
         ) from exc
 
 
+def prepolicy_visual_readiness_evidence(*, camera_rgb: Mapping[str, Any]) -> dict[str, Any]:
+    """Measure the exact three-camera reset domain before policy inference."""
+
+    try:  # flat provider-bundle layout
+        from native_task_camera_observability import (
+            NativeTaskCameraObservabilityError,
+            measure_native_task_prepolicy_visual_frames,
+        )
+    except ModuleNotFoundError:  # repository package / arena bundle
+        try:
+            from .native_task_camera_observability import (
+                NativeTaskCameraObservabilityError,
+                measure_native_task_prepolicy_visual_frames,
+            )
+        except ImportError as exc:
+            raise PolicyEpisodeEvidenceError(
+                [f"{PRESTART_READINESS_BLOCKER}:prepolicy_visual_gate_unavailable"]
+            ) from exc
+    try:
+        return measure_native_task_prepolicy_visual_frames(camera_rgb)
+    except NativeTaskCameraObservabilityError as exc:
+        raise PolicyEpisodeEvidenceError(
+            [f"{PRESTART_READINESS_BLOCKER}:{error}" for error in exc.errors]
+        ) from exc
+
+
 def json_safe_policy_action(value: Any) -> Any:
     """Retain candidate output before numerical validation, including NaN tags."""
 
@@ -366,6 +392,7 @@ __all__ = [
     "BLOCKER_POLICY_INPUT_SATURATION_GATE_UNAVAILABLE",
     "PRESTART_READINESS_BLOCKER",
     "policy_input_saturation_evidence",
+    "prepolicy_visual_readiness_evidence",
     "ARM_MOTION_EPSILON_RAD",
     "BLOCKER_CLIENT_RETURNED_NOTHING",
     "PolicyEpisodeEvidenceError",

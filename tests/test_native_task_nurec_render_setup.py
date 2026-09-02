@@ -94,11 +94,21 @@ class _Stage:
         return self.prims.get(str(path)) or _Missing()
 
 
-def _particlefield_stage(*, shader_attrs=None, source_asset="ParticleFieldEmissive.mdl"):
+def _particlefield_stage(
+    *, shader_attrs=None, source_asset="ParticleFieldEmissive.mdl", bound: bool = False,
+    hints: bool = False,
+):
     field = _Prim(
         "/World/envs/env_0/scene_appearance/CapturedScene/Gaussians",
         "ParticleField3DGaussianSplat",
-        targets=["/World/envs/env_0/scene_appearance/CapturedScene/Looks/ParticleFieldEmissive"],
+        attrs={
+            **({"projectionModeHint": _Attr("perspective")} if hints else {}),
+        },
+        targets=(
+            ["/World/envs/env_0/scene_appearance/CapturedScene/Looks/ParticleFieldEmissive"]
+            if bound
+            else []
+        ),
     )
     shader = _Prim(
         "/World/envs/env_0/scene_appearance/CapturedScene/Looks/ParticleFieldEmissive/Shader",
@@ -164,17 +174,13 @@ def test_engine_default_or_explicit_skip_warms_and_records_the_flag(value) -> No
 
     assert result["passed"] is True
     assert result["blockers"] == []
-    # A sealed asset with MDL-default inputs is overridden live, before the
-    # warmup, and read back.
-    assert shader.attrs["inputs:apply_srgb_linear"].Get() is True
-    assert shader.attrs["inputs:apply_inverse_tonemap"].Get() is False
+    # The upstream-native field is validated without live-stage mutation.
+    assert "inputs:apply_srgb_linear" not in shader.attrs
+    assert "inputs:apply_inverse_tonemap" not in shader.attrs
     material = result["display_referred_material"]
     assert material["passed"] is True
-    assert material["particlefields"][0]["inputs_before"] == {
-        "apply_srgb_linear": None,
-        "apply_inverse_tonemap": None,
-    }
-    assert material["particlefields"][0]["inputs_after"] == DISPLAY_REFERRED_MATERIAL_INPUTS
+    assert material["live_stage_mutated"] is False
+    assert material["particlefields"][0]["material_binding_targets"] == []
     assert result["gaussian_skip_tonemapping"]["readback"] == "read"
     assert result["gaussian_skip_tonemapping"]["enabled"] is (
         None if value is None else True
@@ -269,24 +275,21 @@ def test_prepare_site_appearance_renderer_gates_only_display_referred_splats() -
 # --- display-referred material override -----------------------------------
 
 
-def test_the_shader_override_precedes_every_warmup_tick_and_is_read_back() -> None:
-    stage, shader = _particlefield_stage(
-        shader_attrs={"inputs:apply_srgb_linear": _Attr(False)}
-    )
+def test_upstream_native_particlefield_is_unbound_and_never_mutated() -> None:
+    stage, shader = _particlefield_stage()
 
     receipt = apply_display_referred_particlefield_material(stage)
 
     assert receipt["passed"] is True
-    assert receipt["inputs"] == {"apply_srgb_linear": True, "apply_inverse_tonemap": False}
     row = receipt["particlefields"][0]
-    assert row["shader_source_asset"] == "ParticleFieldEmissive.mdl"
-    assert row["inputs_before"] == {"apply_srgb_linear": False, "apply_inverse_tonemap": None}
-    assert row["inputs_after"] == {"apply_srgb_linear": True, "apply_inverse_tonemap": False}
-    assert shader.attrs["inputs:apply_srgb_linear"].Get() is True
+    assert row["material_binding_targets"] == []
+    assert row["projection_mode_hint_authored"] is False
+    assert row["sorting_mode_hint_authored"] is False
+    assert shader.attrs == {"info:mdl:sourceAsset": shader.attrs["info:mdl:sourceAsset"]}
 
 
-def test_a_particlefield_without_the_emissive_material_is_refused() -> None:
-    stage, _ = _particlefield_stage(source_asset="OmniPBR.mdl")
+def test_a_particlefield_with_a_custom_material_is_refused() -> None:
+    stage, _ = _particlefield_stage(bound=True)
     app = _App()
 
     result = setup_and_warm_native_nurec_renderer(
@@ -303,10 +306,8 @@ def test_a_particlefield_without_the_emissive_material_is_refused() -> None:
     assert app.updates == 0
 
 
-def test_an_override_that_does_not_read_back_is_refused() -> None:
-    stage, _ = _particlefield_stage(
-        shader_attrs={"inputs:apply_srgb_linear": _Attr(False, sticky=False)}
-    )
+def test_a_particlefield_with_custom_render_hints_is_refused() -> None:
+    stage, _ = _particlefield_stage(hints=True)
     app = _App()
 
     result = setup_and_warm_native_nurec_renderer(
@@ -351,25 +352,20 @@ def test_writer_and_runtime_agree_on_the_display_referred_inputs() -> None:
     assert PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS == DISPLAY_REFERRED_MATERIAL_INPUTS
 
 
-def test_a_sealed_pxr_asset_with_default_inputs_is_overridden_on_the_live_stage() -> None:
+def test_a_sealed_pxr_upstream_native_asset_is_not_mutated_on_the_live_stage() -> None:
     pxr = pytest.importorskip("pxr")
     from pxr import Sdf, Usd
 
     stage = Usd.Stage.CreateInMemory()
     world = stage.DefinePrim("/World", "Xform")
     stage.SetDefaultPrim(world)
-    field = stage.DefinePrim("/World/scene_appearance/Gaussians", "ParticleField3DGaussianSplat")
-    material = stage.DefinePrim("/World/scene_appearance/Looks/ParticleFieldEmissive", "Material")
-    shader = stage.DefinePrim(f"{material.GetPath()}/Shader", "Shader")
-    shader.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(
-        "ParticleFieldEmissive.mdl"
-    )
-    field.CreateRelationship("material:binding").SetTargets([material.GetPath()])
+    stage.DefinePrim("/World/scene_appearance/Gaussians", "ParticleField3DGaussianSplat")
+    del Sdf
     del pxr
 
     receipt = apply_display_referred_particlefield_material(stage)
 
     assert receipt["passed"] is True, receipt
-    assert shader.GetAttribute("inputs:apply_srgb_linear").Get() is True
-    assert shader.GetAttribute("inputs:apply_inverse_tonemap").Get() is False
     assert receipt["particlefields"][0]["prim_path"] == "/World/scene_appearance/Gaussians"
+    assert receipt["particlefields"][0]["material_binding_targets"] == []
+    assert receipt["live_stage_mutated"] is False

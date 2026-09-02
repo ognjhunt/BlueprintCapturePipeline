@@ -21,7 +21,7 @@ import pytest
 
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
-from blueprint_pipeline import task_evaluation_launch_activation_worker as activation
+from blueprint_pipeline import task_evaluation_activation_runtime_layers as activation_layers
 from blueprint_pipeline.task_evaluation_episode_compilation_worker import (
     COMPILATION_RESERVATION_MARGIN_BYTES,
     _expected_compilation_bytes,
@@ -449,7 +449,7 @@ def test_preparation_fetches_runtime_source_layers_once_into_the_content_store(
             if row["contract_path"]
             == "execution_adapter.runtime_source_bundle"
         )
-        derived = activation._runtime_source_external_layer_references(
+        derived = activation_layers.derive_runtime_source_external_layer_references(
             request=request_value,
             wrapper_path=Path(wrapper_row["materialized_path"]),
         )

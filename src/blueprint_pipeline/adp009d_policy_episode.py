@@ -3,14 +3,11 @@
 This is the orchestration the five ADP-009D adapters were built for, and it is
 the only place they meet: observation formatting, policy query, action-chunk
 execution, and deterministic scoring, in that order, for one episode.
-
 The simulator is injected rather than imported.  Everything here is arithmetic
 and sequencing, so the whole loop -- including its failure paths -- is testable
 without a GPU, and the Isaac-side adapter stays a thin, reviewable shim that
 only reads and writes simulator state.
-
 Three properties are load-bearing and enforced rather than assumed:
-
 * **The episode ends with a settle window the gripper is absent from.**  The
   place predicate is judged on a can at rest after release; without a settle
   phase ``placed`` could never be decided, and an episode would silently score
@@ -21,7 +18,6 @@ Three properties are load-bearing and enforced rather than assumed:
 * **The policy is queried only through the injected client**, and every query
   and chunk is retained, so a receipt can be re-derived without a simulator.
 """
-
 from __future__ import annotations
 
 import json
@@ -141,6 +137,7 @@ try:  # flat provider-bundle layout
         PolicyEpisodeEvidenceError,
         motion_and_command_evidence as _build_motion_and_command_evidence,
         policy_input_saturation_evidence,
+        prepolicy_visual_readiness_evidence,
         prevalidation_vendor_action_evidence as _prevalidation_vendor_action_evidence,
         raw_policy_action_evidence as _raw_policy_action_evidence,
         terminal_class_for_policy_exception as _terminal_class_for_policy_exception,
@@ -152,6 +149,7 @@ except ModuleNotFoundError:  # repository package
         PolicyEpisodeEvidenceError,
         motion_and_command_evidence as _build_motion_and_command_evidence,
         policy_input_saturation_evidence,
+        prepolicy_visual_readiness_evidence,
         prevalidation_vendor_action_evidence as _prevalidation_vendor_action_evidence,
         raw_policy_action_evidence as _raw_policy_action_evidence,
         terminal_class_for_policy_exception as _terminal_class_for_policy_exception,
@@ -651,6 +649,20 @@ def _prestart_episode_readiness(
             "wrist": camera_rgb[DROID_WRIST_VIEW],
         },
     )
+    prepolicy_frames = dict(evaluation_images)
+    prepolicy_frames.update(
+        external=camera_rgb[DROID_EXTERIOR_VIEW_1], wrist=camera_rgb[DROID_WRIST_VIEW]
+    )
+    prepolicy_visual_quality = _evidence(
+        prepolicy_visual_readiness_evidence, camera_rgb=prepolicy_frames
+    )
+    if not prepolicy_visual_quality["passed"]:
+        raise PolicyEpisodeError(
+            [
+                f"{BLOCKER_PRESTART_READINESS}:{blocker}"
+                for blocker in prepolicy_visual_quality["blockers"]
+            ]
+        )
 
     # Exercise the same step/readback seam the episode will use, while holding
     # the reset joint targets.  This is not a learned-policy action.
@@ -721,6 +733,7 @@ def _prestart_episode_readiness(
                 "task_state_readback": True,
                 "policy_observation_built": True,
                 "policy_input_frames_unsaturated": True,
+                "prepolicy_visual_quality": True,
                 "policy_control_plane_ready": True,
                 "evidence_storage_reserved": True,
                 "exact_media_write_readback": bool(exact_frame.get("png_sha256")),
@@ -736,6 +749,7 @@ def _prestart_episode_readiness(
             },
             "policy_control_plane": policy_evidence,
             "policy_input_frame_saturation": policy_input_saturation,
+            "prepolicy_visual_quality": prepolicy_visual_quality,
             "reset_joint_positions_rad": reset_joints,
             "probe_joint_positions_rad": probe_joints,
             "restored_joint_positions_rad": restored_joints,

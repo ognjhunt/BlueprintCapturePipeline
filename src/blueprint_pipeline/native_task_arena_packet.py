@@ -33,9 +33,8 @@ from .paired_target_native_construction_bindings import (
 REQUEST_SCHEMA_VERSION = "native_task_arena_packet_request.v1"
 RECEIPT_SCHEMA_VERSION = "native_task_arena_packet_receipt.v1"
 CONSTRUCTION_CANARY_SCHEMA_VERSION = "native_task_construction_canary.v1"
-#: Authoring receipts before 2026-09-02 left the emissive shader at MDL
-#: defaults ("mdl_defaults"); the live render setup now overrides those inputs
-#: on the stage, so both receipt labels admit a packet.
+#: Legacy receipts remain replayable, but newly materialized production
+#: ParticleFields use NVIDIA's public writer and therefore carry no custom MDL.
 ACCEPTED_PARTICLEFIELD_EMISSIVE_MATERIAL_INPUTS = frozenset(
     {"mdl_defaults", "display_referred_srgb"}
 )
@@ -163,6 +162,22 @@ def materialize_native_task_arena_appearance_variant_request(
         if isinstance(sh_degree, int) and not isinstance(sh_degree, bool) and 0 <= sh_degree <= 3
         else None
     )
+    official_upstream = (
+        appearance.get("particlefield_authoring_implementation")
+        == "nvidia_usd_convert_gsplat"
+        and appearance.get("particlefield_emissive_material_binding_authored") is False
+        and appearance.get("particlefield_custom_render_hints_authored") is False
+        and isinstance(appearance.get("upstream_converter"), Mapping)
+        and appearance["upstream_converter"].get("distribution") == "usd-convert-gsplat"
+        and appearance["upstream_converter"].get("version") == "0.1.15"
+        and appearance["upstream_converter"].get("source_revision")
+        == "621017ebf78394488260c70ec4eadd70ff621131"
+    )
+    legacy_material = (
+        appearance.get("particlefield_emissive_material_binding_authored") is True
+        and appearance.get("particlefield_emissive_material_inputs")
+        in ACCEPTED_PARTICLEFIELD_EMISSIVE_MATERIAL_INPUTS
+    )
     if (
         appearance.get("schema_version") != "particlefield_3dgs_authoring_receipt.v1"
         or appearance.get("status") != "completed"
@@ -170,9 +185,7 @@ def materialize_native_task_arena_appearance_variant_request(
         or appearance.get("sh_primvar_element_size") != sh_element_size
         or appearance.get("sh_primvar_interpolation") != "vertex"
         or appearance.get("display_color_fallback_authored") is not True
-        or appearance.get("particlefield_emissive_material_binding_authored") is not True
-        or appearance.get("particlefield_emissive_material_inputs")
-        not in ACCEPTED_PARTICLEFIELD_EMISSIVE_MATERIAL_INPUTS
+        or not (official_upstream or legacy_material)
         or not gaussian_quality_is_qualified(appearance.get("gaussian_field_quality"))
         or appearance.get("receipt_digest")
         != canonical_digest(appearance, digest_field="receipt_digest")
@@ -213,10 +226,19 @@ def materialize_native_task_arena_appearance_variant_request(
         "sh_primvar_element_size": sh_element_size,
         "sh_primvar_interpolation": "vertex",
         "display_color_fallback_authored": True,
-        "particlefield_emissive_material_binding_authored": True,
-        "particlefield_emissive_material_inputs": appearance[
-            "particlefield_emissive_material_inputs"
+        "particlefield_emissive_material_binding_authored": appearance[
+            "particlefield_emissive_material_binding_authored"
         ],
+        "particlefield_emissive_material_inputs": appearance.get(
+            "particlefield_emissive_material_inputs"
+        ),
+        "particlefield_custom_render_hints_authored": appearance.get(
+            "particlefield_custom_render_hints_authored"
+        ),
+        "particlefield_authoring_implementation": appearance.get(
+            "particlefield_authoring_implementation"
+        ),
+        "upstream_converter": appearance.get("upstream_converter"),
         "gaussian_field_quality": appearance["gaussian_field_quality"],
     }
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")

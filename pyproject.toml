@@ -41,6 +41,10 @@ dependencies = [
     # base must therefore carry usd-core; a geometry/dev-only declaration
     # makes the website dispatcher fail before it can classify any request.
     "usd-core>=24.0",
+    # Production ParticleField authoring follows NVIDIA's public converter
+    # instead of maintaining a second renderer-specific USD interpretation.
+    # Pin the exact release reviewed in NVIDIA_SIGGRAPH_2026_STACK_IMPACT.
+    "usd-convert-gsplat==0.1.15; python_version >= '3.11'",
     "numpy>=1.24.0",
     # Exact-camera frame registration uses scipy.spatial.cKDTree in the core
     # external-scene admission path, so this cannot be left to a transitive
