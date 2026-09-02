@@ -678,6 +678,87 @@ def test_selected_cell_queries_both_real_clients_and_seals_before_isaac_close(
     assert (child_root / "policy_canary_telemetry_index.json").is_file()
 
 
+def test_selected_cell_runs_native_mount_gate_before_loading_either_policy(
+    tmp_path: Path,
+) -> None:
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    child_root = provider_output / "cell_runs" / "00"
+    child_root.mkdir(parents=True)
+    packet_request = {
+        "wrist_camera_mount_registry": {
+            "schema_version": "policy_canary_wrist_camera_mount_registry.v1"
+        }
+    }
+    _write(
+        runtime_root / "native_task_packet" / worker.PACKET_REQUEST_FILENAME,
+        packet_request,
+    )
+    (
+        runtime_root
+        / "runtime_inputs"
+        / worker.OBSERVATION_INTEGRITY_AUTHORITY_FILENAME
+    ).unlink()
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    base_runtime = _rehearsal_runtime(isaac)
+    backend = worker.appearance_render_backend_from_plan(
+        _scene_plan(), packet_request=packet_request
+    )
+    events: list[str] = []
+
+    def camera_gate(**kwargs) -> dict[str, Any]:
+        events.append("camera_gate")
+        assert kwargs["packet_request"]["wrist_camera_mount_registry"]
+        assert kwargs["plan"]["scenario"]["cell_id"] == "cell-0"
+        value = {
+            "schema_version": "policy_canary_runtime_observation_integrity_gate.v1",
+            "status": "passed",
+            "run_kind": "internal_policy_canary",
+            "claim_ceiling": "diagnostic_policy_execution",
+            "appearance_render_backend_receipt_digest": backend[
+                "receipt_digest"
+            ],
+            "wrist_camera_mount_selection_digest": "sha256:" + "4" * 64,
+            "frame_structure_passed": True,
+            "target_semantic_visibility_passed": True,
+            "candidate_policy_loaded": False,
+            "candidate_policy_queried": False,
+            "official_ranking_permitted": False,
+            "scene_promotion_permitted": False,
+            "blockers": [],
+            "policy_observation_integrity_passed": True,
+            "gate_digest": "",
+        }
+        value["gate_digest"] = canonical_digest(value, digest_field="gate_digest")
+        return value
+
+    def policy_client(*args, **kwargs):
+        events.append("policy_load")
+        return base_runtime.policy_client(*args, **kwargs)
+
+    runtime = worker.CellRuntime(
+        **{
+            **base_runtime.__dict__,
+            "prepolicy_camera_gate": camera_gate,
+            "policy_client": policy_client,
+        }
+    )
+    with pytest.raises(SystemExit) as exited:
+        worker._run_selected_cell(
+            0,
+            runtime_root=runtime_root,
+            output_root=child_root,
+            provider_output_root=provider_output,
+            cell_runtime=runtime,
+        )
+    assert exited.value.code == 0
+    assert events[0] == "camera_gate"
+    assert events.count("policy_load") == 2
+    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+    assert result["preload_observation_gate"][
+        "policy_observation_integrity_passed"
+    ] is True
+
+
 def test_selected_cell_retains_real_policy_action_rejected_by_joint_limits(
     tmp_path: Path,
 ) -> None:
