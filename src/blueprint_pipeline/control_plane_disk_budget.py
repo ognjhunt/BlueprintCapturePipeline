@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import time
 import uuid
@@ -223,7 +224,20 @@ def reserve_control_plane_disk(
     ledger = _prepare_ledger_root(Path(reservation_root).expanduser())
     lock_path = ledger / ".lock"
     with lock_path.open("a+b") as lock:
-        os.chmod(lock_path, 0o660)
+        lock_mode = stat.S_IMODE(os.fstat(lock.fileno()).st_mode)
+        if lock_mode != 0o660:
+            try:
+                os.chmod(lock_path, 0o660)
+            except OSError as exc:
+                raise ControlPlaneDiskBudgetError(
+                    f"control_plane_disk_budget_lock_mode_invalid:{lock_mode:04o}"
+                ) from exc
+            installed_mode = stat.S_IMODE(os.fstat(lock.fileno()).st_mode)
+            if installed_mode != 0o660:
+                raise ControlPlaneDiskBudgetError(
+                    "control_plane_disk_budget_lock_mode_repair_failed:"
+                    f"{installed_mode:04o}"
+                )
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         ledger, usage, device, reserved, stale = _snapshot(
             target_root=target_root,

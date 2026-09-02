@@ -5,6 +5,7 @@ from collections import namedtuple
 
 import pytest
 
+from blueprint_pipeline import control_plane_disk_budget as disk_budget
 from blueprint_pipeline.control_plane_disk_budget import (
     ControlPlaneDiskBudgetError,
     disk_headroom,
@@ -14,6 +15,67 @@ from blueprint_pipeline.control_plane_disk_budget import (
 
 Usage = namedtuple("Usage", "total used free")
 GIB = 1024**3
+
+
+def test_preinstalled_group_writable_lock_is_not_rechmodded(
+    tmp_path, monkeypatch
+) -> None:
+    ledger = tmp_path / "ledger"
+    ledger.mkdir(mode=0o2770)
+    lock = ledger / ".lock"
+    lock.touch(mode=0o660)
+    lock.chmod(0o660)
+    original_chmod = disk_budget.os.chmod
+
+    def reject_lock_chmod(path, mode, **kwargs) -> None:
+        if path == lock:
+            raise PermissionError("root-owned correct lock must not be rechmodded")
+        original_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(disk_budget.os, "chmod", reject_lock_chmod)
+
+    reservation = reserve_control_plane_disk(
+        "launch_activation",
+        target_root=tmp_path,
+        expected_bytes=GIB,
+        reservation_root=ledger,
+        disk_usage=lambda _path: Usage(100 * GIB, 60 * GIB, 40 * GIB),
+        now=lambda: 100.0,
+        pid_alive=lambda _pid: True,
+    )
+
+    assert lock.stat().st_mode & 0o777 == 0o660
+    reservation.release()
+
+
+def test_unsafe_lock_mode_fails_closed_when_owner_rejects_repair(
+    tmp_path, monkeypatch
+) -> None:
+    ledger = tmp_path / "ledger"
+    ledger.mkdir(mode=0o2770)
+    lock = ledger / ".lock"
+    lock.touch(mode=0o640)
+    lock.chmod(0o640)
+    original_chmod = disk_budget.os.chmod
+
+    def reject_lock_chmod(path, mode, **kwargs) -> None:
+        if path == lock:
+            raise PermissionError("runtime account cannot chmod root-owned lock")
+        original_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(disk_budget.os, "chmod", reject_lock_chmod)
+
+    with pytest.raises(
+        ControlPlaneDiskBudgetError,
+        match="control_plane_disk_budget_lock_mode_invalid:0640",
+    ):
+        reserve_control_plane_disk(
+            "launch_activation",
+            target_root=tmp_path,
+            expected_bytes=GIB,
+            reservation_root=ledger,
+            disk_usage=lambda _path: Usage(100 * GIB, 60 * GIB, 40 * GIB),
+        )
 
 
 def test_reservation_accounts_for_live_concurrent_reservations(tmp_path) -> None:
