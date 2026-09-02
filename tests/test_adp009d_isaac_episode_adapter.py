@@ -35,6 +35,10 @@ from blueprint_pipeline.adp009d_isaac_episode_adapter import (
     signed_point_to_vertical_cylinder_clearance_m,
     validate_adapter_bindings,
 )
+from blueprint_pipeline.adp_task_scoring import (
+    TaskNeutralScoringError,
+    score_task_episode_from_spec,
+)
 
 
 def test_signed_cylinder_clearance_is_pose_aware_and_signed() -> None:
@@ -732,6 +736,92 @@ def test_gripper_width_is_probe_calibrated_physical_opening() -> None:
     )
 
 
+def test_scene839873_rigid_reset_compares_the_live_scoring_frame_not_asset_root() -> None:
+    """Production regression for seed 641681250's false 63.5 mm mismatch."""
+
+    task_object = _Can()
+    task_object.data.root_pose_w = np.array(
+        [[2.9742285, -6.7605156, 0.7548189972043038, 0.0, 0.0, 0.0, 1.0]],
+        dtype=float,
+    )
+    adapter = IsaacEpisodeAdapter(
+        env=_Env(),
+        robot=_Robot(),
+        rigid_task_object=task_object,
+        action_dim=8,
+        reset_seed=641681250,
+        to_torch=_to_torch,
+        gripper_closed_width_m=0.0,
+        gripper_open_width_m=0.06,
+        rigid_task_scoring_frame_offset={
+            "position_m": [0.0, 0.0, 0.06400000303983688],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+    )
+
+    sample = dict(adapter.read_object_sample())
+    expected_start = [2.9742285, -6.7605156, 0.818319]
+    assert sample["asset_root_pose_world"] == pytest.approx(
+        [2.9742285, -6.7605156, 0.7548189972043038, 0.0, 0.0, 0.0, 1.0]
+    )
+    assert sample["task_scoring_pose_world"] == pytest.approx(
+        [2.9742285, -6.7605156, 0.8188190002441407, 0.0, 0.0, 0.0, 1.0]
+    )
+    assert sample["task_object_pose_world"] == sample["task_scoring_pose_world"]
+    assert math.dist(sample["asset_root_pose_world"][:3], expected_start) == pytest.approx(
+        0.06350000279569623
+    )
+    assert math.dist(sample["task_object_pose_world"][:3], expected_start) == pytest.approx(
+        0.0005000002441407636
+    )
+
+    sample.update(
+        step_index=0,
+        task_contact_active=False,
+        support_contact_active=True,
+        robot_collision_failure=False,
+        scene_collision_failure=False,
+        containment_violation=False,
+        forbidden_robot_task_collision_failure=False,
+        locked_joint_containment_violation=False,
+    )
+    task_spec = {
+        "schema_version": "adp_task_spec.v2",
+        "task_kind": "rigid_pick_place",
+        "subject_asset_id": "scene_839873_mug_replacement",
+        "start_pose_world": [*expected_start, 0.0, 0.0, 0.0, 1.0],
+        "destination_position_bounds_world_m": {
+            "minimum": [3.0442285, -6.8105156, 0.808319],
+            "maximum": [3.1442285, -6.7105156, 0.828319],
+        },
+        "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "destination_orientation_tolerance_rad": 0.08,
+        "support_height_interval_m": [0.808319, 0.828319],
+        "minimum_translation_m": 0.1,
+        "minimum_lift_m": 0.0,
+        "movement_epsilon_m": 0.005,
+        "reset_translation_tolerance_m": 0.002,
+        "reset_orientation_tolerance_rad": 0.01,
+        "settle_window_samples": 1,
+        "settle_position_tolerance_m": 0.005,
+        "settle_orientation_tolerance_rad": 0.03,
+        "release_required": True,
+        "release_gripper_width_min_m": 0.06,
+        "task_contact_minimum_force_n": 0.5,
+    }
+    raw_root_sample = {**sample, "task_object_pose_world": sample["asset_root_pose_world"]}
+    with pytest.raises(
+        TaskNeutralScoringError,
+        match="rigid_task_reset_readback_mismatch",
+    ):
+        score_task_episode_from_spec(task_spec=task_spec, samples=[raw_root_sample])
+
+    report = score_task_episode_from_spec(task_spec=task_spec, samples=[sample])
+    assert report["measurements"]["reset_translation_error_m"] == pytest.approx(
+        0.0005000002441407636
+    )
+
+
 def test_linkage_overtravel_is_bounded_and_raw_measurement_is_retained() -> None:
     """Regression for v74 samples whose link origins exceeded the 85 mm stroke."""
 
@@ -1006,6 +1096,8 @@ def test_bindings_are_reported_and_drift_is_caught() -> None:
     assert bindings["finger_tool_frame_source"] == FINGER_TOOL_FRAME_SOURCE
     assert bindings["gripper_physical_full_opening_m"] == pytest.approx(0.085)
     assert bindings["raw_gripper_body_separation_retained"] is True
+    assert bindings["rigid_task_scoring_frame_offset_supported"] is True
+    assert bindings["rigid_task_asset_root_pose_retained"] is True
     assert bindings["isaaclab_pose_quaternion_order"] == "xyzw"
     assert bindings["droid_eef_body_name"] == DROID_EEF_BODY_NAME
     assert bindings["droid_eef_body_source"] == DROID_EEF_BODY_SOURCE
