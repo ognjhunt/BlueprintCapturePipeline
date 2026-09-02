@@ -55,6 +55,27 @@ class TaskEvaluationNativeArenaAdapterError(RuntimeError):
     """A customer adapter archive could not be admitted without mutation."""
 
 
+def control_search_warm_retention_requested(
+    *, packet_request: Mapping[str, Any], lane: str
+) -> bool:
+    """Admit warm retention only for a sealed no-allocation control search."""
+
+    feedback = packet_request.get("native_construction_feedback")
+    control_search = (
+        feedback.get("control_search") if isinstance(feedback, Mapping) else None
+    )
+    return bool(
+        lane == "native_task_arena_construction"
+        and isinstance(control_search, Mapping)
+        and control_search.get("enabled") is True
+        and control_search.get("claim_ceiling") == "development_only_control_search"
+        and control_search.get("provider_allocations_performed") == 0
+        and control_search.get("full_fidelity_replay_required") is True
+        and control_search.get("authority_digest")
+        == canonical_digest(control_search, digest_field="authority_digest")
+    )
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -774,5 +795,6 @@ __all__ = [
     "TaskEvaluationNativeArenaAdapterError",
     "build_task_evaluation_adapter_bundle",
     "build_task_evaluation_runtime_source_bundle",
+    "control_search_warm_retention_requested",
     "materialize_native_arena_adapter",
 ]

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import hashlib
 import json
 import os
 import pwd
@@ -26,6 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .core.common import sha256_file as _sha256_file_hex
 from .decision_evidence_contracts import canonical_digest
 from . import control_plane_disk_budget as disk_budget
 from .task_evaluation_configured_scene_revision import (
@@ -65,6 +65,7 @@ from .task_evaluation_policy_run_contract import (
 )
 from .task_evaluation_native_arena_preparation_adapter import (
     RESULT_SCHEMA_VERSION as ADAPTER_RESULT_SCHEMA_VERSION,
+    control_search_warm_retention_requested as _control_search_warm_retention_requested,
 )
 from .task_evaluation_shared_mutation_window import (
     TaskEvaluationSharedMutationWindowError,
@@ -156,11 +157,7 @@ def validate_release_window_uri(uri: str, *, prefix: str) -> str:
 
 
 def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+    return "sha256:" + _sha256_file_hex(path)
 
 
 def _load_sealed(
@@ -654,22 +651,6 @@ def _read_json(path: Path, *, blocker: str) -> dict[str, Any]:
     if path.is_symlink() or not path.is_file() or not isinstance(value, Mapping):
         raise TaskEvaluationLaunchActivationWorkerError(blocker)
     return dict(value)
-
-
-def _control_search_warm_retention_requested(*, packet_request: Mapping[str, Any], lane: str) -> bool:
-    feedback = packet_request.get("native_construction_feedback")
-    control_search = feedback.get("control_search") if isinstance(feedback, Mapping) else None
-    return bool(
-        lane == "native_task_arena_construction"
-        and isinstance(control_search, Mapping)
-        and control_search.get("enabled") is True
-        and control_search.get("claim_ceiling") == "development_only_control_search"
-        and control_search.get("provider_allocations_performed") == 0
-        and control_search.get("full_fidelity_replay_required") is True
-        and control_search.get("authority_digest") == canonical_digest(
-            control_search, digest_field="authority_digest"
-        )
-    )
 
 
 def _build_native_context(
