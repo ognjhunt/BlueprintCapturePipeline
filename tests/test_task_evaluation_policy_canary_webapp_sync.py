@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from blueprint_pipeline.decision_evidence_contracts import (
     cross_runtime_canonical_digest,
 )
@@ -9,6 +11,7 @@ from blueprint_pipeline.task_evaluation_policy_canary_result import (
     validate_policy_canary_result,
 )
 from blueprint_pipeline.task_evaluation_run_webapp_sync import (
+    build_task_evaluation_policy_canary_webapp_publication,
     sync_policy_canary_preprovider_blocked_to_webapp,
     sync_task_evaluation_policy_canary_to_webapp,
 )
@@ -103,6 +106,33 @@ def _projection() -> tuple[dict[str, object], dict[str, object]]:
         result, digest_field="projection_digest"
     )
     return delivery, validate_policy_canary_result(result)
+
+
+def test_policy_canary_publication_refuses_oversized_inline_delivery() -> None:
+    delivery, result = _projection()
+    delivery["oversized_inline_padding"] = "x" * 4_000_000
+    delivery["delivery_digest"] = cross_runtime_canonical_digest(
+        delivery, digest_field="delivery_digest"
+    )
+    result["result_delivery_digest"] = delivery["delivery_digest"]
+    result["projection_digest"] = cross_runtime_canonical_digest(
+        result, digest_field="projection_digest"
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="task_evaluation_policy_canary_publication_too_large",
+    ):
+        build_task_evaluation_policy_canary_webapp_publication(
+            capture_session_id="capture-1",
+            intake_id="intake-1",
+            run_id=delivery["run_id"],
+            request_digest=result["request_digest"],
+            configuration_digest=result["configuration_digest"],
+            result_status=result["result_status"],
+            result_delivery=delivery,
+            policy_canary_result=result,
+        )
 
 
 def test_blocked_episode_does_not_count_as_completed_rollout() -> None:

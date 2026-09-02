@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import time
@@ -38,6 +39,8 @@ TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV = (
 )
 _TERMINAL_STATES = {"decided", "partially_decided", "abstained"}
 _CANARY_TERMINAL_STATES = {"completed_unqualified", "blocked", "cancelled"}
+_CANARY_PUBLICATION_RAW_MAX_BYTES = 4_000_000
+_CANARY_PUBLICATION_GZIP_MAX_BYTES = 850_000
 
 
 def _text(value: Any) -> str:
@@ -186,7 +189,7 @@ def build_task_evaluation_policy_canary_webapp_publication(
         or canary["result_delivery_digest"] != delivery["delivery_digest"]
     ):
         raise ValueError("task_evaluation_policy_canary_result_binding_mismatch")
-    return {
+    publication = {
         "schema_version": "task_evaluation_run_publication.v4",
         "capture_session_id": session,
         "intake_id": intake,
@@ -208,6 +211,14 @@ def build_task_evaluation_policy_canary_webapp_publication(
             "deployment_or_safety_approved": False,
         },
     }
+    body = json.dumps(publication, separators=(",", ":")).encode("utf-8")
+    if (
+        len(body) > _CANARY_PUBLICATION_RAW_MAX_BYTES
+        or len(gzip.compress(body, compresslevel=9, mtime=0))
+        > _CANARY_PUBLICATION_GZIP_MAX_BYTES
+    ):
+        raise ValueError("task_evaluation_policy_canary_publication_too_large")
+    return publication
 
 
 def sync_task_evaluation_run_to_webapp(

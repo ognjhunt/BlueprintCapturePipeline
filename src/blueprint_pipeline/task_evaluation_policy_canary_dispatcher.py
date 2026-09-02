@@ -56,6 +56,7 @@ from .task_evaluation_result_delivery import (
     POLICY_CANARY_DELIVERY_SCHEMA_VERSION,
     TaskEvaluationResultDeliveryError,
     materialize_policy_canary_result_delivery,
+    materialize_policy_canary_website_delivery,
 )
 from .task_evaluation_run_webapp_sync import (
     sync_policy_canary_preprovider_blocked_to_webapp,
@@ -666,7 +667,15 @@ def _finish_policy_canary_delivery(
 ) -> dict[str, Any]:
     """Publish one already sealed delivery without re-entering provider closeout."""
 
-    projection = _projection(setup=setup, result=joined, delivery=delivery)
+    website_delivery = materialize_policy_canary_website_delivery(
+        run_root=root,
+        delivery=delivery,
+    )
+    projection = _projection(
+        setup=setup,
+        result=joined,
+        delivery=website_delivery,
+    )
     _event_and_sync(
         root,
         stage="report_generating",
@@ -683,7 +692,7 @@ def _finish_policy_canary_delivery(
             request_digest=setup["request_digest"],
             configuration_digest=runtime_inputs["configuration_digest"],
             result_status=str(joined["status"]),
-            result_delivery=delivery,
+            result_delivery=website_delivery,
             policy_canary_result=projection,
         )
     )
@@ -712,7 +721,7 @@ def _finish_policy_canary_delivery(
         "authority_digest": authority["authority_digest"],
         "bundle_sha256": bundle["bundle_sha256"],
         "terminal_result": _record(joined_path),
-        "result_delivery_digest": delivery["delivery_digest"],
+        "result_delivery_digest": website_delivery["delivery_digest"],
         "policy_canary_projection_digest": projection["projection_digest"],
         "notification_delivery": sync["notification_delivery"],
         "official_billing": closure["billing"],

@@ -18,6 +18,7 @@ import shutil
 import tempfile
 import zipfile
 from collections.abc import Mapping
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,8 @@ from .decision_evidence_contracts import (
 DELIVERY_SCHEMA_VERSION = "task_evaluation_result_delivery.v1"
 POLICY_CANARY_DELIVERY_SCHEMA_VERSION = "task_evaluation_result_delivery.v2"
 REGISTRY_SCHEMA_VERSION = "task_evaluation_result_artifact_registry.v1"
+POLICY_CANARY_INLINE_TIMELINE_MAX_SAMPLES = 64
+POLICY_CANARY_INLINE_OMITTED_ARTIFACT_ROLES = frozenset({"episode_evidence"})
 _FIXED_ZIP_TIME = (2020, 1, 1, 0, 0, 0)
 
 
@@ -170,6 +173,143 @@ def _write_zip_immutable(path: Path, files: list[tuple[str, bytes | Path]]) -> N
             os.replace(temporary_path, path)
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+def _compact_policy_canary_timeline(timeline: Any) -> tuple[list[Any], dict[str, Any]]:
+    if not isinstance(timeline, list):
+        return [], {
+            "source_sample_count": 0,
+            "inline_sample_count": 0,
+        }
+    count = len(timeline)
+    if count <= POLICY_CANARY_INLINE_TIMELINE_MAX_SAMPLES:
+        return deepcopy(timeline), {
+            "source_sample_count": count,
+            "inline_sample_count": count,
+        }
+
+    required = {0, count - 1}
+    required.update(
+        index
+        for index, row in enumerate(timeline)
+        if isinstance(row, Mapping) and row.get("scoring_state") is not None
+    )
+    for field in ("action", "force_newtons"):
+        previous = False
+        for index, row in enumerate(timeline):
+            present = isinstance(row, Mapping) and row.get(field) is not None
+            if present != previous:
+                required.add(index)
+                if index:
+                    required.add(index - 1)
+            previous = present
+    if len(required) > POLICY_CANARY_INLINE_TIMELINE_MAX_SAMPLES:
+        raise TaskEvaluationResultDeliveryError(
+            "policy_canary_inline_timeline_event_count_exceeds_limit"
+        )
+    available = [index for index in range(count) if index not in required]
+    needed = min(
+        POLICY_CANARY_INLINE_TIMELINE_MAX_SAMPLES - len(required),
+        len(available),
+    )
+    selected = set(required)
+    for offset in range(needed):
+        selected.add(available[((2 * offset + 1) * len(available)) // (2 * needed)])
+    indices = sorted(selected)
+    return [deepcopy(timeline[index]) for index in indices], {
+        "source_sample_count": count,
+        "inline_sample_count": len(indices),
+    }
+
+
+def compact_policy_canary_website_delivery(
+    delivery: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Derive a bounded inline delivery while retaining full evidence by reference."""
+
+    value = json.loads(json.dumps(dict(delivery), allow_nan=False))
+    if (
+        value.get("schema_version") != POLICY_CANARY_DELIVERY_SCHEMA_VERSION
+        or value.get("delivery_digest")
+        != cross_runtime_canonical_digest(value, digest_field="delivery_digest")
+    ):
+        raise TaskEvaluationResultDeliveryError(
+            "policy_canary_source_delivery_invalid"
+        )
+    if isinstance(value.get("inline_compaction"), Mapping):
+        return value
+    artifacts = value.get("artifacts")
+    episodes = value.get("episodes")
+    if not isinstance(artifacts, list) or not isinstance(episodes, list):
+        raise TaskEvaluationResultDeliveryError(
+            "policy_canary_source_delivery_invalid"
+        )
+    source_delivery_digest = value["delivery_digest"]
+    inline_artifacts = [
+        artifact
+        for artifact in artifacts
+        if not (
+            isinstance(artifact, Mapping)
+            and artifact.get("role") in POLICY_CANARY_INLINE_OMITTED_ARTIFACT_ROLES
+        )
+    ]
+    compact_episodes: list[dict[str, Any]] = []
+    source_timeline_samples = 0
+    inline_timeline_samples = 0
+    for episode in episodes:
+        if not isinstance(episode, Mapping):
+            raise TaskEvaluationResultDeliveryError(
+                "policy_canary_source_delivery_invalid"
+            )
+        compact_episode = deepcopy(dict(episode))
+        timeline, counts = _compact_policy_canary_timeline(episode.get("timeline"))
+        compact_episode["timeline"] = timeline
+        compact_episode["timeline_projection"] = {
+            "schema_version": "task_evaluation_policy_canary_timeline_projection.v1",
+            "algorithm": "uniform_64_with_endpoints_and_terminal_events",
+            "max_inline_samples": POLICY_CANARY_INLINE_TIMELINE_MAX_SAMPLES,
+            **counts,
+            "full_timeline_sources": [
+                "evidence.episode_json",
+                "action_delivery.returned_action_sequence",
+                "traces.state",
+                "traces.contact_force",
+                "traces.task_object_trajectory",
+            ],
+        }
+        source_timeline_samples += counts["source_sample_count"]
+        inline_timeline_samples += counts["inline_sample_count"]
+        compact_episodes.append(compact_episode)
+    value["artifacts"] = inline_artifacts
+    value["episodes"] = compact_episodes
+    value["inline_compaction"] = {
+        "schema_version": "task_evaluation_policy_canary_inline_compaction.v1",
+        "source_delivery_digest": source_delivery_digest,
+        "omitted_artifact_roles": sorted(POLICY_CANARY_INLINE_OMITTED_ARTIFACT_ROLES),
+        "source_artifact_count": len(artifacts),
+        "inline_artifact_count": len(inline_artifacts),
+        "omitted_artifact_count": len(artifacts) - len(inline_artifacts),
+        "source_timeline_sample_count": source_timeline_samples,
+        "inline_timeline_sample_count": inline_timeline_samples,
+        "full_artifact_inventory": "report.evidence_manifest",
+        "full_artifact_registry": "artifact_registry.json",
+    }
+    value["delivery_digest"] = cross_runtime_canonical_digest(
+        value, digest_field="delivery_digest"
+    )
+    return value
+
+
+def materialize_policy_canary_website_delivery(
+    *, run_root: str | Path, delivery: Mapping[str, Any]
+) -> dict[str, Any]:
+    compact = compact_policy_canary_website_delivery(delivery)
+    root = Path(run_root).expanduser().resolve()
+    _write_immutable(
+        root / "artifacts" / "result_delivery" / "website_delivery.json",
+        (canonical_json(compact) + "\n").encode("utf-8"),
+    )
+    return compact
 
 
 def _scenario_csv(episodes: list[Mapping[str, Any]]) -> bytes:
@@ -1265,9 +1405,12 @@ def materialize_policy_canary_result_delivery(
 
 __all__ = [
     "DELIVERY_SCHEMA_VERSION",
+    "POLICY_CANARY_INLINE_TIMELINE_MAX_SAMPLES",
     "POLICY_CANARY_DELIVERY_SCHEMA_VERSION",
     "TaskEvaluationResultDeliveryError",
+    "compact_policy_canary_website_delivery",
     "materialize_policy_canary_result_delivery",
+    "materialize_policy_canary_website_delivery",
     "materialize_task_evaluation_result_delivery",
     "resolve_task_evaluation_result_artifact",
 ]

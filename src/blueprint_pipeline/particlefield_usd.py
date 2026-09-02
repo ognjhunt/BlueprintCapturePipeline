@@ -45,6 +45,8 @@ from .nurec_volume_codec import (
 
 PARTICLEFIELD_SCHEMA = "ParticleField3DGaussianSplat"
 PARTICLEFIELD_RECEIPT_SCHEMA_VERSION = "particlefield_3dgs_authoring_receipt.v1"
+SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR = "inria_channel_major"
+SH_REST_LAYOUT_COEFFICIENT_MAJOR = "coefficient_major_rgb_triplets"
 PARTICLEFIELD_REFERENCE_CONVERTERS = {
     "openusd_py3dgs_ply_to_usd": (
         "https://github.com/PixarAnimationStudios/OpenUSD/blob/"
@@ -75,6 +77,17 @@ _GAUSSIAN_SURFLET_SCHEMA_MEMBERS = (
 # back as a display colour: colour = 0.5 + C0 * dc.
 SH_C0 = 0.28209479177387814
 
+#: Standard 3DGS / 2DGS spherical harmonics are display-referred sRGB.  The
+#: bound ParticleFieldEmissive shader must linearise them so RTX's display
+#: transform round-trips them; nothing inverse-tonemaps because ParticleField
+#: prims are composited after the tonemapper.
+PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS: dict[str, bool] = {
+    "apply_srgb_linear": True,
+    "apply_inverse_tonemap": False,
+}
+PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS_LABEL = "display_referred_srgb"
+
+
 # The structural Z extent, as a fraction of the smaller learned planar extent.
 # Flat has to be relative: a constant epsilon would be thicker than wide for the
 # smallest surfels in this field, which is the bug it replaces at a new scale.
@@ -94,11 +107,17 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
     return np.where(np.isneginf(x), 0.0, result)
 
 
-def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None = None) -> dict:
+def build_particlefield_arrays(
+    splat: SplatData,
+    *,
+    sh_rest: np.ndarray | None = None,
+    sh_rest_layout: str = SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR,
+) -> dict:
     """Compute the ParticleField attribute arrays from standard 3DGS data (pure numpy).
 
-    Returns float32 arrays ready for USD authoring. ``sh_rest`` (N, 45) higher-order SH,
-    INRIA channel-major layout, is optional; without it the field is degree-0 (DC only).
+    Returns float32 arrays ready for USD authoring. ``sh_rest`` (N, 45)
+    higher-order SH is optional and its source layout must be declared when it
+    is not INRIA PLY channel-major; without it the field is degree-0 (DC only).
     """
     if isinstance(splat.count, bool) or splat.count < 1:
         raise ValueError("particlefield_splat_count_invalid")
@@ -135,8 +154,18 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
         if rest.ndim != 2 or rest.shape[0] != n or rest.shape[1] % 3 or not np.isfinite(rest).all():
             raise ValueError("particlefield_sh_rest_invalid")
         n_rest = rest.shape[1] // 3
-        # INRIA f_rest is channel-major: [R*n_rest, G*n_rest, B*n_rest] -> (n, n_rest, 3)
-        rest = rest.reshape(n, 3, n_rest).transpose(0, 2, 1)
+        if sh_rest_layout == SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR:
+            # INRIA PLY f_rest is channel-major:
+            # [R*n_rest, G*n_rest, B*n_rest] -> (n, n_rest, 3).
+            rest = rest.reshape(n, 3, n_rest).transpose(0, 2, 1)
+        elif sh_rest_layout == SH_REST_LAYOUT_COEFFICIENT_MAJOR:
+            # NuRec stores the model tensor directly as RGB triplets per SH
+            # coefficient. Applying the INRIA transpose to this array moves
+            # channels and coefficients, producing view-dependent chromatic
+            # splat artifacts even though every scalar value is preserved.
+            rest = rest.reshape(n, n_rest, 3)
+        else:
+            raise ValueError("particlefield_sh_rest_layout_invalid")
         coeffs = np.concatenate([dc, rest], axis=1)  # (n, 1+n_rest, 3)
         total = coeffs.shape[1]
         degree = int(round(total ** 0.5)) - 1
@@ -162,6 +191,9 @@ def build_particlefield_arrays(splat: SplatData, *, sh_rest: np.ndarray | None =
         "sh_coefficients": sh,
         "sh_degree": degree,
         "sh_element_size": int((degree + 1) ** 2),
+        "source_sh_rest_layout": (
+            sh_rest_layout if sh_rest is not None and np.asarray(sh_rest).size else None
+        ),
         "display_colors": display_colors,
         "extent": extent,
         "positive_infinite_opacity_logit_count": int(np.isposinf(raw_opacity).sum()),
@@ -387,11 +419,13 @@ def write_gaussian_surflet_particlefield_usd(
     shader.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set(
         "ParticleFieldEmissive"
     )
+    # Aura's 2DGS colours are trained on sRGB frames too: linearise them so
+    # the display transform round-trips them instead of encoding them twice.
     shader.CreateAttribute(
         "inputs:apply_inverse_tonemap", Sdf.ValueTypeNames.Bool, custom=True
-    ).Set(False)
+    ).Set(PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS["apply_inverse_tonemap"])
     shader.CreateAttribute("inputs:apply_srgb_linear", Sdf.ValueTypeNames.Bool, custom=True).Set(
-        False
+        PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS["apply_srgb_linear"]
     )
     shader.CreateAttribute("outputs:out", Sdf.ValueTypeNames.Token, custom=True)
     for output_name in ("mdl:displacement", "mdl:surface", "mdl:volume"):
@@ -426,9 +460,14 @@ def write_gaussian_surflet_particlefield_usd(
             "path": material_path,
             "shader": "ParticleFieldEmissive.mdl",
             "sub_identifier": "ParticleFieldEmissive",
-            "apply_inverse_tonemap": False,
-            "apply_srgb_linear": False,
+            "apply_inverse_tonemap": PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS[
+                "apply_inverse_tonemap"
+            ],
+            "apply_srgb_linear": PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS[
+                "apply_srgb_linear"
+            ],
             "basis": "official_isaac_lab_gaussian_camera_test_asset",
+            "colour_space": "display_referred_srgb",
         },
         "sealed_source_mutated": False,
         "proof_boundary": "OpenUSD Gaussian-surflet authoring only; live OVRTX rendering remains required.",
@@ -444,6 +483,7 @@ def write_particlefield_usd(
     out_path: str | Path,
     *,
     sh_rest: np.ndarray | None = None,
+    sh_rest_layout: str = SH_REST_LAYOUT_INRIA_CHANNEL_MAJOR,
     prim_path: str = "/World/CapturedScene/Gaussians",
     up_axis: str = "Z",
     sorting_mode: str = "zDepth",
@@ -484,7 +524,11 @@ def write_particlefield_usd(
             }
     splat = source if isinstance(source, SplatData) else read_standard_3dgs_ply(source_path)
     effective_sh_rest = sh_rest if sh_rest is not None else splat.sh_rest
-    arr = build_particlefield_arrays(splat, sh_rest=effective_sh_rest)
+    arr = build_particlefield_arrays(
+        splat,
+        sh_rest=effective_sh_rest,
+        sh_rest_layout=sh_rest_layout,
+    )
     field_quality = measure_gaussian_field_quality(
         positions=arr["positions"],
         activated_scales=arr["scales"],
@@ -579,12 +623,18 @@ def write_particlefield_usd(
     )
     display_color.Set(vec3f(arr["display_colors"]))
 
-    # Match Isaac Lab's own known-working Gaussian camera fixture.  The
-    # ParticleField schema carries geometry/radiance attributes, but the RTX
-    # camera path still needs the emissive MDL bound to turn those attributes
-    # into renderable radiance.  Leave its inputs at MDL defaults: the Isaac
-    # Lab PPISP test overrides them only because that test installs a separate
-    # ISP authority, which this normal LDR camera path does not.
+    # Bind the emissive MDL Isaac Lab's Gaussian camera fixture binds, but
+    # declare the field's colour space on it.  Standard 3DGS spherical
+    # harmonics are trained on sRGB photographs and are display-referred;
+    # left at the MDL default the material emitted them as linear radiance
+    # and the display transform encoded them a second time (scene-839873
+    # f23e2100: rendered frames decoded once from sRGB matched the field's own
+    # DC luminance percentiles, while the raw frames were pale and washed
+    # out).  ``apply_srgb_linear`` makes the shader linearise the field so the
+    # display transform round-trips it; no inverse tonemap because RTX
+    # composites ParticleField prims after the tonemapper (as-is).  3dgrut's
+    # PPISP exporter sets the same flag False only because it converts the SH
+    # to linear itself first.
     material_path = f"{prim.GetParent().GetPath()}/Looks/ParticleFieldEmissive"
     shader_path = f"{material_path}/Shader"
     material = stage.DefinePrim(material_path, "Material")
@@ -596,6 +646,10 @@ def write_particlefield_usd(
     shader.CreateAttribute("info:mdl:sourceAsset:subIdentifier", Sdf.ValueTypeNames.Token).Set(
         "ParticleFieldEmissive"
     )
+    for input_name, input_value in PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS.items():
+        shader.CreateAttribute(
+            f"inputs:{input_name}", Sdf.ValueTypeNames.Bool, custom=True
+        ).Set(input_value)
     shader.CreateAttribute("outputs:out", Sdf.ValueTypeNames.Token, custom=True)
     for output_name in ("mdl:displacement", "mdl:surface", "mdl:volume"):
         material.CreateAttribute(f"outputs:{output_name}", Sdf.ValueTypeNames.Token).AddConnection(
@@ -636,9 +690,15 @@ def write_particlefield_usd(
         "sh_degree": arr["sh_degree"],
         "sh_primvar_element_size": arr["sh_element_size"],
         "sh_primvar_interpolation": "vertex",
+        "source_sh_rest_layout": arr["source_sh_rest_layout"],
         "display_color_fallback_authored": True,
         "particlefield_emissive_material_binding_authored": True,
-        "particlefield_emissive_material_inputs": "mdl_defaults",
+        "particlefield_emissive_material_inputs": (
+            PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS_LABEL
+        ),
+        "particlefield_emissive_material_input_values": dict(
+            PARTICLEFIELD_DISPLAY_REFERRED_MATERIAL_INPUTS
+        ),
         "particlefield_emissive_material_path": material_path,
         "reference_converters": PARTICLEFIELD_REFERENCE_CONVERTERS,
         "prim_path": prim_path,
@@ -773,6 +833,7 @@ def write_particlefield_usd_from_nurec(
         splat,
         out_path,
         sh_rest=splat.sh_rest,
+        sh_rest_layout=SH_REST_LAYOUT_COEFFICIENT_MAJOR,
         layer_transform_row_major=transform,
     )
     if result.get("status") != "completed":
@@ -783,6 +844,7 @@ def write_particlefield_usd_from_nurec(
         source_nurec_payload_sha256=_sha256_bytes(payload),
         source_nurec_prim_path=source_prim_path,
         source_nurec_description=description,
+        source_nurec_sh_rest_layout=SH_REST_LAYOUT_COEFFICIENT_MAJOR,
         exact_learned_arrays_preserved=True,
         representation_conversion_only=True,
         proof_boundary=(

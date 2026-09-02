@@ -277,6 +277,10 @@ def test_materialized_delivery_resume_retries_only_website_publication(
         "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_vast_official_same_goal_reconciliation",
         lambda _path: {},
     )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.materialize_policy_canary_website_delivery",
+        lambda *, run_root, delivery: dict(delivery),
+    )
     sync_calls = []
 
     receipt = _resume_materialized_policy_canary_delivery(
@@ -764,6 +768,10 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
     monkeypatch.setattr(
         "blueprint_pipeline.task_evaluation_policy_canary_dispatcher._projection",
         lambda **_kwargs: {"projection_digest": "sha256:" + "e" * 64},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.materialize_policy_canary_website_delivery",
+        lambda *, run_root, delivery: dict(delivery),
     )
     third = dispatch_policy_canary_activation(
         activation_result_path=activation_result,

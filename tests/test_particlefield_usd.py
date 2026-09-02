@@ -119,6 +119,29 @@ def test_full_sh_layout_degree3() -> None:
     np.testing.assert_allclose(arr["display_colors"], expected_display, rtol=1e-6)
 
 
+def test_nurec_coefficient_major_sh_layout_is_not_transposed_as_inria_ply() -> None:
+    n = 4
+    splat, _ = _splat(n)
+    rest = np.zeros((n, 45), dtype=np.float32)
+    for coefficient in range(15):
+        rest[:, coefficient * 3 : coefficient * 3 + 3] = [
+            coefficient + 1,
+            100 + coefficient + 1,
+            200 + coefficient + 1,
+        ]
+
+    arr = build_particlefield_arrays(
+        splat,
+        sh_rest=rest,
+        sh_rest_layout=particlefield_usd.SH_REST_LAYOUT_COEFFICIENT_MAJOR,
+    )
+    coeffs = arr["sh_coefficients"].reshape(n, 16, 3)
+
+    np.testing.assert_allclose(coeffs[0, 1, :], [1.0, 101.0, 201.0])
+    np.testing.assert_allclose(coeffs[0, 15, :], [15.0, 115.0, 215.0])
+    assert arr["source_sh_rest_layout"] == "coefficient_major_rgb_triplets"
+
+
 def test_extent_is_aabb() -> None:
     splat, _ = _splat(20)
     arr = build_particlefield_arrays(splat)
@@ -184,13 +207,19 @@ def test_path_source_is_digest_bound_and_authors_default_prim(
     assert result["sh_primvar_interpolation"] == "vertex"
     assert result["display_color_fallback_authored"] is True
     assert result["particlefield_emissive_material_binding_authored"] is True
-    assert result["particlefield_emissive_material_inputs"] == "mdl_defaults"
+    assert result["particlefield_emissive_material_inputs"] == "display_referred_srgb"
+    assert result["particlefield_emissive_material_input_values"] == {
+        "apply_srgb_linear": True,
+        "apply_inverse_tonemap": False,
+    }
     binding = prim.GetRelationship("material:binding").GetTargets()
     assert [str(path) for path in binding] == [result["particlefield_emissive_material_path"]]
     shader = stage.GetPrimAtPath(result["particlefield_emissive_material_path"] + "/Shader")
     assert shader.GetAttribute("info:mdl:sourceAsset").Get().path == ("ParticleFieldEmissive.mdl")
-    assert not shader.GetAttribute("inputs:apply_inverse_tonemap")
-    assert not shader.GetAttribute("inputs:apply_srgb_linear")
+    # Display-referred sRGB field: the shader linearises it so RTX's display
+    # transform round-trips it instead of encoding it twice.
+    assert shader.GetAttribute("inputs:apply_inverse_tonemap").Get() is False
+    assert shader.GetAttribute("inputs:apply_srgb_linear").Get() is True
 
 
 @pytest.mark.skipif(not _HAS_PXR, reason="usd-core unavailable")
@@ -218,6 +247,8 @@ def test_path_source_digest_mismatch_fails_before_authoring(
 def test_nurec_is_represented_as_particlefield_without_changing_gaussians(
     tmp_path: Path,
 ) -> None:
+    from pxr import Usd
+
     from blueprint_pipeline.native_task_appearance_frame_alignment import (
         measure_native_task_appearance_frame,
     )
@@ -271,6 +302,9 @@ def test_nurec_is_represented_as_particlefield_without_changing_gaussians(
     assert result["source_sha256"] == source_sha256
     assert result["exact_learned_arrays_preserved"] is True
     assert result["representation_conversion_only"] is True
+    assert result["source_nurec_sh_rest_layout"] == (
+        "coefficient_major_rgb_triplets"
+    )
     assert result["splat_count"] == splat.count
     assert json.loads(receipt_path.read_text(encoding="utf-8")) == result
     before = measure_native_task_appearance_frame(source)
@@ -278,6 +312,16 @@ def test_nurec_is_represented_as_particlefield_without_changing_gaussians(
     assert before["representation"] == "nurec_volume"
     assert after["representation"] == "particlefield_3d_gaussian_splat"
     assert after["gaussian_count"] == before["gaussian_count"]
+    stage = Usd.Stage.Open(str(output))
+    prim = stage.GetPrimAtPath(result["prim_path"])
+    authored_sh = np.asarray(
+        prim.GetAttribute("radiance:sphericalHarmonicsCoefficients").Get()
+    ).reshape(splat.count, 16, 3)
+    expected_sh = np.concatenate(
+        [splat.f_dc[:, None, :], rest.reshape(splat.count, 15, 3)],
+        axis=1,
+    )
+    np.testing.assert_array_equal(authored_sh, expected_sh)
     np.testing.assert_allclose(
         after["stored_tensor_occupied_bounds_m"]["minimum"],
         before["stored_tensor_occupied_bounds_m"]["minimum"],
