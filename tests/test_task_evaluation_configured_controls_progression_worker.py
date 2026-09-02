@@ -416,6 +416,38 @@ def test_one_shot_adoption_registry_targets_only_its_legacy_launch(
     assert observed["intent_path_override"] != automatic_path
 
 
+def test_process_plans_does_not_forward_canary_only_compilation_root_to_controls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_root = tmp_path / "plans"
+    _write(plan_root / "configured-controls.json", {"schema_version": "test.plan.v1"})
+    launch_root = tmp_path / "launch-runs"
+    launch_root.mkdir()
+    observed: dict[str, object] = {}
+
+    def advance(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "controls_activation_queued"}
+
+    monkeypatch.setattr(worker, "advance_configured_controls_plan", advance)
+    report = worker.process_plans(
+        plan_root=plan_root,
+        autostart_intent_root=tmp_path / "intents",
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progression",
+        preparation_queue_root=tmp_path / "preparations",
+        episode_compilation_queue_root=tmp_path / "compilations",
+        activation_queue_root=tmp_path / "activations",
+        repo_root=tmp_path / "repo",
+        webapp_secret_file=tmp_path / "secret",
+    )
+
+    assert report["status"] == "completed"
+    assert observed["plan_path"] == plan_root / "configured-controls.json"
+    assert "episode_compilation_queue_root" not in observed
+
+
 def _seal_plan(plan: dict[str, object]) -> None:
     paths: dict[str, Path] = {}
 
