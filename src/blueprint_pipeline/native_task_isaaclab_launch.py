@@ -43,13 +43,27 @@ NATIVE_TASK_ARENA_NUREC_SCHEMA = "OmniNuRecFieldAsset"
 NATIVE_TASK_ARENA_NUREC_RENDER_PATH = "plain_nurec_volume"
 NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH = "particlefield_3d_gaussian_splat"
 NATIVE_TASK_ARENA_UJITSO_GEOMETRY_SETTING = "/UJITSO/geometry"
+# Omniverse RTX composites ParticleField prims "as-is": their light fields are
+# display-referred sRGB and the tonemapping pipeline is skipped for them
+# (Omniverse Materials and Rendering, "Gaussian Splats (Particle Fields)").
+# NVIDIA's shipped ``nurec_config.yaml`` forces this flag off only for PPISP
+# (``info:spg:sourceAsset``) stages and leaves plain gaussians at the engine
+# default.  This lane forced it off at launch from 2026-08-20, and every world
+# camera then rendered the sealed splat as linear radiance up to 60x display
+# white (scene-839873 r13 construction receipt: 22-24 percent of world-camera
+# pixels above 1.0, p99 = 20).  The LDR annotator clamps those per channel
+# into white blobs with chromatic fringes, and that clamp is the exact frame
+# the policies were fed.  The flag is therefore never forced here, and the
+# launch receipt refuses a runtime that reports it forced off.
+NATIVE_TASK_ARENA_GAUSSIAN_SKIP_TONEMAPPING_SETTING = (
+    "/rtx/rtpt/gaussian/skipTonemapping/enabled"
+)
 NATIVE_TASK_ARENA_KIT_ARGS = (
     "--enable isaacsim.replicator.nurec_utils "
     "--enable omni.rtx.spg "
     "--enable isaacsim.robot_motion.pink "
     "--/UJITSO/geometry=true "
-    "--/renderer/multiGpu/enabled=false "
-    "--/rtx/rtpt/gaussian/skipTonemapping/enabled=false"
+    "--/renderer/multiGpu/enabled=false"
 )
 
 SCHEMA_VERSION = "native_task_isaaclab_launch.v1"
@@ -351,6 +365,9 @@ def launch_native_task_isaaclab(
                 "multi_gpu_enabled": settings.get(
                     "/renderer/multiGpu/enabled"
                 ),
+                "gaussian_skip_tonemapping_enabled": settings.get(
+                    NATIVE_TASK_ARENA_GAUSSIAN_SKIP_TONEMAPPING_SETTING
+                ),
                 "schema_registered": (
                     Usd.SchemaRegistry().FindConcretePrimDefinition(
                         NATIVE_TASK_ARENA_NUREC_SCHEMA
@@ -391,6 +408,14 @@ def launch_native_task_isaaclab(
         "ujitso_geometry_enabled": raw_nurec.get("ujitso_geometry_enabled")
         is True,
         "multi_gpu_enabled": raw_nurec.get("multi_gpu_enabled"),
+        "gaussian_skip_tonemapping_setting": (
+            NATIVE_TASK_ARENA_GAUSSIAN_SKIP_TONEMAPPING_SETTING
+        ),
+        # ``None`` is the engine default, which skips tonemapping for
+        # ParticleField prims; only an explicit ``False`` is a forced-off flag.
+        "gaussian_skip_tonemapping_enabled": raw_nurec.get(
+            "gaussian_skip_tonemapping_enabled"
+        ),
         "schema_type_name": NATIVE_TASK_ARENA_NUREC_SCHEMA,
         "schema_registration_required": raw_nurec.get(
             "schema_registration_required"
@@ -410,6 +435,10 @@ def launch_native_task_isaaclab(
         nurec_errors.append("native_task_isaaclab_ujitso_geometry_not_enabled")
     if nurec["multi_gpu_enabled"] is not False:
         nurec_errors.append("native_task_isaaclab_nurec_multi_gpu_not_disabled")
+    if nurec["gaussian_skip_tonemapping_enabled"] is False:
+        nurec_errors.append(
+            "native_task_isaaclab_gaussian_tonemapping_forced_off"
+        )
     if nurec["schema_registration_required"] and not nurec["schema_registered"]:
         nurec_errors.append("native_task_isaaclab_nurec_schema_not_registered")
     if nurec_errors:
@@ -432,6 +461,7 @@ def launch_native_task_isaaclab(
 
 __all__ = [
     "NATIVE_TASK_ARENA_DEVICE",
+    "NATIVE_TASK_ARENA_GAUSSIAN_SKIP_TONEMAPPING_SETTING",
     "NATIVE_TASK_ARENA_IMAGE",
     "NATIVE_TASK_ARENA_KIT_ARGS",
     "NATIVE_TASK_ARENA_NUREC_EXTENSION",

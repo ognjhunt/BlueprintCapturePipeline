@@ -688,3 +688,97 @@ def test_an_alpha_channel_and_a_batch_axis_are_accepted() -> None:
 
     assert evidence["frame_resolution_hw"] == [40, 40]
     assert evidence["passed"] is True
+
+
+# --- policy-input saturation ----------------------------------------------
+
+
+def _clipped(shape: tuple[int, int], *, fraction: float) -> np.ndarray:
+    """A textured frame whose leading ``fraction`` of pixels clip in one channel."""
+
+    rows, cols = shape
+    frame = _textured(shape, low=0, high=200)
+    clipped = int(round(rows * cols * fraction))
+    flat = frame.reshape(-1, 3)
+    flat[:clipped, 0] = 255
+    return flat.reshape(rows, cols, 3)
+
+
+def test_a_clamped_splat_observation_is_refused_before_any_policy_query() -> None:
+    from blueprint_pipeline.native_task_camera_observability import (
+        REFUSAL_POLICY_INPUT_FRAME_SATURATED,
+        validate_native_task_policy_input_frames,
+    )
+
+    with pytest.raises(NativeTaskCameraObservabilityError) as failure:
+        validate_native_task_policy_input_frames(
+            {
+                "exterior_image_1_left": _clipped((180, 320), fraction=0.24),
+                "wrist_image_left": _clipped((180, 320), fraction=0.027),
+            }
+        )
+
+    assert failure.value.errors == (
+        f"{REFUSAL_POLICY_INPUT_FRAME_SATURATED}:exterior_image_1_left",
+    )
+
+
+def test_the_r13_saturation_band_separates_the_defect_from_a_robot_frame() -> None:
+    from blueprint_pipeline.native_task_camera_observability import (
+        MAXIMUM_POLICY_INPUT_SATURATED_PIXEL_FRACTION,
+        measure_native_task_frame_saturation,
+    )
+
+    # scene-839873 r13 construction reset frames, linear HDR pixels with a
+    # channel above 1.0: external 0.225, overview 0.240, wrist 0.027.
+    defect = measure_native_task_frame_saturation(rgb=_clipped((180, 320), fraction=0.225))
+    robot = measure_native_task_frame_saturation(rgb=_clipped((180, 320), fraction=0.027))
+
+    assert defect["saturated_channel_pixel_fraction"] == pytest.approx(0.225, abs=1e-4)
+    assert defect["chromatic_clip_pixel_fraction"] == pytest.approx(0.225, abs=1e-4)
+    assert defect["saturated_white_pixel_fraction"] == 0.0
+    assert defect["passed"] is False
+    assert robot["passed"] is True
+    assert 0.027 < MAXIMUM_POLICY_INPUT_SATURATED_PIXEL_FRACTION < 0.225
+
+
+def test_a_clean_observation_passes_and_carries_its_evidence() -> None:
+    from blueprint_pipeline.native_task_camera_observability import (
+        validate_native_task_policy_input_frames,
+    )
+
+    receipt = validate_native_task_policy_input_frames(
+        {"exterior_image_1_left": _textured((24, 32), low=0, high=254)}
+    )
+
+    assert receipt["passed"] is True
+    assert receipt["views"]["exterior_image_1_left"]["saturated_channel_pixel_fraction"] == 0.0
+    assert receipt["views"]["exterior_image_1_left"]["pixel_count"] == 24 * 32
+
+
+@pytest.mark.parametrize(
+    ("frames", "expected"),
+    [
+        ({}, "native_task_policy_input_frames_invalid"),
+        ({"": _textured((4, 4))}, "native_task_policy_input_frames_invalid"),
+        ({"wrist_image_left": None}, "native_task_camera_rgb_frame_missing"),
+    ],
+)
+def test_the_saturation_gate_refuses_what_it_cannot_read(frames, expected) -> None:
+    from blueprint_pipeline.native_task_camera_observability import (
+        validate_native_task_policy_input_frames,
+    )
+
+    with pytest.raises(NativeTaskCameraObservabilityError) as failure:
+        validate_native_task_policy_input_frames(frames)
+
+    assert expected in failure.value.errors[0]
+
+
+def test_render_evidence_reports_the_clipped_fraction_for_construction_receipts() -> None:
+    evidence = measure_native_task_frame_render_evidence(
+        rgb=_clipped((32, 32), fraction=0.25),
+        site_appearance_render_expected=False,
+    )
+
+    assert evidence["frame"]["saturated_channel_pixel_fraction"] == pytest.approx(0.25)

@@ -95,7 +95,11 @@ def test_calibrated_cameras_map_to_role_neutral_native_cfg(
     assert parameters["vertical_aperture_mm"] == pytest.approx(
         20.955 * 180.0 / 320.0
     )
-    assert "rgb_hdr" in parameters["data_types"]
+    # ``rgb_hdr`` makes Isaac Lab's camera force the gaussian tonemapping
+    # flag off, which turns the display-referred splat into a clamped HDR
+    # render; the policies read ``rgb`` and must get the as-is composite.
+    assert "rgb_hdr" not in parameters["data_types"]
+    assert parameters["data_types"][0] == "rgb"
 
 
 def test_rotation_is_converted_to_xyzw_not_legacy_wxyz() -> None:
