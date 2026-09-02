@@ -415,7 +415,9 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "splat_count": 1_000_000,
         "sh_degree": 3,
         "sh_primvar_element_size": 16,
-        "sh_primvar_interpolation": "vertex",
+        "sh_primvar_interpolation": (
+            "constant" if direct_3dgrut else "vertex"
+        ),
         "display_color_fallback_authored": not direct_3dgrut,
         "particlefield_emissive_material_binding_authored": False,
         "particlefield_emissive_material_inputs": None,
@@ -485,7 +487,9 @@ def test_particlefield_appearance_variant_request_binds_authoring_receipt(
         "request_digest"
     ]
     assert variant["appearance_variant"]["sh_primvar_element_size"] == 16
-    assert variant["appearance_variant"]["sh_primvar_interpolation"] == "vertex"
+    assert variant["appearance_variant"]["sh_primvar_interpolation"] == (
+        "constant" if direct_3dgrut else "vertex"
+    )
     assert variant["appearance_variant"]["display_color_fallback_authored"] is (
         not direct_3dgrut
     )

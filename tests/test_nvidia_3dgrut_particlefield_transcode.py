@@ -122,6 +122,7 @@ def test_direct_transcode_seals_upstream_lightfield_contract(tmp_path: Path) -> 
     assert result["particlefield_authoring_implementation"] == AUTHORING_IMPLEMENTATION
     assert result["upstream_sorting_mode_hint"] == SORTING_MODE_HINT
     assert result["upstream_color_space"] == COLOR_SPACE
+    assert result["sh_primvar_interpolation"] == "constant"
     assert result["splat_count"] == 4
     assert result["provider_mutation_performed"] is False
     assert result["receipt_digest"] == canonical_digest(

@@ -90,7 +90,7 @@ def _load_pinned_transcode(
 def validate_direct_particlefield(path: str | Path) -> dict[str, Any]:
     """Validate the exact LightField contract authored by pinned 3DGRUT."""
 
-    from pxr import Usd
+    from pxr import Usd, UsdGeom
 
     asset = Path(path).expanduser().resolve()
     stage = Usd.Stage.Open(str(asset)) if asset.is_file() else None
@@ -171,7 +171,11 @@ def validate_direct_particlefield(path: str | Path) -> dict[str, Any]:
         "sh_degree": degree,
         "sh_coefficient_count": len(coefficients),
         "sh_primvar_element_size": 16,
-        "sh_primvar_interpolation": "vertex",
+        "sh_primvar_interpolation": str(
+            UsdGeom.Primvar(
+                field.GetAttribute("radiance:sphericalHarmonicsCoefficients")
+            ).GetInterpolation()
+        ),
         "particlefield_emissive_material_binding_authored": False,
         "particlefield_custom_render_hints_authored": False,
         "upstream_projection_mode_hint": projection.Get(),

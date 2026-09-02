@@ -316,7 +316,9 @@ def _gripper_pad_geometry_axis_readback(
     }
 
 
-def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
+def _particlefield_stage_readback(
+    stage: Any, *, authoring_implementation: str | None = None
+) -> dict[str, Any]:
     """Measure whether one conforming ParticleField actually composed live."""
 
     from pxr import UsdGeom
@@ -387,6 +389,12 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
             "sh_element_size": sh_primvar.GetElementSize(),
             "sh_interpolation": str(sh_primvar.GetInterpolation()),
             "expected_sh_element_size": expected_element_size,
+            "expected_sh_interpolation": (
+                "constant"
+                if authoring_implementation
+                == "nvidia_3dgrut_direct_nurec_transcode"
+                else "vertex"
+            ),
             "extent": extent,
             "material_binding_targets": material_targets,
             "material_prim_valid": bool(material),
@@ -401,6 +409,23 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
                 if shader
                 else None
             ),
+            "projection_mode_hint": prim.GetAttribute(
+                "projectionModeHint"
+            ).Get(),
+            "projection_mode_hint_authored": prim.GetAttribute(
+                "projectionModeHint"
+            ).HasAuthoredValueOpinion(),
+            "sorting_mode_hint": prim.GetAttribute("sortingModeHint").Get(),
+            "sorting_mode_hint_authored": prim.GetAttribute(
+                "sortingModeHint"
+            ).HasAuthoredValueOpinion(),
+            "color_space": prim.GetAttribute("colorSpace:name").Get(),
+            "color_space_authored": prim.GetAttribute(
+                "colorSpace:name"
+            ).HasAuthoredValueOpinion(),
+            "display_color_authored": prim.GetAttribute(
+                "primvars:displayColor"
+            ).HasAuthoredValueOpinion(),
         }
         upstream_native_material = (
             not material_targets
@@ -421,6 +446,20 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
             if legacy_emissive_material
             else "invalid"
         )
+        direct_3dgrut_contract = (
+            authoring_implementation
+            == "nvidia_3dgrut_direct_nurec_transcode"
+            and row["projection_mode_hint_authored"]
+            and row["projection_mode_hint"] == "perspective"
+            and row["sorting_mode_hint_authored"]
+            and row["sorting_mode_hint"] == "cameraDistance"
+            and row["color_space_authored"]
+            and row["color_space"] == "srgb_rec709_display"
+            and not row["display_color_authored"]
+        )
+        legacy_or_generic_contract = authoring_implementation != (
+            "nvidia_3dgrut_direct_nurec_transcode"
+        )
         row["passed"] = bool(
             row["active"]
             and row["defined"]
@@ -432,12 +471,14 @@ def _particlefield_stage_readback(stage: Any) -> dict[str, Any]:
             and row["opacity_count"] == position_count
             and expected_element_size is not None
             and row["sh_element_size"] == expected_element_size
-            and row["sh_interpolation"] == "vertex"
+            and row["sh_interpolation"]
+            == row["expected_sh_interpolation"]
             and row["sh_coefficient_count"]
             == position_count * expected_element_size
             and isinstance(row["extent"], list)
             and len(row["extent"]) == 2
             and (upstream_native_material or legacy_emissive_material)
+            and (direct_3dgrut_contract or legacy_or_generic_contract)
         )
         rows.append(row)
     if len(rows) != 1:
@@ -587,6 +628,11 @@ def main() -> int:
                 encoding="utf-8"
             )
         )
+        packet_request = json.loads(
+            (packet / "native_task_arena_packet_request.v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
         result["implementation_commit"] = manifest["implementation_commit"]
         result["manifest_input_digest"] = manifest["input_digest"]
         result["packet_receipt_digest"] = manifest["packet_receipt_digest"]
@@ -680,7 +726,13 @@ def main() -> int:
 
             result["particlefield_stage_readback"] = (
                 _particlefield_stage_readback(
-                    omni.usd.get_context().get_stage()
+                    omni.usd.get_context().get_stage(),
+                    authoring_implementation=str(
+                        (packet_request.get("appearance_variant") or {}).get(
+                            "particlefield_authoring_implementation"
+                        )
+                        or ""
+                    ),
                 )
             )
             if not result["particlefield_stage_readback"]["passed"]:
