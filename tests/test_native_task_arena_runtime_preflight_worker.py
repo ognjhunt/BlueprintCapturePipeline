@@ -6,6 +6,7 @@ from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
     _bind_measured_gripper_servo,
     _gripper_pad_geometry_axis_readback,
     _particlefield_stage_readback,
+    _prepolicy_visual_gate_from_snapshot,
     _robot_reset_task_space_readback,
 )
 from blueprint_pipeline.native_task_nurec_render_setup import (
@@ -66,6 +67,58 @@ def test_runtime_preflight_refuses_unmeasured_gripper_without_servo() -> None:
 
     assert gripper["blockers"] == ["probe_failed"]
     assert servo is None
+
+
+def test_runtime_preflight_applies_visual_gate_to_exact_retained_pngs(
+    tmp_path,
+) -> None:
+    import numpy as np
+    from PIL import Image
+
+    cameras = []
+    for index, role in enumerate(("external", "wrist", "overview"), start=1):
+        frame = np.zeros((40, 60, 3), dtype=np.uint8)
+        frame[:, :, index - 1] = np.tile(
+            np.linspace(20 + index, 220 - index, 60, dtype=np.uint8),
+            (40, 1),
+        )
+        path = tmp_path / f"{role}.png"
+        Image.fromarray(frame).save(path)
+        cameras.append(
+            {"role": role, "rgb_png": {"path": path.name}}
+        )
+
+    result = _prepolicy_visual_gate_from_snapshot(
+        snapshot={"cameras": cameras}, output_root=tmp_path
+    )
+
+    assert result["passed"] is True
+    assert result["candidate_policy_loaded"] is False
+    assert result["candidate_policy_queried"] is False
+
+
+def test_runtime_preflight_visual_gate_refuses_dark_splat_signature(tmp_path) -> None:
+    import numpy as np
+    from PIL import Image
+
+    cameras = []
+    for index, role in enumerate(("external", "wrist", "overview"), start=1):
+        frame = np.zeros((40, 60, 3), dtype=np.uint8)
+        frame[:8, :, index - 1] = np.tile(
+            np.linspace(10, 200, 60, dtype=np.uint8), (8, 1)
+        )
+        path = tmp_path / f"{role}.png"
+        Image.fromarray(frame).save(path)
+        cameras.append(
+            {"role": role, "rgb_png": {"path": path.name}}
+        )
+
+    result = _prepolicy_visual_gate_from_snapshot(
+        snapshot={"cameras": cameras}, output_root=tmp_path
+    )
+
+    assert result["passed"] is False
+    assert any("near_black_fraction_above_ceiling" in value for value in result["blockers"])
 
 
 def test_gripper_pad_geometry_uses_live_bounds_not_coincident_body_origins() -> None:

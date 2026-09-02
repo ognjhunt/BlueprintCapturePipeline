@@ -41,6 +41,33 @@ def _bind_measured_gripper_servo(
     )
 
 
+def _prepolicy_visual_gate_from_snapshot(
+    *, snapshot: dict[str, Any], output_root: Path
+) -> dict[str, Any]:
+    """Measure the exact retained reset PNGs before any candidate can load."""
+
+    import numpy as np
+    from PIL import Image
+
+    from blueprint_pipeline.native_task_camera_observability import (
+        measure_native_task_prepolicy_visual_frames,
+    )
+
+    frames: dict[str, Any] = {}
+    root = output_root.resolve()
+    for row in snapshot.get("cameras") or []:
+        role = str(row.get("role") or "")
+        relative = str((row.get("rgb_png") or {}).get("path") or "")
+        frame_path = (root / relative).resolve()
+        if not relative or not frame_path.is_relative_to(root):
+            raise RuntimeError(
+                f"native_task_arena_preflight_camera_path_invalid:{role}"
+            )
+        with Image.open(frame_path) as image:
+            frames[role] = np.asarray(image.convert("RGB"))
+    return measure_native_task_prepolicy_visual_frames(frames)
+
+
 def _robot_reset_task_space_readback(
     *,
     plan: dict[str, Any],
@@ -738,6 +765,17 @@ def main() -> int:
                 "native_task_arena_preflight_camera_observability_failed"
             )
             raise RuntimeError("native_task_arena_preflight_camera_failed")
+        result["prepolicy_visual_gate"] = _prepolicy_visual_gate_from_snapshot(
+            snapshot=result["camera_snapshot"],
+            output_root=output_root,
+        )
+        if not result["prepolicy_visual_gate"]["passed"]:
+            result["blockers"].extend(
+                result["prepolicy_visual_gate"]["blockers"]
+            )
+            raise RuntimeError(
+                "native_task_arena_preflight_prepolicy_visual_gate_failed"
+            )
         result["torch_runtime"] = {
             "version": torch.__version__,
             "cuda_version": torch.version.cuda,
