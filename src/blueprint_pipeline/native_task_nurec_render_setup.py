@@ -31,6 +31,90 @@ BLOCKER_PARTICLEFIELD_TONEMAPPING_UNREADABLE = (
     "native_task_arena_particlefield_tonemapping_setting_unreadable"
 )
 
+#: A standard 3DGS field is trained on sRGB photographs, so its spherical
+#: harmonics are display-referred.  NVIDIA's shipped ``usd-convert-gsplat``
+#: binds no material and RTX composites such a field as-is; 3dgrut binds
+#: ``ParticleFieldEmissive.mdl`` only for its PPISP mode, after converting the
+#: SH to linear itself, and then sets ``apply_srgb_linear`` False.  Our sealed
+#: assets bind that same emissive material with the input at its MDL default,
+#: so the field is emitted as *linear* radiance and the display transform
+#: encodes it a second time: the scene-839873 f23e2100 policy frames, decoded
+#: once from sRGB, reproduce the asset's own DC luminance percentiles
+#: (0.04/0.25/0.46/0.75 rendered-and-decoded vs 0.04/0.24/0.45/0.72 in the
+#: field) while the raw frames sat at 0.21/0.53/0.71/0.88 -- pale and washed
+#: out.  The live stage is therefore told to linearise the field before it is
+#: composited, and the shader is read back before a single warmup tick.
+PARTICLEFIELD_EMISSIVE_SOURCE_ASSET = "ParticleFieldEmissive.mdl"
+DISPLAY_REFERRED_MATERIAL_INPUTS: dict[str, bool] = {
+    "apply_srgb_linear": True,
+    "apply_inverse_tonemap": False,
+}
+BLOCKER_PARTICLEFIELD_PRIM_MISSING = "native_task_arena_particlefield_prim_missing"
+BLOCKER_PARTICLEFIELD_MATERIAL_MISSING = (
+    "native_task_arena_particlefield_emissive_material_missing"
+)
+BLOCKER_PARTICLEFIELD_INPUTS_NOT_APPLIED = (
+    "native_task_arena_particlefield_display_referred_inputs_not_applied"
+)
+
+
+def apply_display_referred_particlefield_material(stage: Any) -> dict[str, Any]:
+    """Make every bound ParticleFieldEmissive shader linearise its sRGB field.
+
+    Authored as an override on the live stage so a sealed asset keeps its
+    bytes; the readback after authoring is the evidence the render will use
+    the display-referred inputs.
+    """
+
+    try:
+        from pxr import Sdf
+
+        bool_type = Sdf.ValueTypeNames.Bool
+    except ImportError:  # pragma: no cover - a fake stage needs no pxr
+        bool_type = None
+    rows: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    for prim in stage.Traverse():
+        if not str(prim.GetTypeName()).startswith("ParticleField"):
+            continue
+        targets = [
+            str(path) for path in prim.GetRelationship("material:binding").GetTargets()
+        ]
+        shader = stage.GetPrimAtPath(f"{targets[0]}/Shader") if len(targets) == 1 else None
+        source = shader.GetAttribute("info:mdl:sourceAsset").Get() if shader else None
+        source_path = getattr(source, "path", source)
+        row: dict[str, Any] = {
+            "prim_path": str(prim.GetPath()),
+            "material_binding_targets": targets,
+            "shader_source_asset": str(source_path) if source_path is not None else None,
+            "inputs_before": {},
+            "inputs_after": {},
+        }
+        rows.append(row)
+        if not shader or source_path != PARTICLEFIELD_EMISSIVE_SOURCE_ASSET:
+            blockers.append(BLOCKER_PARTICLEFIELD_MATERIAL_MISSING)
+            continue
+        for name, value in DISPLAY_REFERRED_MATERIAL_INPUTS.items():
+            attribute = shader.GetAttribute(f"inputs:{name}")
+            row["inputs_before"][name] = attribute.Get() if attribute else None
+            if not attribute:
+                attribute = shader.CreateAttribute(f"inputs:{name}", bool_type, custom=True)
+            attribute.Set(value)
+            readback = shader.GetAttribute(f"inputs:{name}").Get()
+            row["inputs_after"][name] = readback
+            if readback is not value:
+                blockers.append(BLOCKER_PARTICLEFIELD_INPUTS_NOT_APPLIED)
+    if not rows:
+        blockers.append(BLOCKER_PARTICLEFIELD_PRIM_MISSING)
+    return {
+        "schema_version": "native_task_arena_particlefield_display_referred_material.v1",
+        "shader_source_asset": PARTICLEFIELD_EMISSIVE_SOURCE_ASSET,
+        "inputs": dict(DISPLAY_REFERRED_MATERIAL_INPUTS),
+        "particlefields": rows,
+        "blockers": sorted(set(blockers)),
+        "passed": not blockers,
+    }
+
 
 def read_gaussian_skip_tonemapping_setting(
     settings_reader: Callable[[str], Any] | None = None,
@@ -191,6 +275,28 @@ def setup_and_warm_native_nurec_renderer(
             "passed": False,
             "blockers": tonemapping_blockers,
         }
+    # The shader override is authored before the warmup so every warmup tick
+    # and every captured frame composites the linearised field.
+    display_referred_material = (
+        apply_display_referred_particlefield_material(stage)
+        if display_referred_required
+        else None
+    )
+    if display_referred_material is not None and not display_referred_material["passed"]:
+        return {
+            "schema_version": "native_task_arena_nurec_warmup.v1",
+            "official_setup_success": True,
+            "stage_classified_nurec": True,
+            "stage_classified_spg": bool(spg),
+            "official_setup_problems": [],
+            "gaussian_skip_tonemapping": tonemapping,
+            "display_referred_particlefield_required": True,
+            "display_referred_material": display_referred_material,
+            "warmup_app_update_count": 0,
+            "app_update_count": 0,
+            "passed": False,
+            "blockers": list(display_referred_material["blockers"]),
+        }
 
     attempts = 8
     updates_per_attempt = max(int(warmup_steps) // attempts, 5)
@@ -229,6 +335,7 @@ def setup_and_warm_native_nurec_renderer(
         "official_setup_problems": [],
         "gaussian_skip_tonemapping": tonemapping,
         "display_referred_particlefield_required": display_referred_required,
+        "display_referred_material": display_referred_material,
         "requested_warmup_steps": int(warmup_steps),
         "orchestrator_attempts": 0,
         "orchestrator_error_types": [],
@@ -255,11 +362,17 @@ def setup_and_warm_native_nurec_renderer(
 
 
 __all__ = [
+    "BLOCKER_PARTICLEFIELD_INPUTS_NOT_APPLIED",
+    "BLOCKER_PARTICLEFIELD_MATERIAL_MISSING",
+    "BLOCKER_PARTICLEFIELD_PRIM_MISSING",
     "BLOCKER_PARTICLEFIELD_TONEMAPPING_NOT_SKIPPED",
     "BLOCKER_PARTICLEFIELD_TONEMAPPING_UNREADABLE",
+    "DISPLAY_REFERRED_MATERIAL_INPUTS",
     "DISPLAY_REFERRED_REPRESENTATIONS",
     "GAUSSIAN_SKIP_TONEMAPPING_SETTING",
     "OFFICIAL_NUREC_WARMUP_STEPS",
+    "PARTICLEFIELD_EMISSIVE_SOURCE_ASSET",
+    "apply_display_referred_particlefield_material",
     "particlefield_display_referred_blockers",
     "prepare_site_appearance_renderer",
     "read_gaussian_skip_tonemapping_setting",

@@ -184,13 +184,19 @@ def test_path_source_is_digest_bound_and_authors_default_prim(
     assert result["sh_primvar_interpolation"] == "vertex"
     assert result["display_color_fallback_authored"] is True
     assert result["particlefield_emissive_material_binding_authored"] is True
-    assert result["particlefield_emissive_material_inputs"] == "mdl_defaults"
+    assert result["particlefield_emissive_material_inputs"] == "display_referred_srgb"
+    assert result["particlefield_emissive_material_input_values"] == {
+        "apply_srgb_linear": True,
+        "apply_inverse_tonemap": False,
+    }
     binding = prim.GetRelationship("material:binding").GetTargets()
     assert [str(path) for path in binding] == [result["particlefield_emissive_material_path"]]
     shader = stage.GetPrimAtPath(result["particlefield_emissive_material_path"] + "/Shader")
     assert shader.GetAttribute("info:mdl:sourceAsset").Get().path == ("ParticleFieldEmissive.mdl")
-    assert not shader.GetAttribute("inputs:apply_inverse_tonemap")
-    assert not shader.GetAttribute("inputs:apply_srgb_linear")
+    # Display-referred sRGB field: the shader linearises it so RTX's display
+    # transform round-trips it instead of encoding it twice.
+    assert shader.GetAttribute("inputs:apply_inverse_tonemap").Get() is False
+    assert shader.GetAttribute("inputs:apply_srgb_linear").Get() is True
 
 
 @pytest.mark.skipif(not _HAS_PXR, reason="usd-core unavailable")

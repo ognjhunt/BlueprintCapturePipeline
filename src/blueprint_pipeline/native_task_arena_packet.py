@@ -33,6 +33,12 @@ from .paired_target_native_construction_bindings import (
 REQUEST_SCHEMA_VERSION = "native_task_arena_packet_request.v1"
 RECEIPT_SCHEMA_VERSION = "native_task_arena_packet_receipt.v1"
 CONSTRUCTION_CANARY_SCHEMA_VERSION = "native_task_construction_canary.v1"
+#: Authoring receipts before 2026-09-02 left the emissive shader at MDL
+#: defaults ("mdl_defaults"); the live render setup now overrides those inputs
+#: on the stage, so both receipt labels admit a packet.
+ACCEPTED_PARTICLEFIELD_EMISSIVE_MATERIAL_INPUTS = frozenset(
+    {"mdl_defaults", "display_referred_srgb"}
+)
 EVALUATION_INSTANCE_SCHEMA_VERSION = "adp009d_scenario_instance.v1"
 
 
@@ -165,7 +171,8 @@ def materialize_native_task_arena_appearance_variant_request(
         or appearance.get("sh_primvar_interpolation") != "vertex"
         or appearance.get("display_color_fallback_authored") is not True
         or appearance.get("particlefield_emissive_material_binding_authored") is not True
-        or appearance.get("particlefield_emissive_material_inputs") != "mdl_defaults"
+        or appearance.get("particlefield_emissive_material_inputs")
+        not in ACCEPTED_PARTICLEFIELD_EMISSIVE_MATERIAL_INPUTS
         or not gaussian_quality_is_qualified(appearance.get("gaussian_field_quality"))
         or appearance.get("receipt_digest")
         != canonical_digest(appearance, digest_field="receipt_digest")
@@ -207,7 +214,9 @@ def materialize_native_task_arena_appearance_variant_request(
         "sh_primvar_interpolation": "vertex",
         "display_color_fallback_authored": True,
         "particlefield_emissive_material_binding_authored": True,
-        "particlefield_emissive_material_inputs": "mdl_defaults",
+        "particlefield_emissive_material_inputs": appearance[
+            "particlefield_emissive_material_inputs"
+        ],
         "gaussian_field_quality": appearance["gaussian_field_quality"],
     }
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
