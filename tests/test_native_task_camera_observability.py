@@ -27,6 +27,7 @@ from blueprint_pipeline.native_task_camera_observability import (
     NativeTaskCameraObservabilityError,
     measure_native_task_camera_observability,
     measure_native_task_frame_render_evidence,
+    measure_native_task_semantic_label_pixels,
     validate_native_task_policy_start_camera_observability,
 )
 
@@ -43,6 +44,29 @@ def _semantic(shape: tuple[int, int]) -> np.ndarray:
     semantic = np.zeros(shape, dtype=np.int32)
     semantic[30:70, 70:130] = 7
     return semantic
+
+
+def test_semantic_label_pixels_separates_task_and_robot_occlusion() -> None:
+    semantic = np.zeros((20, 30), dtype=np.int32)
+    semantic[2:6, 3:8] = 7
+    semantic[8:18, 10:25] = 9
+    labels = {"7": {"class": "task_object"}, "9": {"class": "robot"}}
+
+    task = measure_native_task_semantic_label_pixels(
+        semantic_ids=semantic,
+        id_to_labels=labels,
+        target_label="task_object",
+    )
+    robot = measure_native_task_semantic_label_pixels(
+        semantic_ids=semantic,
+        id_to_labels=labels,
+        target_label="robot",
+    )
+
+    assert task["pixel_count"] == 20
+    assert task["bbox_xyxy"] == [3, 2, 7, 5]
+    assert robot["pixel_count"] == 150
+    assert robot["pixel_fraction"] == pytest.approx(0.25)
 
 
 def _passing_policy_start_camera(role: str, *, snapshot_id: str = "reset") -> dict:
