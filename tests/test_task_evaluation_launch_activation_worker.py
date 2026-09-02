@@ -311,8 +311,10 @@ def test_policy_activation_seals_paired_campaign_queue_without_preparer(
     assert result["paid_execution_requested"] is False
 
 
+@pytest.mark.parametrize("construction_lineage", ["qualified", "compiled_scene"])
 def test_policy_canary_activation_materializes_single_session_runtime_inputs(
     tmp_path: Path,
+    construction_lineage: str,
 ) -> None:
     setup_value = policy_setup()
     quick = setup_value["presets"][0]
@@ -362,13 +364,24 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
         "request_digest": "sha256:" + "1" * 64,
         "result_digest": "sha256:" + "2" * 64,
     }
-    construction = {
-        "schema_version": "native_task_arena_construction_result.v1",
-        "status": "completed",
-        "construction_gate_qualified": True,
-        "candidate_policy_queried": False,
-        "blockers": [],
-    }
+    construction = (
+        {
+            "schema_version": "native_task_arena_construction_result.v1",
+            "status": "completed",
+            "construction_gate_qualified": True,
+            "candidate_policy_queried": False,
+            "blockers": [],
+        }
+        if construction_lineage == "qualified"
+        else {
+            "schema_version": "task_evaluation_episode_compilation_result.v1",
+            "status": "compiled_for_production_launch",
+            "configured_scene_revision_digest": selected["scene_revision_digest"],
+            "provider_mutation_performed": False,
+            "paid_execution_requested": False,
+            "blockers": [],
+        }
+    )
     construction["result_digest"] = canonical_digest(
         construction, digest_field="result_digest"
     )
