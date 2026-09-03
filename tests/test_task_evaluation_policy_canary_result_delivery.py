@@ -255,6 +255,121 @@ def test_canary_delivery_seals_downloads_and_terminal_closure(tmp_path: Path) ->
     assert record["sha256"] == report["digest"]
 
 
+def test_canary_delivery_projects_non_authoritative_episode_interpretation(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = _result(evidence)
+    result["episodes"][0]["evidence_artifacts"]["review_video"] = next(
+        artifact
+        for artifact in result["artifact_inventory"]
+        if artifact["role"] == "review_video"
+    )
+    receipt = {
+        "schema_version": "episode_interpretation_receipt.v1",
+        "status": "completed",
+        "abstention_reason": None,
+        "episode_id": "scene-839873-canary-interpretation--quick-cell-0--pi05_droid",
+        "candidate_policy_id": "pi05_droid",
+        "learned_interpretation": {
+            "episode_outcome": "appears_incomplete",
+            "summary": "The cup appears to remain held at the terminal frame.",
+            "events": [],
+            "possible_missed_events": [],
+            "contract_considerations": ["Release remains independently scored."],
+            "confidence": 0.8,
+        },
+        "deterministic_agreement": "disagrees",
+        "proof_boundary": {
+            "learned_interpretation_only": True,
+            "authoritative_task_success_unchanged": True,
+            "ranking_or_promotion_effect": "none",
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    receipt_path = evidence / "episode-one.interpretation.json"
+    receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    record = {
+        "role": "episode_interpretation_receipt",
+        "relative_path": receipt_path.name,
+        "media_type": "application/json",
+        "size_bytes": receipt_path.stat().st_size,
+        "sha256": _sha(receipt_path),
+    }
+    result["artifact_inventory"].append(record)
+    result["episodes"][0]["evidence_artifacts"]["episode_interpretation"] = record
+    result["episode_interpretation"] = {
+        "schema_version": "policy_canary_episode_interpretation_closeout.v1",
+        "status": "completed",
+        "episode_count": 1,
+        "receipt_count": 1,
+        "completed_count": 1,
+        "abstained_count": 0,
+        "disagreement_count": 1,
+        "reused_receipt_count": 0,
+        "provider_call_count": 0,
+        "input_bundle_unavailable_count": 0,
+        "interpreter": None,
+        "interpreter_profile_digest": None,
+        "authoritative_deterministic_result_unchanged": True,
+        "score_overwrite_performed": False,
+        "ranking_or_promotion_effect": "none",
+        "summary_digest": "sha256:" + "a" * 64,
+    }
+    result["run_id"] = "scene-839873-canary-interpretation"
+    result["episodes"][0]["episode"]["episode_id"] = (
+        "scene-839873-canary-interpretation--quick-cell-0--pi05_droid"
+    )
+    result["configuration_digest"] = "sha256:" + "9" * 64
+    result["status"] = "blocked"
+    result["blockers"] = ["remaining_cells_incomplete"]
+    result["artifact_inventory_digest"] = canonical_digest(
+        {"value": result["artifact_inventory"]}
+    )
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    closure = {
+        "billing": _closure(tmp_path / "billing.json", flag="official_billing_sealed"),
+        "teardown": _closure(tmp_path / "teardown.json", flag="teardown_completed"),
+        "provider_zero": _closure(
+            tmp_path / "provider-zero.json", flag="provider_zero_verified"
+        ),
+    }
+
+    delivery = materialize_policy_canary_result_delivery(
+        run_root=tmp_path,
+        run_id=result["run_id"],
+        result_status="blocked",
+        session_result=result,
+        evidence_root=evidence,
+        closure_records=closure,
+    )
+
+    interpreted = delivery["episodes"][0]["interpretation"]
+    assert interpreted["deterministic_agreement"] == "disagrees"
+    assert interpreted["ranking_or_promotion_effect"] == "none"
+    assert interpreted["receipt"]["artifact_id"]
+    assert delivery["episode_interpretation"]["disagreement_count"] == 1
+    projection = build_policy_canary_result_projection(
+        setup={
+            "scene_id": "839873",
+            "request_digest": "sha256:" + "8" * 64,
+            "scene_revision_digest": result["scene_revision_digest"],
+            "task_success_contract": result["task_success_contract"],
+            "task_success_contract_digest": result[
+                "task_success_contract_digest"
+            ],
+        },
+        result=result,
+        delivery=delivery,
+    )
+    assert projection["episode_interpretation"]["disagreement_count"] == 1
+    assert projection["episodes"][0]["interpretation"]["receipt"]["artifact_id"]
+
+
 def test_canary_delivery_projects_path_distinct_byte_identical_episode_evidence(
     tmp_path: Path,
 ) -> None:

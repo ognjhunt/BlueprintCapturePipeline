@@ -298,6 +298,10 @@ def test_materialized_delivery_resume_retries_only_website_publication(
         "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.materialize_policy_canary_website_delivery",
         lambda *, run_root, delivery: dict(delivery),
     )
+    monkeypatch.setattr(
+        "blueprint_pipeline.policy_canary_episode_interpretation_closeout.materialize_policy_canary_episode_interpretations",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("interpreter unavailable")),
+    )
     sync_calls = []
 
     receipt = _resume_materialized_policy_canary_delivery(
@@ -1132,6 +1136,10 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
         "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.materialize_policy_canary_website_delivery",
         lambda *, run_root, delivery: dict(delivery),
     )
+    monkeypatch.setattr(
+        "blueprint_pipeline.policy_canary_episode_interpretation_closeout.materialize_policy_canary_episode_interpretations",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("interpreter unavailable")),
+    )
     third = dispatch_policy_canary_activation(
         activation_result_path=activation_result,
         execution_setup_path=setup_path,
@@ -1153,6 +1161,10 @@ def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
     assert third["allocator_invoked"] is False
     assert third["notification_delivery"]["status"] == "failed"
     assert (output / "dispatch_receipt.json").is_file()
+    terminal = json.loads((output / "policy_canary_terminal_result.json").read_text())
+    assert terminal["episode_interpretation"]["status"] == "abstained"
+    assert terminal["episode_interpretation"]["closeout_error_type"] == "RuntimeError"
+    assert terminal["session_closeout"]["provider_zero_confirmed"] is True
     assert calls == {"allocator": 1, "bundle": 1}
     assert zero_collections == 1
 

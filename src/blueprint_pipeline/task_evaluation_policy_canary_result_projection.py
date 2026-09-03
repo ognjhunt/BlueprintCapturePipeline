@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from typing import Any
 
 from .decision_evidence_contracts import (
@@ -80,6 +81,15 @@ def build_policy_canary_result_projection(
     def compact_artifact(record: Mapping[str, Any]) -> dict[str, Any]:
         return {key: record[key] for key in ("artifact_id", "digest", "size_bytes")}
 
+    def compact_interpretation(record: Any) -> dict[str, Any] | None:
+        if not isinstance(record, Mapping):
+            return None
+        value = deepcopy(dict(record))
+        receipt = value.get("receipt")
+        if isinstance(receipt, Mapping):
+            value["receipt"] = compact_artifact(receipt)
+        return value
+
     report = {
         "machine_readable_report": compact_artifact(
             delivery["report"]["machine_readable_report"]
@@ -87,6 +97,11 @@ def build_policy_canary_result_projection(
         "evidence_manifest": compact_artifact(delivery["report"]["evidence_manifest"]),
     }
     public_artifacts = delivery.get("artifacts") or []
+    delivered_episodes = {
+        str(row.get("episode_id")): row
+        for row in delivery.get("episodes") or []
+        if isinstance(row, Mapping)
+    }
 
     def bound_artifact(record: Any) -> dict[str, Any] | None:
         if not isinstance(record, Mapping):
@@ -212,6 +227,9 @@ def build_policy_canary_result_projection(
                     row.get("policy_outcome_interpretable") is True
                 ),
                 "failure_taxonomy": row.get("typed_harness_failure"),
+                "interpretation": compact_interpretation(
+                    (delivered_episodes.get(episode_id) or {}).get("interpretation")
+                ),
                 "evidence": evidence,
             }
         )
@@ -296,6 +314,9 @@ def build_policy_canary_result_projection(
             "diagnostic_control_rollout_count": 20,
             "completed_diagnostic_control_rollout_count": 0,
         },
+        "episode_interpretation": deepcopy(
+            dict(delivery.get("episode_interpretation") or {})
+        ),
         "candidate_ids": list(CANDIDATE_IDS),
         "candidate_results": candidate_results,
         "episodes": projected_episodes,

@@ -1218,6 +1218,60 @@ def materialize_policy_canary_result_delivery(
             )
         )
         failure_code = str(row.get("typed_harness_failure") or "unclassified")
+        interpretation_record = source_artifacts.get("episode_interpretation")
+        interpretation_artifact = bound_artifact(interpretation_record)
+        interpretation_projection = None
+        if interpretation_artifact is not None and isinstance(
+            interpretation_record, Mapping
+        ):
+            interpretation_path = _inside(
+                evidence,
+                str(interpretation_record.get("relative_path") or ""),
+                role="episode_interpretation_receipt",
+            )
+            interpretation_receipt = json.loads(
+                interpretation_path.read_text(encoding="utf-8")
+            )
+            if (
+                not isinstance(interpretation_receipt, Mapping)
+                or interpretation_receipt.get("schema_version")
+                != "episode_interpretation_receipt.v1"
+                or interpretation_receipt.get("episode_id") != episode_id
+                or interpretation_receipt.get("candidate_policy_id") != candidate_id
+                or interpretation_receipt.get("receipt_digest")
+                != canonical_digest(
+                    interpretation_receipt, digest_field="receipt_digest"
+                )
+                or interpretation_receipt.get("proof_boundary", {}).get(
+                    "authoritative_task_success_unchanged"
+                )
+                is not True
+                or interpretation_receipt.get("proof_boundary", {}).get(
+                    "ranking_or_promotion_effect"
+                )
+                != "none"
+            ):
+                raise TaskEvaluationResultDeliveryError(
+                    "policy_canary_episode_interpretation_receipt_invalid"
+                )
+            learned = interpretation_receipt.get("learned_interpretation") or {}
+            interpretation_projection = {
+                "status": interpretation_receipt.get("status"),
+                "abstention_reason": interpretation_receipt.get("abstention_reason"),
+                "episode_outcome": learned.get("episode_outcome"),
+                "summary": learned.get("summary"),
+                "events": learned.get("events") or [],
+                "possible_missed_events": learned.get("possible_missed_events") or [],
+                "contract_considerations": learned.get("contract_considerations") or [],
+                "confidence": learned.get("confidence"),
+                "deterministic_agreement": interpretation_receipt.get(
+                    "deterministic_agreement"
+                ),
+                "receipt": interpretation_artifact,
+                "learned_interpretation_only": True,
+                "authoritative_task_success_unchanged": True,
+                "ranking_or_promotion_effect": "none",
+            }
         rich_episodes.append(
             {
                 "episode_id": episode_id,
@@ -1293,6 +1347,7 @@ def materialize_policy_canary_result_delivery(
                         "summary": failure_code.replace("_", " "),
                     }
                 ),
+                "interpretation": interpretation_projection,
                 "evidence": {
                     "complete": row.get("status") == "completed",
                     "lossless_policy_inputs": lossless_inputs,
@@ -1379,6 +1434,32 @@ def materialize_policy_canary_result_delivery(
             "episodes_per_policy": 10,
             "learned_policy_rollout_count": 20,
             "completed_learned_policy_rollout_count": completed,
+        },
+        "episode_interpretation": {
+            key: value
+            for key, value in dict(result.get("episode_interpretation") or {}).items()
+            if key
+            in {
+                "schema_version",
+                "status",
+                "episode_count",
+                "receipt_count",
+                "completed_count",
+                "abstained_count",
+                "disagreement_count",
+                "reused_receipt_count",
+                "provider_call_count",
+                "provider_invocation_attempt_count",
+                "input_bundle_unavailable_count",
+                "interpreter",
+                "interpreter_profile_digest",
+                "official_cost_completion_error_type",
+                "closeout_error_type",
+                "authoritative_deterministic_result_unchanged",
+                "score_overwrite_performed",
+                "ranking_or_promotion_effect",
+                "summary_digest",
+            }
         },
         "episodes": rich_episodes,
         "artifacts": sorted(public_artifacts, key=lambda row: (row["role"], row["artifact_id"])),
