@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,8 +16,10 @@ from blueprint_pipeline.decision_evidence_contracts import (
 from blueprint_pipeline.task_evaluation_policy_canary_rescore import (
     PolicyCanaryRescoreError,
     rescore_policy_canary_result,
+    resolve_scorer_identity,
     validate_policy_canary_score_correction,
 )
+from blueprint_pipeline import task_evaluation_policy_canary_rescore as rescore_module
 
 
 RUN_ID = (
@@ -292,3 +295,30 @@ def test_publication_validator_rejects_added_mutation_fields(tmp_path: Path) -> 
             correction=mutated,
             receipt_root=correction_root,
         )
+
+
+def test_scorer_identity_explicitly_admits_detached_foreign_owned_repo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_commit = "c" * 40
+    repo = Path(rescore_module.__file__).resolve().parents[2]
+    safe_argument = f"safe.directory={repo}"
+    calls: list[list[str]] = []
+
+    def foreign_owner_git(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        # Model Git's dubious-ownership refusal: this fake permits the command
+        # only when the process itself supplies the exact resolved repository.
+        if argv[:3] != ["git", "-c", safe_argument]:
+            raise subprocess.CalledProcessError(128, argv, stderr="dubious ownership")
+        if "rev-parse" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout=expected_commit + "\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(rescore_module.subprocess, "run", foreign_owner_git)
+
+    identity = resolve_scorer_identity(expected_commit=expected_commit)
+
+    assert identity["scorer_commit"] == expected_commit
+    assert len(calls) == 2
+    assert all(call[:5] == ["git", "-c", safe_argument, "-C", str(repo)] for call in calls)

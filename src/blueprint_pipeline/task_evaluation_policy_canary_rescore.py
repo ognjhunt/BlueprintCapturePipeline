@@ -292,11 +292,12 @@ def resolve_scorer_identity(*, expected_commit: str) -> dict[str, Any]:
     if not _COMMIT.fullmatch(expected_commit):
         raise PolicyCanaryRescoreError("policy_canary_rescore_scorer_commit_invalid")
     repo = Path(__file__).resolve().parents[2]
+    git_prefix = ["git", "-c", f"safe.directory={repo}", "-C", str(repo)]
 
     def git(*args: str) -> str:
         try:
             completed = subprocess.run(
-                ["git", "-C", str(repo), *args],
+                [*git_prefix, *args],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -311,9 +312,7 @@ def resolve_scorer_identity(*, expected_commit: str) -> dict[str, Any]:
     if observed != expected_commit:
         raise PolicyCanaryRescoreError("policy_canary_rescore_scorer_commit_mismatch")
     if (
-        subprocess.run(
-            ["git", "-C", str(repo), "diff", "--quiet", "HEAD", "--", *_SCORER_SOURCES]
-        ).returncode
+        subprocess.run([*git_prefix, "diff", "--quiet", "HEAD", "--", *_SCORER_SOURCES]).returncode
         != 0
     ):
         raise PolicyCanaryRescoreError("policy_canary_rescore_scorer_sources_dirty")
