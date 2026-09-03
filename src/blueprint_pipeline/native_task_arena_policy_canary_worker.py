@@ -412,6 +412,8 @@ class CellRuntime:
     run_policy_episode: Callable[..., Mapping[str, Any]]
     prepolicy_camera_gate: Callable[..., Mapping[str, Any]] | None = None
     configure_post_gate_renderer: Callable[..., Mapping[str, Any]] | None = None
+    make_rigid_task_readback: Callable[..., Any] | None = None
+    wrap_rigid_scoring_environment: Callable[..., Any] | None = None
 
 
 def isaac_cell_runtime() -> CellRuntime:
@@ -443,6 +445,7 @@ def isaac_cell_runtime() -> CellRuntime:
     )
     from blueprint_pipeline.native_task_arena_readback import (
         NativeArticulatedTaskArenaReadback,
+        NativeRigidTaskArenaReadback,
     )
     from blueprint_pipeline.native_task_arena_runtime import (
         build_native_task_arena_environment,
@@ -454,6 +457,7 @@ def isaac_cell_runtime() -> CellRuntime:
         configure_post_gate_rtx_streaming_wait,
     )
     from blueprint_pipeline.native_task_episode_environment import (
+        NativeRigidScoringEnvironment,
         build_native_task_episode_environment,
     )
     from blueprint_pipeline.native_task_isaaclab_launch import (
@@ -636,6 +640,8 @@ def isaac_cell_runtime() -> CellRuntime:
         run_policy_episode=run_policy_episode,
         prepolicy_camera_gate=prepolicy_camera_gate,
         configure_post_gate_renderer=configure_post_gate_rtx_streaming_wait,
+        make_rigid_task_readback=NativeRigidTaskArenaReadback,
+        wrap_rigid_scoring_environment=NativeRigidScoringEnvironment,
     )
 
 
@@ -1714,14 +1720,18 @@ def _run_selected_cell(
         servo = bound_runtime.make_servo(
             env=env, robot=robot, gripper_convention=gripper
         )
-        task_readback = (
-            bound_runtime.make_task_readback(
+        task_kind = str(scene_plan["task_kind"])
+        if task_kind == "articulated_open_close":
+            task_readback = bound_runtime.make_task_readback(
                 built,
                 grasp_frame_pose_callback=servo.current_grasp_frame_pose_world,
             )
-            if scene_plan["task_kind"] == "articulated_open_close"
-            else None
-        )
+        elif task_kind == "rigid_pick_place":
+            if bound_runtime.make_rigid_task_readback is None:
+                raise RuntimeError("policy_canary_rigid_task_readback_missing")
+            task_readback = bound_runtime.make_rigid_task_readback(built)
+        else:
+            task_readback = None
         episode_environment, environment_receipt = bound_runtime.build_episode_environment(
             built=built,
             gripper_convention=gripper,
@@ -1729,6 +1739,20 @@ def _run_selected_cell(
             task_readback=task_readback,
             to_tensor=bound_runtime.to_tensor,
         )
+        if task_kind == "rigid_pick_place":
+            if bound_runtime.wrap_rigid_scoring_environment is None:
+                raise RuntimeError("policy_canary_rigid_scoring_environment_missing")
+            episode_environment = bound_runtime.wrap_rigid_scoring_environment(
+                environment=episode_environment,
+                task_readback=task_readback,
+                task_spec=scene_plan["task_spec"],
+            )
+            environment_receipt = {
+                **dict(environment_receipt),
+                "task_state_source": (
+                    "native_rigid_scoring_frame_and_filtered_contact_readback"
+                ),
+            }
         environment_receipt = {
             **dict(environment_receipt),
             "appearance_renderer": dict(current_env["appearance_renderer"]),

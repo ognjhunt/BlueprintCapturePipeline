@@ -76,6 +76,35 @@ class _ParityLifecycleEnvironment(_LifecycleEnvironment):
         return sample
 
 
+class _RigidSafetyReadbackEnvironment:
+    """Hermetic counterpart of the native rigid scoring readback join."""
+
+    def __init__(self, environment):
+        self.environment = environment
+
+    def __getattr__(self, name: str):
+        return getattr(self.environment, name)
+
+    def read_object_sample(self):
+        sample = dict(self.environment.read_object_sample())
+        sample.update(
+            {
+                "task_contact_active": False,
+                "support_contact_active": True,
+                "robot_collision_failure": False,
+                "scene_collision_failure": False,
+                "containment_violation": False,
+                "forbidden_robot_task_collision_failure": False,
+                "locked_joint_containment_violation": False,
+                "controls_measurement_authority": (
+                    "native_scoring_frame_pose_filtered_contacts_and_shared_"
+                    "gripper_calibration"
+                ),
+            }
+        )
+        return sample
+
+
 RUN_ID = "scene-839873-canary-rehearsal"
 
 
@@ -664,6 +693,12 @@ def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
         groot_worker_identity=_runtime_groot_worker_identity,
         run_policy_episode=run_policy_episode,
         configure_post_gate_renderer=configure_post_gate_renderer,
+        make_rigid_task_readback=lambda built: object(),
+        wrap_rigid_scoring_environment=(
+            lambda *, environment, task_readback, task_spec: (
+                _RigidSafetyReadbackEnvironment(environment)
+            )
+        ),
     )
 
 
@@ -739,6 +774,16 @@ def test_selected_cell_queries_both_real_clients_and_seals_before_isaac_close(
         assert episode["episode_environment"]["appearance_renderer"][
             "requested_warmup_steps"
         ] == 800
+        assert episode["episode_environment"]["task_state_source"] == (
+            "native_rigid_scoring_frame_and_filtered_contact_readback"
+        )
+        for sample in episode["episode"]["state_trace"]["task_state_samples"]:
+            assert sample["support_contact_active"] is True
+            assert sample["robot_collision_failure"] is False
+            assert sample["scene_collision_failure"] is False
+            assert sample["containment_violation"] is False
+            assert sample["forbidden_robot_task_collision_failure"] is False
+            assert sample["locked_joint_containment_violation"] is False
     # Exactly one Isaac launch, one environment build for the selected cell,
     # and the environment closed once after the second candidate.
     assert isaac.launches == 1

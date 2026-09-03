@@ -3242,115 +3242,6 @@ def _to_tensor(value: Any) -> Any:
     raise TypeError(f"unsupported_sim_array:{value_module}.{type(value).__name__}")
 
 
-class _RigidScoringEnvironment:
-    """Overlay exact scoring-frame/contact readback on the shared episode seam."""
-
-    def __init__(
-        self,
-        *,
-        environment: Any,
-        task_readback: Any,
-        task_spec: Mapping[str, Any],
-    ) -> None:
-        if not callable(getattr(task_readback, "read_task_sample", None)):
-            raise RuntimeError("native_task_controls_rigid_readback_missing")
-        try:
-            contact_threshold = float(task_spec["task_contact_minimum_force_n"])
-            collision_threshold = float(
-                task_spec["collision_failure_minimum_force_n"]
-            )
-            bounds = task_spec["workspace_position_bounds_world_m"]
-            lower = [float(value) for value in bounds["minimum"]]
-            upper = [float(value) for value in bounds["maximum"]]
-        except (KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError(
-                "native_task_controls_rigid_measurement_contract_invalid"
-            ) from exc
-        if (
-            not all(
-                math.isfinite(value)
-                for value in [contact_threshold, collision_threshold, *lower, *upper]
-            )
-            or contact_threshold <= 0.0
-            or collision_threshold <= 0.0
-            or len(lower) != 3
-            or len(upper) != 3
-            or any(low >= high for low, high in zip(lower, upper, strict=True))
-        ):
-            raise RuntimeError(
-                "native_task_controls_rigid_measurement_contract_invalid"
-            )
-        self._environment = environment
-        self._task_readback = task_readback
-        self._contact_threshold = contact_threshold
-        self._collision_threshold = collision_threshold
-        self._workspace_lower = lower
-        self._workspace_upper = upper
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._environment, name)
-
-    def read_object_sample(self) -> dict[str, Any]:
-        base = self._environment.read_object_sample()
-        native = self._task_readback.read_task_sample()
-        if not isinstance(base, Mapping) or not isinstance(native, Mapping):
-            raise RuntimeError("native_task_controls_rigid_sample_invalid")
-        try:
-            pose = [float(value) for value in native["task_scoring_pose_world"]]
-            task_force = float(native["task_robot_contact_peak_force_n"])
-            support_force = float(native["task_support_contact_peak_force_n"])
-            scene_force = float(native["task_scene_collision_peak_force_n"])
-            robot_force = float(native["robot_scene_contact_peak_force_n"])
-            forbidden_robot_force = float(
-                native["robot_task_forbidden_collision_peak_force_n"]
-            )
-            locked_joint_violation = native[
-                "locked_joint_containment_violation"
-            ]
-        except (KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError("native_task_controls_rigid_sample_invalid") from exc
-        if len(pose) != 7 or not all(
-            math.isfinite(value)
-            for value in [
-                *pose,
-                task_force,
-                support_force,
-                scene_force,
-                robot_force,
-                forbidden_robot_force,
-            ]
-        ) or not isinstance(locked_joint_violation, bool):
-            raise RuntimeError("native_task_controls_rigid_sample_invalid")
-        sample = dict(base)
-        sample.update(native)
-        sample.update(
-            {
-                "task_object_pose_world": pose,
-                "task_contact_active": task_force >= self._contact_threshold,
-                "support_contact_active": support_force >= self._contact_threshold,
-                "robot_collision_failure": max(robot_force, forbidden_robot_force)
-                >= self._collision_threshold,
-                "forbidden_robot_task_collision_failure": (
-                    forbidden_robot_force >= self._collision_threshold
-                ),
-                "locked_joint_containment_violation": locked_joint_violation,
-                "scene_collision_failure": scene_force
-                >= self._collision_threshold,
-                "containment_violation": any(
-                    value < low or value > high
-                    for low, value, high in zip(
-                        self._workspace_lower, pose[:3], self._workspace_upper, strict=True
-                    )
-                ),
-                "controls_measurement_authority": (
-                    "native_scoring_frame_pose_filtered_contacts_and_shared_"
-                    "gripper_calibration"
-                ),
-            }
-        )
-        return sample
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
     runtime = Path(__file__).resolve().parent
@@ -3488,6 +3379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             build_native_task_arena_environment,
         )
         from blueprint_pipeline.native_task_episode_environment import (
+            NativeRigidScoringEnvironment,
             build_native_task_episode_environment,
         )
 
@@ -3678,7 +3570,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "synthetic_post_phase5_diagnostic_not_applicable_to_rigid_task"
             )
         if graph_rigid:
-            episode_environment = _RigidScoringEnvironment(
+            episode_environment = NativeRigidScoringEnvironment(
                 environment=episode_environment,
                 task_readback=readback,
                 task_spec=scene_plan["task_spec"],
