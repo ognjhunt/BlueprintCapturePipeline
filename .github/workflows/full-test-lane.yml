@@ -94,33 +94,32 @@ jobs:
           # a mirror that is slow rather than broken, so the mirror is no
           # longer on this path at all.
           #
-          # Use a versioned release archive rather than BtbN's expiring daily
-          # autobuild tags. The bytes are still pinned and verified before use.
+          # Use versioned GitHub release assets rather than an expiring daily
+          # build or a mirror that serves inconsistent bytes to Actions runners.
           if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
             echo "media toolchain already present: $(ffmpeg -version | head -n1)"
             exit 0
           fi
-          FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-amd64-static.tar.xz"
-          FFMPEG_SHA256="abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67"
-          FFMPEG_ARCHIVE="${RUNNER_TEMP}/ffmpeg-7.0.2-amd64-static.tar.xz"
-          verified=0
-          for attempt in 1 2 3; do
-            rm -f "${FFMPEG_ARCHIVE}"
-            if curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 600 \
-              -o "${FFMPEG_ARCHIVE}" "${FFMPEG_URL}" \
-              && echo "${FFMPEG_SHA256}  ${FFMPEG_ARCHIVE}" | sha256sum -c -; then
-              verified=1
-              break
-            fi
-            echo "ffmpeg archive attempt ${attempt} failed byte verification"
-          done
-          if [[ "${verified}" != "1" ]]; then
-            echo "ffmpeg archive did not pass the pinned digest after 3 attempts"
-            exit 1
-          fi
-          tar -xJf "${FFMPEG_ARCHIVE}" -C /tmp
-          sudo install -m 0755 /tmp/ffmpeg-7.0.2-amd64-static/ffmpeg /usr/local/bin/ffmpeg
-          sudo install -m 0755 /tmp/ffmpeg-7.0.2-amd64-static/ffprobe /usr/local/bin/ffprobe
+          FFMPEG_RELEASE="https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1"
+          download_verified() {
+            local name="$1" expected="$2" destination="${RUNNER_TEMP}/$1"
+            for attempt in 1 2 3; do
+              rm -f "${destination}"
+              if curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 420 \
+                -o "${destination}" "${FFMPEG_RELEASE}/${name}" \
+                && echo "${expected}  ${destination}" | sha256sum -c -; then
+                return 0
+              fi
+              echo "${name} attempt ${attempt} failed byte verification"
+            done
+            return 1
+          }
+          download_verified ffmpeg-linux-x64.gz bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa
+          download_verified ffprobe-linux-x64.gz 25d9b6ccb05e3d9de9e04e31e2506d8dd7f9f0418981965ac6df12e8d3afd067
+          gzip -dc "${RUNNER_TEMP}/ffmpeg-linux-x64.gz" > "${RUNNER_TEMP}/ffmpeg"
+          gzip -dc "${RUNNER_TEMP}/ffprobe-linux-x64.gz" > "${RUNNER_TEMP}/ffprobe"
+          sudo install -m 0755 "${RUNNER_TEMP}/ffmpeg" /usr/local/bin/ffmpeg
+          sudo install -m 0755 "${RUNNER_TEMP}/ffprobe" /usr/local/bin/ffprobe
           ffmpeg -version | head -n1
 
       - name: Setup Node.js
