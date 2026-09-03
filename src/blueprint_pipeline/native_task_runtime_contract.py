@@ -19,6 +19,10 @@ import math
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
+from .adp_task_scoring import (
+    TaskNeutralScoringError,
+    validate_rigid_task_success_contract,
+)
 from .articulated_runtime_composition import plan_articulated_runtime_composition
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
@@ -798,6 +802,18 @@ def materialize_native_task_runtime_contract(
     task_kind = str(task_spec.get("task_kind") or "")
     if task_kind not in TASK_KINDS:
         errors.append("native_task_runtime_task_kind_invalid")
+    if (
+        task_kind == "rigid_pick_place"
+        and task_spec.get("task_success_contract") is not None
+    ):
+        try:
+            validate_rigid_task_success_contract(
+                task_spec["task_success_contract"],
+                expected_site_id=scene,
+                expected_task_id=task,
+            )
+        except TaskNeutralScoringError as exc:
+            errors.extend(exc.errors)
     if not str(scenario_cell_id or "").strip():
         errors.append("native_task_runtime_scenario_cell_missing")
     context_kind = str(scenario_context_kind or "").strip()

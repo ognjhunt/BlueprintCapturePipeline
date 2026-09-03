@@ -13,7 +13,9 @@ from blueprint_pipeline.adp_task_scoring import (
     OUTCOME_OPENED_THEN_REBOUNDED,
     OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE,
     TaskNeutralScoringError,
+    confirm_rigid_task_success_contract,
     score_task_episode_from_spec,
+    seal_rigid_task_success_contract,
 )
 
 
@@ -453,6 +455,340 @@ def test_planar_push_requires_task_contact_to_clear_during_settle() -> None:
     assert report["outcome"] == "push_contact_not_cleared"
     assert report["task_succeeded"] is False
     assert report["measurements"]["settle_task_contact_cleared"] is False
+
+
+def test_team_confirmed_contract_can_define_task_specific_terminal_success() -> None:
+    task_spec = _rigid_v2_spec()
+    task_spec.update(site_id="scene839873", task_id="move_cup_to_green_target")
+    compatibility = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id=task_spec["site_id"],
+        task_id=task_spec["task_id"],
+        author_source="compatibility_default",
+        author_id="test-default",
+        confirmation_status="confirmed",
+    )
+    criteria = copy.deepcopy(compatibility["criteria"])
+    criteria["orientation"]["mode"] = "ignored"
+    criteria["gripper_state"] = {"mode": "ignored", "threshold_m": None}
+    criteria["terminal_task_contact"]["mode"] = "cleared"
+    criteria["motion"]["minimum_lift_m"] = None
+    task_spec["task_success_contract"] = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id=task_spec["site_id"],
+        task_id=task_spec["task_id"],
+        author_source="site_robot_team",
+        author_id="robot-team:relocation-owners",
+        confirmation_status="confirmed",
+        confirmed_by_team_id="robot-team:relocation-owners",
+        criteria=criteria,
+    )
+
+    report = score_task_episode_from_spec(
+        task_spec=task_spec,
+        samples=_held_out_groot_push_samples(),
+    )
+
+    assert report["task_succeeded"] is True
+    assert report["failed_criteria"] == []
+    assert report["failure_reason_plain_english"] is None
+    assert report["task_success_contract_digest"] == (
+        task_spec["task_success_contract"]["contract_digest"]
+    )
+    assert report["task_success_contract"]["provenance"]["author_source"] == (
+        "site_robot_team"
+    )
+
+
+def test_agent_contract_is_proposal_only_until_a_team_confirms_new_document() -> None:
+    task_spec = _rigid_v2_spec()
+    task_spec.update(site_id="scene839873", task_id="move_cup_to_green_target")
+    proposal = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id=task_spec["site_id"],
+        task_id=task_spec["task_id"],
+        author_source="agent_proposal",
+        author_id="agent:criteria-drafter",
+        confirmation_status="proposal_only",
+    )
+    task_spec["task_success_contract"] = proposal
+
+    with pytest.raises(
+        TaskNeutralScoringError,
+        match="rigid_task_success_contract_unconfirmed",
+    ):
+        score_task_episode_from_spec(
+            task_spec=task_spec,
+            samples=_held_out_groot_push_samples(),
+        )
+
+    confirmed = confirm_rigid_task_success_contract(
+        proposal, confirmed_by_team_id="robot-team:relocation-owners"
+    )
+    assert proposal["provenance"]["confirmation_status"] == "proposal_only"
+    assert confirmed["contract_digest"] != proposal["contract_digest"]
+    assert confirmed["provenance"]["proposal_digest"] == proposal["contract_digest"]
+    task_spec["task_success_contract"] = confirmed
+    report = score_task_episode_from_spec(
+        task_spec=task_spec,
+        samples=[
+            _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+            _rigid_v2_sample(1, [1.0, 2.0, 0.83]),
+            _rigid_v2_sample(2, [1.15, 2.0, 0.83]),
+            _rigid_v2_sample(3, [1.15, 2.0, 0.8]),
+            _rigid_v2_sample(4, [1.15, 2.0, 0.8]),
+            _rigid_v2_sample(5, [1.15, 2.0, 0.8]),
+        ],
+    )
+    assert report["task_succeeded"] is True
+
+
+def test_task_success_contract_digest_detects_post_confirmation_drift() -> None:
+    task_spec = _rigid_v2_spec()
+    contract = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id="scene839873",
+        task_id="move_cup_to_green_target",
+        author_source="site_robot_team",
+        author_id="robot-team:relocation-owners",
+        confirmation_status="confirmed",
+        confirmed_by_team_id="robot-team:relocation-owners",
+    )
+    contract["criteria"]["orientation"]["mode"] = "ignored"
+    task_spec["task_success_contract"] = contract
+
+    with pytest.raises(
+        TaskNeutralScoringError,
+        match="rigid_task_success_contract_digest_mismatch",
+    ):
+        score_task_episode_from_spec(
+            task_spec=task_spec,
+            samples=_held_out_groot_push_samples(),
+        )
+
+
+def _dropped_then_placed_samples() -> list[dict]:
+    samples = [
+        _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+        _rigid_v2_sample(1, [1.0, 2.0, 0.86]),
+        _rigid_v2_sample(2, [1.15, 2.0, 0.86]),
+        _rigid_v2_sample(3, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(4, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(5, [1.15, 2.0, 0.8]),
+    ]
+    # Contact is lost while the object is still unsupported at step 2; it
+    # falls 6 cm and regains support inside the destination at step 3.
+    samples[2]["task_contact_active"] = False
+    return samples
+
+
+def test_no_drop_is_distinct_from_eventual_placement_success() -> None:
+    task_spec = _rigid_v2_spec()
+    eventual = score_task_episode_from_spec(
+        task_spec=task_spec, samples=_dropped_then_placed_samples()
+    )
+    assert eventual["task_succeeded"] is True
+    assert eventual["event_ledger"]["drop_events"][0]["fall_m"] == pytest.approx(
+        0.06
+    )
+    assert eventual["event_ledger"]["drop_events"][0]["contact_lost_step"] == 2
+    assert eventual["event_ledger"]["drop_events"][0]["minimum_height_m"] == 0.8
+    assert eventual["event_ledger"]["drop_events"][0]["support_recontact_step"] == 3
+    assert (
+        eventual["event_ledger"]["drop_events"][0][
+            "destination_inside_at_recontact"
+        ]
+        is True
+    )
+
+    default_contract = eventual["task_success_contract"]
+    criteria = copy.deepcopy(default_contract["criteria"])
+    criteria["temporal_invariants"]["no_drop"]["mode"] = "required"
+    task_spec.update(site_id="scene839873", task_id="move_cup_to_green_target")
+    task_spec["task_success_contract"] = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id=task_spec["site_id"],
+        task_id=task_spec["task_id"],
+        author_source="site_robot_team",
+        author_id="robot-team:relocation-owners",
+        confirmation_status="confirmed",
+        confirmed_by_team_id="robot-team:relocation-owners",
+        criteria=criteria,
+    )
+    no_drop = score_task_episode_from_spec(
+        task_spec=task_spec, samples=_dropped_then_placed_samples()
+    )
+
+    assert no_drop["task_succeeded"] is False
+    assert no_drop["failed_criteria"] == ["no_drop"]
+    assert no_drop["failure_reason_plain_english"].startswith(
+        "The object was dropped"
+    )
+
+
+def test_no_drop_allows_contact_clear_after_supported_controlled_placement() -> None:
+    task_spec = _rigid_v2_spec()
+    samples = [
+        _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+        _rigid_v2_sample(1, [1.0, 2.0, 0.86]),
+        _rigid_v2_sample(2, [1.15, 2.0, 0.86]),
+        _rigid_v2_sample(3, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(4, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(5, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(6, [1.15, 2.0, 0.8]),
+    ]
+    # The object is placed onto support before task contact clears; it remains
+    # supported throughout the release, so the 6 cm controlled lowering is
+    # not a drop event.
+    samples[3]["task_contact_active"] = True
+    baseline = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
+    criteria = copy.deepcopy(baseline["task_success_contract"]["criteria"])
+    criteria["temporal_invariants"]["no_drop"]["mode"] = "required"
+    task_spec.update(site_id="scene839873", task_id="move_cup_to_green_target")
+    task_spec["task_success_contract"] = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id=task_spec["site_id"],
+        task_id=task_spec["task_id"],
+        author_source="site_robot_team",
+        author_id="robot-team:relocation-owners",
+        confirmation_status="confirmed",
+        confirmed_by_team_id="robot-team:relocation-owners",
+        criteria=criteria,
+    )
+
+    report = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
+
+    assert report["task_succeeded"] is True
+    assert report["criteria_satisfied"]["no_drop"] is True
+    assert report["event_ledger"]["drop_events"] == []
+
+
+def test_scoped_temporal_event_limits_are_deterministically_enforced() -> None:
+    task_spec = _rigid_v2_spec()
+    baseline = score_task_episode_from_spec(
+        task_spec=task_spec,
+        samples=_dropped_then_placed_samples(),
+    )
+    criteria = copy.deepcopy(baseline["task_success_contract"]["criteria"])
+    temporal = criteria["temporal_invariants"]
+    temporal.update(
+        maximum_task_contact_force_n=20.0,
+        forbidden_contact_classes=["table_edge"],
+        workspace_excursions="forbidden",
+        maximum_retries=1,
+        maximum_regrasps=0,
+    )
+    task_spec.update(site_id="scene839873", task_id="move_cup_to_green_target")
+    task_spec["task_success_contract"] = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id=task_spec["site_id"],
+        task_id=task_spec["task_id"],
+        author_source="site_robot_team",
+        author_id="robot-team:relocation-owners",
+        confirmation_status="confirmed",
+        confirmed_by_team_id="robot-team:relocation-owners",
+        criteria=criteria,
+    )
+    samples = _dropped_then_placed_samples()
+    for sample in samples:
+        sample.update(
+            task_contact_force_n=5.0,
+            contact_classes_active=[],
+            workspace_excursion=False,
+            retry_count=0,
+            regrasp_count=0,
+        )
+    samples[2].update(
+        task_contact_force_n=25.0,
+        contact_classes_active=["table_edge"],
+        workspace_excursion=True,
+    )
+    for sample in samples[2:]:
+        sample.update(retry_count=2, regrasp_count=1)
+
+    report = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
+
+    assert report["task_succeeded"] is False
+    assert report["failed_criteria"] == [
+        "maximum_task_contact_force",
+        "forbidden_contact_classes",
+        "workspace_excursions",
+        "maximum_retries",
+        "maximum_regrasps",
+    ]
+    assert report["event_ledger"]["peak_task_contact_force_n"] == 25.0
+    assert report["event_ledger"]["observed_forbidden_contact_classes"] == [
+        "table_edge"
+    ]
+
+
+def test_contact_force_limit_uses_retained_top_level_native_readback() -> None:
+    task_spec = _rigid_v2_spec()
+    baseline = score_task_episode_from_spec(
+        task_spec=task_spec,
+        samples=_dropped_then_placed_samples(),
+    )
+    criteria = copy.deepcopy(baseline["task_success_contract"]["criteria"])
+    criteria["temporal_invariants"]["maximum_task_contact_force_n"] = 10.0
+    task_spec.update(site_id="scene839873", task_id="move_cup_to_green_target")
+    task_spec["task_success_contract"] = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id=task_spec["site_id"],
+        task_id=task_spec["task_id"],
+        author_source="site_robot_team",
+        author_id="robot-team:relocation-owners",
+        confirmation_status="confirmed",
+        confirmed_by_team_id="robot-team:relocation-owners",
+        criteria=criteria,
+    )
+    samples = _dropped_then_placed_samples()
+    for sample in samples:
+        sample.update(
+            task_robot_contact_peak_force_n=5.0,
+            task_contact_force_n=1.0,
+            native_readback={"task_robot_contact_peak_force_n": 2.0},
+        )
+    samples[2]["task_robot_contact_peak_force_n"] = 12.0
+
+    report = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
+
+    assert report["task_succeeded"] is False
+    assert report["event_ledger"]["peak_task_contact_force_n"] == 12.0
+    assert report["event_ledger"]["task_contact_force_sources"] == [
+        "task_robot_contact_peak_force_n"
+    ]
+    assert report["failed_criteria"] == ["maximum_task_contact_force"]
+
+
+def test_scoped_temporal_limit_abstains_when_event_readback_is_missing() -> None:
+    task_spec = _rigid_v2_spec()
+    baseline = score_task_episode_from_spec(
+        task_spec=task_spec,
+        samples=_dropped_then_placed_samples(),
+    )
+    criteria = copy.deepcopy(baseline["task_success_contract"]["criteria"])
+    criteria["temporal_invariants"]["maximum_retries"] = 0
+    task_spec.update(site_id="scene839873", task_id="move_cup_to_green_target")
+    task_spec["task_success_contract"] = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id=task_spec["site_id"],
+        task_id=task_spec["task_id"],
+        author_source="site_robot_team",
+        author_id="robot-team:relocation-owners",
+        confirmation_status="confirmed",
+        confirmed_by_team_id="robot-team:relocation-owners",
+        criteria=criteria,
+    )
+
+    report = score_task_episode_from_spec(
+        task_spec=task_spec, samples=_dropped_then_placed_samples()
+    )
+
+    assert report["status"] == "undetermined"
+    assert report["outcome"] == "native_temporal_event_readback_missing"
+    assert report["event_ledger"]["required_readback_gaps"] == [
+        "retry_event_ledger"
+    ]
 
 
 def test_scene_neutral_rigid_thresholds_accept_machine_roundoff_at_boundary() -> None:
