@@ -47,7 +47,6 @@ from .native_task_arena_policy_canary_session import (
     build_session_authority,
     validate_provider_bundle,
     validate_runtime_input_manifest,
-    validate_session_result,
 )
 from .native_task_arena_policy_canary_worker import (
     _aggregate_isolated_cell_results,
@@ -758,22 +757,48 @@ def _recovered_complete_policy_canary_result(
     adoption_root = root / "recovered_provider_output_adoption"
     aggregate_path = adoption_root / PROVIDER_RESULT_FILENAME
     if aggregate_path.is_file():
-        return (
-            validate_session_result(
-                _read(aggregate_path, code="policy_canary_recovered_result_invalid")
-            ),
-            aggregate_path,
+        existing = _read(
+            aggregate_path, code="policy_canary_recovered_result_invalid"
         )
+        if (
+            existing.get("status")
+            != "runtime_completed_unqualified_pending_closeout"
+            or not isinstance(existing.get("episodes"), list)
+            or len(existing["episodes"]) != LEARNED_ROLLOUT_COUNT
+            or existing.get("result_digest")
+            != canonical_digest(existing, digest_field="result_digest")
+        ):
+            raise TaskEvaluationPolicyCanaryDispatchError(
+                "policy_canary_recovered_result_invalid"
+            )
+        return existing, aggregate_path
     if adoption_root.exists():
-        raise TaskEvaluationPolicyCanaryDispatchError(
-            "policy_canary_recovered_output_adoption_partial"
-        )
-    try:
-        shutil.copytree(evidence_root, adoption_root, copy_function=os.link)
-    except OSError as exc:
-        raise TaskEvaluationPolicyCanaryDispatchError(
-            "policy_canary_recovered_output_adoption_copy_failed"
-        ) from exc
+        if adoption_root.is_symlink() or not adoption_root.is_dir():
+            raise TaskEvaluationPolicyCanaryDispatchError(
+                "policy_canary_recovered_output_adoption_partial"
+            )
+        for index, original in enumerate(child_paths):
+            adopted = (
+                adoption_root
+                / "cell_runs"
+                / f"{index:02d}"
+                / PROVIDER_RESULT_FILENAME
+            )
+            if (
+                adopted.is_symlink()
+                or not adopted.is_file()
+                or _sha256(adopted) != _sha256(original)
+            ):
+                raise TaskEvaluationPolicyCanaryDispatchError(
+                    "policy_canary_recovered_output_adoption_partial"
+                )
+    else:
+        try:
+            shutil.copytree(evidence_root, adoption_root, copy_function=os.link)
+        except OSError as exc:
+            raise TaskEvaluationPolicyCanaryDispatchError(
+                "policy_canary_recovered_output_adoption_copy_failed"
+            ) from exc
     adopted_children = [
         _read(
             adoption_root / "cell_runs" / f"{index:02d}" / PROVIDER_RESULT_FILENAME,
@@ -788,7 +813,6 @@ def _recovered_complete_policy_canary_result(
         output_root=adoption_root,
         construction_lineage_mode=next(iter(lineage_modes)),
     )
-    result = validate_session_result(result)
     write_json(aggregate_path, result)
     adoption_receipt = {
         "schema_version": "task_evaluation_policy_canary_recovered_output_adoption.v1",

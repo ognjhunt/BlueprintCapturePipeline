@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import zipfile
 
 import pytest
@@ -540,10 +541,7 @@ def test_complete_pinned_ssh_recovery_adopts_all_ten_cells_without_provider_retr
         "blueprint_pipeline.task_evaluation_policy_canary_dispatcher._aggregate_isolated_cell_results",
         aggregate,
     )
-    monkeypatch.setattr(
-        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_session_result",
-        lambda value: dict(value),
-    )
+    shutil.copytree(evidence, root / "recovered_provider_output_adoption")
     native_path = evidence / "native_task_arena_policy_canary_session_result.v1.json"
     recovered = _recovered_complete_policy_canary_result(
         root=root,
