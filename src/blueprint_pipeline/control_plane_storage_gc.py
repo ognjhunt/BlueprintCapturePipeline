@@ -56,7 +56,11 @@ DERIVED_ACK = "retire-terminal-derived-directories"
 RUN_SCHEMA_VERSION = "control_plane_storage_gc_run.v1"
 RUN_ACK = "reclaim-control-plane-storage"
 DEFAULT_MINIMUM_AGE_SECONDS = 24 * 60 * 60
-DEFAULT_DERIVED_MINIMUM_AGE_SECONDS = 7 * 24 * 60 * 60
+# Failed and superseded policy-canary builds can create 10+ GiB of fully
+# reproducible prepared/compiled caches in a single attempt.  Six hours keeps
+# a debugging window while ensuring the six-hourly timer reclaims terminal,
+# unpinned, unqueued work before the next operating window.
+DEFAULT_DERIVED_MINIMUM_AGE_SECONDS = 6 * 60 * 60
 RESERVED_DERIVED_CHILDREN = frozenset({"content-addressed"})
 QUEUE_STATES = ("pending", "processing")
 CONTENT_STORE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_CONTENT_STORE_ROOTS"

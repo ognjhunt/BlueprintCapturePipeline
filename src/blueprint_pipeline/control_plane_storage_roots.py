@@ -100,6 +100,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-configured-controls", "work", "blueprint", "configured controls progression state"),
     StorageRoot(f"{_CONTROL_PLANE}/capture-reconstruction-queue", "work", "blueprint", "capture reconstruction queue"),
     StorageRoot(f"{_CONTROL_PLANE}/capture-reconstruction-derived", "cache", "blueprint", "derived reconstruction bytes"),
+    StorageRoot(f"{_CONTROL_PLANE}/profile-install-staging", "cache", "blueprint", "reproducible launch-profile installation staging"),
     StorageRoot("/var/lib/blueprint/pubsub-handoffs", "work", "blueprint", "pubsub handoff spool"),
     # --- reproducible derived inputs
     StorageRoot(f"{_INPUTS}/prepared-references", "cache", "blueprint", "materialized references and content store"),

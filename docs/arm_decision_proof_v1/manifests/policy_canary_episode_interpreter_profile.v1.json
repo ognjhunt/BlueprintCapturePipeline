@@ -1,0 +1,14 @@
+{
+  "schema_version": "policy_canary_episode_interpreter_profile.v1",
+  "status": "configured",
+  "interpreter_id": "openai_multimodal_episode_interpreter_v1",
+  "provider_id": "openai",
+  "runtime": "openai_agents_sdk",
+  "model": "gpt-5.6-luna",
+  "model_version": "gpt-5.6-luna",
+  "max_frames": 64,
+  "max_input_tokens": 240000,
+  "max_output_tokens": 8000,
+  "max_cost_usd": 1.5,
+  "profile_digest": "sha256:eca3944e331b60cc08fdb1548d753be7c1b513b7b703ad5fce8401b09eb83baf"
+}

@@ -668,6 +668,19 @@ def advance_policy_canary_activation(
         "lineage": automation["lineage"],
         "authorization": authorization,
         "requested_mutations": automation["requested_mutations"],
+        **(
+            {
+                "episode_interpretation_authority": preparation_request[
+                    "policy_canary_activation"
+                ]["episode_interpretation_authority"],
+                "episode_interpretation_source_rights_admission": preparation_request[
+                    "policy_canary_activation"
+                ]["episode_interpretation_source_rights_admission"],
+            }
+            if "episode_interpretation_authority"
+            in preparation_request["policy_canary_activation"]
+            else {}
+        ),
     }
     base_request = validate_launch_activation_request(base_request)
     window = materialize_shared_mutation_window(

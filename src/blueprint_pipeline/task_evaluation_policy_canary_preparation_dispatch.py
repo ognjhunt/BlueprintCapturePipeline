@@ -265,6 +265,12 @@ def _validate_selection(
             "task_success_contract_digest"
         ),
         "notification": request.get("notification"),
+        "episode_interpretation_authority": request.get(
+            "episode_interpretation_authority"
+        ),
+        "episode_interpretation_source_rights_admission": request.get(
+            "episode_interpretation_source_rights_admission"
+        ),
     }
     quick = setup["episode_presets"][0]
     matrix = quick["matrix"]
@@ -401,7 +407,27 @@ def maybe_dispatch_policy_canary_preparation(
             run_id=request["run_id"],
             preparation_id=preparation_id,
         )
-        preparation["policy_canary_activation"] = plan["activation_automation"]
+        preparation["policy_canary_activation"] = {
+            **plan["activation_automation"],
+            **(
+                {
+                    "episode_interpretation_authority": selection[
+                        "episode_interpretation_authority"
+                    ],
+                    "episode_interpretation_source_rights_admission": selection[
+                        "episode_interpretation_source_rights_admission"
+                    ],
+                }
+                if isinstance(
+                    selection.get("episode_interpretation_authority"), Mapping
+                )
+                and isinstance(
+                    selection.get("episode_interpretation_source_rights_admission"),
+                    Mapping,
+                )
+                else {}
+            ),
+        }
         preparation = validate_launch_preparation_request(preparation)
         queue_receipt = stage_launch_preparation_request(
             value=preparation,

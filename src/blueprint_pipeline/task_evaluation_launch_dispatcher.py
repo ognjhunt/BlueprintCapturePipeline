@@ -29,6 +29,9 @@ from .adp_task_scoring import (
     validate_rigid_task_success_contract,
 )
 from .decision_evidence_contracts import cross_runtime_canonical_digest
+from .episode_interpretation_batch_authority import (
+    validate_episode_interpretation_batch_authority_shape,
+)
 from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .paid_attempt_authority import (
     JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA,
@@ -419,6 +422,8 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
             "scene_controls_status_at_submission",
             "task_success_contract",
             "task_success_contract_digest",
+            "episode_interpretation_source_rights_admission",
+            "episode_interpretation_authority",
             "team_namespace",
             "robot_preset_id",
             "policy_candidate_ids",
@@ -446,6 +451,39 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
                 != task_success_contract["contract_digest"]
             ):
                 blockers.append("policy_canary_task_success_contract_digest_mismatch")
+        if (
+            request.get("episode_interpretation_authority") is not None
+            or request.get("episode_interpretation_source_rights_admission") is not None
+        ):
+            try:
+                interpretation_authority = (
+                    validate_episode_interpretation_batch_authority_shape(
+                        _mapping(request.get("episode_interpretation_authority"))
+                    )
+                )
+                source_rights = _mapping(
+                    request.get("episode_interpretation_source_rights_admission")
+                )
+                if (
+                    interpretation_authority.get("run_id") != request.get("run_id")
+                    or source_rights.get("run_id") != request.get("run_id")
+                    or source_rights.get("external_disclosure_authorized") is not True
+                    or source_rights.get("provider_training_authorized") is not False
+                    or source_rights.get("public_redistribution_authorized") is not False
+                    or source_rights.get("accepted_by")
+                    != interpretation_authority.get("accepted_by")
+                    or source_rights.get("accepted_on")
+                    != interpretation_authority.get("accepted_on")
+                    or source_rights.get("disclosed_artifact_roles")
+                    != interpretation_authority.get("allowed_artifact_roles")
+                    or source_rights.get("admission_digest")
+                    != canonical_digest(source_rights, digest_field="admission_digest")
+                    or interpretation_authority.get("source_rights_admission_digest")
+                    != source_rights.get("admission_digest")
+                ):
+                    raise ValueError("binding mismatch")
+            except ValueError:
+                blockers.append("policy_canary_episode_interpretation_authority_invalid")
     return policy_canary_setup.normalize_policy_canary_launch_request_blockers(
         request, blockers)
 

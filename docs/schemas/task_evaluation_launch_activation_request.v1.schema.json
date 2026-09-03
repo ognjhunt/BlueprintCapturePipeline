@@ -25,6 +25,8 @@
     "run_kind": {"enum": ["qualified_evaluation", "internal_policy_canary"]},
     "capture_session_id": {"$ref": "#/$defs/identifier"},
     "intake_id": {"$ref": "#/$defs/identifier"},
+    "episode_interpretation_authority": {"type": "object"},
+    "episode_interpretation_source_rights_admission": {"type": "object"},
     "lane": {
       "enum": [
         "task_evaluation_scene_configuration",

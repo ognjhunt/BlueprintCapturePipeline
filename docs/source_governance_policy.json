@@ -25,6 +25,9 @@
     "src/blueprint_pipeline/articulated_usd_depth_sweep.py": [
       "tests/test_adp009d_articulated_usd_depth_sweep.py"
     ],
+    "src/blueprint_pipeline/adp_task_scoring.py": [
+      "tests/test_adp_task_scoring.py"
+    ],
     "src/blueprint_pipeline/capture_orchestrator.py": [
       "tests/test_capture_orchestrator.py"
     ],
@@ -84,6 +87,13 @@
     ],
     "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": [
       "tests/test_mujoco_g1_wam_vla_policy_endpoint_eval.py"
+    ],
+    "src/blueprint_pipeline/native_task_arena_construction_worker.py": [
+      "tests/test_native_task_arena_construction_worker.py"
+    ],
+    "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py": [
+      "tests/test_native_task_arena_policy_canary_worker.py",
+      "tests/test_native_task_arena_policy_canary_lifecycle_rehearsal.py"
     ],
     "src/blueprint_pipeline/native_franka_pose_servo.py": [
       "tests/test_native_franka_pose_servo.py"
@@ -211,6 +221,9 @@
     "src/blueprint_pipeline/task_evaluation_launch_dispatcher.py": [
       "tests/test_task_evaluation_launch_dispatcher.py"
     ],
+    "src/blueprint_pipeline/task_evaluation_policy_canary_dispatcher.py": [
+      "tests/test_task_evaluation_policy_canary_dispatcher.py"
+    ],
     "src/blueprint_pipeline/task_evaluation_supervisor/tools.py": [
       "tests/test_task_evaluation_supervisor.py"
     ],
@@ -263,6 +276,7 @@
     "src/blueprint_pipeline/adp009d_franka_evaluation_harness.py": 2047,
     "src/blueprint_pipeline/adp009d_isaac_runtime.py": 4647,
     "src/blueprint_pipeline/adp009d_physics_backend_comparison.py": 2041,
+    "src/blueprint_pipeline/adp_task_scoring.py": 2130,
     "src/blueprint_pipeline/adp_content_agents_vast.py": 2800,
     "src/blueprint_pipeline/alpha_readiness.py": 2163,
     "src/blueprint_pipeline/arena_result_ingest.py": 2383,
@@ -290,7 +304,9 @@
     "src/blueprint_pipeline/native_runtime_backend.py": 2970,
     "src/blueprint_pipeline/native_task_arena_actuator_sweep.py": 2551,
     "src/blueprint_pipeline/native_task_arena_controls_worker.py": 5066,
+    "src/blueprint_pipeline/native_task_arena_construction_worker.py": 2006,
     "src/blueprint_pipeline/native_task_arena_paid_authority.py": 2283,
+    "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py": 2176,
     "src/blueprint_pipeline/native_task_construction_plan.py": 2281,
     "src/blueprint_pipeline/object_index_stage.py": 2369,
     "src/blueprint_pipeline/official_g1_policy_handoff.py": 2942,
@@ -323,8 +339,9 @@
     "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py": 4648,
     "src/blueprint_pipeline/site_eval_director.py": 2152,
     "src/blueprint_pipeline/site_package_orchestrator.py": 5604,
-    "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py": 2028,
-    "src/blueprint_pipeline/task_evaluation_launch_dispatcher.py": 2004,
+    "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py": 2049,
+    "src/blueprint_pipeline/task_evaluation_launch_dispatcher.py": 2109,
+    "src/blueprint_pipeline/task_evaluation_policy_canary_dispatcher.py": 2460,
     "src/blueprint_pipeline/task_evaluation_supervisor/tools.py": 4166,
     "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": 10104,
     "src/blueprint_pipeline/vast_provider_adapter.py": 10372,
