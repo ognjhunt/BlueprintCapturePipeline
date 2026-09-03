@@ -996,7 +996,10 @@ def materialize_policy_canary_presubmission_setup(
             ),
         },
         "controller": {
-            "identity": {"id": "paired-policy-canary", "version": "v1"},
+            "identity": {
+                "id": "paired-droid-policy-canary",
+                "version": "v2",
+            },
             "kind": "policy_container",
             "configuration": native_controller_ref,
             "model_or_asset_rights": rights_ref,

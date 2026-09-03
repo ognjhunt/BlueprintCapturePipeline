@@ -579,6 +579,10 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     }
     assert plan["plan_digest"] == canonical_digest(plan, digest_field="plan_digest")
     legacy_setup = plan["legacy_policy_run_setup"]
+    assert legacy_setup["preparation_template"]["controller"]["identity"] == {
+        "id": "paired-droid-policy-canary",
+        "version": "v2",
+    }
     configuration = compile_policy_run_configuration(
         {
             "schema_version": "task_evaluation_policy_run_selection.v1",
