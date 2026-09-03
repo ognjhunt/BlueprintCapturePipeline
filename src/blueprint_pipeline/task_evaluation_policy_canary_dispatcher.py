@@ -458,6 +458,18 @@ def _partial_policy_canary_result(
 ) -> tuple[dict[str, Any], Path] | None:
     """Preserve sealed child cells when a later isolated cell times out."""
 
+    if (
+        fallback.get("status") == "runtime_completed_unqualified_pending_closeout"
+        and isinstance(fallback.get("episodes"), list)
+        and len(fallback["episodes"]) == LEARNED_ROLLOUT_COUNT
+        and isinstance(fallback.get("artifact_inventory"), list)
+    ):
+        # The provider already produced the authoritative full-session
+        # aggregation. Rebuilding it from child receipts would incorrectly turn
+        # a complete run into a "partial" result and would rebind child-owned
+        # artifacts that may still have been open when the child sealed.
+        return None
+
     evidence_root = native_path.parent
     cells = list(runtime_inputs.get("cells") or [])
     if len(cells) != 10:
@@ -529,6 +541,14 @@ def _partial_policy_canary_result(
             if not isinstance(record, Mapping):
                 continue
             copied = dict(record)
+            if str(copied.get("relative_path") or "").endswith(
+                "/worker_console.log"
+            ) or copied.get("relative_path") == "worker_console.log":
+                # Legacy child receipts could include the parent-owned stdout
+                # log before the parent appended the final exit lines. It is a
+                # mutable diagnostic, not episode evidence, so partial recovery
+                # must not publish its stale digest.
+                continue
             if isinstance(copied.get("relative_path"), str):
                 copied["relative_path"] = f"{prefix}/{copied['relative_path']}"
             partial_artifacts.append(copied)

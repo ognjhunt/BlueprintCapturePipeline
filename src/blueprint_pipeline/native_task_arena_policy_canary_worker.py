@@ -1069,7 +1069,15 @@ def _write_indexed_telemetry(
     artifacts = []
     seen: set[str] = set()
     for path in sorted(output_root.rglob("*")):
-        if not path.is_file() or path.name == PROVIDER_RESULT_FILENAME:
+        # The parent process owns this file and keeps the child's stdout stream
+        # open until after the child has sealed its result.  Including it here
+        # races the final interpreter-shutdown writes and produces an inventory
+        # entry whose size/digest no longer match by delivery time.
+        if (
+            not path.is_file()
+            or path.name == PROVIDER_RESULT_FILENAME
+            or path.name == "worker_console.log"
+        ):
             continue
         relative = path.relative_to(output_root).as_posix()
         if relative in seen:

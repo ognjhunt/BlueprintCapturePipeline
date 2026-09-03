@@ -389,7 +389,13 @@ def test_partial_provider_result_preserves_completed_cell_and_types_remaining_ga
                 "relative_path": "episodes/pi05.mp4",
                 "sha256": "sha256:" + "2" * 64,
                 "size_bytes": 10,
-            }
+            },
+            {
+                "role": "runtime_supporting_evidence",
+                "relative_path": "worker_console.log",
+                "sha256": "sha256:" + "3" * 64,
+                "size_bytes": 100,
+            },
         ],
         "result_digest": "",
     }
@@ -436,6 +442,32 @@ def test_partial_provider_result_preserves_completed_cell_and_types_remaining_ga
     assert preserved[0]["evidence_artifacts"]["review_video"][
         "relative_path"
     ].startswith("cell_runs/00/")
+    assert not any(
+        row["relative_path"].endswith("worker_console.log")
+        for row in result["artifact_inventory"]
+    )
+
+
+def test_complete_provider_result_is_not_rebuilt_from_child_receipts(
+    tmp_path: Path,
+) -> None:
+    native_path = tmp_path / "native_task_arena_policy_canary_session_result.v1.json"
+    complete = {
+        "status": "runtime_completed_unqualified_pending_closeout",
+        "episodes": [{} for _ in range(20)],
+        "artifact_inventory": [],
+    }
+    _write(native_path, complete)
+
+    assert (
+        _partial_policy_canary_result(
+            native_path=native_path,
+            fallback=complete,
+            runtime_inputs={"cells": []},
+            specs={},
+        )
+        is None
+    )
 
 
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:

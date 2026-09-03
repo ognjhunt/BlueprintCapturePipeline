@@ -945,6 +945,16 @@ def test_quick10_rehearsal_runs_twenty_real_client_rollouts_in_ten_isolated_proc
     assert {"indexed_episode_telemetry", "review_video", "policy_query_receipt"} <= roles
 
 
+def test_child_inventory_excludes_parent_owned_console_log(tmp_path: Path) -> None:
+    (tmp_path / "worker_console.log").write_text("still open\n", encoding="utf-8")
+
+    _index, artifacts = worker._write_indexed_telemetry(tmp_path, [])
+
+    assert not any(
+        row["relative_path"] == "worker_console.log" for row in artifacts
+    )
+
+
 def test_one_failed_cell_is_a_typed_gap_and_the_other_nineteen_rollouts_continue(
     tmp_path: Path,
 ) -> None:
