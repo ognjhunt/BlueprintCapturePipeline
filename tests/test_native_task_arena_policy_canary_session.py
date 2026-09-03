@@ -303,6 +303,22 @@ def test_executor_opens_one_session_loads_each_policy_once_and_runs_twenty(
     assert result["provider_allocations_observed"] == 1
     assert validate_session_result(result)["result_digest"] == result["result_digest"]
 
+    legacy = json.loads(json.dumps(result))
+    legacy.pop("task_success_contract")
+    legacy.pop("task_success_contract_digest")
+    legacy["result_digest"] = canonical_digest(legacy, digest_field="result_digest")
+    with pytest.raises(
+        PolicyCanarySessionError,
+        match="policy_canary_session_result_task_success_contract_missing",
+    ):
+        validate_session_result(legacy)
+    assert (
+        validate_session_result(
+            legacy, allow_legacy_missing_task_success_contract=True
+        )["result_digest"]
+        == legacy["result_digest"]
+    )
+
 
 def test_executor_can_isolate_one_cell_for_fresh_isaac_process(
     tmp_path: Path,

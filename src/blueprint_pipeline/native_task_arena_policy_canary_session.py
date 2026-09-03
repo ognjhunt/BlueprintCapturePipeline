@@ -531,7 +531,11 @@ def _episode_evidence_valid(episode: Mapping[str, Any]) -> bool:
     )
 
 
-def validate_session_result(value: Mapping[str, Any]) -> dict[str, Any]:
+def validate_session_result(
+    value: Mapping[str, Any],
+    *,
+    allow_legacy_missing_task_success_contract: bool = False,
+) -> dict[str, Any]:
     payload = json.loads(json.dumps(value, allow_nan=False))
     episodes = payload.get("episodes")
     closeout = _mapping(payload.get("session_closeout"))
@@ -550,21 +554,27 @@ def validate_session_result(value: Mapping[str, Any]) -> dict[str, Any]:
         or len(episodes) != LEARNED_ROLLOUT_COUNT
     ):
         raise PolicyCanarySessionError("policy_canary_session_result_identity_invalid")
-    try:
-        task_success_contract = validate_rigid_task_success_contract(
-            _mapping(payload.get("task_success_contract"))
-        )
-    except TaskNeutralScoringError as exc:
-        raise PolicyCanarySessionError(
-            "policy_canary_session_result_task_success_contract_invalid:" + str(exc)
-        ) from exc
-    if (
-        payload.get("task_success_contract_digest")
-        != task_success_contract["contract_digest"]
-    ):
-        raise PolicyCanarySessionError(
-            "policy_canary_session_result_task_success_contract_digest_mismatch"
-        )
+    raw_success_contract = payload.get("task_success_contract")
+    raw_success_contract_digest = payload.get("task_success_contract_digest")
+    if raw_success_contract is None and raw_success_contract_digest is None:
+        if not allow_legacy_missing_task_success_contract:
+            raise PolicyCanarySessionError(
+                "policy_canary_session_result_task_success_contract_missing"
+            )
+    else:
+        try:
+            task_success_contract = validate_rigid_task_success_contract(
+                _mapping(raw_success_contract)
+            )
+        except TaskNeutralScoringError as exc:
+            raise PolicyCanarySessionError(
+                "policy_canary_session_result_task_success_contract_invalid:"
+                + str(exc)
+            ) from exc
+        if raw_success_contract_digest != task_success_contract["contract_digest"]:
+            raise PolicyCanarySessionError(
+                "policy_canary_session_result_task_success_contract_digest_mismatch"
+            )
     allocations = closeout.get("provider_allocations_observed")
     if (
         allocations != 1

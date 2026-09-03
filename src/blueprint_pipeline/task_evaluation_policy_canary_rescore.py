@@ -396,7 +396,9 @@ def rescore_policy_canary_result(
         raise PolicyCanaryRescoreError("policy_canary_rescore_evidence_root_invalid")
     source = _load_object(source_path, code="policy_canary_rescore_source_result_invalid")
     try:
-        validate_session_result(source)
+        validate_session_result(
+            source, allow_legacy_missing_task_success_contract=True
+        )
     except ValueError as exc:
         raise PolicyCanaryRescoreError("policy_canary_rescore_source_result_invalid") from exc
     if source.get("status") != "completed_unqualified" or source.get("run_id") != expected_run_id:
@@ -446,7 +448,9 @@ def rescore_policy_canary_result(
             not _digest(success_contract_digest)
             or success_contract.get("contract_digest") != success_contract_digest
             or success_contract_digest
-            != canonical_digest(success_contract, digest_field="contract_digest")
+            != cross_runtime_canonical_digest(
+                success_contract, digest_field="contract_digest"
+            )
             or new_score.get("report_digest")
             != canonical_digest(new_score, digest_field="report_digest")
         ):
@@ -584,7 +588,9 @@ def validate_policy_canary_score_correction(
         "correction_digest",
     }
     try:
-        validate_session_result(source)
+        validate_session_result(
+            source, allow_legacy_missing_task_success_contract=True
+        )
     except ValueError as exc:
         raise PolicyCanaryRescoreError("policy_canary_score_correction_source_invalid") from exc
     scorer_identity = _validate_scorer_identity(
@@ -691,7 +697,9 @@ def validate_policy_canary_score_correction(
             or row.get("success_contract_digest") != new_score.get("task_success_contract_digest")
             or row.get("success_contract_digest") != success_contract.get("contract_digest")
             or row.get("success_contract_digest")
-            != canonical_digest(success_contract, digest_field="contract_digest")
+            != cross_runtime_canonical_digest(
+                success_contract, digest_field="contract_digest"
+            )
             or row.get("scoring_version_digest") != value.get("scoring_version_digest")
         ):
             raise PolicyCanaryRescoreError("policy_canary_score_correction_update_binding_invalid")
