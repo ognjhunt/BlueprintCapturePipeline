@@ -546,6 +546,7 @@ def test_openai_adapter_uses_agents_sdk_and_discloses_frame_sampling_gap(
         "trace_digest",
         "task_state_samples",
         "joint_states",
+        "sampling",
     }
     assert receipt["provider_called"] is True
     assert (
@@ -587,6 +588,23 @@ def test_openai_adapter_preserves_first_terminal_and_event_nearby_camera_groups(
     selected = interpreter._selected_frame_indices(request, frame_rows)
 
     assert selected == [0, 1, 2, 6, 7, 8, 12, 13, 14]
+
+
+def test_openai_adapter_bounds_trace_rows_while_preserving_event_steps() -> None:
+    rows = [
+        {"step_index": index, "task_object_pose_world": [float(index), 0.0, 0.0]}
+        for index in range(261)
+    ]
+
+    selected = OpenAIMultimodalEpisodeInterpreter._selected_trace_rows(
+        rows,
+        event_steps={17, 129, 244},
+    )
+
+    assert len(selected) == 96
+    assert {17, 129, 244}.issubset({row["step_index"] for row in selected})
+    assert selected[0]["step_index"] == 0
+    assert selected[-1]["step_index"] == 260
 
 
 def test_tampered_score_fails_before_interpreter(tmp_path: Path) -> None:
