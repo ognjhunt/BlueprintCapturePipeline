@@ -16,8 +16,10 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
+import zipfile
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
@@ -40,10 +42,15 @@ from .native_task_arena_policy_canary_session import (
     CLAIM_CEILING,
     LEARNED_ROLLOUT_COUNT,
     PROBE_KIND,
+    PROVIDER_RESULT_FILENAME,
     RUN_KIND,
     build_session_authority,
     validate_provider_bundle,
     validate_runtime_input_manifest,
+    validate_session_result,
+)
+from .native_task_arena_policy_canary_worker import (
+    _aggregate_isolated_cell_results,
 )
 from .task_evaluation_policy_canary_result_projection import (
     build_policy_canary_result_projection,
@@ -147,6 +154,10 @@ def _read(path: str | Path, *, code: str) -> dict[str, Any]:
     if source.is_symlink() or not source.is_file() or not isinstance(value, Mapping):
         raise TaskEvaluationPolicyCanaryDispatchError(code)
     return dict(value)
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _record(path: str | Path) -> dict[str, Any]:
@@ -667,6 +678,143 @@ def _partial_policy_canary_result(
     output_path = evidence_root / "policy_canary_partial_provider_result.v1.json"
     write_json(output_path, value)
     return value, output_path
+
+
+def _recovered_complete_policy_canary_result(
+    *,
+    root: Path,
+    native_path: Path,
+    adapter: Mapping[str, Any],
+    authority: Mapping[str, Any],
+    runtime_inputs: Mapping[str, Any],
+) -> tuple[dict[str, Any], Path] | None:
+    """Adopt a complete pinned-SSH recovery without re-entering the provider."""
+
+    attempt_root_value = str(adapter.get("attempt_root") or "").strip()
+    if not attempt_root_value:
+        return None
+    attempt_root = Path(attempt_root_value).expanduser().resolve()
+    evidence_root = attempt_root / "immutable_execution"
+    if native_path != evidence_root / PROVIDER_RESULT_FILENAME:
+        return None
+    command_path = attempt_root / "vast_provider_run" / "vast_provider_command_result.json"
+    if not command_path.is_file() or not evidence_root.is_dir() or evidence_root.is_symlink():
+        return None
+    command = _read(command_path, code="policy_canary_recovered_provider_command_invalid")
+    download = _mapping(command.get("provider_output_download_manifest"))
+    recovery = _mapping(download.get("ssh_recovery"))
+    inspection = _mapping(command.get("provider_runtime_output_zip_inspection"))
+    archive = Path(str(command.get("provider_runtime_output_zip_path") or "")).expanduser().resolve()
+    if (
+        command.get("provider_bundle_kind")
+        != "native_task_arena_policy_canary_session"
+        or command.get("provider_runtime_output_zip_received") is not True
+        or recovery.get("status") != "completed"
+        or recovery.get("strict_host_key_checking") is not True
+        or recovery.get("streamed_to_disk") is not True
+        or inspection.get("zip_present") is not True
+        or inspection.get("mp4_count") != 120
+        or archive.is_symlink()
+        or not archive.is_file()
+        or archive.stat().st_size != recovery.get("recovered_size_bytes")
+        or _sha256(archive) != recovery.get("recovered_sha256")
+    ):
+        return None
+    child_paths = [
+        evidence_root / "cell_runs" / f"{index:02d}" / PROVIDER_RESULT_FILENAME
+        for index in range(10)
+    ]
+    if any(not path.is_file() or path.is_symlink() for path in child_paths):
+        return None
+    expected_members = {
+        f"cell_runs/{index:02d}/{PROVIDER_RESULT_FILENAME}": child_paths[index]
+        for index in range(10)
+    }
+    try:
+        with zipfile.ZipFile(archive) as recovered_archive:
+            names = recovered_archive.namelist()
+            if (
+                any(name.startswith("/") or ".." in Path(name).parts for name in names)
+                or sum(name.lower().endswith(".mp4") for name in names) != 120
+                or not set(expected_members).issubset(names)
+            ):
+                return None
+            for member, extracted in expected_members.items():
+                if hashlib.sha256(recovered_archive.read(member)).digest() != hashlib.sha256(
+                    extracted.read_bytes()
+                ).digest():
+                    return None
+    except (OSError, zipfile.BadZipFile, KeyError):
+        return None
+    children = [
+        _read(path, code="policy_canary_recovered_child_result_invalid")
+        for path in child_paths
+    ]
+    lineage_modes = {
+        str(child.get("construction_lineage_mode") or "") for child in children
+    }
+    if len(lineage_modes) != 1 or "" in lineage_modes:
+        return None
+    adoption_root = root / "recovered_provider_output_adoption"
+    aggregate_path = adoption_root / PROVIDER_RESULT_FILENAME
+    if aggregate_path.is_file():
+        return (
+            validate_session_result(
+                _read(aggregate_path, code="policy_canary_recovered_result_invalid")
+            ),
+            aggregate_path,
+        )
+    if adoption_root.exists():
+        raise TaskEvaluationPolicyCanaryDispatchError(
+            "policy_canary_recovered_output_adoption_partial"
+        )
+    try:
+        shutil.copytree(evidence_root, adoption_root, copy_function=os.link)
+    except OSError as exc:
+        raise TaskEvaluationPolicyCanaryDispatchError(
+            "policy_canary_recovered_output_adoption_copy_failed"
+        ) from exc
+    adopted_children = [
+        _read(
+            adoption_root / "cell_runs" / f"{index:02d}" / PROVIDER_RESULT_FILENAME,
+            code="policy_canary_recovered_child_result_invalid",
+        )
+        for index in range(10)
+    ]
+    result = _aggregate_isolated_cell_results(
+        authority=authority,
+        inputs=runtime_inputs,
+        child_results=adopted_children,
+        output_root=adoption_root,
+        construction_lineage_mode=next(iter(lineage_modes)),
+    )
+    result = validate_session_result(result)
+    write_json(aggregate_path, result)
+    adoption_receipt = {
+        "schema_version": "task_evaluation_policy_canary_recovered_output_adoption.v1",
+        "status": "adopted_complete_provider_output",
+        "run_id": authority["run_id"],
+        "archive": _record(archive),
+        "archive_recovery": {
+            "status": recovery["status"],
+            "recovered_size_bytes": recovery["recovered_size_bytes"],
+            "recovered_sha256": recovery["recovered_sha256"],
+            "known_hosts_sha256": recovery.get("known_hosts_sha256"),
+            "strict_host_key_checking": True,
+            "streamed_to_disk": True,
+        },
+        "child_result_digests": [child["result_digest"] for child in children],
+        "episode_count": len(result["episodes"]),
+        "mp4_count": 120,
+        "provider_mutation_performed": False,
+        "automatic_retry_performed": False,
+        "adoption_digest": "",
+    }
+    adoption_receipt["adoption_digest"] = canonical_digest(
+        adoption_receipt, digest_field="adoption_digest"
+    )
+    write_json(root / "recovered_provider_output_adoption.json", adoption_receipt)
+    return result, aggregate_path
 
 
 def _materialize_official_billing_if_posted(
@@ -1486,8 +1634,20 @@ def dispatch_policy_canary_activation(
         )
         for candidate in CANDIDATE_IDS
     }
-    if native_path.is_file():
-        inner = _read(native_path, code="policy_canary_provider_result_missing")
+    recovered = None
+    if not native_path.is_file():
+        recovered = _recovered_complete_policy_canary_result(
+            root=root,
+            native_path=native_path,
+            adapter=adapter,
+            authority=authority,
+            runtime_inputs=runtime_inputs,
+        )
+    if native_path.is_file() or recovered is not None:
+        if recovered is not None:
+            inner, native_path = recovered
+        else:
+            inner = _read(native_path, code="policy_canary_provider_result_missing")
         partial = _partial_policy_canary_result(
             native_path=native_path,
             fallback=inner,
