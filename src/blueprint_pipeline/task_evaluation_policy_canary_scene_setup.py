@@ -18,6 +18,11 @@ import subprocess  # nosec B404 - fixed runuser/sha256sum argv for service readb
 import tempfile
 from typing import Any, Callable
 
+from .adp_task_scoring import (
+    TaskNeutralScoringError,
+    seal_rigid_task_success_contract,
+    validate_rigid_task_success_contract,
+)
 from .adp009d_droid_observation import (
     CANDIDATE_REQUIRED_VIEWS,
     DROID_EXTERIOR_VIEW_1,
@@ -86,6 +91,10 @@ class PolicyCanarySetupError(ValueError):
     def __init__(self, blockers: list[str] | tuple[str, ...]):
         self.blockers = tuple(sorted(set(str(item) for item in blockers if str(item))))
         super().__init__(";".join(self.blockers))
+
+
+def _mapping_or_empty(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _read(path: str | Path, *, code: str) -> dict[str, Any]:
@@ -326,7 +335,11 @@ def _quick_cells(scene_revision_digest: str) -> list[dict[str, Any]]:
 
 
 def _candidate_spec(
-    *, candidate: Mapping[str, Any], source_commit: str, scene_plan: Mapping[str, Any]
+    *,
+    candidate: Mapping[str, Any],
+    source_commit: str,
+    scene_plan: Mapping[str, Any],
+    task_success_contract: Mapping[str, Any],
 ) -> dict[str, Any]:
     candidate_id = str(candidate["candidate_id"])
     policy, endpoint, policy_identity = _candidate_runtime_binding(candidate_id)
@@ -379,6 +392,8 @@ def _candidate_spec(
         "qualification_permitted": False,
         "scene_promotion_permitted": False,
         "scoring_authority": "deterministic_simulator_state",
+        "task_success_contract": deepcopy(dict(task_success_contract)),
+        "task_success_contract_digest": task_success_contract["contract_digest"],
         "execution_spec_digest": "",
     }
     spec["execution_spec_digest"] = canonical_digest(spec, digest_field="execution_spec_digest")
@@ -408,6 +423,8 @@ def materialize_scene839873_policy_canary_setup(
     maximum_hourly_rate_usd: float = 0.8,
     hard_cap_usd: float = 4.0,
     hard_ttl_seconds: int = 14_400,
+    task_success_contract: Mapping[str, Any] | None = None,
+    require_confirmed_task_success_contract: bool = True,
     activation_release_window_template: Mapping[str, Any] | None = None,
     activation_lineage: Mapping[str, Any] | None = None,
     activation_authorization: Mapping[str, Any] | None = None,
@@ -480,6 +497,42 @@ def materialize_scene839873_policy_canary_setup(
         or scene_plan.get("task_spec", {}).get("manipulation_strategy") != "planar_push"
     ):
         blockers.append("policy_canary_scene_task_embodiment_incompatible")
+    explicit_execution_contract = (
+        task_success_contract is not None
+        and require_confirmed_task_success_contract
+    )
+    raw_success_contract = task_success_contract
+    if raw_success_contract is None:
+        raw_success_contract = launch_request.get("task_success_contract")
+        explicit_execution_contract = raw_success_contract is not None
+    if raw_success_contract is None:
+        raw_success_contract = scene_plan.get("task_spec", {}).get(
+            "task_success_contract"
+        )
+    try:
+        if raw_success_contract is None:
+            raw_success_contract = seal_rigid_task_success_contract(
+                task_spec=scene_plan.get("task_spec", {}),
+                site_id=str(scene_plan.get("scene_id") or ""),
+                task_id=str(scene_plan.get("task_id") or ""),
+                author_source="compatibility_default",
+                author_id="blueprint:manipulation_strategy_defaults.v1",
+                confirmation_status="confirmed",
+            )
+        task_success_contract = validate_rigid_task_success_contract(
+            raw_success_contract,
+            require_confirmed=explicit_execution_contract,
+            expected_site_id=str(scene_plan.get("scene_id") or ""),
+            expected_task_id=str(scene_plan.get("task_id") or ""),
+        )
+        if launch_request.get("task_success_contract") is not None and (
+            launch_request.get("task_success_contract_digest")
+            != task_success_contract["contract_digest"]
+        ):
+            blockers.append("policy_canary_task_success_contract_digest_mismatch")
+    except TaskNeutralScoringError as exc:
+        task_success_contract = {}
+        blockers.extend(exc.errors)
     if (
         packet.get("scene_id") != scene_plan.get("scene_id")
         or packet.get("task_id") != scene_plan.get("task_id")
@@ -541,6 +594,7 @@ def materialize_scene839873_policy_canary_setup(
             candidate=candidates[candidate_id],
             source_commit=source_commit,
             scene_plan=scene_plan,
+            task_success_contract=task_success_contract,
         )
         path = destination / f"{candidate_id}.policy_canary_execution_spec.v1.json"
         write_json(path, spec)
@@ -567,6 +621,8 @@ def materialize_scene839873_policy_canary_setup(
         "intake_id": intake_id,
         "request_digest": request_digest,
         "configured_request_digest": source_request_digest,
+        "task_success_contract": task_success_contract,
+        "task_success_contract_digest": task_success_contract["contract_digest"],
         "runtime_inputs": {
             "native_packet": _record(packet_receipt_path),
             "scene_plan": _record(scene_plan_path),
@@ -655,6 +711,7 @@ def materialize_policy_canary_presubmission_setup(
     activation_lineage: Mapping[str, Any],
     activation_authorization: Mapping[str, Any],
     output_dir: str | Path,
+    task_success_contract: Mapping[str, Any] | None = None,
     policy_observation_setup: Mapping[str, Any] | None = None,
     maximum_hourly_rate_usd: float = 0.8,
     hard_cap_usd: float = 4.0,
@@ -699,6 +756,8 @@ def materialize_policy_canary_presubmission_setup(
             maximum_hourly_rate_usd=maximum_hourly_rate_usd,
             hard_cap_usd=hard_cap_usd,
             hard_ttl_seconds=hard_ttl_seconds,
+            task_success_contract=task_success_contract,
+            require_confirmed_task_success_contract=False,
         )
     readiness = _read(
         historical_policy_readiness_path,
@@ -903,6 +962,10 @@ def materialize_policy_canary_presubmission_setup(
             "zero_action": "nonblocking",
             "deterministic_scripted_positive": "nonblocking",
         },
+        "task_success_contract": deepcopy(verified["task_success_contract"]),
+        "task_success_contract_digest": verified[
+            "task_success_contract_digest"
+        ],
         "setup_digest": "",
     }
     setup["setup_digest"] = policy_canary_setup_digest(setup)
@@ -1190,6 +1253,8 @@ def materialize_policy_canary_presubmission_setup(
         "configured_offering_configuration_run_id": (configured_offering_configuration_run_id),
         "scene_revision_digest": scene_revision_digest,
         "public_setup_digest": setup["setup_digest"],
+        "task_success_contract": deepcopy(setup["task_success_contract"]),
+        "task_success_contract_digest": setup["task_success_contract_digest"],
         "configured_preparation_request_digest": configured_preparation_digest,
         "policy_controller_configuration": controller_ref,
         "model_rights": rights_ref,
@@ -1233,6 +1298,8 @@ def materialize_policy_canary_presubmission_setup(
         "source_commit": source_commit,
         "internal_policy_canary_setup": setup,
         "internal_policy_canary_execution_plan": execution_plan,
+        "task_success_contract": deepcopy(setup["task_success_contract"]),
+        "task_success_contract_digest": setup["task_success_contract_digest"],
         "materialization_digest": "",
     }
     wrapper["materialization_digest"] = canonical_digest(
@@ -1336,6 +1403,14 @@ def materialize_scene839873_policy_canary_setup_from_template(
         wrapper.get("schema_version") != PROFILE_INPUT_SCHEMA_VERSION
         or wrapper.get("configured_source_launch_id") != template.get("configured_source_launch_id")
         or wrapper.get("source_commit") != template.get("source_commit")
+        or wrapper.get("task_success_contract")
+        != _mapping_or_empty(wrapper.get("internal_policy_canary_setup")).get(
+            "task_success_contract"
+        )
+        or wrapper.get("task_success_contract_digest")
+        != _mapping_or_empty(wrapper.get("task_success_contract")).get(
+            "contract_digest"
+        )
         or wrapper.get("materialization_digest")
         != canonical_digest(wrapper, digest_field="materialization_digest")
     ):
@@ -1362,6 +1437,26 @@ def materialize_scene839873_policy_canary_setup_from_template(
     ):
         raise PolicyCanarySetupError(["policy_canary_activation_result_invalid"])
     activation = _read(activation_path, code="policy_canary_activation_result_invalid")
+    activation_task_success_contract = _mapping_or_empty(
+        activation_envelope.get("task_success_contract")
+        or activation.get("task_success_contract")
+    )
+    activation_task_success_contract_digest = activation_envelope.get(
+        "task_success_contract_digest"
+    ) or activation.get("task_success_contract_digest")
+    try:
+        validated_activation_contract = validate_rigid_task_success_contract(
+            activation_task_success_contract
+        )
+    except TaskNeutralScoringError as exc:
+        raise PolicyCanarySetupError(list(exc.errors)) from exc
+    if (
+        activation_task_success_contract_digest
+        != validated_activation_contract["contract_digest"]
+    ):
+        raise PolicyCanarySetupError(
+            ["policy_canary_task_success_contract_digest_mismatch"]
+        )
     return materialize_scene839873_policy_canary_setup(
         source_commit=str(template["source_commit"]),
         configured_source_commit=str(
@@ -1386,6 +1481,8 @@ def materialize_scene839873_policy_canary_setup_from_template(
         maximum_hourly_rate_usd=float(template["maximum_hourly_rate_usd"]),
         hard_cap_usd=float(template["hard_cap_usd"]),
         hard_ttl_seconds=int(template["hard_ttl_seconds"]),
+        task_success_contract=validated_activation_contract,
+        require_confirmed_task_success_contract=True,
     )
 
 

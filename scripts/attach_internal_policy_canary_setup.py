@@ -75,6 +75,8 @@ def materialize_policy_canary_launch_profile(
         "source_commit",
         "internal_policy_canary_setup",
         "internal_policy_canary_execution_plan",
+        "task_success_contract",
+        "task_success_contract_digest",
         "materialization_digest",
     }
     if (
@@ -95,6 +97,12 @@ def materialize_policy_canary_launch_profile(
         wrapper["configured_source_launch_id"] != setup["source_launch_id"]
         or wrapper["configured_source_launch_id"]
         != plan["configured_source_launch_id"]
+        or wrapper["task_success_contract"] != setup["task_success_contract"]
+        or wrapper["task_success_contract"] != plan["task_success_contract"]
+        or wrapper["task_success_contract_digest"]
+        != setup["task_success_contract_digest"]
+        or wrapper["task_success_contract_digest"]
+        != plan["task_success_contract_digest"]
     ):
         raise ValueError("policy_canary_offering_lineage_invalid")
     output = deepcopy(base)

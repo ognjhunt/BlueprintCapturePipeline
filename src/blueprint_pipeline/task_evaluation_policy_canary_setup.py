@@ -10,11 +10,18 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .adp_task_scoring import (
+    TaskNeutralScoringError,
+    validate_rigid_task_success_contract,
+)
 from .decision_evidence_contracts import (
     canonical_digest,
     cross_runtime_canonical_digest,
 )
 from .task_evaluation_policy_run_contract import QUICK_FAMILY_COUNTS
+from .rigid_task_success_contract_schema import (
+    rigid_task_success_contract_schema,
+)
 
 
 SCHEMA_VERSION = "task_evaluation_policy_canary_setup.v1"
@@ -31,6 +38,9 @@ def policy_canary_setup_schema() -> dict[str, Any]:
 
     try:
         value = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        value["$defs"]["taskSuccessContract"] = (
+            rigid_task_success_contract_schema()
+        )
         jsonschema.Draft202012Validator.check_schema(value)
     except (OSError, json.JSONDecodeError, jsonschema.SchemaError) as exc:
         raise TaskEvaluationPolicyCanarySetupError(
@@ -54,6 +64,18 @@ def validate_policy_canary_setup(value: Mapping[str, Any]) -> dict[str, Any]:
         )
     if setup["setup_digest"] != policy_canary_setup_digest(setup):
         raise TaskEvaluationPolicyCanarySetupError("policy_canary_setup_digest_mismatch")
+    try:
+        success_contract = validate_rigid_task_success_contract(
+            setup["task_success_contract"], require_confirmed=False
+        )
+    except TaskNeutralScoringError as exc:
+        raise TaskEvaluationPolicyCanarySetupError(
+            "policy_canary_task_success_contract_invalid:" + str(exc)
+        ) from exc
+    if setup["task_success_contract_digest"] != success_contract["contract_digest"]:
+        raise TaskEvaluationPolicyCanarySetupError(
+            "policy_canary_task_success_contract_digest_mismatch"
+        )
     presets = setup["episode_presets"]
     if [row["preset_id"] for row in presets] != ["quick_10", "standard_100", "deep_500"]:
         raise TaskEvaluationPolicyCanarySetupError("policy_canary_setup_preset_order_invalid")

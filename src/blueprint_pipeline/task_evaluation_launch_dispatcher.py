@@ -23,6 +23,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from .adp_task_scoring import (
+    TaskNeutralScoringError,
+    confirmed_rigid_task_success_contract_matches_published,
+    validate_rigid_task_success_contract,
+)
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .paid_attempt_authority import (
@@ -394,6 +399,53 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
         blockers.append("launch_request_secret_value_forbidden")
     if request.get("request_digest") != canonical_digest(request, digest_field="request_digest"):
         blockers.append("launch_request_digest_mismatch")
+    if request.get("run_kind") == "internal_policy_canary":
+        allowed_fields = {
+            "schema_version",
+            "launch_id",
+            "run_id",
+            "launch_profile_id",
+            "launch_profile_digest",
+            "source_commit",
+            "source_bundle",
+            "evaluation_run_spec",
+            "source_launch_id",
+            "offering_digest",
+            "setup_digest",
+            "preset_id",
+            "run_kind",
+            "claim_ceiling",
+            "scene_revision_digest",
+            "scene_controls_status_at_submission",
+            "task_success_contract",
+            "task_success_contract_digest",
+            "team_namespace",
+            "robot_preset_id",
+            "policy_candidate_ids",
+            "episode_plan",
+            "notification",
+            "authorization",
+            "required_controls",
+            "controls_qualification_bypassed",
+            "scene_promotion_permitted",
+            "official_ranking_permitted",
+            "idempotency_key",
+            "request_digest",
+        }
+        if not set(request).issubset(allowed_fields):
+            blockers.append("policy_canary_launch_request_fields_invalid")
+        try:
+            task_success_contract = validate_rigid_task_success_contract(
+                _mapping(request.get("task_success_contract"))
+            )
+        except TaskNeutralScoringError as exc:
+            blockers.append("policy_canary_task_success_contract_invalid:" + str(exc))
+        else:
+            if (
+                request.get("task_success_contract_digest")
+                != task_success_contract["contract_digest"]
+            ):
+                blockers.append("policy_canary_task_success_contract_digest_mismatch")
     return policy_canary_setup.normalize_policy_canary_launch_request_blockers(
         request, blockers)
 
@@ -890,6 +942,21 @@ def validate_launch_request_against_public_catalog(
         "source_commit"
     ):
         blockers.append("launch_profile_public_catalog_source_commit_mismatch")
+    public_setup = _mapping(descriptor.get("internal_policy_canary_setup"))
+    if public_setup:
+        if not confirmed_rigid_task_success_contract_matches_published(
+            published=_mapping(public_setup.get("task_success_contract")),
+            selected=_mapping(request.get("task_success_contract")),
+        ):
+            blockers.append(
+                "launch_profile_public_catalog_task_success_contract_mismatch"
+            )
+        if request.get("task_success_contract_digest") != _mapping(
+            request.get("task_success_contract")
+        ).get("contract_digest"):
+            blockers.append(
+                "launch_profile_public_catalog_task_success_contract_digest_mismatch"
+            )
     return blockers
 
 

@@ -3,7 +3,7 @@
   "$id": "https://tryblueprint.io/schemas/task_evaluation_policy_canary_execution_plan.v1.schema.json",
   "title": "Private internal policy canary preparation plan",
   "type": "object",
-  "required": ["schema_version", "source_commit", "configured_source_launch_id", "configured_offering_configuration_run_id", "scene_revision_digest", "public_setup_digest", "configured_preparation_request_digest", "policy_controller_configuration", "model_rights", "resolved_scenarios", "legacy_policy_run_setup", "preparation_template", "resource_authority", "lineage_aliases", "provider_mutation_performed", "paid_execution_requested", "plan_digest"],
+  "required": ["schema_version", "source_commit", "configured_source_launch_id", "configured_offering_configuration_run_id", "scene_revision_digest", "public_setup_digest", "task_success_contract", "task_success_contract_digest", "configured_preparation_request_digest", "policy_controller_configuration", "model_rights", "resolved_scenarios", "legacy_policy_run_setup", "preparation_template", "resource_authority", "activation_automation", "lineage_aliases", "provider_mutation_performed", "paid_execution_requested", "plan_digest"],
   "additionalProperties": false,
   "properties": {
     "schema_version": {"const": "task_evaluation_policy_canary_execution_plan.v1"},
@@ -12,6 +12,8 @@
     "configured_offering_configuration_run_id": {"$ref": "#/$defs/id"},
     "scene_revision_digest": {"$ref": "#/$defs/digest"},
     "public_setup_digest": {"$ref": "#/$defs/digest"},
+    "task_success_contract": {"$ref": "#/$defs/taskSuccessContract"},
+    "task_success_contract_digest": {"$ref": "#/$defs/digest"},
     "configured_preparation_request_digest": {"$ref": "#/$defs/digest"},
     "policy_controller_configuration": {"$ref": "#/$defs/ref"},
     "model_rights": {"$ref": "#/$defs/ref"},
@@ -19,6 +21,7 @@
     "legacy_policy_run_setup": {"type": "object"},
     "preparation_template": {"type": "object"},
     "resource_authority": {"type": "object", "required": ["maximum_hourly_rate_usd", "hard_cap_usd", "hard_ttl_seconds", "maximum_provider_allocations", "retry_cap"], "additionalProperties": false, "properties": {"maximum_hourly_rate_usd": {"type": "number", "exclusiveMinimum": 0}, "hard_cap_usd": {"type": "number", "exclusiveMinimum": 0}, "hard_ttl_seconds": {"type": "integer", "minimum": 1}, "maximum_provider_allocations": {"const": 1}, "retry_cap": {"const": 0}}},
+    "activation_automation": {"type": "object"},
     "lineage_aliases": {"type": "object"},
     "provider_mutation_performed": {"const": false},
     "paid_execution_requested": {"const": false},
@@ -27,6 +30,7 @@
   "$defs": {
     "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,191}$"},
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-    "ref": {"type": "object", "required": ["uri", "digest", "size_bytes"], "additionalProperties": false, "properties": {"uri": {"type": "string", "minLength": 1}, "digest": {"$ref": "#/$defs/digest"}, "size_bytes": {"type": "integer", "minimum": 1}}}
+    "ref": {"type": "object", "required": ["uri", "digest", "size_bytes"], "additionalProperties": false, "properties": {"uri": {"type": "string", "minLength": 1}, "digest": {"$ref": "#/$defs/digest"}, "size_bytes": {"type": "integer", "minimum": 1}}},
+    "taskSuccessContract": {"$ref": "rigid_task_success_contract.v1.schema.json"}
   }
 }

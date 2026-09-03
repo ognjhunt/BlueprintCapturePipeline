@@ -9,7 +9,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .adp_task_scoring import (
+    TaskNeutralScoringError,
+    validate_rigid_task_success_contract,
+)
 from .decision_evidence_contracts import cross_runtime_canonical_digest
+from .rigid_task_success_contract_schema import rigid_task_success_contract_schema
 
 
 SCHEMA_VERSION = "task_evaluation_policy_canary_result_projection.v1"
@@ -28,6 +33,9 @@ def policy_canary_result_schema() -> dict[str, Any]:
 
     try:
         value = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        value["$defs"]["taskSuccessContract"] = (
+            rigid_task_success_contract_schema()
+        )
         jsonschema.Draft202012Validator.check_schema(value)
     except (OSError, json.JSONDecodeError, jsonschema.SchemaError) as exc:
         raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_schema_invalid") from exc
@@ -52,6 +60,21 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
         result, digest_field="projection_digest"
     ):
         raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_digest_mismatch")
+    try:
+        task_success_contract = validate_rigid_task_success_contract(
+            result["task_success_contract"]
+        )
+    except TaskNeutralScoringError as exc:
+        raise TaskEvaluationPolicyCanaryResultError(
+            "policy_canary_result_task_success_contract_invalid:" + str(exc)
+        ) from exc
+    if (
+        result["task_success_contract_digest"]
+        != task_success_contract["contract_digest"]
+    ):
+        raise TaskEvaluationPolicyCanaryResultError(
+            "policy_canary_result_task_success_contract_digest_mismatch"
+        )
     counts = result["counts"]
     if (
         counts["completed_learned_policy_rollout_count"]

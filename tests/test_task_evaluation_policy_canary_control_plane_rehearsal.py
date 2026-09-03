@@ -338,6 +338,12 @@ def _website_launch(
             "claim_ceiling": "diagnostic_policy_execution",
             "scene_revision_digest": public["scene_revision_digest"],
             "scene_controls_status_at_submission": "configured_controls_pending",
+            "task_success_contract": copy.deepcopy(
+                public["task_success_contract"]
+            ),
+            "task_success_contract_digest": public[
+                "task_success_contract_digest"
+            ],
             "team_namespace": TEAM_NAMESPACE,
             "robot_preset_id": "droid_franka_panda_robotiq_2f85_v1",
             "policy_candidate_ids": ["pi05_droid", "groot_n17_droid"],

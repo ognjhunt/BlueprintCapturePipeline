@@ -48,6 +48,7 @@ from tests.test_task_evaluation_launch_preparation_worker import (
     request_with_fetchable_bytes,
 )
 from tests.test_task_evaluation_launch_dispatcher import _profile as launch_profile
+from tests.test_task_evaluation_policy_canary_setup import _setup as public_canary_setup
 
 
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
@@ -413,6 +414,12 @@ def test_internal_canary_compiles_resolved_quick_10_without_controls_gate() -> N
                 "notify_on": ["completed", "blocked", "cancelled"],
             },
             "website_request_digest": "sha256:" + "8" * 64,
+            "task_success_contract": public_canary_setup()[
+                "task_success_contract"
+            ],
+            "task_success_contract_digest": public_canary_setup()[
+                "task_success_contract_digest"
+            ],
         }
     )
     config = compile_policy_run_configuration(selected, setup=setup_value)

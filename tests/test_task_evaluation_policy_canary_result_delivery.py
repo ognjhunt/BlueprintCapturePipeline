@@ -22,6 +22,7 @@ from blueprint_pipeline.task_evaluation_result_delivery import (
 from blueprint_pipeline.task_evaluation_policy_canary_result_projection import (
     build_policy_canary_result_projection,
 )
+from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
 
 
 def _sha(path: Path) -> str:
@@ -39,6 +40,7 @@ def _closure(path: Path, *, flag: str) -> dict[str, object]:
 
 
 def _result(evidence: Path) -> dict[str, object]:
+    setup = public_setup()
     telemetry = evidence / "policy_canary_telemetry.jsonl"
     telemetry.write_text('{"episode":"one"}\n', encoding="utf-8")
     artifacts: dict[str, dict[str, object]] = {}
@@ -106,6 +108,8 @@ def _result(evidence: Path) -> dict[str, object]:
         "status": "completed_unqualified",
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
+        "task_success_contract": setup["task_success_contract"],
+        "task_success_contract_digest": setup["task_success_contract_digest"],
         "episodes": [
             {
                 "candidate_id": "pi05_droid",
@@ -203,6 +207,10 @@ def test_canary_delivery_seals_downloads_and_terminal_closure(tmp_path: Path) ->
     assert delivery["summary"]["successful_episode_count"] == 1
     assert delivery["candidate_results"][0]["success_rate"] == 1.0
     assert delivery["matrix_digest"] == "sha256:" + "6" * 64
+    assert delivery["task_success_contract"] == result["task_success_contract"]
+    assert delivery["task_success_contract_digest"] == result[
+        "task_success_contract_digest"
+    ]
     assert delivery["reproducibility"]["scene_revision_digest"] == (
         "sha256:" + "7" * 64
     )
@@ -315,10 +323,20 @@ def test_canary_delivery_projects_path_distinct_byte_identical_episode_evidence(
             "scene_id": "839873",
             "request_digest": "sha256:" + "a" * 64,
             "scene_revision_digest": result["scene_revision_digest"],
+            "task_success_contract": result["task_success_contract"],
+            "task_success_contract_digest": result[
+                "task_success_contract_digest"
+            ],
         },
         result=result,
         delivery=delivery,
     )
+    assert projection["task_success_contract"] == result[
+        "task_success_contract"
+    ]
+    assert projection["task_success_contract_digest"] == result[
+        "task_success_contract_digest"
+    ]
 
     for role in ambiguous_roles:
         delivered = [

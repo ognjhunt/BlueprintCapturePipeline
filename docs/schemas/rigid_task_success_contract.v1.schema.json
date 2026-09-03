@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/rigid_task_success_contract.v1.schema.json",
+  "title": "Confirmed or proposal-only rigid task success contract",
+  "type": "object",
+  "required": ["schema_version", "scope", "provenance", "criteria", "contract_digest"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "rigid_task_success_contract.v1"},
+    "scope": {
+      "type": "object",
+      "required": ["site_id", "task_id"],
+      "additionalProperties": false,
+      "properties": {
+        "site_id": {"$ref": "#/$defs/nonEmpty"},
+        "task_id": {"$ref": "#/$defs/nonEmpty"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["author_source", "author_id", "confirmation_status", "confirmed_by_team_id", "proposal_digest"],
+      "additionalProperties": false,
+      "properties": {
+        "author_source": {"enum": ["compatibility_default", "site_robot_team", "task_owner", "agent_proposal"]},
+        "author_id": {"$ref": "#/$defs/nonEmpty"},
+        "confirmation_status": {"enum": ["proposal_only", "confirmed"]},
+        "confirmed_by_team_id": {"oneOf": [{"$ref": "#/$defs/nonEmpty"}, {"type": "null"}]},
+        "proposal_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]}
+      }
+    },
+    "criteria": {
+      "type": "object",
+      "required": ["destination_containment", "orientation", "support", "terminal_task_contact", "gripper_state", "settling", "safety", "motion", "temporal_invariants"],
+      "additionalProperties": false,
+      "properties": {
+        "destination_containment": {
+          "type": "object",
+          "required": ["mode", "position_bounds_world_m"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {"enum": ["required", "ignored"]},
+            "position_bounds_world_m": {
+              "type": "object",
+              "required": ["minimum", "maximum"],
+              "additionalProperties": false,
+              "properties": {
+                "minimum": {"$ref": "#/$defs/vector3"},
+                "maximum": {"$ref": "#/$defs/vector3"}
+              }
+            }
+          }
+        },
+        "orientation": {
+          "type": "object",
+          "required": ["mode", "reference_xyzw", "tolerance_rad"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {"enum": ["required", "ignored"]},
+            "reference_xyzw": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
+            "tolerance_rad": {"type": "number", "minimum": 0}
+          }
+        },
+        "support": {
+          "type": "object",
+          "required": ["height_mode", "height_interval_m", "contact_mode"],
+          "additionalProperties": false,
+          "properties": {
+            "height_mode": {"enum": ["required", "ignored"]},
+            "height_interval_m": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+            "contact_mode": {"enum": ["required", "ignored"]}
+          }
+        },
+        "terminal_task_contact": {
+          "type": "object",
+          "required": ["mode"],
+          "additionalProperties": false,
+          "properties": {"mode": {"enum": ["cleared", "maintained", "ignored"]}}
+        },
+        "gripper_state": {
+          "type": "object",
+          "required": ["mode", "threshold_m"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {"enum": ["released", "closed_at_most", "ignored"]},
+            "threshold_m": {"type": ["number", "null"], "minimum": 0}
+          }
+        },
+        "settling": {
+          "type": "object",
+          "required": ["mode", "window_samples", "position_tolerance_m", "orientation_tolerance_rad"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {"enum": ["required", "ignored"]},
+            "window_samples": {"type": "integer", "minimum": 1},
+            "position_tolerance_m": {"type": "number", "minimum": 0},
+            "orientation_tolerance_rad": {"type": "number", "minimum": 0}
+          }
+        },
+        "safety": {
+          "type": "object",
+          "required": ["mode"],
+          "additionalProperties": false,
+          "properties": {"mode": {"const": "required"}}
+        },
+        "motion": {
+          "type": "object",
+          "required": ["movement_epsilon_m", "minimum_translation_m", "minimum_lift_m"],
+          "additionalProperties": false,
+          "properties": {
+            "movement_epsilon_m": {"type": "number", "exclusiveMinimum": 0},
+            "minimum_translation_m": {"type": ["number", "null"], "minimum": 0},
+            "minimum_lift_m": {"type": ["number", "null"], "minimum": 0}
+          }
+        },
+        "temporal_invariants": {
+          "type": "object",
+          "required": ["schema_version", "no_drop", "maximum_task_contact_force_n", "forbidden_contact_classes", "containment_excursions", "workspace_excursions", "maximum_retries", "maximum_regrasps"],
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {"const": "rigid_task_event_ledger_expectation.v1"},
+            "no_drop": {
+              "type": "object",
+              "required": ["mode", "minimum_fall_m"],
+              "additionalProperties": false,
+              "properties": {
+                "mode": {"enum": ["required", "ignored"]},
+                "minimum_fall_m": {"type": "number", "exclusiveMinimum": 0}
+              }
+            },
+            "maximum_task_contact_force_n": {"type": ["number", "null"], "exclusiveMinimum": 0},
+            "forbidden_contact_classes": {"type": "array", "uniqueItems": true, "maxItems": 100, "items": {"$ref": "#/$defs/nonEmpty"}},
+            "containment_excursions": {"enum": ["forbidden", "ignored"]},
+            "workspace_excursions": {"enum": ["forbidden", "ignored"]},
+            "maximum_retries": {"type": ["integer", "null"], "minimum": 0},
+            "maximum_regrasps": {"type": ["integer", "null"], "minimum": 0}
+          }
+        }
+      }
+    },
+    "contract_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nonEmpty": {"type": "string", "minLength": 1, "maxLength": 240},
+    "vector3": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}}
+  }
+}

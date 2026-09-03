@@ -31,6 +31,7 @@ from blueprint_pipeline.provider_runtime_import_closure import (
     provider_runtime_import_closure_blockers,
 )
 from tests.test_native_task_arena_bundle import _packet, _runtime_source_packet
+from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
 
 
 REPO_PACKAGE = Path(bundle.__file__).resolve().parent
@@ -59,6 +60,7 @@ def _write(path: Path, value: object) -> Path:
 
 
 def _spec(candidate: str) -> dict[str, object]:
+    setup = public_setup()
     value: dict[str, object] = {
         "schema_version": "native_task_arena_policy_canary_execution_spec.v1",
         "candidate_id": candidate,
@@ -72,6 +74,8 @@ def _spec(candidate: str) -> dict[str, object]:
         "candidate_rights_binding": {"status": "admitted"},
         "checkpoint_digest": "sha256:" + "1" * 64,
         "runtime_identity_digest": "sha256:" + "2" * 64,
+        "task_success_contract": setup["task_success_contract"],
+        "task_success_contract_digest": setup["task_success_contract_digest"],
         "prompt": "Move the object",
         "max_policy_queries": 10,
         "open_loop_horizon": 8,
@@ -84,6 +88,7 @@ def _spec(candidate: str) -> dict[str, object]:
 
 
 def _build_real_canary_bundle(tmp_path: Path) -> dict[str, object]:
+    public = public_setup()
     packet = _packet(tmp_path, scene_id="839873")
     runtime_receipt = _runtime_source_packet(tmp_path)
     construction = _write(tmp_path / "construction.json", {"status": "completed"})
@@ -94,6 +99,8 @@ def _build_real_canary_bundle(tmp_path: Path) -> dict[str, object]:
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "candidate_ids": list(CANDIDATE_IDS),
+        "task_success_contract": public["task_success_contract"],
+        "task_success_contract_digest": public["task_success_contract_digest"],
         "campaign_unit_count": 10,
         "campaign_units": [
             {
@@ -142,6 +149,8 @@ def _build_real_canary_bundle(tmp_path: Path) -> dict[str, object]:
         "runtime_source": _record(runtime_receipt),
         "construction_result": _record(construction),
         "candidate_ids": list(CANDIDATE_IDS),
+        "task_success_contract": public["task_success_contract"],
+        "task_success_contract_digest": public["task_success_contract_digest"],
         "cells": cells,
         "execution_authority": {
             "maximum_provider_allocations": 1,

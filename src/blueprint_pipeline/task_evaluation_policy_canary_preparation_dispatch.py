@@ -10,6 +10,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .adp_task_scoring import (
+    confirmed_rigid_task_success_contract_matches_published,
+)
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
 from .task_evaluation_launch_preparation_queue import stage_launch_preparation_request
@@ -124,13 +127,39 @@ def validate_policy_canary_execution_plan(
     template = _mapping(plan.get("preparation_template"))
     template_controller = _mapping(template.get("controller"))
     resource = _mapping(plan.get("resource_authority"))
+    expected_plan_fields = {
+        "schema_version",
+        "source_commit",
+        "configured_source_launch_id",
+        "configured_offering_configuration_run_id",
+        "scene_revision_digest",
+        "public_setup_digest",
+        "task_success_contract",
+        "task_success_contract_digest",
+        "configured_preparation_request_digest",
+        "policy_controller_configuration",
+        "model_rights",
+        "resolved_scenarios",
+        "legacy_policy_run_setup",
+        "preparation_template",
+        "resource_authority",
+        "activation_automation",
+        "lineage_aliases",
+        "provider_mutation_performed",
+        "paid_execution_requested",
+        "plan_digest",
+    }
     if (
-        plan.get("schema_version") != PLAN_SCHEMA_VERSION
+        set(plan) != expected_plan_fields
+        or plan.get("schema_version") != PLAN_SCHEMA_VERSION
         or not re.fullmatch(r"[0-9a-f]{40}", str(plan.get("source_commit") or ""))
         or plan.get("configured_source_launch_id") != setup["source_launch_id"]
         or not str(plan.get("configured_offering_configuration_run_id") or "")
         or plan.get("scene_revision_digest") != setup["scene_revision_digest"]
         or plan.get("public_setup_digest") != setup["setup_digest"]
+        or plan.get("task_success_contract") != setup["task_success_contract"]
+        or plan.get("task_success_contract_digest")
+        != setup["task_success_contract_digest"]
         or not _digest(plan.get("configured_preparation_request_digest"))
         or not _reference(plan.get("policy_controller_configuration"))
         or not _reference(plan.get("model_rights"))
@@ -231,6 +260,10 @@ def _validate_selection(
             "hard_cap_usd": spend.get("max_spend_usd"),
             "hard_ttl_seconds": spend.get("hard_ttl_seconds"),
         },
+        "task_success_contract": request.get("task_success_contract"),
+        "task_success_contract_digest": request.get(
+            "task_success_contract_digest"
+        ),
         "notification": request.get("notification"),
     }
     quick = setup["episode_presets"][0]
@@ -261,6 +294,12 @@ def _validate_selection(
         or not str(notification.get("email") or "")
         or selected_resource.get("hard_cap_usd") != resource["hard_cap_usd"]
         or selected_resource.get("hard_ttl_seconds") != resource["hard_ttl_seconds"]
+        or selection.get("task_success_contract_digest")
+        != _mapping(selection.get("task_success_contract")).get("contract_digest")
+        or not confirmed_rigid_task_success_contract_matches_published(
+            published=setup["task_success_contract"],
+            selected=_mapping(selection.get("task_success_contract")),
+        )
     ):
         raise PolicyCanaryPreparationDispatchError(
             "policy_canary_launch_selection_invalid"
@@ -349,6 +388,10 @@ def maybe_dispatch_policy_canary_preparation(
             "policy_candidate_ids": list(CANDIDATES),
             "notification": selection["notification"],
             "website_request_digest": request["request_digest"],
+            "task_success_contract": selection["task_success_contract"],
+            "task_success_contract_digest": selection[
+                "task_success_contract_digest"
+            ],
         }
         preparation = expand_policy_run_preparation_request(
             setup=legacy_setup,

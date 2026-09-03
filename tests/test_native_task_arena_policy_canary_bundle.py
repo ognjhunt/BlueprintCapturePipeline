@@ -13,9 +13,11 @@ from blueprint_pipeline import native_task_arena_policy_canary_bundle as bundle
 from blueprint_pipeline import native_task_arena_policy_canary_worker as worker
 from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import policy_canary_allocator_lane as allocator_lane
+from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
 
 
 def _spec(candidate: str) -> dict[str, object]:
+    setup = public_setup()
     value: dict[str, object] = {
         "schema_version": "native_task_arena_policy_canary_execution_spec.v1",
         "candidate_id": candidate,
@@ -29,6 +31,8 @@ def _spec(candidate: str) -> dict[str, object]:
         "candidate_rights_binding": {"status": "admitted"},
         "checkpoint_digest": "sha256:" + "1" * 64,
         "runtime_identity_digest": "sha256:" + "2" * 64,
+        "task_success_contract": setup["task_success_contract"],
+        "task_success_contract_digest": setup["task_success_contract_digest"],
         "prompt": "Move the object",
         "max_policy_queries": 10,
         "open_loop_horizon": 8,
@@ -277,6 +281,10 @@ def test_resolved_scene_plan_binds_policy_cadence_and_supported_variations() -> 
                 "dynamic_friction": 0.55,
             },
         },
+        "task_success_contract": public_setup()["task_success_contract"],
+        "task_success_contract_digest": public_setup()[
+            "task_success_contract_digest"
+        ],
     }
 
     resolved = worker._resolved_scene_plan(base, cell)
@@ -284,6 +292,9 @@ def test_resolved_scene_plan_binds_policy_cadence_and_supported_variations() -> 
     assert resolved["cadence"]["control_frequency_hz"] == 15.0
     assert resolved["cadence"]["control_decimation"] == 8
     assert resolved["task_spec"]["control_frequency_hz"] == 15.0
+    assert resolved["task_spec"]["task_success_contract"] == cell[
+        "task_success_contract"
+    ]
     assert resolved["task_spec"]["prompt"] == (
         "Push the mug onto the green target marker."
     )
@@ -320,6 +331,7 @@ def test_resolved_scene_plan_binds_policy_cadence_and_supported_variations() -> 
 def test_isolated_cell_results_aggregate_to_twenty_paired_episodes(
     tmp_path: Path,
 ) -> None:
+    setup = public_setup()
     cells = [
         {"cell_id": f"cell-{index}", "seed": index}
         for index in range(10)
@@ -330,6 +342,10 @@ def test_isolated_cell_results_aggregate_to_twenty_paired_episodes(
             {
                 "status": "runtime_selected_cell_completed_pending_aggregation",
                 "selected_cell_index": index,
+                "task_success_contract": setup["task_success_contract"],
+                "task_success_contract_digest": setup[
+                    "task_success_contract_digest"
+                ],
                 "episodes": [
                     {
                         "candidate_id": candidate,
@@ -353,7 +369,14 @@ def test_isolated_cell_results_aggregate_to_twenty_paired_episodes(
 
     result = worker._aggregate_isolated_cell_results(
         authority={},
-        inputs={"cells": cells, "matrix_digest": "sha256:" + "a" * 64},
+        inputs={
+            "cells": cells,
+            "matrix_digest": "sha256:" + "a" * 64,
+            "task_success_contract": setup["task_success_contract"],
+            "task_success_contract_digest": setup[
+                "task_success_contract_digest"
+            ],
+        },
         child_results=children,
         output_root=tmp_path,
         construction_lineage_mode="compiled_configured_scene_diagnostic",

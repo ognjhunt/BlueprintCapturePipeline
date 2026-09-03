@@ -12,7 +12,9 @@
     "scene_revision_digest",
     "schema_version",
     "setup_digest",
-    "source_launch_id"
+    "source_launch_id",
+    "task_success_contract",
+    "task_success_contract_digest"
   ],
   "robot_keys": [
     "action_schema",
@@ -54,6 +56,8 @@
     "profile_id",
     "schema_version",
     "source_commit"
+    ,"task_success_contract"
+    ,"task_success_contract_digest"
   ],
   "execution_plan_keys": [
     "activation_automation",
@@ -74,5 +78,7 @@
     "scene_revision_digest",
     "schema_version",
     "source_commit"
+    ,"task_success_contract"
+    ,"task_success_contract_digest"
   ]
 }

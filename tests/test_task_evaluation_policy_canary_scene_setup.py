@@ -239,6 +239,20 @@ def _inputs(tmp_path: Path) -> dict[str, Path]:
             "prompt": "Move the configured rigid object by planar push.",
             "maximum_action_steps": 240,
             "manipulation_strategy": "planar_push",
+            "destination_position_bounds_world_m": {
+                "minimum": [1.14, 1.99, 0.79],
+                "maximum": [1.16, 2.01, 0.81],
+            },
+            "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "destination_orientation_tolerance_rad": 0.1,
+            "support_height_interval_m": [0.79, 0.81],
+            "minimum_translation_m": 0.14,
+            "minimum_lift_m": 0.0,
+            "movement_epsilon_m": 0.001,
+            "settle_window_samples": 3,
+            "settle_position_tolerance_m": 0.002,
+            "settle_orientation_tolerance_rad": 0.01,
+            "release_gripper_width_min_m": 0.07,
         },
         "plan_digest": "",
     }
@@ -349,9 +363,13 @@ def test_setup_binds_current_scene_pair_quick10_and_unqualified_boundary(
     assert setup["historical_runtime_smoke"]["current_runtime_proof"] is False
     assert setup["scene_promotion_authorized"] is False
     assert setup["official_ranking_authorized"] is False
+    assert setup["task_success_contract_digest"] == setup[
+        "task_success_contract"
+    ]["contract_digest"]
     for role in ("pi05_execution_spec", "groot_execution_spec"):
         spec = json.loads(Path(setup["records"][role]["path"]).read_text())
         assert spec["prompt"] == "Push the mug onto the green target marker."
+        assert spec["task_success_contract"] == setup["task_success_contract"]
     groot = json.loads(
         Path(setup["records"]["groot_execution_spec"]["path"]).read_text()
     )
@@ -602,6 +620,10 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
                 "notify_on": ["completed", "blocked", "cancelled"],
             },
             "website_request_digest": "sha256:" + "7" * 64,
+            "task_success_contract": setup["task_success_contract"],
+            "task_success_contract_digest": setup[
+                "task_success_contract_digest"
+            ],
         },
         setup=legacy_setup,
     )
@@ -695,6 +717,10 @@ def test_post_activation_template_separates_configured_and_canary_requests(
         "capture_session_id": "capture-new-canary",
         "intake_id": "intake-new-canary",
         "request_digest": "sha256:" + "e" * 64,
+        "task_success_contract": emitted["setup"]["task_success_contract"],
+        "task_success_contract_digest": emitted["setup"][
+            "task_success_contract_digest"
+        ],
         "maximum_provider_allocations": 1,
         "retry_cap": 0,
         "automatic_retry_authorized": False,

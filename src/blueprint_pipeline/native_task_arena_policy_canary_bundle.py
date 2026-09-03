@@ -223,6 +223,13 @@ def build_policy_canary_session_bundle(
             _read(groot_execution_spec_path), candidate="groot_n17_droid"
         ),
     }
+    if any(
+        spec.get("task_success_contract") != inputs["task_success_contract"]
+        or spec.get("task_success_contract_digest")
+        != inputs["task_success_contract_digest"]
+        for spec in specs.values()
+    ):
+        raise ValueError("policy_canary_execution_spec_task_success_contract_mismatch")
     package = Path(__file__).resolve().parent
     runtime_modules = [package / name for name in POLICY_RUNTIME_MODULE_NAMES]
     runtime_modules.extend(
@@ -304,6 +311,9 @@ def build_policy_canary_session_bundle(
                 "retry_cap": 0,
                 "authority_digest": authority["authority_digest"],
                 "runtime_inputs_digest": inputs["runtime_inputs_digest"],
+                "task_success_contract_digest": inputs[
+                    "task_success_contract_digest"
+                ],
                 "candidate_policy_queried": False,
                 "expected_output_filename": PROVIDER_RESULT_FILENAME,
                 "scene_promotion_authorized": False,

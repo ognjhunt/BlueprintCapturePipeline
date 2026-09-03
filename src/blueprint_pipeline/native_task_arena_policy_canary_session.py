@@ -17,6 +17,16 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
+try:  # flat provider-bundle layout
+    from adp_task_scoring import (
+        TaskNeutralScoringError,
+        validate_rigid_task_success_contract,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp_task_scoring import (
+        TaskNeutralScoringError,
+        validate_rigid_task_success_contract,
+    )
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -143,8 +153,32 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     """
 
     payload = json.loads(json.dumps(value, allow_nan=False))
+    allowed_fields = {
+        "schema_version",
+        "run_id",
+        "run_kind",
+        "claim_ceiling",
+        "scene_revision_digest",
+        "matrix_digest",
+        "configuration_digest",
+        "plan_digest",
+        "activation_digest",
+        "task_success_contract",
+        "task_success_contract_digest",
+        "base_native_packet",
+        "runtime_source",
+        "construction_result",
+        "policy_readiness",
+        "candidate_ids",
+        "cells",
+        "execution_authority",
+        "resource_authority",
+        "capture_contract",
+        "runtime_inputs_digest",
+    }
     if (
-        payload.get("schema_version")
+        not set(payload).issubset(allowed_fields)
+        or payload.get("schema_version")
         != "task_evaluation_policy_canary_runtime_inputs.v1"
         or payload.get("run_kind") != RUN_KIND
         or payload.get("claim_ceiling") != CLAIM_CEILING
@@ -154,6 +188,21 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     for field in ("activation_digest", "configuration_digest", "plan_digest"):
         if not _digest(payload.get(field)):
             raise PolicyCanarySessionError("policy_canary_runtime_input_digest_invalid")
+    try:
+        task_success_contract = validate_rigid_task_success_contract(
+            _mapping(payload.get("task_success_contract"))
+        )
+    except TaskNeutralScoringError as exc:
+        raise PolicyCanarySessionError(
+            "policy_canary_runtime_task_success_contract_invalid:" + str(exc)
+        ) from exc
+    if (
+        payload.get("task_success_contract_digest")
+        != task_success_contract["contract_digest"]
+    ):
+        raise PolicyCanarySessionError(
+            "policy_canary_runtime_task_success_contract_digest_mismatch"
+        )
     if "matrix_digest" in payload and not _digest(payload.get("matrix_digest")):
         raise PolicyCanarySessionError("policy_canary_runtime_input_digest_invalid")
     for field in ("base_native_packet", "runtime_source", "construction_result"):
@@ -232,6 +281,10 @@ def validate_session_authority(value: Mapping[str, Any]) -> dict[str, Any]:
     _execution_release(payload.get("execution_release"))
     if not _digest(payload.get("runtime_inputs_digest")):
         raise PolicyCanarySessionError("policy_canary_session_runtime_inputs_digest_invalid")
+    if not _digest(payload.get("task_success_contract_digest")):
+        raise PolicyCanarySessionError(
+            "policy_canary_session_task_success_contract_digest_invalid"
+        )
     if (
         not _finite_positive(payload.get("hard_cap_usd"))
         or isinstance(payload.get("hard_ttl_seconds"), bool)
@@ -306,6 +359,8 @@ def validate_provider_bundle(
         or payload.get("runtime_inputs_digest")
         != bound_authority["runtime_inputs_digest"]
         or payload.get("authority_digest") != bound_authority["authority_digest"]
+        or payload.get("task_success_contract_digest")
+        != bound_authority["task_success_contract_digest"]
         or payload.get("execution_release") != execution_release
     ):
         raise PolicyCanarySessionError("policy_canary_provider_bundle_invalid")
@@ -339,6 +394,10 @@ def build_session_authority(
         or activation.get("activation_digest") != inputs["activation_digest"]
         or tuple(activation.get("candidate_ids") or ()) != CANDIDATE_IDS
         or activation.get("campaign_unit_count") != EPISODES_PER_POLICY
+        or activation.get("task_success_contract")
+        != inputs["task_success_contract"]
+        or activation.get("task_success_contract_digest")
+        != inputs["task_success_contract_digest"]
         or activation.get("activation_digest")
         != canonical_digest(activation, digest_field="activation_digest")
     ):
@@ -358,6 +417,7 @@ def build_session_authority(
             runtime_input_record, code="policy_canary_session_runtime_inputs_invalid"
         ),
         "runtime_inputs_digest": inputs["runtime_inputs_digest"],
+        "task_success_contract_digest": inputs["task_success_contract_digest"],
         "resource_name": resource_name,
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
@@ -490,6 +550,21 @@ def validate_session_result(value: Mapping[str, Any]) -> dict[str, Any]:
         or len(episodes) != LEARNED_ROLLOUT_COUNT
     ):
         raise PolicyCanarySessionError("policy_canary_session_result_identity_invalid")
+    try:
+        task_success_contract = validate_rigid_task_success_contract(
+            _mapping(payload.get("task_success_contract"))
+        )
+    except TaskNeutralScoringError as exc:
+        raise PolicyCanarySessionError(
+            "policy_canary_session_result_task_success_contract_invalid:" + str(exc)
+        ) from exc
+    if (
+        payload.get("task_success_contract_digest")
+        != task_success_contract["contract_digest"]
+    ):
+        raise PolicyCanarySessionError(
+            "policy_canary_session_result_task_success_contract_digest_mismatch"
+        )
     allocations = closeout.get("provider_allocations_observed")
     if (
         allocations != 1
@@ -616,6 +691,10 @@ def execute_paired_session(
                         "claim_ceiling": CLAIM_CEILING,
                         "policy_outcome_interpretable": False,
                         "ranking_eligible": False,
+                        "task_success_contract": inputs["task_success_contract"],
+                        "task_success_contract_digest": inputs[
+                            "task_success_contract_digest"
+                        ],
                     }
                     try:
                         observed = dict(run_episode(session, policy, context))
@@ -703,6 +782,8 @@ def execute_paired_session(
         "run_kind": RUN_KIND,
         "claim_ceiling": CLAIM_CEILING,
         "candidate_ids": list(CANDIDATE_IDS),
+        "task_success_contract": inputs["task_success_contract"],
+        "task_success_contract_digest": inputs["task_success_contract_digest"],
         "episodes_per_policy": EPISODES_PER_POLICY,
         "learned_policy_rollout_count": LEARNED_ROLLOUT_COUNT,
         "provider_allocations_observed": (

@@ -62,6 +62,7 @@ from tests.test_task_evaluation_policy_run_contract import (
     selection as policy_selection,
     setup as policy_setup,
 )
+from tests.test_task_evaluation_policy_canary_setup import _setup as public_canary_setup
 from blueprint_pipeline.task_evaluation_policy_run_contract import (
     build_policy_run_plan,
     compile_policy_run_configuration,
@@ -348,13 +349,19 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
             "claim_ceiling": "diagnostic_policy_execution",
             "scene_revision_digest": "sha256:" + "9" * 64,
             "scene_controls_status_at_submission": "configured_controls_pending",
-            "robot_preset_id": "franka_panda_robotiq_2f85_v1",
+            "robot_preset_id": "droid_franka_panda_robotiq_2f85_v1",
             "policy_candidate_ids": ["pi05_droid", "groot_n17_droid"],
             "notification": {
                 "email": "robotics@example.com",
                 "notify_on": ["completed", "blocked", "cancelled"],
             },
             "website_request_digest": "sha256:" + "4" * 64,
+            "task_success_contract": public_canary_setup()[
+                "task_success_contract"
+            ],
+            "task_success_contract_digest": public_canary_setup()[
+                "task_success_contract_digest"
+            ],
         }
     )
     configuration = compile_policy_run_configuration(selected, setup=setup_value)
@@ -433,6 +440,13 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
     assert runtime_inputs["matrix_digest"] == configuration["matrix"][
         "scenario_set_digest"
     ]
+    assert runtime_inputs["task_success_contract"] == selected[
+        "task_success_contract"
+    ]
+    assert runtime_inputs["task_success_contract_digest"] == selected[
+        "task_success_contract_digest"
+    ]
+    assert result["task_success_contract"] == selected["task_success_contract"]
     assert runtime_inputs["resource_authority"] == {
         "resource_name": (
             "blueprint-native-task-policy-canary-"
