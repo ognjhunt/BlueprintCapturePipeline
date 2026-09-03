@@ -110,7 +110,10 @@ def test_policy_canary_keeps_registry_out_of_native_controller_slot() -> None:
         "controller.configuration",
         "task_evaluation_native_controller_configuration.v1",
     )
-    assert controller["identity"] == {"id": "paired-policy-canary", "version": "v1"}
+    assert controller["identity"] == {
+        "id": "paired-droid-policy-canary",
+        "version": "v2",
+    }
     assert controller["kind"] == "policy_container"
     assert controller["document_digest"] == canonical_digest(
         controller, digest_field="document_digest"
