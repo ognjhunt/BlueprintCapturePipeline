@@ -862,7 +862,46 @@ class OpenAIMultimodalEpisodeInterpreter:
         )
 
     @staticmethod
-    def _compact_state_trace(value: Mapping[str, Any]) -> dict[str, Any]:
+    def _selected_trace_rows(
+        value: Any,
+        *,
+        event_steps: set[int],
+        maximum_rows: int = 96,
+    ) -> list[Mapping[str, Any]]:
+        rows = [row for row in value or [] if isinstance(row, Mapping)]
+        if len(rows) <= maximum_rows:
+            return rows
+        step_positions = [
+            (index, int(row["step_index"]))
+            for index, row in enumerate(rows)
+            if isinstance(row.get("step_index"), int)
+            and not isinstance(row.get("step_index"), bool)
+        ]
+        event_positions = sorted(
+            {
+                min(step_positions, key=lambda item: abs(item[1] - step))[0]
+                for step in event_steps
+            }
+        )
+        available = maximum_rows - 2
+        if len(event_positions) > available:
+            event_positions = [
+                event_positions[
+                    round(index * (len(event_positions) - 1) / (available - 1))
+                ]
+                for index in range(available)
+            ]
+        chosen = {0, len(rows) - 1, *event_positions}
+        for slot in range(maximum_rows):
+            if len(chosen) >= maximum_rows:
+                break
+            chosen.add(round(slot * (len(rows) - 1) / (maximum_rows - 1)))
+        return [rows[index] for index in sorted(chosen)[:maximum_rows]]
+
+    @classmethod
+    def _compact_state_trace(
+        cls, value: Mapping[str, Any], *, event_steps: set[int]
+    ) -> dict[str, Any]:
         task_fields = (
             "step_index",
             "task_object_pose_world",
@@ -884,23 +923,38 @@ class OpenAIMultimodalEpisodeInterpreter:
             "robot_task_forbidden_collision_peak_force_n",
         )
         joint_fields = ("step_index", "joint_positions_rad")
+        task_rows = cls._selected_trace_rows(
+            value.get("task_state_samples"), event_steps=event_steps
+        )
+        joint_rows = cls._selected_trace_rows(
+            value.get("joint_states"), event_steps=event_steps
+        )
         return {
             "schema_version": value.get("schema_version"),
             "trace_digest": value.get("trace_digest"),
             "task_state_samples": [
                 {key: row[key] for key in task_fields if key in row}
-                for row in value.get("task_state_samples") or []
-                if isinstance(row, Mapping)
+                for row in task_rows
             ],
             "joint_states": [
                 {key: row[key] for key in joint_fields if key in row}
-                for row in value.get("joint_states") or []
-                if isinstance(row, Mapping)
+                for row in joint_rows
             ],
+            "sampling": {
+                "source_task_state_sample_count": len(
+                    value.get("task_state_samples") or []
+                ),
+                "selected_task_state_sample_count": len(task_rows),
+                "source_joint_state_count": len(value.get("joint_states") or []),
+                "selected_joint_state_count": len(joint_rows),
+                "event_steps_preserved_when_capacity_allows": sorted(event_steps),
+            },
         }
 
-    @staticmethod
-    def _compact_contact_trace(value: Mapping[str, Any]) -> dict[str, Any]:
+    @classmethod
+    def _compact_contact_trace(
+        cls, value: Mapping[str, Any], *, event_steps: set[int]
+    ) -> dict[str, Any]:
         fields = (
             "step_index",
             "gripper_width_m",
@@ -911,15 +965,20 @@ class OpenAIMultimodalEpisodeInterpreter:
             "task_scene_collision_peak_force_n",
             "task_support_contact_peak_force_n",
         )
+        rows = cls._selected_trace_rows(value.get("samples"), event_steps=event_steps)
         return {
             "schema_version": value.get("schema_version"),
             "trace_digest": value.get("trace_digest"),
             "typed_gap": value.get("typed_gap"),
             "samples": [
                 {key: row[key] for key in fields if key in row}
-                for row in value.get("samples") or []
-                if isinstance(row, Mapping)
+                for row in rows
             ],
+            "sampling": {
+                "source_sample_count": len(value.get("samples") or []),
+                "selected_sample_count": len(rows),
+                "event_steps_preserved_when_capacity_allows": sorted(event_steps),
+            },
         }
 
     @staticmethod
@@ -1044,13 +1103,16 @@ class OpenAIMultimodalEpisodeInterpreter:
         return sorted(chosen[: self._max_frames])
 
     def interpret(self, request: EpisodeInterpretationRequest) -> EpisodeInterpreterOutput:
+        event_steps = self._event_steps(request.deterministic_score)
         compact = {
             "input_bundle_digest": request.input_receipt["input_bundle_digest"],
             "task_success_contract": request.task_success_contract,
             "deterministic_score": request.deterministic_score,
-            "state_trace": self._compact_state_trace(request.state_trace),
+            "state_trace": self._compact_state_trace(
+                request.state_trace, event_steps=event_steps
+            ),
             "contact_force_trace": self._compact_contact_trace(
-                request.contact_force_trace
+                request.contact_force_trace, event_steps=event_steps
             ),
             "frame_manifest": self._compact_frame_manifest(request.frame_manifest),
             "review_video_bindings": request.input_receipt["artifacts"]["review_videos"],
