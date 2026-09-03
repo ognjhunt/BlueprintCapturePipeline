@@ -1952,6 +1952,7 @@ def dispatch_policy_canary_activation(
         session_result=joined,
         runner=episode_interpretation_runner,
         rights_root=episode_interpretation_rights_root,
+        batch_authority=activation_result.get("episode_interpretation_authority"),
     )
     write_json(joined_path, joined)
     _event_and_sync(

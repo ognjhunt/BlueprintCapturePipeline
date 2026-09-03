@@ -97,6 +97,7 @@ REQUIRED_TRUE_FLAGS = (
 # needed releasing. A test pins this tuple against `deploy/systemd/*.service`
 # so a new unit cannot ship an unchecked entrypoint.
 CONTROL_PLANE_ENTRYPOINTS = (
+    "blueprint_pipeline.control_plane_storage_gc",
     "blueprint_pipeline.paid_resource_allocator",
     "blueprint_pipeline.live_pipeline_control_plane",
     "blueprint_pipeline.live_pipeline_intake_service",

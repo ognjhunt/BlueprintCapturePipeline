@@ -296,7 +296,11 @@ def _immutable_ref(value: Mapping[str, Any], *, code: str) -> dict[str, Any]:
     return ref
 
 
-def _quick_cells(scene_revision_digest: str) -> list[dict[str, Any]]:
+def _quick_cells(
+    scene_revision_digest: str, *, scene_id: str = SCENE_ID
+) -> list[dict[str, Any]]:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", scene_id):
+        raise PolicyCanarySetupError(["policy_canary_scene_id_invalid"])
     families = [family for family, count in QUICK_FAMILY_COUNTS.items() for _ in range(count)]
     parameters = [
         {},
@@ -323,7 +327,7 @@ def _quick_cells(scene_revision_digest: str) -> list[dict[str, Any]]:
         scenario = {"family": family, "ordinal": index, "parameters": resolved}
         cells.append(
             {
-                "cell_id": f"scene839873.quick10.{index:02d}.{family}",
+                "cell_id": f"scene{scene_id}.quick10.{index:02d}.{family}",
                 "seed": seed,
                 "family": family,
                 "partition": "held_out" if family == "held_out_composition" else "diagnostic",
@@ -428,6 +432,7 @@ def materialize_scene839873_policy_canary_setup(
     activation_release_window_template: Mapping[str, Any] | None = None,
     activation_lineage: Mapping[str, Any] | None = None,
     activation_authorization: Mapping[str, Any] | None = None,
+    scene_id: str = SCENE_ID,
 ) -> dict[str, Any]:
     del (
         activation_release_window_template,
@@ -435,6 +440,8 @@ def materialize_scene839873_policy_canary_setup(
         activation_authorization,
     )
     blockers: list[str] = []
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", scene_id):
+        blockers.append("policy_canary_scene_id_invalid")
     if not _SHA.fullmatch(source_commit):
         blockers.append("policy_canary_source_commit_invalid")
     configured_commit = configured_source_commit or source_commit
@@ -491,7 +498,7 @@ def materialize_scene839873_policy_canary_setup(
     ) != canonical_digest(scene_plan, digest_field="plan_digest"):
         blockers.append("policy_canary_scene_plan_invalid")
     if (
-        scene_plan.get("scene_id") != "interiorgs-839873"
+        scene_plan.get("scene_id") != f"interiorgs-{scene_id}"
         or scene_plan.get("task_kind") != "rigid_pick_place"
         or scene_plan.get("robot", {}).get("robot_id") != "franka_panda"
         or scene_plan.get("task_spec", {}).get("manipulation_strategy") != "planar_push"
@@ -581,7 +588,7 @@ def materialize_scene839873_policy_canary_setup(
             "policy_output_schema", {}
         ).get("joint_order") != [f"panda_joint{i}" for i in range(1, 8)]:
             blockers.append(f"policy_canary_{candidate_id}_action_schema_invalid")
-    cells = _quick_cells(scene_revision_digest)
+    cells = _quick_cells(scene_revision_digest, scene_id=scene_id)
     if Counter(row["family"] for row in cells) != Counter(QUICK_FAMILY_COUNTS):
         blockers.append("policy_canary_quick10_coverage_invalid")
     if blockers:
@@ -604,7 +611,7 @@ def materialize_scene839873_policy_canary_setup(
         "status": "verified_runnable",
         "run_kind": RUN_KIND,
         "claim_ceiling": CLAIM_CEILING,
-        "scene_id": SCENE_ID,
+        "scene_id": scene_id,
         "configured_source_launch_id": configured_source_launch_id,
         "scene_revision_digest": scene_revision_digest,
         "activation_digest": activation_digest,
@@ -716,6 +723,7 @@ def materialize_policy_canary_presubmission_setup(
     maximum_hourly_rate_usd: float = 0.8,
     hard_cap_usd: float = 4.0,
     hard_ttl_seconds: int = 9_000,
+    scene_id: str | None = None,
 ) -> dict[str, Any]:
     """Emit the Website descriptor before a user-created activation exists."""
 
@@ -727,6 +735,13 @@ def materialize_policy_canary_presubmission_setup(
         )
     if not _DIGEST.fullmatch(str(offering_digest or "")):
         raise PolicyCanarySetupError(["policy_canary_offering_digest_invalid"])
+    scene_plan_identity = _read(
+        scene_plan_path, code="policy_canary_scene_plan_invalid"
+    ).get("scene_id")
+    derived_scene_id = str(scene_plan_identity or "").removeprefix("interiorgs-")
+    selected_scene_id = scene_id or derived_scene_id
+    if not selected_scene_id:
+        raise PolicyCanarySetupError(["policy_canary_scene_id_missing"])
     # Reuse the complete byte/static preflight without publishing its
     # activation-bound output. The placeholder lineage lives only in a
     # temporary directory and is never returned or persisted as evidence.
@@ -758,6 +773,7 @@ def materialize_policy_canary_presubmission_setup(
             hard_ttl_seconds=hard_ttl_seconds,
             task_success_contract=task_success_contract,
             require_confirmed_task_success_contract=False,
+            scene_id=selected_scene_id,
         )
     readiness = _read(
         historical_policy_readiness_path,
@@ -914,7 +930,7 @@ def materialize_policy_canary_presubmission_setup(
                 "recommended": True,
                 "matrix": {
                     "matrix_digest": canonical_digest({"ordered_cells": cells}),
-                    "resolver_id": "scene839873_quick10_deterministic",
+                    "resolver_id": f"scene{selected_scene_id}_quick10_deterministic",
                     "resolver_version": "v1",
                     "deterministic": True,
                     "cells": cells,
@@ -1250,6 +1266,7 @@ def materialize_policy_canary_presubmission_setup(
         "schema_version": "task_evaluation_policy_canary_execution_plan.v1",
         "source_commit": source_commit,
         "configured_source_launch_id": configured_source_launch_id,
+        "scene_id": selected_scene_id,
         "configured_offering_configuration_run_id": (configured_offering_configuration_run_id),
         "scene_revision_digest": scene_revision_digest,
         "public_setup_digest": setup["setup_digest"],
@@ -1295,6 +1312,7 @@ def materialize_policy_canary_presubmission_setup(
         "configured_base_profile_id": configured_base_profile["profile_id"],
         "configured_base_profile_digest": configured_base_profile["profile_digest"],
         "configured_source_launch_id": configured_source_launch_id,
+        "scene_id": selected_scene_id,
         "source_commit": source_commit,
         "internal_policy_canary_setup": setup,
         "internal_policy_canary_execution_plan": execution_plan,
@@ -1318,6 +1336,7 @@ def materialize_policy_canary_presubmission_setup(
         "source_commit": source_commit,
         "configured_source_commit": configured_source_commit or source_commit,
         "configured_source_launch_id": configured_source_launch_id,
+        "scene_id": selected_scene_id,
         "scene_revision_digest": scene_revision_digest,
         "configured_request_digest": request_digest,
         "launch_request_path": str(Path(launch_request_path).expanduser().resolve()),
@@ -1483,6 +1502,7 @@ def materialize_scene839873_policy_canary_setup_from_template(
         hard_ttl_seconds=int(template["hard_ttl_seconds"]),
         task_success_contract=validated_activation_contract,
         require_confirmed_task_success_contract=True,
+        scene_id=str(template.get("scene_id") or SCENE_ID),
     )
 
 

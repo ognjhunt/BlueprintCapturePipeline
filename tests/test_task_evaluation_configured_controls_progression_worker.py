@@ -247,6 +247,12 @@ def test_compiled_policy_canary_automatically_queues_bound_activation(
         "standing_authorization": False,
         "policy_campaign_queue": True,
     }
+    assert activation["episode_interpretation_authority"] == request[
+        "episode_interpretation_authority"
+    ]
+    assert activation["episode_interpretation_source_rights_admission"] == request[
+        "episode_interpretation_source_rights_admission"
+    ]
     assert observed["provider_mutation_performed"] is False
     assert observed["paid_execution_requested"] is False
 

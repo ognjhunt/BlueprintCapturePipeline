@@ -16,6 +16,7 @@ from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import (
     AgentsSDKInvocationResult,
 )
 from blueprint_pipeline.policy_canary_episode_interpretation_closeout import (
+    main,
     materialize_policy_canary_episode_interpretations,
 )
 from tests.test_episode_interpretation import _episode_root, _output
@@ -213,6 +214,38 @@ def test_unavailable_configuration_yields_twenty_nonblocking_abstentions(
     assert summary["receipt_count"] == summary["abstained_count"] == 20
     assert summary["provider_call_count"] == 0
     assert summary["score_overwrite_performed"] is False
+
+
+def test_closeout_cli_writes_a_nonblocking_backfill_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data, result = _session(tmp_path)
+    source = tmp_path / "session-result.json"
+    source.write_text(canonical_json(result) + "\n", encoding="utf-8")
+    output = tmp_path / "backfill-result.json"
+    monkeypatch.delenv(
+        "BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETER_PROFILE_FILE", raising=False
+    )
+    monkeypatch.delenv("BLUEPRINT_LIVE_AGENTS_SDK", raising=False)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "policy_canary_episode_interpretation_closeout",
+            "--run-root",
+            str(tmp_path),
+            "--evidence-root",
+            str(data["root"]),
+            "--session-result",
+            str(source),
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert main() == 0
+    written = __import__("json").loads(output.read_text(encoding="utf-8"))
+    assert written["episode_interpretation"]["status"] == "abstained"
+    assert written["episode_interpretation"]["provider_call_count"] == 0
 
 
 def test_interpreter_disagreement_is_retained_without_score_overwrite(tmp_path: Path) -> None:

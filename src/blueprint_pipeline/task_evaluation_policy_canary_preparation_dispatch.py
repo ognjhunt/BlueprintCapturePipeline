@@ -150,10 +150,16 @@ def validate_policy_canary_execution_plan(
         "plan_digest",
     }
     if (
-        set(plan) != expected_plan_fields
+        set(plan) not in (expected_plan_fields, expected_plan_fields | {"scene_id"})
         or plan.get("schema_version") != PLAN_SCHEMA_VERSION
         or not re.fullmatch(r"[0-9a-f]{40}", str(plan.get("source_commit") or ""))
         or plan.get("configured_source_launch_id") != setup["source_launch_id"]
+        or (
+            plan.get("scene_id") is not None
+            and not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", str(plan["scene_id"])
+            )
+        )
         or not str(plan.get("configured_offering_configuration_run_id") or "")
         or plan.get("scene_revision_digest") != setup["scene_revision_digest"]
         or plan.get("public_setup_digest") != setup["setup_digest"]
@@ -265,6 +271,12 @@ def _validate_selection(
             "task_success_contract_digest"
         ),
         "notification": request.get("notification"),
+        "episode_interpretation_authority": request.get(
+            "episode_interpretation_authority"
+        ),
+        "episode_interpretation_source_rights_admission": request.get(
+            "episode_interpretation_source_rights_admission"
+        ),
     }
     quick = setup["episode_presets"][0]
     matrix = quick["matrix"]
@@ -401,7 +413,27 @@ def maybe_dispatch_policy_canary_preparation(
             run_id=request["run_id"],
             preparation_id=preparation_id,
         )
-        preparation["policy_canary_activation"] = plan["activation_automation"]
+        preparation["policy_canary_activation"] = {
+            **plan["activation_automation"],
+            **(
+                {
+                    "episode_interpretation_authority": selection[
+                        "episode_interpretation_authority"
+                    ],
+                    "episode_interpretation_source_rights_admission": selection[
+                        "episode_interpretation_source_rights_admission"
+                    ],
+                }
+                if isinstance(
+                    selection.get("episode_interpretation_authority"), Mapping
+                )
+                and isinstance(
+                    selection.get("episode_interpretation_source_rights_admission"),
+                    Mapping,
+                )
+                else {}
+            ),
+        }
         preparation = validate_launch_preparation_request(preparation)
         queue_receipt = stage_launch_preparation_request(
             value=preparation,

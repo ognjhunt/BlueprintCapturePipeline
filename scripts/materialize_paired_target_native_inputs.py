@@ -324,6 +324,7 @@ STEPS: dict[str, Step] = {
             "request": Param("--request", required=True, json_file=True),
             "evidence_root": Param("--evidence-root", required=True),
             "output_dir": Param("--output-dir", required=True),
+            "link_sources_within": Param("--link-sources-within"),
         },
     ),
     "policy-execution-spec": Step(

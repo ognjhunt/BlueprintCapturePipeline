@@ -52,6 +52,10 @@ def test_storage_table_is_well_formed() -> None:
     guard = classify_path("/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit")
     assert guard is not None and guard.storage_class == "evidence_hot"
     assert "/var/lib/blueprint/task-evaluation-inputs/prepared-references" in roots_of_class("cache")
+    assert "/var/lib/blueprint/pipeline-control-plane/profile-install-staging" in roots_of_class("cache")
+    assert "/var/lib/blueprint/pipeline-control-plane/episode-interpretation-rights" in roots_of_class(
+        "evidence_hot"
+    )
     assert "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs" in roots_of_class(
         "evidence_cold"
     )

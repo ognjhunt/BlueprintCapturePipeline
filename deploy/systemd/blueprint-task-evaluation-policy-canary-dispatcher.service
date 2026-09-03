@@ -50,6 +50,11 @@ Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
 Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
 Environment=VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock
 Environment=HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token
+Environment=OPENAI_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key_episode_interpretation
+Environment=OPENAI_ADMIN_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_admin_api_key
+Environment=BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETER_PROFILE_FILE=/opt/blueprint/task-evaluation-control-plane/docs/arm_decision_proof_v1/manifests/policy_canary_episode_interpreter_profile.v1.json
+Environment=BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETATION_RIGHTS_ROOT=/var/lib/blueprint/pipeline-control-plane/episode-interpretation-rights
+Environment=BLUEPRINT_LIVE_AGENTS_SDK=1
 Environment=PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token
 # Keep terminal report and notification publication reachable after a clean
 # production rebuild; EnvironmentFile remains the operator override.

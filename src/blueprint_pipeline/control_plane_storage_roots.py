@@ -76,6 +76,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-reconciliation", "evidence_hot", "blueprint", "reconciler reports"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-supervision", "evidence_hot", "blueprint", "launch supervisor reports"),
     StorageRoot(f"{_CONTROL_PLANE}/storage-gc", "evidence_hot", "blueprint", "storage reclaim reports"),
+    StorageRoot(f"{_CONTROL_PLANE}/episode-interpretation-rights", "evidence_hot", "blueprint", "human-approved per-episode disclosure rights"),
     StorageRoot("/var/lib/blueprint/production-gpu-campaigns.sqlite", "evidence_hot", "blueprint", "gpu campaign ledger"),
     StorageRoot("/var/lib/blueprint/production-gpu-worker-pool.sqlite", "evidence_hot", "blueprint", "gpu worker pool ledger"),
     # --- sealed run evidence; offloadable after the hot window
@@ -100,6 +101,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-configured-controls", "work", "blueprint", "configured controls progression state"),
     StorageRoot(f"{_CONTROL_PLANE}/capture-reconstruction-queue", "work", "blueprint", "capture reconstruction queue"),
     StorageRoot(f"{_CONTROL_PLANE}/capture-reconstruction-derived", "cache", "blueprint", "derived reconstruction bytes"),
+    StorageRoot(f"{_CONTROL_PLANE}/profile-install-staging", "cache", "blueprint", "reproducible launch-profile installation staging"),
     StorageRoot("/var/lib/blueprint/pubsub-handoffs", "work", "blueprint", "pubsub handoff spool"),
     # --- reproducible derived inputs
     StorageRoot(f"{_INPUTS}/prepared-references", "cache", "blueprint", "materialized references and content store"),

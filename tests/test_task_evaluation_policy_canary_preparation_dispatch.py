@@ -253,6 +253,59 @@ def _profile_and_request(tmp_path: Path) -> tuple[dict, dict]:
         "scene_promotion_permitted": False,
         "official_ranking_permitted": False,
     })
+    source_rights = {
+        "schema_version": "policy_canary_episode_interpretation_source_rights_admission.v1",
+        "run_id": request["run_id"],
+        "team_namespace": "blueprint-internal",
+        "accepted_by": "robotics-member",
+        "accepted_on": "2026-08-31T16:30:00Z",
+        "external_disclosure_authorized": True,
+        "disclosed_artifact_roles": [
+            "contact_force_trace",
+            "deterministic_score",
+            "frame_manifest",
+            "lossless_frame",
+            "review_video",
+            "state_trace",
+            "task_success_contract",
+        ],
+        "provider_training_authorized": False,
+        "public_redistribution_authorized": False,
+        "admission_digest": "",
+    }
+    source_rights["admission_digest"] = canonical_digest(
+        source_rights, digest_field="admission_digest"
+    )
+    interpretation_authority = {
+        "schema_version": "policy_canary_episode_interpretation_batch_authority.v1",
+        "status": "approved",
+        "run_id": request["run_id"],
+        "interpreter": {
+            "interpreter_id": "openai_multimodal_episode_interpreter_v1",
+            "principal_kind": "independent_interpreter",
+            "provider_id": "openai",
+            "execution_site": "external_provider",
+            "runtime": "openai_agents_sdk",
+            "model": "gpt-5.6-luna",
+            "model_version": "gpt-5.6-luna",
+        },
+        "interpreter_profile_digest": "sha256:eca3944e331b60cc08fdb1548d753be7c1b513b7b703ad5fce8401b09eb83baf",
+        "allowed_artifact_roles": source_rights["disclosed_artifact_roles"],
+        "external_disclosure_authorized": True,
+        "provider_training_authorized": False,
+        "public_redistribution_authorized": False,
+        "maximum_cost_usd": 1.5,
+        "source_rights_admission_digest": source_rights["admission_digest"],
+        "accepted_by": "robotics-member",
+        "accepted_on": "2026-08-31T16:30:00Z",
+        "authority_reference": f"website:{request['run_id']}",
+        "authority_digest": "",
+    }
+    interpretation_authority["authority_digest"] = canonical_digest(
+        interpretation_authority, digest_field="authority_digest"
+    )
+    request["episode_interpretation_source_rights_admission"] = source_rights
+    request["episode_interpretation_authority"] = interpretation_authority
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     return profile, request
 

@@ -40,7 +40,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/Bluepr
 # Content stores whose blobs are implicitly pinned by hardlinks from derived directories.
 Environment=BLUEPRINT_CONTROL_PLANE_GC_CONTENT_STORE_ROOTS=/var/lib/blueprint/task-evaluation-inputs/prepared-references/content-addressed/sha256:/var/lib/blueprint/task-evaluation-inputs/compiled-episodes/content-addressed/adapter-members/sha256
 # Derived directories (cache class) retired once unpinned, aged, and unreferenced by any queue message.
-Environment=BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS=/var/lib/blueprint/task-evaluation-inputs/prepared-references:/var/lib/blueprint/task-evaluation-inputs/compiled-episodes:/var/lib/blueprint/task-evaluation-inputs/launch-activations
+Environment=BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS=/var/lib/blueprint/task-evaluation-inputs/prepared-references:/var/lib/blueprint/task-evaluation-inputs/compiled-episodes:/var/lib/blueprint/task-evaluation-inputs/launch-activations:/var/lib/blueprint/pipeline-control-plane/profile-install-staging
 Environment=BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches:/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches:/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions
 # Sealed run evidence eligible for offload after the hot window; offload itself stays dry-run until
 # BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1 is set in the operator environment file.

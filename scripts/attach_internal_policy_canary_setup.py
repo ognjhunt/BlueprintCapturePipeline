@@ -80,7 +80,8 @@ def materialize_policy_canary_launch_profile(
         "materialization_digest",
     }
     if (
-        set(wrapper) != expected_wrapper_fields
+        set(wrapper)
+        not in (expected_wrapper_fields, expected_wrapper_fields | {"scene_id"})
         or wrapper.get("schema_version")
         != "task_evaluation_policy_canary_profile_materialization_input.v1"
         or wrapper.get("materialization_digest")
@@ -97,6 +98,7 @@ def materialize_policy_canary_launch_profile(
         wrapper["configured_source_launch_id"] != setup["source_launch_id"]
         or wrapper["configured_source_launch_id"]
         != plan["configured_source_launch_id"]
+        or wrapper.get("scene_id") != plan.get("scene_id")
         or wrapper["task_success_contract"] != setup["task_success_contract"]
         or wrapper["task_success_contract"] != plan["task_success_contract"]
         or wrapper["task_success_contract_digest"]

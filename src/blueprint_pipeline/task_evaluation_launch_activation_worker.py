@@ -1493,6 +1493,18 @@ def _policy_campaign_activation_result(
                 "task_success_contract_digest": runtime_inputs[
                     "task_success_contract_digest"
                 ],
+                **(
+                    {
+                        "episode_interpretation_authority": request[
+                            "episode_interpretation_authority"
+                        ],
+                        "episode_interpretation_source_rights_admission": request[
+                            "episode_interpretation_source_rights_admission"
+                        ],
+                    }
+                    if "episode_interpretation_authority" in request
+                    else {}
+                ),
             }
             if runtime_inputs is not None and runtime_inputs_path is not None
             else {}

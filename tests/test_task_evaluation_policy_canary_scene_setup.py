@@ -379,6 +379,39 @@ def test_setup_binds_current_scene_pair_quick10_and_unqualified_boundary(
         assert record["sha256"].startswith("sha256:")
 
 
+def test_setup_accepts_a_new_interiorgs_scene_without_scene_specific_code(
+    tmp_path: Path,
+) -> None:
+    kwargs = _kwargs(tmp_path)
+    scene_path = Path(kwargs["scene_plan_path"])
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    scene["scene_id"] = "interiorgs-840999"
+    scene["task_id"] = "scene-840999-notebook-planar-push"
+    scene["plan_digest"] = canonical_digest(scene, digest_field="plan_digest")
+    write_json(scene_path, scene)
+    packet_path = Path(kwargs["packet_receipt_path"])
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    packet["scene_id"] = scene["scene_id"]
+    packet["task_id"] = scene["task_id"]
+    packet["arena_scene_plan_digest"] = scene["plan_digest"]
+    write_json(packet_path, packet)
+
+    setup = materialize_scene839873_policy_canary_setup(
+        **kwargs,
+        scene_id="840999",
+    )
+
+    assert setup["scene_id"] == "840999"
+    assert all(
+        row["cell_id"].startswith("scene840999.quick10.")
+        for row in setup["quick_10"]["cells"]
+    )
+    for role in ("pi05_execution_spec", "groot_execution_spec"):
+        spec = json.loads(Path(setup["records"][role]["path"]).read_text())
+        assert spec["scene_id"] == "interiorgs-840999"
+        assert spec["task_id"] == "scene-840999-notebook-planar-push"
+
+
 def test_setup_keeps_execution_commit_distinct_from_configured_scene_commit(
     tmp_path: Path,
 ) -> None:

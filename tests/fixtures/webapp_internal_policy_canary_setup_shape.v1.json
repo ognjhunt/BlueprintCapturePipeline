@@ -54,6 +54,7 @@
     "internal_policy_canary_setup",
     "materialization_digest",
     "profile_id",
+    "scene_id",
     "schema_version",
     "source_commit"
     ,"task_success_contract"
@@ -75,6 +76,7 @@
     "public_setup_digest",
     "resolved_scenarios",
     "resource_authority",
+    "scene_id",
     "scene_revision_digest",
     "schema_version",
     "source_commit"

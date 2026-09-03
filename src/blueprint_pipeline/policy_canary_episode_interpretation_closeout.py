@@ -8,6 +8,7 @@ authoritative billing/teardown/delivery path.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -27,6 +28,10 @@ from .episode_interpretation import (
     materialize_episode_interpretation_abstention,
     validate_episode_interpretation_rights,
 )
+from .episode_interpretation_batch_authority import (
+    derive_episode_interpretation_rights,
+    validate_episode_interpretation_batch_authority,
+)
 from .openai_official_cost_gate import build_openai_official_cost_run_gate
 from .task_evaluation_supervisor.agents_sdk import (
     OpenAIAgentsSDKConfig,
@@ -38,6 +43,9 @@ from .task_evaluation_supervisor.inference_reservations import InferenceReservat
 SCHEMA_VERSION = "policy_canary_episode_interpretation_closeout.v1"
 PLAN_SCHEMA_VERSION = "policy_canary_episode_interpretation_plan.v1"
 PROFILE_SCHEMA_VERSION = "policy_canary_episode_interpreter_profile.v1"
+BATCH_AUTHORITY_ENV = (
+    "BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETATION_BATCH_AUTHORITY_FILE"
+)
 
 
 class EpisodeInterpretationRunner(Protocol):
@@ -292,6 +300,7 @@ def materialize_policy_canary_episode_interpretations(
     runner: EpisodeInterpretationRunner | None = None,
     rights_root: str | Path | None = None,
     environment: Mapping[str, str] | None = None,
+    batch_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Add optional receipts and return a cloned result with a closeout summary."""
 
@@ -409,8 +418,50 @@ def materialize_policy_canary_episode_interpretations(
         )
         eligible = []
         rights_interpreter = _RightsOnlyInterpreter(identity)
+        resolved_batch_authority = dict(batch_authority) if batch_authority else None
+        batch_authority_path = str(env.get(BATCH_AUTHORITY_ENV) or "").strip()
+        if resolved_batch_authority is None and batch_authority_path:
+            try:
+                resolved_batch_authority = validate_episode_interpretation_batch_authority(
+                    _read(Path(batch_authority_path).expanduser().resolve()),
+                    run_id=str(result.get("run_id") or root.name),
+                    interpreter=rights_interpreter,
+                    interpreter_profile_digest=str(profile["profile_digest"]),
+                    maximum_cost_usd=float(profile["max_cost_usd"]),
+                )
+            except Exception:
+                unavailable_reason = "batch_rights_authority_invalid"
+        elif resolved_batch_authority is not None:
+            try:
+                resolved_batch_authority = validate_episode_interpretation_batch_authority(
+                    resolved_batch_authority,
+                    run_id=str(result.get("run_id") or root.name),
+                    interpreter=rights_interpreter,
+                    interpreter_profile_digest=str(profile["profile_digest"]),
+                    maximum_cost_usd=float(profile["max_cost_usd"]),
+                )
+            except Exception:
+                resolved_batch_authority = None
+                unavailable_reason = "batch_rights_authority_invalid"
         for _, request, _, receipt_path, marker_path in requests:
             rights_path = rights / f"{request.input_receipt['input_bundle_digest'].removeprefix('sha256:')}.json"  # type: ignore[operator]
+            if (
+                resolved_batch_authority is not None
+                and not rights_path.exists()
+                and not receipt_path.exists()
+                and not marker_path.exists()
+            ):
+                try:
+                    derive_episode_interpretation_rights(
+                        authority=resolved_batch_authority,
+                        request=request,
+                        interpreter=rights_interpreter,
+                        output_path=rights_path,
+                    )
+                except Exception:
+                    invalid_rights_inputs.add(
+                        str(request.input_receipt["input_bundle_digest"])
+                    )
             if rights_path.is_file() and not receipt_path.exists() and not marker_path.exists():
                 try:
                     validate_episode_interpretation_rights(
@@ -712,6 +763,7 @@ def best_effort_policy_canary_episode_interpretations(
     session_result: Mapping[str, Any],
     runner: EpisodeInterpretationRunner | None = None,
     rights_root: str | Path | None = None,
+    batch_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Never let the optional interpretation layer block terminal closeout."""
 
@@ -722,6 +774,7 @@ def best_effort_policy_canary_episode_interpretations(
             session_result=session_result,
             runner=runner,
             rights_root=rights_root,
+            batch_authority=batch_authority,
         )
     except Exception as exc:
         result = json.loads(json.dumps(dict(session_result), allow_nan=False))
@@ -756,7 +809,38 @@ def best_effort_policy_canary_episode_interpretations(
         return result
 
 
+def main() -> int:
+    """Run one digest-bound closeout/backfill without mutating source evidence."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-root", type=Path, required=True)
+    parser.add_argument("--evidence-root", type=Path, required=True)
+    parser.add_argument("--session-result", type=Path, required=True)
+    parser.add_argument("--rights-root", type=Path)
+    parser.add_argument("--batch-authority", type=Path)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    result = materialize_policy_canary_episode_interpretations(
+        run_root=args.run_root,
+        evidence_root=args.evidence_root,
+        session_result=_read(args.session_result.expanduser().resolve()),
+        rights_root=args.rights_root,
+        batch_authority=(
+            _read(args.batch_authority.expanduser().resolve())
+            if args.batch_authority is not None
+            else None
+        ),
+    )
+    _write_once(args.output.expanduser().resolve(), result)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
+
+
 __all__ = [
+    "BATCH_AUTHORITY_ENV",
     "EpisodeInterpretationRunner",
     "PLAN_SCHEMA_VERSION",
     "PROFILE_SCHEMA_VERSION",
