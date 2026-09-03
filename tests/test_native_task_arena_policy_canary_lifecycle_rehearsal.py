@@ -221,6 +221,10 @@ def _scene_plan() -> dict[str, Any]:
         "task_spec": {
             "schema_version": "adp_task_spec.v1",
             "task_kind": "rigid_pick_place",
+            "start_pose_world": [
+                *pose["position_world_m"],
+                *pose["orientation_xyzw"],
+            ],
             "destination_position_world_m": list(_DESTINATION),
             "support_plane_z_m": SUPPORT_PLANE_Z_M,
             "settle_window_samples": 1,
