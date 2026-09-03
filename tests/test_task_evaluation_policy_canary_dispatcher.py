@@ -470,6 +470,77 @@ def test_complete_provider_result_is_not_rebuilt_from_child_receipts(
     )
 
 
+def test_partial_provider_result_preserves_prepolicy_blocked_cell_evidence(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "immutable_execution"
+    native_path = _write(
+        evidence_root / "native_task_arena_policy_canary_session_result.v1.json",
+        {
+            "schema_version": "native_task_arena_policy_canary_session_result.v1",
+            "status": "blocked",
+            "blockers": ["policy_canary_worker_failed_without_result"],
+        },
+    )
+    cells = [
+        {
+            "cell_id": f"cell-{index}",
+            "seed": 3100 + index,
+            "resolved_scenario": {"ordinal": index},
+        }
+        for index in range(10)
+    ]
+    child = {
+        "schema_version": "native_task_arena_policy_canary_session_result.v1",
+        "status": "blocked",
+        "selected_cell_index": 0,
+        "episodes": [],
+        "candidate_policy_queried": False,
+        "blockers": ["policy_canary_task_semantic_visibility_failed"],
+        "artifact_inventory": [
+            {
+                "role": "runtime_supporting_evidence",
+                "relative_path": "prepolicy_observation_gate/external.png",
+                "sha256": "sha256:" + "4" * 64,
+                "size_bytes": 123,
+            }
+        ],
+        "result_digest": "",
+    }
+    child["result_digest"] = canonical_digest(child, digest_field="result_digest")
+    _write(
+        evidence_root
+        / "cell_runs/00/native_task_arena_policy_canary_session_result.v1.json",
+        child,
+    )
+
+    partial = _partial_policy_canary_result(
+        native_path=native_path,
+        fallback=json.loads(native_path.read_text(encoding="utf-8")),
+        runtime_inputs={"cells": cells},
+        specs={
+            candidate: {
+                "checkpoint_digest": "sha256:" + character * 64,
+                "runtime_identity_digest": "sha256:" + character.upper() * 64,
+            }
+            for candidate, character in (
+                ("pi05_droid", "a"),
+                ("groot_n17_droid", "b"),
+            )
+        },
+    )
+
+    assert partial is not None
+    result, _ = partial
+    assert result["candidate_policy_queried"] is False
+    assert result["completed_cell_count"] == 0
+    assert result["incomplete_cell_count"] == 10
+    assert len(result["episodes"]) == 20
+    assert result["artifact_inventory"][0]["relative_path"] == (
+        "cell_runs/00/prepolicy_observation_gate/external.png"
+    )
+
+
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
     run_id = "scene-839873-canary-1"
     units = [

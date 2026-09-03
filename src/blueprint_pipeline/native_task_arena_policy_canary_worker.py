@@ -36,6 +36,101 @@ ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS = 900
 DROID_PARITY_MINIMUM_APPROACH_M = 0.05
 
 
+def _policy_camera_visibility_contract(
+    snapshot: Mapping[str, Any],
+    *,
+    preserve_official_droid_calibration: bool,
+) -> dict[str, Any]:
+    """Qualify task visibility according to each camera's policy role.
+
+    A fixed external camera must frame the task at reset. The official DROID
+    wrist camera is attached to the gripper, so its reset observation may put
+    the task near an image edge before the policy approaches it. For that
+    camera, visible native-semantic task pixels are the reset requirement;
+    centering remains recorded as a typed notice and is measured during the
+    rollout.
+    """
+
+    rows = {
+        str(row.get("role")): row
+        for row in snapshot.get("cameras") or []
+        if isinstance(row, Mapping) and str(row.get("role") or "")
+    }
+    expected_roles = {"external", "wrist", "overview"}
+    raw_visibility = {
+        role: bool((row.get("observability") or {}).get("passed"))
+        for role, row in rows.items()
+    }
+    qualifications: dict[str, Any] = {}
+    blockers: list[str] = []
+    notices: list[str] = []
+    if set(rows) != expected_roles:
+        blockers.append("policy_canary_camera_role_inventory_invalid")
+    for role in sorted(expected_roles):
+        row = rows.get(role)
+        observability = (
+            row.get("observability")
+            if isinstance(row, Mapping)
+            and isinstance(row.get("observability"), Mapping)
+            else {}
+        )
+        raw_passed = bool(observability.get("passed"))
+        pixel_count = int(observability.get("pixel_count") or 0)
+        thresholds = observability.get("thresholds")
+        minimum_pixels = (
+            int(thresholds.get("effective_minimum_pixels") or 0)
+            if isinstance(thresholds, Mapping)
+            else 0
+        )
+        render_passed = observability.get("render_passed") is True
+        centroid_within_margin = (
+            observability.get("centroid_within_margin") is True
+        )
+        if preserve_official_droid_calibration and role == "wrist":
+            passed = (
+                render_passed
+                and minimum_pixels > 0
+                and pixel_count >= minimum_pixels
+                and bool(observability.get("target_semantic_ids"))
+            )
+            status = (
+                "centered"
+                if passed and centroid_within_margin
+                else "initial_edge_visible"
+                if passed
+                else "insufficient_task_pixels"
+            )
+            if passed and not centroid_within_margin:
+                notices.append("droid_wrist_task_initially_near_frame_edge")
+            if not passed:
+                blockers.append("droid_wrist_task_pixels_below_threshold")
+        else:
+            passed = raw_passed
+            status = "centered" if passed else "not_qualified"
+            if not passed:
+                blockers.append(f"policy_canary_{role}_task_visibility_failed")
+        qualifications[role] = {
+            "status": status,
+            "passed": passed,
+            "raw_observability_passed": raw_passed,
+            "pixel_count": pixel_count,
+            "minimum_pixels": minimum_pixels,
+            "render_passed": render_passed,
+            "centroid_within_margin": centroid_within_margin,
+        }
+    return {
+        "passed": not blockers and set(rows) == expected_roles,
+        "camera_visibility": {
+            role: bool(qualifications.get(role, {}).get("passed"))
+            for role in sorted(expected_roles)
+        },
+        "raw_camera_visibility": raw_visibility,
+        "role_qualifications": qualifications,
+        "blockers": sorted(set(blockers)),
+        "notices": sorted(set(notices)),
+    }
+
+
 def _sha256_prefixed(value: Any) -> str:
     text = str(value or "")
     return text if text.startswith("sha256:") else f"sha256:{text}"
@@ -446,15 +541,19 @@ def isaac_cell_runtime() -> CellRuntime:
             snapshot=snapshot,
             output_root=root,
         )
-        visibility = {
-            str(row["role"]): bool((row.get("observability") or {}).get("passed"))
-            for row in snapshot.get("cameras") or []
-        }
+        visibility_contract = _policy_camera_visibility_contract(
+            snapshot,
+            preserve_official_droid_calibration=(
+                isinstance(droid_profile, Mapping)
+                and droid_profile.get("preserve_official_policy_camera_calibration")
+                is True
+            ),
+        )
+        visibility = dict(visibility_contract["camera_visibility"])
         blockers = list((selection or {}).get("blockers") or [])
         blockers.extend(visual.get("blockers") or [])
-        if set(visibility) != {"external", "wrist", "overview"} or not all(
-            visibility.values()
-        ):
+        blockers.extend(visibility_contract["blockers"])
+        if visibility_contract["passed"] is not True:
             blockers.append("policy_canary_task_semantic_visibility_failed")
         passed = (
             isinstance(selection, Mapping)
@@ -482,6 +581,11 @@ def isaac_cell_runtime() -> CellRuntime:
                 visibility.values()
             ),
             "camera_visibility": visibility,
+            "raw_camera_visibility": visibility_contract["raw_camera_visibility"],
+            "camera_role_qualifications": visibility_contract[
+                "role_qualifications"
+            ],
+            "notices": visibility_contract["notices"],
             "selected_wrist_camera_mount": (
                 selection.get("selected_candidate")
                 if isinstance(selection, Mapping)

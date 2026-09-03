@@ -77,6 +77,48 @@ class _ParityLifecycleEnvironment(_LifecycleEnvironment):
 
 
 RUN_ID = "scene-839873-canary-rehearsal"
+
+
+def test_official_droid_wrist_reset_accepts_visible_edge_task_pixels() -> None:
+    def camera(role: str, *, passed: bool, pixels: int, centered: bool):
+        return {
+            "role": role,
+            "observability": {
+                "passed": passed,
+                "pixel_count": pixels,
+                "render_passed": True,
+                "centroid_within_margin": centered,
+                "target_semantic_ids": [17],
+                "thresholds": {"effective_minimum_pixels": 120},
+            },
+        }
+
+    snapshot = {
+        "cameras": [
+            camera("external", passed=True, pixels=2881, centered=True),
+            camera("overview", passed=True, pixels=509, centered=True),
+            camera("wrist", passed=False, pixels=2928, centered=False),
+        ]
+    }
+
+    droid = worker._policy_camera_visibility_contract(
+        snapshot,
+        preserve_official_droid_calibration=True,
+    )
+    generic = worker._policy_camera_visibility_contract(
+        snapshot,
+        preserve_official_droid_calibration=False,
+    )
+
+    assert droid["passed"] is True
+    assert droid["camera_visibility"]["wrist"] is True
+    assert droid["raw_camera_visibility"]["wrist"] is False
+    assert droid["role_qualifications"]["wrist"]["status"] == (
+        "initial_edge_visible"
+    )
+    assert droid["notices"] == ["droid_wrist_task_initially_near_frame_edge"]
+    assert generic["passed"] is False
+    assert "policy_canary_wrist_task_visibility_failed" in generic["blockers"]
 PI05_POLICY_SPEC = {
     "policy_id": "pi05_droid_jointpos_polaris",
     "config_name": "pi05_droid_jointpos_polaris",

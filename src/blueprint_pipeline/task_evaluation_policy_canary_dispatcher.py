@@ -477,6 +477,7 @@ def _partial_policy_canary_result(
     partial_episodes: list[dict[str, Any]] = []
     partial_artifacts: list[dict[str, Any]] = []
     completed_indices: set[int] = set()
+    observed_indices: set[int] = set()
     for path in sorted(
         evidence_root.glob(
             "cell_runs/*/native_task_arena_policy_canary_session_result.v1.json"
@@ -491,14 +492,22 @@ def _partial_policy_canary_result(
         child = _read(path, code="policy_canary_partial_cell_result_invalid")
         episodes = child.get("episodes")
         if (
-            child.get("status")
-            != "runtime_selected_cell_completed_pending_aggregation"
-            or child.get("selected_cell_index") != index
+            child.get("selected_cell_index") != index
             or child.get("result_digest")
             != canonical_digest(child, digest_field="result_digest")
             or not isinstance(episodes, list)
-            or len(episodes) != len(CANDIDATE_IDS)
+            or not isinstance(child.get("artifact_inventory"), list)
         ):
+            raise TaskEvaluationPolicyCanaryDispatchError(
+                "policy_canary_partial_cell_result_invalid"
+            )
+        child_completed = (
+            child.get("status")
+            == "runtime_selected_cell_completed_pending_aggregation"
+            and len(episodes) == len(CANDIDATE_IDS)
+        )
+        child_blocked = child.get("status") == "blocked" and not episodes
+        if not child_completed and not child_blocked:
             raise TaskEvaluationPolicyCanaryDispatchError(
                 "policy_canary_partial_cell_result_invalid"
             )
@@ -515,7 +524,11 @@ def _partial_policy_canary_result(
             for row in episodes
             if isinstance(row, Mapping)
         }
-        if observed != expected:
+        if child_completed and observed != expected:
+            raise TaskEvaluationPolicyCanaryDispatchError(
+                "policy_canary_partial_cell_pairing_invalid"
+            )
+        if child_blocked and observed:
             raise TaskEvaluationPolicyCanaryDispatchError(
                 "policy_canary_partial_cell_pairing_invalid"
             )
@@ -552,8 +565,10 @@ def _partial_policy_canary_result(
             if isinstance(copied.get("relative_path"), str):
                 copied["relative_path"] = f"{prefix}/{copied['relative_path']}"
             partial_artifacts.append(copied)
-        completed_indices.add(index)
-    if not partial_episodes:
+        observed_indices.add(index)
+        if child_completed:
+            completed_indices.add(index)
+    if not partial_episodes and not partial_artifacts:
         return None
     gap_root = evidence_root / "partial_terminal_evidence"
     gap_root.mkdir(parents=True, exist_ok=True)
@@ -563,6 +578,7 @@ def _partial_policy_canary_result(
         "type": "cell_not_completed_before_terminal_failure",
         "reason": (fallback.get("blockers") or ["policy_canary_worker_timeout"])[0],
         "completed_cell_indices": sorted(completed_indices),
+        "observed_cell_indices": sorted(observed_indices),
         "candidate_policy_queried": any(
             row.get("candidate_policy_queried") is True for row in partial_episodes
         ),
