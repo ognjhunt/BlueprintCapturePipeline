@@ -5,9 +5,102 @@ from types import SimpleNamespace
 import pytest
 
 from blueprint_pipeline.native_task_episode_environment import (
+    NativeRigidScoringEnvironment,
     NativeTaskEpisodeEnvironmentError,
     build_native_task_episode_environment,
 )
+
+
+class _RigidEpisodeEnvironment:
+    def read_object_sample(self):
+        return {
+            "task_object_pose_world": [1.0, 2.0, 0.8, 0.0, 0.0, 0.0, 1.0],
+            "gripper_width_m": 0.08,
+        }
+
+    def reset(self):
+        return None
+
+
+class _RigidNativeReadback:
+    def __init__(self, **overrides):
+        self.overrides = overrides
+
+    def read_task_sample(self):
+        return {
+            "task_scoring_pose_world": [
+                1.1,
+                2.1,
+                0.8,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+            "task_robot_contact_peak_force_n": 0.0,
+            "task_support_contact_peak_force_n": 1.0,
+            "task_scene_collision_peak_force_n": 0.0,
+            "robot_scene_contact_peak_force_n": 0.0,
+            "robot_task_forbidden_collision_peak_force_n": 0.0,
+            "locked_joint_containment_violation": False,
+            **self.overrides,
+        }
+
+
+def _rigid_scoring_task_spec():
+    return {
+        "task_contact_minimum_force_n": 0.5,
+        "collision_failure_minimum_force_n": 5.0,
+        "workspace_position_bounds_world_m": {
+            "minimum": [0.0, 1.0, 0.7],
+            "maximum": [2.0, 3.0, 1.2],
+        },
+    }
+
+
+def test_rigid_scoring_environment_joins_native_safety_and_support_readback():
+    base = _RigidEpisodeEnvironment()
+    environment = NativeRigidScoringEnvironment(
+        environment=base,
+        task_readback=_RigidNativeReadback(),
+        task_spec=_rigid_scoring_task_spec(),
+    )
+
+    sample = environment.read_object_sample()
+
+    assert sample["task_object_pose_world"] == [
+        1.1,
+        2.1,
+        0.8,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    assert sample["task_contact_active"] is False
+    assert sample["support_contact_active"] is True
+    assert sample["robot_collision_failure"] is False
+    assert sample["forbidden_robot_task_collision_failure"] is False
+    assert sample["scene_collision_failure"] is False
+    assert sample["containment_violation"] is False
+    assert sample["locked_joint_containment_violation"] is False
+    assert environment.reset() is None
+
+
+def test_rigid_scoring_environment_refuses_missing_native_safety_channel():
+    environment = NativeRigidScoringEnvironment(
+        environment=_RigidEpisodeEnvironment(),
+        task_readback=_RigidNativeReadback(
+            robot_task_forbidden_collision_peak_force_n=None
+        ),
+        task_spec=_rigid_scoring_task_spec(),
+    )
+
+    with pytest.raises(
+        NativeTaskEpisodeEnvironmentError,
+        match="native_task_rigid_scoring_sample_invalid",
+    ):
+        environment.read_object_sample()
 
 
 class _Servo:

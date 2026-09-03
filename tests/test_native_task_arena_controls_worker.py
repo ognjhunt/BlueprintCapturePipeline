@@ -11,8 +11,11 @@ import textwrap
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.native_task_episode_environment import (
+    NativeRigidScoringEnvironment as _RigidScoringEnvironment,
+    NativeTaskEpisodeEnvironmentError,
+)
 from blueprint_pipeline.native_task_arena_controls_worker import (
-    _RigidScoringEnvironment,
     _announce_bounded_orientation_ik_progress,
     _bounded_orientation_joint_targets,
     _bounded_orientation_reference_seeds,
@@ -1694,7 +1697,10 @@ def test_rigid_controls_environment_fails_closed_on_missing_native_channel() -> 
         task_spec=_graph_rigid_task_spec(),
     )
 
-    with pytest.raises(RuntimeError, match="rigid_sample_invalid"):
+    with pytest.raises(
+        NativeTaskEpisodeEnvironmentError,
+        match="native_task_rigid_scoring_sample_invalid",
+    ):
         environment.read_object_sample()
 
 
