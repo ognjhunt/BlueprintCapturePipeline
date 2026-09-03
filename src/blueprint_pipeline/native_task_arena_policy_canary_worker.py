@@ -246,6 +246,7 @@ class CellRuntime:
     groot_worker_identity: Callable[..., tuple[Mapping[str, Any], Mapping[str, Any]]]
     run_policy_episode: Callable[..., Mapping[str, Any]]
     prepolicy_camera_gate: Callable[..., Mapping[str, Any]] | None = None
+    configure_post_gate_renderer: Callable[..., Mapping[str, Any]] | None = None
 
 
 def isaac_cell_runtime() -> CellRuntime:
@@ -283,6 +284,9 @@ def isaac_cell_runtime() -> CellRuntime:
     )
     from blueprint_pipeline.native_task_nurec_render_setup import (
         prepare_site_appearance_renderer,
+    )
+    from blueprint_pipeline.native_task_rtx_streaming_guard import (
+        configure_post_gate_rtx_streaming_wait,
     )
     from blueprint_pipeline.native_task_episode_environment import (
         build_native_task_episode_environment,
@@ -434,6 +438,7 @@ def isaac_cell_runtime() -> CellRuntime:
         groot_worker_identity=_runtime_groot_worker_identity,
         run_policy_episode=run_policy_episode,
         prepolicy_camera_gate=prepolicy_camera_gate,
+        configure_post_gate_renderer=configure_post_gate_rtx_streaming_wait,
     )
 
 
@@ -1497,6 +1502,9 @@ def _run_selected_cell(
         environment_receipt = {
             **dict(environment_receipt),
             "appearance_renderer": dict(current_env["appearance_renderer"]),
+            "post_gate_rtx_streaming_guard": dict(
+                current_session.get("post_gate_rtx_streaming_guard") or {}
+            ),
         }
         tracker = _PolicyQueryTracker(policy["client"])
         spec = policy["spec"]
@@ -1792,7 +1800,24 @@ def _run_selected_cell(
                     output_root=output_root,
                 )
             )
+            if bound_runtime.configure_post_gate_renderer is None:
+                raise RuntimeError(
+                    "policy_canary_post_gate_renderer_guard_unavailable"
+                )
+            renderer_guard = dict(
+                bound_runtime.configure_post_gate_renderer(
+                    observation_gate=gate,
+                    output_path=(
+                        output_root
+                        / "prepolicy_observation_gate"
+                        / "post_gate_rtx_streaming_guard.v1.json"
+                    ),
+                )
+            )
+            if renderer_guard.get("status") != "configured":
+                raise RuntimeError("policy_canary_post_gate_renderer_guard_failed")
             current_session["policy_observation_runtime_gate"] = gate
+            current_session["post_gate_rtx_streaming_guard"] = renderer_guard
             return gate
         return preload_observation_integrity_gate(
             observation_integrity_authority,

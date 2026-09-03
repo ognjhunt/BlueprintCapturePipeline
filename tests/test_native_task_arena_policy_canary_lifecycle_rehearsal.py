@@ -540,6 +540,27 @@ def _real_policy_client(spec: dict[str, Any], *, groot_worker_identity_receipt=N
 
 
 def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
+    def configure_post_gate_renderer(
+        *, observation_gate: Mapping[str, Any], output_path: str | Path
+    ) -> dict[str, Any]:
+        value = {
+            "schema_version": "policy_canary_post_gate_rtx_streaming_guard.v1",
+            "status": "configured",
+            "observation_gate_digest": observation_gate["gate_digest"],
+            "streaming_busy_after_gate": False,
+            "previous_wait_timeout_seconds": 30.0,
+            "maximum_wait_timeout_seconds": 1.0,
+            "camera_qualification_skipped": False,
+            "later_frames_remain_required": True,
+            "claim_ceiling": "diagnostic_policy_execution",
+            "receipt_digest": "",
+        }
+        value["receipt_digest"] = canonical_digest(
+            value, digest_field="receipt_digest"
+        )
+        _write(Path(output_path), value)
+        return value
+
     return worker.CellRuntime(
         device="cuda:0",
         launch_isaac=isaac.launch,
@@ -581,6 +602,7 @@ def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
         policy_client=_real_policy_client,
         groot_worker_identity=_runtime_groot_worker_identity,
         run_policy_episode=run_policy_episode,
+        configure_post_gate_renderer=configure_post_gate_renderer,
     )
 
 
@@ -739,10 +761,15 @@ def test_selected_cell_runs_native_mount_gate_before_loading_either_policy(
         events.append("policy_load")
         return base_runtime.policy_client(*args, **kwargs)
 
+    def configure_post_gate_renderer(**kwargs):
+        events.append("renderer_guard")
+        return base_runtime.configure_post_gate_renderer(**kwargs)
+
     runtime = worker.CellRuntime(
         **{
             **base_runtime.__dict__,
             "prepolicy_camera_gate": camera_gate,
+            "configure_post_gate_renderer": configure_post_gate_renderer,
             "policy_client": policy_client,
         }
     )
@@ -755,7 +782,7 @@ def test_selected_cell_runs_native_mount_gate_before_loading_either_policy(
             cell_runtime=runtime,
         )
     assert exited.value.code == 0
-    assert events[0] == "camera_gate"
+    assert events[:2] == ["camera_gate", "renderer_guard"]
     assert events.count("policy_load") == 2
     result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
     assert result["preload_observation_gate"][

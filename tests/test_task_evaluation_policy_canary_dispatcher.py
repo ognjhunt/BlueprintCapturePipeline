@@ -12,6 +12,7 @@ from blueprint_pipeline.decision_evidence_contracts import (
 )
 from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import (
     _join_session_closeout,
+    _partial_policy_canary_result,
     _projection,
     _resume_materialized_policy_canary_delivery,
     TaskEvaluationPolicyCanaryDispatchError,
@@ -335,6 +336,106 @@ def _write(path: Path, value: object) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def test_partial_provider_result_preserves_completed_cell_and_types_remaining_gaps(
+    tmp_path: Path,
+) -> None:
+    evidence_root = tmp_path / "immutable_execution"
+    native_path = _write(
+        evidence_root / "native_task_arena_policy_canary_session_result.v1.json",
+        {
+            "schema_version": "native_task_arena_policy_canary_session_result.v1",
+            "status": "blocked",
+            "blockers": ["policy_canary_worker_failed_without_result"],
+        },
+    )
+    cells = [
+        {
+            "cell_id": f"cell-{index}",
+            "seed": 3100 + index,
+            "resolved_scenario": {"ordinal": index},
+        }
+        for index in range(10)
+    ]
+    episodes = [
+        {
+            "candidate_id": candidate,
+            "cell_id": "cell-0",
+            "seed": 3100,
+            "status": "completed",
+            "candidate_policy_queried": True,
+            "actions_reached_robot": True,
+            "arm_moved": True,
+            "policy_outcome_interpretable": False,
+            "evidence_artifacts": {
+                "review_video": {
+                    "relative_path": f"episodes/{candidate}.mp4",
+                    "sha256": "sha256:" + "1" * 64,
+                    "size_bytes": 10,
+                }
+            },
+        }
+        for candidate in ("pi05_droid", "groot_n17_droid")
+    ]
+    child = {
+        "schema_version": "native_task_arena_policy_canary_session_result.v1",
+        "status": "runtime_selected_cell_completed_pending_aggregation",
+        "selected_cell_index": 0,
+        "episodes": episodes,
+        "artifact_inventory": [
+            {
+                "role": "review_video",
+                "relative_path": "episodes/pi05.mp4",
+                "sha256": "sha256:" + "2" * 64,
+                "size_bytes": 10,
+            }
+        ],
+        "result_digest": "",
+    }
+    child["result_digest"] = canonical_digest(child, digest_field="result_digest")
+    _write(
+        evidence_root
+        / "cell_runs/00/native_task_arena_policy_canary_session_result.v1.json",
+        child,
+    )
+
+    partial = _partial_policy_canary_result(
+        native_path=native_path,
+        fallback=json.loads(native_path.read_text(encoding="utf-8")),
+        runtime_inputs={"cells": cells},
+        specs={
+            candidate: {
+                "checkpoint_digest": "sha256:" + character * 64,
+                "runtime_identity_digest": "sha256:" + character.upper() * 64,
+            }
+            for candidate, character in (
+                ("pi05_droid", "a"),
+                ("groot_n17_droid", "b"),
+            )
+        },
+    )
+
+    assert partial is not None
+    result, result_path = partial
+    assert result_path.is_file()
+    assert result["status"] == "blocked"
+    assert result["candidate_policy_queried"] is True
+    assert result["completed_cell_count"] == 1
+    assert result["incomplete_cell_count"] == 9
+    assert len(result["episodes"]) == 20
+    preserved = [row for row in result["episodes"] if row["cell_id"] == "cell-0"]
+    missing = [row for row in result["episodes"] if row["cell_id"] != "cell-0"]
+    assert len(preserved) == 2 and len(missing) == 18
+    assert all(row["candidate_policy_queried"] is True for row in preserved)
+    assert all(
+        row["typed_harness_failure"]
+        == "cell_not_completed_before_terminal_failure"
+        for row in missing
+    )
+    assert preserved[0]["evidence_artifacts"]["review_video"][
+        "relative_path"
+    ].startswith("cell_runs/00/")
 
 
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:

@@ -160,6 +160,7 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     # render-only preflight before either model client is loaded.
     "native_task_arena_runtime_preflight_worker.py",
     "native_task_wrist_camera_mount_sweep.py",
+    "native_task_rtx_streaming_guard.py",
 )
 
 POLICY_RUNTIME_MODULE_NAMES = tuple(

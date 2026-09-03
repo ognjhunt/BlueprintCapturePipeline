@@ -449,6 +449,190 @@ def _join_session_closeout(
     return value
 
 
+def _partial_policy_canary_result(
+    *,
+    native_path: Path,
+    fallback: Mapping[str, Any],
+    runtime_inputs: Mapping[str, Any],
+    specs: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, Any], Path] | None:
+    """Preserve sealed child cells when a later isolated cell times out."""
+
+    evidence_root = native_path.parent
+    cells = list(runtime_inputs.get("cells") or [])
+    if len(cells) != 10:
+        return None
+    partial_episodes: list[dict[str, Any]] = []
+    partial_artifacts: list[dict[str, Any]] = []
+    completed_indices: set[int] = set()
+    for path in sorted(
+        evidence_root.glob(
+            "cell_runs/*/native_task_arena_policy_canary_session_result.v1.json"
+        )
+    ):
+        try:
+            index = int(path.parent.name)
+        except ValueError:
+            continue
+        if index < 0 or index >= len(cells):
+            continue
+        child = _read(path, code="policy_canary_partial_cell_result_invalid")
+        episodes = child.get("episodes")
+        if (
+            child.get("status")
+            != "runtime_selected_cell_completed_pending_aggregation"
+            or child.get("selected_cell_index") != index
+            or child.get("result_digest")
+            != canonical_digest(child, digest_field="result_digest")
+            or not isinstance(episodes, list)
+            or len(episodes) != len(CANDIDATE_IDS)
+        ):
+            raise TaskEvaluationPolicyCanaryDispatchError(
+                "policy_canary_partial_cell_result_invalid"
+            )
+        expected = {
+            (candidate, str(cells[index]["cell_id"]), int(cells[index]["seed"]))
+            for candidate in CANDIDATE_IDS
+        }
+        observed = {
+            (
+                str(row.get("candidate_id")),
+                str(row.get("cell_id")),
+                int(row.get("seed")),
+            )
+            for row in episodes
+            if isinstance(row, Mapping)
+        }
+        if observed != expected:
+            raise TaskEvaluationPolicyCanaryDispatchError(
+                "policy_canary_partial_cell_pairing_invalid"
+            )
+        prefix = f"cell_runs/{index:02d}"
+        for row in episodes:
+            episode = json.loads(json.dumps(dict(row), allow_nan=False))
+            evidence = episode.get("evidence_artifacts")
+            if isinstance(evidence, Mapping):
+                episode["evidence_artifacts"] = {
+                    role: (
+                        {
+                            **dict(record),
+                            "relative_path": f"{prefix}/{record['relative_path']}",
+                        }
+                        if isinstance(record, Mapping)
+                        and isinstance(record.get("relative_path"), str)
+                        else record
+                    )
+                    for role, record in evidence.items()
+                }
+            partial_episodes.append(episode)
+        for record in child.get("artifact_inventory") or []:
+            if not isinstance(record, Mapping):
+                continue
+            copied = dict(record)
+            if isinstance(copied.get("relative_path"), str):
+                copied["relative_path"] = f"{prefix}/{copied['relative_path']}"
+            partial_artifacts.append(copied)
+        completed_indices.add(index)
+    if not partial_episodes:
+        return None
+    gap_root = evidence_root / "partial_terminal_evidence"
+    gap_root.mkdir(parents=True, exist_ok=True)
+    gap_path = gap_root / "typed_media_gap.json"
+    gap_value = {
+        "schema_version": "task_evaluation_policy_canary_media_gap.v1",
+        "type": "cell_not_completed_before_terminal_failure",
+        "reason": (fallback.get("blockers") or ["policy_canary_worker_timeout"])[0],
+        "completed_cell_indices": sorted(completed_indices),
+        "candidate_policy_queried": any(
+            row.get("candidate_policy_queried") is True for row in partial_episodes
+        ),
+    }
+    write_json(gap_path, gap_value)
+    observed_keys = {
+        (str(row["candidate_id"]), str(row["cell_id"]), int(row["seed"]))
+        for row in partial_episodes
+    }
+    missing_episodes = []
+    for candidate in CANDIDATE_IDS:
+        spec = specs[candidate]
+        for cell in cells:
+            key = (candidate, str(cell["cell_id"]), int(cell["seed"]))
+            if key in observed_keys:
+                continue
+            missing_episodes.append(
+                {
+                    "candidate_id": candidate,
+                    "cell_id": cell["cell_id"],
+                    "seed": cell["seed"],
+                    "status": "blocked",
+                    "candidate_policy_queried": False,
+                    "actions_reached_robot": False,
+                    "arm_moved": False,
+                    "policy_outcome_interpretable": False,
+                    "typed_harness_failure": (
+                        "cell_not_completed_before_terminal_failure"
+                    ),
+                    "checkpoint_digest": spec["checkpoint_digest"],
+                    "runtime_identity_digest": spec["runtime_identity_digest"],
+                    "reset_state_digest": canonical_digest(
+                        {
+                            "resolved_scenario": cell["resolved_scenario"],
+                            "seed": cell["seed"],
+                            "execution_performed": False,
+                        }
+                    ),
+                    "visual_evidence": {
+                        "media_gap": {
+                            "type": gap_value["type"],
+                            "reason": gap_value["reason"],
+                        }
+                    },
+                    "evidence_artifacts": {},
+                }
+            )
+    value: dict[str, Any] = {
+        "schema_version": "native_task_arena_policy_canary_session_result.v1",
+        "status": "blocked",
+        "run_kind": RUN_KIND,
+        "claim_ceiling": CLAIM_CEILING,
+        "candidate_ids": list(CANDIDATE_IDS),
+        "episodes_per_policy": 10,
+        "learned_policy_rollout_count": 20,
+        "episodes": [*partial_episodes, *missing_episodes],
+        "artifact_inventory": [
+            *partial_artifacts,
+            {
+                "role": "typed_media_gap",
+                "relative_path": gap_path.relative_to(evidence_root).as_posix(),
+                "media_type": "application/json",
+                "size_bytes": gap_path.stat().st_size,
+                "sha256": _sha256(gap_path),
+            },
+        ],
+        "candidate_policy_queried": any(
+            row.get("candidate_policy_queried") is True for row in partial_episodes
+        ),
+        "completed_cell_count": len(completed_indices),
+        "incomplete_cell_count": len(cells) - len(completed_indices),
+        "official_ranking_performed": False,
+        "scene_promotion_performed": False,
+        "blockers": sorted(
+            set(
+                [str(item) for item in fallback.get("blockers") or []]
+                + [
+                    "policy_canary_partial_cell_results_preserved",
+                    f"policy_canary_incomplete_cell_count:{len(cells) - len(completed_indices)}",
+                ]
+            )
+        ),
+        "result_digest": "",
+    }
+    value["result_digest"] = canonical_digest(value, digest_field="result_digest")
+    output_path = evidence_root / "policy_canary_partial_provider_result.v1.json"
+    write_json(output_path, value)
+    return value, output_path
+
+
 def _materialize_official_billing_if_posted(
     *,
     billing_audit_root: str | Path,
@@ -1255,8 +1439,27 @@ def dispatch_policy_canary_activation(
         provider_zero = dict(provider_zero_collector())
         write_json(provider_zero_path, provider_zero)
     native_path = Path(str(adapter.get("native_control_result_path") or ""))
+    specs = {
+        candidate: _read(
+            records[
+                "pi05_execution_spec"
+                if candidate == "pi05_droid"
+                else "groot_execution_spec"
+            ]["path"],
+            code="policy_canary_execution_spec_invalid",
+        )
+        for candidate in CANDIDATE_IDS
+    }
     if native_path.is_file():
         inner = _read(native_path, code="policy_canary_provider_result_missing")
+        partial = _partial_policy_canary_result(
+            native_path=native_path,
+            fallback=inner,
+            runtime_inputs=runtime_inputs,
+            specs=specs,
+        )
+        if partial is not None:
+            inner, native_path = partial
     else:
         gap_root = root / "preprovider_evidence"
         gap_root.mkdir(parents=True, exist_ok=True)
@@ -1268,15 +1471,6 @@ def dispatch_policy_canary_activation(
             "candidate_policy_queried": False,
         }
         write_json(gap_path, gap_value)
-        specs = {
-            candidate: _read(
-                records[
-                    "pi05_execution_spec" if candidate == "pi05_droid" else "groot_execution_spec"
-                ]["path"],
-                code="policy_canary_execution_spec_invalid",
-            )
-            for candidate in CANDIDATE_IDS
-        }
         inner = {
             "schema_version": "native_task_arena_policy_canary_session_result.v1",
             "status": "blocked",
