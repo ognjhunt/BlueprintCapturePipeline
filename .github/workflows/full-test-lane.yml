@@ -102,10 +102,23 @@ jobs:
           fi
           FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-amd64-static.tar.xz"
           FFMPEG_SHA256="abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67"
-          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 600 \
-            -o /tmp/ffmpeg-static.tar.xz "${FFMPEG_URL}"
-          echo "${FFMPEG_SHA256}  /tmp/ffmpeg-static.tar.xz" | sha256sum -c -
-          tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp
+          FFMPEG_ARCHIVE="${RUNNER_TEMP}/ffmpeg-7.0.2-amd64-static.tar.xz"
+          verified=0
+          for attempt in 1 2 3; do
+            rm -f "${FFMPEG_ARCHIVE}"
+            if curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 600 \
+              -o "${FFMPEG_ARCHIVE}" "${FFMPEG_URL}" \
+              && echo "${FFMPEG_SHA256}  ${FFMPEG_ARCHIVE}" | sha256sum -c -; then
+              verified=1
+              break
+            fi
+            echo "ffmpeg archive attempt ${attempt} failed byte verification"
+          done
+          if [[ "${verified}" != "1" ]]; then
+            echo "ffmpeg archive did not pass the pinned digest after 3 attempts"
+            exit 1
+          fi
+          tar -xJf "${FFMPEG_ARCHIVE}" -C /tmp
           sudo install -m 0755 /tmp/ffmpeg-7.0.2-amd64-static/ffmpeg /usr/local/bin/ffmpeg
           sudo install -m 0755 /tmp/ffmpeg-7.0.2-amd64-static/ffprobe /usr/local/bin/ffprobe
           ffmpeg -version | head -n1
