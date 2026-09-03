@@ -42,6 +42,10 @@ CONTROL_PLANE_ONLY_LAZY_IMPORTS: frozenset[tuple[str, str]] = frozenset(
         ("adp009d_physics_backend_comparison.py", "spend_admission_lock"),
         # Control-search funnel packet reads run on the control plane.
         ("task_evaluation_control_search_funnel.py", "native_task_arena_packet"),
+        # Compilation materializes and validates the camera-sweep request on
+        # the control plane.  The provider calls only the registry geometry and
+        # native-render selection functions; it never materializes a packet.
+        ("native_task_wrist_camera_mount_sweep.py", "native_task_arena_packet"),
         # Remote cuRobo candidate generation allocates from the control plane.
         ("task_evaluation_curobo_candidate_generator.py", "gpu_render_providers"),
         (
