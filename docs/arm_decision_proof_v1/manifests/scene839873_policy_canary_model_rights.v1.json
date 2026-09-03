@@ -20,7 +20,7 @@
         "provider_use_status": "inference_and_remote_provider_use_allowed_subject_to_Gemma_terms_and_prohibited_use_policy",
         "redistribution_status": "permitted_subject_to_Apache-2.0_and_Gemma_terms_not_required_by_Blueprint_provider_bundle"
       },
-      "adapter_id": "openpi_droid_to_native_franka_v1"
+      "adapter_id": "openpi_droid_to_official_arena_droid_abs_joint_v2"
     },
     {
       "candidate_id": "groot_n17_droid",
@@ -45,7 +45,7 @@
         "access_authority_required_at_runtime": true,
         "secret_material_recorded": false
       },
-      "adapter_id": "groot_n17_droid_joint_projection_v1"
+      "adapter_id": "groot_n17_droid_to_official_arena_droid_abs_joint_v2"
     }
   ],
   "blueprint_adapter_code": {
@@ -54,9 +54,10 @@
     "redistribution_status": "do_not_redistribute",
     "modules": [
       {"path": "src/blueprint_pipeline/openpi_droid_policy_runtime.py", "sha256": "sha256:fea3fc56991d0cc1544440c3c2321fd3407b0133353aa7d086ebd7a5d603a5d2"},
-      {"path": "src/blueprint_pipeline/groot_n17_droid_policy_runtime.py", "sha256": "sha256:6c3a87479a32e19c47ae5347ecd1d0f7cc8d1d0524f32357e4a57f86bf5622c8"},
+      {"path": "src/blueprint_pipeline/groot_n17_droid_policy_runtime.py", "sha256": "sha256:186f97e5a7a3eee6afdc63bb5f2715a3b9410cc8ed1b6a755393c7b9841a1f93"},
       {"path": "src/blueprint_pipeline/adp009d_droid_action_execution.py", "sha256": "sha256:5cccbb37cd3671e56b75032ea231cad84c2e4ecdd4c06ffcc8f250a6816fcceb"},
-      {"path": "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py", "sha256": "sha256:c9a28fddc94d85e35892f7e7a633f0bb780605bbe89e015df4df96466b9aa3b7"},
+      {"path": "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py", "sha256": "sha256:0493cd65077302cb1d93af95442aa08d685ca4a8f2a3187f24350f0eac10c882"},
+      {"path": "src/blueprint_pipeline/droid_policy_canary_embodiment.py", "sha256": "sha256:c16505c1960ae33560a8b5e8fea9811a36841c3266c57a587ce6f25551e4addf"},
       {"path": "src/blueprint_pipeline/adp009d_policy_episode.py", "sha256": "sha256:a2367679cf100f28520627a519dc25dbd41cd77ff137e10fa537fb2164afc374"},
       {"path": "src/blueprint_pipeline/policy_episode_trace_evidence.py", "sha256": "sha256:81b920384f0029c788d5872738e157df6b24027539ffc0e819599b964f3b18a3"}
     ]
@@ -72,5 +73,5 @@
   "official_ranking_permitted": false,
   "scene_promotion_permitted": false,
   "secret_material_recorded": false,
-  "rights_digest": "sha256:c547f9736a90dbe2691623af0d021d287edb5a9a42a841b2efb834387e846f88"
+  "rights_digest": "sha256:13c0e1e8c883ea1739ab3f799ac0059a0387134032c6e0b38c3a6cf897971d16"
 }

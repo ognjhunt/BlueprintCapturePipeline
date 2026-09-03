@@ -344,6 +344,10 @@ def _install_fake_native_runtime(monkeypatch) -> None:
     }
     modules["isaaclab.envs.mdp"].reset_joints_by_offset = object()
     modules["isaaclab.sim"].DomeLightCfg = lambda **kwargs: SimpleNamespace(**kwargs)
+    modules["isaaclab.sim"].CylinderCfg = lambda **kwargs: SimpleNamespace(**kwargs)
+    modules["isaaclab.sim"].PreviewSurfaceCfg = (
+        lambda **kwargs: SimpleNamespace(**kwargs)
+    )
     modules["isaaclab.managers"].EventTermCfg = (
         lambda **kwargs: SimpleNamespace(**kwargs)
     )
@@ -560,6 +564,38 @@ def test_builder_wires_articulation_contacts_resets_and_cameras(monkeypatch) -> 
         arena_env.embodiment.camera_config.external_camera_2,
     ):
         assert camera_cfg.renderer_cfg.colorize_semantic_segmentation is False
+
+
+def test_builder_preserves_official_droid_policy_cameras_and_adds_target_marker(
+    monkeypatch,
+) -> None:
+    from blueprint_pipeline.droid_policy_canary_embodiment import (
+        apply_droid_policy_canary_profile,
+    )
+
+    _install_fake_native_runtime(monkeypatch)
+    plan = _sealed_scene_plan()
+    plan["task_spec"] = {
+        "manipulation_strategy": "planar_push",
+        "source_subject_identity": "scene-839873-mug-replacement",
+        "target_position_world_m": [1.2, 2.0, 0.8],
+    }
+    plan = apply_droid_policy_canary_profile(plan)
+
+    built = build_native_task_arena_environment(plan)
+
+    cameras = built.native_configuration_readback["cameras"]
+    assert cameras["external"]["calibration_source"] == "official_arena_droid"
+    assert cameras["external"]["offset_position_m"] == []
+    assert cameras["wrist"]["calibration_source"] == "official_arena_droid"
+    assert cameras["wrist"]["offset_position_m"] == []
+    assert cameras["overview"]["calibration_source"] == "resolved_scene_plan"
+    marker = next(
+        asset
+        for asset in _ArenaBuilder.last.arena_env.scene.assets
+        if asset.name == "policy_target_marker"
+    )
+    assert marker.object_cfg.init_state.pos == pytest.approx((1.2, 2.0, 0.737))
 
 
 def test_builder_clones_lightweight_control_search_without_rendering(

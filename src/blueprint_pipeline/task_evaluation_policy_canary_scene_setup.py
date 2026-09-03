@@ -29,6 +29,11 @@ from .decision_evidence_contracts import (
     canonical_digest,
     cross_runtime_canonical_digest,
 )
+from .droid_policy_canary_embodiment import (
+    DROID_EMBODIMENT_ID,
+    DROID_POLICY_CANARY_PRESET_ID,
+    concrete_droid_task_instruction,
+)
 from .native_task_arena_policy_bundle import _candidate_runtime_binding
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .host_resident_launch_inputs import PRODUCTION_LAUNCH_INPUT_ROOTS
@@ -57,7 +62,7 @@ RUN_KIND = "internal_policy_canary"
 CLAIM_CEILING = "diagnostic_policy_execution"
 SCENE_ID = "839873"
 CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
-EMBODIMENT_ID = "franka_panda_robotiq_2f85_v1"
+EMBODIMENT_ID = DROID_POLICY_CANARY_PRESET_ID
 FORBIDDEN_SCENE_DIGEST_PREFIXES = ("d6c3cd3e",)
 QUICK_FAMILY_COUNTS = {
     "canonical_anchor": 2,
@@ -358,13 +363,16 @@ def _candidate_spec(
         "scene_id": scene_plan["scene_id"],
         "task_id": scene_plan["task_id"],
         "scene_plan_digest": scene_plan["plan_digest"],
-        "prompt": scene_plan["task_spec"]["prompt"],
+        "prompt": concrete_droid_task_instruction(
+            {**scene_plan["task_spec"], "task_id": scene_plan["task_id"]}
+        ),
         "policy_endpoint": endpoint,
         "policy_spec": policy_spec,
         "candidate_rights_binding": rights,
         "checkpoint_digest": checkpoint["inventory_digest"],
         "runtime_identity": runtime_identity,
         "runtime_identity_digest": canonical_digest(runtime_identity),
+        "require_observed_eef_support": candidate_id == "groot_n17_droid",
         "max_policy_queries": max_queries,
         "open_loop_horizon": horizon,
         "ranking_permitted": False,
@@ -704,7 +712,7 @@ def materialize_policy_canary_presubmission_setup(
     observation_schema_id = "droid_two_camera_robot_state_v1"
     action_schema_id = "droid_absolute_joint_position_v1"
     simulator_runtime_id = "isaac_native_arena_v1"
-    embodiment_id = "franka_robotiq"
+    embodiment_id = DROID_EMBODIMENT_ID
     task_family_id = "rigid_relocation"
     policies = []
     for candidate_id in CANDIDATE_IDS:
@@ -727,9 +735,9 @@ def materialize_policy_canary_presubmission_setup(
                     "size_bytes": checkpoint["total_bytes"],
                 },
                 "adapter_id": (
-                    "openpi_droid_to_native_franka_v1"
+                    "openpi_droid_to_official_arena_droid_abs_joint_v2"
                     if candidate_id == "pi05_droid"
-                    else "groot_n17_droid_joint_projection_v1"
+                    else "groot_n17_droid_to_official_arena_droid_abs_joint_v2"
                 ),
                 "license_id": (
                     "apache-2.0-gemma-terms"
@@ -801,7 +809,7 @@ def materialize_policy_canary_presubmission_setup(
         "robot_presets": [
             {
                 "robot_preset_id": EMBODIMENT_ID,
-                "display_name": "Franka Panda + Robotiq 2F-85",
+                "display_name": "DROID-compatible Franka Panda + Robotiq 2F-85",
                 "embodiment_id": embodiment_id,
                 "task_family_id": task_family_id,
                 "simulator_runtime_id": simulator_runtime_id,
@@ -829,7 +837,7 @@ def materialize_policy_canary_presubmission_setup(
                     "receipt": {
                         "uri": (
                             "blueprint://policy-canary/readiness/"
-                            f"franka-robotiq/{readiness['readiness_digest']}"
+                            f"droid-franka-robotiq/{readiness['readiness_digest']}"
                         ),
                         "digest": readiness["readiness_digest"],
                     },

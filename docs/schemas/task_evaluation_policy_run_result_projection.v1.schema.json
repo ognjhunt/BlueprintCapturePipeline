@@ -12,7 +12,7 @@
     "offering_digest": {"$ref": "#/$defs/digest"},
     "configuration_digest": {"$ref": "#/$defs/digest"},
     "plan_digest": {"$ref": "#/$defs/digest"},
-    "embodiment_id": {"const": "franka_panda_robotiq_2f85_v1"},
+    "embodiment_id": {"enum": ["franka_panda_robotiq_2f85_v1", "droid_franka_panda_robotiq_2f85_v1"]},
     "candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{"const": "pi05_droid"}, {"const": "groot_n17_droid"}], "items": false},
     "state": {"enum": ["decided", "partially_decided", "abstained"]},
     "matrix": {

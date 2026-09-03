@@ -33,11 +33,81 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 
 
 ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS = 900
+DROID_PARITY_MINIMUM_APPROACH_M = 0.05
 
 
 def _sha256_prefixed(value: Any) -> str:
     text = str(value or "")
     return text if text.startswith("sha256:") else f"sha256:{text}"
+
+
+def _episode_embodiment_parity_diagnostic(
+    episode: Mapping[str, Any], *, observation_support_qualified: bool
+) -> dict[str, Any]:
+    """Measure harness parity without treating task success as the authority."""
+
+    trace = episode.get("state_trace")
+    rows = list(trace.get("task_state_samples") or []) if isinstance(trace, Mapping) else []
+    distances: list[float] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        grasp = row.get("grasp_frame_position_world_m") or row.get(
+            "gripper_body_midpoint_world_m"
+        )
+        task = row.get("task_object_pose_world") or row.get("can_pose_world")
+        if (
+            isinstance(grasp, list)
+            and isinstance(task, list)
+            and len(grasp) >= 3
+            and len(task) >= 3
+        ):
+            distances.append(math.dist(grasp[:3], task[:3]))
+    queries = [row for row in episode.get("queries") or [] if isinstance(row, Mapping)]
+    joint_limit_clean = bool(
+        queries and all(row.get("any_joint_limit_clamped") is False for row in queries)
+    )
+    motion = episode.get("motion_evidence")
+    actions_reached_robot = bool(
+        isinstance(motion, Mapping) and motion.get("actions_reached_robot") is True
+    )
+    arm_moved = bool(isinstance(motion, Mapping) and motion.get("arm_moved") is True)
+    initial = distances[0] if distances else None
+    minimum = min(distances) if distances else None
+    final = distances[-1] if distances else None
+    approach = initial - minimum if initial is not None and minimum is not None else None
+    blockers = []
+    if observation_support_qualified is not True:
+        blockers.append("droid_observation_outside_checkpoint_support")
+    if not actions_reached_robot:
+        blockers.append("droid_actions_did_not_reach_robot")
+    if not arm_moved:
+        blockers.append("droid_arm_did_not_move")
+    if not joint_limit_clean:
+        blockers.append("droid_action_joint_limit_or_query_evidence_invalid")
+    if approach is None:
+        blockers.append("droid_gripper_task_distance_unavailable")
+    elif approach < DROID_PARITY_MINIMUM_APPROACH_M:
+        blockers.append("droid_gripper_did_not_approach_task")
+    value: dict[str, Any] = {
+        "schema_version": "droid_policy_canary_embodiment_parity.v1",
+        "status": "passed" if not blockers else "blocked",
+        "observation_support_qualified": observation_support_qualified,
+        "actions_reached_robot": actions_reached_robot,
+        "arm_moved": arm_moved,
+        "joint_limit_clean": joint_limit_clean,
+        "initial_gripper_to_task_distance_m": initial,
+        "minimum_gripper_to_task_distance_m": minimum,
+        "final_gripper_to_task_distance_m": final,
+        "approach_distance_m": approach,
+        "minimum_required_approach_m": DROID_PARITY_MINIMUM_APPROACH_M,
+        "blockers": blockers,
+        "diagnostic_only": True,
+        "task_success_claimed": False,
+        "receipt_digest": "",
+    }
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    return value
 
 
 PACKET_REQUEST_FILENAME = "native_task_arena_packet_request.v1.json"
@@ -329,17 +399,40 @@ def isaac_cell_runtime() -> CellRuntime:
         env.reset(seed=seed)
         root = output_root / "prepolicy_observation_gate"
         root.mkdir(parents=True, exist_ok=True)
-        selection = _run_wrist_camera_mount_sweep(
-            simulation_app=simulation_app,
-            env=env,
-            built=built,
-            packet_request=dict(packet_request),
-            plan=dict(plan),
-            output_root=root,
-            torch=torch,
-            body_pose_reader=_body_pose_world,
-            camera_snapshot=_camera_snapshot,
-        )
+        droid_profile = plan.get("policy_canary_embodiment_profile")
+        if (
+            isinstance(droid_profile, Mapping)
+            and droid_profile.get("preserve_official_policy_camera_calibration")
+            is True
+        ):
+            selected = {
+                "candidate_id": "official_arena_droid_wrist_camera",
+                "source": "official_arena_droid_embodiment",
+                "arena_source": dict(droid_profile["arena_source"]),
+                "robot_preset_id": droid_profile["robot_preset_id"],
+                "admitted": True,
+                "blockers": [],
+            }
+            selection = {
+                "schema_version": "policy_canary_wrist_camera_mount_selection.v1",
+                "status": "selected",
+                "selected_candidate": selected,
+                "contact_sheet": None,
+                "blockers": [],
+                "selection_digest": canonical_digest(selected),
+            }
+        else:
+            selection = _run_wrist_camera_mount_sweep(
+                simulation_app=simulation_app,
+                env=env,
+                built=built,
+                packet_request=dict(packet_request),
+                plan=dict(plan),
+                output_root=root,
+                torch=torch,
+                body_pose_reader=_body_pose_world,
+                camera_snapshot=_camera_snapshot,
+            )
         snapshot = _camera_snapshot(
             env=env,
             camera_scene_names=built.camera_scene_names,
@@ -624,8 +717,11 @@ def _resolved_scene_plan(base: Mapping[str, Any], cell: Mapping[str, Any]) -> di
         "control_decimation": 8,
         "reason": "frozen_droid_policy_action_cadence",
     }
-    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
-    return plan
+    from blueprint_pipeline.droid_policy_canary_embodiment import (
+        apply_droid_policy_canary_profile,
+    )
+
+    return apply_droid_policy_canary_profile(plan)
 
 
 def _sha256(path: Path) -> str:
@@ -1310,6 +1406,20 @@ def _run_isolated_cell_processes(
                 f"exit_{exit_code}"
             )
         child_results.append(_read(child_result_path))
+        if index == 0:
+            diagnostics = [
+                row.get("embodiment_parity_diagnostic")
+                for row in child_results[-1].get("episodes") or []
+                if isinstance(row, Mapping)
+            ]
+            if (
+                len(diagnostics) != len(CANDIDATE_IDS)
+                or any(
+                    not isinstance(row, Mapping) or row.get("status") != "passed"
+                    for row in diagnostics
+                )
+            ):
+                raise RuntimeError("droid_policy_canary_embodiment_parity_probe_failed")
     result = _aggregate_isolated_cell_results(
         authority=authority,
         inputs=inputs,
@@ -1616,6 +1726,11 @@ def _run_selected_cell(
                 )
             )
         )
+        parity_diagnostic = _episode_embodiment_parity_diagnostic(
+            episode,
+            observation_support_qualified=observation_support_qualified,
+        )
+        episode["embodiment_parity_diagnostic"] = parity_diagnostic
         evidence_artifacts = {
             "frame_manifest": _bound_media_artifact(
                 output_root,
@@ -1690,6 +1805,12 @@ def _run_selected_cell(
                 role="score_receipt",
                 value=episode.get("score"),
             ),
+            "embodiment_parity_diagnostic": _write_episode_json_artifact(
+                output_root,
+                episode_id=episode_id,
+                role="embodiment_parity_diagnostic",
+                value=parity_diagnostic,
+            ),
         }
         return {
             "status": "completed",
@@ -1697,6 +1818,7 @@ def _run_selected_cell(
             "actions_reached_robot": bool(motion.get("actions_reached_robot")),
             "arm_moved": bool(motion.get("arm_moved")),
             "observation_support_qualified": observation_support_qualified,
+            "embodiment_parity_diagnostic": parity_diagnostic,
             "checkpoint_digest": policy["checkpoint_digest"],
             "runtime_identity_digest": policy["runtime_identity_digest"],
             "lossless_frame_manifest_digest": _digest(visual),

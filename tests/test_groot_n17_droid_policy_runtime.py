@@ -296,6 +296,29 @@ def test_client_queries_production_reset_outside_empirical_extrema_with_typed_ev
     assert support["query_blocking"] is False
 
 
+def test_strict_droid_profile_refuses_out_of_support_reset_before_query() -> None:
+    fake = _FakePolicyClient()
+    client = GrootN17DroidPolicyClient(
+        spec=GrootN17DroidPolicySpec(),
+        worker_identity_receipt=_receipt(),
+        host="127.0.0.1",
+        require_observed_eef_support=True,
+        client_factory=lambda **kwargs: fake,
+    )
+    position = [0.16286441683769226, 0.0867096483707428, 1.0434999465942383]
+
+    with pytest.raises(
+        ValueError, match="groot_droid_eef_outside_checkpoint_observed_support"
+    ):
+        client.infer(_observation(position_m=position))
+
+    assert fake.requests == []
+    assert client.candidate_policy_queried is False
+    support = client.last_inference_evidence()["eef_position_observed_support"]
+    assert support["inside_checkpoint_observed_extrema"] is False
+    assert support["query_blocking"] is True
+
+
 @pytest.mark.parametrize("mutation", ("missing", "world_position", "digest"))
 def test_client_refuses_unproven_eef_frame_before_query(mutation: str) -> None:
     fake = _FakePolicyClient()

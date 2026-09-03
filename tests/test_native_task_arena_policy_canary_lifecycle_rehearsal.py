@@ -61,6 +61,21 @@ from blueprint_pipeline.openpi_droid_policy_runtime import (
 from tests.test_adp009d_policy_episode import _DESTINATION, _LifecycleEnvironment
 
 
+class _ParityLifecycleEnvironment(_LifecycleEnvironment):
+    """Expose a measurable approach baseline for the embodiment parity gate."""
+
+    def read_object_sample(self):
+        sample = super().read_object_sample()
+        if self._t == 0:
+            position = sample["can_pose_world"][:3]
+            sample["grasp_frame_position_world_m"] = [
+                position[0] - 0.2,
+                position[1],
+                position[2],
+            ]
+        return sample
+
+
 RUN_ID = "scene-839873-canary-rehearsal"
 PI05_POLICY_SPEC = {
     "policy_id": "pi05_droid_jointpos_polaris",
@@ -595,7 +610,7 @@ def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
         ),
         make_task_readback=lambda built, *, grasp_frame_pose_callback: None,
         build_episode_environment=lambda *, built, gripper_convention, servo, task_readback, to_tensor: (
-            _LifecycleEnvironment(),
+            _ParityLifecycleEnvironment(),
             {"schema_version": "rehearsal_episode_environment.v1", "seed": built.env.reset_seeds[-1]},
         ),
         to_tensor=_to_tensor,

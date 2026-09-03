@@ -152,6 +152,7 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "adp009d_groot_worker_identity.py",
     "adp009d_policy_rights.py",
     "droid_policy_bridge.py",
+    "droid_policy_canary_embodiment.py",
     "groot_n17_wire_client.py",
     "openpi_droid_policy_runtime.py",
     "policy_episode_trace_evidence.py",

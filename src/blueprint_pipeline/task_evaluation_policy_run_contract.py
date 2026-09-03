@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_json
+from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
 
 
 SETUP_SCHEMA_VERSION = "task_evaluation_policy_run_setup.v1"
@@ -27,6 +28,7 @@ RESULT_PROJECTION_SCHEMA_VERSION = "task_evaluation_policy_run_result_projection
 CONTROLS_QUALIFICATION_SCHEMA_VERSION = "task_evaluation_policy_controls_qualification.v1"
 ACTIVATION_MANIFEST_SCHEMA_VERSION = "task_evaluation_policy_campaign_activation.v1"
 EMBODIMENT_ID = "franka_panda_robotiq_2f85_v1"
+CANARY_EMBODIMENT_ID = DROID_POLICY_CANARY_PRESET_ID
 FROZEN_CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
 RUN_KIND_QUALIFIED_EVALUATION = "qualified_evaluation"
 RUN_KIND_INTERNAL_POLICY_CANARY = "internal_policy_canary"
@@ -296,7 +298,7 @@ def validate_policy_run_selection(value: Mapping[str, Any]) -> dict[str, Any]:
         required = {
             "claim_ceiling": CLAIM_CEILING_DIAGNOSTIC_POLICY_EXECUTION,
             "scene_controls_status_at_submission": CANARY_SCENE_CONTROLS_STATUS,
-            "robot_preset_id": EMBODIMENT_ID,
+            "robot_preset_id": CANARY_EMBODIMENT_ID,
             "policy_candidate_ids": list(FROZEN_CANDIDATE_IDS),
         }
         if any(selection.get(field) != expected for field, expected in required.items()):
@@ -376,7 +378,11 @@ def compile_policy_run_configuration(
         "offering_digest": selection["offering_digest"],
         "setup_digest": selection["setup_digest"],
         "run_kind": run_kind,
-        "embodiment_id": EMBODIMENT_ID,
+        "embodiment_id": (
+            selection["robot_preset_id"]
+            if run_kind == RUN_KIND_INTERNAL_POLICY_CANARY
+            else bound_setup["embodiment_id"]
+        ),
         "candidate_ids": list(FROZEN_CANDIDATE_IDS),
         "preset_id": preset["preset_id"],
         "scenario_count_per_policy": scenario_count,
@@ -492,7 +498,7 @@ def validate_policy_run_configuration(
             configuration.get("claim_ceiling") != CLAIM_CEILING_DIAGNOSTIC_POLICY_EXECUTION
             or configuration.get("scene_controls_status_at_submission")
             != CANARY_SCENE_CONTROLS_STATUS
-            or configuration.get("robot_preset_id") != EMBODIMENT_ID
+            or configuration.get("robot_preset_id") != CANARY_EMBODIMENT_ID
             or tuple(configuration.get("policy_candidate_ids") or ()) != FROZEN_CANDIDATE_IDS
             or configuration.get("unqualified_warning")
             != "Controls pending — results are unqualified."
@@ -560,7 +566,7 @@ def build_policy_run_plan(value: Mapping[str, Any], *, setup: Mapping[str, Any])
         "configuration_digest": configuration["configuration_digest"],
         "setup_digest": configuration["setup_digest"],
         "run_kind": configuration.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION),
-        "embodiment_id": EMBODIMENT_ID,
+        "embodiment_id": configuration["embodiment_id"],
         "candidate_ids": list(FROZEN_CANDIDATE_IDS),
         "matrix_profile_id": MATRIX_PROFILE_ID,
         "preset_id": configuration["preset_id"],
@@ -915,6 +921,7 @@ __all__ = [
     "CONTROLS_QUALIFICATION_SCHEMA_PATH",
     "CONTROLS_QUALIFICATION_SCHEMA_VERSION",
     "EMBODIMENT_ID",
+    "CANARY_EMBODIMENT_ID",
     "FROZEN_CANDIDATE_IDS",
     "MATRIX_PROFILE_ID",
     "MAX_TOTAL_EPISODES",

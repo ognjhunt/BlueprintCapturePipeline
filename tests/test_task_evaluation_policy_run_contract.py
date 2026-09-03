@@ -24,6 +24,7 @@ from blueprint_pipeline.task_evaluation_launch_preparation_worker import (
     process_launch_preparation_queue,
 )
 from blueprint_pipeline.task_evaluation_policy_run_contract import (
+    CANARY_EMBODIMENT_ID,
     EMBODIMENT_ID,
     FROZEN_CANDIDATE_IDS,
     TaskEvaluationPolicyRunContractError,
@@ -405,7 +406,7 @@ def test_internal_canary_compiles_resolved_quick_10_without_controls_gate() -> N
             "claim_ceiling": "diagnostic_policy_execution",
             "scene_revision_digest": "sha256:" + "9" * 64,
             "scene_controls_status_at_submission": "configured_controls_pending",
-            "robot_preset_id": EMBODIMENT_ID,
+            "robot_preset_id": CANARY_EMBODIMENT_ID,
             "policy_candidate_ids": list(FROZEN_CANDIDATE_IDS),
             "notification": {
                 "email": "robotics@example.com",
