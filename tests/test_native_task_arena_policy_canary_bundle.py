@@ -258,6 +258,7 @@ def test_resolved_scene_plan_binds_policy_cadence_and_supported_variations() -> 
             "maximum_episode_seconds": 12.0,
             "manipulation_strategy": "planar_push",
             "source_subject_identity": "test-mug",
+            "start_pose_world": [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0],
             "target_position_world_m": [1.2, 2.0, 0.8],
         },
         "plan_digest": "",
@@ -290,6 +291,13 @@ def test_resolved_scene_plan_binds_policy_cadence_and_supported_variations() -> 
         "preserve_official_policy_camera_calibration"
     ] is True
     assert resolved["objects"][0]["pose_world"]["position_world_m"][1] == 2.015
+    assert resolved["task_spec"]["start_pose_world"][:3] == [1.0, 2.015, 3.0]
+    assert resolved["task_spec"]["start_pose_world"][3:] == pytest.approx(
+        [0.0, 0.0, -0.043619387365336, 0.9990482215818578]
+    )
+    assert resolved["task_spec"]["start_pose_world"][3:] == pytest.approx(
+        resolved["objects"][0]["pose_world"]["orientation_xyzw"]
+    )
     assert resolved["cameras"][0]["frame_from_camera_matrix"][3] == 0.985
     assert {row["parameter_id"] for row in resolved["scenario"]["parameter_applications"]} == {
         "object_start_y_delta_m",
