@@ -45,6 +45,18 @@ CANARY_SHIPPED_MODULES = sorted(
 )
 
 
+def test_episode_interpretation_remains_control_plane_only() -> None:
+    assert "episode_interpretation.py" not in CANARY_SHIPPED_MODULES
+    assert "policy_canary_episode_interpretation_closeout.py" not in CANARY_SHIPPED_MODULES
+    assert (
+        provider_runtime_import_closure_blockers(
+            package_source_dir=REPO_PACKAGE,
+            shipped_module_names=CANARY_SHIPPED_MODULES,
+        )
+        == []
+    )
+
+
 def _sha(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 

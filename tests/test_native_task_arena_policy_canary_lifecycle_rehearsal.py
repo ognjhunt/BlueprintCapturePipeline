@@ -44,6 +44,9 @@ from blueprint_pipeline.groot_n17_droid_policy_runtime import (
 # module to the tests whose source names it, so a worker-only change runs this
 # rehearsal (pinned in tests/test_impacted_test_selection.py).
 import blueprint_pipeline.native_task_arena_policy_canary_worker as worker
+from blueprint_pipeline.policy_canary_episode_interpretation_closeout import (
+    materialize_policy_canary_episode_interpretations,
+)
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     CANDIDATE_IDS,
     PROVIDER_RESULT_FILENAME,
@@ -1044,6 +1047,9 @@ def test_quick10_rehearsal_runs_twenty_real_client_rollouts_in_ten_isolated_proc
     assert all(row["status"] == "completed" for row in result["episodes"])
     assert all(row["candidate_policy_queried"] is True for row in result["episodes"])
     assert result["candidate_policy_queried"] is True
+    # Learned interpretation is attached only by the control-plane closeout,
+    # after every deterministic provider episode has been durably sealed.
+    assert "episode_interpretation" not in result
     assert {
         (row["candidate_id"], row["cell_id"], row["seed"]) for row in result["episodes"]
     } == {
@@ -1061,6 +1067,16 @@ def test_quick10_rehearsal_runs_twenty_real_client_rollouts_in_ten_isolated_proc
     assert all(isaac.built_control_frequencies == [15.0] for isaac in isaacs)
     roles = {row["role"] for row in result["artifact_inventory"]}
     assert {"indexed_episode_telemetry", "review_video", "policy_query_receipt"} <= roles
+    assert "episode_interpretation_receipt" not in roles
+    closeout = materialize_policy_canary_episode_interpretations(
+        run_root=tmp_path,
+        evidence_root=provider_output,
+        session_result=result,
+        environment={},
+    )
+    assert closeout["episode_interpretation"]["receipt_count"] == 20
+    assert closeout["episode_interpretation"]["abstained_count"] == 20
+    assert closeout["episode_interpretation"]["provider_call_count"] == 0
 
 
 def test_child_inventory_excludes_parent_owned_console_log(tmp_path: Path) -> None:

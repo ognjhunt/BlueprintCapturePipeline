@@ -49,7 +49,7 @@ OPENAI_ADAPTER_ID = "openai_multimodal_episode_interpreter_v1"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PROMPT = (
     "Reconstruct the episode chronologically from the confirmed task success "
-    "contract, independent deterministic score and event ledger, exact state "
+    "contract, independent deterministic score and any retained event ledger, exact state "
     "and contact/force traces, and ordered visual evidence. Describe important "
     "events even if the robot later recovered. In particular, never erase a "
     "drop, collision, force excursion, failed attempt, regrasp, containment "
@@ -317,14 +317,24 @@ def build_episode_interpretation_request(
     )
     embedded_contract = score.get("task_success_contract")
     event_ledger = score.get("event_ledger")
-    if (
-        score.get("task_success_contract_digest") != contract_digest
-        or not isinstance(embedded_contract, Mapping)
-        or embedded_contract.get("contract_digest") != contract_digest
-        or not isinstance(event_ledger, Mapping)
-        or event_ledger.get("derived_only_from_episode_samples") is not True
-        or score.get("learned_judge_consulted") is not False
-        or score.get("candidate_policy_queried_by_scorer") is not False
+    current_provenance = (
+        score.get("task_success_contract_digest") == contract_digest
+        and isinstance(embedded_contract, Mapping)
+        and embedded_contract.get("contract_digest") == contract_digest
+        and isinstance(event_ledger, Mapping)
+        and event_ledger.get("derived_only_from_episode_samples") is True
+        and score.get("candidate_policy_queried_by_scorer") is False
+    )
+    retained_legacy_provenance = (
+        score.get("schema_version") == "adp009d_task_scoring.v1"
+        and score.get("judgement_source") == "deterministic_simulator_object_state"
+        and score.get("rendered_image_consulted") is False
+        and score.get("caller_asserted_success_accepted") is False
+        and score.get("candidate_policy_queried") is False
+        and score.get("failure_modes_fully_determined") is True
+    )
+    if score.get("learned_judge_consulted") is not False or not (
+        current_provenance or retained_legacy_provenance
     ):
         raise EpisodeInterpretationError(
             "episode_interpretation_deterministic_score_provenance_invalid"
@@ -493,6 +503,22 @@ def _validate_rights(
     return path, rights
 
 
+def validate_episode_interpretation_rights(
+    *,
+    rights_path: str | Path,
+    request: EpisodeInterpretationRequest,
+    interpreter: EpisodeInterpreter,
+) -> dict[str, Any]:
+    """Public preflight used by closeout before reserving provider spend."""
+
+    _, rights = _validate_rights(
+        rights_path=rights_path,
+        request=request,
+        interpreter=interpreter,
+    )
+    return rights
+
+
 def _evidence_digest_inventory(request: EpisodeInterpretationRequest) -> dict[str, set[str]]:
     artifacts = request.input_receipt["artifacts"]
     inventory = {
@@ -554,7 +580,7 @@ def _abstention_output(
     manifest_digest = request.input_receipt["artifacts"]["frame_manifest"]["logical_digest"]
     return EpisodeInterpreterOutput(
         episode_outcome="unclear",
-        summary="Episode interpretation abstained because required temporal media is missing.",
+        summary=f"Episode interpretation abstained: {reason}.",
         events=[],
         possible_missed_events=[
             PossibleMissedEvent(
@@ -564,7 +590,7 @@ def _abstention_output(
                     InterpretationEvidenceRef(
                         artifact_role="frame_manifest",
                         artifact_digest=manifest_digest,
-                        note="Lossless frames exist, but no derived review video was supplied.",
+                        note="The optional learned interpretation lane did not run.",
                     )
                 ],
             )
@@ -572,6 +598,81 @@ def _abstention_output(
         contract_considerations=[],
         confidence=0.0,
     )
+
+
+def materialize_episode_interpretation_abstention(
+    *,
+    request: EpisodeInterpretationRequest,
+    reason: str,
+    output_path: str | Path,
+    interpreter_identity: InterpreterIdentity | None = None,
+) -> dict[str, Any]:
+    """Seal a typed, idempotency-friendly abstention without provider inference."""
+
+    if not re.fullmatch(r"[a-z][a-z0-9_]{2,127}", reason):
+        raise EpisodeInterpretationError("episode_interpretation_abstention_reason_invalid")
+    identity = interpreter_identity or InterpreterIdentity(
+        interpreter_id="unavailable_independent_episode_interpreter",
+        principal_kind="independent_interpreter",
+        provider_id="unavailable",
+        execution_site="local",
+        runtime="not_invoked",
+        model="not_configured",
+        model_version="not_configured",
+    )
+    if (
+        identity.principal_kind != "independent_interpreter"
+        or identity.interpreter_id == request.candidate_policy_id
+        or identity.model == request.candidate_policy_id
+    ):
+        raise EpisodeInterpretationError("candidate_policy_self_grading_forbidden")
+    destination = Path(output_path).expanduser().resolve()
+    output = _abstention_output(request, reason=reason)
+    receipt: dict[str, Any] = {
+        "schema_version": RECEIPT_SCHEMA_VERSION,
+        "status": "abstained",
+        "abstention_reason": reason,
+        "episode_id": request.episode_id,
+        "candidate_policy_id": request.candidate_policy_id,
+        "input_bundle_digest": request.input_receipt["input_bundle_digest"],
+        "input_receipt": dict(request.input_receipt),
+        "interpreter": identity.__dict__,
+        "interpreter_identity_digest": canonical_digest(identity.__dict__),
+        "prompt_contract_version": PROMPT_CONTRACT_VERSION,
+        "prompt_digest": PROMPT_DIGEST,
+        "rights_attestation": None,
+        "provider_called": False,
+        "learned_interpretation": output.model_dump(mode="json"),
+        "deterministic_agreement": "abstains",
+        "authoritative_deterministic_result": {
+            "score_digest": request.input_receipt["deterministic_score_digest"],
+            "status": request.deterministic_score.get("status"),
+            "task_succeeded": request.deterministic_score.get("task_succeeded"),
+            "outcome": request.deterministic_score.get("outcome"),
+            "failed_criteria": request.deterministic_score.get("failed_criteria"),
+        },
+        "proof_boundary": {
+            "learned_interpretation_only": True,
+            "authoritative_task_success_unchanged": True,
+            "deterministic_score_overwrite_forbidden": True,
+            "candidate_policy_self_grading_forbidden": True,
+            "ranking_or_promotion_effect": "none",
+            "review_video_is_derived_visual_evidence": True,
+            "simulation_is_not_physical_truth": True,
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        existing = _read_mapping(
+            destination, error="episode_interpretation_existing_receipt_invalid"
+        )
+        if existing != receipt:
+            raise EpisodeInterpretationError("episode_interpretation_output_conflict")
+        return existing
+    write_json(destination, receipt)
+    return receipt
 
 
 def interpret_episode(
@@ -609,7 +710,6 @@ def interpret_episode(
             interpreter=interpreter,
         )
         rights_record = {
-            "path": str(rights_path),
             "sha256": _file_sha256(rights_path),
             "rights_digest": rights["rights_digest"],
         }
@@ -629,6 +729,7 @@ def interpret_episode(
         "input_bundle_digest": request.input_receipt["input_bundle_digest"],
         "input_receipt": dict(request.input_receipt),
         "interpreter": identity.__dict__,
+        "interpreter_identity_digest": canonical_digest(identity.__dict__),
         "prompt_contract_version": PROMPT_CONTRACT_VERSION,
         "prompt_digest": PROMPT_DIGEST,
         "rights_attestation": rights_record,
@@ -904,5 +1005,7 @@ __all__ = [
     "build_episode_interpretation_request",
     "interpret_episode",
     "main",
+    "materialize_episode_interpretation_abstention",
     "materialize_episode_interpretation_rights",
+    "validate_episode_interpretation_rights",
 ]

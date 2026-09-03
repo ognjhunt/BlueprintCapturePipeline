@@ -55,6 +55,10 @@ from .native_task_arena_policy_canary_session import (
 from .native_task_arena_policy_canary_worker import (
     _aggregate_isolated_cell_results,
 )
+from .policy_canary_episode_interpretation_closeout import (
+    EpisodeInterpretationRunner,
+    best_effort_policy_canary_episode_interpretations,
+)
 from .task_evaluation_policy_canary_result_projection import (
     build_policy_canary_result_projection,
     derive_policy_canary_episode_blockers,
@@ -1390,6 +1394,8 @@ def dispatch_policy_canary_activation(
     sync_runner: SyncRunner = sync_task_evaluation_policy_canary_to_webapp,
     blocked_sync_runner: SyncRunner = sync_policy_canary_preprovider_blocked_to_webapp,
     progress_sync_runner: SyncRunner = sync_launch_progress_to_webapp,
+    episode_interpretation_runner: EpisodeInterpretationRunner | None = None,
+    episode_interpretation_rights_root: str | Path | None = None,
     access: AccessChecker = _default_access_checker,
 ) -> dict[str, Any]:
     """Dispatch or resume exactly one Scene 839873 policy canary."""
@@ -1940,6 +1946,14 @@ def dispatch_policy_canary_activation(
             "provider_zero_verified": provider_zero.get("provider_zero_verified") is True,
         },
     }
+    joined = best_effort_policy_canary_episode_interpretations(
+        run_root=root,
+        evidence_root=native_path.parent,
+        session_result=joined,
+        runner=episode_interpretation_runner,
+        rights_root=episode_interpretation_rights_root,
+    )
+    write_json(joined_path, joined)
     _event_and_sync(
         root,
         stage="artifacts_syncing",

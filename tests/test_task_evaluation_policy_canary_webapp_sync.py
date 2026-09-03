@@ -15,6 +15,7 @@ from blueprint_pipeline.task_evaluation_run_webapp_sync import (
     sync_policy_canary_preprovider_blocked_to_webapp,
     sync_task_evaluation_policy_canary_to_webapp,
 )
+from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
 
 
 def _artifact(character: str, artifact_id: str) -> dict[str, object]:
@@ -26,6 +27,7 @@ def _artifact(character: str, artifact_id: str) -> dict[str, object]:
 
 
 def _projection() -> tuple[dict[str, object], dict[str, object]]:
+    setup = public_setup()
     delivery: dict[str, object] = {
         "schema_version": "task_evaluation_result_delivery.v2",
         "run_id": "scene-839873-canary-1",
@@ -45,6 +47,8 @@ def _projection() -> tuple[dict[str, object], dict[str, object]]:
         "request_digest": "sha256:" + "1" * 64,
         "configuration_digest": "sha256:" + "2" * 64,
         "result_delivery_digest": delivery["delivery_digest"],
+        "task_success_contract": setup["task_success_contract"],
+        "task_success_contract_digest": setup["task_success_contract_digest"],
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "scene_controls_status": "configured_controls_pending",
