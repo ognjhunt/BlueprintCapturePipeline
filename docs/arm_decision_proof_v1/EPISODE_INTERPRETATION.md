@@ -30,7 +30,7 @@ retains the video's exact byte digest in the input receipt.
 For hermetic contract testing and offline wiring, use the fixture CLI:
 
 ```bash
-blueprint-interpret-policy-episode \
+python -m blueprint_pipeline.episode_interpretation \
   --evidence-root <run-root> \
   --episode-id <episode-id> \
   --candidate-policy-id <candidate-id> \

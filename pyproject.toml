@@ -402,7 +402,6 @@ blueprint-reconcile-task-evaluation-launches = "blueprint_pipeline.task_evaluati
 blueprint-supervise-task-evaluation-launches = "blueprint_pipeline.task_evaluation_launch_supervisor:main"
 blueprint-setup-live-pipeline-forwarding = "blueprint_pipeline.live_pipeline_forwarding_secret_setup:main"
 blueprint-label-rollout-vision-openai = "blueprint_pipeline.rollout_vision_label_openai:main"
-blueprint-interpret-policy-episode = "blueprint_pipeline.episode_interpretation:main"
 blueprint-deliver-arena-package-local = "blueprint_pipeline.arena_package_delivery_local:main"
 blueprint-build-oscar-visual-augmentation-packet = "blueprint_pipeline.oscar_visual_augmentation_packet:main"
 blueprint-build-capture-batch-registry = "blueprint_pipeline.capture_batch_registry:main"
