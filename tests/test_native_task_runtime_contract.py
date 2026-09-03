@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
 from blueprint_pipeline.native_task_runtime_contract import (
     DROID_FRANKA_RESET_JOINT_NAMES,
     FROZEN_CANDIDATES,
@@ -231,6 +232,45 @@ def test_identified_inserted_task_object_fails_closed_on_identity_mismatch() -> 
     with pytest.raises(
         NativeTaskRuntimeContractError,
         match="native_task_runtime_subject_asset_id_invalid",
+    ):
+        materialize_native_task_runtime_contract(**fixture)
+
+
+def test_runtime_contract_refuses_unconfirmed_agent_success_criteria() -> None:
+    fixture = _identified_rigid_fixture()
+    fixture["task_spec"].update(
+        {
+            "start_pose_world": [1.0, 2.0, 0.8, 0.0, 0.0, 0.0, 1.0],
+            "destination_position_bounds_world_m": {
+                "minimum": [1.14, 1.99, 0.79],
+                "maximum": [1.16, 2.01, 0.81],
+            },
+            "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "destination_orientation_tolerance_rad": 0.1,
+            "support_height_interval_m": [0.79, 0.81],
+            "minimum_translation_m": 0.14,
+            "minimum_lift_m": 0.02,
+            "movement_epsilon_m": 0.001,
+            "settle_window_samples": 3,
+            "settle_position_tolerance_m": 0.002,
+            "settle_orientation_tolerance_rad": 0.01,
+            "release_gripper_width_min_m": 0.07,
+        }
+    )
+    fixture["task_spec"]["task_success_contract"] = (
+        seal_rigid_task_success_contract(
+            task_spec=fixture["task_spec"],
+            site_id=fixture["scene_id"],
+            task_id=fixture["task_id"],
+            author_source="agent_proposal",
+            author_id="agent:criteria-drafter",
+            confirmation_status="proposal_only",
+        )
+    )
+
+    with pytest.raises(
+        NativeTaskRuntimeContractError,
+        match="rigid_task_success_contract_unconfirmed",
     ):
         materialize_native_task_runtime_contract(**fixture)
 
