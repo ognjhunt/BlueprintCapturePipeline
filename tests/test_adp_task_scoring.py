@@ -379,6 +379,80 @@ def test_scene_neutral_rigid_task_scores_pose_volume_release_and_settle() -> Non
     assert report["outcome"] == "placed_and_settled"
     assert report["task_succeeded"] is True
     assert report["subject_asset_id"] == "notebook_replacement"
+    assert report["manipulation_strategy"] == "pick_and_place"
+
+
+def _held_out_groot_push_samples() -> list[dict]:
+    """Reproduce the terminal measurements from Quick-10 held-out GR00T."""
+
+    samples = [
+        _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+        _rigid_v2_sample(1, [1.08, 2.0, 0.8]),
+        _rigid_v2_sample(2, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(3, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(4, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(5, [1.15, 2.0, 0.8]),
+    ]
+    for sample in samples:
+        # A planar push keeps the fingers closed and does not control the
+        # object's terminal yaw.  Neither fact invalidates a completed push.
+        sample["gripper_width_m"] = 0.0
+    for sample in samples[2:]:
+        sample["task_object_pose_world"][3:] = [
+            0.0,
+            0.0,
+            0.7071067811865476,
+            0.7071067811865476,
+        ]
+    return samples
+
+
+def test_planar_push_scores_held_out_groot_destination_and_settle_as_success() -> None:
+    task_spec = _rigid_v2_spec()
+    task_spec["manipulation_strategy"] = "planar_push"
+
+    report = score_task_episode_from_spec(
+        task_spec=task_spec,
+        samples=_held_out_groot_push_samples(),
+    )
+
+    assert report["status"] == "scored"
+    assert report["manipulation_strategy"] == "planar_push"
+    assert report["outcome"] == "pushed_and_settled"
+    assert report["task_succeeded"] is True
+    assert report["measurements"]["settle_destination_inside"] is True
+    assert report["measurements"]["settle_orientation_ok"] is False
+    assert report["measurements"]["settle_support_height_ok"] is True
+    assert report["measurements"]["settle_support_contact_ok"] is True
+    assert report["measurements"]["settled"] is True
+    assert report["measurements"]["settle_task_contact_cleared"] is True
+    assert report["measurements"]["released"] is False
+    assert report["measurements"]["maximum_lift_m"] == 0.0
+
+
+def test_pick_and_place_keeps_release_orientation_and_lift_requirements() -> None:
+    report = score_task_episode_from_spec(
+        task_spec=_rigid_v2_spec(),
+        samples=_held_out_groot_push_samples(),
+    )
+
+    assert report["manipulation_strategy"] == "pick_and_place"
+    assert report["outcome"] == "release_incomplete"
+    assert report["task_succeeded"] is False
+
+
+def test_planar_push_requires_task_contact_to_clear_during_settle() -> None:
+    task_spec = _rigid_v2_spec()
+    task_spec["manipulation_strategy"] = "planar_push"
+    samples = _held_out_groot_push_samples()
+    samples[-1]["task_contact_active"] = True
+
+    report = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
+
+    assert report["status"] == "scored"
+    assert report["outcome"] == "push_contact_not_cleared"
+    assert report["task_succeeded"] is False
+    assert report["measurements"]["settle_task_contact_cleared"] is False
 
 
 def test_scene_neutral_rigid_thresholds_accept_machine_roundoff_at_boundary() -> None:

@@ -37,6 +37,7 @@ ARTICULATED_REPORT_SCHEMA_VERSION = "adp_articulated_task_scoring.v1"
 RIGID_REPORT_SCHEMA_VERSION = "adp_rigid_task_scoring.v2"
 TASK_KIND_RIGID_PICK_PLACE = "rigid_pick_place"
 TASK_KIND_ARTICULATED_OPEN_CLOSE = "articulated_open_close"
+RIGID_MANIPULATION_STRATEGIES = {"pick_and_place", "planar_push"}
 
 # How far past a sealed hard limit a joint may read before this recomputation
 # calls it a violation.  This is a solver-residual allowance, not a task
@@ -55,6 +56,7 @@ OUTCOME_LIMIT_OR_CONTAINMENT_VIOLATION = "joint_limit_or_containment_violation"
 OUTCOME_COLLISION_FAILURE = "robot_or_scene_collision_failure"
 OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE = "release_or_retreat_incomplete"
 OUTCOME_OPENED_AND_SETTLED = "opened_and_settled"
+OUTCOME_PUSHED_AND_SETTLED = "pushed_and_settled"
 
 _ARTICULATED_OUTCOME_RANK = {
     OUTCOME_NEVER_MOVED: 0,
@@ -647,6 +649,11 @@ def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     subject = str(spec.get("subject_asset_id") or "")
     if not subject:
         errors.append("rigid_task_subject_asset_id_missing")
+    manipulation_strategy = str(
+        spec.get("manipulation_strategy") or "pick_and_place"
+    )
+    if manipulation_strategy not in RIGID_MANIPULATION_STRATEGIES:
+        errors.append("rigid_task_manipulation_strategy_invalid")
     try:
         start_pose = _vector(
             spec.get("start_pose_world"), 7, error="rigid_task_start_pose_invalid"
@@ -714,6 +721,7 @@ def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         raise TaskNeutralScoringError(errors)
     return {
         "subject_asset_id": subject,
+        "manipulation_strategy": manipulation_strategy,
         "start_pose_world": start_pose,
         "destination_position_bounds_world_m": {"minimum": lower, "maximum": upper},
         "destination_orientation_xyzw": orientation_reference,
@@ -826,6 +834,12 @@ def score_rigid_task_episode(
         and row["task_contact_active"] is False
         for row in settle
     )
+    task_contact_complete = settle_available and all(
+        isinstance(row["task_contact_active"], bool) for row in settle
+    )
+    task_contact_cleared = task_contact_complete and all(
+        row["task_contact_active"] is False for row in settle
+    )
     safety_fields = (
         "robot_collision_failure",
         "scene_collision_failure",
@@ -856,33 +870,45 @@ def score_rigid_task_episode(
         rel_tol=0.0,
         abs_tol=1.0e-12,
     )
-    succeeded = (
+    common_success = (
         destination_inside
-        and orientation_ok
         and support_ok
         and support_contact_ok
         and settled
-        and released
         and safety_ok
         and translated
-        and lifted
     )
-    if not safety_complete or not support_contact_complete:
+    planar_push = spec["manipulation_strategy"] == "planar_push"
+    if planar_push:
+        succeeded = common_success and task_contact_cleared
+    else:
+        succeeded = common_success and orientation_ok and released and lifted
+    if (
+        not safety_complete
+        or not support_contact_complete
+        or (planar_push and not task_contact_complete)
+    ):
         status = "undetermined"
-        outcome = (
-            "native_safety_readback_missing"
-            if not safety_complete
-            else "native_support_contact_readback_missing"
-        )
+        if not safety_complete:
+            outcome = "native_safety_readback_missing"
+        elif not support_contact_complete:
+            outcome = "native_support_contact_readback_missing"
+        else:
+            outcome = "native_task_contact_readback_missing"
     elif not safety_ok:
         status = "scored"
         outcome = "collision_or_containment_failure"
     elif succeeded:
         status = "scored"
-        outcome = "placed_and_settled"
+        outcome = (
+            OUTCOME_PUSHED_AND_SETTLED if planar_push else "placed_and_settled"
+        )
     elif not moved:
         status = "scored"
         outcome = OUTCOME_NEVER_MOVED
+    elif planar_push and common_success and not task_contact_cleared:
+        status = "scored"
+        outcome = "push_contact_not_cleared"
     elif destination_inside and not released:
         status = "scored"
         outcome = "release_incomplete"
@@ -894,6 +920,7 @@ def score_rigid_task_episode(
         "status": status,
         "task_kind": TASK_KIND_RIGID_PICK_PLACE,
         "subject_asset_id": spec["subject_asset_id"],
+        "manipulation_strategy": spec["manipulation_strategy"],
         "task_succeeded": succeeded,
         "outcome": outcome,
         "measurements": {
@@ -910,6 +937,8 @@ def score_rigid_task_episode(
             "settle_support_contact_ok": support_contact_ok,
             "settled": settled,
             "released": released,
+            "settle_task_contact_readback_complete": task_contact_complete,
+            "settle_task_contact_cleared": task_contact_cleared,
             "native_safety_readback_complete": safety_complete,
             "native_safety_ok": safety_ok,
         },
@@ -959,6 +988,7 @@ __all__ = [
     "OUTCOME_NON_TASK_JOINT_MOVED",
     "OUTCOME_OPENED_AND_SETTLED",
     "OUTCOME_OPENED_THEN_REBOUNDED",
+    "OUTCOME_PUSHED_AND_SETTLED",
     "OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE",
     "TASK_KIND_ARTICULATED_OPEN_CLOSE",
     "TASK_KIND_RIGID_PICK_PLACE",
