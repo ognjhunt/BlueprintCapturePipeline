@@ -357,6 +357,11 @@ replacement, and typed abstentions are retained. Day-28 gate: the Franka
 two-candidate public-data rehearsal is reproducible. Real metric transfer then
 occurs through the fresh Raw V3.2 capture in ADP-021.
 
+Optional whole-episode learned interpretation is specified in
+[`EPISODE_INTERPRETATION.md`](EPISODE_INTERPRETATION.md). It attaches only after
+the deterministic episode evidence is sealed and cannot change scoring,
+ranking, promotion, or the Day-28 acceptance gate.
+
 ## Partner Proof: Day 7 From Partner-Phase Start
 
 ### ADP-010 — Select one design partner
