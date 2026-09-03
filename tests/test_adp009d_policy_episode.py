@@ -202,6 +202,30 @@ def _integrity(authority, *, backend_digest: str = _BACKEND_RECEIPT_DIGEST) -> d
     }
 
 
+def _runtime_observation_gate(
+    *, backend_digest: str = _BACKEND_RECEIPT_DIGEST
+) -> dict:
+    value = {
+        "schema_version": "policy_canary_runtime_observation_integrity_gate.v1",
+        "status": "passed",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "appearance_render_backend_receipt_digest": backend_digest,
+        "wrist_camera_mount_selection_digest": "sha256:" + "4" * 64,
+        "frame_structure_passed": True,
+        "target_semantic_visibility_passed": True,
+        "candidate_policy_loaded": False,
+        "candidate_policy_queried": False,
+        "official_ranking_permitted": False,
+        "scene_promotion_permitted": False,
+        "blockers": [],
+        "policy_observation_integrity_passed": True,
+        "gate_digest": "",
+    }
+    value["gate_digest"] = canonical_digest(value, digest_field="gate_digest")
+    return value
+
+
 def _run(environment=None, policy=None, **overrides):
     kwargs = dict(
         environment=environment or _Environment(),
@@ -2333,3 +2357,33 @@ def test_prestart_receipt_records_that_the_candidate_is_loaded_but_not_queried(
     assert gate["appearance_reference_parity_binding"]["backend_bound"] is True
     for row in gate["views"].values():
         assert "rgb_spread_pixel_fraction" in row["chromatic_diagnostics"]
+
+
+def test_internal_canary_accepts_digest_bound_runtime_camera_gate_without_human_claim(
+    tmp_path,
+) -> None:
+    runtime_gate = _runtime_observation_gate()
+    receipt = _run(
+        environment=_LifecycleEnvironment(),
+        policy=_LifecyclePolicy(),
+        max_policy_queries=1,
+        settle_window_samples=1,
+        media_output_dir=tmp_path,
+        episode_id="lifecycle-runtime-camera-gate",
+        require_complete_multicamera_media=True,
+        require_prestart_readiness=True,
+        observation_integrity={
+            "authority": None,
+            "appearance_render_backend_receipt_digest": _BACKEND_RECEIPT_DIGEST,
+            "runtime_gate": runtime_gate,
+        },
+    )
+    gate = receipt["prestart_readiness"]["prepolicy_visual_quality"]
+    assert gate["policy_observation_integrity_passed"] is True
+    assert gate["human_visual_review_status"] == (
+        "not_required_for_internal_diagnostic_policy_execution"
+    )
+    assert gate["appearance_reference_parity_passed"] is False
+    assert gate["runtime_observation_gate"]["gate_digest"] == runtime_gate[
+        "gate_digest"
+    ]

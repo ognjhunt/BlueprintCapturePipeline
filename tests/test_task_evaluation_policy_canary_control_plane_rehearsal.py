@@ -339,7 +339,7 @@ def _website_launch(
             "scene_revision_digest": public["scene_revision_digest"],
             "scene_controls_status_at_submission": "configured_controls_pending",
             "team_namespace": TEAM_NAMESPACE,
-            "robot_preset_id": "franka_panda_robotiq_2f85_v1",
+            "robot_preset_id": "droid_franka_panda_robotiq_2f85_v1",
             "policy_candidate_ids": ["pi05_droid", "groot_n17_droid"],
             "episode_plan": {
                 "preset": "quick_10",

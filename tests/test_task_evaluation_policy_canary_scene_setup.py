@@ -339,6 +339,7 @@ def test_setup_binds_current_scene_pair_quick10_and_unqualified_boundary(
     setup = materialize_scene839873_policy_canary_setup(**_kwargs(tmp_path))
 
     assert setup["status"] == "verified_runnable"
+    assert setup["embodiment_id"] == "droid_franka_panda_robotiq_2f85_v1"
     assert setup["candidate_ids"] == ["pi05_droid", "groot_n17_droid"]
     assert setup["quick_10"]["learned_policy_rollout_count"] == 20
     assert {
@@ -348,6 +349,13 @@ def test_setup_binds_current_scene_pair_quick10_and_unqualified_boundary(
     assert setup["historical_runtime_smoke"]["current_runtime_proof"] is False
     assert setup["scene_promotion_authorized"] is False
     assert setup["official_ranking_authorized"] is False
+    for role in ("pi05_execution_spec", "groot_execution_spec"):
+        spec = json.loads(Path(setup["records"][role]["path"]).read_text())
+        assert spec["prompt"] == "Push the mug onto the green target marker."
+    groot = json.loads(
+        Path(setup["records"]["groot_execution_spec"]["path"]).read_text()
+    )
+    assert groot["require_observed_eef_support"] is True
     for record in setup["records"].values():
         assert Path(record["path"]).is_file()
         assert record["sha256"].startswith("sha256:")
@@ -571,6 +579,10 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     }
     assert plan["plan_digest"] == canonical_digest(plan, digest_field="plan_digest")
     legacy_setup = plan["legacy_policy_run_setup"]
+    assert legacy_setup["preparation_template"]["controller"]["identity"] == {
+        "id": "paired-droid-policy-canary",
+        "version": "v2",
+    }
     configuration = compile_policy_run_configuration(
         {
             "schema_version": "task_evaluation_policy_run_selection.v1",
@@ -583,7 +595,7 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
             "claim_ceiling": "diagnostic_policy_execution",
             "scene_revision_digest": REVISION,
             "scene_controls_status_at_submission": "configured_controls_pending",
-            "robot_preset_id": "franka_panda_robotiq_2f85_v1",
+            "robot_preset_id": "droid_franka_panda_robotiq_2f85_v1",
             "policy_candidate_ids": ["pi05_droid", "groot_n17_droid"],
             "notification": {
                 "email": "robotics@example.com",

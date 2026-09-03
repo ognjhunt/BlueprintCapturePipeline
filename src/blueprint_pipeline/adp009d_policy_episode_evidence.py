@@ -110,6 +110,28 @@ def prepolicy_visual_readiness_evidence(
     """
 
     binding = dict(observation_integrity or {})
+    runtime_gate = binding.get("runtime_gate")
+    runtime_gate = dict(runtime_gate) if isinstance(runtime_gate, Mapping) else None
+    runtime_gate_passed = bool(
+        runtime_gate
+        and runtime_gate.get("schema_version")
+        == "policy_canary_runtime_observation_integrity_gate.v1"
+        and runtime_gate.get("status") == "passed"
+        and runtime_gate.get("run_kind") == "internal_policy_canary"
+        and runtime_gate.get("claim_ceiling") == "diagnostic_policy_execution"
+        and runtime_gate.get("frame_structure_passed") is True
+        and runtime_gate.get("target_semantic_visibility_passed") is True
+        and runtime_gate.get("candidate_policy_loaded") is False
+        and runtime_gate.get("candidate_policy_queried") is False
+        and runtime_gate.get("official_ranking_permitted") is False
+        and runtime_gate.get("scene_promotion_permitted") is False
+        and runtime_gate.get("blockers") == []
+        and runtime_gate.get("policy_observation_integrity_passed") is True
+        and runtime_gate.get("appearance_render_backend_receipt_digest")
+        == binding.get("appearance_render_backend_receipt_digest")
+        and runtime_gate.get("gate_digest")
+        == canonical_digest(runtime_gate, digest_field="gate_digest")
+    )
 
     try:  # flat provider-bundle layout
         from native_task_camera_observability import (
@@ -140,6 +162,32 @@ def prepolicy_visual_readiness_evidence(
         raise PolicyEpisodeEvidenceError(
             [f"{PRESTART_READINESS_BLOCKER}:{error}" for error in exc.errors]
         ) from exc
+    if runtime_gate_passed and receipt["frame_structure_passed"] is True:
+        receipt = dict(receipt)
+        receipt.update(
+            policy_observation_integrity_passed=True,
+            policy_observation_integrity_blockers=[],
+            target_semantic_visibility_passed=True,
+            appearance_reference_parity_passed=False,
+            human_visual_review_status=(
+                "not_required_for_internal_diagnostic_policy_execution"
+            ),
+            runtime_observation_gate={
+                "gate_digest": runtime_gate["gate_digest"],
+                "wrist_camera_mount_selection_digest": runtime_gate.get(
+                    "wrist_camera_mount_selection_digest"
+                ),
+                "appearance_render_backend_receipt_digest": runtime_gate[
+                    "appearance_render_backend_receipt_digest"
+                ],
+            },
+            quality_boundary=(
+                "internal diagnostic policy execution only; a digest-bound native "
+                "camera-mount sweep, semantic task visibility, and exact reset-frame "
+                "structure may unlock the unqualified canary without controls, "
+                "reference-render parity, ranking, or scene promotion"
+            ),
+        )
     # A structural pass is not observation integrity: Scene 839873's frames
     # passed every structural check and were visibly corrupt.  Only sealed
     # same-pose parity bound to this backend plus human approval may unlock

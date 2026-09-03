@@ -151,6 +151,7 @@ from .vast_scene_configuration_warm_readiness import (
     scene_configuration_warm_validation_fields,
 )
 from .vast_provider_transfer_upload import provider_output_upload_shell_fragment
+from .vast_provider_output_recovery import recover_provider_output_before_teardown
 from .vast_args_payload_transport import args_mode_command, onstart_mode_script
 from .vast_provider_bundle_digest_guard import provider_bundle_digest_guard
 
@@ -9520,6 +9521,35 @@ def run_vast_provider_adapter(
                         "blockers": ["provider_output_get_url_missing"],
                     }
                 )
+            if output_download_manifest.get("status") != "completed":
+                output_size_match = re.search(
+                    r"BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:([0-9]+)",
+                    heartbeat_text,
+                )
+                if output_size_match is not None:
+                    recovery = recover_provider_output_before_teardown(
+                        connection={
+                            "ssh_host": onstart_logs.get("instance_ssh_host"),
+                            "ssh_port": onstart_logs.get("instance_ssh_port"),
+                        },
+                        provider_bundle_kind=provider_bundle_kind,
+                        output_path=output_zip_path,
+                        attempt_dir=resolved_job_dir / "provider_output_ssh_recovery",
+                        expected_size_bytes=int(output_size_match.group(1)),
+                        minimum_free_bytes=provider_output_minimum_free_bytes,
+                    )
+                    output_download_manifest["ssh_recovery"] = recovery
+                    if recovery.get("status") == "completed":
+                        output_download_manifest.update(
+                            {
+                                "status": "completed",
+                                "output_zip_present_after_download": output_zip_path.is_file(),
+                                "output_zip_size_bytes": recovery.get(
+                                    "recovered_size_bytes", 0
+                                ),
+                                "blockers": [],
+                            }
+                        )
             write_json(
                 resolved_job_dir / "vast_provider_output_download_manifest.json",
                 output_download_manifest,
@@ -9542,6 +9572,10 @@ def run_vast_provider_adapter(
                 "log_marker_and_object_store"
                 if provider_upload_ok and output_zip_received
                 else "object_store_only"
+                if output_zip_received
+                and _mapping(output_download_manifest.get("ssh_recovery")).get("status")
+                != "completed"
+                else "pinned_ssh_recovery"
                 if output_zip_received
                 else "none"
             )

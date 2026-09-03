@@ -30,6 +30,7 @@ from .decision_evidence_contracts import (
     canonical_json,
     cross_runtime_canonical_digest,
 )
+from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
 
 
 DELIVERY_SCHEMA_VERSION = "task_evaluation_result_delivery.v1"
@@ -1205,7 +1206,7 @@ def materialize_policy_canary_result_delivery(
                 "subject_id": candidate_id,
                 "policy_candidate_id": candidate_id,
                 "policy_checkpoint_digest": row.get("checkpoint_digest"),
-                "robot_preset_id": "franka_panda_robotiq_2f85_v1",
+                "robot_preset_id": DROID_POLICY_CANARY_PRESET_ID,
                 "runtime_identity": str(row.get("runtime_identity_digest") or "unreported"),
                 "variation": {
                     "cell_id": cell_id,

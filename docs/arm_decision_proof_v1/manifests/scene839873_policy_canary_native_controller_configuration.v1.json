@@ -1,15 +1,23 @@
 {
   "schema_version": "task_evaluation_native_controller_configuration.v1",
   "identity": {
-    "id": "paired-policy-canary",
-    "version": "v1"
+    "id": "paired-droid-policy-canary",
+    "version": "v2"
   },
   "kind": "policy_container",
   "robot_identity": {
-    "id": "franka-panda-robotiq-2f85",
+    "id": "droid-franka-panda-robotiq-2f85",
     "version": "isaaclab-arena-droid-8b4a3a47"
   },
-  "action_contract": "absolute_seven_arm_joints_plus_gripper",
+  "action_contract": "official_arena_droid_absolute_seven_arm_joints_plus_gripper",
+  "observation_contract": "official_arena_droid_external_wrist_and_robot_state",
+  "reset_contract": "official_arena_droid_default_joint_pose",
+  "first_cell_embodiment_parity_gate": {
+    "minimum_approach_m": 0.05,
+    "checkpoint_support_required": true,
+    "joint_limit_clean_required": true,
+    "actions_reached_robot_required": true
+  },
   "control_frequency_hz": 15,
   "candidate_policy_queried": false,
   "policy_registry_digest": "sha256:675f4116d27001b5d30e4dbe3805dcae169ce908254da053c20525884820ae4c",
@@ -25,5 +33,5 @@
     "derived_review_video_required": true,
     "deterministic_simulator_scoring_required": true
   },
-  "document_digest": "sha256:fc6428a5d4b658a452fcca60553a9d49f048f67e4ab3f5e36b395b25c5c0920f"
+  "document_digest": "sha256:c75e01e44e269128d0a05357058b8cb21d91cf8d0b2ab4623725224dbc274a39"
 }

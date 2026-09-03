@@ -196,7 +196,7 @@ def _profile_and_request(tmp_path: Path) -> tuple[dict, dict]:
         "scene_revision_digest": public["scene_revision_digest"],
         "scene_controls_status_at_submission": "configured_controls_pending",
         "team_namespace": "blueprint-internal",
-        "robot_preset_id": "franka_panda_robotiq_2f85_v1",
+        "robot_preset_id": "droid_franka_panda_robotiq_2f85_v1",
         "policy_candidate_ids": ["pi05_droid", "groot_n17_droid"],
         "episode_plan": {
             "preset": "quick_10",

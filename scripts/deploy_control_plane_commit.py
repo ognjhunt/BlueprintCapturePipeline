@@ -2222,6 +2222,7 @@ def deploy_control_plane_commit(
             state_root=state_root,
             active_link=active,
             activate=True,
+            allow_unmerged_remote_commit=canary,
         )
         commit = str(release["source_commit"])
         _mark_stage("release_activated")

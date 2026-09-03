@@ -72,7 +72,11 @@ def provider_output_upload_shell_fragment() -> str:
         'curl --http1.1 --silent --show-error --fail -X PUT -H \'Content-Type: application/zip\' '
         '--connect-timeout 30 --max-time "$blueprint_upload_remaining" --speed-limit 1024 --speed-time 60 '
         '--output "$blueprint_upload_body_file" --write-out \'%{http_code}\' '
-        '--data-binary @"$blueprint_upload_path" "$blueprint_upload_url" >"$blueprint_upload_status_file"; '
+        # --upload-file streams from the file descriptor.  --data-binary
+        # constructs a request body and curl may allocate the complete archive;
+        # a real 2.31 GiB policy evidence archive exhausted provider memory that
+        # way after all episodes had already completed.
+        '--upload-file "$blueprint_upload_path" "$blueprint_upload_url" >"$blueprint_upload_status_file"; '
         'blueprint_upload_rc=$?; blueprint_upload_last_rc="$blueprint_upload_rc"; '
         'blueprint_upload_http_status=$(tr -d \'[:space:]\' < "$blueprint_upload_status_file"); '
         'case "$blueprint_upload_http_status" in \'\'|*[!0-9]*) blueprint_upload_http_status=000;; esac; '

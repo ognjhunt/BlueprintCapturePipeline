@@ -2,7 +2,7 @@
   "schema_version": "scene839873_policy_canary_controller_configuration.v1",
   "scene_id": "839873",
   "task_id": "scene-839873-mug-planar-push",
-  "robot_preset_id": "franka_panda_robotiq_2f85_v1",
+  "robot_preset_id": "droid_franka_panda_robotiq_2f85_v1",
   "execution_mode": "single_warm_provider_session",
   "candidate_order": [
     "pi05_droid",
@@ -12,7 +12,7 @@
     {
       "candidate_id": "pi05_droid",
       "checkpoint_digest": "sha256:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
-      "adapter_id": "openpi_droid_to_native_franka_v1",
+      "adapter_id": "openpi_droid_to_official_arena_droid_abs_joint_v2",
       "transport": "openpi_websocket",
       "host": "127.0.0.1",
       "port": 8000,
@@ -22,7 +22,7 @@
     {
       "candidate_id": "groot_n17_droid",
       "checkpoint_digest": "sha256:5d1d83ab34215da2dcaa049d70e93ccec18687591ad5760c5183fc1fd6e035fd",
-      "adapter_id": "groot_n17_droid_joint_projection_v1",
+      "adapter_id": "groot_n17_droid_to_official_arena_droid_abs_joint_v2",
       "transport": "groot_zmq",
       "host": "127.0.0.1",
       "port": 5555,
@@ -52,8 +52,19 @@
   "retry_cap": 0,
   "candidate_servers_coexist_before_execution": true,
   "identical_cells_and_seeds_required": true,
+  "droid_embodiment_contract": {
+    "arena_source_revision": "8b4a3a47fc53de23e8205089d71109a2e2348acd",
+    "embodiment": "DroidAbsoluteJointPositionEmbodiment",
+    "control_variant": "droid_abs_joint_pos",
+    "policy_camera_calibration": "official_arena_droid_external_and_wrist",
+    "reset": "official_arena_droid_default_joint_pose",
+    "language_instruction": "Push the mug onto the green target marker.",
+    "strict_checkpoint_observation_support": true,
+    "first_cell_minimum_approach_m": 0.05,
+    "first_cell_must_pass_before_remaining_cells": true
+  },
   "ranking_permitted": false,
   "winner_selection_permitted": false,
   "scene_promotion_permitted": false,
-  "configuration_digest": "sha256:688d5b06c7063e9cbd84e6e65cef8bbfd00991aadab0fcc0ba6b60ae90eb4327"
+  "configuration_digest": "sha256:1ab8618d246a32012c02c9688c00ab31eb28db493716d230051a9051b24620c8"
 }

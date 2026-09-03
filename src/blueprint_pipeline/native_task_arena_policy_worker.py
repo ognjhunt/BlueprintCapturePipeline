@@ -471,6 +471,9 @@ def _policy_client(
         host=str(endpoint["host"]),
         port=int(endpoint["port"]),
         api_token=secret,
+        require_observed_eef_support=(
+            spec.get("require_observed_eef_support") is True
+        ),
     )
 
 

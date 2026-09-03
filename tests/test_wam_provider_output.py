@@ -146,6 +146,43 @@ def test_provider_output_recognizes_policy_canary_session_result(
     )
 
 
+def test_provider_output_prefers_top_level_terminal_over_nested_cell_result(
+    tmp_path: Path,
+) -> None:
+    output_zip = tmp_path / "partial-policy-canary-output.zip"
+    with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "cell_runs/00/native_task_arena_policy_canary_session_result.v1.json",
+            json.dumps(
+                {
+                    "schema_version": "native_task_arena_policy_canary_session_result.v1",
+                    "status": "runtime_selected_cell_completed_pending_aggregation",
+                    "blockers": [],
+                }
+            ),
+        )
+        archive.writestr(
+            "native_task_arena_policy_canary_session_result.v1.json",
+            json.dumps(
+                {
+                    "schema_version": "native_task_arena_policy_canary_session_result.v1",
+                    "status": "blocked",
+                    "blockers": ["policy_canary_worker_failed_without_result"],
+                }
+            ),
+        )
+
+    result = inspect_provider_runtime_output_zip(output_zip)
+
+    assert result["runtime_result_status"] == "blocked"
+    assert result["runtime_result"]["blockers"] == [
+        "policy_canary_worker_failed_without_result"
+    ]
+    assert result["runtime_result_member"] == (
+        "native_task_arena_policy_canary_session_result.v1.json"
+    )
+
+
 def test_provider_output_recognizes_artifixer3d_result(tmp_path: Path) -> None:
     output_zip = tmp_path / "artifixer3d-output.zip"
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:

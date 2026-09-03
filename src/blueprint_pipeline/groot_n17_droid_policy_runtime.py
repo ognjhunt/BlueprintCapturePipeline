@@ -334,6 +334,7 @@ class GrootN17DroidPolicyClient:
         port: int = 5555,
         api_token: str | None = None,
         timeout_ms: int = 15000,
+        require_observed_eef_support: bool = False,
         client_factory: Callable[..., Any] | None = None,
     ) -> None:
         spec.validate()
@@ -349,6 +350,7 @@ class GrootN17DroidPolicyClient:
         self._worker_receipt = validate_worker_identity_receipt(
             worker_identity_receipt, expected=spec
         )
+        self._require_observed_eef_support = bool(require_observed_eef_support)
         client = client_factory(
             host=str(host),
             port=int(port),
@@ -453,6 +455,12 @@ class GrootN17DroidPolicyClient:
             "eef_frame_provenance": frame_provenance,
             "eef_position_observed_support": support_evidence,
         }
+        support_evidence["query_blocking"] = self._require_observed_eef_support
+        if (
+            self._require_observed_eef_support
+            and support_evidence["inside_checkpoint_observed_extrema"] is not True
+        ):
+            raise ValueError("groot_droid_eef_outside_checkpoint_observed_support")
         exterior_video = exterior[None, None, ...]
         wrist_video = wrist[None, None, ...]
         request = {

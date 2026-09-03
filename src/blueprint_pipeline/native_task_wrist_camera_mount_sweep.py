@@ -15,7 +15,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -179,7 +178,9 @@ def materialize_wrist_camera_mount_sweep_request(
     if destination.exists() or destination.is_symlink():
         raise WristCameraMountSweepError("wrist_camera_mount_request_output_exists")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    write_json(destination, request)
+    destination.write_text(
+        json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return json.loads(json.dumps(request))
 
 

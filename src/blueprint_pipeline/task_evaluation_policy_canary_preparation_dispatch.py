@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
 from .task_evaluation_launch_preparation_queue import stage_launch_preparation_request
 from .task_evaluation_launch_preparation_contract import (
     validate_launch_preparation_request,
@@ -29,7 +30,7 @@ SELECTION_SCHEMA_VERSION = "task_evaluation_policy_canary_launch_selection.v1"
 RUN_KIND = "internal_policy_canary"
 CLAIM_CEILING = "diagnostic_policy_execution"
 CANDIDATES = ("pi05_droid", "groot_n17_droid")
-ROBOT_PRESET = "franka_panda_robotiq_2f85_v1"
+ROBOT_PRESET = DROID_POLICY_CANARY_PRESET_ID
 RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_receipt.v1"
 
 

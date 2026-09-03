@@ -53,12 +53,20 @@ rc=${outcome%% *}
 status=${outcome#* }
 upload_arg=""
 url=""
+expect_upload_path=0
 for arg in "$@"; do
+  if [ "$expect_upload_path" = 1 ]; then
+    upload_arg=$arg
+    expect_upload_path=0
+    continue
+  fi
   case "$arg" in
-    @*) upload_arg=${arg#@} ;;
+    --upload-file|-T) expect_upload_path=1 ;;
+    @*) printf 'whole-body-upload-forbidden\n' >&2; exit 97 ;;
     https://*) url=$arg ;;
   esac
 done
+[ -n "$upload_arg" ] || { printf 'streaming-upload-path-missing\n' >&2; exit 98; }
 upload_sha=$(sha256sum "$upload_arg" | cut -d" " -f1)
 url_sha=$(printf '%s' "$url" | sha256sum | cut -d" " -f1)
 printf '%s %s %s\n' "$attempt" "$upload_sha" "$url_sha" >> "$attempts_path"
@@ -272,3 +280,51 @@ def test_provider_output_upload_has_no_whole_file_python_fallback() -> None:
     assert "--connect-timeout 30" in fragment
     assert '--max-time "$blueprint_upload_remaining"' in fragment
     assert "blueprint_upload_max_attempts=3" in fragment
+    assert '--upload-file "$blueprint_upload_path"' in fragment
+    assert "--data-binary" not in fragment
+
+
+def test_provider_output_upload_streams_sparse_archive_larger_than_two_gib(
+    tmp_path: Path,
+) -> None:
+    """The transport passes a path to curl and never materializes archive bytes."""
+
+    archive = tmp_path / "provider-output-over-two-gib.zip"
+    archive_size = 2_312_630_447
+    with archive.open("wb") as handle:
+        handle.truncate(archive_size)
+
+    fake_bin, attempts_path, outcomes_path = _install_fake_transport(tmp_path)
+    outcomes_path.write_text("0 200\n", encoding="utf-8")
+    fake_sha256sum = fake_bin / "sha256sum"
+    fake_sha256sum.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  %s\\n' \"$1\"\n",
+        encoding="utf-8",
+    )
+    fake_sha256sum.chmod(0o755)
+    env = dict(os.environ)
+    env[EXPECTED_PROVIDER_UPLOAD_BYTES_ENV] = str(archive_size)
+    env["BLUEPRINT_TEST_CURL_ATTEMPTS"] = str(attempts_path)
+    env["BLUEPRINT_TEST_CURL_OUTCOMES"] = str(outcomes_path)
+    env["BLUEPRINT_TEST_MUTATE_AFTER_FIRST"] = "0"
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            provider_output_upload_shell_fragment()
+            + 'blueprint_upload_put "https://signed.invalid/output.zip" "$1"; '
+            + 'printf "UPLOAD_RC:%s\\n" "$?"',
+            "upload-transport",
+            str(archive),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert "UPLOAD_RC:0" in result.stdout
+    assert len(attempts_path.read_text(encoding="utf-8").splitlines()) == 1

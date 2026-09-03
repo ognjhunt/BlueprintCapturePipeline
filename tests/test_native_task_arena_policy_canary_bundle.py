@@ -239,6 +239,11 @@ def test_resolved_scene_plan_binds_policy_cadence_and_supported_variations() -> 
         "cameras": [
             {"role": "external", "frame_from_camera_matrix": [1.0] * 16}
         ],
+        "robot": {
+            "joint_reset_positions_rad": {
+                f"panda_joint{index}": 0.1 for index in range(1, 8)
+            }
+        },
         "cadence": {
             "control_frequency_hz": 20.0,
             "physics_frequency_hz": 120.0,
@@ -251,6 +256,9 @@ def test_resolved_scene_plan_binds_policy_cadence_and_supported_variations() -> 
         "task_spec": {
             "control_frequency_hz": 20.0,
             "maximum_episode_seconds": 12.0,
+            "manipulation_strategy": "planar_push",
+            "source_subject_identity": "test-mug",
+            "target_position_world_m": [1.2, 2.0, 0.8],
         },
         "plan_digest": "",
     }
@@ -275,6 +283,12 @@ def test_resolved_scene_plan_binds_policy_cadence_and_supported_variations() -> 
     assert resolved["cadence"]["control_frequency_hz"] == 15.0
     assert resolved["cadence"]["control_decimation"] == 8
     assert resolved["task_spec"]["control_frequency_hz"] == 15.0
+    assert resolved["task_spec"]["prompt"] == (
+        "Push the mug onto the green target marker."
+    )
+    assert resolved["policy_canary_embodiment_profile"][
+        "preserve_official_policy_camera_calibration"
+    ] is True
     assert resolved["objects"][0]["pose_world"]["position_world_m"][1] == 2.015
     assert resolved["cameras"][0]["frame_from_camera_matrix"][3] == 0.985
     assert {row["parameter_id"] for row in resolved["scenario"]["parameter_applications"]} == {

@@ -61,7 +61,64 @@ from blueprint_pipeline.openpi_droid_policy_runtime import (
 from tests.test_adp009d_policy_episode import _DESTINATION, _LifecycleEnvironment
 
 
+class _ParityLifecycleEnvironment(_LifecycleEnvironment):
+    """Expose a measurable approach baseline for the embodiment parity gate."""
+
+    def read_object_sample(self):
+        sample = super().read_object_sample()
+        if self._t == 0:
+            position = sample["can_pose_world"][:3]
+            sample["grasp_frame_position_world_m"] = [
+                position[0] - 0.2,
+                position[1],
+                position[2],
+            ]
+        return sample
+
+
 RUN_ID = "scene-839873-canary-rehearsal"
+
+
+def test_official_droid_wrist_reset_accepts_visible_edge_task_pixels() -> None:
+    def camera(role: str, *, passed: bool, pixels: int, centered: bool):
+        return {
+            "role": role,
+            "observability": {
+                "passed": passed,
+                "pixel_count": pixels,
+                "render_passed": True,
+                "centroid_within_margin": centered,
+                "target_semantic_ids": [17],
+                "thresholds": {"effective_minimum_pixels": 120},
+            },
+        }
+
+    snapshot = {
+        "cameras": [
+            camera("external", passed=True, pixels=2881, centered=True),
+            camera("overview", passed=True, pixels=509, centered=True),
+            camera("wrist", passed=False, pixels=2928, centered=False),
+        ]
+    }
+
+    droid = worker._policy_camera_visibility_contract(
+        snapshot,
+        preserve_official_droid_calibration=True,
+    )
+    generic = worker._policy_camera_visibility_contract(
+        snapshot,
+        preserve_official_droid_calibration=False,
+    )
+
+    assert droid["passed"] is True
+    assert droid["camera_visibility"]["wrist"] is True
+    assert droid["raw_camera_visibility"]["wrist"] is False
+    assert droid["role_qualifications"]["wrist"]["status"] == (
+        "initial_edge_visible"
+    )
+    assert droid["notices"] == ["droid_wrist_task_initially_near_frame_edge"]
+    assert generic["passed"] is False
+    assert "policy_canary_wrist_task_visibility_failed" in generic["blockers"]
 PI05_POLICY_SPEC = {
     "policy_id": "pi05_droid_jointpos_polaris",
     "config_name": "pi05_droid_jointpos_polaris",
@@ -540,6 +597,27 @@ def _real_policy_client(spec: dict[str, Any], *, groot_worker_identity_receipt=N
 
 
 def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
+    def configure_post_gate_renderer(
+        *, observation_gate: Mapping[str, Any], output_path: str | Path
+    ) -> dict[str, Any]:
+        value = {
+            "schema_version": "policy_canary_post_gate_rtx_streaming_guard.v1",
+            "status": "configured",
+            "observation_gate_digest": observation_gate["gate_digest"],
+            "streaming_busy_after_gate": False,
+            "previous_wait_timeout_seconds": 30.0,
+            "maximum_wait_timeout_seconds": 1.0,
+            "camera_qualification_skipped": False,
+            "later_frames_remain_required": True,
+            "claim_ceiling": "diagnostic_policy_execution",
+            "receipt_digest": "",
+        }
+        value["receipt_digest"] = canonical_digest(
+            value, digest_field="receipt_digest"
+        )
+        _write(Path(output_path), value)
+        return value
+
     return worker.CellRuntime(
         device="cuda:0",
         launch_isaac=isaac.launch,
@@ -574,13 +652,14 @@ def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
         ),
         make_task_readback=lambda built, *, grasp_frame_pose_callback: None,
         build_episode_environment=lambda *, built, gripper_convention, servo, task_readback, to_tensor: (
-            _LifecycleEnvironment(),
+            _ParityLifecycleEnvironment(),
             {"schema_version": "rehearsal_episode_environment.v1", "seed": built.env.reset_seeds[-1]},
         ),
         to_tensor=_to_tensor,
         policy_client=_real_policy_client,
         groot_worker_identity=_runtime_groot_worker_identity,
         run_policy_episode=run_policy_episode,
+        configure_post_gate_renderer=configure_post_gate_renderer,
     )
 
 
@@ -676,6 +755,100 @@ def test_selected_cell_queries_both_real_clients_and_seals_before_isaac_close(
     assert isaac.result_sealed_at_close is True
     assert not list((child_root / "episodes").glob("*.failure_gap.json"))
     assert (child_root / "policy_canary_telemetry_index.json").is_file()
+
+
+def test_selected_cell_runs_native_mount_gate_before_loading_either_policy(
+    tmp_path: Path,
+) -> None:
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    child_root = provider_output / "cell_runs" / "00"
+    child_root.mkdir(parents=True)
+    packet_request = {
+        "wrist_camera_mount_registry": json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "docs/arm_decision_proof_v1/manifests/"
+                "franka_robotiq_policy_camera_mount_registry.v1.json"
+            ).read_text(encoding="utf-8")
+        )
+    }
+    _write(
+        runtime_root / "native_task_packet" / worker.PACKET_REQUEST_FILENAME,
+        packet_request,
+    )
+    (
+        runtime_root
+        / "runtime_inputs"
+        / worker.OBSERVATION_INTEGRITY_AUTHORITY_FILENAME
+    ).unlink()
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    base_runtime = _rehearsal_runtime(isaac)
+    backend = worker.appearance_render_backend_from_plan(
+        _scene_plan(), packet_request=packet_request
+    )
+    events: list[str] = []
+
+    def camera_gate(**kwargs) -> dict[str, Any]:
+        events.append("camera_gate")
+        assert kwargs["packet_request"]["wrist_camera_mount_registry"]
+        assert kwargs["plan"]["scenario"]["cell_id"] == "cell-0"
+        value = {
+            "schema_version": "policy_canary_runtime_observation_integrity_gate.v1",
+            "status": "passed",
+            "run_kind": "internal_policy_canary",
+            "claim_ceiling": "diagnostic_policy_execution",
+            "appearance_render_backend_receipt_digest": backend[
+                "receipt_digest"
+            ],
+            "wrist_camera_mount_selection_digest": "sha256:" + "4" * 64,
+            "frame_structure_passed": True,
+            "target_semantic_visibility_passed": True,
+            "candidate_policy_loaded": False,
+            "candidate_policy_queried": False,
+            "official_ranking_permitted": False,
+            "scene_promotion_permitted": False,
+            "blockers": [],
+            "policy_observation_integrity_passed": True,
+            "gate_digest": "",
+        }
+        value["gate_digest"] = canonical_digest(value, digest_field="gate_digest")
+        return value
+
+    def policy_client(*args, **kwargs):
+        events.append("policy_load")
+        return base_runtime.policy_client(*args, **kwargs)
+
+    def configure_post_gate_renderer(**kwargs):
+        events.append("renderer_guard")
+        return base_runtime.configure_post_gate_renderer(**kwargs)
+
+    runtime = worker.CellRuntime(
+        **{
+            **base_runtime.__dict__,
+            "prepolicy_camera_gate": camera_gate,
+            "configure_post_gate_renderer": configure_post_gate_renderer,
+            "policy_client": policy_client,
+        }
+    )
+    with pytest.raises(SystemExit) as exited:
+        worker._run_selected_cell(
+            0,
+            runtime_root=runtime_root,
+            output_root=child_root,
+            provider_output_root=provider_output,
+            cell_runtime=runtime,
+        )
+    assert exited.value.code == 0
+    assert events[:2] == ["camera_gate", "renderer_guard"]
+    assert events.count("policy_load") == 2
+    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+    assert result["preload_observation_gate"][
+        "policy_observation_integrity_passed"
+    ] is True
+    assert result["policy_loads"] == [
+        {"candidate_id": "pi05_droid", "loaded_once": True},
+        {"candidate_id": "groot_n17_droid", "loaded_once": True},
+    ]
 
 
 def test_selected_cell_retains_real_policy_action_rejected_by_joint_limits(
@@ -827,6 +1000,16 @@ def test_quick10_rehearsal_runs_twenty_real_client_rollouts_in_ten_isolated_proc
     assert all(isaac.built_control_frequencies == [15.0] for isaac in isaacs)
     roles = {row["role"] for row in result["artifact_inventory"]}
     assert {"indexed_episode_telemetry", "review_video", "policy_query_receipt"} <= roles
+
+
+def test_child_inventory_excludes_parent_owned_console_log(tmp_path: Path) -> None:
+    (tmp_path / "worker_console.log").write_text("still open\n", encoding="utf-8")
+
+    _index, artifacts = worker._write_indexed_telemetry(tmp_path, [])
+
+    assert not any(
+        row["relative_path"] == "worker_console.log" for row in artifacts
+    )
 
 
 def test_one_failed_cell_is_a_typed_gap_and_the_other_nineteen_rollouts_continue(

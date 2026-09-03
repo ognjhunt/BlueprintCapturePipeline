@@ -33,11 +33,176 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 
 
 ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS = 900
+DROID_PARITY_MINIMUM_APPROACH_M = 0.05
+
+
+def _policy_camera_visibility_contract(
+    snapshot: Mapping[str, Any],
+    *,
+    preserve_official_droid_calibration: bool,
+) -> dict[str, Any]:
+    """Qualify task visibility according to each camera's policy role.
+
+    A fixed external camera must frame the task at reset. The official DROID
+    wrist camera is attached to the gripper, so its reset observation may put
+    the task near an image edge before the policy approaches it. For that
+    camera, visible native-semantic task pixels are the reset requirement;
+    centering remains recorded as a typed notice and is measured during the
+    rollout.
+    """
+
+    rows = {
+        str(row.get("role")): row
+        for row in snapshot.get("cameras") or []
+        if isinstance(row, Mapping) and str(row.get("role") or "")
+    }
+    expected_roles = {"external", "wrist", "overview"}
+    raw_visibility = {
+        role: bool((row.get("observability") or {}).get("passed"))
+        for role, row in rows.items()
+    }
+    qualifications: dict[str, Any] = {}
+    blockers: list[str] = []
+    notices: list[str] = []
+    if set(rows) != expected_roles:
+        blockers.append("policy_canary_camera_role_inventory_invalid")
+    for role in sorted(expected_roles):
+        row = rows.get(role)
+        observability = (
+            row.get("observability")
+            if isinstance(row, Mapping)
+            and isinstance(row.get("observability"), Mapping)
+            else {}
+        )
+        raw_passed = bool(observability.get("passed"))
+        pixel_count = int(observability.get("pixel_count") or 0)
+        thresholds = observability.get("thresholds")
+        minimum_pixels = (
+            int(thresholds.get("effective_minimum_pixels") or 0)
+            if isinstance(thresholds, Mapping)
+            else 0
+        )
+        render_passed = observability.get("render_passed") is True
+        centroid_within_margin = (
+            observability.get("centroid_within_margin") is True
+        )
+        if preserve_official_droid_calibration and role == "wrist":
+            passed = (
+                render_passed
+                and minimum_pixels > 0
+                and pixel_count >= minimum_pixels
+                and bool(observability.get("target_semantic_ids"))
+            )
+            status = (
+                "centered"
+                if passed and centroid_within_margin
+                else "initial_edge_visible"
+                if passed
+                else "insufficient_task_pixels"
+            )
+            if passed and not centroid_within_margin:
+                notices.append("droid_wrist_task_initially_near_frame_edge")
+            if not passed:
+                blockers.append("droid_wrist_task_pixels_below_threshold")
+        else:
+            passed = raw_passed
+            status = "centered" if passed else "not_qualified"
+            if not passed:
+                blockers.append(f"policy_canary_{role}_task_visibility_failed")
+        qualifications[role] = {
+            "status": status,
+            "passed": passed,
+            "raw_observability_passed": raw_passed,
+            "pixel_count": pixel_count,
+            "minimum_pixels": minimum_pixels,
+            "render_passed": render_passed,
+            "centroid_within_margin": centroid_within_margin,
+        }
+    return {
+        "passed": not blockers and set(rows) == expected_roles,
+        "camera_visibility": {
+            role: bool(qualifications.get(role, {}).get("passed"))
+            for role in sorted(expected_roles)
+        },
+        "raw_camera_visibility": raw_visibility,
+        "role_qualifications": qualifications,
+        "blockers": sorted(set(blockers)),
+        "notices": sorted(set(notices)),
+    }
 
 
 def _sha256_prefixed(value: Any) -> str:
     text = str(value or "")
     return text if text.startswith("sha256:") else f"sha256:{text}"
+
+
+def _episode_embodiment_parity_diagnostic(
+    episode: Mapping[str, Any], *, observation_support_qualified: bool
+) -> dict[str, Any]:
+    """Measure harness parity without treating task success as the authority."""
+
+    trace = episode.get("state_trace")
+    rows = list(trace.get("task_state_samples") or []) if isinstance(trace, Mapping) else []
+    distances: list[float] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        grasp = row.get("grasp_frame_position_world_m") or row.get(
+            "gripper_body_midpoint_world_m"
+        )
+        task = row.get("task_object_pose_world") or row.get("can_pose_world")
+        if (
+            isinstance(grasp, list)
+            and isinstance(task, list)
+            and len(grasp) >= 3
+            and len(task) >= 3
+        ):
+            distances.append(math.dist(grasp[:3], task[:3]))
+    queries = [row for row in episode.get("queries") or [] if isinstance(row, Mapping)]
+    joint_limit_clean = bool(
+        queries and all(row.get("any_joint_limit_clamped") is False for row in queries)
+    )
+    motion = episode.get("motion_evidence")
+    actions_reached_robot = bool(
+        isinstance(motion, Mapping) and motion.get("actions_reached_robot") is True
+    )
+    arm_moved = bool(isinstance(motion, Mapping) and motion.get("arm_moved") is True)
+    initial = distances[0] if distances else None
+    minimum = min(distances) if distances else None
+    final = distances[-1] if distances else None
+    approach = initial - minimum if initial is not None and minimum is not None else None
+    blockers = []
+    if observation_support_qualified is not True:
+        blockers.append("droid_observation_outside_checkpoint_support")
+    if not actions_reached_robot:
+        blockers.append("droid_actions_did_not_reach_robot")
+    if not arm_moved:
+        blockers.append("droid_arm_did_not_move")
+    if not joint_limit_clean:
+        blockers.append("droid_action_joint_limit_or_query_evidence_invalid")
+    if approach is None:
+        blockers.append("droid_gripper_task_distance_unavailable")
+    elif approach < DROID_PARITY_MINIMUM_APPROACH_M:
+        blockers.append("droid_gripper_did_not_approach_task")
+    value: dict[str, Any] = {
+        "schema_version": "droid_policy_canary_embodiment_parity.v1",
+        "status": "passed" if not blockers else "blocked",
+        "observation_support_qualified": observation_support_qualified,
+        "actions_reached_robot": actions_reached_robot,
+        "arm_moved": arm_moved,
+        "joint_limit_clean": joint_limit_clean,
+        "initial_gripper_to_task_distance_m": initial,
+        "minimum_gripper_to_task_distance_m": minimum,
+        "final_gripper_to_task_distance_m": final,
+        "approach_distance_m": approach,
+        "minimum_required_approach_m": DROID_PARITY_MINIMUM_APPROACH_M,
+        "blockers": blockers,
+        "diagnostic_only": True,
+        "task_success_claimed": False,
+        "receipt_digest": "",
+    }
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    return value
 
 
 PACKET_REQUEST_FILENAME = "native_task_arena_packet_request.v1.json"
@@ -245,6 +410,8 @@ class CellRuntime:
     policy_client: Callable[..., Any]
     groot_worker_identity: Callable[..., tuple[Mapping[str, Any], Mapping[str, Any]]]
     run_policy_episode: Callable[..., Mapping[str, Any]]
+    prepolicy_camera_gate: Callable[..., Mapping[str, Any]] | None = None
+    configure_post_gate_renderer: Callable[..., Mapping[str, Any]] | None = None
 
 
 def isaac_cell_runtime() -> CellRuntime:
@@ -283,6 +450,9 @@ def isaac_cell_runtime() -> CellRuntime:
     from blueprint_pipeline.native_task_nurec_render_setup import (
         prepare_site_appearance_renderer,
     )
+    from blueprint_pipeline.native_task_rtx_streaming_guard import (
+        configure_post_gate_rtx_streaming_wait,
+    )
     from blueprint_pipeline.native_task_episode_environment import (
         build_native_task_episode_environment,
     )
@@ -297,6 +467,156 @@ def isaac_cell_runtime() -> CellRuntime:
         import torch
 
         return _gripper_convention_probe(env=env, robot=robot, seed=seed, torch=torch)
+
+    def prepolicy_camera_gate(
+        *,
+        simulation_app: Any,
+        built: Any,
+        packet_request: Mapping[str, Any],
+        plan: Mapping[str, Any],
+        output_root: Path,
+    ) -> Mapping[str, Any]:
+        """Prove the task-facing mount and exact reset frames before policy load."""
+
+        import torch
+
+        from blueprint_pipeline.native_task_arena_construction_worker import (
+            _body_pose_world,
+            _camera_snapshot,
+        )
+        from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
+            _prepolicy_visual_gate_from_snapshot,
+            _run_wrist_camera_mount_sweep,
+        )
+
+        env = built.env
+        seed = int(plan["scenario"]["seed"])
+        env.reset(seed=seed)
+        root = output_root / "prepolicy_observation_gate"
+        root.mkdir(parents=True, exist_ok=True)
+        droid_profile = plan.get("policy_canary_embodiment_profile")
+        if (
+            isinstance(droid_profile, Mapping)
+            and droid_profile.get("preserve_official_policy_camera_calibration")
+            is True
+        ):
+            selected = {
+                "candidate_id": "official_arena_droid_wrist_camera",
+                "source": "official_arena_droid_embodiment",
+                "arena_source": dict(droid_profile["arena_source"]),
+                "robot_preset_id": droid_profile["robot_preset_id"],
+                "admitted": True,
+                "blockers": [],
+            }
+            selection = {
+                "schema_version": "policy_canary_wrist_camera_mount_selection.v1",
+                "status": "selected",
+                "selected_candidate": selected,
+                "contact_sheet": None,
+                "blockers": [],
+                "selection_digest": canonical_digest(selected),
+            }
+        else:
+            selection = _run_wrist_camera_mount_sweep(
+                simulation_app=simulation_app,
+                env=env,
+                built=built,
+                packet_request=dict(packet_request),
+                plan=dict(plan),
+                output_root=root,
+                torch=torch,
+                body_pose_reader=_body_pose_world,
+                camera_snapshot=_camera_snapshot,
+            )
+        snapshot = _camera_snapshot(
+            env=env,
+            camera_scene_names=built.camera_scene_names,
+            output_root=root,
+            snapshot_id="selected_mount_reset",
+            framing_expectations=(plan.get("task_object_observability") or {}).get(
+                "cameras"
+            ),
+        )
+        visual = _prepolicy_visual_gate_from_snapshot(
+            snapshot=snapshot,
+            output_root=root,
+        )
+        visibility_contract = _policy_camera_visibility_contract(
+            snapshot,
+            preserve_official_droid_calibration=(
+                isinstance(droid_profile, Mapping)
+                and droid_profile.get("preserve_official_policy_camera_calibration")
+                is True
+            ),
+        )
+        visibility = dict(visibility_contract["camera_visibility"])
+        blockers = list((selection or {}).get("blockers") or [])
+        blockers.extend(visual.get("blockers") or [])
+        blockers.extend(visibility_contract["blockers"])
+        if visibility_contract["passed"] is not True:
+            blockers.append("policy_canary_task_semantic_visibility_failed")
+        passed = (
+            isinstance(selection, Mapping)
+            and selection.get("status") == "selected"
+            and visual.get("frame_structure_passed") is True
+            and not blockers
+        )
+        receipt: dict[str, Any] = {
+            "schema_version": "policy_canary_runtime_observation_integrity_gate.v1",
+            "status": "passed" if passed else "blocked",
+            "run_kind": "internal_policy_canary",
+            "claim_ceiling": "diagnostic_policy_execution",
+            "appearance_render_backend_receipt_digest": (
+                appearance_render_backend_from_plan(
+                    plan, packet_request=packet_request
+                )["receipt_digest"]
+            ),
+            "wrist_camera_mount_selection_digest": (
+                selection.get("selection_digest")
+                if isinstance(selection, Mapping)
+                else None
+            ),
+            "frame_structure_passed": visual.get("frame_structure_passed") is True,
+            "target_semantic_visibility_passed": bool(visibility) and all(
+                visibility.values()
+            ),
+            "camera_visibility": visibility,
+            "raw_camera_visibility": visibility_contract["raw_camera_visibility"],
+            "camera_role_qualifications": visibility_contract[
+                "role_qualifications"
+            ],
+            "notices": visibility_contract["notices"],
+            "selected_wrist_camera_mount": (
+                selection.get("selected_candidate")
+                if isinstance(selection, Mapping)
+                else None
+            ),
+            "wrist_camera_contact_sheet": (
+                selection.get("contact_sheet")
+                if isinstance(selection, Mapping)
+                else None
+            ),
+            "snapshot": snapshot,
+            "visual_gate": visual,
+            "human_visual_review_status": (
+                "not_required_for_internal_diagnostic_policy_execution"
+            ),
+            "candidate_policy_loaded": False,
+            "candidate_policy_queried": False,
+            "official_ranking_permitted": False,
+            "scene_promotion_permitted": False,
+            "blockers": sorted(set(str(item) for item in blockers if str(item))),
+            "policy_observation_integrity_passed": passed,
+            "gate_digest": "",
+        }
+        receipt["gate_digest"] = canonical_digest(
+            receipt, digest_field="gate_digest"
+        )
+        (root / "policy_canary_runtime_observation_integrity_gate.v1.json").write_text(
+            json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return receipt
 
     return CellRuntime(
         device=NATIVE_TASK_ARENA_DEVICE,
@@ -314,6 +634,8 @@ def isaac_cell_runtime() -> CellRuntime:
         policy_client=_policy_client,
         groot_worker_identity=_runtime_groot_worker_identity,
         run_policy_episode=run_policy_episode,
+        prepolicy_camera_gate=prepolicy_camera_gate,
+        configure_post_gate_renderer=configure_post_gate_rtx_streaming_wait,
     )
 
 
@@ -499,8 +821,11 @@ def _resolved_scene_plan(base: Mapping[str, Any], cell: Mapping[str, Any]) -> di
         "control_decimation": 8,
         "reason": "frozen_droid_policy_action_cadence",
     }
-    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
-    return plan
+    from blueprint_pipeline.droid_policy_canary_embodiment import (
+        apply_droid_policy_canary_profile,
+    )
+
+    return apply_droid_policy_canary_profile(plan)
 
 
 def _sha256(path: Path) -> str:
@@ -944,7 +1269,15 @@ def _write_indexed_telemetry(
     artifacts = []
     seen: set[str] = set()
     for path in sorted(output_root.rglob("*")):
-        if not path.is_file() or path.name == PROVIDER_RESULT_FILENAME:
+        # The parent process owns this file and keeps the child's stdout stream
+        # open until after the child has sealed its result.  Including it here
+        # races the final interpreter-shutdown writes and produces an inventory
+        # entry whose size/digest no longer match by delivery time.
+        if (
+            not path.is_file()
+            or path.name == PROVIDER_RESULT_FILENAME
+            or path.name == "worker_console.log"
+        ):
             continue
         relative = path.relative_to(output_root).as_posix()
         if relative in seen:
@@ -1177,6 +1510,20 @@ def _run_isolated_cell_processes(
                 f"exit_{exit_code}"
             )
         child_results.append(_read(child_result_path))
+        if index == 0:
+            diagnostics = [
+                row.get("embodiment_parity_diagnostic")
+                for row in child_results[-1].get("episodes") or []
+                if isinstance(row, Mapping)
+            ]
+            if (
+                len(diagnostics) != len(CANDIDATE_IDS)
+                or any(
+                    not isinstance(row, Mapping) or row.get("status") != "passed"
+                    for row in diagnostics
+                )
+            ):
+                raise RuntimeError("droid_policy_canary_embodiment_parity_probe_failed")
     result = _aggregate_isolated_cell_results(
         authority=authority,
         inputs=inputs,
@@ -1253,9 +1600,10 @@ def _run_selected_cell(
     current_session: dict[str, Any] = {}
 
     packet_request_path = runtime / "native_task_packet" / PACKET_REQUEST_FILENAME
+    packet_request = _read(packet_request_path) if packet_request_path.is_file() else {}
     appearance_render_backend = appearance_render_backend_from_plan(
         base_scene_plan,
-        packet_request=_read(packet_request_path) if packet_request_path.is_file() else None,
+        packet_request=packet_request or None,
     )
     authority_path = (
         runtime / "runtime_inputs" / OBSERVATION_INTEGRITY_AUTHORITY_FILENAME
@@ -1376,6 +1724,9 @@ def _run_selected_cell(
         environment_receipt = {
             **dict(environment_receipt),
             "appearance_renderer": dict(current_env["appearance_renderer"]),
+            "post_gate_rtx_streaming_guard": dict(
+                current_session.get("post_gate_rtx_streaming_guard") or {}
+            ),
         }
         tracker = _PolicyQueryTracker(policy["client"])
         spec = policy["spec"]
@@ -1406,6 +1757,9 @@ def _run_selected_cell(
                     "authority": observation_integrity_authority,
                     "appearance_render_backend_receipt_digest": (
                         appearance_render_backend["receipt_digest"]
+                    ),
+                    "runtime_gate": current_session.get(
+                        "policy_observation_runtime_gate"
                     ),
                 },
                 progress=episode_progress,
@@ -1476,6 +1830,11 @@ def _run_selected_cell(
                 )
             )
         )
+        parity_diagnostic = _episode_embodiment_parity_diagnostic(
+            episode,
+            observation_support_qualified=observation_support_qualified,
+        )
+        episode["embodiment_parity_diagnostic"] = parity_diagnostic
         evidence_artifacts = {
             "frame_manifest": _bound_media_artifact(
                 output_root,
@@ -1550,6 +1909,12 @@ def _run_selected_cell(
                 role="score_receipt",
                 value=episode.get("score"),
             ),
+            "embodiment_parity_diagnostic": _write_episode_json_artifact(
+                output_root,
+                episode_id=episode_id,
+                role="embodiment_parity_diagnostic",
+                value=parity_diagnostic,
+            ),
         }
         return {
             "status": "completed",
@@ -1557,6 +1922,7 @@ def _run_selected_cell(
             "actions_reached_robot": bool(motion.get("actions_reached_robot")),
             "arm_moved": bool(motion.get("arm_moved")),
             "observation_support_qualified": observation_support_qualified,
+            "embodiment_parity_diagnostic": parity_diagnostic,
             "checkpoint_digest": policy["checkpoint_digest"],
             "runtime_identity_digest": policy["runtime_identity_digest"],
             "lossless_frame_manifest_digest": _digest(visual),
@@ -1627,6 +1993,66 @@ def _run_selected_cell(
         }
 
     def prepolicy_observation_gate(session: Mapping[str, Any]) -> dict[str, Any]:
+        if packet_request.get("wrist_camera_mount_registry") is not None:
+            if bound_runtime.prepolicy_camera_gate is None:
+                raise RuntimeError("policy_canary_runtime_camera_gate_unavailable")
+            cell = inputs["cells"][selected_cell_index]
+            scene_plan = _resolved_scene_plan(base_scene_plan, cell)
+            dependencies = bound_runtime.preflight_dependency_matrix(
+                robot_id=str(scene_plan["robot"]["robot_id"])
+            )
+            if not dependencies["all_required_available"]:
+                raise RuntimeError("policy_canary_dependency_preflight_failed")
+            preconstruction = bound_runtime.prepare_preconstruction(
+                expected_device=bound_runtime.device
+            )
+            if not preconstruction["passed"]:
+                raise RuntimeError("policy_canary_preconstruction_failed")
+            built = bound_runtime.build_environment(
+                scene_plan,
+                device=bound_runtime.device,
+                bundle_root=runtime / "native_task_packet",
+                preconstruction_receipt=preconstruction,
+            )
+            appearance_renderer = bound_runtime.prepare_appearance_renderer(
+                simulation_app=current_session["simulation_app"],
+                plan=scene_plan,
+            )
+            if appearance_renderer.get("passed") is not True:
+                raise RuntimeError("policy_canary_appearance_renderer_unqualified")
+            current_env.update(
+                built=built,
+                cell_id=str(cell["cell_id"]),
+                appearance_renderer=dict(appearance_renderer),
+            )
+            gate = dict(
+                bound_runtime.prepolicy_camera_gate(
+                    simulation_app=current_session["simulation_app"],
+                    built=built,
+                    packet_request=packet_request,
+                    plan=scene_plan,
+                    output_root=output_root,
+                )
+            )
+            if bound_runtime.configure_post_gate_renderer is None:
+                raise RuntimeError(
+                    "policy_canary_post_gate_renderer_guard_unavailable"
+                )
+            renderer_guard = dict(
+                bound_runtime.configure_post_gate_renderer(
+                    observation_gate=gate,
+                    output_path=(
+                        output_root
+                        / "prepolicy_observation_gate"
+                        / "post_gate_rtx_streaming_guard.v1.json"
+                    ),
+                )
+            )
+            if renderer_guard.get("status") != "configured":
+                raise RuntimeError("policy_canary_post_gate_renderer_guard_failed")
+            current_session["policy_observation_runtime_gate"] = gate
+            current_session["post_gate_rtx_streaming_guard"] = renderer_guard
+            return gate
         return preload_observation_integrity_gate(
             observation_integrity_authority,
             appearance_render_backend=dict(session["appearance_render_backend"]),

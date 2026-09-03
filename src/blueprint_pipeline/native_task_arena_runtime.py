@@ -1117,27 +1117,38 @@ def build_native_task_arena_environment(
     )
     embodiment.scene_config.robot.spawn.semantic_tags = [("class", "robot")]
 
+    droid_profile = plan.get("policy_canary_embodiment_profile")
+    preserve_policy_cameras = bool(
+        isinstance(droid_profile, Mapping)
+        and droid_profile.get("preserve_official_policy_camera_calibration") is True
+    )
+    policy_camera_roles = set(
+        droid_profile.get("policy_camera_roles") or []
+        if isinstance(droid_profile, Mapping)
+        else []
+    )
     camera_names: dict[str, str] = {}
     camera_configuration_readback: dict[str, dict[str, Any]] = {}
     for camera in plan["cameras"] if enable_cameras else ():
         parameters = camera_runtime_parameters(camera)
         camera_cfg = getattr(embodiment.camera_config, parameters["runtime_name"])
-        camera_cfg.prim_path = parameters["prim_path"]
-        camera_cfg.offset.pos = tuple(parameters["offset_position_m"])
-        # Preserve XYZW here too. A predecessor conversion (r17) blinded both
-        # world cameras: measured
-        # It was tried (r17) and it blinded both world cameras: measured
-        # task_object pixels per camera, same scene and same thresholds --
-        #
-        #   r13, assigned directly : external 21871, overview 9053, wrist 51939
-        #   r17, converted to wxyz : external     0, overview    0, wrist  5326
-        #
-        # All Beta2 pose seams are XYZW; the wrist survived only because its
-        # parent prim dominated the mistaken world rotation.
-        camera_cfg.offset.rot = tuple(parameters["offset_rotation_xyzw"])
-        camera_cfg.offset.convention = parameters["isaac_offset_convention"]
-        camera_cfg.width = parameters["width"]
-        camera_cfg.height = parameters["height"]
+        official_policy_camera = (
+            preserve_policy_cameras and parameters["role"] in policy_camera_roles
+        )
+        if not official_policy_camera:
+            camera_cfg.prim_path = parameters["prim_path"]
+            camera_cfg.offset.pos = tuple(parameters["offset_position_m"])
+            # Preserve XYZW here too. A predecessor conversion (r17) blinded
+            # both world cameras. All Beta2 pose seams are XYZW.
+            camera_cfg.offset.rot = tuple(parameters["offset_rotation_xyzw"])
+            camera_cfg.offset.convention = parameters["isaac_offset_convention"]
+            camera_cfg.width = parameters["width"]
+            camera_cfg.height = parameters["height"]
+            camera_cfg.spawn.focal_length = parameters["focal_length_mm"]
+            camera_cfg.spawn.horizontal_aperture = parameters[
+                "horizontal_aperture_mm"
+            ]
+            camera_cfg.spawn.vertical_aperture = parameters["vertical_aperture_mm"]
         camera_cfg.data_types = list(parameters["data_types"])
         camera_cfg.colorize_semantic_segmentation = False
         camera_cfg.renderer_cfg = IsaacRtxRendererCfg(
@@ -1145,12 +1156,14 @@ def build_native_task_arena_environment(
         )
         camera_cfg.update_period = 0.0
         camera_cfg.update_latest_camera_pose = True
-        camera_cfg.spawn.focal_length = parameters["focal_length_mm"]
-        camera_cfg.spawn.horizontal_aperture = parameters["horizontal_aperture_mm"]
-        camera_cfg.spawn.vertical_aperture = parameters["vertical_aperture_mm"]
         camera_names[parameters["role"]] = parameters["runtime_name"]
         camera_configuration_readback[parameters["role"]] = {
             "runtime_name": parameters["runtime_name"],
+            "calibration_source": (
+                "official_arena_droid"
+                if official_policy_camera
+                else "resolved_scene_plan"
+            ),
             "offset_position_m": list(camera_cfg.offset.pos),
             "offset_rotation_xyzw": list(camera_cfg.offset.rot),
             "focal_length_mm": float(camera_cfg.spawn.focal_length),
@@ -1234,6 +1247,35 @@ def build_native_task_arena_environment(
             task_object = obj
         assets.append(obj)
         scene_asset_names[runtime_name] = runtime_name
+
+    marker_contract = (
+        droid_profile.get("visible_target_marker")
+        if isinstance(droid_profile, Mapping)
+        else None
+    )
+    if isinstance(marker_contract, Mapping):
+        target = [float(value) for value in marker_contract["position_world_m"]]
+        marker = SpawnerObject(
+            name="policy_target_marker",
+            prim_path="{ENV_REGEX_NS}/policy_target_marker",
+            spawner_cfg=sim_utils.CylinderCfg(
+                radius=float(marker_contract["radius_m"]),
+                height=0.002,
+                axis="Z",
+                collision_props=None,
+                rigid_props=None,
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(0.03, 0.8, 0.12),
+                    emissive_color=(0.0, 0.12, 0.0),
+                    roughness=0.8,
+                ),
+            ),
+        )
+        marker.object_cfg.init_state = marker.object_cfg.init_state.replace(
+            pos=(target[0], target[1], target[2] - 0.063)
+        )
+        assets.append(marker)
+        scene_asset_names["policy_target_marker"] = "policy_target_marker"
 
     # One source of truth: the same pure check the host-side pre-spend gate
     # runs, so the two can never disagree about what this runtime accepts.

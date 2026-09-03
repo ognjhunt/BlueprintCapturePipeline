@@ -152,10 +152,16 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "adp009d_groot_worker_identity.py",
     "adp009d_policy_rights.py",
     "droid_policy_bridge.py",
+    "droid_policy_canary_embodiment.py",
     "groot_n17_wire_client.py",
     "openpi_droid_policy_runtime.py",
     "policy_episode_trace_evidence.py",
     "policy_episode_lifecycle.py",
+    # Policy sessions perform the same native camera-mount sweep as the
+    # render-only preflight before either model client is loaded.
+    "native_task_arena_runtime_preflight_worker.py",
+    "native_task_wrist_camera_mount_sweep.py",
+    "native_task_rtx_streaming_guard.py",
 )
 
 POLICY_RUNTIME_MODULE_NAMES = tuple(
