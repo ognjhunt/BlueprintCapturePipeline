@@ -76,6 +76,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-reconciliation", "evidence_hot", "blueprint", "reconciler reports"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-supervision", "evidence_hot", "blueprint", "launch supervisor reports"),
     StorageRoot(f"{_CONTROL_PLANE}/storage-gc", "evidence_hot", "blueprint", "storage reclaim reports"),
+    StorageRoot(f"{_CONTROL_PLANE}/episode-interpretation-rights", "evidence_hot", "blueprint", "human-approved per-episode disclosure rights"),
     StorageRoot("/var/lib/blueprint/production-gpu-campaigns.sqlite", "evidence_hot", "blueprint", "gpu campaign ledger"),
     StorageRoot("/var/lib/blueprint/production-gpu-worker-pool.sqlite", "evidence_hot", "blueprint", "gpu worker pool ledger"),
     # --- sealed run evidence; offloadable after the hot window

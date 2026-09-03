@@ -150,10 +150,16 @@ def validate_policy_canary_execution_plan(
         "plan_digest",
     }
     if (
-        set(plan) != expected_plan_fields
+        set(plan) not in (expected_plan_fields, expected_plan_fields | {"scene_id"})
         or plan.get("schema_version") != PLAN_SCHEMA_VERSION
         or not re.fullmatch(r"[0-9a-f]{40}", str(plan.get("source_commit") or ""))
         or plan.get("configured_source_launch_id") != setup["source_launch_id"]
+        or (
+            plan.get("scene_id") is not None
+            and not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", str(plan["scene_id"])
+            )
+        )
         or not str(plan.get("configured_offering_configuration_run_id") or "")
         or plan.get("scene_revision_digest") != setup["scene_revision_digest"]
         or plan.get("public_setup_digest") != setup["setup_digest"]

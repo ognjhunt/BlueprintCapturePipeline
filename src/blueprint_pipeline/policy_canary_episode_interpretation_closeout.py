@@ -8,6 +8,7 @@ authoritative billing/teardown/delivery path.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -806,6 +807,36 @@ def best_effort_policy_canary_episode_interpretations(
         result["episode_interpretation"] = summary
         result["result_digest"] = canonical_digest(result, digest_field="result_digest")
         return result
+
+
+def main() -> int:
+    """Run one digest-bound closeout/backfill without mutating source evidence."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-root", type=Path, required=True)
+    parser.add_argument("--evidence-root", type=Path, required=True)
+    parser.add_argument("--session-result", type=Path, required=True)
+    parser.add_argument("--rights-root", type=Path)
+    parser.add_argument("--batch-authority", type=Path)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    result = materialize_policy_canary_episode_interpretations(
+        run_root=args.run_root,
+        evidence_root=args.evidence_root,
+        session_result=_read(args.session_result.expanduser().resolve()),
+        rights_root=args.rights_root,
+        batch_authority=(
+            _read(args.batch_authority.expanduser().resolve())
+            if args.batch_authority is not None
+            else None
+        ),
+    )
+    _write_once(args.output.expanduser().resolve(), result)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
 
 
 __all__ = [
