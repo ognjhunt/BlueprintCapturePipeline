@@ -1367,13 +1367,29 @@ def score_rigid_task_episode(
         native_readback = sample.get("native_readback")
         if not isinstance(native_readback, Mapping):
             native_readback = {}
-        task_contact_force_n = _finite(sample.get("task_contact_force_n"))
+        task_contact_force_n = _finite(
+            sample.get("task_robot_contact_peak_force_n")
+        )
+        task_contact_force_source = (
+            "task_robot_contact_peak_force_n"
+            if task_contact_force_n is not None
+            else None
+        )
+        if task_contact_force_n is None:
+            task_contact_force_n = _finite(sample.get("task_contact_force_n"))
+            if task_contact_force_n is not None:
+                task_contact_force_source = "task_contact_force_n"
         if task_contact_force_n is None:
             task_contact_force_n = _finite(
                 native_readback.get("task_robot_contact_peak_force_n")
             )
+            if task_contact_force_n is not None:
+                task_contact_force_source = (
+                    "native_readback.task_robot_contact_peak_force_n"
+                )
         if task_contact_force_n is not None and task_contact_force_n < 0.0:
             task_contact_force_n = None
+            task_contact_force_source = None
         normalized.append(
             {
                 "step_index": step,
@@ -1392,6 +1408,7 @@ def score_rigid_task_episode(
                 ),
                 "workspace_excursion": sample.get("workspace_excursion"),
                 "task_contact_force_n": task_contact_force_n,
+                "task_contact_force_source": task_contact_force_source,
                 "contact_classes_active": sample.get("contact_classes_active"),
                 "retry_count": sample.get("retry_count"),
                 "regrasp_count": sample.get("regrasp_count"),
@@ -1501,33 +1518,92 @@ def score_rigid_task_episode(
     contact_trace_complete = all(
         isinstance(row["task_contact_active"], bool) for row in normalized
     )
+    support_trace_complete = all(
+        isinstance(row["support_contact_active"], bool) for row in normalized
+    )
     drop_events: list[dict[str, Any]] = []
-    if contact_trace_complete:
+    if contact_trace_complete and support_trace_complete:
         loss: dict[str, Any] | None = None
+
+        def retain_drop_event(
+            candidate: Mapping[str, Any],
+            *,
+            support_recontact: Mapping[str, Any] | None,
+            task_contact_recovered_step: int | None = None,
+        ) -> None:
+            fall_m = max(
+                0.0,
+                float(candidate["reference_height_m"])
+                - float(candidate["minimum_height_m"]),
+            )
+            if (
+                candidate.get("unsupported_started_step") is None
+                or fall_m < temporal_criteria["no_drop"]["minimum_fall_m"]
+            ):
+                return
+            destination_inside_at_recontact = None
+            support_recontact_step = None
+            if support_recontact is not None:
+                support_recontact_step = support_recontact["step_index"]
+                destination_inside_at_recontact = all(
+                    low <= value <= high
+                    for low, value, high in zip(
+                        lower,
+                        support_recontact["pose"][:3],
+                        upper,
+                        strict=True,
+                    )
+                )
+            drop_events.append(
+                {
+                    "contact_lost_step": candidate["contact_lost_step"],
+                    "unsupported_started_step": candidate[
+                        "unsupported_started_step"
+                    ],
+                    "reference_height_m": candidate["reference_height_m"],
+                    "minimum_height_m": candidate["minimum_height_m"],
+                    "minimum_height_step": candidate["minimum_height_step"],
+                    "support_recontact_step": support_recontact_step,
+                    "task_contact_recovered_step": task_contact_recovered_step,
+                    "fall_m": fall_m,
+                    "destination_inside_at_recontact": (
+                        destination_inside_at_recontact
+                    ),
+                }
+            )
+
         for previous, row in zip(normalized, normalized[1:], strict=False):
             if previous["task_contact_active"] is True and row["task_contact_active"] is False:
                 loss = {
                     "contact_lost_step": row["step_index"],
                     "reference_height_m": previous["pose"][2],
-                    "minimum_height_m": row["pose"][2],
+                    "minimum_height_m": previous["pose"][2],
+                    "minimum_height_step": previous["step_index"],
+                    "unsupported_started_step": None,
                 }
-            elif loss is not None and row["task_contact_active"] is False:
-                loss["minimum_height_m"] = min(
-                    loss["minimum_height_m"], row["pose"][2]
-                )
             if loss is not None:
-                fall_m = loss["reference_height_m"] - loss["minimum_height_m"]
-                if fall_m >= temporal_criteria["no_drop"]["minimum_fall_m"]:
-                    drop_events.append(
-                        {
-                            **loss,
-                            "fall_m": fall_m,
-                            "detected_step": row["step_index"],
-                        }
+                if row["support_contact_active"] is False:
+                    if loss["unsupported_started_step"] is None:
+                        loss["unsupported_started_step"] = row["step_index"]
+                    if row["pose"][2] < loss["minimum_height_m"]:
+                        loss["minimum_height_m"] = row["pose"][2]
+                        loss["minimum_height_step"] = row["step_index"]
+                elif loss["unsupported_started_step"] is not None:
+                    if row["pose"][2] < loss["minimum_height_m"]:
+                        loss["minimum_height_m"] = row["pose"][2]
+                        loss["minimum_height_step"] = row["step_index"]
+                    retain_drop_event(loss, support_recontact=row)
+                    loss = None
+                    continue
+                if loss is not None and row["task_contact_active"] is True:
+                    retain_drop_event(
+                        loss,
+                        support_recontact=None,
+                        task_contact_recovered_step=row["step_index"],
                     )
                     loss = None
-            if row["task_contact_active"] is True:
-                loss = None
+        if loss is not None:
+            retain_drop_event(loss, support_recontact=None)
     maximum_force_limit = temporal_criteria["maximum_task_contact_force_n"]
     force_trace_complete = all(
         row["task_contact_force_n"] is not None for row in normalized
@@ -1536,6 +1612,13 @@ def score_rigid_task_episode(
         max(float(row["task_contact_force_n"]) for row in normalized)
         if force_trace_complete
         else None
+    )
+    task_contact_force_sources = sorted(
+        {
+            str(row["task_contact_force_source"])
+            for row in normalized
+            if row["task_contact_force_source"] is not None
+        }
     )
     contact_classes_complete = all(
         isinstance(row["contact_classes_active"], Sequence)
@@ -1597,8 +1680,8 @@ def score_rigid_task_episode(
         else None
     )
     temporal_readback_gaps: list[str] = []
-    if no_drop_required and not contact_trace_complete:
-        temporal_readback_gaps.append("no_drop_contact_trace")
+    if no_drop_required and not (contact_trace_complete and support_trace_complete):
+        temporal_readback_gaps.append("no_drop_contact_support_trace")
     if maximum_force_limit is not None and not force_trace_complete:
         temporal_readback_gaps.append("task_contact_force_trace")
     if forbidden_contact_classes and not contact_classes_complete:
@@ -1672,7 +1755,12 @@ def score_rigid_task_episode(
         "safety": safety_ok,
         "minimum_translation": translated,
         "minimum_lift": lifted,
-        "no_drop": not no_drop_required or (contact_trace_complete and not drop_events),
+        "no_drop": not no_drop_required
+        or (
+            contact_trace_complete
+            and support_trace_complete
+            and not drop_events
+        ),
         "maximum_task_contact_force": (
             maximum_force_limit is None
             or (
@@ -1808,6 +1896,7 @@ def score_rigid_task_episode(
             "schema_version": "rigid_task_event_ledger.v1",
             "drop_events": drop_events,
             "peak_task_contact_force_n": peak_task_contact_force_n,
+            "task_contact_force_sources": task_contact_force_sources,
             "observed_contact_classes": observed_contact_classes,
             "observed_forbidden_contact_classes": observed_forbidden_contact_classes,
             "containment_excursion_steps": containment_excursion_steps,

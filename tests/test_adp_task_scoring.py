@@ -568,7 +568,7 @@ def test_task_success_contract_digest_detects_post_confirmation_drift() -> None:
 
 
 def _dropped_then_placed_samples() -> list[dict]:
-    return [
+    samples = [
         _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
         _rigid_v2_sample(1, [1.0, 2.0, 0.86]),
         _rigid_v2_sample(2, [1.15, 2.0, 0.86]),
@@ -576,6 +576,10 @@ def _dropped_then_placed_samples() -> list[dict]:
         _rigid_v2_sample(4, [1.15, 2.0, 0.8]),
         _rigid_v2_sample(5, [1.15, 2.0, 0.8]),
     ]
+    # Contact is lost while the object is still unsupported at step 2; it
+    # falls 6 cm and regains support inside the destination at step 3.
+    samples[2]["task_contact_active"] = False
+    return samples
 
 
 def test_no_drop_is_distinct_from_eventual_placement_success() -> None:
@@ -586,6 +590,15 @@ def test_no_drop_is_distinct_from_eventual_placement_success() -> None:
     assert eventual["task_succeeded"] is True
     assert eventual["event_ledger"]["drop_events"][0]["fall_m"] == pytest.approx(
         0.06
+    )
+    assert eventual["event_ledger"]["drop_events"][0]["contact_lost_step"] == 2
+    assert eventual["event_ledger"]["drop_events"][0]["minimum_height_m"] == 0.8
+    assert eventual["event_ledger"]["drop_events"][0]["support_recontact_step"] == 3
+    assert (
+        eventual["event_ledger"]["drop_events"][0][
+            "destination_inside_at_recontact"
+        ]
+        is True
     )
 
     default_contract = eventual["task_success_contract"]
@@ -611,6 +624,43 @@ def test_no_drop_is_distinct_from_eventual_placement_success() -> None:
     assert no_drop["failure_reason_plain_english"].startswith(
         "The object was dropped"
     )
+
+
+def test_no_drop_allows_contact_clear_after_supported_controlled_placement() -> None:
+    task_spec = _rigid_v2_spec()
+    samples = [
+        _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+        _rigid_v2_sample(1, [1.0, 2.0, 0.86]),
+        _rigid_v2_sample(2, [1.15, 2.0, 0.86]),
+        _rigid_v2_sample(3, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(4, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(5, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(6, [1.15, 2.0, 0.8]),
+    ]
+    # The object is placed onto support before task contact clears; it remains
+    # supported throughout the release, so the 6 cm controlled lowering is
+    # not a drop event.
+    samples[3]["task_contact_active"] = True
+    baseline = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
+    criteria = copy.deepcopy(baseline["task_success_contract"]["criteria"])
+    criteria["temporal_invariants"]["no_drop"]["mode"] = "required"
+    task_spec.update(site_id="scene839873", task_id="move_cup_to_green_target")
+    task_spec["task_success_contract"] = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id=task_spec["site_id"],
+        task_id=task_spec["task_id"],
+        author_source="site_robot_team",
+        author_id="robot-team:relocation-owners",
+        confirmation_status="confirmed",
+        confirmed_by_team_id="robot-team:relocation-owners",
+        criteria=criteria,
+    )
+
+    report = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
+
+    assert report["task_succeeded"] is True
+    assert report["criteria_satisfied"]["no_drop"] is True
+    assert report["event_ledger"]["drop_events"] == []
 
 
 def test_scoped_temporal_event_limits_are_deterministically_enforced() -> None:
@@ -670,6 +720,44 @@ def test_scoped_temporal_event_limits_are_deterministically_enforced() -> None:
     assert report["event_ledger"]["observed_forbidden_contact_classes"] == [
         "table_edge"
     ]
+
+
+def test_contact_force_limit_uses_retained_top_level_native_readback() -> None:
+    task_spec = _rigid_v2_spec()
+    baseline = score_task_episode_from_spec(
+        task_spec=task_spec,
+        samples=_dropped_then_placed_samples(),
+    )
+    criteria = copy.deepcopy(baseline["task_success_contract"]["criteria"])
+    criteria["temporal_invariants"]["maximum_task_contact_force_n"] = 10.0
+    task_spec.update(site_id="scene839873", task_id="move_cup_to_green_target")
+    task_spec["task_success_contract"] = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id=task_spec["site_id"],
+        task_id=task_spec["task_id"],
+        author_source="site_robot_team",
+        author_id="robot-team:relocation-owners",
+        confirmation_status="confirmed",
+        confirmed_by_team_id="robot-team:relocation-owners",
+        criteria=criteria,
+    )
+    samples = _dropped_then_placed_samples()
+    for sample in samples:
+        sample.update(
+            task_robot_contact_peak_force_n=5.0,
+            task_contact_force_n=1.0,
+            native_readback={"task_robot_contact_peak_force_n": 2.0},
+        )
+    samples[2]["task_robot_contact_peak_force_n"] = 12.0
+
+    report = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
+
+    assert report["task_succeeded"] is False
+    assert report["event_ledger"]["peak_task_contact_force_n"] == 12.0
+    assert report["event_ledger"]["task_contact_force_sources"] == [
+        "task_robot_contact_peak_force_n"
+    ]
+    assert report["failed_criteria"] == ["maximum_task_contact_force"]
 
 
 def test_scoped_temporal_limit_abstains_when_event_readback_is_missing() -> None:
