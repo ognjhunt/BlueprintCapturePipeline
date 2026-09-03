@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import zipfile
 
 import pytest
 
@@ -14,6 +15,7 @@ from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import (
     _join_session_closeout,
     _partial_policy_canary_result,
     _projection,
+    _recovered_complete_policy_canary_result,
     _resume_materialized_policy_canary_delivery,
     TaskEvaluationPolicyCanaryDispatchError,
     dispatch_policy_canary_activation,
@@ -468,6 +470,102 @@ def test_complete_provider_result_is_not_rebuilt_from_child_receipts(
         )
         is None
     )
+
+
+def test_complete_pinned_ssh_recovery_adopts_all_ten_cells_without_provider_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "dispatch"
+    attempt = tmp_path / "attempt"
+    evidence = attempt / "immutable_execution"
+    archive = attempt / "vast_provider_run" / "provider-output.zip"
+    children = []
+    for index in range(10):
+        child = {
+            "selected_cell_index": index,
+            "status": "runtime_selected_cell_completed_pending_aggregation",
+            "construction_lineage_mode": "compiled_configured_scene_diagnostic",
+            "episodes": [],
+            "result_digest": "",
+        }
+        child["result_digest"] = canonical_digest(child, digest_field="result_digest")
+        path = _write(
+            evidence
+            / f"cell_runs/{index:02d}/native_task_arena_policy_canary_session_result.v1.json",
+            child,
+        )
+        children.append((path, child))
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as output:
+        for index, (path, _child) in enumerate(children):
+            output.write(
+                path,
+                f"cell_runs/{index:02d}/native_task_arena_policy_canary_session_result.v1.json",
+            )
+        for index in range(120):
+            output.writestr(f"cell_runs/media/{index:03d}.mp4", b"video")
+    command = {
+        "provider_bundle_kind": "native_task_arena_policy_canary_session",
+        "provider_runtime_output_zip_received": True,
+        "provider_runtime_output_zip_path": str(archive),
+        "provider_output_download_manifest": {
+            "ssh_recovery": {
+                "status": "completed",
+                "strict_host_key_checking": True,
+                "streamed_to_disk": True,
+                "recovered_size_bytes": archive.stat().st_size,
+                "recovered_sha256": _sha(archive),
+                "known_hosts_sha256": "a" * 64,
+            }
+        },
+        "provider_runtime_output_zip_inspection": {
+            "zip_present": True,
+            "mp4_count": 120,
+        },
+    }
+    _write(attempt / "vast_provider_run/vast_provider_command_result.json", command)
+    aggregate_calls = []
+
+    def aggregate(**kwargs):
+        aggregate_calls.append(kwargs)
+        result = {
+            "status": "runtime_completed_unqualified_pending_closeout",
+            "episodes": [{"status": "completed"} for _ in range(20)],
+            "result_digest": "",
+        }
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+        return result
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher._aggregate_isolated_cell_results",
+        aggregate,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_session_result",
+        lambda value: dict(value),
+    )
+    native_path = evidence / "native_task_arena_policy_canary_session_result.v1.json"
+    recovered = _recovered_complete_policy_canary_result(
+        root=root,
+        native_path=native_path,
+        adapter={"attempt_root": str(attempt)},
+        authority={"run_id": "scene-839873-recovered"},
+        runtime_inputs={"cells": [{"cell_id": f"cell-{i}"} for i in range(10)]},
+    )
+
+    assert recovered is not None
+    result, result_path = recovered
+    assert len(result["episodes"]) == 20
+    assert result_path.is_file()
+    assert len(aggregate_calls) == 1
+    receipt = json.loads(
+        (root / "recovered_provider_output_adoption.json").read_text(encoding="utf-8")
+    )
+    assert receipt["status"] == "adopted_complete_provider_output"
+    assert receipt["episode_count"] == 20
+    assert receipt["mp4_count"] == 120
+    assert receipt["provider_mutation_performed"] is False
+    assert receipt["automatic_retry_performed"] is False
 
 
 def test_partial_provider_result_preserves_prepolicy_blocked_cell_evidence(
