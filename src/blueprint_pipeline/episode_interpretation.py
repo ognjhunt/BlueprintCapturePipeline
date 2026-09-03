@@ -243,6 +243,11 @@ def _verified_frames(
         bindings.append(
             {
                 "frame_index": index,
+                "source_frame_index": row.get("frame_index"),
+                "camera_id": row.get("camera_id"),
+                "kind": row.get("kind"),
+                "simulation_time_s": row.get("simulation_time_s"),
+                "timestamp_ns": row.get("timestamp_ns"),
                 "relative_path": path.relative_to(root).as_posix(),
                 "sha256": expected,
                 "size_bytes": path.stat().st_size,
@@ -821,7 +826,7 @@ class OpenAIMultimodalEpisodeInterpreter:
         invoker: AgentsSDKInvoker,
         model: str,
         model_version: str,
-        max_frames: int = 64,
+        max_frames: int = 12,
         max_input_tokens: int = 240_000,
         max_output_tokens: int = 8_000,
     ) -> None:
@@ -856,32 +861,206 @@ class OpenAIMultimodalEpisodeInterpreter:
             "lossless_frame",
         )
 
-    def _selected_frame_indices(self, count: int) -> list[int]:
+    @staticmethod
+    def _compact_state_trace(value: Mapping[str, Any]) -> dict[str, Any]:
+        task_fields = (
+            "step_index",
+            "task_object_pose_world",
+            "task_scoring_pose_world",
+            "grasp_frame_position_world_m",
+            "gripper_width_m",
+            "finger_separation_m",
+            "task_contact_active",
+            "support_contact_active",
+            "containment_violation",
+            "locked_joint_containment_violation",
+            "robot_collision_failure",
+            "scene_collision_failure",
+            "forbidden_robot_task_collision_failure",
+            "task_robot_contact_peak_force_n",
+            "task_scene_collision_peak_force_n",
+            "task_support_contact_peak_force_n",
+            "robot_scene_contact_peak_force_n",
+            "robot_task_forbidden_collision_peak_force_n",
+        )
+        joint_fields = ("step_index", "joint_positions_rad")
+        return {
+            "schema_version": value.get("schema_version"),
+            "trace_digest": value.get("trace_digest"),
+            "task_state_samples": [
+                {key: row[key] for key in task_fields if key in row}
+                for row in value.get("task_state_samples") or []
+                if isinstance(row, Mapping)
+            ],
+            "joint_states": [
+                {key: row[key] for key in joint_fields if key in row}
+                for row in value.get("joint_states") or []
+                if isinstance(row, Mapping)
+            ],
+        }
+
+    @staticmethod
+    def _compact_contact_trace(value: Mapping[str, Any]) -> dict[str, Any]:
+        fields = (
+            "step_index",
+            "gripper_width_m",
+            "task_contact_active",
+            "robot_collision_failure",
+            "scene_collision_failure",
+            "task_robot_contact_peak_force_n",
+            "task_scene_collision_peak_force_n",
+            "task_support_contact_peak_force_n",
+        )
+        return {
+            "schema_version": value.get("schema_version"),
+            "trace_digest": value.get("trace_digest"),
+            "typed_gap": value.get("typed_gap"),
+            "samples": [
+                {key: row[key] for key in fields if key in row}
+                for row in value.get("samples") or []
+                if isinstance(row, Mapping)
+            ],
+        }
+
+    @staticmethod
+    def _compact_frame_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
+        observations = []
+        for field in ("policy_input_observations", "review_observations"):
+            for row in value.get(field) or []:
+                if not isinstance(row, Mapping):
+                    continue
+                observations.append(
+                    {
+                        "kind": row.get("kind"),
+                        "observation_index": row.get("observation_index"),
+                        "simulation_time_s": row.get("simulation_time_s"),
+                        "timestamp_ns": row.get("timestamp_ns"),
+                        "camera_ids": row.get("camera_ids"),
+                    }
+                )
+        terminal = value.get("terminal_observation")
+        if isinstance(terminal, Mapping):
+            observations.append(
+                {
+                    "kind": terminal.get("kind"),
+                    "observation_index": terminal.get("observation_index"),
+                    "simulation_time_s": terminal.get("simulation_time_s"),
+                    "timestamp_ns": terminal.get("timestamp_ns"),
+                    "camera_ids": terminal.get("camera_ids"),
+                }
+            )
+        return {
+            "schema_version": value.get("schema_version"),
+            "frame_manifest_digest": value.get("frame_manifest_digest"),
+            "episode_id": value.get("episode_id"),
+            "required_camera_ids": value.get("required_camera_ids"),
+            "review_only_camera_ids": value.get("review_only_camera_ids"),
+            "policy_input_observation_count": value.get(
+                "policy_input_observation_count"
+            ),
+            "review_observation_count": value.get("review_observation_count"),
+            "observations": observations,
+        }
+
+    @staticmethod
+    def _event_steps(score: Mapping[str, Any]) -> set[int]:
+        ledger = score.get("event_ledger")
+        if not isinstance(ledger, Mapping):
+            return set()
+        steps: set[int] = set()
+        for key, value in ledger.items():
+            if key.endswith("_steps") and isinstance(value, list):
+                steps.update(
+                    item
+                    for item in value
+                    if isinstance(item, int) and not isinstance(item, bool) and item >= 0
+                )
+            if key not in {"drop_events", "safety_events"} or not isinstance(
+                value, list
+            ):
+                continue
+            for event in value:
+                if not isinstance(event, Mapping):
+                    continue
+                for field in ("step_index", "step", "start_step", "end_step"):
+                    item = event.get(field)
+                    if isinstance(item, int) and not isinstance(item, bool) and item >= 0:
+                        steps.add(item)
+        return steps
+
+    def _selected_frame_indices(
+        self,
+        request: EpisodeInterpretationRequest,
+        frame_rows: Sequence[Mapping[str, Any]],
+    ) -> list[int]:
+        count = len(frame_rows)
         if count <= self._max_frames:
             return list(range(count))
-        return sorted(
-            {
-                round(index * (count - 1) / (self._max_frames - 1))
-                for index in range(self._max_frames)
-            }
-        )
+        groups: dict[float, list[int]] = {}
+        for index, row in enumerate(frame_rows):
+            time_value = row.get("simulation_time_s")
+            if isinstance(time_value, (int, float)) and not isinstance(time_value, bool):
+                groups.setdefault(float(time_value), []).append(index)
+        if len(groups) < 2:
+            return sorted(
+                {
+                    round(index * (count - 1) / (self._max_frames - 1))
+                    for index in range(self._max_frames)
+                }
+            )
+        times = sorted(groups)
+        group_width = max(len(indices) for indices in groups.values())
+        group_limit = max(2, self._max_frames // group_width)
+        event_positions: list[int] = []
+        samples = request.state_trace.get("task_state_samples") or []
+        step_values = [
+            row.get("step_index")
+            for row in samples
+            if isinstance(row, Mapping)
+            and isinstance(row.get("step_index"), int)
+            and not isinstance(row.get("step_index"), bool)
+        ]
+        if step_values and max(step_values) > 0:
+            for step in self._event_steps(request.deterministic_score):
+                target_time = times[-1] * step / max(step_values)
+                position = min(
+                    range(len(times)), key=lambda index: abs(times[index] - target_time)
+                )
+                if position not in event_positions:
+                    event_positions.append(position)
+        mandatory = [0, len(times) - 1, *event_positions]
+        chosen_positions: set[int] = set()
+        for position in mandatory:
+            if len(chosen_positions) >= group_limit:
+                break
+            chosen_positions.add(position)
+        for slot in range(group_limit):
+            if len(chosen_positions) >= group_limit:
+                break
+            chosen_positions.add(round(slot * (len(times) - 1) / (group_limit - 1)))
+        chosen = []
+        for position in sorted(chosen_positions):
+            chosen.extend(groups[times[position]])
+        return sorted(chosen[: self._max_frames])
 
     def interpret(self, request: EpisodeInterpretationRequest) -> EpisodeInterpreterOutput:
         compact = {
             "input_bundle_digest": request.input_receipt["input_bundle_digest"],
             "task_success_contract": request.task_success_contract,
             "deterministic_score": request.deterministic_score,
-            "state_trace": request.state_trace,
-            "contact_force_trace": request.contact_force_trace,
-            "frame_manifest": request.frame_manifest,
+            "state_trace": self._compact_state_trace(request.state_trace),
+            "contact_force_trace": self._compact_contact_trace(
+                request.contact_force_trace
+            ),
+            "frame_manifest": self._compact_frame_manifest(request.frame_manifest),
             "review_video_bindings": request.input_receipt["artifacts"]["review_videos"],
         }
         content: list[dict[str, Any]] = [
             {"type": "input_text", "text": _PROMPT},
             {"type": "input_text", "text": canonical_json(compact)},
         ]
-        selected = self._selected_frame_indices(len(request.ordered_frame_paths))
         frame_rows = request.input_receipt["artifacts"]["lossless_frames"]
+        selected = self._selected_frame_indices(request, frame_rows)
         for index in selected:
             path = request.ordered_frame_paths[index]
             mime = mimetypes.guess_type(path.name)[0] or "image/png"
@@ -897,7 +1076,7 @@ class OpenAIMultimodalEpisodeInterpreter:
                             f"data:{mime};base64,"
                             + base64.b64encode(path.read_bytes()).decode("ascii")
                         ),
-                        "detail": "high",
+                        "detail": "low",
                     },
                 ]
             )

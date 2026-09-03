@@ -6,9 +6,9 @@
   "runtime": "openai_agents_sdk",
   "model": "gpt-5.6-luna",
   "model_version": "gpt-5.6-luna",
-  "max_frames": 64,
+  "max_frames": 12,
   "max_input_tokens": 240000,
   "max_output_tokens": 8000,
   "max_cost_usd": 1.5,
-  "profile_digest": "sha256:eca3944e331b60cc08fdb1548d753be7c1b513b7b703ad5fce8401b09eb83baf"
+  "profile_digest": "sha256:193f816a222b11f8ee9511538e7c16af37387feee873624ab4752dfa7d5cf8f3"
 }

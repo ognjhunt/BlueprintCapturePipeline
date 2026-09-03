@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -536,11 +537,56 @@ def test_openai_adapter_uses_agents_sdk_and_discloses_frame_sampling_gap(
         if item["type"] == "input_image"
     ]
     assert len(images) == 2
+    assert all(item["detail"] == "low" for item in images)
+    compact = json.loads(provider_input[0]["content"][1]["text"])
+    assert "policy_input_observations" not in compact["frame_manifest"]
+    assert "review_observations" not in compact["frame_manifest"]
+    assert set(compact["state_trace"]) == {
+        "schema_version",
+        "trace_digest",
+        "task_state_samples",
+        "joint_states",
+    }
     assert receipt["provider_called"] is True
     assert (
         receipt["learned_interpretation"]["possible_missed_events"][-1]["reason"]
         == "OpenAI adapter sampled 2 of 5 lossless frames."
     )
+
+
+def test_openai_adapter_preserves_first_terminal_and_event_nearby_camera_groups(
+    tmp_path: Path,
+) -> None:
+    data = _episode_root(tmp_path, no_drop=False, deterministic_success=True)
+    request = _request(data)
+    score = copy.deepcopy(request.deterministic_score)
+    score["event_ledger"] = {
+        **score["event_ledger"],
+        "drop_events": [{"step_index": 50}],
+    }
+    state = {
+        **request.state_trace,
+        "task_state_samples": [
+            {"step_index": 0},
+            {"step_index": 100},
+        ],
+    }
+    request = replace(request, deterministic_score=score, state_trace=state)
+    frame_rows = [
+        {"simulation_time_s": float(time), "camera_id": camera}
+        for time in range(5)
+        for camera in ("external", "overview", "wrist")
+    ]
+    interpreter = OpenAIMultimodalEpisodeInterpreter(
+        invoker=_FakeAgentsSDKInvoker(_output(data)),
+        model="gpt-5.6-luna",
+        model_version="gpt-5.6-luna",
+        max_frames=9,
+    )
+
+    selected = interpreter._selected_frame_indices(request, frame_rows)
+
+    assert selected == [0, 1, 2, 6, 7, 8, 12, 13, 14]
 
 
 def test_tampered_score_fails_before_interpreter(tmp_path: Path) -> None:
