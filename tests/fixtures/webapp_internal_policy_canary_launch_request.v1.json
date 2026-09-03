@@ -2,7 +2,7 @@
   "schema_version": "task_evaluation_launch_request.v1",
   "run_kind": "internal_policy_canary",
   "claim_ceiling": "diagnostic_policy_execution",
-  "robot_preset_id": "franka_panda_robotiq_2f85_v1",
+  "robot_preset_id": "droid_franka_panda_robotiq_2f85_v1",
   "policy_candidate_ids": ["pi05_droid", "groot_n17_droid"],
   "preset_id": "quick_10",
   "episode_plan": {
