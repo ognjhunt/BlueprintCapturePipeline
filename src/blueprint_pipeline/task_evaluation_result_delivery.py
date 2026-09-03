@@ -23,6 +23,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .adp_task_scoring import (
+    TaskNeutralScoringError,
+    validate_rigid_task_success_contract,
+)
 from .adp_episode_evidence_index import INDEX_FILENAME, INDEX_SCHEMA_VERSION
 from .core.security_controls import strict_identifier
 from .decision_evidence_contracts import (
@@ -837,6 +841,21 @@ def materialize_policy_canary_result_delivery(
     episodes = result.get("episodes")
     if not isinstance(episodes, list) or len(episodes) > 20:
         raise TaskEvaluationResultDeliveryError("policy_canary_result_delivery_episodes_invalid")
+    try:
+        task_success_contract = validate_rigid_task_success_contract(
+            result.get("task_success_contract") or {}
+        )
+    except TaskNeutralScoringError as exc:
+        raise TaskEvaluationResultDeliveryError(
+            "policy_canary_result_delivery_task_success_contract_invalid:" + str(exc)
+        ) from exc
+    if (
+        result.get("task_success_contract_digest")
+        != task_success_contract["contract_digest"]
+    ):
+        raise TaskEvaluationResultDeliveryError(
+            "policy_canary_result_delivery_task_success_contract_digest_mismatch"
+        )
 
     root = Path(run_root).expanduser().resolve()
     evidence = Path(evidence_root).expanduser().resolve()
@@ -1336,6 +1355,8 @@ def materialize_policy_canary_result_delivery(
         "run_id": run,
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
+        "task_success_contract": task_success_contract,
+        "task_success_contract_digest": task_success_contract["contract_digest"],
         "result_status": result_status,
         "status": "ready",
         "stages": [

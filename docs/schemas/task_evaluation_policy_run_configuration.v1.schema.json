@@ -19,6 +19,8 @@
     "policy_candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{"const": "pi05_droid"}, {"const": "groot_n17_droid"}], "items": false},
     "notification": {"type": "object", "required": ["email", "notify_on"], "additionalProperties": false, "properties": {"email": {"type": "string", "format": "email", "maxLength": 254}, "notify_on": {"type": "array", "minItems": 3, "maxItems": 3, "prefixItems": [{"const": "completed"}, {"const": "blocked"}, {"const": "cancelled"}], "items": false}}},
     "website_request_digest": {"$ref": "#/$defs/digest"},
+    "task_success_contract": {"$ref": "#/$defs/taskSuccessContract"},
+    "task_success_contract_digest": {"$ref": "#/$defs/digest"},
     "unqualified_warning": {"const": "Controls pending — results are unqualified."},
     "embodiment_id": {"enum": ["franka_panda_robotiq_2f85_v1", "droid_franka_panda_robotiq_2f85_v1"]},
     "candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{"const": "pi05_droid"}, {"const": "groot_n17_droid"}], "items": false},
@@ -41,9 +43,10 @@
     "evidence_requirements": {"type": "object", "required": ["lossless_policy_input_frames_required", "digest_bound_frame_manifest_required", "derived_review_video_required", "typed_media_gap_before_first_observation_required", "grader_authority", "policy_self_grading_forbidden", "policy_query_receipt_required", "action_sequence_required", "action_delivery_readback_required", "joint_pose_state_trace_required", "contact_force_evidence_required", "task_object_trajectory_required"], "additionalProperties": false, "properties": {"lossless_policy_input_frames_required": {"const": true}, "digest_bound_frame_manifest_required": {"const": true}, "derived_review_video_required": {"const": true}, "typed_media_gap_before_first_observation_required": {"const": true}, "grader_authority": {"const": "deterministic_simulator_state"}, "policy_self_grading_forbidden": {"const": true}, "policy_query_receipt_required": {"const": true}, "action_sequence_required": {"const": true}, "action_delivery_readback_required": {"const": true}, "joint_pose_state_trace_required": {"const": true}, "contact_force_evidence_required": {"const": true}, "task_object_trajectory_required": {"const": true}}},
     "configuration_digest": {"$ref": "#/$defs/digest"}
   },
-  "allOf": [{"if": {"properties": {"run_kind": {"const": "internal_policy_canary"}}, "required": ["run_kind"]}, "then": {"required": ["claim_ceiling", "scene_revision_digest", "scene_controls_status_at_submission", "robot_preset_id", "policy_candidate_ids", "notification", "website_request_digest", "unqualified_warning"]}}],
+  "allOf": [{"if": {"properties": {"run_kind": {"const": "internal_policy_canary"}}, "required": ["run_kind"]}, "then": {"required": ["claim_ceiling", "scene_revision_digest", "scene_controls_status_at_submission", "robot_preset_id", "policy_candidate_ids", "notification", "website_request_digest", "task_success_contract", "task_success_contract_digest", "unqualified_warning"]}}],
   "$defs": {
     "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
-    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "taskSuccessContract": {"$ref": "rigid_task_success_contract.v1.schema.json"}
   }
 }

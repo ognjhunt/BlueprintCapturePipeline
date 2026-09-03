@@ -717,6 +717,8 @@ def _validate_provider_manifest(
         or manifest.get("claim_ceiling") != "diagnostic_policy_execution"
         or manifest.get("runtime_inputs_digest")
         != runtime_inputs.get("runtime_inputs_digest")
+        or manifest.get("task_success_contract_digest")
+        != runtime_inputs.get("task_success_contract_digest")
         or manifest.get("authority_digest") != authority.get("authority_digest")
         or manifest.get("input_digest")
         != canonical_digest(manifest, digest_field="input_digest")
@@ -725,8 +727,28 @@ def _validate_provider_manifest(
     return manifest
 
 
-def _resolved_scene_plan(base: Mapping[str, Any], cell: Mapping[str, Any]) -> dict[str, Any]:
+def _resolved_scene_plan(
+    base: Mapping[str, Any],
+    cell: Mapping[str, Any],
+    *,
+    task_success_contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     plan = deepcopy(dict(base))
+    task_success_contract = task_success_contract or cell.get(
+        "task_success_contract"
+    )
+    if (
+        not isinstance(task_success_contract, Mapping)
+        or (
+            cell.get("task_success_contract_digest")
+            or task_success_contract.get("contract_digest")
+        )
+        != task_success_contract.get("contract_digest")
+    ):
+        raise RuntimeError("policy_canary_task_success_contract_binding_invalid")
+    plan["task_spec"]["task_success_contract"] = deepcopy(
+        dict(task_success_contract)
+    )
     scenario = deepcopy(dict(cell["resolved_scenario"]))
     scenario["cell_id"] = cell["cell_id"]
     scenario["seed"] = cell["seed"]
@@ -1384,6 +1406,10 @@ def _aggregate_isolated_cell_results(
             != "runtime_selected_cell_completed_pending_aggregation"
             or not isinstance(child.get("episodes"), list)
             or len(child["episodes"]) != len(CANDIDATE_IDS)
+            or child.get("task_success_contract")
+            != inputs.get("task_success_contract")
+            or child.get("task_success_contract_digest")
+            != inputs.get("task_success_contract_digest")
         ):
             raise RuntimeError("policy_canary_isolated_cell_result_invalid")
         prefix = f"cell_runs/{index:02d}"
@@ -1408,6 +1434,8 @@ def _aggregate_isolated_cell_results(
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "candidate_ids": list(CANDIDATE_IDS),
+        "task_success_contract": inputs["task_success_contract"],
+        "task_success_contract_digest": inputs["task_success_contract_digest"],
         "episodes_per_policy": 10,
         "learned_policy_rollout_count": 20,
         "provider_allocations_observed": None,
@@ -2029,7 +2057,11 @@ def _run_selected_cell(
             if bound_runtime.prepolicy_camera_gate is None:
                 raise RuntimeError("policy_canary_runtime_camera_gate_unavailable")
             cell = inputs["cells"][selected_cell_index]
-            scene_plan = _resolved_scene_plan(base_scene_plan, cell)
+            scene_plan = _resolved_scene_plan(
+                base_scene_plan,
+                cell,
+                task_success_contract=inputs["task_success_contract"],
+            )
             dependencies = bound_runtime.preflight_dependency_matrix(
                 robot_id=str(scene_plan["robot"]["robot_id"])
             )

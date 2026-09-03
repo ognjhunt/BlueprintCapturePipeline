@@ -23,6 +23,10 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
+from .adp_task_scoring import (
+    TaskNeutralScoringError,
+    validate_rigid_task_success_contract,
+)
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .control_plane_disk_budget import (
@@ -189,8 +193,37 @@ def validate_policy_canary_execution_setup(
 ) -> dict[str, Any]:
     setup = json.loads(json.dumps(dict(value), allow_nan=False))
     records = setup.get("records")
+    allowed_fields = {
+        "schema_version",
+        "status",
+        "run_kind",
+        "claim_ceiling",
+        "scene_id",
+        "configured_source_launch_id",
+        "scene_revision_digest",
+        "activation_digest",
+        "source_commit",
+        "provider",
+        "embodiment_id",
+        "candidate_ids",
+        "records",
+        "capture_session_id",
+        "intake_id",
+        "request_digest",
+        "configured_request_digest",
+        "task_success_contract",
+        "task_success_contract_digest",
+        "runtime_inputs",
+        "quick_10",
+        "estimate",
+        "historical_runtime_smoke",
+        "scene_promotion_authorized",
+        "official_ranking_authorized",
+        "setup_digest",
+    }
     if (
-        setup.get("schema_version") != SETUP_SCHEMA_VERSION
+        not set(setup).issubset(allowed_fields)
+        or setup.get("schema_version") != SETUP_SCHEMA_VERSION
         or setup.get("status") != "verified_runnable"
         or str(setup.get("scene_id")) != "839873"
         or not str(setup.get("configured_source_launch_id") or "")
@@ -216,7 +249,32 @@ def validate_policy_canary_execution_setup(
             "policy_canary_scene839873_setup_records_invalid"
         )
     for name in sorted(expected):
-        _record_path(records[name], code=f"policy_canary_setup_record_invalid:{name}")
+        path = _record_path(
+            records[name], code=f"policy_canary_setup_record_invalid:{name}"
+        )
+        if name.endswith("execution_spec"):
+            spec = _read(path, code=f"policy_canary_setup_record_invalid:{name}")
+            if (
+                spec.get("task_success_contract")
+                != setup.get("task_success_contract")
+                or spec.get("task_success_contract_digest")
+                != setup.get("task_success_contract_digest")
+            ):
+                raise TaskEvaluationPolicyCanaryDispatchError(
+                    "policy_canary_setup_task_success_contract_binding_mismatch"
+                )
+    try:
+        success_contract = validate_rigid_task_success_contract(
+            _mapping(setup.get("task_success_contract"))
+        )
+    except TaskNeutralScoringError as exc:
+        raise TaskEvaluationPolicyCanaryDispatchError(
+            "policy_canary_setup_task_success_contract_invalid:" + str(exc)
+        ) from exc
+    if setup.get("task_success_contract_digest") != success_contract["contract_digest"]:
+        raise TaskEvaluationPolicyCanaryDispatchError(
+            "policy_canary_setup_task_success_contract_digest_mismatch"
+        )
     return setup
 
 
@@ -642,6 +700,10 @@ def _partial_policy_canary_result(
         "run_kind": RUN_KIND,
         "claim_ceiling": CLAIM_CEILING,
         "candidate_ids": list(CANDIDATE_IDS),
+        "task_success_contract": runtime_inputs["task_success_contract"],
+        "task_success_contract_digest": runtime_inputs[
+            "task_success_contract_digest"
+        ],
         "episodes_per_policy": 10,
         "learned_policy_rollout_count": 20,
         "episodes": [*partial_episodes, *missing_episodes],
@@ -1393,6 +1455,14 @@ def dispatch_policy_canary_activation(
         setup["source_commit"] != implementation_commit
         or setup["activation_digest"] != activation["activation_digest"]
         or setup["scene_revision_digest"] != runtime_inputs.get("scene_revision_digest")
+        or setup.get("task_success_contract")
+        != runtime_inputs.get("task_success_contract")
+        or setup.get("task_success_contract_digest")
+        != runtime_inputs.get("task_success_contract_digest")
+        or activation.get("task_success_contract")
+        != runtime_inputs.get("task_success_contract")
+        or activation.get("task_success_contract_digest")
+        != runtime_inputs.get("task_success_contract_digest")
         or activation_result.get("source_commit") != implementation_commit
         or not isinstance(resource, Mapping)
         or resource.get("user_confirmed") is not True
@@ -1696,6 +1766,10 @@ def dispatch_policy_canary_activation(
             "status": "blocked",
             "run_kind": RUN_KIND,
             "claim_ceiling": CLAIM_CEILING,
+            "task_success_contract": runtime_inputs["task_success_contract"],
+            "task_success_contract_digest": runtime_inputs[
+                "task_success_contract_digest"
+            ],
             "episodes": [
                 {
                     "candidate_id": candidate,
@@ -2093,6 +2167,33 @@ def process_policy_canary_dispatch_queue(
                 activation_record,
                 code="policy_canary_dispatch_activation_record_invalid",
             )
+            activation_payload = _read(
+                activation_path,
+                code="policy_canary_dispatch_activation_record_invalid",
+            )
+            raw_success_contract = envelope.get(
+                "task_success_contract",
+                activation_payload.get("task_success_contract"),
+            )
+            raw_success_contract_digest = envelope.get(
+                "task_success_contract_digest",
+                activation_payload.get("task_success_contract_digest"),
+            )
+            try:
+                envelope_success_contract = validate_rigid_task_success_contract(
+                    _mapping(raw_success_contract)
+                )
+            except TaskNeutralScoringError as exc:
+                raise TaskEvaluationPolicyCanaryDispatchError(
+                    "policy_canary_dispatch_task_success_contract_invalid:" + str(exc)
+                ) from exc
+            if (
+                raw_success_contract_digest
+                != envelope_success_contract["contract_digest"]
+            ):
+                raise TaskEvaluationPolicyCanaryDispatchError(
+                    "policy_canary_dispatch_task_success_contract_digest_mismatch"
+                )
         except (OSError, ValueError, TypeError, KeyError) as exc:
             invalid = {
                 "schema_version": "task_evaluation_policy_canary_invalid_envelope.v1",

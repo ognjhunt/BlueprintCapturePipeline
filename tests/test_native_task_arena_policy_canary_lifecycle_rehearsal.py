@@ -59,6 +59,7 @@ from blueprint_pipeline.openpi_droid_policy_runtime import (
     OpenPIWebsocketDroidPolicyClient,
 )
 from tests.test_adp009d_policy_episode import _DESTINATION, _LifecycleEnvironment
+from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
 
 
 class _ParityLifecycleEnvironment(_LifecycleEnvironment):
@@ -177,12 +178,15 @@ def _write(path: Path, value: Any) -> Path:
 
 
 def _activation() -> dict[str, Any]:
+    setup = public_setup()
     value: dict[str, Any] = {
         "schema_version": "task_evaluation_policy_campaign_activation.v1",
         "run_id": RUN_ID,
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "candidate_ids": list(CANDIDATE_IDS),
+        "task_success_contract": setup["task_success_contract"],
+        "task_success_contract_digest": setup["task_success_contract_digest"],
         "campaign_unit_count": 10,
         "campaign_units": [
             {
@@ -294,6 +298,7 @@ def _observation_integrity_authority(*, plan: dict[str, Any] | None = None) -> d
 
 
 def _execution_spec(candidate: str, *, port: int) -> dict[str, Any]:
+    setup = public_setup()
     value: dict[str, Any] = {
         "schema_version": "native_task_arena_policy_canary_execution_spec.v1",
         "candidate_id": candidate,
@@ -315,6 +320,8 @@ def _execution_spec(candidate: str, *, port: int) -> dict[str, Any]:
         "candidate_rights_binding": {"status": "admitted"},
         "checkpoint_digest": "sha256:" + ("c" if candidate == "pi05_droid" else "d") * 64,
         "runtime_identity_digest": "sha256:" + ("e" if candidate == "pi05_droid" else "f") * 64,
+        "task_success_contract": setup["task_success_contract"],
+        "task_success_contract_digest": setup["task_success_contract_digest"],
         "prompt": "push the mug across the table",
         "max_policy_queries": 1,
         "open_loop_horizon": 8,
@@ -403,6 +410,10 @@ def _stage_runtime_root(tmp_path: Path) -> tuple[Path, Path]:
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "candidate_ids": list(CANDIDATE_IDS),
+        "task_success_contract": activation["task_success_contract"],
+        "task_success_contract_digest": activation[
+            "task_success_contract_digest"
+        ],
         "activation_digest": activation["activation_digest"],
         "scene_revision_digest": scene_revision_digest,
         "matrix_digest": "sha256:" + "8" * 64,
@@ -445,6 +456,7 @@ def _stage_runtime_root(tmp_path: Path) -> tuple[Path, Path]:
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "runtime_inputs_digest": inputs["runtime_inputs_digest"],
+        "task_success_contract_digest": inputs["task_success_contract_digest"],
         "authority_digest": authority["authority_digest"],
         "input_digest": "",
     }
@@ -1255,6 +1267,7 @@ def test_real_clients_refuse_a_second_readiness_preflight_after_inference(
             task_spec=worker._resolved_scene_plan(
                 _scene_plan(),
                 {"cell_id": f"cell-{label}", "seed": 1, "resolved_scenario": {}},
+                task_success_contract=public_setup()["task_success_contract"],
             )["task_spec"],
             max_policy_queries=1,
             settle_window_samples=1,

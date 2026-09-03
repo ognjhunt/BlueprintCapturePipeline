@@ -62,6 +62,20 @@ def build_policy_canary_result_projection(
     """Project evidence-bound result fields without exposing provider internals."""
 
     episodes = list(result.get("episodes") or [])
+    task_success_contract = delivery.get("task_success_contract")
+    task_success_contract_digest = delivery.get("task_success_contract_digest")
+    if (
+        not isinstance(task_success_contract, Mapping)
+        or task_success_contract_digest
+        != task_success_contract.get("contract_digest")
+        or result.get("task_success_contract") != task_success_contract
+        or result.get("task_success_contract_digest")
+        != task_success_contract_digest
+        or setup.get("task_success_contract") != task_success_contract
+        or setup.get("task_success_contract_digest")
+        != task_success_contract_digest
+    ):
+        raise error_factory("policy_canary_task_success_contract_binding_mismatch")
 
     def compact_artifact(record: Mapping[str, Any]) -> dict[str, Any]:
         return {key: record[key] for key in ("artifact_id", "digest", "size_bytes")}
@@ -264,6 +278,8 @@ def build_policy_canary_result_projection(
         "request_digest": setup["request_digest"],
         "configuration_digest": result["configuration_digest"],
         "result_delivery_digest": delivery["delivery_digest"],
+        "task_success_contract": dict(task_success_contract),
+        "task_success_contract_digest": task_success_contract_digest,
         "run_kind": RUN_KIND,
         "claim_ceiling": CLAIM_CEILING,
         "scene_controls_status": "configured_controls_pending",

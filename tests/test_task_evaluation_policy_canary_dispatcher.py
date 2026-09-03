@@ -22,6 +22,7 @@ from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import (
     dispatch_policy_canary_activation,
     process_policy_canary_dispatch_queue,
 )
+from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
 
 
 COMMIT = "a" * 40
@@ -117,6 +118,7 @@ def _public_artifact(character: str, artifact_id: str) -> dict[str, object]:
 
 
 def test_projection_derives_reset_identity_only_for_blocked_legacy_episodes() -> None:
+    contract = public_setup()["task_success_contract"]
     episodes = []
     for candidate_id in ("pi05_droid", "groot_n17_droid"):
         for index in range(10):
@@ -160,6 +162,8 @@ def test_projection_derives_reset_identity_only_for_blocked_legacy_episodes() ->
         },
         "candidate_results": [],
         "artifacts": [],
+        "task_success_contract": contract,
+        "task_success_contract_digest": contract["contract_digest"],
     }
     result = {
         "run_id": report["run_id"],
@@ -168,12 +172,16 @@ def test_projection_derives_reset_identity_only_for_blocked_legacy_episodes() ->
         "status": "blocked",
         "episodes": episodes,
         "blockers": ["policy_canary_episode_runner_failed"],
+        "task_success_contract": contract,
+        "task_success_contract_digest": contract["contract_digest"],
     }
 
     projected = _projection(
         setup={
             "scene_id": "839873",
             "request_digest": "sha256:" + "5" * 64,
+            "task_success_contract": contract,
+            "task_success_contract_digest": contract["contract_digest"],
         },
         result=result,
         delivery=report,
@@ -193,6 +201,7 @@ def test_projection_derives_reset_identity_only_for_blocked_legacy_episodes() ->
 def test_materialized_delivery_resume_retries_only_website_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    contract = public_setup()["task_success_contract"]
     root = tmp_path / "dispatch"
     episodes = []
     for candidate_id in ("pi05_droid", "groot_n17_droid"):
@@ -228,6 +237,8 @@ def test_materialized_delivery_resume_retries_only_website_publication(
         "configuration_digest": "sha256:" + "d" * 64,
         "episodes": episodes,
         "blockers": ["policy_canary_episode_runner_failed"],
+        "task_success_contract": contract,
+        "task_success_contract_digest": contract["contract_digest"],
         "result_digest": "",
     }
     joined["result_digest"] = canonical_digest(joined, digest_field="result_digest")
@@ -271,6 +282,8 @@ def test_materialized_delivery_resume_retries_only_website_publication(
         },
         "candidate_results": [],
         "artifacts": [],
+        "task_success_contract": contract,
+        "task_success_contract_digest": contract["contract_digest"],
         "delivery_digest": "",
     }
     delivery["delivery_digest"] = cross_runtime_canonical_digest(
@@ -294,8 +307,14 @@ def test_materialized_delivery_resume_retries_only_website_publication(
             "capture_session_id": "capture-839873",
             "intake_id": "intake-839873",
             "request_digest": "sha256:" + "f" * 64,
+            "task_success_contract": contract,
+            "task_success_contract_digest": contract["contract_digest"],
         },
-        runtime_inputs={"configuration_digest": joined["configuration_digest"]},
+        runtime_inputs={
+            "configuration_digest": joined["configuration_digest"],
+            "task_success_contract": contract,
+            "task_success_contract_digest": contract["contract_digest"],
+        },
         authority={"authority_digest": "sha256:" + "1" * 64},
         bundle={"bundle_sha256": "sha256:" + "2" * 64},
         adapter={"teardown_manifest_path": str(teardown_path)},
@@ -412,7 +431,13 @@ def test_partial_provider_result_preserves_completed_cell_and_types_remaining_ga
     partial = _partial_policy_canary_result(
         native_path=native_path,
         fallback=json.loads(native_path.read_text(encoding="utf-8")),
-        runtime_inputs={"cells": cells},
+        runtime_inputs={
+            "cells": cells,
+            "task_success_contract": public_setup()["task_success_contract"],
+            "task_success_contract_digest": public_setup()[
+                "task_success_contract_digest"
+            ],
+        },
         specs={
             candidate: {
                 "checkpoint_digest": "sha256:" + character * 64,
@@ -613,7 +638,13 @@ def test_partial_provider_result_preserves_prepolicy_blocked_cell_evidence(
     partial = _partial_policy_canary_result(
         native_path=native_path,
         fallback=json.loads(native_path.read_text(encoding="utf-8")),
-        runtime_inputs={"cells": cells},
+        runtime_inputs={
+            "cells": cells,
+            "task_success_contract": public_setup()["task_success_contract"],
+            "task_success_contract_digest": public_setup()[
+                "task_success_contract_digest"
+            ],
+        },
         specs={
             candidate: {
                 "checkpoint_digest": "sha256:" + character * 64,
@@ -638,6 +669,9 @@ def test_partial_provider_result_preserves_prepolicy_blocked_cell_evidence(
 
 
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
+    public = public_setup()
+    task_success_contract = public["task_success_contract"]
+    task_success_contract_digest = public["task_success_contract_digest"]
     run_id = "scene-839873-canary-1"
     units = [
         {
@@ -654,6 +688,8 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "task_success_contract": task_success_contract,
+        "task_success_contract_digest": task_success_contract_digest,
         "campaign_unit_count": 10,
         "campaign_units": units,
         "activation_digest": "",
@@ -705,6 +741,8 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
         "runtime_source": _record(runtime_source),
         "construction_result": _record(construction),
         "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "task_success_contract": task_success_contract,
+        "task_success_contract_digest": task_success_contract_digest,
         "cells": cells,
         "execution_authority": {
             "maximum_provider_allocations": 1,
@@ -737,6 +775,8 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "policy_canary_runtime_inputs_path": str(runtime_path),
+        "task_success_contract": task_success_contract,
+        "task_success_contract_digest": task_success_contract_digest,
         "provider_mutation_performed": False,
         "paid_execution_requested": False,
         "result_digest": "",
@@ -751,7 +791,24 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
         "groot_execution_spec",
         "pi05_checkpoint_inventory",
     ):
-        records[name] = _record(_write(tmp_path / f"{name}.json", {"name": name}))
+        records[name] = _record(
+            _write(
+                tmp_path / f"{name}.json",
+                {
+                    "name": name,
+                    **(
+                        {
+                            "task_success_contract": task_success_contract,
+                            "task_success_contract_digest": (
+                                task_success_contract_digest
+                            ),
+                        }
+                        if name.endswith("execution_spec")
+                        else {}
+                    ),
+                },
+            )
+        )
     setup: dict[str, object] = {
         "schema_version": "task_evaluation_policy_canary_execution_setup.v1",
         "status": "verified_runnable",
@@ -765,6 +822,8 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
         "capture_session_id": "capture-839873",
         "intake_id": "intake-839873",
         "request_digest": "sha256:" + "7" * 64,
+        "task_success_contract": task_success_contract,
+        "task_success_contract_digest": task_success_contract_digest,
         "records": records,
         "setup_digest": "",
     }

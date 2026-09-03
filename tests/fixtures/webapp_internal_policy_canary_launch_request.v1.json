@@ -29,5 +29,10 @@
   },
   "controls_qualification_bypassed": false,
   "scene_promotion_permitted": false,
+  "task_success_contract": {
+    "schema_version": "rigid_task_success_contract.v1",
+    "contract_digest": "sha256:b1921cb11e235831ba0e765e5b04fb60b9952e1bb86519a776b08906ca566d03"
+  },
+  "task_success_contract_digest": "sha256:b1921cb11e235831ba0e765e5b04fb60b9952e1bb86519a776b08906ca566d03",
   "official_ranking_permitted": false
 }

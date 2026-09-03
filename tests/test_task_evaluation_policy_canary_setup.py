@@ -4,7 +4,11 @@ import copy
 
 import pytest
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
+from blueprint_pipeline.decision_evidence_contracts import (
+    canonical_digest,
+    cross_runtime_canonical_digest,
+)
 from blueprint_pipeline.task_evaluation_policy_canary_setup import (
     TaskEvaluationPolicyCanarySetupError,
     policy_canary_setup_digest,
@@ -16,6 +20,31 @@ from scripts.attach_internal_policy_canary_setup import (
 
 
 def _setup() -> dict[str, object]:
+    task_spec = {
+        "manipulation_strategy": "planar_push",
+        "destination_position_bounds_world_m": {
+            "minimum": [1.14, 1.99, 0.79],
+            "maximum": [1.16, 2.01, 0.81],
+        },
+        "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "destination_orientation_tolerance_rad": 0.1,
+        "support_height_interval_m": [0.79, 0.81],
+        "minimum_translation_m": 0.14,
+        "minimum_lift_m": 0.0,
+        "movement_epsilon_m": 0.001,
+        "settle_window_samples": 3,
+        "settle_position_tolerance_m": 0.002,
+        "settle_orientation_tolerance_rad": 0.01,
+        "release_gripper_width_min_m": 0.07,
+    }
+    task_success_contract = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id="interiorgs-839873",
+        task_id="scene-839873-mug-planar-push",
+        author_source="compatibility_default",
+        author_id="blueprint:manipulation_strategy_defaults.v1",
+        confirmation_status="confirmed",
+    )
     families = [
         "canonical_anchor",
         "canonical_anchor",
@@ -173,6 +202,8 @@ def _setup() -> dict[str, object]:
             "zero_action": "nonblocking",
             "deterministic_scripted_positive": "nonblocking",
         },
+        "task_success_contract": task_success_contract,
+        "task_success_contract_digest": task_success_contract["contract_digest"],
         "setup_digest": "",
     }
     value["setup_digest"] = policy_canary_setup_digest(value)
@@ -207,7 +238,7 @@ def test_setup_digest_uses_cross_runtime_number_canonicalization() -> None:
 
     assert setup["setup_digest"] != python_digest
     assert setup["setup_digest"] == (
-        "sha256:7f71891bdb3db9b52d898c4b722afb8636a70ba1df6afc4d732be4b037eb3e30"
+        "sha256:73a0d3cbb5c015699b90ace8b9c0a7669c8d0bdae3c7780ec0794f62ecc8605b"
     )
     assert validate_policy_canary_setup(setup) == setup
 
@@ -246,3 +277,42 @@ def test_setup_rejects_unrunnable_second_policy() -> None:
         match="policy_canary_setup_runnable_pair_invalid",
     ):
         validate_policy_canary_setup(mutated)
+
+
+def test_setup_schema_rejects_unknown_task_success_contract_fields() -> None:
+    setup = _setup()
+    mutated = copy.deepcopy(setup)
+    mutated["task_success_contract"]["criteria"]["unexpected_rule"] = True
+    mutated["task_success_contract"]["contract_digest"] = (
+        cross_runtime_canonical_digest(
+            mutated["task_success_contract"], digest_field="contract_digest"
+        )
+    )
+    mutated["task_success_contract_digest"] = mutated[
+        "task_success_contract"
+    ]["contract_digest"]
+    mutated["setup_digest"] = policy_canary_setup_digest(mutated)
+
+    with pytest.raises(
+        TaskEvaluationPolicyCanarySetupError,
+        match="policy_canary_setup_invalid:task_success_contract.criteria",
+    ):
+        validate_policy_canary_setup(mutated)
+
+
+def test_public_setup_may_publish_an_agent_proposal_without_authorizing_it() -> None:
+    setup = _setup()
+    proposal = seal_rigid_task_success_contract(
+        task_spec={},
+        site_id=setup["task_success_contract"]["scope"]["site_id"],
+        task_id=setup["task_success_contract"]["scope"]["task_id"],
+        author_source="agent_proposal",
+        author_id="agent:criteria-drafter",
+        confirmation_status="proposal_only",
+        criteria=setup["task_success_contract"]["criteria"],
+    )
+    setup["task_success_contract"] = proposal
+    setup["task_success_contract_digest"] = proposal["contract_digest"]
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+
+    assert validate_policy_canary_setup(setup)["task_success_contract"] == proposal

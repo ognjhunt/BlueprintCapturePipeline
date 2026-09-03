@@ -84,7 +84,29 @@ def test_rigid_scoring_environment_joins_native_safety_and_support_readback():
     assert sample["scene_collision_failure"] is False
     assert sample["containment_violation"] is False
     assert sample["locked_joint_containment_violation"] is False
+    assert sample["collision_failure_minimum_force_n"] == 5.0
     assert environment.reset() is None
+
+
+def test_rigid_scoring_environment_retains_measured_contact_pair_identity():
+    pairs = [
+        {
+            "robot_link_id": "panda_link7",
+            "task_link_id": "mug_body",
+            "sensor_instance_id": "forbidden__panda_link7__mug_body",
+        }
+    ]
+    environment = NativeRigidScoringEnvironment(
+        environment=_RigidEpisodeEnvironment(),
+        task_readback=_RigidNativeReadback(
+            robot_task_forbidden_contact_pairs=pairs
+        ),
+        task_spec=_rigid_scoring_task_spec(),
+    )
+
+    sample = environment.read_object_sample()
+
+    assert sample["robot_task_forbidden_contact_pairs"] == pairs
 
 
 def test_rigid_scoring_environment_refuses_missing_native_safety_channel():

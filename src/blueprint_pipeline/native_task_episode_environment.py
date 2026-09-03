@@ -155,6 +155,9 @@ class NativeRigidScoringEnvironment:
                 ["native_task_rigid_scoring_sample_invalid"]
             )
         sample = dict(base)
+        # ``native`` is copied wholesale so future native contact reporters can
+        # retain robot/task link or contact-pair identities without this
+        # overlay inventing them for older samples that never measured them.
         sample.update(native)
         sample.update(
             {
@@ -169,6 +172,7 @@ class NativeRigidScoringEnvironment:
                 "forbidden_robot_task_collision_failure": (
                     forbidden_robot_force >= self._collision_threshold
                 ),
+                "collision_failure_minimum_force_n": self._collision_threshold,
                 "locked_joint_containment_violation": locked_joint_violation,
                 "scene_collision_failure": scene_force
                 >= self._collision_threshold,

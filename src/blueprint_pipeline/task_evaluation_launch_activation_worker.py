@@ -1325,6 +1325,12 @@ def _policy_campaign_activation_result(
             "configuration_digest": preparation_request[
                 "policy_run_configuration"
             ]["configuration_digest"],
+            "task_success_contract": preparation_request[
+                "policy_run_configuration"
+            ]["task_success_contract"],
+            "task_success_contract_digest": preparation_request[
+                "policy_run_configuration"
+            ]["task_success_contract_digest"],
             "plan_digest": preparation_result["policy_run_plan"]["plan_digest"],
             "activation_digest": manifest["activation_digest"],
             "base_native_packet": {
@@ -1391,6 +1397,7 @@ def _policy_campaign_activation_result(
                     "matrix_digest",
                     "cell_spec_digest",
                     "seed",
+                    "task_success_contract_digest",
                 ],
                 "calibration_and_timebase_required": True,
                 "synchronized_timestamped_streams": [
@@ -1480,6 +1487,12 @@ def _policy_campaign_activation_result(
                 "intake_id": request["intake_id"],
                 "request_digest": request["preparation"]["request_digest"],
                 "website_request_digest": website_request_digest,
+                "task_success_contract": runtime_inputs[
+                    "task_success_contract"
+                ],
+                "task_success_contract_digest": runtime_inputs[
+                    "task_success_contract_digest"
+                ],
             }
             if runtime_inputs is not None and runtime_inputs_path is not None
             else {}
@@ -1846,6 +1859,10 @@ def process_launch_activation_queue(
                 "capture_session_id": result["capture_session_id"],
                 "intake_id": result["intake_id"],
                 "request_digest": result["website_request_digest"],
+                "task_success_contract": result["task_success_contract"],
+                "task_success_contract_digest": result[
+                    "task_success_contract_digest"
+                ],
                 "maximum_provider_allocations": 1,
                 "retry_cap": 0,
                 "automatic_retry_authorized": False,

@@ -17,6 +17,10 @@ from blueprint_pipeline.adp_task_scoring import (
     score_task_episode_from_spec,
     seal_rigid_task_success_contract,
 )
+from blueprint_pipeline.decision_evidence_contracts import (
+    canonical_digest,
+    cross_runtime_canonical_digest,
+)
 
 
 def _articulated_spec() -> dict:
@@ -567,6 +571,24 @@ def test_task_success_contract_digest_detects_post_confirmation_drift() -> None:
         )
 
 
+def test_task_success_contract_digest_uses_browser_compatible_number_encoding() -> None:
+    contract = seal_rigid_task_success_contract(
+        task_spec=_rigid_v2_spec(),
+        site_id="interiorgs-839873",
+        task_id="move-cup",
+        author_source="compatibility_default",
+        author_id="blueprint:manipulation_strategy_defaults.v1",
+        confirmation_status="confirmed",
+    )
+
+    assert contract["contract_digest"] == cross_runtime_canonical_digest(
+        contract, digest_field="contract_digest"
+    )
+    assert contract["contract_digest"] != canonical_digest(
+        contract, digest_field="contract_digest"
+    )
+
+
 def _dropped_then_placed_samples() -> list[dict]:
     samples = [
         _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
@@ -869,6 +891,43 @@ def test_scene_neutral_rigid_task_cannot_pass_when_locked_joint_moves() -> None:
     assert report["status"] == "scored"
     assert report["outcome"] == "collision_or_containment_failure"
     assert report["task_succeeded"] is False
+
+
+def test_forbidden_robot_object_collision_emits_specific_safety_event() -> None:
+    task_spec = _rigid_v2_spec()
+    task_spec["control_frequency_hz"] = 15.0
+    samples = [
+        _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+        _rigid_v2_sample(1, [1.0, 2.0, 0.83]),
+        _rigid_v2_sample(72, [1.15, 2.0, 0.83]),
+        _rigid_v2_sample(73, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(74, [1.15, 2.0, 0.8]),
+        _rigid_v2_sample(75, [1.15, 2.0, 0.8]),
+    ]
+    samples[2].update(
+        robot_collision_failure=True,
+        forbidden_robot_task_collision_failure=True,
+        robot_task_forbidden_collision_peak_force_n=4.519003553,
+        collision_failure_minimum_force_n=1.0,
+    )
+
+    report = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
+
+    assert report["task_succeeded"] is False
+    assert report["failure_reason_plain_english"] == (
+        "Forbidden robot-object contact reached 4.519 N, exceeding 1 N at step 72."
+    )
+    assert report["event_ledger"]["safety_events"] == [
+        {
+            "event_type": "forbidden_robot_object_contact_force_exceeded",
+            "step_index": 72,
+            "simulation_time_seconds": 4.8,
+            "measured_force_n": 4.519003553,
+            "threshold_n": 1.0,
+            "contact_pair_identities": [],
+            "contact_pair_identity_status": "contact_pair_identity_missing",
+        }
+    ]
 
 
 def test_scene_neutral_rigid_task_abstains_without_support_contact_readback() -> None:

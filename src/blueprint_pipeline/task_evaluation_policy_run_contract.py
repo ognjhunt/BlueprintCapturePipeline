@@ -16,8 +16,13 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .adp_task_scoring import (
+    TaskNeutralScoringError,
+    validate_rigid_task_success_contract,
+)
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_json
 from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
+from .rigid_task_success_contract_schema import rigid_task_success_contract_schema
 
 
 SETUP_SCHEMA_VERSION = "task_evaluation_policy_run_setup.v1"
@@ -101,11 +106,15 @@ def policy_run_setup_schema() -> dict[str, Any]:
 
 
 def policy_run_configuration_schema() -> dict[str, Any]:
-    return deepcopy(_schema(CONFIGURATION_SCHEMA_PATH))
+    schema = deepcopy(_schema(CONFIGURATION_SCHEMA_PATH))
+    schema["$defs"]["taskSuccessContract"] = rigid_task_success_contract_schema()
+    return schema
 
 
 def policy_run_selection_schema() -> dict[str, Any]:
-    return deepcopy(_schema(SELECTION_SCHEMA_PATH))
+    schema = deepcopy(_schema(SELECTION_SCHEMA_PATH))
+    schema["$defs"]["taskSuccessContract"] = rigid_task_success_contract_schema()
+    return schema
 
 
 def policy_run_result_projection_schema() -> dict[str, Any]:
@@ -317,6 +326,21 @@ def validate_policy_run_selection(value: Mapping[str, Any]) -> dict[str, Any]:
             raise TaskEvaluationPolicyRunContractError(
                 "policy_run_selection_canary_notification_invalid"
             )
+        try:
+            success_contract = validate_rigid_task_success_contract(
+                selection["task_success_contract"]
+            )
+        except TaskNeutralScoringError as exc:
+            raise TaskEvaluationPolicyRunContractError(
+                "policy_run_selection_task_success_contract_invalid:" + str(exc)
+            ) from exc
+        if (
+            selection["task_success_contract_digest"]
+            != success_contract["contract_digest"]
+        ):
+            raise TaskEvaluationPolicyRunContractError(
+                "policy_run_selection_task_success_contract_digest_mismatch"
+            )
     elif run_kind != RUN_KIND_QUALIFIED_EVALUATION:
         raise TaskEvaluationPolicyRunContractError("policy_run_selection_run_kind_invalid")
     return selection
@@ -440,6 +464,12 @@ def compile_policy_run_configuration(
                 "policy_candidate_ids": list(selection["policy_candidate_ids"]),
                 "notification": deepcopy(selection["notification"]),
                 "website_request_digest": selection["website_request_digest"],
+                "task_success_contract": deepcopy(
+                    selection["task_success_contract"]
+                ),
+                "task_success_contract_digest": selection[
+                    "task_success_contract_digest"
+                ],
                 "unqualified_warning": "Controls pending — results are unqualified.",
             }
         )
@@ -494,6 +524,14 @@ def validate_policy_run_configuration(
         )
     run_kind = configuration.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION)
     if run_kind == RUN_KIND_INTERNAL_POLICY_CANARY:
+        try:
+            success_contract = validate_rigid_task_success_contract(
+                configuration["task_success_contract"]
+            )
+        except TaskNeutralScoringError as exc:
+            raise TaskEvaluationPolicyRunContractError(
+                "policy_run_configuration_task_success_contract_invalid:" + str(exc)
+            ) from exc
         if (
             configuration.get("claim_ceiling") != CLAIM_CEILING_DIAGNOSTIC_POLICY_EXECUTION
             or configuration.get("scene_controls_status_at_submission")
@@ -504,6 +542,8 @@ def validate_policy_run_configuration(
             != "Controls pending — results are unqualified."
             or configuration["execution_guards"].get("controls_gate_policy_execution") is not False
             or configuration["execution_guards"].get("scene_promotion_forbidden") is not True
+            or configuration.get("task_success_contract_digest")
+            != success_contract["contract_digest"]
         ):
             raise TaskEvaluationPolicyRunContractError(
                 "policy_run_configuration_canary_boundary_invalid"
@@ -534,6 +574,8 @@ def validate_policy_run_configuration(
                         "policy_candidate_ids",
                         "notification",
                         "website_request_digest",
+                        "task_success_contract",
+                        "task_success_contract_digest",
                     )
                 }
             )
@@ -592,6 +634,18 @@ def build_policy_run_plan(value: Mapping[str, Any], *, setup: Mapping[str, Any])
         ],
         "execution_guards": deepcopy(configuration["execution_guards"]),
         "evidence_requirements": deepcopy(configuration["evidence_requirements"]),
+        **(
+            {
+                "task_success_contract": deepcopy(
+                    configuration["task_success_contract"]
+                ),
+                "task_success_contract_digest": configuration[
+                    "task_success_contract_digest"
+                ],
+            }
+            if configuration.get("run_kind") == RUN_KIND_INTERNAL_POLICY_CANARY
+            else {}
+        ),
         "status": (
             "prepared_awaiting_policy_canary_activation"
             if configuration.get("run_kind") == RUN_KIND_INTERNAL_POLICY_CANARY
@@ -685,14 +739,21 @@ def build_policy_campaign_activation_manifest(
     """Materialize N exact two-member campaign units without executing them."""
 
     configuration = validate_policy_run_configuration(configuration)
+    run_kind = configuration.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION)
     if (
         plan.get("schema_version") != PLAN_SCHEMA_VERSION
         or plan.get("configuration_digest") != configuration["configuration_digest"]
         or plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest")
         or plan.get("campaign_units") is None
+        or run_kind == RUN_KIND_INTERNAL_POLICY_CANARY
+        and (
+            plan.get("task_success_contract")
+            != configuration.get("task_success_contract")
+            or plan.get("task_success_contract_digest")
+            != configuration.get("task_success_contract_digest")
+        )
     ):
         raise TaskEvaluationPolicyRunContractError("policy_campaign_activation_plan_invalid")
-    run_kind = configuration.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION)
     if run_kind == RUN_KIND_QUALIFIED_EVALUATION:
         if controls_qualification is None:
             raise TaskEvaluationPolicyRunContractError(
@@ -745,6 +806,18 @@ def build_policy_campaign_activation_manifest(
             qualification["qualification_digest"] if qualification else None
         ),
         "candidate_ids": list(FROZEN_CANDIDATE_IDS),
+        **(
+            {
+                "task_success_contract": deepcopy(
+                    configuration["task_success_contract"]
+                ),
+                "task_success_contract_digest": configuration[
+                    "task_success_contract_digest"
+                ],
+            }
+            if run_kind == RUN_KIND_INTERNAL_POLICY_CANARY
+            else {}
+        ),
         "campaign_unit_count": len(units),
         "campaign_units": units,
         "paired_session_request": {
@@ -752,6 +825,18 @@ def build_policy_campaign_activation_manifest(
             "plan_digest": plan["plan_digest"],
             "matrix_digest": configuration["matrix"]["scenario_set_digest"],
             "candidate_ids": list(FROZEN_CANDIDATE_IDS),
+            **(
+                {
+                    "task_success_contract": deepcopy(
+                        configuration["task_success_contract"]
+                    ),
+                    "task_success_contract_digest": configuration[
+                        "task_success_contract_digest"
+                    ],
+                }
+                if run_kind == RUN_KIND_INTERNAL_POLICY_CANARY
+                else {}
+            ),
             "policy_count": 2,
             "episodes_per_policy": configuration["scenario_count_per_policy"],
             "learned_policy_rollout_count": configuration["counts"]["learned_policy_rollout_count"],

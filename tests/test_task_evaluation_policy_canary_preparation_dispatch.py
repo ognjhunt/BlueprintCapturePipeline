@@ -4,6 +4,7 @@ import copy
 import json
 from pathlib import Path
 
+from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     dispatch_launch_request,
@@ -115,6 +116,8 @@ def _profile_and_request(tmp_path: Path) -> tuple[dict, dict]:
         "configured_offering_configuration_run_id": "configuration-run-839873",
         "scene_revision_digest": public["scene_revision_digest"],
         "public_setup_digest": public["setup_digest"],
+        "task_success_contract": copy.deepcopy(public["task_success_contract"]),
+        "task_success_contract_digest": public["task_success_contract_digest"],
         "configured_preparation_request_digest": "sha256:" + "3" * 64,
         "policy_controller_configuration": policy_registry,
         "model_rights": controller["model_or_asset_rights"],
@@ -154,6 +157,14 @@ def _profile_and_request(tmp_path: Path) -> tuple[dict, dict]:
                 "policy_campaign_queue": True,
             },
         },
+        "lineage_aliases": {
+            "capture_session_id": public["source_launch_id"],
+            "capture_session_id_semantics": (
+                "configured_scene_offering_source_launch_id_no_capture_upload_session"
+            ),
+            "intake_id": "configuration-run-839873",
+            "intake_id_semantics": "configured_scene_offering_configuration_run_id",
+        },
         "provider_mutation_performed": False,
         "paid_execution_requested": False,
         "plan_digest": "",
@@ -168,6 +179,8 @@ def _profile_and_request(tmp_path: Path) -> tuple[dict, dict]:
         "source_commit": COMMIT,
         "internal_policy_canary_setup": public,
         "internal_policy_canary_execution_plan": plan,
+        "task_success_contract": copy.deepcopy(public["task_success_contract"]),
+        "task_success_contract_digest": public["task_success_contract_digest"],
         "materialization_digest": "",
     }
     wrapper["materialization_digest"] = canonical_digest(
@@ -195,6 +208,8 @@ def _profile_and_request(tmp_path: Path) -> tuple[dict, dict]:
         "claim_ceiling": "diagnostic_policy_execution",
         "scene_revision_digest": public["scene_revision_digest"],
         "scene_controls_status_at_submission": "configured_controls_pending",
+        "task_success_contract": copy.deepcopy(public["task_success_contract"]),
+        "task_success_contract_digest": public["task_success_contract_digest"],
         "team_namespace": "blueprint-internal",
         "robot_preset_id": "droid_franka_panda_robotiq_2f85_v1",
         "policy_candidate_ids": ["pi05_droid", "groot_n17_droid"],
@@ -306,6 +321,15 @@ def test_direct_website_canary_launch_diverts_to_preparation_without_allocator(
             "controls_qualification_bypassed"
         ],
         "scene_promotion_permitted": request["scene_promotion_permitted"],
+        "task_success_contract": {
+            "schema_version": request["task_success_contract"]["schema_version"],
+            "contract_digest": request["task_success_contract"][
+                "contract_digest"
+            ],
+        },
+        "task_success_contract_digest": request[
+            "task_success_contract_digest"
+        ],
         "official_ranking_permitted": request["official_ranking_permitted"],
     } == fixture
 
@@ -331,6 +355,15 @@ def test_direct_website_canary_launch_diverts_to_preparation_without_allocator(
     assert preparation["policy_run_configuration"]["counts"][
         "learned_policy_rollout_count"
     ] == 20
+    assert preparation["policy_run_selection"]["task_success_contract"] == request[
+        "task_success_contract"
+    ]
+    assert preparation["policy_run_configuration"]["task_success_contract"] == request[
+        "task_success_contract"
+    ]
+    assert preparation["policy_run_configuration"][
+        "task_success_contract_digest"
+    ] == request["task_success_contract_digest"]
     assert [
         (cell["cell_id"], cell["seed"])
         for cell in preparation["policy_run_configuration"]["matrix"]["cells"]
@@ -351,6 +384,10 @@ def test_direct_website_canary_launch_diverts_to_preparation_without_allocator(
     )
     assert activation["run_kind"] == "internal_policy_canary"
     assert activation["campaign_unit_count"] == 10
+    assert activation["task_success_contract"] == request["task_success_contract"]
+    assert activation["task_success_contract_digest"] == request[
+        "task_success_contract_digest"
+    ]
     assert activation["provider_mutation_performed"] is False
 
 
@@ -382,3 +419,56 @@ def test_visible_cell_tampering_blocks_before_preparation_queue(
     assert receipt["status"] == "blocked"
     assert receipt["allocator_invoked"] is False
     assert not (tmp_path / "preparations/pending").exists()
+
+
+def test_launch_request_refuses_task_success_contract_tamper(tmp_path: Path) -> None:
+    _profile, request = _profile_and_request(tmp_path)
+    request["task_success_contract"]["criteria"]["orientation"]["mode"] = (
+        "required"
+    )
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+
+    assert any(
+        "rigid_task_success_contract_digest_mismatch" in blocker
+        for blocker in validate_launch_request(request)
+    )
+
+
+def test_launch_request_refuses_unconfirmed_agent_success_contract(
+    tmp_path: Path,
+) -> None:
+    _profile, request = _profile_and_request(tmp_path)
+    published = request["task_success_contract"]
+    proposal = seal_rigid_task_success_contract(
+        task_spec={},
+        site_id=published["scope"]["site_id"],
+        task_id=published["scope"]["task_id"],
+        author_source="agent_proposal",
+        author_id="agent:criteria-drafter",
+        confirmation_status="proposal_only",
+        criteria=published["criteria"],
+    )
+    request["task_success_contract"] = proposal
+    request["task_success_contract_digest"] = proposal["contract_digest"]
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+
+    assert any(
+        "rigid_task_success_contract_unconfirmed" in blocker
+        for blocker in validate_launch_request(request)
+    )
+
+
+def test_policy_canary_launch_request_rejects_unknown_fields(tmp_path: Path) -> None:
+    _profile, request = _profile_and_request(tmp_path)
+    request["unreviewed_grading_override"] = True
+    request["request_digest"] = canonical_digest(
+        request, digest_field="request_digest"
+    )
+
+    assert "policy_canary_launch_request_fields_invalid" in (
+        validate_launch_request(request)
+    )

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://tryblueprint.io/schemas/task_evaluation_policy_canary_profile_materialization_input.v1.schema.json",
   "type": "object",
-  "required": ["schema_version", "profile_id", "configured_base_profile_id", "configured_base_profile_digest", "configured_source_launch_id", "source_commit", "internal_policy_canary_setup", "internal_policy_canary_execution_plan", "materialization_digest"],
+  "required": ["schema_version", "profile_id", "configured_base_profile_id", "configured_base_profile_digest", "configured_source_launch_id", "source_commit", "internal_policy_canary_setup", "internal_policy_canary_execution_plan", "task_success_contract", "task_success_contract_digest", "materialization_digest"],
   "additionalProperties": false,
   "properties": {
     "schema_version": {"const": "task_evaluation_policy_canary_profile_materialization_input.v1"},
@@ -13,10 +13,13 @@
     "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "internal_policy_canary_setup": {"type": "object"},
     "internal_policy_canary_execution_plan": {"type": "object"},
+    "task_success_contract": {"$ref": "#/$defs/taskSuccessContract"},
+    "task_success_contract_digest": {"$ref": "#/$defs/digest"},
     "materialization_digest": {"$ref": "#/$defs/digest"}
   },
   "$defs": {
     "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,191}$"},
-    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "taskSuccessContract": {"$ref": "rigid_task_success_contract.v1.schema.json"}
   }
 }

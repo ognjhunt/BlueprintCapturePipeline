@@ -17,9 +17,15 @@ try:  # flat provider-bundle layout
 except ModuleNotFoundError:  # repository package
     from .adp009d_task_scoring import TaskScoringError, score_task_episode
 try:  # flat provider-bundle layout
-    from decision_evidence_contracts import canonical_digest
+    from decision_evidence_contracts import (
+        canonical_digest,
+        cross_runtime_canonical_digest,
+    )
 except ModuleNotFoundError:  # repository package
-    from .decision_evidence_contracts import canonical_digest
+    from .decision_evidence_contracts import (
+        canonical_digest,
+        cross_runtime_canonical_digest,
+    )
 try:  # flat provider-bundle layout
     from articulation_graph_contract import (
         ArticulationGraphContractError,
@@ -570,7 +576,7 @@ def validate_rigid_task_success_contract(
         ):
             errors.append(f"rigid_task_success_contract_{field}_invalid")
 
-    if contract.get("contract_digest") != canonical_digest(
+    if contract.get("contract_digest") != cross_runtime_canonical_digest(
         contract, digest_field="contract_digest"
     ):
         errors.append("rigid_task_success_contract_digest_mismatch")
@@ -618,7 +624,7 @@ def seal_rigid_task_success_contract(
         ),
         "contract_digest": "",
     }
-    document["contract_digest"] = canonical_digest(
+    document["contract_digest"] = cross_runtime_canonical_digest(
         document, digest_field="contract_digest"
     )
     return validate_rigid_task_success_contract(
@@ -646,10 +652,38 @@ def confirm_rigid_task_success_contract(
     confirmed["provenance"]["confirmed_by_team_id"] = str(confirmed_by_team_id)
     if confirmed["provenance"]["author_source"] == "agent_proposal":
         confirmed["provenance"]["proposal_digest"] = validated["contract_digest"]
-    confirmed["contract_digest"] = canonical_digest(
+    confirmed["contract_digest"] = cross_runtime_canonical_digest(
         confirmed, digest_field="contract_digest"
     )
     return validate_rigid_task_success_contract(confirmed)
+
+
+def confirmed_rigid_task_success_contract_matches_published(
+    *, published: Mapping[str, Any], selected: Mapping[str, Any]
+) -> bool:
+    """Match an exact published contract or its one team-confirmed successor."""
+
+    try:
+        public_contract = validate_rigid_task_success_contract(
+            published, require_confirmed=False
+        )
+        confirmed_contract = validate_rigid_task_success_contract(selected)
+    except TaskNeutralScoringError:
+        return False
+    if public_contract["scope"] != confirmed_contract["scope"]:
+        return False
+    if public_contract["provenance"]["confirmation_status"] == "confirmed":
+        return public_contract["contract_digest"] == confirmed_contract["contract_digest"]
+    team_id = confirmed_contract["provenance"]["confirmed_by_team_id"]
+    if not isinstance(team_id, str) or not team_id:
+        return False
+    try:
+        expected = confirm_rigid_task_success_contract(
+            public_contract, confirmed_by_team_id=team_id
+        )
+    except TaskNeutralScoringError:
+        return False
+    return expected["contract_digest"] == confirmed_contract["contract_digest"]
 
 
 def _default_rigid_task_success_contract(
@@ -1308,6 +1342,12 @@ def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         "release_required": True,
         **numbers,
     }
+    control_frequency_hz = _finite(spec.get("control_frequency_hz"))
+    normalized["control_frequency_hz"] = (
+        control_frequency_hz
+        if control_frequency_hz is not None and control_frequency_hz > 0.0
+        else None
+    )
     raw_success_contract = spec.get("task_success_contract")
     if raw_success_contract is None:
         normalized["task_success_contract"] = _default_rigid_task_success_contract(
@@ -1405,6 +1445,30 @@ def score_rigid_task_episode(
                 ),
                 "locked_joint_containment_violation": sample.get(
                     "locked_joint_containment_violation"
+                ),
+                "robot_task_forbidden_collision_peak_force_n": _finite(
+                    sample.get("robot_task_forbidden_collision_peak_force_n")
+                    if sample.get("robot_task_forbidden_collision_peak_force_n")
+                    is not None
+                    else native_readback.get(
+                        "robot_task_forbidden_collision_peak_force_n"
+                    )
+                ),
+                "robot_scene_contact_peak_force_n": _finite(
+                    sample.get("robot_scene_contact_peak_force_n")
+                    if sample.get("robot_scene_contact_peak_force_n") is not None
+                    else native_readback.get("robot_scene_contact_peak_force_n")
+                ),
+                "task_scene_collision_peak_force_n": _finite(
+                    sample.get("task_scene_collision_peak_force_n")
+                    if sample.get("task_scene_collision_peak_force_n") is not None
+                    else native_readback.get("task_scene_collision_peak_force_n")
+                ),
+                "collision_failure_minimum_force_n": _finite(
+                    sample.get("collision_failure_minimum_force_n")
+                ),
+                "robot_task_forbidden_contact_pairs": sample.get(
+                    "robot_task_forbidden_contact_pairs"
                 ),
                 "workspace_excursion": sample.get("workspace_excursion"),
                 "task_contact_force_n": task_contact_force_n,
@@ -1513,6 +1577,57 @@ def score_rigid_task_episode(
     safety_ok = safety_complete and not any(
         row[field] for row in normalized for field in safety_fields
     )
+    safety_events: list[dict[str, Any]] = []
+    for row in normalized:
+        event_type = None
+        measured_force_n = None
+        if row["forbidden_robot_task_collision_failure"] is True:
+            event_type = "forbidden_robot_object_contact_force_exceeded"
+            measured_force_n = row[
+                "robot_task_forbidden_collision_peak_force_n"
+            ]
+        elif row["robot_collision_failure"] is True:
+            event_type = "robot_scene_contact_force_exceeded"
+            measured_force_n = row["robot_scene_contact_peak_force_n"]
+        elif row["scene_collision_failure"] is True:
+            event_type = "task_scene_contact_force_exceeded"
+            measured_force_n = row["task_scene_collision_peak_force_n"]
+        elif row["containment_violation"] is True:
+            event_type = "workspace_containment_excursion"
+        elif row["locked_joint_containment_violation"] is True:
+            event_type = "locked_joint_containment_excursion"
+        if event_type is None:
+            continue
+        raw_pairs = row["robot_task_forbidden_contact_pairs"]
+        contact_pair_identities = (
+            [
+                json.loads(json.dumps(item, allow_nan=False))
+                for item in raw_pairs
+                if isinstance(item, (str, Mapping))
+            ]
+            if event_type == "forbidden_robot_object_contact_force_exceeded"
+            and isinstance(raw_pairs, Sequence)
+            and not isinstance(raw_pairs, (str, bytes))
+            else []
+        )
+        event = {
+            "event_type": event_type,
+            "step_index": row["step_index"],
+            "simulation_time_seconds": (
+                row["step_index"] / spec["control_frequency_hz"]
+                if spec["control_frequency_hz"] is not None
+                else None
+            ),
+            "measured_force_n": measured_force_n,
+            "threshold_n": row["collision_failure_minimum_force_n"],
+            "contact_pair_identities": contact_pair_identities,
+            "contact_pair_identity_status": (
+                "observed"
+                if contact_pair_identities
+                else "contact_pair_identity_missing"
+            ),
+        }
+        safety_events.append(event)
     temporal_criteria = criteria["temporal_invariants"]
     no_drop_required = temporal_criteria["no_drop"]["mode"] == "required"
     contact_trace_complete = all(
@@ -1873,6 +1988,24 @@ def score_rigid_task_episode(
         "maximum_retries": "The episode exceeded the authored retry limit.",
         "maximum_regrasps": "The episode exceeded the authored regrasp limit.",
     }
+    specific_failure_reason = None
+    if safety_events:
+        first_safety_event = safety_events[0]
+        if (
+            first_safety_event["event_type"]
+            == "forbidden_robot_object_contact_force_exceeded"
+        ):
+            force = first_safety_event["measured_force_n"]
+            threshold = first_safety_event["threshold_n"]
+            force_text = f"{force:g} N" if force is not None else "an unknown force"
+            threshold_text = (
+                f"{threshold:g} N" if threshold is not None else "the safety threshold"
+            )
+            specific_failure_reason = (
+                "Forbidden robot-object contact reached "
+                f"{force_text}, exceeding {threshold_text} at step "
+                f"{first_safety_event['step_index']}."
+            )
     report: dict[str, Any] = {
         "schema_version": RIGID_REPORT_SCHEMA_VERSION,
         "status": status,
@@ -1888,12 +2021,15 @@ def score_rigid_task_episode(
         "failure_reason_plain_english": (
             None
             if succeeded
+            else specific_failure_reason
+            if specific_failure_reason is not None
             else plain_reasons[failed_criteria[0]]
             if failed_criteria
             else "Required deterministic readback was unavailable."
         ),
         "event_ledger": {
             "schema_version": "rigid_task_event_ledger.v1",
+            "safety_events": safety_events,
             "drop_events": drop_events,
             "peak_task_contact_force_n": peak_task_contact_force_n,
             "task_contact_force_sources": task_contact_force_sources,
@@ -1984,6 +2120,7 @@ __all__ = [
     "TASK_SPEC_GRAPH_SCHEMA_VERSION",
     "TaskNeutralScoringError",
     "confirm_rigid_task_success_contract",
+    "confirmed_rigid_task_success_contract_matches_published",
     "score_articulated_task_episode",
     "score_rigid_task_episode",
     "score_task_episode_from_spec",

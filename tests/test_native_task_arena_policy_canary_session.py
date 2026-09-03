@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     CANDIDATE_IDS,
@@ -16,6 +17,7 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
     validate_runtime_input_manifest,
     validate_session_result,
 )
+from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
 
 
 def _record(path: Path) -> dict[str, object]:
@@ -29,6 +31,7 @@ def _record(path: Path) -> dict[str, object]:
 
 
 def _activation() -> dict[str, object]:
+    setup = public_setup()
     units = []
     for index in range(10):
         units.append(
@@ -45,6 +48,8 @@ def _activation() -> dict[str, object]:
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "candidate_ids": list(CANDIDATE_IDS),
+        "task_success_contract": setup["task_success_contract"],
+        "task_success_contract_digest": setup["task_success_contract_digest"],
         "campaign_unit_count": 10,
         "campaign_units": units,
         "activation_digest": "",
@@ -84,6 +89,10 @@ def _runtime_inputs(tmp_path: Path, activation: dict[str, object]) -> dict[str, 
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "candidate_ids": list(CANDIDATE_IDS),
+        "task_success_contract": activation["task_success_contract"],
+        "task_success_contract_digest": activation[
+            "task_success_contract_digest"
+        ],
         "activation_digest": activation["activation_digest"],
         "configuration_digest": "sha256:" + "1" * 64,
         "plan_digest": "sha256:" + "2" * 64,
@@ -147,6 +156,63 @@ def test_session_rejects_missing_resolved_scenario(tmp_path: Path) -> None:
     )
 
     with pytest.raises(PolicyCanarySessionError, match="runtime_input_cell_invalid"):
+        validate_runtime_input_manifest(inputs)
+
+
+def test_runtime_inputs_reject_task_success_contract_tamper(tmp_path: Path) -> None:
+    _authority_value, inputs = _authority(tmp_path)
+    inputs["task_success_contract"]["criteria"]["orientation"]["mode"] = (
+        "required"
+    )
+    inputs["runtime_inputs_digest"] = canonical_digest(
+        inputs, digest_field="runtime_inputs_digest"
+    )
+
+    with pytest.raises(
+        PolicyCanarySessionError,
+        match="rigid_task_success_contract_digest_mismatch",
+    ):
+        validate_runtime_input_manifest(inputs)
+
+
+def test_runtime_inputs_reject_unconfirmed_agent_contract(tmp_path: Path) -> None:
+    activation = _activation()
+    inputs = _runtime_inputs(tmp_path, activation)
+    published = inputs["task_success_contract"]
+    proposal = seal_rigid_task_success_contract(
+        task_spec={},
+        site_id=published["scope"]["site_id"],
+        task_id=published["scope"]["task_id"],
+        author_source="agent_proposal",
+        author_id="agent:criteria-drafter",
+        confirmation_status="proposal_only",
+        criteria=published["criteria"],
+    )
+    inputs["task_success_contract"] = proposal
+    inputs["task_success_contract_digest"] = proposal["contract_digest"]
+    inputs["runtime_inputs_digest"] = canonical_digest(
+        inputs, digest_field="runtime_inputs_digest"
+    )
+
+    with pytest.raises(
+        PolicyCanarySessionError,
+        match="rigid_task_success_contract_unconfirmed",
+    ):
+        validate_runtime_input_manifest(inputs)
+
+
+def test_runtime_inputs_reject_unknown_fields(tmp_path: Path) -> None:
+    activation = _activation()
+    inputs = _runtime_inputs(tmp_path, activation)
+    inputs["unreviewed_grading_override"] = True
+    inputs["runtime_inputs_digest"] = canonical_digest(
+        inputs, digest_field="runtime_inputs_digest"
+    )
+
+    with pytest.raises(
+        PolicyCanarySessionError,
+        match="policy_canary_runtime_input_identity_invalid",
+    ):
         validate_runtime_input_manifest(inputs)
 
 
