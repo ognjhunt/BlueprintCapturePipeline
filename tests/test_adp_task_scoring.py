@@ -400,6 +400,14 @@ def test_rigid_destination_is_scored_in_its_live_frame_and_must_stay_stable() ->
             "minimum": [0.04, -0.01, -0.01],
             "maximum": [0.06, 0.01, 0.01],
         },
+        subject_collision_bounds_scoring_frame_m={
+            "minimum": [-0.02, -0.005, -0.005],
+            "maximum": [0.02, 0.005, 0.005],
+        },
+        destination_interior_bounds_body_frame_m={
+            "minimum": [0.02, -0.03, -0.02],
+            "maximum": [0.08, 0.03, 0.02],
+        },
         destination_reset_translation_tolerance_m=0.002,
         destination_reset_rotation_tolerance_rad=0.01,
     )
@@ -444,6 +452,14 @@ def test_rigid_destination_pose_readback_is_required() -> None:
         destination_position_bounds_destination_frame_m={
             "minimum": [-0.01, -0.01, -0.01],
             "maximum": [0.01, 0.01, 0.01],
+        },
+        subject_collision_bounds_scoring_frame_m={
+            "minimum": [-0.005, -0.005, -0.005],
+            "maximum": [0.005, 0.005, 0.005],
+        },
+        destination_interior_bounds_body_frame_m={
+            "minimum": [-0.02, -0.02, -0.02],
+            "maximum": [0.02, 0.02, 0.02],
         },
         destination_reset_translation_tolerance_m=0.002,
         destination_reset_rotation_tolerance_rad=0.01,

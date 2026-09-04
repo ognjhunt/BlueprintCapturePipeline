@@ -7,6 +7,8 @@
   "required": [
     "schema_version",
     "status",
+    "producer",
+    "native_observation_digest",
     "destination_identity",
     "configured_scene_revision_digest",
     "configured_scene_collision_digest",
@@ -25,6 +27,8 @@
   "properties": {
     "schema_version": {"const": "task_evaluation_rigid_destination_placement_qualification.v1"},
     "status": {"const": "qualified"},
+    "producer": {"const": "task_evaluation_rigid_destination_placement_qualification"},
+    "native_observation_digest": {"$ref": "#/$defs/digest"},
     "destination_identity": {"$ref": "#/$defs/versionedIdentity"},
     "configured_scene_revision_digest": {"$ref": "#/$defs/digest"},
     "configured_scene_collision_digest": {"$ref": "#/$defs/digest"},

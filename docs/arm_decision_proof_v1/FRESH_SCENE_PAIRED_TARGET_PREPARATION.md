@@ -185,6 +185,17 @@ destination dynamically, for example `Pick up and place the open book into the
 blue document tray.` Planar-push launches retain their existing target-region
 contract and must not include `task.destination`.
 
+The native probe emits
+`task_evaluation_rigid_destination_native_observation.v1`; it does not emit the
+qualification decision itself. Materialize the decision on the control plane
+with `python -m
+blueprint_pipeline.task_evaluation_rigid_destination_placement_qualification`,
+passing the exact observation, configured collision, destination asset,
+static/native qualification, and destination geometry files. The materializer
+recomputes digests, pose errors, penetration, support stability, per-camera
+pixel gates, and repeated-reset tolerances. A caller-authored summary boolean is
+not accepted as placement evidence.
+
 Before a destination is used in a paid episode, retain its authoring source and
 parameters, renderer/kernel/export versions, USD bytes and digest, license and
 provider-disclosure authority, static validators, Isaac import/readback, exact

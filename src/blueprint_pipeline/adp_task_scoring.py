@@ -1251,11 +1251,11 @@ def _quaternion_angle(a: Sequence[float], b: Sequence[float]) -> float:
     return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
 
 
-def _rotate_inverse_xyzw(
+def _rotate_xyzw(
     vector: Sequence[float], quaternion: Sequence[float]
 ) -> list[float]:
     x, y, z, w = quaternion
-    qx, qy, qz, qw = (-x, -y, -z, w)
+    qx, qy, qz, qw = (x, y, z, w)
     vx, vy, vz = vector
     tx = 2.0 * (qy * vz - qz * vy)
     ty = 2.0 * (qz * vx - qx * vz)
@@ -1265,6 +1265,15 @@ def _rotate_inverse_xyzw(
         vy + qw * ty + (qz * tx - qx * tz),
         vz + qw * tz + (qx * ty - qy * tx),
     ]
+
+
+def _rotate_inverse_xyzw(
+    vector: Sequence[float], quaternion: Sequence[float]
+) -> list[float]:
+    return _rotate_xyzw(
+        vector,
+        (-quaternion[0], -quaternion[1], -quaternion[2], quaternion[3]),
+    )
 
 
 def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -1386,6 +1395,34 @@ def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
             3,
             error="rigid_task_destination_local_bounds_invalid",
         )
+        subject_bounds = spec.get("subject_collision_bounds_scoring_frame_m")
+        interior_bounds = spec.get("destination_interior_bounds_body_frame_m")
+        if not isinstance(subject_bounds, Mapping) or not isinstance(
+            interior_bounds, Mapping
+        ):
+            raise TaskNeutralScoringError(
+                ["rigid_task_destination_collision_geometry_invalid"]
+            )
+        subject_lower = _vector(
+            subject_bounds.get("minimum"),
+            3,
+            error="rigid_task_destination_collision_geometry_invalid",
+        )
+        subject_upper = _vector(
+            subject_bounds.get("maximum"),
+            3,
+            error="rigid_task_destination_collision_geometry_invalid",
+        )
+        interior_lower = _vector(
+            interior_bounds.get("minimum"),
+            3,
+            error="rigid_task_destination_collision_geometry_invalid",
+        )
+        interior_upper = _vector(
+            interior_bounds.get("maximum"),
+            3,
+            error="rigid_task_destination_collision_geometry_invalid",
+        )
         translation_tolerance = _finite(
             spec.get("destination_reset_translation_tolerance_m")
         )
@@ -1398,6 +1435,14 @@ def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
             or any(
                 low >= high
                 for low, high in zip(local_lower, local_upper, strict=True)
+            )
+            or any(
+                low >= high
+                for low, high in zip(subject_lower, subject_upper, strict=True)
+            )
+            or any(
+                low >= high
+                for low, high in zip(interior_lower, interior_upper, strict=True)
             )
             or translation_tolerance is None
             or translation_tolerance <= 0.0
@@ -1413,6 +1458,14 @@ def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
             destination_position_bounds_destination_frame_m={
                 "minimum": local_lower,
                 "maximum": local_upper,
+            },
+            subject_collision_bounds_scoring_frame_m={
+                "minimum": subject_lower,
+                "maximum": subject_upper,
+            },
+            destination_interior_bounds_body_frame_m={
+                "minimum": interior_lower,
+                "maximum": interior_upper,
             },
             destination_reset_translation_tolerance_m=translation_tolerance,
             destination_reset_rotation_tolerance_rad=rotation_tolerance,
@@ -1614,32 +1667,47 @@ def score_rigid_task_episode(
             <= spec["destination_reset_rotation_tolerance_rad"]
             for row in normalized
         )
-        local_bounds = spec["destination_position_bounds_destination_frame_m"]
-        lower = local_bounds["minimum"]
-        upper = local_bounds["maximum"]
+        subject_bounds = spec["subject_collision_bounds_scoring_frame_m"]
+        subject_lower = subject_bounds["minimum"]
+        subject_upper = subject_bounds["maximum"]
+        interior_bounds = spec["destination_interior_bounds_body_frame_m"]
+        lower = interior_bounds["minimum"]
+        upper = interior_bounds["maximum"]
 
-        def destination_local_position(row: Mapping[str, Any]) -> list[float]:
+        def subject_inside_destination(row: Mapping[str, Any]) -> bool:
             destination_pose = row["destination_pose"]
-            offset = [
-                row["pose"][axis] - destination_pose[axis] for axis in range(3)
+            subject_corners_world = [
+                [
+                    row["pose"][axis] + rotated[axis]
+                    for axis in range(3)
+                ]
+                for rotated in (
+                    _rotate_xyzw([x, y, z], row["pose"][3:])
+                    for x in (subject_lower[0], subject_upper[0])
+                    for y in (subject_lower[1], subject_upper[1])
+                    for z in (subject_lower[2], subject_upper[2])
+                )
             ]
-            return _rotate_inverse_xyzw(offset, destination_pose[3:])
+            corners_destination = [
+                _rotate_inverse_xyzw(
+                    [
+                        point[axis] - destination_pose[axis]
+                        for axis in range(3)
+                    ],
+                    destination_pose[3:],
+                )
+                for point in subject_corners_world
+            ]
+            return all(
+                low <= value <= high
+                for point in corners_destination
+                for low, value, high in zip(lower, point, upper, strict=True)
+            )
 
         destination_inside = (
             settle_available
             and destination_pose_stable
-            and all(
-                all(
-                    low <= value <= high
-                    for low, value, high in zip(
-                        lower,
-                        destination_local_position(row),
-                        upper,
-                        strict=True,
-                    )
-                )
-                for row in settle
-            )
+            and all(subject_inside_destination(row) for row in settle)
         )
     else:
         lower = destination_criteria["position_bounds_world_m"]["minimum"]
@@ -1653,6 +1721,14 @@ def score_rigid_task_episode(
             )
             for row in settle
         )
+
+        def subject_inside_destination(row: Mapping[str, Any]) -> bool:
+            return all(
+                low <= value <= high
+                for low, value, high in zip(
+                    lower, row["pose"][:3], upper, strict=True
+                )
+            )
     orientation_criteria = criteria["orientation"]
     orientation_errors = [
         _quaternion_angle(row["pose"][3:], orientation_criteria["reference_xyzw"])
@@ -1801,21 +1877,10 @@ def score_rigid_task_episode(
             support_recontact_step = None
             if support_recontact is not None:
                 support_recontact_step = support_recontact["step_index"]
-                recontact_position = (
-                    destination_local_position(support_recontact)
-                    if spec.get("destination_relation") is not None
-                    and support_recontact["destination_pose"] is not None
-                    else support_recontact["pose"][:3]
-                )
-                destination_inside_at_recontact = all(
-                    low <= value <= high
-                    for low, value, high in zip(
-                        lower,
-                        recontact_position,
-                        upper,
-                        strict=True,
-                    )
-                )
+                destination_inside_at_recontact = (
+                    support_recontact["destination_pose"] is not None
+                    or spec.get("destination_relation") is None
+                ) and subject_inside_destination(support_recontact)
             drop_events.append(
                 {
                     "contact_lost_step": candidate["contact_lost_step"],

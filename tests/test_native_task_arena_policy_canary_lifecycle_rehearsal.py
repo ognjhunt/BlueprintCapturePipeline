@@ -29,7 +29,11 @@ from blueprint_pipeline.adp009d_groot_worker_identity import (
     expected_checkpoint_content_binding,
 )
 from blueprint_pipeline.adp009d_policy_episode import run_policy_episode
-from blueprint_pipeline.adp009d_task_scoring import SUPPORT_PLANE_Z_M
+from blueprint_pipeline.adp009d_task_scoring import (
+    CAN_START_POSITION_M,
+    SUPPORT_PLANE_Z_M,
+)
+from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.groot_n17_droid_policy_runtime import (
     CHECKPOINT_REVISION,
@@ -68,6 +72,18 @@ from tests.test_task_evaluation_policy_canary_setup import _setup as public_setu
 class _ParityLifecycleEnvironment(_LifecycleEnvironment):
     """Expose a measurable approach baseline for the embodiment parity gate."""
 
+    def __init__(self, *, start_position: list[float] | None = None) -> None:
+        super().__init__()
+        self._rehearsal_start = list(start_position or CAN_START_POSITION_M)
+
+    def _position(self):
+        progress = min(1.0, self._t / self.steps_to_destination)
+        return [
+            self._rehearsal_start[axis]
+            + progress * (_DESTINATION[axis] - self._rehearsal_start[axis])
+            for axis in range(3)
+        ]
+
     def read_object_sample(self):
         sample = super().read_object_sample()
         if self._t == 0:
@@ -83,18 +99,36 @@ class _ParityLifecycleEnvironment(_LifecycleEnvironment):
 class _RigidSafetyReadbackEnvironment:
     """Hermetic counterpart of the native rigid scoring readback join."""
 
-    def __init__(self, environment):
+    def __init__(self, environment, *, destination_relative: bool = False):
         self.environment = environment
+        self.destination_relative = destination_relative
 
     def __getattr__(self, name: str):
         return getattr(self.environment, name)
 
     def read_object_sample(self):
         sample = dict(self.environment.read_object_sample())
+        task_fields = {
+            "task_contact_active": False,
+            "support_contact_active": True,
+        }
+        if self.destination_relative:
+            carrying = sample.get("gripper_width_m", 0.0) < 0.07
+            task_fields.update(
+                task_object_pose_world=list(sample["can_pose_world"]),
+                destination_pose_world=[
+                    *_DESTINATION,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ],
+                task_contact_active=carrying,
+                support_contact_active=not carrying,
+            )
         sample.update(
             {
-                "task_contact_active": False,
-                "support_contact_active": True,
+                **task_fields,
                 "robot_collision_failure": False,
                 "scene_collision_failure": False,
                 "containment_violation": False,
@@ -292,6 +326,71 @@ def _scene_plan() -> dict[str, Any]:
     return value
 
 
+def _destination_scene_plan() -> dict[str, Any]:
+    value = _scene_plan()
+    pose = value["objects"][0]["pose_world"]
+    value["task_spec"] = {
+        "schema_version": "adp_task_spec.v2",
+        "task_kind": "rigid_pick_place",
+        "manipulation_strategy": "pick_and_place",
+        "subject_asset_id": "task_object",
+        "start_pose_world": [
+            *pose["position_world_m"],
+            *pose["orientation_xyzw"],
+        ],
+        "destination_position_world_m": list(_DESTINATION),
+        "destination_position_bounds_world_m": {
+            "minimum": [
+                _DESTINATION[0] - 0.1,
+                _DESTINATION[1] - 0.1,
+                SUPPORT_PLANE_Z_M - 0.02,
+            ],
+            "maximum": [
+                _DESTINATION[0] + 0.1,
+                _DESTINATION[1] + 0.1,
+                SUPPORT_PLANE_Z_M + 0.02,
+            ],
+        },
+        "destination_relation": "inside",
+        "destination_pose_world": [*_DESTINATION, 0.0, 0.0, 0.0, 1.0],
+        "destination_position_bounds_destination_frame_m": {
+            "minimum": [-0.1, -0.1, -0.02],
+            "maximum": [0.1, 0.1, 0.02],
+        },
+        "subject_collision_bounds_scoring_frame_m": {
+            "minimum": [-0.03, -0.03, -0.03],
+            "maximum": [0.03, 0.03, 0.03],
+        },
+        "destination_interior_bounds_body_frame_m": {
+            "minimum": [-0.13, -0.13, -0.05],
+            "maximum": [0.13, 0.13, 0.05],
+        },
+        "destination_reset_translation_tolerance_m": 0.002,
+        "destination_reset_rotation_tolerance_rad": 0.01,
+        "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "destination_orientation_tolerance_rad": 0.1,
+        "support_height_interval_m": [
+            SUPPORT_PLANE_Z_M - 0.02,
+            SUPPORT_PLANE_Z_M + 0.02,
+        ],
+        "minimum_translation_m": 0.01,
+        "minimum_lift_m": 0.0,
+        "movement_epsilon_m": 0.001,
+        "reset_translation_tolerance_m": 0.002,
+        "reset_orientation_tolerance_rad": 0.01,
+        "settle_window_samples": 1,
+        "settle_position_tolerance_m": 0.005,
+        "settle_orientation_tolerance_rad": 0.03,
+        "release_required": True,
+        "release_gripper_width_min_m": 0.07,
+        "task_contact_minimum_force_n": 0.5,
+        "control_frequency_hz": 20.0,
+        "maximum_action_steps": 240,
+    }
+    value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
+    return value
+
+
 def _observation_integrity_authority(*, plan: dict[str, Any] | None = None) -> dict[str, Any]:
     """Approved same-pose parity + human review bound to the rehearsal backend."""
 
@@ -318,8 +417,16 @@ def _observation_integrity_authority(*, plan: dict[str, Any] | None = None) -> d
     )
 
 
-def _execution_spec(candidate: str, *, port: int) -> dict[str, Any]:
+def _execution_spec(
+    candidate: str,
+    *,
+    port: int,
+    task_success_contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     setup = public_setup()
+    success_contract = dict(
+        task_success_contract or setup["task_success_contract"]
+    )
     value: dict[str, Any] = {
         "schema_version": "native_task_arena_policy_canary_execution_spec.v1",
         "candidate_id": candidate,
@@ -347,8 +454,8 @@ def _execution_spec(candidate: str, *, port: int) -> dict[str, Any]:
             else "groot_droid_runtime_measurement"
         ),
         "require_observed_eef_support": candidate == "groot_n17_droid",
-        "task_success_contract": setup["task_success_contract"],
-        "task_success_contract_digest": setup["task_success_contract_digest"],
+        "task_success_contract": success_contract,
+        "task_success_contract_digest": success_contract["contract_digest"],
         "prompt": "push the mug across the table",
         "max_policy_queries": 1,
         "open_loop_horizon": 8,
@@ -375,7 +482,9 @@ def _groot_identity_receipt() -> dict[str, Any]:
     }
 
 
-def _stage_runtime_root(tmp_path: Path) -> tuple[Path, Path]:
+def _stage_runtime_root(
+    tmp_path: Path, *, scene_plan: dict[str, Any] | None = None
+) -> tuple[Path, Path]:
     """Lay out the provider bundle exactly as the worker reads it on a GPU host."""
 
     runtime = tmp_path / "provider_runtime"
@@ -385,12 +494,33 @@ def _stage_runtime_root(tmp_path: Path) -> tuple[Path, Path]:
         runtime / "native_task_packet" / "native_task_arena_packet_receipt.v1.json",
         {"schema_version": "native_task_arena_packet_receipt.v1"},
     )
-    _write(runtime / "native_task_packet" / "native_task_arena_scene_plan.v1.json", _scene_plan())
+    plan = scene_plan or _scene_plan()
+    _write(
+        runtime / "native_task_packet" / "native_task_arena_scene_plan.v1.json",
+        plan,
+    )
     runtime_source = _write(
         runtime / "native_task_runtime_sources" / "native_task_runtime_source_packet.v1.json",
         {"schema_version": "native_task_runtime_source_packet.v1"},
     )
     activation = _activation()
+    task_success_contract = activation["task_success_contract"]
+    if plan["task_spec"].get("schema_version") == "adp_task_spec.v2":
+        task_success_contract = seal_rigid_task_success_contract(
+            task_spec=plan["task_spec"],
+            site_id="interiorgs-839873",
+            task_id="book-into-tray-rehearsal",
+            author_source="compatibility_default",
+            author_id="blueprint:manipulation_strategy_defaults.v1",
+            confirmation_status="confirmed",
+        )
+        activation["task_success_contract"] = task_success_contract
+        activation["task_success_contract_digest"] = task_success_contract[
+            "contract_digest"
+        ]
+        activation["activation_digest"] = canonical_digest(
+            activation, digest_field="activation_digest"
+        )
     activation_path = _write(
         runtime / "runtime_inputs" / "task_evaluation_policy_campaign_activation.v1.json",
         activation,
@@ -475,7 +605,7 @@ def _stage_runtime_root(tmp_path: Path) -> tuple[Path, Path]:
     _write(runtime / "runtime_inputs" / "policy_canary_session_authority.json", authority)
     _write(
         runtime / "runtime_inputs" / worker.OBSERVATION_INTEGRITY_AUTHORITY_FILENAME,
-        _observation_integrity_authority(),
+        _observation_integrity_authority(plan=plan),
     )
     manifest: dict[str, Any] = {
         "schema_version": "native_task_arena_policy_canary_provider_bundle.v1",
@@ -491,11 +621,19 @@ def _stage_runtime_root(tmp_path: Path) -> tuple[Path, Path]:
     _write(runtime / "adp_arena_provider_manifest.json", manifest)
     _write(
         runtime / "runtime_inputs" / "policy_execution_spec.pi05_droid.json",
-        _execution_spec("pi05_droid", port=8000),
+        _execution_spec(
+            "pi05_droid",
+            port=8000,
+            task_success_contract=task_success_contract,
+        ),
     )
     _write(
         runtime / "runtime_inputs" / "policy_execution_spec.groot_n17_droid.json",
-        _execution_spec("groot_n17_droid", port=5555),
+        _execution_spec(
+            "groot_n17_droid",
+            port=5555,
+            task_success_contract=task_success_contract,
+        ),
     )
     _write(provider_output / GROOT_RUNTIME_IDENTITY_FILENAME, _groot_identity_receipt())
     return runtime, provider_output
@@ -556,7 +694,7 @@ class FakeIsaac:
                 for row in scene_plan["objects"]
             )
         )
-        return SimpleNamespace(env=_FakeEnvironment(self))
+        return SimpleNamespace(env=_FakeEnvironment(self), plan=scene_plan)
 
 
 class _FakeSimulationApp:
@@ -731,7 +869,14 @@ def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
         ),
         make_task_readback=lambda built, *, grasp_frame_pose_callback: None,
         build_episode_environment=lambda *, built, gripper_convention, servo, task_readback, to_tensor: (
-            _ParityLifecycleEnvironment(),
+            _ParityLifecycleEnvironment(
+                start_position=(
+                    list(built.plan["task_spec"]["start_pose_world"][:3])
+                    if built.plan["task_spec"].get("schema_version")
+                    == "adp_task_spec.v2"
+                    else None
+                )
+            ),
             {"schema_version": "rehearsal_episode_environment.v1", "seed": built.env.reset_seeds[-1]},
         ),
         to_tensor=_to_tensor,
@@ -742,7 +887,12 @@ def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
         make_rigid_task_readback=lambda built: object(),
         wrap_rigid_scoring_environment=(
             lambda *, environment, task_readback, task_spec: (
-                _RigidSafetyReadbackEnvironment(environment)
+                _RigidSafetyReadbackEnvironment(
+                    environment,
+                    destination_relative=(
+                        task_spec.get("destination_relation") is not None
+                    ),
+                )
             )
         ),
     )
@@ -1060,7 +1210,9 @@ def test_selected_cell_retains_real_policy_action_rejected_by_joint_limits(
 def test_quick10_rehearsal_runs_twenty_real_client_rollouts_in_ten_isolated_processes(
     tmp_path: Path,
 ) -> None:
-    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    runtime_root, provider_output = _stage_runtime_root(
+        tmp_path, scene_plan=_destination_scene_plan()
+    )
     isaacs: list[FakeIsaac] = []
 
     exit_code = worker._run_isolated_cell_processes(
@@ -1076,6 +1228,19 @@ def test_quick10_rehearsal_runs_twenty_real_client_rollouts_in_ten_isolated_proc
     assert result["construction_lineage_mode"] == "compiled_configured_scene_diagnostic"
     assert len(result["episodes"]) == 20
     assert all(row["status"] == "completed" for row in result["episodes"])
+    assert all(
+        row["episode"]["score"]["schema_version"]
+        == "adp_rigid_task_scoring.v2"
+        and row["episode"]["score"]["measurements"][
+            "destination_pose_readback_complete"
+        ]
+        is True
+        and row["episode"]["score"]["measurements"][
+            "destination_pose_stable"
+        ]
+        is True
+        for row in result["episodes"]
+    )
     assert all(row["candidate_policy_queried"] is True for row in result["episodes"])
     assert result["candidate_policy_queried"] is True
     # Learned interpretation is attached only by the control-plane closeout,

@@ -642,6 +642,8 @@ def _stage_destination_asset(
             )
         )
         or placement.get("status") != "qualified"
+        or placement.get("producer")
+        != "task_evaluation_rigid_destination_placement_qualification"
         or placement.get("destination_identity") != identity
         or placement.get("configured_scene_revision_digest")
         != task.get("configured_scene_revision_digest")
@@ -712,6 +714,14 @@ def _stage_destination_asset(
         "destination_position_bounds_destination_frame_m": {
             "minimum": lower,
             "maximum": upper,
+        },
+        "subject_collision_bounds_scoring_frame_m": {
+            "minimum": computed_subject_lower,
+            "maximum": computed_subject_upper,
+        },
+        "destination_interior_bounds_body_frame_m": {
+            "minimum": interior_lower,
+            "maximum": interior_upper,
         },
         "target_position_world_m": [
             position[axis] + target_offset_world[axis] for axis in range(3)
@@ -1036,6 +1046,12 @@ def compile_native_arena_episode(
             destination_support_asset_id=destination_asset["asset_id"],
             destination_position_bounds_destination_frame_m=destination_asset[
                 "destination_position_bounds_destination_frame_m"
+            ],
+            subject_collision_bounds_scoring_frame_m=destination_asset[
+                "subject_collision_bounds_scoring_frame_m"
+            ],
+            destination_interior_bounds_body_frame_m=destination_asset[
+                "destination_interior_bounds_body_frame_m"
             ],
             destination_pose_world=destination_asset["destination_pose_world"],
             destination_orientation_xyzw=destination_asset[

@@ -197,6 +197,8 @@ def _destination_case(
     placement = {
         "schema_version": "task_evaluation_rigid_destination_placement_qualification.v1",
         "status": "qualified",
+        "producer": "task_evaluation_rigid_destination_placement_qualification",
+        "native_observation_digest": "sha256:" + "f" * 64,
         "destination_identity": identity,
         "configured_scene_revision_digest": scene_revision_digest,
         "configured_scene_collision_digest": collision_digest,
