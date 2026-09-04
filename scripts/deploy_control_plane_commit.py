@@ -119,6 +119,15 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
     "blueprint-task-evaluation-launch-activation.path",
     "blueprint-scene-object-discovery.path",
 )
+#: Paid execution is still impossible without a consumed, digest-bound
+#: activation authority, a clear global spend guard, and the provider-zero
+#: preflight inside the dispatcher.  Keeping this watcher active therefore
+#: restores Website-to-GPU liveness without granting spend authority by
+#: itself.  It is separated from the no-spend watchers so deploy receipts do
+#: not blur that distinction.
+DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
+    "blueprint-task-evaluation-policy-canary-dispatcher.path",
+)
 #: This fixed timer advances only a sealed, qualifying configured-scene plan
 #: through the canonical Website APIs.  It cannot be supplied by a request or
 #: launch profile and never invokes an allocator directly, but unlike the
@@ -1625,6 +1634,7 @@ def _restore_installed_path_units(
     before: Mapping[str, Mapping[str, str]],
     arm_path_units: bool,
     always_arm_units: Sequence[str] = (),
+    always_arm_authority_gated_units: Sequence[str] = (),
     always_arm_timer_units: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
     """Restore path/timer intent without widening arbitrary launch authority.
@@ -1643,8 +1653,9 @@ def _restore_installed_path_units(
             continue
         prior = dict(before.get(unit) or {"enabled": "disabled", "state": "inactive"})
         arm_no_spend = unit in always_arm_units
+        arm_authority_gated = unit in always_arm_authority_gated_units
         arm_progression = unit in always_arm_timer_units
-        if arm_no_spend and arm_progression:
+        if sum((arm_no_spend, arm_authority_gated, arm_progression)) > 1:
             raise ControlPlaneDeployError(
                 f"deploy_automation_unit_authority_ambiguous:{unit}"
             )
@@ -1652,12 +1663,14 @@ def _restore_installed_path_units(
         should_enable = (
             explicit_path_arm
             or arm_no_spend
+            or arm_authority_gated
             or arm_progression
             or prior.get("enabled") == "enabled"
         )
         should_start = (
             explicit_path_arm
             or arm_no_spend
+            or arm_authority_gated
             or arm_progression
             or prior.get("state") == "active"
         )
@@ -1702,6 +1715,8 @@ def _restore_installed_path_units(
                     if explicit_path_arm
                     else "arm_no_spend"
                     if arm_no_spend
+                    else "arm_authority_gated_paid_dispatch"
+                    if arm_authority_gated
                     else "arm_configured_controls_progression"
                     if arm_progression
                     else "preserve"
@@ -1710,6 +1725,7 @@ def _restore_installed_path_units(
                 "operator_freeze_preserved": (
                     not explicit_path_arm
                     and not arm_no_spend
+                    and not arm_authority_gated
                     and not arm_progression
                     and not should_start
                 ),
@@ -2300,6 +2316,9 @@ def deploy_control_plane_commit(
             before=automation_unit_states_before,
             arm_path_units=arm_path_units,
             always_arm_units=DEFAULT_ALWAYS_ARM_PATH_UNITS,
+            always_arm_authority_gated_units=(
+                DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS
+            ),
             always_arm_timer_units=DEFAULT_ALWAYS_ARM_TIMER_UNITS,
         )
         # Last, with the new release proven live: retire the trees this deploy

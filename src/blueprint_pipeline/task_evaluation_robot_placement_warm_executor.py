@@ -1154,7 +1154,7 @@ def _run_retained_native_construction_feedback(
         or warm_session.get("status") != "ready"
         or warm_session.get("continuing_spend") is not True
         or warm_session.get("remote_work_dir")
-        not in {"/workspace", "/tmp/blueprint_vast_work"}
+        not in {"/workspace", "/tmp/blueprint_vast_work"}  # nosec B108 - remote roots
         or cold.get("continuing_spend_from_this_run") is not True
         or cold.get("retry_cap") != 0
         or (

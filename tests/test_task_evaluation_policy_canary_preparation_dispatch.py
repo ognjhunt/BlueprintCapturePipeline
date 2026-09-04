@@ -41,6 +41,17 @@ OFFERING_SOURCE_LAUNCH_ID = (
 def _contracts() -> tuple[dict, dict]:
     legacy = legacy_setup()
     public = public_setup()
+    legacy["embodiment_id"] = "droid_franka_panda_robotiq_2f85_v1"
+    for robot in public["robot_presets"]:
+        prior_id = robot["robot_preset_id"]
+        robot["robot_preset_id"] = "droid_franka_panda_robotiq_2f85_v1"
+        for candidate in robot["policy_candidates"]:
+            candidate["compatibility"]["robot_preset_ids"] = [
+                "droid_franka_panda_robotiq_2f85_v1"
+                if value == prior_id
+                else value
+                for value in candidate["compatibility"]["robot_preset_ids"]
+            ]
     legacy["source_launch_id"] = OFFERING_SOURCE_LAUNCH_ID
     quick = legacy["presets"][0]
     for index, cell in enumerate(quick["cells"]):

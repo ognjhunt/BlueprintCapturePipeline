@@ -322,6 +322,7 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
     construction_lineage: str,
 ) -> None:
     setup_value = policy_setup()
+    setup_value["embodiment_id"] = "droid_franka_panda_robotiq_2f85_v1"
     quick = setup_value["presets"][0]
     for index, cell in enumerate(quick["cells"]):
         cell["seed"] = 1000 + index

@@ -563,6 +563,58 @@ def test_configured_controls_timer_is_installed_and_armed_by_default(
     ]
 
 
+def test_authority_gated_paid_dispatch_watcher_is_armed_by_default(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    unit = "blueprint-task-evaluation-policy-canary-dispatcher.path"
+    enabled = "enabled"
+    active = "inactive"
+
+    def completed(argv, **kwargs):
+        nonlocal enabled, active
+        calls.append(tuple(argv))
+        if argv[:2] == ["systemctl", "enable"]:
+            enabled = "enabled"
+        elif argv[:2] == ["systemctl", "restart"]:
+            active = "active"
+        stdout = ""
+        if argv[:2] == ["systemctl", "is-enabled"]:
+            stdout = enabled + "\n"
+        elif argv[:2] == ["systemctl", "is-active"]:
+            stdout = active + "\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+
+    observed = deploy._installed_path_unit_states([{"unit": unit}])
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit}],
+        before=observed,
+        arm_path_units=False,
+        always_arm_authority_gated_units=(
+            deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS
+        ),
+    )
+
+    assert observed == {unit: {"enabled": "enabled", "state": "inactive"}}
+    assert calls == [
+        ("systemctl", "is-enabled", unit),
+        ("systemctl", "is-active", unit),
+        ("systemctl", "enable", unit),
+        ("systemctl", "restart", unit),
+        ("systemctl", "is-enabled", unit),
+        ("systemctl", "is-active", unit),
+    ]
+    assert restored == [
+        {
+            "unit": unit,
+            "before": {"enabled": "enabled", "state": "inactive"},
+            "requested_intent": "arm_authority_gated_paid_dispatch",
+            "after": {"enabled": "enabled", "state": "active"},
+            "operator_freeze_preserved": False,
+        }
+    ]
 def test_path_unit_state_restore_preserves_an_active_enabled_watcher(monkeypatch) -> None:
     calls: list[tuple[str, ...]] = []
 

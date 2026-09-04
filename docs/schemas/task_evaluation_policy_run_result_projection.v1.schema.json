@@ -13,7 +13,7 @@
     "configuration_digest": {"$ref": "#/$defs/digest"},
     "plan_digest": {"$ref": "#/$defs/digest"},
     "embodiment_id": {"enum": ["franka_panda_robotiq_2f85_v1", "droid_franka_panda_robotiq_2f85_v1"]},
-    "candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{"const": "pi05_droid"}, {"const": "groot_n17_droid"}], "items": false},
+    "candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}},
     "state": {"enum": ["decided", "partially_decided", "abstained"]},
     "matrix": {
       "type": "object",
@@ -38,7 +38,7 @@
         "required": ["candidate_id", "episodes_completed", "family_metrics", "failures", "contacts", "evidence"],
         "additionalProperties": false,
         "properties": {
-          "candidate_id": {"enum": ["pi05_droid", "groot_n17_droid"]},
+          "candidate_id": {"$ref": "#/$defs/identifier"},
           "episodes_completed": {"type": "integer", "minimum": 0, "maximum": 500},
           "family_metrics": {
             "type": "object",
@@ -58,7 +58,7 @@
       "additionalProperties": false,
       "properties": {
         "matched_episode_pairs": {"type": "integer", "minimum": 0, "maximum": 500},
-        "decision": {"enum": ["pi05_droid", "groot_n17_droid", "tie", "abstain"]},
+        "decision": {"$ref": "#/$defs/identifier"},
         "deterministic_non_policy_scoring": {"const": true}
       }
     },

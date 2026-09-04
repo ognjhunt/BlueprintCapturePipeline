@@ -66,6 +66,7 @@ def test_build_loop_default_is_two_minutes() -> None:
 
     assert MODULE.DEFAULT_TIMEOUT_SECONDS == 120
     assert args.timeout_seconds == 120
+    assert MODULE.DEFAULT_WORKER_COUNT == 4
 
 
 def test_timeout_terminates_the_entire_pytest_process_group(monkeypatch) -> None:

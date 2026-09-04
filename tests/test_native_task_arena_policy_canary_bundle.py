@@ -370,6 +370,7 @@ def test_isolated_cell_results_aggregate_to_twenty_paired_episodes(
     result = worker._aggregate_isolated_cell_results(
         authority={},
         inputs={
+            "candidate_ids": ["pi05_droid", "groot_n17_droid"],
             "cells": cells,
             "matrix_digest": "sha256:" + "a" * 64,
             "task_success_contract": setup["task_success_contract"],

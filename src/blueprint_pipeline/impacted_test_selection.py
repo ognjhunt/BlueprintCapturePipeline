@@ -21,6 +21,7 @@ from typing import Iterable, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TIMEOUT_SECONDS = 120
+DEFAULT_WORKER_COUNT = 4
 MAX_CHANGED_FILES = 50
 MAX_IMPACTED_TEST_FILES = 40
 
@@ -246,6 +247,8 @@ def run_pytest(
         "-m",
         "pytest",
         "-q",
+        "-n",
+        str(max(1, min(DEFAULT_WORKER_COUNT, os.cpu_count() or 1))),
         "-p",
         "no:cacheprovider",
         "-m",

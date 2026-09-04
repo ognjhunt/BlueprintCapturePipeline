@@ -539,6 +539,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-scene-object-discovery.path
   systemctl enable --now blueprint-task-evaluation-episode-compilation.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.path
+  systemctl enable --now blueprint-task-evaluation-policy-canary-dispatcher.path
   systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
   systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer
 else
@@ -555,6 +556,7 @@ else
   echo "enable whole-splat object discovery queue with: systemctl enable --now blueprint-scene-object-discovery.path"
   echo "enable no-spend episode compilation queue with: systemctl enable --now blueprint-task-evaluation-episode-compilation.path"
   echo "enable release-window-gated launch activation queue with: systemctl enable --now blueprint-task-evaluation-launch-activation.path"
+  echo "enable authority-gated paid policy canary queue with: systemctl enable --now blueprint-task-evaluation-policy-canary-dispatcher.path"
   echo "enable terminal resource release queue watch with: systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path"
   echo "enable optional launch supervision with: systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer"
   echo "start intake service with: systemctl enable --now blueprint-pipeline-intake.service"

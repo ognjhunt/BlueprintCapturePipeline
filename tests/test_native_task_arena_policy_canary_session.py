@@ -148,6 +148,38 @@ def test_session_authority_binds_one_allocation_and_typed_controls_gaps(
     assert authority["official_ranking_authorized"] is False
 
 
+def test_session_preserves_a_registry_selected_candidate_pair(tmp_path: Path) -> None:
+    candidate_ids = ["team_policy_alpha", "team_policy_beta"]
+    activation = _activation()
+    activation["candidate_ids"] = candidate_ids
+    for unit in activation["campaign_units"]:  # type: ignore[union-attr]
+        unit["candidate_ids"] = candidate_ids
+    activation["activation_digest"] = canonical_digest(
+        activation, digest_field="activation_digest"
+    )
+    activation_path = tmp_path / "activation-custom.json"
+    activation_path.write_text(json.dumps(activation) + "\n", encoding="utf-8")
+    inputs = _runtime_inputs(tmp_path, activation)
+    inputs["candidate_ids"] = candidate_ids
+    inputs["runtime_inputs_digest"] = canonical_digest(
+        inputs, digest_field="runtime_inputs_digest"
+    )
+    inputs_path = tmp_path / "runtime-inputs-custom.json"
+    inputs_path.write_text(json.dumps(inputs) + "\n", encoding="utf-8")
+
+    authority = build_session_authority(
+        activation_manifest=activation,
+        activation_record=_record(activation_path),
+        runtime_inputs=inputs,
+        runtime_input_record=_record(inputs_path),
+        resource_name="blueprint-native-task-policy-canary-custom-0123456789abcdef",
+        hard_cap_usd=4.0,
+        hard_ttl_seconds=14_400,
+    )
+
+    assert authority["candidate_ids"] == candidate_ids
+
+
 def test_session_rejects_missing_resolved_scenario(tmp_path: Path) -> None:
     _authority_value, inputs = _authority(tmp_path)
     inputs["cells"][0].pop("resolved_scenario")  # type: ignore[index]

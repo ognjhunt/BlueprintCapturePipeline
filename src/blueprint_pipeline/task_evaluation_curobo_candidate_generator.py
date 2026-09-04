@@ -116,7 +116,10 @@ class RemoteCuroboCandidateGenerator:
         identity_file: str | Path | None = None,
     ) -> None:
         remote_work_dir = str(warm_session.get("remote_work_dir") or "")
-        if remote_work_dir not in {"/workspace", "/tmp/blueprint_vast_work"}:
+        if remote_work_dir not in {  # nosec B108 - fixed remote provider roots
+            "/workspace",
+            "/tmp/blueprint_vast_work",
+        }:
             raise CollisionAwareCandidateGenerationError(
                 "curobo_remote_work_dir_invalid"
             )

@@ -323,6 +323,12 @@ def _execution_spec(candidate: str, *, port: int) -> dict[str, Any]:
         "candidate_rights_binding": {"status": "admitted"},
         "checkpoint_digest": "sha256:" + ("c" if candidate == "pi05_droid" else "d") * 64,
         "runtime_identity_digest": "sha256:" + ("e" if candidate == "pi05_droid" else "f") * 64,
+        "worker_identity_requirement": (
+            "none"
+            if candidate == "pi05_droid"
+            else "groot_droid_runtime_measurement"
+        ),
+        "require_observed_eef_support": candidate == "groot_n17_droid",
         "task_success_contract": setup["task_success_contract"],
         "task_success_contract_digest": setup["task_success_contract_digest"],
         "prompt": "push the mug across the table",

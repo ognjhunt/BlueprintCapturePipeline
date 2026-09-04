@@ -161,8 +161,6 @@ def _read(path: str | Path, *, code: str) -> dict[str, Any]:
     if source.is_symlink() or not source.is_file() or not isinstance(value, Mapping):
         raise TaskEvaluationPolicyCanaryDispatchError(code)
     return dict(value)
-
-
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
@@ -229,7 +227,8 @@ def validate_policy_canary_execution_setup(
         not set(setup).issubset(allowed_fields)
         or setup.get("schema_version") != SETUP_SCHEMA_VERSION
         or setup.get("status") != "verified_runnable"
-        or str(setup.get("scene_id")) != "839873"
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", str(setup.get("scene_id") or ""))
+        is None
         or not str(setup.get("configured_source_launch_id") or "")
         or not _is_digest(setup.get("scene_revision_digest"))
         or not _is_digest(setup.get("activation_digest"))

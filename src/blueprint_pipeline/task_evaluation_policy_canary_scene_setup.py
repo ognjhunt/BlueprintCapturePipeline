@@ -389,6 +389,11 @@ def _candidate_spec(
         "checkpoint_digest": checkpoint["inventory_digest"],
         "runtime_identity": runtime_identity,
         "runtime_identity_digest": canonical_digest(runtime_identity),
+        "worker_identity_requirement": (
+            "groot_droid_runtime_measurement"
+            if policy_identity.get("status") == "runtime_measurement_required"
+            else "none"
+        ),
         "require_observed_eef_support": candidate_id == "groot_n17_droid",
         "max_policy_queries": max_queries,
         "open_loop_horizon": horizon,
@@ -504,6 +509,12 @@ def materialize_scene839873_policy_canary_setup(
         or scene_plan.get("task_spec", {}).get("manipulation_strategy") != "planar_push"
     ):
         blockers.append("policy_canary_scene_task_embodiment_incompatible")
+    task_spec = _mapping_or_empty(scene_plan.get("task_spec"))
+    if scene_id != SCENE_ID and (
+        not str(task_spec.get("instruction_subject_label") or "").strip()
+        or not str(task_spec.get("visible_target_label") or "").strip()
+    ):
+        blockers.append("policy_canary_scene_instruction_grounding_missing")
     explicit_execution_contract = (
         task_success_contract is not None
         and require_confirmed_task_success_contract

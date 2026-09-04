@@ -44,7 +44,8 @@ class RemoteIsaacLabControlSweepRunner:
         if (
             self._session.get("status") != "ready"
             or self._session.get("continuing_spend") is not True
-            or remote_work_dir not in {"/workspace", "/tmp/blueprint_vast_work"}
+            or remote_work_dir
+            not in {"/workspace", "/tmp/blueprint_vast_work"}  # nosec B108 - remote roots
         ):
             raise RemoteIsaacLabControlSweepError(
                 "control_search_remote_warm_session_invalid"

@@ -99,7 +99,7 @@ def validate_policy_canary_setup(value: Mapping[str, Any]) -> dict[str, Any]:
         for row in presets[1:]
     ):
         raise TaskEvaluationPolicyCanarySetupError("policy_canary_setup_large_preset_enabled")
-    runnable: list[str] = []
+    runnable_by_robot: dict[str, list[str]] = {}
     for robot in setup["robot_presets"]:
         if robot["readiness"]["status"] != "verified_runnable":
             continue
@@ -119,8 +119,13 @@ def validate_policy_canary_setup(value: Mapping[str, Any]) -> dict[str, Any]:
                 raise TaskEvaluationPolicyCanarySetupError(
                     "policy_canary_setup_compatibility_invalid"
                 )
-            runnable.append(policy["candidate_id"])
-    if runnable != ["pi05_droid", "groot_n17_droid"]:
+            runnable_by_robot.setdefault(robot["robot_preset_id"], []).append(
+                policy["candidate_id"]
+            )
+    if not runnable_by_robot or any(
+        len(candidate_ids) != 2 or len(set(candidate_ids)) != 2
+        for candidate_ids in runnable_by_robot.values()
+    ):
         raise TaskEvaluationPolicyCanarySetupError("policy_canary_setup_runnable_pair_invalid")
     return setup
 

@@ -408,7 +408,11 @@ def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -
     assert (
         f"-m blueprint_pipeline.control_plane_storage_gc run --apply --ack {RUN_ACK}"
     ) in service
-    assert "User=blueprint" in service and "ProtectSystem=strict" in service
+    assert "User=root" in service and "ProtectSystem=strict" in service
+    assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE" in service
+    assert "AmbientCapabilities=CAP_DAC_OVERRIDE" in service
+    assert "ReadWritePaths=/var/lib/blueprint " not in service
+    assert "/var/lib/blueprint/pipeline-control-plane/policy-canary-presubmission" in service
 
     def roots(env: str) -> list[str]:
         line = next(row for row in service.splitlines() if row.startswith(f"Environment={env}="))

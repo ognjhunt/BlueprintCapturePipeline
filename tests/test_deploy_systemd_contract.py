@@ -129,6 +129,15 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
         "CPUQuota=200%",
     )
     for unit in SYSTEMD_DIR.glob("*.service"):
+        if unit.name == "blueprint-control-plane-storage-gc.service":
+            text = unit.read_text(encoding="utf-8")
+            assert "User=root" in text
+            assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE" in text
+            assert "AmbientCapabilities=CAP_DAC_OVERRIDE" in text
+            assert "NoNewPrivileges=true" in text
+            assert "ProtectSystem=strict" in text
+            assert "ReadWritePaths=/var/lib/blueprint " not in text
+            continue
         text = unit.read_text(encoding="utf-8")
         for control in required_controls:
             assert control in text, (unit.name, control)

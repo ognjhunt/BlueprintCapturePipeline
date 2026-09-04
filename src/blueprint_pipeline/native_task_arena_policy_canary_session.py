@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import tempfile
 from typing import Any
 
@@ -47,6 +48,7 @@ CANONICAL_ALLOCATOR = (
     "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
 )
 CONTROL_MODES = frozenset({"nonblocking_diagnostic_pending", "nonblocking_diagnostic_bound"})
+_REGISTRY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class PolicyCanarySessionError(ValueError):
@@ -90,6 +92,15 @@ def _digest(value: Any) -> bool:
     return len(text) == 71 and text.startswith("sha256:") and all(
         character in "0123456789abcdef" for character in text[7:]
     )
+
+
+def _candidate_pair(value: Any) -> tuple[str, str]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise PolicyCanarySessionError("policy_canary_candidate_pair_invalid")
+    pair = tuple(str(item or "") for item in value)
+    if len(set(pair)) != 2 or any(_REGISTRY_ID.fullmatch(item) is None for item in pair):
+        raise PolicyCanarySessionError("policy_canary_candidate_pair_invalid")
+    return pair  # type: ignore[return-value]
 
 
 def _record(value: Any, *, code: str) -> dict[str, Any]:
@@ -182,9 +193,9 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         != "task_evaluation_policy_canary_runtime_inputs.v1"
         or payload.get("run_kind") != RUN_KIND
         or payload.get("claim_ceiling") != CLAIM_CEILING
-        or tuple(payload.get("candidate_ids") or ()) != CANDIDATE_IDS
     ):
         raise PolicyCanarySessionError("policy_canary_runtime_input_identity_invalid")
+    _candidate_pair(payload.get("candidate_ids"))
     for field in ("activation_digest", "configuration_digest", "plan_digest"):
         if not _digest(payload.get(field)):
             raise PolicyCanarySessionError("policy_canary_runtime_input_digest_invalid")
@@ -259,13 +270,14 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def validate_session_authority(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = json.loads(json.dumps(value, allow_nan=False))
+    candidate_ids = _candidate_pair(payload.get("candidate_ids"))
     if (
         payload.get("schema_version") != AUTHORITY_SCHEMA_VERSION
         or payload.get("run_kind") != RUN_KIND
         or payload.get("claim_ceiling") != CLAIM_CEILING
-        or tuple(payload.get("candidate_ids") or ()) != CANDIDATE_IDS
         or payload.get("episodes_per_policy") != EPISODES_PER_POLICY
-        or payload.get("learned_policy_rollout_count") != LEARNED_ROLLOUT_COUNT
+        or payload.get("learned_policy_rollout_count")
+        != payload.get("episodes_per_policy") * len(candidate_ids)
         or payload.get("maximum_provider_allocations") != 1
         or payload.get("retry_cap") != 0
         or payload.get("automatic_retry_authorized") is not False
@@ -349,9 +361,11 @@ def validate_provider_bundle(
         or payload.get("execution_mode") != "internal_policy_canary_paired_session"
         or payload.get("run_kind") != RUN_KIND
         or payload.get("claim_ceiling") != CLAIM_CEILING
-        or tuple(payload.get("candidate_ids") or ()) != CANDIDATE_IDS
+        or tuple(payload.get("candidate_ids") or ())
+        != tuple(bound_authority["candidate_ids"])
         or payload.get("episodes_per_policy") != EPISODES_PER_POLICY
-        or payload.get("learned_policy_rollout_count") != LEARNED_ROLLOUT_COUNT
+        or payload.get("learned_policy_rollout_count")
+        != bound_authority["learned_policy_rollout_count"]
         or payload.get("maximum_provider_allocations") != 1
         or payload.get("retry_cap") != 0
         or payload.get("candidate_policy_queried") is not False
@@ -387,12 +401,13 @@ def build_session_authority(
     execution_release: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     inputs = validate_runtime_input_manifest(runtime_inputs)
+    candidate_ids = _candidate_pair(inputs["candidate_ids"])
     activation = json.loads(json.dumps(activation_manifest, allow_nan=False))
     if (
         activation.get("run_kind") != RUN_KIND
         or activation.get("claim_ceiling") != CLAIM_CEILING
         or activation.get("activation_digest") != inputs["activation_digest"]
-        or tuple(activation.get("candidate_ids") or ()) != CANDIDATE_IDS
+        or tuple(activation.get("candidate_ids") or ()) != candidate_ids
         or activation.get("campaign_unit_count") != EPISODES_PER_POLICY
         or activation.get("task_success_contract")
         != inputs["task_success_contract"]
@@ -407,7 +422,7 @@ def build_session_authority(
         "run_kind": RUN_KIND,
         "claim_ceiling": CLAIM_CEILING,
         "run_id": activation.get("run_id"),
-        "candidate_ids": list(CANDIDATE_IDS),
+        "candidate_ids": list(candidate_ids),
         "episodes_per_policy": EPISODES_PER_POLICY,
         "learned_policy_rollout_count": LEARNED_ROLLOUT_COUNT,
         "activation_manifest": _record(
@@ -537,21 +552,22 @@ def validate_session_result(
     allow_legacy_missing_task_success_contract: bool = False,
 ) -> dict[str, Any]:
     payload = json.loads(json.dumps(value, allow_nan=False))
+    candidate_ids = _candidate_pair(payload.get("candidate_ids"))
     episodes = payload.get("episodes")
     closeout = _mapping(payload.get("session_closeout"))
     if (
         payload.get("schema_version") != RESULT_SCHEMA_VERSION
         or payload.get("run_kind") != RUN_KIND
         or payload.get("claim_ceiling") != CLAIM_CEILING
-        or tuple(payload.get("candidate_ids") or ()) != CANDIDATE_IDS
         or payload.get("episodes_per_policy") != EPISODES_PER_POLICY
-        or payload.get("learned_policy_rollout_count") != LEARNED_ROLLOUT_COUNT
+        or payload.get("learned_policy_rollout_count")
+        != payload.get("episodes_per_policy") * len(candidate_ids)
         or payload.get("retry_cap") != 0
         or payload.get("warm_session_open_count") != 1
         or payload.get("scene_promotion_performed") is not False
         or payload.get("official_ranking_performed") is not False
         or not isinstance(episodes, list)
-        or len(episodes) != LEARNED_ROLLOUT_COUNT
+        or len(episodes) != payload.get("learned_policy_rollout_count")
     ):
         raise PolicyCanarySessionError("policy_canary_session_result_identity_invalid")
     raw_success_contract = payload.get("task_success_contract")
@@ -584,7 +600,9 @@ def validate_session_result(
     ):
         raise PolicyCanarySessionError("policy_canary_session_result_closeout_invalid")
     observed: set[tuple[str, str]] = set()
-    by_candidate: dict[str, list[tuple[str, int]]] = {candidate: [] for candidate in CANDIDATE_IDS}
+    by_candidate: dict[str, list[tuple[str, int]]] = {
+        candidate: [] for candidate in candidate_ids
+    }
     for episode in episodes:
         row = _mapping(episode)
         candidate = str(row.get("candidate_id") or "")
@@ -592,7 +610,7 @@ def validate_session_result(
         seed = row.get("seed")
         key = (candidate, cell_id)
         if (
-            candidate not in CANDIDATE_IDS
+            candidate not in candidate_ids
             or not cell_id
             or key in observed
             or isinstance(seed, bool)
@@ -606,9 +624,9 @@ def validate_session_result(
         observed.add(key)
         by_candidate[candidate].append((cell_id, seed))
     if (
-        len(observed) != LEARNED_ROLLOUT_COUNT
-        or sorted(by_candidate[CANDIDATE_IDS[0]])
-        != sorted(by_candidate[CANDIDATE_IDS[1]])
+        len(observed) != payload["learned_policy_rollout_count"]
+        or sorted(by_candidate[candidate_ids[0]])
+        != sorted(by_candidate[candidate_ids[1]])
     ):
         raise PolicyCanarySessionError("policy_canary_session_pairing_invalid")
     completed = all(row.get("status") == "completed" for row in episodes)
@@ -648,8 +666,11 @@ def execute_paired_session(
 
     bound_authority = validate_session_authority(authority)
     inputs = validate_runtime_input_manifest(runtime_inputs)
+    candidate_ids = _candidate_pair(inputs["candidate_ids"])
     if bound_authority["runtime_inputs_digest"] != inputs["runtime_inputs_digest"]:
         raise PolicyCanarySessionError("policy_canary_session_runtime_binding_mismatch")
+    if tuple(bound_authority["candidate_ids"]) != candidate_ids:
+        raise PolicyCanarySessionError("policy_canary_session_candidate_binding_mismatch")
     if selected_cell_index is not None and (
         isinstance(selected_cell_index, bool)
         or not isinstance(selected_cell_index, int)
@@ -661,7 +682,7 @@ def execute_paired_session(
         if selected_cell_index is None
         else [inputs["cells"][selected_cell_index]]
     )
-    expected_episode_count = len(CANDIDATE_IDS) * len(selected_cells)
+    expected_episode_count = len(candidate_ids) * len(selected_cells)
     session = None
     episodes: list[dict[str, Any]] = []
     policy_loads: list[dict[str, Any]] = []
@@ -689,7 +710,7 @@ def execute_paired_session(
                 raise PolicyCanarySessionError(
                     "policy_canary_session_observation_integrity_blocked"
                 )
-        for candidate_id in CANDIDATE_IDS:
+        for candidate_id in candidate_ids:
             policy = load_policy(session, candidate_id)
             policy_loads.append({"candidate_id": candidate_id, "loaded_once": True})
             try:
@@ -791,11 +812,11 @@ def execute_paired_session(
         "status": "blocked",
         "run_kind": RUN_KIND,
         "claim_ceiling": CLAIM_CEILING,
-        "candidate_ids": list(CANDIDATE_IDS),
+        "candidate_ids": list(candidate_ids),
         "task_success_contract": inputs["task_success_contract"],
         "task_success_contract_digest": inputs["task_success_contract_digest"],
         "episodes_per_policy": EPISODES_PER_POLICY,
-        "learned_policy_rollout_count": LEARNED_ROLLOUT_COUNT,
+        "learned_policy_rollout_count": len(candidate_ids) * EPISODES_PER_POLICY,
         "provider_allocations_observed": (
             None
             if provider_closeout_pending
@@ -819,7 +840,7 @@ def execute_paired_session(
     if selected_cell_index is not None:
         result["selected_cell_index"] = selected_cell_index
     if (
-        len(episodes) == LEARNED_ROLLOUT_COUNT
+        len(episodes) == expected_episode_count
         and all(row.get("status") == "completed" for row in episodes)
         and closeout.get("provider_allocations_observed") == 1
         and closeout.get("teardown_completed") is True
