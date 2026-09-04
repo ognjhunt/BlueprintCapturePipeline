@@ -1644,6 +1644,7 @@ __all__ = [
     "collect_preparation_references",
     "default_reference_fetcher",
     "materialize_preparation_references",
+    "materialize_recipe_supplemental_destination_references",
     "process_launch_preparation_queue",
     "running_worker_source_commit",
     "validate_allowed_uri_prefixes",
