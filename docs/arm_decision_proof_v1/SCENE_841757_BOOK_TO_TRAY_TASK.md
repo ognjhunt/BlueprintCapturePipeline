@@ -72,6 +72,15 @@ A reasonable initial CAD proposal is an outer footprint near
 short side when centered. These are proposal dimensions only. They are not a
 qualified asset, pose, or success boundary.
 
+The production authoring agent uses `gpt-5.6-sol` with the exact pinned `cad`
+skill source. It receives the owner-authored metric constraints and writes the
+STEP-first build123d generator; it is not allowed to browse the web or alter
+the dimensions. The production executor statically rejects file, process,
+environment, dynamic-import, and network access in generated source, executes
+the pinned CAD skill with retry zero, and reopens the STEP for deterministic
+measurement. Its result remains pending visual, static, native-import, and
+scene-placement qualification and cannot self-grade.
+
 ## Success contract to confirm before launch
 
 The site owner must explicitly accept or change each clause. The proposed
