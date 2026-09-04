@@ -217,7 +217,7 @@ def test_configuration_run_cannot_claim_an_episode_or_bind_a_controller() -> Non
         validate_launch_preparation_request(value)
 
 
-def test_configuration_accepts_only_exact_ungraded_review_pause_override() -> None:
+def test_configuration_forbids_ungraded_review_pause_override() -> None:
     value = test_configuration_request()
     value["appearance_review_override"] = {
         "mode": "paused_ungraded",
@@ -226,17 +226,11 @@ def test_configuration_accepts_only_exact_ungraded_review_pause_override() -> No
         "review_provider_call_permitted": False,
         "warning_label": "Visual review paused - appearance ungraded",
     }
-    assert validate_launch_preparation_request(value) == value
-
-    weakened = copy.deepcopy(value)
-    weakened["appearance_review_override"][
-        "ungraded_publication_acknowledged"
-    ] = False
     with pytest.raises(
         TaskEvaluationLaunchPreparationContractError,
-        match="launch_preparation_request_invalid:appearance_review_override",
+        match="launch_preparation_request_invalid",
     ):
-        validate_launch_preparation_request(weakened)
+        validate_launch_preparation_request(value)
 
     episode = request()
     episode["appearance_review_override"] = value["appearance_review_override"]

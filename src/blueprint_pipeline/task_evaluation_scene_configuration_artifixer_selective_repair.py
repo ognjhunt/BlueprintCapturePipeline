@@ -1,10 +1,11 @@
 """Bound one semantic-teacher repair round to an exact rejected review.
 
-The production ArtiFixer reviewer can reject a candidate even when object
-absence and orientation pass while either the fill remains visibly implausible
-or non-target content is not preserved. This module stages a stricter request
-for those exact cameras and merges the returned semantic targets without
-modifying the already sealed render or first-pass semantic outputs.
+The production ArtiFixer reviewer can reject a camera because the source object
+remains visible, the fill is implausible, non-target content changed, or that
+view is inconsistent with the rest. This module stages a stricter new image
+edit for only those exact camera masks and merges the returned semantic targets
+without modifying sealed first-pass evidence. Camera orientation failures stay
+ineligible because repainting pixels cannot repair a bad camera pose.
 """
 
 from __future__ import annotations
@@ -399,14 +400,13 @@ def materialize_selective_repair_request(
         bounded_appearance_failure = (
             row.get("decision") == "rejected"
             and row.get("orientation_is_upright") is True
-            and row.get("source_object_absent") is True
-            and (
-                row.get("repair_is_locally_plausible") is False
-                or row.get("preserves_non_target_content") is False
-            )
         )
         if bounded_appearance_failure:
             selection_reasons: list[str] = []
+            if row.get("source_object_absent") is False:
+                selection_reasons.append(
+                    "independent_visual_review_source_object_remains"
+                )
             if row.get("repair_is_locally_plausible") is False:
                 selection_reasons.append(
                     "independent_visual_review_local_plausibility_rejection"
@@ -414,6 +414,10 @@ def materialize_selective_repair_request(
             if row.get("preserves_non_target_content") is False:
                 selection_reasons.append(
                     "independent_visual_review_preservation_rejection"
+                )
+            if not selection_reasons:
+                selection_reasons.append(
+                    "independent_visual_review_camera_consistency_rejection"
                 )
             selected_by_camera[camera_id] = {
                 "review_row": row,

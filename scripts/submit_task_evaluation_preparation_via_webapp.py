@@ -165,10 +165,7 @@ def read_exact_preparation_request(path: str | Path) -> tuple[dict[str, Any], by
     expected_keys = set(_BASE_REQUEST_KEYS)
     if run_mode == "episode_evaluation":
         expected_keys.update({"robot", "controller"})
-    elif run_mode == "scene_configuration":
-        if "appearance_review_override" in request:
-            expected_keys.add("appearance_review_override")
-    else:
+    elif run_mode != "scene_configuration":
         raise WebAppPreparationSubmissionError("preparation_run_mode_invalid")
     _exact_keys(request, expected_keys, blocker="preparation_request_fields_invalid")
     if request.get("schema_version") != "task_evaluation_launch_preparation_request.v1":

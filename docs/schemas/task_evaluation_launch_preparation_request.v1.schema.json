@@ -28,24 +28,6 @@
     "preparation_id": {"$ref": "#/$defs/identifier"},
     "team_namespace": {"$ref": "#/$defs/identifier"},
     "run_id": {"$ref": "#/$defs/identifier"},
-    "appearance_review_override": {
-      "type": "object",
-      "required": [
-        "mode",
-        "scope",
-        "ungraded_publication_acknowledged",
-        "review_provider_call_permitted",
-        "warning_label"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "mode": {"const": "paused_ungraded"},
-        "scope": {"const": "artifixer_appearance_only"},
-        "ungraded_publication_acknowledged": {"const": true},
-        "review_provider_call_permitted": {"const": false},
-        "warning_label": {"const": "Visual review paused - appearance ungraded"}
-      }
-    },
     "policy_run_setup": {"type": "object"},
     "policy_run_selection": {"type": "object"},
     "policy_run_configuration": {"type": "object"},
@@ -481,19 +463,14 @@
       "then": {
         "required": ["robot", "controller"],
         "not": {
-          "anyOf": [
-            {"required": ["appearance_review_override"]},
-            {
-              "properties": {
-                "spend": {
-                  "anyOf": [
-                    {"required": ["provider_compute_spend_cap_usd"]},
-                    {"required": ["external_service_caps"]}
-                  ]
-                }
-              }
+          "properties": {
+            "spend": {
+              "anyOf": [
+                {"required": ["provider_compute_spend_cap_usd"]},
+                {"required": ["external_service_caps"]}
+              ]
             }
-          ]
+          }
         },
         "properties": {
           "scene": {

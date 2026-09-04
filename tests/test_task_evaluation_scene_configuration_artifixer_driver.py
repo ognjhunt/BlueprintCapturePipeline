@@ -617,7 +617,7 @@ def test_ungraded_thumbnail_is_exact_deterministic_render_with_pause_receipt(
     )
 
 
-def test_paused_mode_finishes_stage_without_calling_visual_reviewer(
+def test_paused_mode_is_rejected_before_calling_visual_reviewer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     checkpoint_root, _checkpoint, fixture = _materialize_diagnostic_checkpoint(
@@ -731,31 +731,26 @@ def test_paused_mode_finishes_stage_without_calling_visual_reviewer(
         lambda **_kwargs: pytest.fail("paused mode called the visual reviewer"),
     )
 
-    result = driver.execute_artifixer_component(
-        environment={
-            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT": str(stage_path),
-            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES": str(
-                dependencies_path
-            ),
-            "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT": str(output_root),
-            "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT": str(
-                output_root / "result.json"
-            ),
-            "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT": str(package_root),
-            "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT": str(
-                checkpoint_root
-            ),
-        }
-    )
-
-    assert result["status"] == "completed"
-    assert result["appearance_review_status"] == "paused_ungraded"
-    assert result["appearance_quality_graded"] is False
-    removal = json.loads(
-        (output_root / "appearance_removal_receipt.v1.json").read_text()
-    )
-    assert removal["status"] == "completed_ungraded_generated_appearance_edit"
-    assert removal["review_provider_call_performed"] is False
+    with pytest.raises(
+        driver.TaskEvaluationSceneConfigurationArtifixerError,
+        match="scene_configuration_appearance_review_pause_forbidden",
+    ):
+        driver.execute_artifixer_component(
+            environment={
+                "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT": str(stage_path),
+                "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES": str(
+                    dependencies_path
+                ),
+                "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT": str(output_root),
+                "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT": str(
+                    output_root / "result.json"
+                ),
+                "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT": str(package_root),
+                "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_CHECKPOINT_ROOT": str(
+                    checkpoint_root
+                ),
+            }
+        )
 
 
 def test_generic_render_contract_feeds_released_artifixer_inputs(tmp_path: Path) -> None:
