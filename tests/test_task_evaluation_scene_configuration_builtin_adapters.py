@@ -1444,3 +1444,162 @@ def test_static_handler_refuses_a_destination_whose_declared_receipt_drifts(
             dependency_results=dependency_results,
             output_root=output,
         )
+
+
+def _native_runtime_result(*, identity: dict, asset: Path, static_receipt: Path) -> dict:
+    runtime = {
+        "schema_version": "task_evaluation_replacement_native_import_result.v1",
+        "status": "qualified",
+        "replacement_identity": identity,
+        "asset_digest": sha256(asset),
+        "static_qualification_digest": sha256(static_receipt),
+        "native_isaac_executed": True,
+        "native_simulator_import_qualified": True,
+        "support_contact_observed": True,
+        "deterministic_reset_state_digest_repeat_count": 3,
+        "blockers": [],
+        "result_digest": "",
+    }
+    runtime["result_digest"] = canonical_digest(runtime, digest_field="result_digest")
+    return runtime
+
+
+def _native_stage_inputs(tmp_path: Path) -> dict:
+    dependency = tmp_path / "dependency-native"
+    dependency.mkdir()
+    asset = dependency / "replacement.usda"
+    asset.write_text("#usda 1.0\n", encoding="utf-8")
+    static_receipt = dependency / "static.json"
+    static_receipt.write_text('{"status":"qualified"}\n', encoding="utf-8")
+    tray = dependency / "tray.usdz"
+    tray.write_bytes(b"PK-tray")
+    tray_static = dependency / "tray-static.json"
+    tray_static.write_text('{"status":"qualified","replacement_identity":"tray"}\n')
+    identity = {"id": "replacement-mug", "version": "v1"}
+    runtime_path = _json_file(
+        tmp_path / "native-runtime.json",
+        _native_runtime_result(identity=identity, asset=asset, static_receipt=static_receipt),
+    )
+    destination_runtime_path = _json_file(
+        tmp_path / "destination-native-runtime.json",
+        _native_runtime_result(
+            identity=DESTINATION_IDENTITY, asset=tray, static_receipt=tray_static
+        ),
+    )
+    configuration = {
+        "schema_version": "replacement_native_import_qualification_configuration.v1",
+        "replacement_identity": identity,
+        "required_checks": {
+            "stage_import": True,
+            "rigid_body_enabled": True,
+            "collider_enabled": True,
+            "gravity_settle_seconds": 3.0,
+            "maximum_settle_translation_m": 0.01,
+            "maximum_settle_rotation_rad": 0.08,
+            "support_contact_required": True,
+            "explosion_or_tunneling_forbidden": True,
+            "deterministic_reset_required": True,
+            "state_digest_repeat_count": 3,
+        },
+    }
+    return {
+        "identity": identity,
+        "asset": asset,
+        "static_receipt": static_receipt,
+        "tray": tray,
+        "tray_static": tray_static,
+        "runtime_path": runtime_path,
+        "destination_runtime_path": destination_runtime_path,
+        "configuration": configuration,
+        "configuration_path": _json_file(tmp_path / "native-configuration.json", configuration),
+    }
+
+
+def _run_native_stage(tmp_path: Path, inputs: dict, *, destination_runtime: Path | None):
+    output = tmp_path / "native-output"
+    output.mkdir()
+    provider_artifacts = [artifact("native_import_runtime_result", inputs["runtime_path"])]
+    if destination_runtime is not None:
+        provider_artifacts.append(
+            artifact("destination_native_import_runtime_result", destination_runtime)
+        )
+    return execute_simready_native_import_qualification(
+        envelope={
+            "recipe": {
+                "subject_identity": inputs["identity"],
+                "supplemental_destination": {
+                    "identity": DESTINATION_IDENTITY,
+                    "relation": "inside",
+                },
+            }
+        },
+        stage={
+            "stage_id": "stage-5",
+            "capability": "replacement_native_import_qualification",
+            "execution_class": "gpu_canary",
+        },
+        configuration=inputs["configuration"],
+        configuration_path=inputs["configuration_path"],
+        dependency_results=(
+            {
+                "output_artifacts": [
+                    artifact("statically_qualified_replacement_asset", inputs["asset"]),
+                    artifact("static_qualification_receipt", inputs["static_receipt"]),
+                    artifact("statically_qualified_destination_asset", inputs["tray"]),
+                    artifact("destination_static_qualification_receipt", inputs["tray_static"]),
+                ]
+            },
+        ),
+        output_root=output,
+        provider_runtime_artifacts=tuple(provider_artifacts),
+    )
+
+
+def test_native_import_handler_promotes_the_destination_alongside_the_subject(
+    tmp_path: Path,
+) -> None:
+    inputs = _native_stage_inputs(tmp_path)
+    result = _run_native_stage(
+        tmp_path, inputs, destination_runtime=inputs["destination_runtime_path"]
+    )
+    rows = {row["role"]: row for row in result["output_artifacts"]}
+    assert set(rows) == {
+        "native_qualified_replacement_asset",
+        "native_import_qualification_receipt",
+        "native_qualified_destination_asset",
+        "destination_native_import_qualification_receipt",
+    }
+    assert rows["native_qualified_destination_asset"]["digest"] == sha256(inputs["tray"])
+    assert rows["destination_native_import_qualification_receipt"]["digest"] == sha256(
+        inputs["destination_runtime_path"]
+    )
+
+
+def test_native_import_handler_refuses_a_destination_result_bound_to_another_asset(
+    tmp_path: Path,
+) -> None:
+    inputs = _native_stage_inputs(tmp_path)
+    drifted = _json_file(
+        tmp_path / "drifted-destination-runtime.json",
+        _native_runtime_result(
+            identity=DESTINATION_IDENTITY,
+            asset=inputs["asset"],  # the subject's bytes, not the tray's
+            static_receipt=inputs["tray_static"],
+        ),
+    )
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationAdapterError,
+        match="simready_native_import_destination_result_invalid",
+    ):
+        _run_native_stage(tmp_path, inputs, destination_runtime=drifted)
+
+
+def test_native_import_handler_refuses_a_declared_destination_without_its_result(
+    tmp_path: Path,
+) -> None:
+    inputs = _native_stage_inputs(tmp_path)
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationAdapterError,
+        match="scene_configuration_provider_runtime_artifact_missing:destination_native_import_runtime_result",
+    ):
+        _run_native_stage(tmp_path, inputs, destination_runtime=None)

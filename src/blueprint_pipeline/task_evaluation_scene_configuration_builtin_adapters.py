@@ -1569,14 +1569,87 @@ def execute_simready_native_import_qualification(
     retained_receipt = _copy_artifact(
         runtime_path, output_root / "native_import_qualification_receipt.v1.json"
     )
+    output_artifacts = [
+        {"role": "native_qualified_replacement_asset", **retained_asset},
+        {"role": "native_import_qualification_receipt", **retained_receipt},
+    ]
+    output_artifacts.extend(
+        _supplemental_destination_native_artifacts(
+            envelope=envelope,
+            dependency_results=dependency_results,
+            provider_runtime_artifacts=provider_runtime_artifacts,
+            output_root=output_root,
+        )
+    )
     return _stage_result(
         stage=stage,
         configuration_path=configuration_path,
-        output_artifacts=[
-            {"role": "native_qualified_replacement_asset", **retained_asset},
-            {"role": "native_import_qualification_receipt", **retained_receipt},
-        ],
+        output_artifacts=output_artifacts,
     )
+
+
+def _supplemental_destination_native_artifacts(
+    *,
+    envelope: Mapping[str, Any],
+    dependency_results: tuple[Mapping[str, Any], ...],
+    provider_runtime_artifacts: tuple[Mapping[str, Any], ...],
+    output_root: Path,
+) -> list[dict[str, Any]]:
+    """Admit the destination's native readback with the subject's exact rules."""
+
+    recipe = envelope.get("recipe")
+    destination = (
+        recipe.get("supplemental_destination") if isinstance(recipe, Mapping) else None
+    )
+    if destination is None:
+        return []
+    identity = destination.get("identity") if isinstance(destination, Mapping) else None
+    if not isinstance(identity, Mapping):
+        raise TaskEvaluationSceneConfigurationAdapterError(
+            "simready_supplemental_destination_recipe_invalid"
+        )
+    _asset_record, asset = _dependency_artifact(
+        dependency_results, role="statically_qualified_destination_asset"
+    )
+    _static_record, static_receipt = _dependency_artifact(
+        dependency_results, role="destination_static_qualification_receipt"
+    )
+    _runtime_record, runtime_path = _provider_runtime_artifact(
+        provider_runtime_artifacts, role="destination_native_import_runtime_result"
+    )
+    runtime = _load_json(
+        runtime_path, code="simready_native_import_destination_result_invalid"
+    )
+    if (
+        runtime.get("schema_version")
+        != "task_evaluation_replacement_native_import_result.v1"
+        or runtime.get("status") != "qualified"
+        or runtime.get("replacement_identity") != identity
+        or runtime.get("asset_digest") != _sha256_and_size(asset)[0]
+        or runtime.get("static_qualification_digest")
+        != _sha256_and_size(static_receipt)[0]
+        or runtime.get("native_isaac_executed") is not True
+        or runtime.get("native_simulator_import_qualified") is not True
+        or runtime.get("support_contact_observed") is not True
+        or runtime.get("deterministic_reset_state_digest_repeat_count") != 3
+        or runtime.get("blockers") != []
+        or runtime.get("result_digest")
+        != canonical_digest(runtime, digest_field="result_digest")
+    ):
+        raise TaskEvaluationSceneConfigurationAdapterError(
+            "simready_native_import_destination_result_invalid"
+        )
+    retained_asset = _copy_artifact(
+        asset, output_root / f"native_qualified_destination_asset{asset.suffix}"
+    )
+    retained_receipt = _copy_artifact(
+        runtime_path,
+        output_root / "destination_native_import_qualification_receipt.v1.json",
+    )
+    return [
+        {"role": "native_qualified_destination_asset", **retained_asset},
+        {"role": "destination_native_import_qualification_receipt", **retained_receipt},
+    ]
 
 
 def execute_native_task_scene_assembly(

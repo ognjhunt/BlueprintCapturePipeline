@@ -72,6 +72,38 @@ _DIAGNOSTIC_REJECTED_ARTIFACT_ROLES = frozenset(
         "provider_render_reference_manifest",
     }
 )
+_SUPPLEMENTAL_DESTINATION_ARTIFACT_ROLES = {
+    "simready_native_import_qualification": frozenset(
+        {"destination_native_import_runtime_result"}
+    ),
+}
+
+
+def expected_stage_artifact_roles(
+    adapter_id: str, *, supplemental_destination: bool
+) -> frozenset[str]:
+    """Exact artifact roles one GPU stage component must emit.
+
+    A recipe that binds a supplemental passive destination makes the native
+    import component emit the destination's runtime result too; no other
+    component grows an extra role, and an undeclared destination is refused.
+    """
+
+    roles = _EXPECTED_ARTIFACT_ROLES[adapter_id]
+    if supplemental_destination:
+        roles = roles | _SUPPLEMENTAL_DESTINATION_ARTIFACT_ROLES.get(
+            adapter_id, frozenset()
+        )
+    return roles
+
+
+def envelope_declares_supplemental_destination(envelope: Any) -> bool:
+    recipe = envelope.get("recipe") if isinstance(envelope, Mapping) else None
+    return isinstance(recipe, Mapping) and isinstance(
+        recipe.get("supplemental_destination"), Mapping
+    )
+
+
 _SECRET_ENVIRONMENT_FILES = (
     "OPENAI_API_KEY_FILE",
     "OPENAI_ADMIN_API_KEY_FILE",
@@ -444,7 +476,12 @@ def _handler(
                 raise TaskEvaluationSceneConfigurationStageProducerError(
                     "scene_configuration_stage_production_diagnostic_claim_invalid"
                 )
-        elif observed_roles != _EXPECTED_ARTIFACT_ROLES[identity.adapter_id]:
+        elif observed_roles != expected_stage_artifact_roles(
+            identity.adapter_id,
+            supplemental_destination=envelope_declares_supplemental_destination(
+                envelope
+            ),
+        ):
             raise TaskEvaluationSceneConfigurationStageProducerError(
                 "scene_configuration_stage_production_artifact_roles_invalid"
             )
