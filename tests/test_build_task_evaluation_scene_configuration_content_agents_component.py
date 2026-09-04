@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -53,6 +54,8 @@ def test_builds_released_content_agents_component_without_scene_inputs(
         "scripts/adp_content_agents_provider_runner.py",
         "src/blueprint_pipeline/provider_archive.py",
         "src/blueprint_pipeline/content_agents_model_compatibility.py",
+        "src/blueprint_pipeline/production_cad_skill_sources.py",
+        "skillpacks/cad_authoring/skills/multi-agent-cad/SKILL.md",
         "docs/arm_decision_proof_v1/assets/adp009a_content_agents_material.vast.yaml",
         "docs/arm_decision_proof_v1/assets/adp009a_content_agents_texture.vast.yaml",
         "docs/arm_decision_proof_v1/assets/adp009a_content_agents_physics.vast.yaml",
@@ -76,6 +79,54 @@ def test_builds_released_content_agents_component_without_scene_inputs(
     monkeypatch.setattr(subject, "SOURCE_COMMIT", upstream_commit)
     monkeypatch.setattr(subject, "SOURCE_TREE", upstream_tree)
     monkeypatch.setattr(subject, "SOURCE_VERSION", "test-version")
+    text_to_cad = tmp_path / "text-to-cad"
+    for relative in (
+        "skills/cad/SKILL.md",
+        "packages/cadpy/pyproject.toml",
+        "packages/cadpy_metadata/pyproject.toml",
+    ):
+        path = text_to_cad / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture\n", encoding="utf-8")
+    (text_to_cad / "LICENSE").write_text("MIT fixture\n", encoding="utf-8")
+    text_commit, text_tree = _commit(text_to_cad)
+    multi_agent_cad = tmp_path / "Multi-Agent-CAD"
+    for relative in (
+        "multi_agent_cad/WORKFLOW.md",
+        "multi_agent_cad/graph.py",
+        "environment.yml",
+    ):
+        path = multi_agent_cad / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture\n", encoding="utf-8")
+    (multi_agent_cad / "LICENSE").write_text("MIT fixture\n", encoding="utf-8")
+    multi_commit, multi_tree = _commit(multi_agent_cad)
+    monkeypatch.setattr(
+        subject,
+        "SOURCE_SPECS",
+        (
+            {
+                "id": "text-to-cad",
+                "repository": str(text_to_cad),
+                "commit": text_commit,
+                "tree": text_tree,
+                "license": "MIT",
+                "license_sha256": "sha256:"
+                + hashlib.sha256((text_to_cad / "LICENSE").read_bytes()).hexdigest(),
+                "skills": ("cad",),
+            },
+            {
+                "id": "multi-agent-cad",
+                "repository": str(multi_agent_cad),
+                "commit": multi_commit,
+                "tree": multi_tree,
+                "license": "MIT",
+                "license_sha256": "sha256:"
+                + hashlib.sha256((multi_agent_cad / "LICENSE").read_bytes()).hexdigest(),
+                "skills": ("multi-agent-cad",),
+            },
+        ),
+    )
     git_commands: list[list[str]] = []
     original_run = subprocess.run
 
@@ -91,6 +142,8 @@ def test_builds_released_content_agents_component_without_scene_inputs(
         repository_root=repository,
         expected_blueprint_commit=blueprint_commit,
         content_agents_root=upstream,
+        text_to_cad_root=text_to_cad,
+        multi_agent_cad_root=multi_agent_cad,
         output_root=output,
     )
 
@@ -100,6 +153,9 @@ def test_builds_released_content_agents_component_without_scene_inputs(
     )
     assert (output / "content_agents_source.zip").is_file()
     assert (output / "content_agents_source_receipt.json").is_file()
+    assert (output / "text_to_cad_skills_source.zip").is_file()
+    assert (output / "multi_agent_cad_source.zip").is_file()
+    assert (output / "cad_skill_source_receipt.json").is_file()
     assert (output / "run").stat().st_mode & 0o111
     provider_runtime = output / "run_adp_content_agents_provider_runtime.sh"
     assert provider_runtime.stat().st_mode & 0o111

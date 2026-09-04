@@ -214,6 +214,14 @@ mass/collider/material properties, and camera-visible review frames. Generated
 geometry remains `development_only` support and never replaces observed source
 geometry.
 
+CAD authoring is a production-stage dependency, not an operator preflight.
+Deployment provisions and verifies the pinned `text-to-cad` and
+`Multi-Agent-CAD` sources, the released scene-configuration component seals
+their exact archives and source receipt, and the provider worker exposes the
+validated runtime root to the authoring stage. Missing, dirty, or identity-
+drifted CAD sources block before model execution; a laptop-installed skill is
+never accepted as production lineage.
+
 ## Droplet capability contract
 
 The droplet needs repository code at the deployed protected-main commit, the

@@ -1159,6 +1159,17 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     )
     monkeypatch.setattr(
         deploy,
+        "provision_production_cad_skill_sources",
+        lambda _root: {
+            "status": "ready",
+            "sources": [
+                {"id": "text-to-cad", "path": "/runtime/text-to-cad"},
+                {"id": "multi-agent-cad", "path": "/runtime/Multi-Agent-CAD"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        deploy,
         "service_account_readback",
         lambda _user: lambda path: path.read_bytes(),
     )
@@ -1679,6 +1690,19 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
         deploy,
         "_install_release_provenance",
         lambda **kwargs: {"git_sha": commit},
+    )
+    monkeypatch.setattr(
+        deploy,
+        "provision_production_cad_skill_sources",
+        lambda *_args, **_kwargs: {
+            "sources": [
+                {"id": "text-to-cad", "path": str(tmp_path / "text-to-cad")},
+                {
+                    "id": "multi-agent-cad",
+                    "path": str(tmp_path / "Multi-Agent-CAD"),
+                },
+            ]
+        },
     )
     monkeypatch.setattr(
         deploy,

@@ -1,0 +1,17 @@
+{
+  "schema_version": "v1",
+  "name": "cad_authoring",
+  "source_root": "skillpacks/cad_authoring/skills",
+  "skills": [
+    "cad",
+    "cad-viewer",
+    "urdf",
+    "sdf",
+    "srdf",
+    "step-parts",
+    "implicit-cad",
+    "dxf",
+    "gcode",
+    "multi-agent-cad"
+  ]
+}

@@ -15,6 +15,7 @@ from PIL import Image
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdUtils
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.production_cad_skill_sources import SOURCE_SPECS
 from blueprint_pipeline.task_evaluation_scene_configuration_content_agents_driver import (
     TaskEvaluationSceneConfigurationContentAgentsError,
     _metric_envelope_spec,
@@ -118,6 +119,55 @@ def _package(path: Path) -> None:
     )
     (path / "content_agents_source_receipt.json").write_text(
         json.dumps(source_receipt), encoding="utf-8"
+    )
+    text_archive = path / "text_to_cad_skills_source.zip"
+    with zipfile.ZipFile(text_archive, "w") as archive:
+        archive.writestr("LICENSE", "fixture license\n")
+        for skill in SOURCE_SPECS[0]["skills"]:
+            archive.writestr(f"skills/{skill}/SKILL.md", f"# {skill}\n")
+    multi_archive = path / "multi_agent_cad_source.zip"
+    with zipfile.ZipFile(multi_archive, "w") as archive:
+        archive.writestr("LICENSE", "fixture license\n")
+        archive.writestr("multi_agent_cad/WORKFLOW.md", "# Workflow\n")
+        archive.writestr("multi_agent_cad/graph.py", "# fixture\n")
+        archive.writestr("environment.yml", "name: fixture\n")
+    cad_sources = []
+    archive_by_id = {
+        "text-to-cad": text_archive,
+        "multi-agent-cad": multi_archive,
+    }
+    for spec in SOURCE_SPECS:
+        cad_sources.append(
+            {
+                "id": spec["id"],
+                "repository": spec["repository"],
+                "commit": spec["commit"],
+                "tree": spec["tree"],
+                "license": spec["license"],
+                "license_sha256": spec["license_sha256"],
+                "skills": list(spec["skills"]),
+                "archive_sha256": _sha256(archive_by_id[spec["id"]]),
+            }
+        )
+    cad_receipt = {
+        "schema_version": "task_evaluation_cad_skill_component_source.v1",
+        "status": "pinned_sources_packaged",
+        "scene_specific_source": False,
+        "skill_count": 10,
+        "sources": cad_sources,
+        "receipt_digest": "",
+    }
+    cad_receipt["receipt_digest"] = canonical_digest(
+        cad_receipt, digest_field="receipt_digest"
+    )
+    (path / "cad_skill_source_receipt.json").write_text(
+        json.dumps(cad_receipt), encoding="utf-8"
+    )
+    (path / "multi_agent_cad_skill.md").write_text(
+        "# multi-agent-cad\n", encoding="utf-8"
+    )
+    (path / "production_cad_skill_sources.py").write_text(
+        "# sealed identity reference\n", encoding="utf-8"
     )
     for name in (
         "run_adp_content_agents_provider_runtime.sh",
@@ -272,6 +322,10 @@ def test_provider_render_handoff_feeds_released_content_agents_runner(
         ):
             assert name not in env
         assert env["PATH"] == "/usr/bin"
+        cad_root = Path(env["BLUEPRINT_PRODUCTION_CAD_SKILLS_ROOT"])
+        assert (cad_root / "text-to-cad/skills/cad/SKILL.md").is_file()
+        assert (cad_root / "skills/multi-agent-cad/SKILL.md").is_file()
+        assert (cad_root / "Multi-Agent-CAD/multi_agent_cad/graph.py").is_file()
         runtime_output = Path(env["BLUEPRINT_ADP_CONTENT_AGENTS_OUTPUT_DIR"])
         physics = runtime_output / "physics_workdir/physics_candidate.usda"
         physics.parent.mkdir(parents=True)
@@ -417,6 +471,13 @@ def test_provider_render_handoff_feeds_released_content_agents_runner(
     )
     assert manifest["input_variant"] == "scene_configuration_v1"
     assert manifest["retry_cap"] == 0
+    assert manifest["cad_skill_runtime"]["status"] == "materialized"
+    assert manifest["cad_skill_runtime"]["skills"] == sorted(
+        [
+            *SOURCE_SPECS[0]["skills"],
+            "multi-agent-cad",
+        ]
+    )
     normalization = manifest["input_usd_normalization"]
     assert normalization["stripped_physics_schemas"] == [
         "CollisionAPI",

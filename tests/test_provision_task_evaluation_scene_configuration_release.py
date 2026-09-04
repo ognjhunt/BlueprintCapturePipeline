@@ -164,6 +164,8 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
         node_modules_root=tmp_path / "node_modules",
         artifixer_root=tmp_path / "artifixer-source",
         content_agents_root=tmp_path / "content-agents-source",
+        text_to_cad_root=tmp_path / "text-to-cad-source",
+        multi_agent_cad_root=tmp_path / "multi-agent-cad-source",
         readback=lambda path: path.read_bytes(),
         readback_actor="service-account:blueprint",
     )
