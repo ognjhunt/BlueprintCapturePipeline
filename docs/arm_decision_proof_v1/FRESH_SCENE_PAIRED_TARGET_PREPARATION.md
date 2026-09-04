@@ -196,6 +196,38 @@ recomputes digests, pose errors, penetration, support stability, per-camera
 pixel gates, and repeated-reset tolerances. A caller-authored summary boolean is
 not accepted as placement evidence.
 
+A supplemental destination has no source object, so nothing before the
+scene-configuration run can produce its Isaac-native import qualification or
+its task geometry. The production ordering is therefore:
+
+1. Author the destination on the control plane
+   (`task_evaluation_passive_destination_cad_agent` →
+   `task_evaluation_passive_destination_simready`), which yields the asset,
+   authoring receipt, static qualification, rights admission, and SimReady
+   result. The SimReady result is `static_qualified_pending_native_import_and_placement`.
+2. Submit the `scene_configuration` request with `task.destination` carrying the
+   identity, relation, label, asset, rights admission, static qualification,
+   `native_probe`, and `pose_world` — and **without**
+   `native_import_qualification` or `geometry`. The construction recipe binds
+   the same destination as `supplemental_destination` (identity, relation,
+   asset, static qualification, rights admission, authoring receipt, SimReady
+   result); preparation refuses a recipe that drifts from the request or a
+   destination declared on only one side.
+3. Inside the provider run, stage 4 re-runs the static qualifier on the exact
+   destination bytes and refuses a declared receipt it cannot reproduce; stage 5
+   settles the destination in the same Isaac session as the subject and seals a
+   second `task_evaluation_replacement_native_import_result.v1` bound to the
+   destination identity, asset, and static receipt.
+4. Publication derives `task_evaluation_rigid_destination_geometry.v1` from the
+   subject's stage-4 scoring-frame bounds, the destination's SimReady interior,
+   the authored probe limits, and the request pose; the containment volume is
+   shrunk by the whole oriented subject and tolerates only the authored
+   maximum penetration below the floor, so a destination the subject cannot
+   fit into is refused instead of scored. The revision's
+   `task_template.destination` then carries the published native-import and
+   geometry references, and the `destination_qualification` request copies
+   that complete destination from the offering.
+
 Destination tasks use the v3 configured-controls autostart/progression plan.
 The production worker compiles a qualification-only Arena packet before a
 placement receipt exists, launches `native-task-arena-destination-qualification`
