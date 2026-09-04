@@ -614,3 +614,62 @@ def test_dual_task_adapter_rejects_changed_standard_splat_bytes(tmp_path: Path) 
             data_root=paths["data"],
             output_root=paths["output"],
         )
+
+
+def test_production_inputs_and_receipt_live_outside_clean_source_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _write_v2_fixture(tmp_path)
+    repo, data = paths["repo"], paths["data"]
+    request = json.loads((repo / "request.json").read_text())
+    for key in (
+        "scene_freeze_path", "task_freeze_path",
+        "standard_splat_conversion_receipt_path",
+    ):
+        source = repo / request["scene"][key]
+        copied = data / source.name
+        shutil.copyfile(source, copied)
+        request["scene"][key] = str(copied)
+    request.pop("request_digest")
+    request_path = data / "request.json"
+    request_path.write_text(json.dumps(build_public_scene_inpainting_input_request(request)))
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpainting_inputs.render_splat_at_exact_cameras",
+        _fake_sealed_render,
+    )
+    retained = data / "receipts/calibrated.json"
+    receipt = materialize_public_scene_inpainting_inputs(
+        request_path=request_path, repo_root=repo, data_root=data,
+        output_root=paths["output"], receipt_output=retained,
+    )
+    assert receipt["schema_version"] == "public_scene_interiorgs_edit_input_receipt.v2"
+    assert json.loads(retained.read_text())["receipt_digest"] == receipt["receipt_digest"]
+    assert receipt["repository"]["tracked_files_clean"] is True
+    assert subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"],
+        check=True, capture_output=True, text=True,
+    ).stdout == ""
+
+
+def test_calibrated_input_request_cannot_escape_admitted_input_roots(tmp_path: Path) -> None:
+    paths = _write_v2_fixture(tmp_path)
+    unadmitted = tmp_path / "unadmitted_request.json"
+    shutil.copyfile(paths["repo"] / "request.json", unadmitted)
+    with pytest.raises(PublicSceneInpaintingInputError, match="request_outside"):
+        materialize_public_scene_inpainting_inputs(
+            request_path=unadmitted, repo_root=paths["repo"], data_root=paths["data"],
+            output_root=paths["output"],
+        )
+
+
+def test_calibrated_input_output_cannot_overwrite_retained_evidence(tmp_path: Path) -> None:
+    paths = _write_v2_fixture(tmp_path)
+    paths["output"].mkdir()
+    retained = paths["output"] / "prior_evidence.json"
+    retained.write_text('{"status":"retained"}')
+    with pytest.raises(PublicSceneInpaintingInputError, match="output_not_empty"):
+        materialize_public_scene_inpainting_inputs(
+            request_path=paths["repo"] / "request.json", repo_root=paths["repo"],
+            data_root=paths["data"], output_root=paths["output"],
+        )
+    assert retained.read_text() == '{"status":"retained"}'
