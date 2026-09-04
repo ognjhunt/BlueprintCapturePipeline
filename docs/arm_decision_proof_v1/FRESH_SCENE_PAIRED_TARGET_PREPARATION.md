@@ -118,6 +118,14 @@ provider-zero closure.
    - Run paired-target ArtiFixer3D first. Render and retain calibrated review
      frames. Run 3D+ only after raw 3D review passes and never let 3D+ become the
      primary removal painter.
+   - Every new production configuration requires the independent digest-bound
+     appearance grader. `paused_ungraded` remains readable only as historical
+     evidence and is not an admissible launch-request mode.
+   - When the grader rejects an upright camera because the source object remains,
+     the fill is implausible, non-target content changed, or the view conflicts
+     with other cameras, issue one bounded new image edit for only the rejected
+     cameras and exact repair masks. Re-run ArtiFixer and grade all cameras again.
+     Never repaint an orientation or camera-calibration failure.
 
 ## Droplet capability contract
 

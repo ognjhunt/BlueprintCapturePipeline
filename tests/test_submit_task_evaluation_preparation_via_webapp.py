@@ -248,7 +248,7 @@ def test_unknown_request_field_fails_before_network(monkeypatch, tmp_path) -> No
     assert not receipt_path.exists()
 
 
-def test_scene_configuration_accepts_explicit_paused_ungraded_review_override(
+def test_scene_configuration_rejects_explicit_paused_ungraded_review_override(
     tmp_path,
 ) -> None:
     request = _request()
@@ -263,10 +263,11 @@ def test_scene_configuration_accepts_explicit_paused_ungraded_review_override(
     request_path = tmp_path / "paused-ungraded-preparation.json"
     request_path.write_bytes(body)
 
-    parsed, exact_body = submitter.read_exact_preparation_request(request_path)
-
-    assert parsed == request
-    assert exact_body == body
+    with pytest.raises(
+        submitter.WebAppPreparationSubmissionError,
+        match="preparation_request_fields_invalid",
+    ):
+        submitter.read_exact_preparation_request(request_path)
 
 
 def test_existing_receipt_fails_before_network(monkeypatch, tmp_path) -> None:

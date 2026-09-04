@@ -425,11 +425,78 @@ def test_locality_only_rejection_repairs_one_camera_and_reuses_the_rest(
         )
 
 
-def test_non_locality_rejection_is_not_repaired(tmp_path: Path) -> None:
+def test_remaining_source_object_is_reedited_for_only_its_camera(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     execution_path = Path(fixture["execution_path"])
     execution = json.loads(execution_path.read_text(encoding="utf-8"))
     execution["frames"][0]["source_object_absent"] = False
+    execution["execution_digest"] = canonical_digest(
+        execution, digest_field="execution_digest"
+    )
+    execution_path.write_text(json.dumps(execution), encoding="utf-8")
+
+    staged = materialize_selective_repair_request(
+        review_input_path=fixture["review_path"],
+        review_execution_path=execution_path,
+        semantic_runtime_request_path=fixture["request_path"],
+        semantic_runtime_result=fixture["source_result"],
+        semantic_locality_receipt_path=fixture["locality"]["receipt_path"],
+        expected_request_cost_usd=0.22,
+        maximum_stage_cost_usd=2.4,
+        output_root=tmp_path / "repair-request",
+    )
+
+    selected = staged["plan"]["selected_frames"]
+    assert selected[0]["camera_id"] == "camera-0"
+    assert "independent_visual_review_source_object_remains" in selected[0][
+        "selection_reasons"
+    ]
+
+
+def test_camera_consistency_rejection_is_reedited_with_review_feedback(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    execution_path = Path(fixture["execution_path"])
+    execution = json.loads(execution_path.read_text(encoding="utf-8"))
+    execution["frames"][0].update(
+        {
+            "source_object_absent": True,
+            "repair_is_locally_plausible": True,
+            "preserves_non_target_content": True,
+            "rationale": "The repaired grain conflicts with the adjacent camera.",
+        }
+    )
+    execution["execution_digest"] = canonical_digest(
+        execution, digest_field="execution_digest"
+    )
+    execution_path.write_text(json.dumps(execution), encoding="utf-8")
+
+    staged = materialize_selective_repair_request(
+        review_input_path=fixture["review_path"],
+        review_execution_path=execution_path,
+        semantic_runtime_request_path=fixture["request_path"],
+        semantic_runtime_result=fixture["source_result"],
+        semantic_locality_receipt_path=fixture["locality"]["receipt_path"],
+        expected_request_cost_usd=0.22,
+        maximum_stage_cost_usd=2.4,
+        output_root=tmp_path / "repair-request",
+    )
+
+    selected = staged["plan"]["selected_frames"][0]
+    assert selected["selection_reasons"] == [
+        "independent_visual_review_camera_consistency_rejection"
+    ]
+    assert selected["repair_feedback"] == [
+        "The repaired grain conflicts with the adjacent camera."
+    ]
+
+
+def test_upside_down_camera_is_not_repainted(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    execution_path = Path(fixture["execution_path"])
+    execution = json.loads(execution_path.read_text(encoding="utf-8"))
+    execution["frames"][0]["orientation_is_upright"] = False
     execution["execution_digest"] = canonical_digest(
         execution, digest_field="execution_digest"
     )
