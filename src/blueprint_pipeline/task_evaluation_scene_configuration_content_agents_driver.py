@@ -35,6 +35,7 @@ from .adp_content_agents_vast import (
 )
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .provider_archive import extract_provider_archive
+from .production_cad_skill_sources import SOURCE_SPECS
 from .task_evaluation_scene_configuration_disclosure import renders_on_provider
 from .task_evaluation_scene_configuration_stage_tool import (
     COMPONENT_RESULT_SCHEMA_VERSION,
@@ -82,6 +83,11 @@ _EXPECTED_PACKAGE_FILES = {
     "provider_archive.py",
     "content_agents_model_compatibility.py",
     "content_agents_model_compatibility_plan.json",
+    "text_to_cad_skills_source.zip",
+    "multi_agent_cad_source.zip",
+    "cad_skill_source_receipt.json",
+    "multi_agent_cad_skill.md",
+    "production_cad_skill_sources.py",
     "material_agent.yaml",
     "texture_agent.yaml",
     "physics_agent.yaml",
@@ -372,6 +378,96 @@ def _validate_source_receipt(runtime: Path) -> None:
         raise TaskEvaluationSceneConfigurationContentAgentsError(
             "scene_configuration_content_agents_source_receipt_invalid"
         )
+
+
+def _materialize_cad_skill_runtime(runtime: Path) -> dict[str, Any]:
+    receipt = _read(
+        runtime / "cad_skill_source_receipt.json",
+        code="scene_configuration_cad_skill_receipt_invalid",
+    )
+    specs = {str(spec["id"]): spec for spec in SOURCE_SPECS}
+    sources = receipt.get("sources")
+    if (
+        receipt.get("schema_version")
+        != "task_evaluation_cad_skill_component_source.v1"
+        or receipt.get("status") != "pinned_sources_packaged"
+        or receipt.get("scene_specific_source") is not False
+        or receipt.get("skill_count") != 10
+        or not isinstance(sources, list)
+        or len(sources) != 2
+        or receipt.get("receipt_digest")
+        != canonical_digest(receipt, digest_field="receipt_digest")
+    ):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_cad_skill_receipt_invalid"
+        )
+    by_id = {
+        str(row.get("id") or ""): row
+        for row in sources
+        if isinstance(row, Mapping)
+    }
+    archives = {
+        "text-to-cad": runtime / "text_to_cad_skills_source.zip",
+        "multi-agent-cad": runtime / "multi_agent_cad_source.zip",
+    }
+    for source_id, spec in specs.items():
+        row = by_id.get(source_id)
+        if (
+            not isinstance(row, Mapping)
+            or any(
+                row.get(field) != spec[field]
+                for field in (
+                    "repository",
+                    "commit",
+                    "tree",
+                    "license",
+                    "license_sha256",
+                )
+            )
+            or row.get("skills") != list(spec["skills"])
+            or row.get("archive_sha256") != _sha256(archives[source_id])
+        ):
+            raise TaskEvaluationSceneConfigurationContentAgentsError(
+                "scene_configuration_cad_skill_receipt_invalid"
+            )
+    root = runtime / "cad_authoring"
+    text_root = root / "text-to-cad"
+    multi_root = root / "Multi-Agent-CAD"
+    extract_provider_archive(archives["text-to-cad"], text_root)
+    extract_provider_archive(archives["multi-agent-cad"], multi_root)
+    multi_skill = root / "skills" / "multi-agent-cad" / "SKILL.md"
+    multi_skill.parent.mkdir(parents=True)
+    shutil.copyfile(runtime / "multi_agent_cad_skill.md", multi_skill)
+    for skill in specs["text-to-cad"]["skills"]:
+        if not (text_root / "skills" / str(skill) / "SKILL.md").is_file():
+            raise TaskEvaluationSceneConfigurationContentAgentsError(
+                f"scene_configuration_cad_skill_missing:{skill}"
+            )
+    if not all(
+        (multi_root / relative).is_file()
+        for relative in (
+            "multi_agent_cad/WORKFLOW.md",
+            "multi_agent_cad/graph.py",
+            "environment.yml",
+        )
+    ) or not multi_skill.is_file():
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_cad_skill_missing:multi-agent-cad"
+        )
+    return {
+        "status": "materialized",
+        "root": str(root),
+        "receipt_digest": receipt["receipt_digest"],
+        "source_commits": {
+            source_id: spec["commit"] for source_id, spec in specs.items()
+        },
+        "skills": sorted(
+            [
+                *[str(item) for item in specs["text-to-cad"]["skills"]],
+                "multi-agent-cad",
+            ]
+        ),
+    }
 
 
 def _reference_frames(
@@ -819,6 +915,7 @@ def execute_content_agents_component(
     (runtime / "input").mkdir()
     _copy_package_runtime(package_root, runtime)
     _validate_source_receipt(runtime)
+    cad_skill_runtime = _materialize_cad_skill_runtime(runtime)
     extract_provider_archive(
         runtime / "content_agents_source.zip",
         runtime / "content_agents_source",
@@ -881,6 +978,7 @@ def execute_content_agents_component(
             "reasoning_effort": CONTENT_LLM_REASONING_EFFORT,
             "image": CONTENT_IMAGE_MODEL,
         },
+        "cad_skill_runtime": cad_skill_runtime,
         "retry_cap": 0,
         "provider_zero_required_after_return": True,
         "raw_secret_values_recorded": False,
@@ -891,6 +989,7 @@ def execute_content_agents_component(
     child_environment = {
         **values,
         "BLUEPRINT_ADP_CONTENT_AGENTS_OUTPUT_DIR": str(runtime / "runtime_output"),
+        "BLUEPRINT_PRODUCTION_CAD_SKILLS_ROOT": cad_skill_runtime["root"],
     }
     # The parent provider intentionally carries both a sealed standalone
     # ``usd-core`` tree and Isaac/Kit's native runtime.  The released Content

@@ -196,12 +196,31 @@ recomputes digests, pose errors, penetration, support stability, per-camera
 pixel gates, and repeated-reset tolerances. A caller-authored summary boolean is
 not accepted as placement evidence.
 
+Destination tasks use the v3 configured-controls autostart/progression plan.
+The production worker compiles a qualification-only Arena packet before a
+placement receipt exists, launches `native-task-arena-destination-qualification`
+with no policy loaded, seals three repeated reset/settle samples plus exact
+support and forbidden-contact forces, transformed penetration, camera
+calibration, semantic pixel counts, and render artifacts, then materializes and
+publishes the placement qualification. Construction is submitted only from the
+zero-closed destination predecessor and final episode preparation is rebuilt
+with the published qualification reference. Operator-authored observation JSON
+or a manual phase skip is not an admitted path.
+
 Before a destination is used in a paid episode, retain its authoring source and
 parameters, renderer/kernel/export versions, USD bytes and digest, license and
 provider-disclosure authority, static validators, Isaac import/readback, exact
 mass/collider/material properties, and camera-visible review frames. Generated
 geometry remains `development_only` support and never replaces observed source
 geometry.
+
+CAD authoring is a production-stage dependency, not an operator preflight.
+Deployment provisions and verifies the pinned `text-to-cad` and
+`Multi-Agent-CAD` sources, the released scene-configuration component seals
+their exact archives and source receipt, and the provider worker exposes the
+validated runtime root to the authoring stage. Missing, dirty, or identity-
+drifted CAD sources block before model execution; a laptop-installed skill is
+never accepted as production lineage.
 
 ## Droplet capability contract
 

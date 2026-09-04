@@ -32,7 +32,7 @@ def stage_episode_compilation(
     queue_root: str | Path,
 ) -> dict[str, Any]:
     if (
-        request.get("run_mode") != "episode_evaluation"
+        request.get("run_mode") not in {"episode_evaluation", "destination_qualification"}
         or request.get("construction", {}).get("mode")
         != "reuse_configured_scene"
         or preparation_result.get("full_byte_service_account_readback_passed")

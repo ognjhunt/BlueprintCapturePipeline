@@ -216,13 +216,20 @@ def _aware_time(value: Any, code: str) -> datetime:
 
 def _expected_watchdog_blocker(authority: Mapping[str, Any]) -> str:
     mode = str(authority.get("execution_mode") or "")
-    if mode not in {"construction_canary", "controls", "policy", "policy_diagnostic"}:
+    if mode not in {
+        "destination_qualification",
+        "construction_canary",
+        "controls",
+        "policy",
+        "policy_diagnostic",
+    }:
         raise ValueError("native_task_arena_preallocation_authority_mode_invalid")
     return f"native_task_arena_{mode}_independent_watchdog_not_armed"
 
 
 def _expected_job_dir(authority: Mapping[str, Any]) -> str:
     return {
+        "destination_qualification": "arena-destination-qualification-job",
         "construction_canary": "arena-construction-job",
         "controls": "arena-controls-job",
         "policy": "arena-policy-job",

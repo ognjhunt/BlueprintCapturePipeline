@@ -32,6 +32,7 @@ from .task_evaluation_configured_scene_revision import (
     TaskEvaluationConfiguredSceneRevisionError,
     validate_configured_scene_revision,
 )
+from . import task_evaluation_launch_activation_destination as destination_activation
 from .task_evaluation_configured_controls_autostart import (
     configured_controls_autostart_registry_name,
     validate_configured_controls_autostart_intent,
@@ -604,6 +605,14 @@ def _load_verified_preparation(
             raise TaskEvaluationLaunchActivationWorkerError(
                 "launch_activation_episode_compilation_invalid"
             )
+        materialized_references.update(
+            destination_activation.destination_probe_reference(
+                run_mode=str(request.get("run_mode") or ""),
+                compilation=compilation,
+                compiled_root=compiled_root,
+                error_factory=TaskEvaluationLaunchActivationWorkerError,
+            )
+        )
         adapter_root = adapter_path.parent
         expected_adapter_digest = compilation.get("adapter_result_digest")
     else:
@@ -665,7 +674,10 @@ def _build_native_context(
     service_group: str,
 ) -> dict[str, Any]:
     configured_revision: dict[str, Any] | None = None
-    if preparation_request["run_mode"] == "episode_evaluation":
+    if preparation_request["run_mode"] in {
+        "episode_evaluation",
+        "destination_qualification",
+    }:
         configured_revision = validate_configured_scene_revision(
             _read_json(
                 preparation_materialized["scene.configured_revision"],
@@ -749,41 +761,21 @@ def _build_native_context(
         "service_account": service_account,
         "service_group": service_group,
     }
+    operations.update(
+        destination_activation.destination_native_operations(
+            run_mode=str(preparation_request["run_mode"]),
+            materialized=preparation_materialized,
+        )
+    )
     if _control_search_warm_retention_requested(
         packet_request=packet_request, lane=str(activation_request["lane"])
     ):
         operations["retain_warm_control_search"] = True
-    if lineage["kind"] == "initial_project":
-        operations.update(
-            {
-                "project_spend_reconciliation": str(
-                    activation_materialized["lineage.project_spend_reconciliation"]
-                ),
-                "initial_provider_zero": str(
-                    activation_materialized["lineage.initial_provider_zero"]
-                ),
-            }
+    operations.update(
+        destination_activation.lineage_operations(
+            lineage, activation_materialized
         )
-    else:
-        for name in (
-            "prior_authority",
-            "prior_result",
-            "prior_launch_receipt",
-            "prior_webapp_sync",
-            "prior_provider_zero",
-            "prior_spend_reconciliation",
-            "construction_result",
-        ):
-            operations[name] = str(activation_materialized[f"lineage.{name}"])
-        if "zero_action_result" in lineage:
-            operations["zero_action_result"] = str(
-                activation_materialized["lineage.zero_action_result"]
-            )
-        for name in ("controls_qualification_manifest",):
-            if name in lineage:
-                operations[name] = str(
-                    activation_materialized[f"lineage.{name}"]
-                )
+    )
     context = {
         "schema_version": "native_task_arena_launch_preparation_context.v2",
         "lane": activation_request["lane"],

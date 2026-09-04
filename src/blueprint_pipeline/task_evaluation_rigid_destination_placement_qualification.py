@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from .decision_evidence_contracts import canonical_digest
 OBSERVATION_SCHEMA = "task_evaluation_rigid_destination_native_observation.v1"
 OUTPUT_SCHEMA = "task_evaluation_rigid_destination_placement_qualification.v1"
 PRODUCER = "native_task_arena_destination_qualification"
+_COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 
 
 class RigidDestinationPlacementQualificationError(ValueError):
@@ -112,7 +114,7 @@ def materialize_rigid_destination_placement_qualification(
 ) -> dict[str, Any]:
     """Derive the qualification from native samples instead of asserted booleans."""
 
-    _observation_file, observation = _document(
+    observation_file, observation = _document(
         observation_path, schema=OBSERVATION_SCHEMA
     )
     static_file, static = _document(
@@ -148,6 +150,10 @@ def materialize_rigid_destination_placement_qualification(
             "rigid_destination_placement_limits_missing"
         )
     maximum_penetration = _positive(limits, "maximum_penetration_m")
+    minimum_support_force = _positive(limits, "minimum_support_contact_force_n")
+    maximum_forbidden_force = _positive(
+        limits, "maximum_forbidden_contact_force_n"
+    )
     settle_translation_tolerance = _positive(
         limits, "settle_translation_tolerance_m"
     )
@@ -170,12 +176,63 @@ def materialize_rigid_destination_placement_qualification(
         "destination_native_import_qualification_digest": _sha256(native_file),
         "destination_geometry_digest": geometry.get("geometry_digest"),
     }
+    runtime_identity = observation.get("runtime_identity")
+    container_identity = observation.get("container_identity")
+    no_policy = observation.get("no_policy_execution")
+    raw_artifacts = observation.get("raw_measurement_artifacts")
+    raw_artifact_bytes_valid = False
+    if isinstance(raw_artifacts, list) and raw_artifacts:
+        raw_artifact_bytes_valid = True
+        root = observation_file.parent.resolve()
+        for row in raw_artifacts:
+            relative = str(row.get("relative_path") or "") if isinstance(row, Mapping) else ""
+            candidate = (root / relative).resolve()
+            if (
+                not relative
+                or candidate.is_symlink()
+                or not candidate.is_file()
+                or (candidate != root and root not in candidate.parents)
+                or _sha256(candidate) != row.get("sha256")
+                or candidate.stat().st_size != row.get("size_bytes")
+            ):
+                raw_artifact_bytes_valid = False
+                break
     if (
         observation.get("status") != "completed"
         or observation.get("producer") != PRODUCER
         or observation.get("native_isaac_executed") is not True
+        or _COMMIT.fullmatch(str(observation.get("execution_commit") or ""))
+        is None
+        or not isinstance(runtime_identity, Mapping)
+        or set(runtime_identity) != {"id", "version"}
+        or not all(str(runtime_identity.get(field) or "") for field in runtime_identity)
+        or not isinstance(container_identity, Mapping)
+        or set(container_identity) != {"image", "digest"}
+        or "@sha256:" not in str(container_identity.get("image") or "")
+        or not _digest(container_identity.get("digest"))
+        or no_policy
+        != {
+            "policy_loaded": False,
+            "candidate_policy_queried": False,
+            "candidate_outcomes_accessed": False,
+            "policy_actions_executed": 0,
+        }
+        or not isinstance(raw_artifacts, list)
+        or not raw_artifacts
+        or not raw_artifact_bytes_valid
+        or any(
+            not isinstance(row, Mapping)
+            or not str(row.get("role") or "")
+            or not str(row.get("relative_path") or "")
+            or not _digest(row.get("sha256"))
+            or not isinstance(row.get("size_bytes"), int)
+            or isinstance(row.get("size_bytes"), bool)
+            or row["size_bytes"] < 1
+            for row in raw_artifacts
+        )
         or observation.get("destination_identity") != identity
         or not _digest(observation.get("configured_scene_revision_digest"))
+        or not _digest(observation.get("configured_scene_support_plane_digest"))
         or static.get("status") != "authored_structure_statically_qualified"
         or static.get("replacement_identity") != identity
         or (static.get("replacement_usd") or {}).get("sha256")
@@ -244,8 +301,12 @@ def materialize_rigid_destination_placement_qualification(
             "rigid_destination_placement_samples_invalid"
         )
     try:
-        penetration = [
-            float(row["maximum_penetration_m"]) for row in settle_samples
+        penetration = [float(row["maximum_penetration_m"]) for row in settle_samples]
+        support_forces = [
+            float(row["support_contact_peak_force_n"]) for row in settle_samples
+        ]
+        forbidden_forces = [
+            float(row["forbidden_contact_peak_force_n"]) for row in settle_samples
         ]
     except (KeyError, TypeError, ValueError) as exc:
         raise RigidDestinationPlacementQualificationError(
@@ -256,8 +317,11 @@ def materialize_rigid_destination_placement_qualification(
         for value in penetration
     )
     support_stability_passed = all(
-        row.get("support_contact_observed") is True
-        for row in settle_samples
+        math.isfinite(value) and value >= minimum_support_force
+        for value in support_forces
+    ) and all(
+        math.isfinite(value) and 0.0 <= value <= maximum_forbidden_force
+        for value in forbidden_forces
     ) and all(
         translation <= settle_translation_tolerance
         and rotation <= settle_rotation_tolerance
@@ -278,6 +342,8 @@ def materialize_rigid_destination_placement_qualification(
             and minimum > 0
             and isinstance(rows[0].get("task_support_pixel_count"), int)
             and rows[0]["task_support_pixel_count"] >= minimum
+            and isinstance(rows[0].get("camera_calibration"), Mapping)
+            and _digest(rows[0].get("render_receipt_digest"))
         )
     maximum_reset_translation = max(value[0] for value in reset_errors)
     maximum_reset_rotation = max(value[1] for value in reset_errors)
@@ -296,14 +362,27 @@ def materialize_rigid_destination_placement_qualification(
         "status": "qualified",
         "producer": "task_evaluation_rigid_destination_placement_qualification",
         "native_observation_digest": observation["observation_digest"],
+        "execution_commit": observation["execution_commit"],
+        "runtime_identity": runtime_identity,
+        "container_identity": container_identity,
         "destination_identity": identity,
         "configured_scene_revision_digest": observation[
             "configured_scene_revision_digest"
+        ],
+        "configured_scene_support_plane_digest": observation[
+            "configured_scene_support_plane_digest"
         ],
         **actual,
         "pose_world": expected_pose_mapping,
         "nonpenetration_passed": True,
         "support_stability_passed": True,
+        "native_measurement_summary": {
+            "maximum_penetration_m": max(penetration),
+            "minimum_support_contact_force_n": min(support_forces),
+            "maximum_forbidden_contact_force_n": max(forbidden_forces),
+            "raw_measurement_artifact_count": len(raw_artifacts),
+        },
+        "no_policy_execution": no_policy,
         "camera_visibility": cameras,
         "repeated_reset_readback": {
             "repeat_count": len(reset_samples),
@@ -324,6 +403,7 @@ def materialize_rigid_destination_placement_qualification(
         )
     destination.parent.mkdir(parents=True, exist_ok=True)
     write_json(destination, result)
+    destination.chmod(0o440)
     return json.loads(json.dumps(result))
 
 

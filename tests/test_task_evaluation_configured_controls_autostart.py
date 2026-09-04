@@ -45,7 +45,9 @@ def _release_template() -> bytes:
     return (json.dumps(value, sort_keys=True) + "\n").encode()
 
 
-def _intent(tmp_path: Path) -> tuple[Path, dict[str, object]]:
+def _intent(
+    tmp_path: Path, *, with_destination: bool = False
+) -> tuple[Path, dict[str, object]]:
     names = (
         "robot_asset_usd_path",
         "robot_mount_interface_path",
@@ -61,13 +63,18 @@ def _intent(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         str(_write(tmp_path / "inputs" / "overview.png", b"png"))
     ]
     phases: dict[str, dict[str, str]] = {}
-    for phase in ("construction", "controls"):
+    phase_order = (
+        ("destination", "construction", "controls")
+        if with_destination
+        else ("construction", "controls")
+    )
+    for phase in phase_order:
         phase_names = [
             "release_window_template_path",
             "authorization_path",
             "launch_authority_path",
         ]
-        if phase == "construction":
+        if phase == phase_order[0]:
             phase_names.append("lineage_path")
         phases[phase] = {}
         for name in phase_names:
@@ -119,6 +126,17 @@ def test_intent_binds_every_fixed_cpu_and_paid_boundary_input(tmp_path: Path) ->
         "phases.controls.authorization_path",
         "phases.controls.launch_authority_path",
     }
+
+
+def test_destination_intent_binds_prequalification_as_first_paid_phase(
+    tmp_path: Path,
+) -> None:
+    _path, value = _intent(tmp_path, with_destination=True)
+    assert value["schema_version"].endswith(".v3")
+    assert set(value["phases"]) == {"destination", "construction", "controls"}
+    assert "lineage_path" in value["phases"]["destination"]
+    assert "lineage_path" not in value["phases"]["construction"]
+    assert autostart.validate_configured_controls_autostart_intent(value) == value
 
 
 def test_intent_rejects_changed_robot_or_authority_bytes(tmp_path: Path) -> None:

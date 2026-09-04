@@ -112,7 +112,7 @@ def _load_envelope(path: Path) -> dict[str, Any]:
             "episode_compilation_request_invalid"
         ) from exc
     if (
-        request["run_mode"] != "episode_evaluation"
+        request["run_mode"] not in {"episode_evaluation", "destination_qualification"}
         or request["construction"]["mode"] != "reuse_configured_scene"
         or request["task"]["binding_mode"] != "reuse_configured_template"
         or request["task"]["configured_scene_revision_digest"]
@@ -198,6 +198,11 @@ def _validated_compiler_output(
         adapter_result = json.loads(adapter_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         adapter_result = {}
+    probe_artifact = output.get("destination_native_probe_request")
+    qualification_only = envelope["request"].get("run_mode") == "destination_qualification"
+    probe_path = Path(
+        str((probe_artifact or {}).get("path") or "")
+    ).resolve()
     if (
         output.get("schema_version") != COMPILER_OUTPUT_SCHEMA_VERSION
         or output.get("status") != "completed"
@@ -232,6 +237,17 @@ def _validated_compiler_output(
         != adapter_artifact.get("packet_receipt_digest")
         or adapter_result.get("runtime_source_receipt_digest")
         != adapter_artifact.get("runtime_source_receipt_digest")
+        or qualification_only != isinstance(probe_artifact, Mapping)
+        or (
+            qualification_only
+            and (
+                not _under(probe_path, output_root)
+                or probe_path.is_symlink()
+                or not probe_path.is_file()
+                or _sha256_and_size(probe_path)
+                != (probe_artifact.get("digest"), probe_artifact.get("size_bytes"))
+            )
+        )
     ):
         raise TaskEvaluationEpisodeCompilationWorkerError(
             "episode_compiler_output_invalid"
@@ -381,6 +397,21 @@ def process_episode_compilation_queue(
                 "compiler_output_digest": compiler_output[
                     "compiler_output_digest"
                 ],
+                **(
+                    {
+                        "destination_native_probe_request_path": compiler_output[
+                            "destination_native_probe_request"
+                        ]["path"],
+                        "destination_native_probe_request_digest": compiler_output[
+                            "destination_native_probe_request"
+                        ]["digest"],
+                        "destination_native_probe_request_document_digest": compiler_output[
+                            "destination_native_probe_request"
+                        ]["request_digest"],
+                    }
+                    if "destination_native_probe_request" in compiler_output
+                    else {}
+                ),
                 "customer_supplied_prebuilt_episode_packet": False,
                 "compiled_by_production": True,
                 "provider_mutation_performed": False,

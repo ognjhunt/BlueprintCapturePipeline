@@ -50,8 +50,8 @@ SCENE_CONFIGURATION_PROBE_KIND = "task-evaluation-scene-configuration"
 NON_FAMILY_REACHABLE_PROBE_KINDS = frozenset(
     {POLICY_DIAGNOSTIC_PROBE_KIND, SCENE_CONFIGURATION_PROBE_KIND}
 )
-EXPECTED_WEBSITE_PROBE_COUNT = 19
-EXPECTED_FAMILY_PROBE_COUNT = 17
+EXPECTED_WEBSITE_PROBE_COUNT = 20
+EXPECTED_FAMILY_PROBE_COUNT = 18
 EXPECTED_FAMILY_COUNT = 15
 MAX_EVIDENCE_JSON_BYTES = 32 * 1024 * 1024
 MAX_SCENE_LAUNCHES = 4096
@@ -100,6 +100,7 @@ _FAMILY_ORDER: tuple[FamilySpec, ...] = (
     FamilySpec(
         "native_task_arena",
         (
+            "native-task-arena-destination-qualification",
             "native-task-arena-construction",
             "native-task-arena-controls",
             "native-task-arena-policy",

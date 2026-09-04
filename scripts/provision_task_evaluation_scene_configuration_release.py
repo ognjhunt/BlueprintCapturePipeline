@@ -217,6 +217,8 @@ def provision_scene_configuration_release(
     node_modules_root: str | Path,
     artifixer_root: str | Path,
     content_agents_root: str | Path,
+    text_to_cad_root: str | Path,
+    multi_agent_cad_root: str | Path,
     readback: Readback,
     readback_actor: str,
 ) -> dict[str, Any]:
@@ -285,6 +287,8 @@ def provision_scene_configuration_release(
                 repository_root=repository,
                 expected_blueprint_commit=source_commit,
                 content_agents_root=content_agents_root,
+                text_to_cad_root=text_to_cad_root,
+                multi_agent_cad_root=multi_agent_cad_root,
                 output_root=component_packages[
                     "content_agents_rigid_replacement"
                 ],
@@ -351,6 +355,8 @@ def main() -> int:
     parser.add_argument("--node-modules-root", required=True)
     parser.add_argument("--artifixer-root", required=True)
     parser.add_argument("--content-agents-root", required=True)
+    parser.add_argument("--text-to-cad-root", required=True)
+    parser.add_argument("--multi-agent-cad-root", required=True)
     parser.add_argument("--readback-user", required=True)
     args = parser.parse_args()
     value = provision_scene_configuration_release(
@@ -363,6 +369,8 @@ def main() -> int:
         node_modules_root=args.node_modules_root,
         artifixer_root=args.artifixer_root,
         content_agents_root=args.content_agents_root,
+        text_to_cad_root=args.text_to_cad_root,
+        multi_agent_cad_root=args.multi_agent_cad_root,
         readback=service_account_readback(args.readback_user),
         readback_actor=f"service-account:{args.readback_user}",
     )

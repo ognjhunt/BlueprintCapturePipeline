@@ -160,7 +160,31 @@
         "identity": {"$ref": "#/$defs/versionedIdentity"},
         "definition": {"$ref": "#/$defs/reference"},
         "success_criteria": {"$ref": "#/$defs/reference"},
-        "execution": {"$ref": "#/$defs/reference"}
+        "execution": {"$ref": "#/$defs/reference"},
+        "destination": {
+          "type": "object",
+          "required": [
+            "schema_version", "identity", "relation", "visible_label", "asset",
+            "rights_admission", "static_qualification",
+            "native_import_qualification", "geometry", "pose_world",
+            "provider_disclosure_allowed", "native_probe"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {"const": "task_evaluation_rigid_destination_asset.v1"},
+            "identity": {"$ref": "#/$defs/versionedIdentity"},
+            "relation": {"enum": ["inside", "on"]},
+            "visible_label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "asset": {"$ref": "#/$defs/reference"},
+            "rights_admission": {"$ref": "#/$defs/reference"},
+            "static_qualification": {"$ref": "#/$defs/reference"},
+            "native_import_qualification": {"$ref": "#/$defs/reference"},
+            "geometry": {"$ref": "#/$defs/reference"},
+            "pose_world": {"$ref": "#/$defs/pose"},
+            "provider_disclosure_allowed": {"const": true},
+            "native_probe": {"type": "object"}
+          }
+        }
       }
     },
     "presentation": {
@@ -310,6 +334,15 @@
       "properties": {
         "id": {"$ref": "#/$defs/identifier"},
         "version": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "pose": {
+      "type": "object",
+      "required": ["position_world_m", "orientation_xyzw"],
+      "additionalProperties": false,
+      "properties": {
+        "position_world_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "orientation_xyzw": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}}
       }
     }
   }

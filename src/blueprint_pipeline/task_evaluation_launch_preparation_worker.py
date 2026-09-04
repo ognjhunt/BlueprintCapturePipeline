@@ -1195,7 +1195,7 @@ def process_launch_preparation_queue(
                 result.update(
                     {
                         "status": "queued_for_production_episode_compilation",
-                        "run_mode": "episode_evaluation",
+                        "run_mode": envelope["request"]["run_mode"],
                         "configured_scene_revision_digest": configured_revision[
                             "revision_digest"
                         ],

@@ -78,6 +78,11 @@ from blueprint_pipeline.control_plane_release_retirement import (  # noqa: E402
     apply_release_retirement_plan,
     build_release_retirement_plan,
 )
+from blueprint_pipeline.production_cad_skill_sources import (  # noqa: E402
+    DEFAULT_ROOT as DEFAULT_CAD_SKILL_SOURCE_ROOT,
+    ProductionCadSkillSourcesError,
+    provision_production_cad_skill_sources,
+)
 
 SCHEMA_VERSION = "control_plane_commit_deploy_receipt.v1"
 
@@ -2024,6 +2029,7 @@ def deploy_control_plane_commit(
     ),
     artifixer_source_root: str | Path = DEFAULT_ARTIFIXER_SOURCE_ROOT,
     content_agents_source_root: str | Path = DEFAULT_CONTENT_AGENTS_SOURCE_ROOT,
+    cad_skill_source_root: str | Path = DEFAULT_CAD_SKILL_SOURCE_ROOT,
     configured_controls_autostart_intent_root: str | Path = (
         DEFAULT_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT
     ),
@@ -2203,6 +2209,13 @@ def deploy_control_plane_commit(
         )
         _mark_stage("unit_sandbox_paths")
         try:
+            cad_skill_sources = provision_production_cad_skill_sources(
+                cad_skill_source_root
+            )
+            cad_sources_by_id = {
+                str(row["id"]): str(row["path"])
+                for row in cad_skill_sources["sources"]
+            }
             prerequisite = validate_splat_render_prerequisites(
                 root=splat_render_prerequisite_root,
                 repository_root=staged_release["release_path"],
@@ -2218,10 +2231,12 @@ def deploy_control_plane_commit(
                 node_modules_root=prerequisite_entrypoints["node_modules"],
                 artifixer_root=artifixer_source_root,
                 content_agents_root=content_agents_source_root,
+                text_to_cad_root=cad_sources_by_id["text-to-cad"],
+                multi_agent_cad_root=cad_sources_by_id["multi-agent-cad"],
                 readback=service_account_readback(DEFAULT_SERVICE_ACCOUNT),
                 readback_actor=f"service-account:{DEFAULT_SERVICE_ACCOUNT}",
             )
-        except ValueError as exc:
+        except (ValueError, ProductionCadSkillSourcesError) as exc:
             raise ControlPlaneDeployError(
                 f"deploy_scene_configuration_runtime_invalid:{exc}"
             ) from exc
@@ -2398,6 +2413,7 @@ def deploy_control_plane_commit(
         "intake_runtime_binding": runtime_binding,
         "intake_runtime": runtime,
         "scene_configuration_runtime": scene_configuration_runtime,
+        "cad_skill_sources": cad_skill_sources,
         "scene_configuration_environment": scene_configuration_environment,
         # Every slot actually held, not the one base path the caller named.
         # The lock is an N-slot semaphore, so recording the input would
@@ -2502,6 +2518,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--content-agents-source-root", default=DEFAULT_CONTENT_AGENTS_SOURCE_ROOT
     )
     parser.add_argument(
+        "--cad-skill-source-root", default=DEFAULT_CAD_SKILL_SOURCE_ROOT
+    )
+    parser.add_argument(
         "--configured-controls-autostart-intent-root",
         default=DEFAULT_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT,
     )
@@ -2548,6 +2567,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             splat_render_prerequisite_root=args.splat_render_prerequisite_root,
             artifixer_source_root=args.artifixer_source_root,
             content_agents_source_root=args.content_agents_source_root,
+            cad_skill_source_root=args.cad_skill_source_root,
             configured_controls_autostart_intent_root=(
                 args.configured_controls_autostart_intent_root
             ),

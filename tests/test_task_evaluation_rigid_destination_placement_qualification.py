@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,8 @@ def _observation(tmp_path: Path) -> tuple[dict, dict[str, dict], dict]:
     )
     pose = geometry["pose_world"]
     pose_row = [*pose["position_world_m"], *pose["orientation_xyzw"]]
+    measurements = tmp_path / "measurements.json"
+    measurements.write_bytes(b'{"native":true}\n')
     placement_path, placement = _read_reference(
         references, "task.destination.placement_qualification"
     )
@@ -43,6 +46,12 @@ def _observation(tmp_path: Path) -> tuple[dict, dict[str, dict], dict]:
         "status": "completed",
         "producer": "native_task_arena_destination_qualification",
         "native_isaac_executed": True,
+        "execution_commit": "a" * 40,
+        "runtime_identity": {"id": "isaac-arena", "version": "5.1"},
+        "container_identity": {
+            "image": "registry.example/isaac@sha256:" + "b" * 64,
+            "digest": "sha256:" + "b" * 64,
+        },
         "destination_identity": geometry["destination_identity"],
         "configured_scene_revision_digest": placement[
             "configured_scene_revision_digest"
@@ -50,6 +59,7 @@ def _observation(tmp_path: Path) -> tuple[dict, dict[str, dict], dict]:
         "configured_scene_collision_digest": placement[
             "configured_scene_collision_digest"
         ],
+        "configured_scene_support_plane_digest": "sha256:" + "c" * 64,
         "destination_asset_digest": references["task.destination.asset"][
             "digest"
         ],
@@ -63,6 +73,8 @@ def _observation(tmp_path: Path) -> tuple[dict, dict[str, dict], dict]:
         "pose_world": pose,
         "qualification_limits": {
             "maximum_penetration_m": 0.001,
+            "minimum_support_contact_force_n": 0.01,
+            "maximum_forbidden_contact_force_n": 0.1,
             "settle_translation_tolerance_m": 0.002,
             "settle_rotation_tolerance_rad": 0.01,
             "reset_translation_tolerance_m": 0.002,
@@ -75,19 +87,44 @@ def _observation(tmp_path: Path) -> tuple[dict, dict[str, dict], dict]:
         },
         "settle_samples": [
             {
+                "sample_index": index,
                 "destination_pose_world": pose_row,
                 "maximum_penetration_m": 0.0001,
-                "support_contact_observed": True,
+                "support_contact_peak_force_n": 1.0,
+                "forbidden_contact_peak_force_n": 0.0,
             }
-            for _ in range(3)
+            for index in range(3)
         ],
         "reset_samples": [
-            {"destination_pose_world": pose_row} for _ in range(3)
+            {"sample_index": index, "destination_pose_world": pose_row}
+            for index in range(3)
         ],
         "camera_observations": [
-            {"role": role, "task_support_pixel_count": 250}
-            for role in ("external", "wrist", "overview")
+            {
+                "role": role,
+                "task_support_pixel_count": 250,
+                "camera_calibration": {"fx": 320.0},
+                "render_receipt_digest": "sha256:" + character * 64,
+            }
+            for role, character in zip(
+                ("external", "wrist", "overview"), ("d", "e", "f"), strict=True
+            )
         ],
+        "raw_measurement_artifacts": [
+            {
+                "role": "native_measurements",
+                "relative_path": "measurements.json",
+                "sha256": "sha256:"
+                + hashlib.sha256(measurements.read_bytes()).hexdigest(),
+                "size_bytes": measurements.stat().st_size,
+            }
+        ],
+        "no_policy_execution": {
+            "policy_loaded": False,
+            "candidate_policy_queried": False,
+            "candidate_outcomes_accessed": False,
+            "policy_actions_executed": 0,
+        },
         "observation_digest": "",
     }
     value["observation_digest"] = canonical_digest(
@@ -130,6 +167,13 @@ def test_native_samples_materialize_scene_bound_placement_qualification(
     assert result["native_observation_digest"] == observation[
         "observation_digest"
     ]
+    assert result["execution_commit"] == "a" * 40
+    assert result["native_measurement_summary"] == {
+        "maximum_penetration_m": 0.0001,
+        "minimum_support_contact_force_n": 1.0,
+        "maximum_forbidden_contact_force_n": 0.0,
+        "raw_measurement_artifact_count": 1,
+    }
     assert result["placement_qualification_digest"] == canonical_digest(
         result, digest_field="placement_qualification_digest"
     )

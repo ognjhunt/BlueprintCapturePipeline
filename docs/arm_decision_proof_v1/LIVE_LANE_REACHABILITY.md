@@ -6,7 +6,7 @@ denominator; a transport module is not a lane and one profile builder may emit
 more than one ordered probe kind.
 
 <!-- reachability-inventory:start -->
-Current executable inventory: **35 dispatched, 19 website-reachable, 16 named
+Current executable inventory: **36 dispatched, 20 website-reachable, 16 named
 non-reachable, 0 awaiting-builder.**
 <!-- reachability-inventory:end -->
 
@@ -49,6 +49,7 @@ attempt completed. Production proof additionally requires:
 | `adp009b-exact-simready-isaac` | `build_simready_isaac_live_profile.py` |
 | `adp009d-franka-native-microcheck` | `build_adp009d_840313_live_profile.py` |
 | `native-task-arena-construction` | `build_native_task_arena_live_profile.py` |
+| `native-task-arena-destination-qualification` | `build_native_task_arena_live_profile.py` |
 | `native-task-arena-controls` | `build_native_task_arena_live_profile.py` |
 | `native-task-arena-policy` | `build_native_task_arena_live_profile.py` |
 | `native-task-arena-policy-diagnostic` | `build_native_task_arena_live_profile.py` |

@@ -9,9 +9,13 @@
     "status",
     "producer",
     "native_observation_digest",
+    "execution_commit",
+    "runtime_identity",
+    "container_identity",
     "destination_identity",
     "configured_scene_revision_digest",
     "configured_scene_collision_digest",
+    "configured_scene_support_plane_digest",
     "destination_asset_digest",
     "destination_static_qualification_digest",
     "destination_native_import_qualification_digest",
@@ -19,6 +23,8 @@
     "pose_world",
     "nonpenetration_passed",
     "support_stability_passed",
+    "native_measurement_summary",
+    "no_policy_execution",
     "camera_visibility",
     "repeated_reset_readback",
     "placement_qualification_digest"
@@ -29,9 +35,21 @@
     "status": {"const": "qualified"},
     "producer": {"const": "task_evaluation_rigid_destination_placement_qualification"},
     "native_observation_digest": {"$ref": "#/$defs/digest"},
+    "execution_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "runtime_identity": {"$ref": "#/$defs/versionedIdentity"},
+    "container_identity": {
+      "type": "object",
+      "required": ["image", "digest"],
+      "additionalProperties": false,
+      "properties": {
+        "image": {"type": "string", "pattern": "@sha256:[0-9a-f]{64}$"},
+        "digest": {"$ref": "#/$defs/digest"}
+      }
+    },
     "destination_identity": {"$ref": "#/$defs/versionedIdentity"},
     "configured_scene_revision_digest": {"$ref": "#/$defs/digest"},
     "configured_scene_collision_digest": {"$ref": "#/$defs/digest"},
+    "configured_scene_support_plane_digest": {"$ref": "#/$defs/digest"},
     "destination_asset_digest": {"$ref": "#/$defs/digest"},
     "destination_static_qualification_digest": {"$ref": "#/$defs/digest"},
     "destination_native_import_qualification_digest": {"$ref": "#/$defs/digest"},
@@ -39,6 +57,28 @@
     "pose_world": {"$ref": "#/$defs/pose"},
     "nonpenetration_passed": {"const": true},
     "support_stability_passed": {"const": true},
+    "native_measurement_summary": {
+      "type": "object",
+      "required": ["maximum_penetration_m", "minimum_support_contact_force_n", "maximum_forbidden_contact_force_n", "raw_measurement_artifact_count"],
+      "additionalProperties": false,
+      "properties": {
+        "maximum_penetration_m": {"type": "number", "minimum": 0},
+        "minimum_support_contact_force_n": {"type": "number", "minimum": 0},
+        "maximum_forbidden_contact_force_n": {"type": "number", "minimum": 0},
+        "raw_measurement_artifact_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "no_policy_execution": {
+      "type": "object",
+      "required": ["policy_loaded", "candidate_policy_queried", "candidate_outcomes_accessed", "policy_actions_executed"],
+      "additionalProperties": false,
+      "properties": {
+        "policy_loaded": {"const": false},
+        "candidate_policy_queried": {"const": false},
+        "candidate_outcomes_accessed": {"const": false},
+        "policy_actions_executed": {"const": 0}
+      }
+    },
     "camera_visibility": {
       "type": "object",
       "required": ["external", "wrist", "overview"],

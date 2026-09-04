@@ -62,6 +62,11 @@ from blueprint_pipeline.native_task_arena_runtime_preflight_bundle import (
     build_native_task_arena_runtime_preflight_bundle,
     load_verified_native_task_arena_runtime_preflight_bundle,
 )
+from blueprint_pipeline.native_task_arena_destination_qualification_bundle import (
+    RESULT_FILENAME as DESTINATION_RESULT_FILENAME,
+    build_native_task_arena_destination_qualification_bundle,
+    load_verified_native_task_arena_destination_qualification_bundle,
+)
 from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
     _plain_nurec_volume_contract,
 )
@@ -99,6 +104,7 @@ def _sha(path: Path) -> str:
 
 def test_native_execution_contract_freezes_all_modes_and_candidates() -> None:
     assert set(EXECUTION_MODE_CONTRACTS) == {
+        "destination_qualification",
         "runtime_preflight",
         "construction_canary",
         "controls",
@@ -191,7 +197,13 @@ def test_transport_accepts_only_exact_nonqualifying_downstream_diagnostic() -> N
     }
 
 
-def _packet(root: Path, *, scene_id: str, control_search: bool = False) -> Path:
+def _packet(
+    root: Path,
+    *,
+    scene_id: str,
+    control_search: bool = False,
+    destination_support: bool = False,
+) -> Path:
     packet = root / f"packet-{scene_id}"
     assets = packet / "assets"
     assets.mkdir(parents=True)
@@ -209,6 +221,19 @@ def _packet(root: Path, *, scene_id: str, control_search: bool = False) -> Path:
         if role == "task_object":
             binding["asset_id"] = "admitted-can"
         source_bindings.append(binding)
+    if destination_support:
+        path = assets / "task_support.usd"
+        path.write_text(f"exact:{scene_id}:task_support\n", encoding="utf-8")
+        source_bindings.append(
+            {
+                "semantic_role": "task_support",
+                "asset_id": "blue-document-tray",
+                "source": {"root": "evidence", "relative_path": path.name},
+                "staged_relative_path": f"assets/{path.name}",
+                "staged_size_bytes": path.stat().st_size,
+                "staged_sha256": _sha(path),
+            }
+        )
     task_object = assets / "task_object.usd"
     packet_request: dict[str, object] = {"scene_id": scene_id}
     if control_search:
@@ -2079,6 +2104,138 @@ def test_runtime_preflight_bundle_reuses_exact_packet_and_stops_before_motion(
         expected_execution_mode="runtime_preflight",
     )
     assert verified_manifest["execution_mode"] == "runtime_preflight"
+
+
+def test_destination_qualification_bundle_binds_policy_free_native_inputs(
+    tmp_path: Path,
+) -> None:
+    packet = _packet(tmp_path, scene_id="841757", destination_support=True)
+    packet_receipt = json.loads(
+        (packet / "native_task_arena_packet_receipt.v1.json").read_text()
+    )
+    bindings = {
+        row["semantic_role"]: row for row in packet_receipt["source_bindings"]
+    }
+    identity = {"id": "blue-document-tray", "version": "v1"}
+    support = tmp_path / "support-plane.json"
+    support.write_text(
+        json.dumps(
+            {
+                "schema_version": "task_evaluation_support_plane_input.v1",
+                "scene_id": "841757",
+                "sage_prim_path": "/Root/Cabinet",
+                "top_z_m": 0.275,
+            }
+        ),
+        encoding="utf-8",
+    )
+    static = tmp_path / "destination-static.json"
+    static.write_text(
+        json.dumps(
+            {
+                "replacement_identity": identity,
+                "observed_structure": {
+                    "collision_bounds_body_frame_m": {
+                        "minimum": [-0.165, -0.24, 0.0],
+                        "maximum": [0.165, 0.24, 0.03],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    native = tmp_path / "destination-native.json"
+    native.write_text(json.dumps({"replacement_identity": identity}), encoding="utf-8")
+    geometry = tmp_path / "destination-geometry.json"
+    geometry_value = {
+        "destination_identity": identity,
+        "pose_world": {
+            "position_world_m": [1.0, 2.0, 0.275],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "geometry_digest": "",
+    }
+    geometry_value["geometry_digest"] = canonical_digest(
+        geometry_value, digest_field="geometry_digest"
+    )
+    geometry.write_text(json.dumps(geometry_value), encoding="utf-8")
+    commit = "e" * 40
+    image_digest = "sha256:" + NATIVE_TASK_ARENA_IMAGE.rsplit("@sha256:", 1)[-1]
+    probe = {
+        "schema_version": "task_evaluation_rigid_destination_native_probe_request.v1",
+        "execution_commit": commit,
+        "runtime_identity": {"id": "isaac-arena", "version": "5.1"},
+        "container_identity": {
+            "image": NATIVE_TASK_ARENA_IMAGE,
+            "digest": image_digest,
+        },
+        "destination_identity": identity,
+        "configured_scene_revision_digest": "sha256:" + "1" * 64,
+        "configured_scene_collision_digest": bindings["scene_collision"][
+            "staged_sha256"
+        ],
+        "configured_scene_support_plane_digest": _sha(support),
+        "destination_asset_digest": bindings["task_support"]["staged_sha256"],
+        "destination_static_qualification_digest": _sha(static),
+        "destination_native_import_qualification_digest": _sha(native),
+        "destination_geometry_digest": geometry_value["geometry_digest"],
+        "pose_world": geometry_value["pose_world"],
+        "qualification_limits": {
+            "maximum_penetration_m": 0.001,
+            "minimum_support_contact_force_n": 0.01,
+            "maximum_forbidden_contact_force_n": 0.1,
+            "settle_translation_tolerance_m": 0.002,
+            "settle_rotation_tolerance_rad": 0.01,
+            "reset_translation_tolerance_m": 0.002,
+            "reset_rotation_tolerance_rad": 0.01,
+            "minimum_camera_pixels": {
+                "external": 100,
+                "wrist": 100,
+                "overview": 100,
+            },
+        },
+        "settle_sample_count": 3,
+        "settle_steps_per_sample": 60,
+        "candidate_policy_queried": False,
+        "policy_loaded": False,
+        "request_digest": "",
+    }
+    probe["request_digest"] = canonical_digest(probe, digest_field="request_digest")
+    probe_path = tmp_path / "probe.json"
+    probe_path.write_text(json.dumps(probe), encoding="utf-8")
+
+    receipt = build_native_task_arena_destination_qualification_bundle(
+        job_dir=tmp_path / "destination-bundle",
+        packet_dir=packet,
+        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
+        probe_request_path=probe_path,
+        configured_scene_support_plane_path=support,
+        destination_static_qualification_path=static,
+        destination_native_import_qualification_path=native,
+        destination_geometry_path=geometry,
+        implementation_commit=commit,
+        generated_at="fixed",
+    )
+    assert receipt["execution_mode"] == "destination_qualification"
+    assert receipt["expected_output_filename"] == DESTINATION_RESULT_FILENAME
+    assert receipt["candidate_policy_queried"] is False
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        names = set(archive.namelist())
+    assert (
+        "provider_runtime/blueprint_pipeline/"
+        "task_evaluation_rigid_destination_native_observation.py"
+    ) in names
+    assert (
+        "provider_runtime/runtime_inputs/"
+        "rigid_destination_native_probe_request.v1.json"
+    ) in names
+    loaded = load_verified_native_task_arena_destination_qualification_bundle(
+        tmp_path
+        / "destination-bundle/native_task_arena_provider_bundle_receipt.v1.json",
+        expected_implementation_commit=commit,
+        expected_packet_receipt_digest=receipt["packet_receipt_digest"],
+    )
+    assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
 
 
 def test_runtime_preflight_classifies_plain_volume_without_spg(tmp_path: Path) -> None:

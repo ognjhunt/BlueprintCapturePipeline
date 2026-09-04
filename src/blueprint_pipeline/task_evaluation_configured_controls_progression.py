@@ -262,6 +262,8 @@ def stage_configured_controls_episode_preparation(
     submitted_by: str,
     readiness_materializer: ReadinessMaterializer = _default_readiness_materializer,
     preparation_stager: PreparationStager | None = None,
+    destination_qualification_only: bool = False,
+    destination_placement_qualification: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Materialize canonical inputs and queue one no-spend episode compilation."""
 
@@ -299,11 +301,22 @@ def stage_configured_controls_episode_preparation(
                 blocker="configured_controls_progression_cameras_invalid",
             )["rows"],
             "runtime_binding": runtime,
+            "destination_qualification_only": destination_qualification_only,
+            "destination_placement_qualification": (
+                dict(destination_placement_qualification)
+                if destination_placement_qualification is not None
+                else None
+            ),
         }
     )
     namespace = (
-        f"{revision['configuration_run_id']}-franka-controls-"
-        f"{expected_production_commit[:12]}"
+        f"{revision['configuration_run_id']}-franka-"
+        + (
+            "destination-qualification-"
+            if destination_qualification_only
+            else "controls-"
+        )
+        + expected_production_commit[:12]
     )
     if _IDENTIFIER.fullmatch(namespace) is None:
         raise TaskEvaluationConfiguredControlsProgressionError(
@@ -316,7 +329,11 @@ def stage_configured_controls_episode_preparation(
         )
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
     root = root.resolve()
-    receipt_path = root / "configured_controls_progression.v1.json"
+    receipt_path = root / (
+        "configured_destination_qualification_progression.v1.json"
+        if destination_qualification_only
+        else "configured_controls_progression.v1.json"
+    )
     if receipt_path.is_file() and not receipt_path.is_symlink():
         try:
             existing = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -327,7 +344,12 @@ def stage_configured_controls_episode_preparation(
         if (
             not isinstance(existing, Mapping)
             or existing.get("schema_version") != PROGRESSION_SCHEMA_VERSION
-            or existing.get("status") != "episode_preparation_queued"
+            or existing.get("status")
+            != (
+                "destination_qualification_preparation_queued"
+                if destination_qualification_only
+                else "episode_preparation_queued"
+            )
             or existing.get("progression_input_digest")
             != progression_input_digest
             or existing.get("progression_digest")
@@ -341,10 +363,17 @@ def stage_configured_controls_episode_preparation(
         raise TaskEvaluationConfiguredControlsProgressionError(
             "configured_controls_progression_output_root_not_empty"
         )
-    controller_identity = {
-        "id": "canonical-planar-push-control-pair",
-        "version": "zero-action-plus-scripted-positive-v1",
-    }
+    controller_identity = (
+        {
+            "id": "native-destination-no-policy-probe",
+            "version": "zero-action-v1",
+        }
+        if destination_qualification_only
+        else {
+            "id": "canonical-planar-push-control-pair",
+            "version": "zero-action-plus-scripted-positive-v1",
+        }
+    )
     materialized = dict(
         readiness_materializer(
             configured_revision=revision,
@@ -356,7 +385,11 @@ def stage_configured_controls_episode_preparation(
             # The positive controller is the actuator-bearing controller.  The
             # native controls lane independently injects the zero-action
             # negative and requires both outcomes from the same packet.
-            controller_kind="deterministic_scripted",
+            controller_kind=(
+                "zero_action"
+                if destination_qualification_only
+                else "deterministic_scripted"
+            ),
             output_root=root,
         )
     )
@@ -407,13 +440,34 @@ def stage_configured_controls_episode_preparation(
         )
     offering = publication["configured_scene_offering"]
     task = offering["task"]
+    destination = task.get("destination")
+    if destination_qualification_only and not isinstance(destination, Mapping):
+        raise TaskEvaluationConfiguredControlsProgressionError(
+            "configured_controls_progression_destination_missing"
+        )
+    if not destination_qualification_only and isinstance(destination, Mapping):
+        if destination_placement_qualification is None:
+            raise TaskEvaluationConfiguredControlsProgressionError(
+                "configured_controls_progression_destination_qualification_missing"
+            )
+        destination = {
+            **dict(destination),
+            "placement_qualification": dict(
+                destination_placement_qualification
+            ),
+        }
     request: dict[str, Any] = {
         "schema_version": "task_evaluation_launch_preparation_request.v1",
-        "run_mode": "episode_evaluation",
+        "run_mode": (
+            "destination_qualification"
+            if destination_qualification_only
+            else "episode_evaluation"
+        ),
         "expected_production_commit": expected_production_commit,
         "preparation_id": namespace + "-preparation",
         "team_namespace": revision["team_namespace"],
-        "run_id": namespace + "-episode",
+        "run_id": namespace
+        + ("-probe" if destination_qualification_only else "-episode"),
         "scene": {
             "mode": "reuse_configured_revision",
             "identity": dict(revision["scene_identity"]),
@@ -432,7 +486,11 @@ def stage_configured_controls_episode_preparation(
         },
         "controller": {
             "identity": controller_identity,
-            "kind": "deterministic_scripted",
+            "kind": (
+                "zero_action"
+                if destination_qualification_only
+                else "deterministic_scripted"
+            ),
             "configuration": published["controller_configuration"],
         },
         "task": {
@@ -446,6 +504,11 @@ def stage_configured_controls_episode_preparation(
                 "identity": dict(task["subject_identity"]),
                 "physics_authority": "configured_scene_revision",
             },
+            **(
+                {"destination": dict(destination)}
+                if isinstance(destination, Mapping)
+                else {}
+            ),
         },
         "sensors": {"configuration": published["sensor_configuration"]},
         "runtime": runtime["runtime"],
@@ -484,7 +547,11 @@ def stage_configured_controls_episode_preparation(
         )
     result = {
         "schema_version": PROGRESSION_SCHEMA_VERSION,
-        "status": "episode_preparation_queued",
+        "status": (
+            "destination_qualification_preparation_queued"
+            if destination_qualification_only
+            else "episode_preparation_queued"
+        ),
         "configuration_run_id": revision["configuration_run_id"],
         "configured_scene_revision_digest": revision["revision_digest"],
         "configured_scene_offering_digest": offering["offering_digest"],
@@ -496,6 +563,7 @@ def stage_configured_controls_episode_preparation(
         "robot_base_qualified": False,
         "camera_configuration_qualified": False,
         "native_construction_readback_required": True,
+        "destination_qualification_only": destination_qualification_only,
         "zero_action_required": True,
         "scripted_positive_required": True,
         "candidate_policy_queried": False,
@@ -636,15 +704,24 @@ def build_configured_controls_activation_request(
         preparation_result,
         blocker="configured_controls_progression_preparation_result_invalid",
     )
+    destination_lane = lane == "native_task_arena_destination_qualification"
+    expected_state_status = (
+        "destination_qualification_preparation_queued"
+        if destination_lane
+        else "episode_preparation_queued"
+    )
+    expected_run_mode = (
+        "destination_qualification" if destination_lane else "episode_evaluation"
+    )
     if (
         state.get("schema_version") != PROGRESSION_SCHEMA_VERSION
-        or state.get("status") != "episode_preparation_queued"
+        or state.get("status") != expected_state_status
         or state.get("progression_digest")
         != canonical_digest(state, digest_field="progression_digest")
         or preparation.get("schema_version")
         != "task_evaluation_launch_preparation_result.v1"
         or preparation.get("status") != "queued_for_production_episode_compilation"
-        or preparation.get("run_mode") != "episode_evaluation"
+        or preparation.get("run_mode") != expected_run_mode
         or preparation.get("configured_scene_revision_digest")
         != state.get("configured_scene_revision_digest")
         or preparation.get("automatic_progression_required") is not True
@@ -652,12 +729,26 @@ def build_configured_controls_activation_request(
         or preparation.get("paid_execution_requested") is not False
         or preparation.get("result_digest")
         != canonical_digest(preparation, digest_field="result_digest")
-        or lane not in {"native_task_arena_construction", "native_task_arena_controls"}
+        or lane
+        not in {
+            "native_task_arena_destination_qualification",
+            "native_task_arena_construction",
+            "native_task_arena_construction_after_destination",
+            "native_task_arena_controls",
+        }
     ):
         raise TaskEvaluationConfiguredControlsProgressionError(
             "configured_controls_progression_preparation_result_invalid"
         )
-    expected_lineage_kind = "initial_project" if lane == "native_task_arena_construction" else "predecessor"
+    expected_lineage_kind = (
+        "initial_project"
+        if lane
+        in {
+            "native_task_arena_destination_qualification",
+            "native_task_arena_construction",
+        }
+        else "predecessor"
+    )
     if lineage.get("kind") != expected_lineage_kind:
         raise TaskEvaluationConfiguredControlsProgressionError(
             "configured_controls_progression_lineage_invalid"
@@ -673,7 +764,12 @@ def build_configured_controls_activation_request(
         expected_production_commit=state["expected_production_commit"],
         activation_id=(
             preparation_request["run_id"]
-            + ("-construction" if lane == "native_task_arena_construction" else "-controls")
+            + {
+                "native_task_arena_destination_qualification": "-destination",
+                "native_task_arena_construction": "-construction",
+                "native_task_arena_construction_after_destination": "-construction",
+                "native_task_arena_controls": "-controls",
+            }[lane]
         ),
         team_namespace=preparation_request["team_namespace"],
         preparation={
@@ -746,9 +842,16 @@ def stage_configured_controls_activation(
     result = {
         "schema_version": PROGRESSION_SCHEMA_VERSION,
         "status": (
-            "construction_activation_queued"
-            if lane == "native_task_arena_construction"
-            else "controls_activation_queued"
+            {
+                "native_task_arena_destination_qualification": (
+                    "destination_qualification_activation_queued"
+                ),
+                "native_task_arena_construction": "construction_activation_queued",
+                "native_task_arena_construction_after_destination": (
+                    "construction_activation_queued"
+                ),
+                "native_task_arena_controls": "controls_activation_queued",
+            }[lane]
         ),
         "base_progression_digest": state["progression_digest"],
         "configured_scene_revision_digest": state["configured_scene_revision_digest"],
@@ -795,7 +898,11 @@ def build_authorized_webapp_launch_request(
     )
     if (
         state.get("status")
-        not in {"construction_activation_queued", "controls_activation_queued"}
+        not in {
+            "destination_qualification_activation_queued",
+            "construction_activation_queued",
+            "controls_activation_queued",
+        }
         or state.get("progression_digest")
         != canonical_digest(state, digest_field="progression_digest")
         or activation.get("schema_version")
@@ -901,9 +1008,16 @@ def submit_authorized_progression_launch(
     result = {
         "schema_version": PROGRESSION_SCHEMA_VERSION,
         "status": (
-            "construction_launch_queued"
-            if request["progression"]["lane"] == "native_task_arena_construction"
-            else "controls_pair_launch_queued"
+            {
+                "native_task_arena_destination_qualification": (
+                    "destination_qualification_launch_queued"
+                ),
+                "native_task_arena_construction": "construction_launch_queued",
+                "native_task_arena_construction_after_destination": (
+                    "construction_launch_queued"
+                ),
+                "native_task_arena_controls": "controls_pair_launch_queued",
+            }[request["progression"]["lane"]]
         ),
         "configured_scene_revision_digest": request["progression"][
             "configured_scene_revision_digest"

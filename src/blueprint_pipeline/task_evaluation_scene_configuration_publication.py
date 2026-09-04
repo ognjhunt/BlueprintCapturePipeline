@@ -509,6 +509,11 @@ def publish_configured_scene_revision(
             "definition": dict(task["definition"]),
             "success_criteria": dict(task["success_criteria"]),
             "execution": dict(task["execution"]),
+            **(
+                {"destination": dict(task["destination"])}
+                if isinstance(task.get("destination"), Mapping)
+                else {}
+            ),
         },
         "presentation": {
             "task_thumbnail": {
@@ -606,6 +611,11 @@ def publish_configured_scene_revision(
             "kind": task["kind"],
             "strategy": task["strategy"],
             "subject_identity": dict(revision["replacement"]["identity"]),
+            **(
+                {"destination": dict(revision["task_template"]["destination"])}
+                if isinstance(revision["task_template"].get("destination"), Mapping)
+                else {}
+            ),
         },
         "presentation": dict(revision["presentation"]),
         "evaluation_preparation_binding": {

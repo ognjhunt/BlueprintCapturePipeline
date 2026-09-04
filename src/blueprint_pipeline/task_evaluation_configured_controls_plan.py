@@ -16,6 +16,9 @@ from .decision_evidence_contracts import canonical_digest
 
 
 PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v2"
+DESTINATION_PLAN_SCHEMA_VERSION = (
+    "task_evaluation_configured_controls_progression_plan.v3"
+)
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _TOP_LEVEL_PATHS = {
@@ -89,15 +92,25 @@ def _flatten_bindings(bindings: Mapping[str, Any]) -> dict[str, Path]:
             "configured_controls_plan_bindings_invalid"
         )
     phases = bindings.get("phases")
-    if not isinstance(phases, Mapping) or set(phases) != {"construction", "controls"}:
+    phase_names = set(phases) if isinstance(phases, Mapping) else set()
+    if phase_names not in (
+        {"construction", "controls"},
+        {"destination", "construction", "controls"},
+    ):
         raise TaskEvaluationConfiguredControlsPlanError(
             "configured_controls_plan_bindings_invalid"
         )
     flattened = {name: _path(bindings[name]) for name in sorted(_TOP_LEVEL_PATHS)}
-    for phase_name in ("construction", "controls"):
+    ordered_phases = [
+        name
+        for name in ("destination", "construction", "controls")
+        if name in phase_names
+    ]
+    first_phase = ordered_phases[0]
+    for phase_name in ordered_phases:
         phase = phases.get(phase_name)
         expected = _COMMON_PHASE_PATHS | (
-            {"lineage_path"} if phase_name == "construction" else set()
+            {"lineage_path"} if phase_name == first_phase else set()
         )
         if not isinstance(phase, Mapping) or set(phase) != expected:
             raise TaskEvaluationConfiguredControlsPlanError(
@@ -157,6 +170,11 @@ def materialize_configured_controls_plan(
             "configured_controls_plan_source_launch_mismatch"
         )
     paths = _flatten_bindings(bindings)
+    phase_names = [
+        name
+        for name in ("destination", "construction", "controls")
+        if name in bindings["phases"]
+    ]
     inventory: dict[str, dict[str, Any]] = {}
     for name, path in paths.items():
         row = _file_identity(path)
@@ -180,8 +198,18 @@ def materialize_configured_controls_plan(
         f"{expected_production_commit[:12]}"
     )
     expected_activation_ids = {
-        phase: f"{namespace}-episode-{phase}"
-        for phase in ("construction", "controls")
+        "construction": f"{namespace}-episode-construction",
+        "controls": f"{namespace}-episode-controls",
+        **(
+            {
+                "destination": (
+                    f"{configuration_run_id}-franka-destination-qualification-"
+                    f"{expected_production_commit[:12]}-probe-destination"
+                )
+            }
+            if "destination" in phase_names
+            else {}
+        ),
     }
     profiles = Path(profile_dir).expanduser()
     if not profiles.is_absolute() or profiles.is_symlink() or not profiles.is_dir():
@@ -189,7 +217,11 @@ def materialize_configured_controls_plan(
             "configured_controls_plan_profile_dir_invalid"
         )
     plan = {
-        "schema_version": PLAN_SCHEMA_VERSION,
+        "schema_version": (
+            DESTINATION_PLAN_SCHEMA_VERSION
+            if "destination" in phase_names
+            else PLAN_SCHEMA_VERSION
+        ),
         "enabled": True,
         "source_launch_id": source_launch_id,
         "source_launch_receipt_digest": receipt["receipt_digest"],
@@ -207,14 +239,14 @@ def materialize_configured_controls_plan(
                 **(
                     {
                         "lineage_path": str(
-                            paths["phases.construction.lineage_path"]
+                            paths[f"phases.{phase_names[0]}.lineage_path"]
                         )
                     }
-                    if phase == "construction"
+                    if phase == phase_names[0]
                     else {}
                 ),
             }
-            for phase in ("construction", "controls")
+            for phase in phase_names
         },
         "artifact_inventory": {
             name: {key: value for key, value in row.items() if key != "value"}
@@ -224,7 +256,7 @@ def materialize_configured_controls_plan(
             phase: {
                 "expected_activation_id": expected_activation_ids[phase],
             }
-            for phase in ("construction", "controls")
+            for phase in phase_names
         },
         "provider_mutation_performed": False,
         "paid_execution_requested": False,

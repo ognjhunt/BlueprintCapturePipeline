@@ -22,6 +22,7 @@ from blueprint_pipeline.content_agents_model_compatibility import (
     materialize_content_agents_model_compatibility_plan,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.production_cad_skill_sources import SOURCE_SPECS
 from scripts.build_task_evaluation_scene_configuration_component_package import (
     build_scene_configuration_component_package,
 )
@@ -61,12 +62,16 @@ def build_content_agents_scene_configuration_component(
     repository_root: str | Path,
     expected_blueprint_commit: str,
     content_agents_root: str | Path,
+    text_to_cad_root: str | Path,
+    multi_agent_cad_root: str | Path,
     output_root: str | Path,
 ) -> dict:
     """Seal exact released source plus the existing Blueprint runtime adapter."""
 
     repository = Path(repository_root).expanduser().resolve()
     upstream = Path(content_agents_root).expanduser().resolve()
+    text_to_cad = Path(text_to_cad_root).expanduser().resolve()
+    multi_agent_cad = Path(multi_agent_cad_root).expanduser().resolve()
     if (
         _git(repository, "rev-parse", "HEAD") != expected_blueprint_commit
         or _git(repository, "status", "--porcelain=v1")
@@ -78,6 +83,19 @@ def build_content_agents_scene_configuration_component(
         or _git(upstream, "status", "--porcelain=v1")
     ):
         raise ValueError("scene_configuration_content_agents_source_invalid")
+    cad_specs = {str(spec["id"]): spec for spec in SOURCE_SPECS}
+    for source, source_id in (
+        (text_to_cad, "text-to-cad"),
+        (multi_agent_cad, "multi-agent-cad"),
+    ):
+        spec = cad_specs[source_id]
+        if (
+            _git(source, "rev-parse", "HEAD") != spec["commit"]
+            or _git(source, "rev-parse", "HEAD^{tree}") != spec["tree"]
+            or _git(source, "status", "--porcelain=v1")
+            or _sha256(source / "LICENSE") != spec["license_sha256"]
+        ):
+            raise ValueError("scene_configuration_cad_skill_source_invalid")
     staging = Path(tempfile.mkdtemp(prefix="content-agents-scene-configuration-"))
     try:
         archive = staging / "content_agents_source.zip"
@@ -87,6 +105,58 @@ def build_content_agents_scene_configuration_component(
             "--format=zip",
             f"--output={archive}",
             "HEAD",
+        )
+        text_to_cad_archive = staging / "text_to_cad_skills_source.zip"
+        _git(
+            text_to_cad,
+            "archive",
+            "--format=zip",
+            f"--output={text_to_cad_archive}",
+            "HEAD",
+            "LICENSE",
+            *[f"skills/{name}" for name in cad_specs["text-to-cad"]["skills"]],
+            "packages/cadpy",
+            "packages/cadpy_metadata",
+        )
+        multi_agent_cad_archive = staging / "multi_agent_cad_source.zip"
+        _git(
+            multi_agent_cad,
+            "archive",
+            "--format=zip",
+            f"--output={multi_agent_cad_archive}",
+            "HEAD",
+        )
+        cad_source_receipt = {
+            "schema_version": "task_evaluation_cad_skill_component_source.v1",
+            "status": "pinned_sources_packaged",
+            "sources": [
+                {
+                    "id": source_id,
+                    "repository": cad_specs[source_id]["repository"],
+                    "commit": cad_specs[source_id]["commit"],
+                    "tree": cad_specs[source_id]["tree"],
+                    "license": cad_specs[source_id]["license"],
+                    "license_sha256": cad_specs[source_id]["license_sha256"],
+                    "skills": list(cad_specs[source_id]["skills"]),
+                    "archive_sha256": _sha256(
+                        text_to_cad_archive
+                        if source_id == "text-to-cad"
+                        else multi_agent_cad_archive
+                    ),
+                }
+                for source_id in ("text-to-cad", "multi-agent-cad")
+            ],
+            "skill_count": 10,
+            "scene_specific_source": False,
+            "receipt_digest": "",
+        }
+        cad_source_receipt["receipt_digest"] = canonical_digest(
+            cad_source_receipt, digest_field="receipt_digest"
+        )
+        (staging / "cad_skill_source_receipt.json").write_text(
+            json.dumps(cad_source_receipt, sort_keys=True, separators=(",", ":"))
+            + "\n",
+            encoding="utf-8",
         )
         source_receipt = {
             "schema_version": "task_evaluation_content_agents_component_source.v1",
@@ -119,6 +189,12 @@ def build_content_agents_scene_configuration_component(
             "src/blueprint_pipeline/provider_archive.py": "provider_archive.py",
             "src/blueprint_pipeline/content_agents_model_compatibility.py": (
                 "content_agents_model_compatibility.py"
+            ),
+            "src/blueprint_pipeline/production_cad_skill_sources.py": (
+                "production_cad_skill_sources.py"
+            ),
+            "skillpacks/cad_authoring/skills/multi-agent-cad/SKILL.md": (
+                "multi_agent_cad_skill.md"
             ),
             "docs/arm_decision_proof_v1/assets/adp009a_content_agents_material.vast.yaml": (
                 "material_agent.yaml"
@@ -155,7 +231,9 @@ def build_content_agents_scene_configuration_component(
             driver_entrypoint="run",
             source_repository="https://github.com/ognjhunt/BlueprintCapturePipeline",
             source_commit=expected_blueprint_commit,
-            source_license="Blueprint adapter; bundled upstream Apache-2.0",
+            source_license=(
+                "Blueprint adapter; bundled upstream Apache-2.0 and MIT CAD skills"
+            ),
             output_root=output_root,
         )
     finally:
@@ -167,12 +245,16 @@ def main() -> int:
     parser.add_argument("--repository-root", required=True)
     parser.add_argument("--expected-blueprint-commit", required=True)
     parser.add_argument("--content-agents-root", required=True)
+    parser.add_argument("--text-to-cad-root", required=True)
+    parser.add_argument("--multi-agent-cad-root", required=True)
     parser.add_argument("--output-root", required=True)
     args = parser.parse_args()
     value = build_content_agents_scene_configuration_component(
         repository_root=args.repository_root,
         expected_blueprint_commit=args.expected_blueprint_commit,
         content_agents_root=args.content_agents_root,
+        text_to_cad_root=args.text_to_cad_root,
+        multi_agent_cad_root=args.multi_agent_cad_root,
         output_root=args.output_root,
     )
     print(json.dumps(value, sort_keys=True))

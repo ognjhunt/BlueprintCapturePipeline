@@ -138,6 +138,7 @@ def request() -> dict[str, object]:
 def test_accepts_scene_neutral_customer_contract_and_has_stable_digest() -> None:
     value = request()
     assert validate_launch_preparation_request(value) == value
+
     assert launch_preparation_request_digest(value) == launch_preparation_request_digest(
         copy.deepcopy(value)
     )
@@ -283,6 +284,33 @@ def test_pick_and_place_requires_a_distinct_qualified_destination_asset() -> Non
         "provider_disclosure_allowed": True,
     }
     assert validate_launch_preparation_request(value) == value
+
+    qualification = copy.deepcopy(value)
+    qualification["run_mode"] = "destination_qualification"
+    qualification["task"]["destination"].pop("placement_qualification")
+    qualification["task"]["destination"]["native_probe"] = {
+        "schema_version": (
+            "task_evaluation_rigid_destination_native_probe_configuration.v1"
+        ),
+        "placement_support_scene_prim_paths": ["/Root/Support"],
+        "qualification_limits": {
+            "maximum_penetration_m": 0.001,
+            "minimum_support_contact_force_n": 0.01,
+            "maximum_forbidden_contact_force_n": 0.1,
+            "settle_translation_tolerance_m": 0.002,
+            "settle_rotation_tolerance_rad": 0.01,
+            "reset_translation_tolerance_m": 0.002,
+            "reset_rotation_tolerance_rad": 0.01,
+            "minimum_camera_pixels": {
+                "external": 100,
+                "wrist": 100,
+                "overview": 100,
+            },
+        },
+        "settle_sample_count": 3,
+        "settle_steps_per_sample": 60,
+    }
+    assert validate_launch_preparation_request(qualification) == qualification
 
     value["task"]["destination"]["identity"] = value["task"]["subject"][
         "identity"
