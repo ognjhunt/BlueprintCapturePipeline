@@ -15,6 +15,7 @@ import itertools
 import json
 import math
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -60,7 +61,10 @@ def _sha256(path: Path) -> str:
 
 
 def _require_under(path: Path, roots: Sequence[Path], *, code: str) -> Path:
-    resolved = path.expanduser().resolve()
+    unresolved = path.expanduser()
+    if unresolved.is_symlink():
+        raise PublicSceneInpaintingInputError([code])
+    resolved = unresolved.resolve()
     if not any(resolved == root or root in resolved.parents for root in roots):
         raise PublicSceneInpaintingInputError([code])
     return resolved
@@ -439,13 +443,13 @@ def _verified_dual_task_scene_source(
 
     scene_freeze_path = _require_under(
         repo / str(scene["scene_freeze_path"]),
-        (repo,),
-        code="edit_input_scene_freeze_outside_repo",
+        (repo, data),
+        code="edit_input_scene_freeze_outside_admitted_roots",
     )
     task_freeze_path = _require_under(
         repo / str(scene["task_freeze_path"]),
-        (repo,),
-        code="edit_input_task_freeze_outside_repo",
+        (repo, data),
+        code="edit_input_task_freeze_outside_admitted_roots",
     )
     try:
         scene_freeze = validate_scene_freeze(
@@ -463,8 +467,8 @@ def _verified_dual_task_scene_source(
 
     conversion_receipt_path = _require_under(
         repo / str(scene["standard_splat_conversion_receipt_path"]),
-        (repo,),
-        code="edit_input_conversion_receipt_outside_repo",
+        (repo, data),
+        code="edit_input_conversion_receipt_outside_admitted_roots",
     )
     conversion_receipt = _read_object(
         conversion_receipt_path, code="edit_input_conversion_receipt_invalid"
@@ -622,15 +626,21 @@ def materialize_public_scene_inpainting_inputs(
     repo = Path(repo_root).expanduser().resolve()
     data = Path(data_root).expanduser().resolve()
     output = _require_under(Path(output_root), (data,), code="edit_input_output_outside_data_root")
+    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+        raise PublicSceneInpaintingInputError(["edit_input_output_not_empty"])
     retained_receipt = (
         _require_under(
-            Path(receipt_output), (repo,), code="edit_input_receipt_output_outside_repo_root"
+            Path(receipt_output), (repo, data), code="edit_input_receipt_output_outside_admitted_roots"
         )
         if receipt_output is not None
         else None
     )
+    if retained_receipt is not None and retained_receipt.exists():
+        raise PublicSceneInpaintingInputError(["edit_input_receipt_output_exists"])
     repository = _git_identity(repo)
-    request_file = _require_under(Path(request_path), (repo,), code="edit_input_request_outside_repo_root")
+    request_file = _require_under(
+        Path(request_path), (repo, data), code="edit_input_request_outside_admitted_roots"
+    )
     request = build_public_scene_inpainting_input_request(
         _read_object(request_file, code="edit_input_request_invalid")
     )
@@ -1150,11 +1160,11 @@ def materialize_public_scene_inpainting_inputs(
             else "method_native_interiorgs_adapter_and_unchanged_author_runtime_required"
         ),
         "claim_ceiling": "synthetic_public_scene_inpainting_input_candidate",
-        "replay_command": (
-            "python -m blueprint_pipeline.public_scene_inpainting_inputs "
-            f"--request {request_file.relative_to(repo).as_posix()} --repo-root . "
-            f"--data-root {data} --output-root {output}"
-        ),
+        "replay_command": shlex.join([
+            "python", "-m", "blueprint_pipeline.public_scene_inpainting_inputs",
+            "--request", str(request_file), "--repo-root", str(repo),
+            "--data-root", str(data), "--output-root", str(output),
+        ]),
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     output_receipt_name = (

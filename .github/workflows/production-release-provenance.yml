@@ -1,0 +1,92 @@
+name: Production Release Provenance
+
+on:
+  workflow_run:
+    workflows: ["Full Test Lane"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      promotion_run_id:
+        description: "Successful exact-main production promotion run ID"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: production-release-provenance-${{ github.event.workflow_run.id || inputs.promotion_run_id }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PROMOTION_RUN_ID: ${{ github.event.workflow_run.id || inputs.promotion_run_id }}
+    steps:
+      - name: Admit only a successful current-main production promotion
+        id: promotion
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${PROMOTION_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PROMOTION_RUN_ID}" > "${RUNNER_TEMP}/promotion-run.json"
+          if ! jq -e '.event == "workflow_dispatch" and .display_title == "Full Test Lane / production_deployment_promotion"' "${RUNNER_TEMP}/promotion-run.json" >/dev/null; then
+            if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+              echo "::error::The requested run is not a production promotion."
+              exit 1
+            fi
+            echo "eligible=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          jq -e --arg repository "${GITHUB_REPOSITORY}" '
+            .repository.full_name == $repository and
+            .head_branch == "main" and .status == "completed" and .conclusion == "success" and
+            (.path | split("@")[0]) == ".github/workflows/full-test-lane.yml"
+          ' "${RUNNER_TEMP}/promotion-run.json" >/dev/null
+          promoted_sha="$(jq -r .head_sha "${RUNNER_TEMP}/promotion-run.json")"
+          [[ "${promoted_sha}" =~ ^[0-9a-f]{40}$ ]]
+          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          test "${promoted_sha}" = "${current_main}"
+          printf 'eligible=true\nsha=%s\nrun_url=https://github.com/%s/actions/runs/%s\n' "${promoted_sha}" "${GITHUB_REPOSITORY}" "${PROMOTION_RUN_ID}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout the admitted immutable source
+        if: steps.promotion.outputs.eligible == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ steps.promotion.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install verification interpreter
+        if: steps.promotion.outputs.eligible == 'true'
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Verify all exact shards, aggregate, and promotion provenance
+        if: steps.promotion.outputs.eligible == 'true'
+        env:
+          EXPECTED_SHA: ${{ steps.promotion.outputs.sha }}
+          PROMOTION_URL: ${{ steps.promotion.outputs.run_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --no-project --with defusedxml==0.7.1 python scripts/verify_deploy_release_provenance.py \
+            --root "${GITHUB_WORKSPACE}" --expected-sha "${EXPECTED_SHA}" \
+            --run-url "${PROMOTION_URL}" --output "${RUNNER_TEMP}/production-deploy-provenance.json"
+          test "${EXPECTED_SHA}" = "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+
+      - name: Retain verified deployment provenance
+        if: steps.promotion.outputs.eligible == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: production-deploy-provenance-${{ steps.promotion.outputs.sha }}
+          path: ${{ runner.temp }}/production-deploy-provenance.json
+          if-no-files-found: error
+          retention-days: 90

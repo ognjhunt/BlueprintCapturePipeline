@@ -30,7 +30,9 @@ from .decision_evidence_contracts import canonical_digest
 
 
 REQUEST_SCHEMA = "public_scene_host_input_request.v1"
+RAW_SCENE_REQUEST_SCHEMA = "public_scene_host_input_request.v2"
 PACKET_SCHEMA = "public_scene_host_input_packet.v1"
+RAW_SCENE_PACKET_SCHEMA = "public_scene_host_input_packet.v2"
 RECEIPT_SCHEMA = "public_scene_host_input_installation_receipt.v1"
 RIGHTS_RECEIPT_SCHEMA = "public_scene_rights_authority.v1"
 DEFAULT_DESTINATION_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs")
@@ -64,6 +66,33 @@ _APPROVED_RIGHTS_STATES = {
 
 class PublicSceneHostInputError(ValueError):
     """The requested intake is not immutable, rights-bound, or contained."""
+
+
+def _source_role_limits(schema: str) -> dict[str, tuple[int, int]]:
+    if schema in {REQUEST_SCHEMA, PACKET_SCHEMA}:
+        return {"collision_usd": (1, 1), "shared_frame_registration": (1, 1)}
+    if schema in {RAW_SCENE_REQUEST_SCHEMA, RAW_SCENE_PACKET_SCHEMA}:
+        return {
+            "appearance_3dgs": (1, 1),
+            "semantic_metadata": (1, 1),
+            "scene_structure": (1, 1),
+            "collision_usd": (1, 1),
+            "publisher_scene_usdz": (0, 1),
+        }
+    raise PublicSceneHostInputError("source_packet_schema_invalid")
+
+
+def _validate_source_extension(role: str, path: Path) -> None:
+    extensions = {
+        "collision_usd": {".usd", ".usda", ".usdc"},
+        "shared_frame_registration": {".json"},
+        "appearance_3dgs": {".ply"},
+        "semantic_metadata": {".json"},
+        "scene_structure": {".json"},
+        "publisher_scene_usdz": {".usdz"},
+    }
+    if role in extensions and path.suffix.lower() not in extensions[role]:
+        raise PublicSceneHostInputError(f"{role}_extension_invalid")
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -176,7 +205,7 @@ def _preflight_local_members(
 def _load_request(request_path: str | Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     request_file = Path(request_path).expanduser().resolve()
     request = _json(request_file)
-    if request.get("schema_version") != REQUEST_SCHEMA:
+    if request.get("schema_version") not in {REQUEST_SCHEMA, RAW_SCENE_REQUEST_SCHEMA}:
         raise PublicSceneHostInputError("host_input_request_schema_invalid")
     forbidden = {"status", "installed", "service_readable"}.intersection(request)
     if forbidden:
@@ -240,7 +269,8 @@ def _load_request(request_path: str | Path) -> tuple[dict[str, Any], list[dict[s
             }
         )
 
-    core_counts = {"collision_usd": 0, "shared_frame_registration": 0}
+    role_limits = _source_role_limits(str(request["schema_version"]))
+    core_counts = dict.fromkeys(role_limits, 0)
     support_count = 0
     destination_names: set[str] = set()
     for index, raw in enumerate(raw_files):
@@ -258,10 +288,7 @@ def _load_request(request_path: str | Path) -> tuple[dict[str, Any], list[dict[s
         expected = _expected_digest(raw.get("sha256"), field=f"files_{index}_sha256")
         if _sha256_file(path) != expected:
             raise PublicSceneHostInputError(f"source_file_bytes_mismatch:{role}")
-        if role == "collision_usd" and path.suffix.lower() not in {".usd", ".usda", ".usdc"}:
-            raise PublicSceneHostInputError("collision_usd_extension_invalid")
-        if role == "shared_frame_registration" and path.suffix.lower() != ".json":
-            raise PublicSceneHostInputError("shared_frame_registration_extension_invalid")
+        _validate_source_extension(role, path)
         rights_ids = raw.get("rights_receipt_ids")
         if (
             not isinstance(rights_ids, list)
@@ -296,7 +323,7 @@ def _load_request(request_path: str | Path) -> tuple[dict[str, Any], list[dict[s
                 "size_bytes": size,
             }
         )
-    if core_counts != {"collision_usd": 1, "shared_frame_registration": 1}:
+    if any(not low <= core_counts[role] <= high for role, (low, high) in role_limits.items()):
         raise PublicSceneHostInputError("required_scene_source_files_invalid")
     if support_count > 5:
         raise PublicSceneHostInputError("task_support_file_count_exceeds_five")
@@ -305,7 +332,7 @@ def _load_request(request_path: str | Path) -> tuple[dict[str, Any], list[dict[s
     if source_commit != _verified_checkout_head():
         raise PublicSceneHostInputError("source_commit_sha_mismatch")
     metadata = {
-        "schema_version": PACKET_SCHEMA,
+        "schema_version": (RAW_SCENE_PACKET_SCHEMA if request["schema_version"] == RAW_SCENE_REQUEST_SCHEMA else PACKET_SCHEMA),
         "program_id": "arm-decision-proof-v1",
         "adp_item": str(request.get("adp_item") or "ADP-009B"),
         "scene_id": scene_id,
@@ -438,7 +465,7 @@ def _validated_archive(archive: zipfile.ZipFile) -> dict[str, Any]:
         packet = json.loads(archive.read("packet.json"))
     except (KeyError, UnicodeError, json.JSONDecodeError) as exc:
         raise PublicSceneHostInputError("packet_manifest_invalid") from exc
-    if not isinstance(packet, dict) or packet.get("schema_version") != PACKET_SCHEMA:
+    if not isinstance(packet, dict) or packet.get("schema_version") not in {PACKET_SCHEMA, RAW_SCENE_PACKET_SCHEMA}:
         raise PublicSceneHostInputError("packet_manifest_schema_invalid")
     if packet.get("packet_digest") != canonical_digest(packet, digest_field="packet_digest"):
         raise PublicSceneHostInputError("packet_manifest_digest_invalid")
@@ -483,7 +510,8 @@ def _validated_archive(archive: zipfile.ZipFile) -> dict[str, Any]:
     file_rows = packet.get("files")
     if not isinstance(file_rows, list) or not file_rows:
         raise PublicSceneHostInputError("packet_manifest_inventory_invalid")
-    core_counts = {"collision_usd": 0, "shared_frame_registration": 0}
+    role_limits = _source_role_limits(str(packet["schema_version"]))
+    core_counts = dict.fromkeys(role_limits, 0)
     support_count = 0
     for row in file_rows:
         if not isinstance(row, Mapping):
@@ -506,11 +534,12 @@ def _validated_archive(archive: zipfile.ZipFile) -> dict[str, Any]:
             or not any(digest in rights_digests.get(str(value), set()) for value in rights_ids)
         ):
             raise PublicSceneHostInputError(f"source_file_not_rights_authorized:{role}")
+        _validate_source_extension(role, Path(relative))
         info = archive.getinfo(relative)
         if info.file_size != row.get("size_bytes"):
             raise PublicSceneHostInputError("packet_archive_source_size_mismatch")
         _assert_secret_free(archive.read(relative), name=PurePosixPath(relative).name)
-    if core_counts != {"collision_usd": 1, "shared_frame_registration": 1}:
+    if any(not low <= core_counts[role] <= high for role, (low, high) in role_limits.items()):
         raise PublicSceneHostInputError("required_scene_source_files_invalid")
     if support_count > 5:
         raise PublicSceneHostInputError("task_support_file_count_exceeds_five")
@@ -736,6 +765,11 @@ def _parser() -> argparse.ArgumentParser:
     stage.add_argument("--request", type=Path, required=True)
     stage.add_argument("--destination-root", type=Path, default=DEFAULT_DESTINATION_ROOT)
     stage.add_argument("--service-account", default=DEFAULT_SERVICE_ACCOUNT)
+    prepare = commands.add_parser("prepare", help="derive source context from installed bytes and task objects")
+    prepare.add_argument("--installation-receipt", type=Path, required=True)
+    prepare.add_argument("--task-objects", type=Path, required=True)
+    prepare.add_argument("--output-root", type=Path)
+    prepare.add_argument("--expected-source-commit")
     upload = commands.add_parser("upload", help="stream client bytes to the production host")
     upload.add_argument("--request", type=Path, required=True)
     upload.add_argument("--host", required=True)
@@ -749,7 +783,16 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if args.command == "upload":
+    if args.command == "prepare":
+        from .public_scene_source_preparation import materialize_public_scene_source_preparation
+
+        receipt = materialize_public_scene_source_preparation(
+            installation_receipt_path=args.installation_receipt,
+            task_objects=json.loads(args.task_objects.read_text(encoding="utf-8")),
+            expected_source_commit=args.expected_source_commit or _verified_checkout_head(),
+            output_root=args.output_root,
+        )
+    elif args.command == "upload":
         receipt = upload_packet(
             request_path=args.request,
             host=args.host,
