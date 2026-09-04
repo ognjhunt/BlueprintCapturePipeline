@@ -594,3 +594,86 @@ def test_requires_one_bounded_output_mount_and_gpu() -> None:
         match="launch_preparation_gpu_requirement_missing",
     ):
         validate_launch_preparation_request(value)
+
+
+def _native_probe() -> dict[str, object]:
+    return {
+        "schema_version": (
+            "task_evaluation_rigid_destination_native_probe_configuration.v1"
+        ),
+        "placement_support_scene_prim_paths": ["/Root/Support"],
+        "qualification_limits": {
+            "maximum_penetration_m": 0.001,
+            "minimum_support_contact_force_n": 0.01,
+            "maximum_forbidden_contact_force_n": 0.1,
+            "settle_translation_tolerance_m": 0.002,
+            "settle_rotation_tolerance_rad": 0.01,
+            "reset_translation_tolerance_m": 0.002,
+            "reset_rotation_tolerance_rad": 0.01,
+            "minimum_camera_pixels": {"external": 100, "wrist": 100, "overview": 100},
+        },
+        "settle_sample_count": 3,
+        "settle_steps_per_sample": 60,
+    }
+
+
+def _pending_destination() -> dict[str, object]:
+    reference = {
+        "uri": "s3://blueprint-production-inputs/task/destination.json",
+        "digest": "sha256:" + "d" * 64,
+        "size_bytes": 123,
+    }
+    return {
+        "schema_version": "task_evaluation_rigid_destination_asset.v1",
+        "identity": {"id": "document-tray", "version": "v1"},
+        "relation": "inside",
+        "visible_label": "blue document tray",
+        "asset": reference,
+        "rights_admission": reference,
+        "static_qualification": reference,
+        "native_probe": _native_probe(),
+        "pose_world": {
+            "position_world_m": [3.25, -6.76, 0.82],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "provider_disclosure_allowed": True,
+    }
+
+
+def test_scene_configuration_destination_defers_native_import_and_geometry_to_the_run() -> None:
+    value = test_configuration_request()
+    value["task"]["strategy"] = "pick_and_place"
+    value["task"]["destination"] = _pending_destination()
+    assert validate_launch_preparation_request(value) == value
+
+    for field in ("native_import_qualification", "geometry"):
+        prequalified = copy.deepcopy(value)
+        prequalified["task"]["destination"][field] = ref(40)
+        with pytest.raises(
+            TaskEvaluationLaunchPreparationContractError,
+            match="launch_preparation_scene_configuration_destination_prequalified_reference_forbidden",
+        ):
+            validate_launch_preparation_request(prequalified)
+
+    unprobed = copy.deepcopy(value)
+    unprobed["task"]["destination"].pop("native_probe")
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationContractError,
+        match="launch_preparation_request_invalid",
+    ):
+        validate_launch_preparation_request(unprobed)
+
+
+def test_destination_qualification_still_requires_run_produced_qualifications() -> None:
+    value = request()
+    value["run_mode"] = "destination_qualification"
+    value["task"]["strategy"] = "pick_and_place"
+    value["task"]["destination"] = _pending_destination()
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationContractError,
+        match="launch_preparation_destination_qualification_reference_missing",
+    ):
+        validate_launch_preparation_request(value)
+    value["task"]["destination"]["native_import_qualification"] = ref(40)
+    value["task"]["destination"]["geometry"] = ref(41)
+    assert validate_launch_preparation_request(value) == value

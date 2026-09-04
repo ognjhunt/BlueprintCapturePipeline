@@ -100,6 +100,11 @@ def validate_scene_construction_recipe(value: Mapping[str, Any]) -> dict[str, An
             raise TaskEvaluationSceneConstructionRecipeError(
                 f"scene_construction_recipe_dependency_invalid:{stage['stage_id']}"
             )
+    destination = recipe.get("supplemental_destination")
+    if destination is not None and destination["identity"] == recipe["subject_identity"]:
+        raise TaskEvaluationSceneConstructionRecipeError(
+            "scene_construction_recipe_supplemental_destination_identity_conflict"
+        )
     if recipe["recipe_digest"] != canonical_digest(
         recipe, digest_field="recipe_digest"
     ):
@@ -107,6 +112,15 @@ def validate_scene_construction_recipe(value: Mapping[str, Any]) -> dict[str, An
             "scene_construction_recipe_digest_invalid"
         )
     return recipe
+
+
+def recipe_supplemental_destination(
+    recipe: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return the validated supplemental destination binding, if the recipe has one."""
+
+    value = validate_scene_construction_recipe(recipe).get("supplemental_destination")
+    return dict(value) if isinstance(value, Mapping) else None
 
 
 def scene_construction_recipe_digest(value: Mapping[str, Any]) -> str:
@@ -118,6 +132,7 @@ __all__ = [
     "SCHEMA_PATH",
     "SCHEMA_VERSION",
     "TaskEvaluationSceneConstructionRecipeError",
+    "recipe_supplemental_destination",
     "construction_recipe_schema",
     "scene_construction_recipe_digest",
     "validate_scene_construction_recipe",

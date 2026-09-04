@@ -279,3 +279,142 @@ def test_native_driver_rejects_invalid_bounds_before_runtime(tmp_path: Path) -> 
             native_runner=native_runner,
         )
     assert executed is False
+
+
+# --- supplemental passive destination imported in the same Isaac session -----
+
+DESTINATION_IDENTITY = {"id": "document-tray", "version": "v1"}
+
+
+def _destination_environment(tmp_path: Path, *, dependency_roles: bool = True) -> dict[str, str]:
+    environment = _environment(tmp_path)
+    output = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"])
+    stage_input_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"])
+    stage_input = json.loads(stage_input_path.read_text(encoding="utf-8"))
+    stage_input["construction_envelope"] = {
+        "recipe": {
+            "subject_identity": {"id": "rigid-object", "version": "v1"},
+            "supplemental_destination": {
+                "identity": DESTINATION_IDENTITY,
+                "relation": "inside",
+            },
+        }
+    }
+    stage_input_path.write_text(json.dumps(stage_input), encoding="utf-8")
+    if dependency_roles:
+        asset = output / "tray.usdz"
+        asset.write_bytes(b"PK-tray")
+        static = output / "tray-static.json"
+        static.write_text('{"replacement_identity":"document-tray"}\n', encoding="utf-8")
+        dependencies_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES"])
+        dependencies = json.loads(dependencies_path.read_text(encoding="utf-8"))
+        dependencies[0]["output_artifacts"].extend(
+            [
+                {
+                    "role": "statically_qualified_destination_asset",
+                    "path": str(asset),
+                    "digest": _sha256(asset),
+                    "size_bytes": asset.stat().st_size,
+                },
+                {
+                    "role": "destination_static_qualification_receipt",
+                    "path": str(static),
+                    "digest": _sha256(static),
+                    "size_bytes": static.stat().st_size,
+                },
+            ]
+        )
+        dependencies_path.write_text(json.dumps(dependencies), encoding="utf-8")
+    return environment
+
+
+def _destination_observed() -> dict:
+    observed = _observed()
+    repeats = []
+    for _index in range(3):
+        state = {"position_m": [0.0, 0.0, 0.0145], "orientation_xyzw": [0, 0, 0, 1]}
+        repeats.append(
+            {
+                "asset_imported": True,
+                "rigid_body_paths": ["/World/Placement/Replacement"],
+                "collision_paths": ["/World/Placement/Replacement/Colliders/Bottom"],
+                "support_contact_observed": True,
+                "contact_report_event_count": 4,
+                "settle_translation_m": 0.001,
+                "settle_rotation_rad": 0.002,
+                "final_state": state,
+                "final_state_digest": canonical_digest(state),
+            }
+        )
+    observed["destination_repeats"] = repeats
+    return observed
+
+
+def test_native_driver_imports_the_supplemental_destination_in_the_same_session(
+    tmp_path: Path,
+) -> None:
+    environment = _destination_environment(tmp_path)
+    seen: dict = {}
+
+    def runner(*, asset_path, required_checks, observation_consumer, destination_asset_path=None):
+        seen["asset_path"] = asset_path
+        seen["destination_asset_path"] = destination_asset_path
+        return observation_consumer(_destination_observed())
+
+    result = execute_native_import_component(environment=environment, native_runner=runner)
+
+    assert seen["destination_asset_path"] is not None
+    assert seen["destination_asset_path"].name == "tray.usdz"
+    artifacts = {row["role"]: row for row in result["artifacts"]}
+    assert set(artifacts) == {
+        "native_import_runtime_result",
+        "destination_native_import_runtime_result",
+    }
+    destination = json.loads(
+        Path(artifacts["destination_native_import_runtime_result"]["path"]).read_text()
+    )
+    assert destination["schema_version"] == RUNTIME_RESULT_SCHEMA_VERSION
+    assert destination["status"] == "qualified"
+    assert destination["replacement_identity"] == DESTINATION_IDENTITY
+    output = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"])
+    assert destination["asset_digest"] == _sha256(output / "tray.usdz")
+    assert destination["static_qualification_digest"] == _sha256(output / "tray-static.json")
+    assert destination["deterministic_reset_state_digest_repeat_count"] == 3
+    assert destination["result_digest"] == canonical_digest(
+        destination, digest_field="result_digest"
+    )
+    subject = json.loads(Path(artifacts["native_import_runtime_result"]["path"]).read_text())
+    assert subject["replacement_identity"] == {"id": "rigid-object", "version": "v1"}
+
+
+def test_native_driver_refuses_a_declared_destination_without_its_settle_observations(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationNativeImportDriverError,
+        match="native_import_destination_execution_invalid",
+    ):
+        execute_native_import_component(
+            environment=_destination_environment(tmp_path),
+            native_runner=_native_runner(_observed()),
+        )
+
+
+def test_native_driver_refuses_a_declared_destination_without_stage4_artifacts(
+    tmp_path: Path,
+) -> None:
+    executed = False
+
+    def runner(**_kwargs):
+        nonlocal executed
+        executed = True
+
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationNativeImportDriverError,
+        match="native_import_destination_dependency_invalid",
+    ):
+        execute_native_import_component(
+            environment=_destination_environment(tmp_path, dependency_roles=False),
+            native_runner=runner,
+        )
+    assert executed is False

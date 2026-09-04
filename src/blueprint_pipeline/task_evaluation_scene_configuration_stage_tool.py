@@ -30,6 +30,8 @@ from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_ROOT_ENV,
     _secret_values,
     _validate_toolchain,
+    envelope_declares_supplemental_destination,
+    expected_stage_artifact_roles,
 )
 from .task_evaluation_scene_configuration_stage_producers import (
     ADMITTED_PRODUCER_IDENTITIES,
@@ -46,27 +48,6 @@ _INPUT_SCHEMA_VERSION = (
 )
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
-_EXPECTED_ROLES = {
-    "artifixer3d_observed_object_removal": frozenset(
-        {
-            "configured_appearance_without_source_object",
-            "appearance_removal_receipt",
-            "appearance_visual_review_receipt",
-            "configured_task_thumbnail",
-            "provider_render_reference_manifest",
-        }
-    ),
-    "content_agents_rigid_replacement": frozenset(
-        {
-            "replacement_asset",
-            "replacement_authoring_receipt",
-            "replacement_graph_spec",
-        }
-    ),
-    "simready_native_import_qualification": frozenset(
-        {"native_import_runtime_result"}
-    ),
-}
 _DIAGNOSTIC_REJECTED_ARTIFACT_ROLES = frozenset(
     {
         "diagnostic_rejected_appearance_candidate",
@@ -198,6 +179,7 @@ def _validate_component_result(
     stage_id: str,
     output_root: Path,
     diagnostic_only: bool,
+    supplemental_destination: bool = False,
 ) -> list[dict[str, Any]]:
     if (
         not isinstance(value, Mapping)
@@ -253,7 +235,9 @@ def _validate_component_result(
             raise TaskEvaluationSceneConfigurationStageToolError(
                 "scene_configuration_component_diagnostic_claim_invalid"
             )
-    elif roles != _EXPECTED_ROLES[adapter_id]:
+    elif roles != expected_stage_artifact_roles(
+        adapter_id, supplemental_destination=supplemental_destination
+    ):
         raise TaskEvaluationSceneConfigurationStageToolError(
             "scene_configuration_component_artifact_roles_invalid"
         )
@@ -439,6 +423,9 @@ def execute_stage_tool(
         stage_id=str(production_input["stage"]["stage_id"]),
         output_root=output_root,
         diagnostic_only=values.get(_DIAGNOSTIC_ONLY_ENV) == "1",
+        supplemental_destination=envelope_declares_supplemental_destination(
+            production_input.get("construction_envelope")
+        ),
     )
     result: dict[str, Any] = {
         "schema_version": PRODUCTION_RESULT_SCHEMA_VERSION,

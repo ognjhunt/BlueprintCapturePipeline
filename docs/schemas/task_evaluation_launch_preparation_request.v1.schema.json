@@ -22,84 +22,220 @@
   ],
   "additionalProperties": false,
   "properties": {
-    "schema_version": {"const": "task_evaluation_launch_preparation_request.v1"},
-    "run_mode": {"enum": ["scene_configuration", "destination_qualification", "episode_evaluation"]},
-    "expected_production_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-    "preparation_id": {"$ref": "#/$defs/identifier"},
-    "team_namespace": {"$ref": "#/$defs/identifier"},
-    "run_id": {"$ref": "#/$defs/identifier"},
-    "policy_run_setup": {"type": "object"},
-    "policy_run_selection": {"type": "object"},
-    "policy_run_configuration": {"type": "object"},
-    "policy_canary_activation": {"type": "object"},
+    "schema_version": {
+      "const": "task_evaluation_launch_preparation_request.v1"
+    },
+    "run_mode": {
+      "enum": [
+        "scene_configuration",
+        "destination_qualification",
+        "episode_evaluation"
+      ]
+    },
+    "expected_production_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "preparation_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "team_namespace": {
+      "$ref": "#/$defs/identifier"
+    },
+    "run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "policy_run_setup": {
+      "type": "object"
+    },
+    "policy_run_selection": {
+      "type": "object"
+    },
+    "policy_run_configuration": {
+      "type": "object"
+    },
+    "policy_canary_activation": {
+      "type": "object"
+    },
     "scene": {
       "oneOf": [
         {
           "type": "object",
-          "required": ["mode", "identity", "source_manifest", "appearance", "geometry", "registration", "rights"],
+          "required": [
+            "mode",
+            "identity",
+            "source_manifest",
+            "appearance",
+            "geometry",
+            "registration",
+            "rights"
+          ],
           "additionalProperties": false,
           "properties": {
-            "mode": {"const": "configure_source_scene"},
-            "identity": {"$ref": "#/$defs/versionedIdentity"},
-            "source_manifest": {"$ref": "#/$defs/reference"},
+            "mode": {
+              "const": "configure_source_scene"
+            },
+            "identity": {
+              "$ref": "#/$defs/versionedIdentity"
+            },
+            "source_manifest": {
+              "$ref": "#/$defs/reference"
+            },
             "appearance": {
               "type": "object",
-              "required": ["kind", "representation", "renderer_qualification"],
+              "required": [
+                "kind",
+                "representation",
+                "renderer_qualification"
+              ],
               "additionalProperties": false,
               "properties": {
-                "kind": {"enum": ["interiorgs", "gaussian_splat", "textured_usd", "other_observed"]},
-                "representation": {"$ref": "#/$defs/reference"},
-                "renderer_qualification": {"$ref": "#/$defs/reference"}
+                "kind": {
+                  "enum": [
+                    "interiorgs",
+                    "gaussian_splat",
+                    "textured_usd",
+                    "other_observed"
+                  ]
+                },
+                "representation": {
+                  "$ref": "#/$defs/reference"
+                },
+                "renderer_qualification": {
+                  "$ref": "#/$defs/reference"
+                }
               }
             },
             "geometry": {
               "type": "object",
-              "required": ["kind", "collision", "validation"],
+              "required": [
+                "kind",
+                "collision",
+                "validation"
+              ],
               "additionalProperties": false,
               "properties": {
-                "kind": {"enum": ["sage_derived", "observed_mesh", "qualified_cad", "other_derived"]},
-                "collision": {"$ref": "#/$defs/reference"},
-                "validation": {"$ref": "#/$defs/reference"}
+                "kind": {
+                  "enum": [
+                    "sage_derived",
+                    "observed_mesh",
+                    "qualified_cad",
+                    "other_derived"
+                  ]
+                },
+                "collision": {
+                  "$ref": "#/$defs/reference"
+                },
+                "validation": {
+                  "$ref": "#/$defs/reference"
+                }
               }
             },
             "registration": {
               "type": "object",
-              "required": ["metric_registration", "support_plane", "robot_mount_interface", "workspace_clearance", "camera_calibration"],
+              "required": [
+                "metric_registration",
+                "support_plane",
+                "robot_mount_interface",
+                "workspace_clearance",
+                "camera_calibration"
+              ],
               "additionalProperties": false,
               "properties": {
-                "metric_registration": {"$ref": "#/$defs/reference"},
-                "support_plane": {"$ref": "#/$defs/reference"},
-                "robot_mount_interface": {"$ref": "#/$defs/reference"},
-                "workspace_clearance": {"$ref": "#/$defs/reference"},
-                "camera_calibration": {"$ref": "#/$defs/reference"}
+                "metric_registration": {
+                  "$ref": "#/$defs/reference"
+                },
+                "support_plane": {
+                  "$ref": "#/$defs/reference"
+                },
+                "robot_mount_interface": {
+                  "$ref": "#/$defs/reference"
+                },
+                "workspace_clearance": {
+                  "$ref": "#/$defs/reference"
+                },
+                "camera_calibration": {
+                  "$ref": "#/$defs/reference"
+                }
               }
             },
             "rights": {
               "type": "object",
-              "required": ["admission", "evidence", "source_bytes_redistributable", "provider_disclosure_scope"],
+              "required": [
+                "admission",
+                "evidence",
+                "source_bytes_redistributable",
+                "provider_disclosure_scope"
+              ],
               "additionalProperties": false,
               "properties": {
-                "admission": {"$ref": "#/$defs/reference"},
+                "admission": {
+                  "$ref": "#/$defs/reference"
+                },
                 "evidence": {
                   "type": "array",
                   "minItems": 2,
                   "maxItems": 16,
                   "items": {
                     "type": "object",
-                    "required": ["role", "artifact"],
+                    "required": [
+                      "role",
+                      "artifact"
+                    ],
                     "additionalProperties": false,
                     "properties": {
-                      "role": {"enum": ["publisher_terms", "publisher_readme", "upstream_license", "human_authority_record"]},
-                      "artifact": {"$ref": "#/$defs/reference"}
+                      "role": {
+                        "enum": [
+                          "publisher_terms",
+                          "publisher_readme",
+                          "upstream_license",
+                          "human_authority_record"
+                        ]
+                      },
+                      "artifact": {
+                        "$ref": "#/$defs/reference"
+                      }
                     }
                   },
                   "allOf": [
-                    {"contains": {"type": "object", "properties": {"role": {"const": "publisher_terms"}}, "required": ["role"]}},
-                    {"contains": {"type": "object", "properties": {"role": {"const": "human_authority_record"}}, "required": ["role"]}}
+                    {
+                      "contains": {
+                        "type": "object",
+                        "properties": {
+                          "role": {
+                            "const": "publisher_terms"
+                          }
+                        },
+                        "required": [
+                          "role"
+                        ]
+                      }
+                    },
+                    {
+                      "contains": {
+                        "type": "object",
+                        "properties": {
+                          "role": {
+                            "const": "human_authority_record"
+                          }
+                        },
+                        "required": [
+                          "role"
+                        ]
+                      }
+                    }
                   ]
                 },
-                "source_bytes_redistributable": {"type": "boolean"},
-                "provider_disclosure_scope": {"enum": ["none", "derived_only", "source_and_derived"]},
+                "source_bytes_redistributable": {
+                  "type": "boolean"
+                },
+                "provider_disclosure_scope": {
+                  "enum": [
+                    "none",
+                    "derived_only",
+                    "source_and_derived"
+                  ]
+                },
                 "public_display_authorization": {
                   "$ref": "#/$defs/configuredScenePublicDisplayAuthorization"
                 }
@@ -109,78 +245,176 @@
         },
         {
           "type": "object",
-          "required": ["mode", "identity", "configured_revision"],
+          "required": [
+            "mode",
+            "identity",
+            "configured_revision"
+          ],
           "additionalProperties": false,
           "properties": {
-            "mode": {"const": "reuse_configured_revision"},
-            "identity": {"$ref": "#/$defs/versionedIdentity"},
-            "configured_revision": {"$ref": "#/$defs/reference"}
+            "mode": {
+              "const": "reuse_configured_revision"
+            },
+            "identity": {
+              "$ref": "#/$defs/versionedIdentity"
+            },
+            "configured_revision": {
+              "$ref": "#/$defs/reference"
+            }
           }
         }
       ]
     },
     "robot": {
       "type": "object",
-      "required": ["identity", "configuration", "kinematics", "joint_bounds", "base_registration", "controller_configuration"],
+      "required": [
+        "identity",
+        "configuration",
+        "kinematics",
+        "joint_bounds",
+        "base_registration",
+        "controller_configuration"
+      ],
       "additionalProperties": false,
       "properties": {
-        "identity": {"$ref": "#/$defs/versionedIdentity"},
-        "configuration": {"$ref": "#/$defs/reference"},
-        "kinematics": {"$ref": "#/$defs/reference"},
-        "joint_bounds": {"$ref": "#/$defs/reference"},
-        "base_registration": {"$ref": "#/$defs/reference"},
-        "controller_configuration": {"$ref": "#/$defs/reference"}
+        "identity": {
+          "$ref": "#/$defs/versionedIdentity"
+        },
+        "configuration": {
+          "$ref": "#/$defs/reference"
+        },
+        "kinematics": {
+          "$ref": "#/$defs/reference"
+        },
+        "joint_bounds": {
+          "$ref": "#/$defs/reference"
+        },
+        "base_registration": {
+          "$ref": "#/$defs/reference"
+        },
+        "controller_configuration": {
+          "$ref": "#/$defs/reference"
+        }
       }
     },
     "construction": {
       "oneOf": [
         {
           "type": "object",
-          "required": ["mode"],
+          "required": [
+            "mode"
+          ],
           "additionalProperties": false,
           "properties": {
-            "mode": {"const": "reuse_configured_scene"}
+            "mode": {
+              "const": "reuse_configured_scene"
+            }
           }
         },
         {
           "type": "object",
-          "required": ["mode", "recipe", "output_identity"],
+          "required": [
+            "mode",
+            "recipe",
+            "output_identity"
+          ],
           "additionalProperties": false,
           "properties": {
-            "mode": {"const": "production_recipe"},
-            "recipe": {"$ref": "#/$defs/reference"},
-            "output_identity": {"$ref": "#/$defs/versionedIdentity"}
+            "mode": {
+              "const": "production_recipe"
+            },
+            "recipe": {
+              "$ref": "#/$defs/reference"
+            },
+            "output_identity": {
+              "$ref": "#/$defs/versionedIdentity"
+            }
           }
         }
       ]
     },
     "controller": {
       "type": "object",
-      "required": ["identity", "kind", "configuration"],
+      "required": [
+        "identity",
+        "kind",
+        "configuration"
+      ],
       "additionalProperties": false,
       "properties": {
-        "identity": {"$ref": "#/$defs/versionedIdentity"},
-        "kind": {"enum": ["zero_action", "deterministic_scripted", "policy_container"]},
-        "configuration": {"$ref": "#/$defs/reference"},
-        "model_or_asset_rights": {"$ref": "#/$defs/reference"}
+        "identity": {
+          "$ref": "#/$defs/versionedIdentity"
+        },
+        "kind": {
+          "enum": [
+            "zero_action",
+            "deterministic_scripted",
+            "policy_container"
+          ]
+        },
+        "configuration": {
+          "$ref": "#/$defs/reference"
+        },
+        "model_or_asset_rights": {
+          "$ref": "#/$defs/reference"
+        }
       },
       "allOf": [
         {
-          "if": {"properties": {"kind": {"const": "policy_container"}}, "required": ["kind"]},
-          "then": {"required": ["model_or_asset_rights"]}
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "policy_container"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "model_or_asset_rights"
+            ]
+          }
         }
       ]
     },
     "task": {
       "type": "object",
-      "required": ["identity", "binding_mode", "kind", "strategy", "subject"],
+      "required": [
+        "identity",
+        "binding_mode",
+        "kind",
+        "strategy",
+        "subject"
+      ],
       "additionalProperties": false,
       "properties": {
-        "identity": {"$ref": "#/$defs/versionedIdentity"},
-        "binding_mode": {"enum": ["define_configuration_template", "reuse_configured_template"]},
-        "kind": {"enum": ["rigid_relocation", "articulated_manipulation"]},
-        "strategy": {"enum": ["planar_push", "pick_and_place", "articulated_open_close"]},
-        "configured_scene_revision_digest": {"$ref": "#/$defs/digest"},
+        "identity": {
+          "$ref": "#/$defs/versionedIdentity"
+        },
+        "binding_mode": {
+          "enum": [
+            "define_configuration_template",
+            "reuse_configured_template"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "rigid_relocation",
+            "articulated_manipulation"
+          ]
+        },
+        "strategy": {
+          "enum": [
+            "planar_push",
+            "pick_and_place",
+            "articulated_open_close"
+          ]
+        },
+        "configured_scene_revision_digest": {
+          "$ref": "#/$defs/digest"
+        },
         "destination": {
           "type": "object",
           "required": [
@@ -191,170 +425,418 @@
             "asset",
             "rights_admission",
             "static_qualification",
-            "native_import_qualification",
-            "geometry",
             "pose_world",
             "provider_disclosure_allowed"
           ],
           "additionalProperties": false,
           "properties": {
-            "schema_version": {"const": "task_evaluation_rigid_destination_asset.v1"},
-            "identity": {"$ref": "#/$defs/versionedIdentity"},
-            "relation": {"enum": ["inside", "on"]},
-            "visible_label": {"type": "string", "minLength": 1, "maxLength": 200},
-            "asset": {"$ref": "#/$defs/reference"},
-            "rights_admission": {"$ref": "#/$defs/reference"},
-            "static_qualification": {"$ref": "#/$defs/reference"},
-            "native_import_qualification": {"$ref": "#/$defs/reference"},
-            "geometry": {"$ref": "#/$defs/reference"},
-            "placement_qualification": {"$ref": "#/$defs/reference"},
+            "schema_version": {
+              "const": "task_evaluation_rigid_destination_asset.v1"
+            },
+            "identity": {
+              "$ref": "#/$defs/versionedIdentity"
+            },
+            "relation": {
+              "enum": [
+                "inside",
+                "on"
+              ]
+            },
+            "visible_label": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "asset": {
+              "$ref": "#/$defs/reference"
+            },
+            "rights_admission": {
+              "$ref": "#/$defs/reference"
+            },
+            "static_qualification": {
+              "$ref": "#/$defs/reference"
+            },
+            "native_import_qualification": {
+              "$ref": "#/$defs/reference"
+            },
+            "geometry": {
+              "$ref": "#/$defs/reference"
+            },
+            "placement_qualification": {
+              "$ref": "#/$defs/reference"
+            },
             "native_probe": {
               "type": "object",
               "required": [
-                "schema_version", "placement_support_scene_prim_paths",
-                "qualification_limits", "settle_sample_count",
+                "schema_version",
+                "placement_support_scene_prim_paths",
+                "qualification_limits",
+                "settle_sample_count",
                 "settle_steps_per_sample"
               ],
               "additionalProperties": false,
               "properties": {
-                "schema_version": {"const": "task_evaluation_rigid_destination_native_probe_configuration.v1"},
+                "schema_version": {
+                  "const": "task_evaluation_rigid_destination_native_probe_configuration.v1"
+                },
                 "placement_support_scene_prim_paths": {
-                  "type": "array", "minItems": 1, "maxItems": 64,
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 64,
                   "uniqueItems": true,
-                  "items": {"type": "string", "pattern": "^/[^\\s]+$"}
+                  "items": {
+                    "type": "string",
+                    "pattern": "^/[^\\s]+$"
+                  }
                 },
                 "qualification_limits": {
                   "type": "object",
                   "required": [
-                    "maximum_penetration_m", "minimum_support_contact_force_n",
-                    "maximum_forbidden_contact_force_n", "settle_translation_tolerance_m",
-                    "settle_rotation_tolerance_rad", "reset_translation_tolerance_m",
-                    "reset_rotation_tolerance_rad", "minimum_camera_pixels"
+                    "maximum_penetration_m",
+                    "minimum_support_contact_force_n",
+                    "maximum_forbidden_contact_force_n",
+                    "settle_translation_tolerance_m",
+                    "settle_rotation_tolerance_rad",
+                    "reset_translation_tolerance_m",
+                    "reset_rotation_tolerance_rad",
+                    "minimum_camera_pixels"
                   ],
                   "additionalProperties": false,
                   "properties": {
-                    "maximum_penetration_m": {"type": "number", "exclusiveMinimum": 0},
-                    "minimum_support_contact_force_n": {"type": "number", "exclusiveMinimum": 0},
-                    "maximum_forbidden_contact_force_n": {"type": "number", "exclusiveMinimum": 0},
-                    "settle_translation_tolerance_m": {"type": "number", "exclusiveMinimum": 0},
-                    "settle_rotation_tolerance_rad": {"type": "number", "exclusiveMinimum": 0},
-                    "reset_translation_tolerance_m": {"type": "number", "exclusiveMinimum": 0},
-                    "reset_rotation_tolerance_rad": {"type": "number", "exclusiveMinimum": 0},
+                    "maximum_penetration_m": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "minimum_support_contact_force_n": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "maximum_forbidden_contact_force_n": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "settle_translation_tolerance_m": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "settle_rotation_tolerance_rad": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "reset_translation_tolerance_m": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "reset_rotation_tolerance_rad": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
                     "minimum_camera_pixels": {
                       "type": "object",
-                      "required": ["external", "wrist", "overview"],
+                      "required": [
+                        "external",
+                        "wrist",
+                        "overview"
+                      ],
                       "additionalProperties": false,
                       "properties": {
-                        "external": {"type": "integer", "minimum": 1},
-                        "wrist": {"type": "integer", "minimum": 1},
-                        "overview": {"type": "integer", "minimum": 1}
+                        "external": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "wrist": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "overview": {
+                          "type": "integer",
+                          "minimum": 1
+                        }
                       }
                     }
                   }
                 },
-                "settle_sample_count": {"type": "integer", "minimum": 3},
-                "settle_steps_per_sample": {"type": "integer", "minimum": 1}
+                "settle_sample_count": {
+                  "type": "integer",
+                  "minimum": 3
+                },
+                "settle_steps_per_sample": {
+                  "type": "integer",
+                  "minimum": 1
+                }
               }
             },
             "pose_world": {
               "type": "object",
-              "required": ["position_world_m", "orientation_xyzw"],
+              "required": [
+                "position_world_m",
+                "orientation_xyzw"
+              ],
               "additionalProperties": false,
               "properties": {
                 "position_world_m": {
                   "type": "array",
                   "minItems": 3,
                   "maxItems": 3,
-                  "items": {"type": "number"}
+                  "items": {
+                    "type": "number"
+                  }
                 },
                 "orientation_xyzw": {
                   "type": "array",
                   "minItems": 4,
                   "maxItems": 4,
-                  "items": {"type": "number"}
+                  "items": {
+                    "type": "number"
+                  }
                 }
               }
             },
-            "provider_disclosure_allowed": {"const": true}
-          }
+            "provider_disclosure_allowed": {
+              "const": true
+            }
+          },
+          "description": "One passive rigid destination for pick_and_place. A scene_configuration request omits native_import_qualification and geometry: the production run produces both and the configured scene revision carries them. destination_qualification and episode_evaluation requests must carry them."
         },
         "subject": {
           "oneOf": [
             {
               "type": "object",
-              "required": ["mode", "identity", "representation_kind", "asset", "physics_validation", "rights_admission", "provider_disclosure_allowed"],
+              "required": [
+                "mode",
+                "identity",
+                "representation_kind",
+                "asset",
+                "physics_validation",
+                "rights_admission",
+                "provider_disclosure_allowed"
+              ],
               "additionalProperties": false,
               "properties": {
-                "mode": {"const": "supplied_qualified_asset"},
-                "identity": {"$ref": "#/$defs/versionedIdentity"},
-                "representation_kind": {"enum": ["simready_usd", "qualified_rigid_usd", "qualified_articulated_usd", "other_qualified_physics_asset"]},
-                "asset": {"$ref": "#/$defs/reference"},
-                "physics_validation": {"$ref": "#/$defs/reference"},
-                "rights_admission": {"$ref": "#/$defs/reference"},
-                "provider_disclosure_allowed": {"const": true}
+                "mode": {
+                  "const": "supplied_qualified_asset"
+                },
+                "identity": {
+                  "$ref": "#/$defs/versionedIdentity"
+                },
+                "representation_kind": {
+                  "enum": [
+                    "simready_usd",
+                    "qualified_rigid_usd",
+                    "qualified_articulated_usd",
+                    "other_qualified_physics_asset"
+                  ]
+                },
+                "asset": {
+                  "$ref": "#/$defs/reference"
+                },
+                "physics_validation": {
+                  "$ref": "#/$defs/reference"
+                },
+                "rights_admission": {
+                  "$ref": "#/$defs/reference"
+                },
+                "provider_disclosure_allowed": {
+                  "const": true
+                }
               }
             },
             {
               "type": "object",
-              "required": ["mode", "identity", "representation_kind", "source_object", "rights_admission", "provider_disclosure_allowed"],
+              "required": [
+                "mode",
+                "identity",
+                "representation_kind",
+                "source_object",
+                "rights_admission",
+                "provider_disclosure_allowed"
+              ],
               "additionalProperties": false,
               "properties": {
-                "mode": {"const": "construct_from_scene_object"},
-                "identity": {"$ref": "#/$defs/versionedIdentity"},
-                "representation_kind": {"enum": ["simready_usd", "qualified_rigid_usd", "qualified_articulated_usd", "other_qualified_physics_asset"]},
-                "source_object": {"$ref": "#/$defs/reference"},
-                "rights_admission": {"$ref": "#/$defs/reference"},
-                "provider_disclosure_allowed": {"const": true}
+                "mode": {
+                  "const": "construct_from_scene_object"
+                },
+                "identity": {
+                  "$ref": "#/$defs/versionedIdentity"
+                },
+                "representation_kind": {
+                  "enum": [
+                    "simready_usd",
+                    "qualified_rigid_usd",
+                    "qualified_articulated_usd",
+                    "other_qualified_physics_asset"
+                  ]
+                },
+                "source_object": {
+                  "$ref": "#/$defs/reference"
+                },
+                "rights_admission": {
+                  "$ref": "#/$defs/reference"
+                },
+                "provider_disclosure_allowed": {
+                  "const": true
+                }
               }
             },
             {
               "type": "object",
-              "required": ["mode", "identity", "physics_authority"],
+              "required": [
+                "mode",
+                "identity",
+                "physics_authority"
+              ],
               "additionalProperties": false,
               "properties": {
-                "mode": {"const": "configured_scene_object"},
-                "identity": {"$ref": "#/$defs/versionedIdentity"},
-                "physics_authority": {"const": "configured_scene_revision"}
+                "mode": {
+                  "const": "configured_scene_object"
+                },
+                "identity": {
+                  "$ref": "#/$defs/versionedIdentity"
+                },
+                "physics_authority": {
+                  "const": "configured_scene_revision"
+                }
               }
             }
           ]
         },
-        "definition": {"$ref": "#/$defs/reference"},
-        "success_criteria": {"$ref": "#/$defs/reference"},
-        "execution": {"$ref": "#/$defs/reference"}
+        "definition": {
+          "$ref": "#/$defs/reference"
+        },
+        "success_criteria": {
+          "$ref": "#/$defs/reference"
+        },
+        "execution": {
+          "$ref": "#/$defs/reference"
+        }
       },
       "allOf": [
         {
-          "if": {"properties": {"binding_mode": {"const": "define_configuration_template"}}, "required": ["binding_mode"]},
-          "then": {"required": ["definition", "success_criteria", "execution"]}
+          "if": {
+            "properties": {
+              "binding_mode": {
+                "const": "define_configuration_template"
+              }
+            },
+            "required": [
+              "binding_mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "definition",
+              "success_criteria",
+              "execution"
+            ]
+          }
         },
         {
-          "if": {"properties": {"binding_mode": {"const": "reuse_configured_template"}}, "required": ["binding_mode"]},
-          "then": {"required": ["configured_scene_revision_digest"]}
+          "if": {
+            "properties": {
+              "binding_mode": {
+                "const": "reuse_configured_template"
+              }
+            },
+            "required": [
+              "binding_mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "configured_scene_revision_digest"
+            ]
+          }
         },
         {
-          "if": {"properties": {"kind": {"const": "rigid_relocation"}}, "required": ["kind"]},
-          "then": {"properties": {"strategy": {"enum": ["planar_push", "pick_and_place"]}}}
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "rigid_relocation"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "strategy": {
+                "enum": [
+                  "planar_push",
+                  "pick_and_place"
+                ]
+              }
+            }
+          }
         },
         {
-          "if": {"properties": {"strategy": {"const": "pick_and_place"}}, "required": ["strategy"]},
-          "then": {"required": ["destination"]}
+          "if": {
+            "properties": {
+              "strategy": {
+                "const": "pick_and_place"
+              }
+            },
+            "required": [
+              "strategy"
+            ]
+          },
+          "then": {
+            "required": [
+              "destination"
+            ]
+          }
         },
         {
-          "if": {"properties": {"strategy": {"const": "planar_push"}}, "required": ["strategy"]},
-          "then": {"not": {"required": ["destination"]}}
+          "if": {
+            "properties": {
+              "strategy": {
+                "const": "planar_push"
+              }
+            },
+            "required": [
+              "strategy"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "destination"
+              ]
+            }
+          }
         },
         {
-          "if": {"properties": {"kind": {"const": "articulated_manipulation"}}, "required": ["kind"]},
-          "then": {"properties": {"strategy": {"const": "articulated_open_close"}}}
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "articulated_manipulation"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "strategy": {
+                "const": "articulated_open_close"
+              }
+            }
+          }
         }
       ]
     },
     "sensors": {
       "type": "object",
-      "required": ["configuration"],
+      "required": [
+        "configuration"
+      ],
       "additionalProperties": false,
-      "properties": {"configuration": {"$ref": "#/$defs/reference"}}
+      "properties": {
+        "configuration": {
+          "$ref": "#/$defs/reference"
+        }
+      }
     },
     "runtime": {
       "type": "object",
@@ -371,37 +853,78 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "identity": {"$ref": "#/$defs/versionedIdentity"},
-        "oci_image": {"type": "string", "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"},
+        "identity": {
+          "$ref": "#/$defs/versionedIdentity"
+        },
+        "oci_image": {
+          "type": "string",
+          "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+        },
         "entrypoint": {
           "type": "array",
           "minItems": 1,
           "maxItems": 32,
-          "items": {"type": "string", "minLength": 1, "maxLength": 1024}
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
         },
-        "health_protocol": {"$ref": "#/$defs/reference"},
+        "health_protocol": {
+          "$ref": "#/$defs/reference"
+        },
         "requirements": {
           "type": "object",
-          "required": ["cpu_cores", "memory_gib", "gpu_count", "disk_gib"],
+          "required": [
+            "cpu_cores",
+            "memory_gib",
+            "gpu_count",
+            "disk_gib"
+          ],
           "additionalProperties": false,
           "properties": {
-            "cpu_cores": {"type": "integer", "minimum": 1, "maximum": 128},
-            "memory_gib": {"type": "number", "exclusiveMinimum": 0, "maximum": 1024},
-            "gpu_count": {"type": "integer", "minimum": 0, "maximum": 8},
-            "disk_gib": {"type": "number", "exclusiveMinimum": 0, "maximum": 4096}
+            "cpu_cores": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 128
+            },
+            "memory_gib": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1024
+            },
+            "gpu_count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 8
+            },
+            "disk_gib": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 4096
+            }
           }
         },
         "network": {
           "type": "object",
-          "required": ["default", "allowlist"],
+          "required": [
+            "default",
+            "allowlist"
+          ],
           "additionalProperties": false,
           "properties": {
-            "default": {"const": "deny"},
+            "default": {
+              "const": "deny"
+            },
             "allowlist": {
               "type": "array",
               "maxItems": 32,
               "uniqueItems": true,
-              "items": {"type": "string", "minLength": 1, "maxLength": 253}
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253
+              }
             }
           }
         },
@@ -409,7 +932,10 @@
           "type": "array",
           "maxItems": 32,
           "uniqueItems": true,
-          "items": {"type": "string", "pattern": "^secret-file:[A-Za-z0-9][A-Za-z0-9_.-]{0,191}$"}
+          "items": {
+            "type": "string",
+            "pattern": "^secret-file:[A-Za-z0-9][A-Za-z0-9_.-]{0,191}$"
+          }
         },
         "mounts": {
           "type": "array",
@@ -417,37 +943,95 @@
           "maxItems": 128,
           "items": {
             "type": "object",
-            "required": ["container_path", "mode"],
+            "required": [
+              "container_path",
+              "mode"
+            ],
             "additionalProperties": false,
             "properties": {
-              "source": {"$ref": "#/$defs/reference"},
-              "container_path": {"type": "string", "pattern": "^/[A-Za-z0-9_./-]+$"},
-              "mode": {"enum": ["read_only", "output"]}
+              "source": {
+                "$ref": "#/$defs/reference"
+              },
+              "container_path": {
+                "type": "string",
+                "pattern": "^/[A-Za-z0-9_./-]+$"
+              },
+              "mode": {
+                "enum": [
+                  "read_only",
+                  "output"
+                ]
+              }
             },
             "allOf": [
               {
-                "if": {"properties": {"mode": {"const": "read_only"}}, "required": ["mode"]},
-                "then": {"required": ["source"]}
+                "if": {
+                  "properties": {
+                    "mode": {
+                      "const": "read_only"
+                    }
+                  },
+                  "required": [
+                    "mode"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "source"
+                  ]
+                }
               },
               {
-                "if": {"properties": {"mode": {"const": "output"}}, "required": ["mode"]},
-                "then": {"not": {"required": ["source"]}}
+                "if": {
+                  "properties": {
+                    "mode": {
+                      "const": "output"
+                    }
+                  },
+                  "required": [
+                    "mode"
+                  ]
+                },
+                "then": {
+                  "not": {
+                    "required": [
+                      "source"
+                    ]
+                  }
+                }
               }
             ]
           }
         },
-        "output_limit_bytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776}
+        "output_limit_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1099511627776
+        }
       }
     },
     "execution_adapter": {
       "type": "object",
-      "required": ["kind", "version", "runtime_source_bundle"],
+      "required": [
+        "kind",
+        "version",
+        "runtime_source_bundle"
+      ],
       "additionalProperties": false,
       "properties": {
-        "kind": {"$ref": "#/$defs/identifier"},
-        "version": {"$ref": "#/$defs/identifier"},
-        "runtime_source_bundle": {"$ref": "#/$defs/reference"},
-        "runtime_source_implementation_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "kind": {
+          "$ref": "#/$defs/identifier"
+        },
+        "version": {
+          "$ref": "#/$defs/identifier"
+        },
+        "runtime_source_bundle": {
+          "$ref": "#/$defs/reference"
+        },
+        "runtime_source_implementation_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
         "policy_observation_setup": {
           "type": "object",
           "required": [
@@ -461,69 +1045,167 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "schema_version": {"const": "task_evaluation_policy_observation_setup.v1"},
-            "appearance_asset": {"$ref": "#/$defs/reference"},
-            "appearance_authoring_receipt": {"$ref": "#/$defs/reference"},
-            "wrist_camera_mount_registry": {"$ref": "#/$defs/reference"},
-            "fresh_native_mount_sweep_required": {"const": true},
-            "policy_master_resolution_wh": {"const": [640, 360]},
-            "overview_review_resolution_wh": {"const": [1280, 720]}
+            "schema_version": {
+              "const": "task_evaluation_policy_observation_setup.v1"
+            },
+            "appearance_asset": {
+              "$ref": "#/$defs/reference"
+            },
+            "appearance_authoring_receipt": {
+              "$ref": "#/$defs/reference"
+            },
+            "wrist_camera_mount_registry": {
+              "$ref": "#/$defs/reference"
+            },
+            "fresh_native_mount_sweep_required": {
+              "const": true
+            },
+            "policy_master_resolution_wh": {
+              "const": [
+                640,
+                360
+              ]
+            },
+            "overview_review_resolution_wh": {
+              "const": [
+                1280,
+                720
+              ]
+            }
           }
         }
       }
     },
     "publication": {
       "type": "object",
-      "required": ["input_namespace", "service_account_readback_required"],
+      "required": [
+        "input_namespace",
+        "service_account_readback_required"
+      ],
       "additionalProperties": false,
       "properties": {
-        "input_namespace": {"$ref": "#/$defs/identifier"},
-        "service_account_readback_required": {"const": true}
+        "input_namespace": {
+          "$ref": "#/$defs/identifier"
+        },
+        "service_account_readback_required": {
+          "const": true
+        }
       }
     },
     "spend": {
       "type": "object",
-      "required": ["maximum_hourly_rate_usd", "hard_cap_usd", "hard_ttl_seconds", "retry_cap", "selected_provider", "provider_allowlist"],
+      "required": [
+        "maximum_hourly_rate_usd",
+        "hard_cap_usd",
+        "hard_ttl_seconds",
+        "retry_cap",
+        "selected_provider",
+        "provider_allowlist"
+      ],
       "additionalProperties": false,
       "properties": {
-        "maximum_hourly_rate_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.8},
-        "hard_cap_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 12},
-        "hard_ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 27000},
-        "provider_compute_spend_cap_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 6},
+        "maximum_hourly_rate_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 0.8
+        },
+        "hard_cap_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 12
+        },
+        "hard_ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 27000
+        },
+        "provider_compute_spend_cap_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 6
+        },
         "external_service_caps": {
           "type": "object",
-          "required": ["openai"],
+          "required": [
+            "openai"
+          ],
           "additionalProperties": false,
           "properties": {
             "openai": {
               "type": "object",
-              "required": ["maximum_cost_usd", "maximum_requests", "stage_max_cost_usd"],
+              "required": [
+                "maximum_cost_usd",
+                "maximum_requests",
+                "stage_max_cost_usd"
+              ],
               "additionalProperties": false,
               "properties": {
-                "maximum_cost_usd": {"type": "number", "minimum": 0, "maximum": 6},
-                "maximum_requests": {"type": "integer", "minimum": 0, "maximum": 100},
+                "maximum_cost_usd": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 6
+                },
+                "maximum_requests": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
                 "stage_max_cost_usd": {
                   "type": "object",
-                  "required": ["artifixer_semantic_teacher", "artifixer_visual_review", "content_agents"],
+                  "required": [
+                    "artifixer_semantic_teacher",
+                    "artifixer_visual_review",
+                    "content_agents"
+                  ],
                   "additionalProperties": false,
                   "properties": {
-                    "artifixer_semantic_teacher": {"type": "number", "minimum": 0, "maximum": 5},
-                    "artifixer_visual_review": {"type": "number", "minimum": 0, "maximum": 5},
-                    "content_agents": {"type": "number", "minimum": 0, "maximum": 5}
+                    "artifixer_semantic_teacher": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 5
+                    },
+                    "artifixer_visual_review": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 5
+                    },
+                    "content_agents": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 5
+                    }
                   }
                 }
               }
             }
           }
         },
-        "retry_cap": {"const": 0},
-        "selected_provider": {"enum": ["vast", "runpod", "gcp", "aws", "azure"]},
+        "retry_cap": {
+          "const": 0
+        },
+        "selected_provider": {
+          "enum": [
+            "vast",
+            "runpod",
+            "gcp",
+            "aws",
+            "azure"
+          ]
+        },
         "provider_allowlist": {
           "type": "array",
           "minItems": 1,
           "maxItems": 16,
           "uniqueItems": true,
-          "items": {"enum": ["vast", "runpod", "gcp", "aws", "azure"]}
+          "items": {
+            "enum": [
+              "vast",
+              "runpod",
+              "gcp",
+              "aws",
+              "azure"
+            ]
+          }
         }
       }
     }
@@ -531,30 +1213,65 @@
   "allOf": [
     {
       "if": {
-        "properties": {"run_mode": {"const": "destination_qualification"}},
-        "required": ["run_mode"]
+        "properties": {
+          "run_mode": {
+            "const": "destination_qualification"
+          }
+        },
+        "required": [
+          "run_mode"
+        ]
       },
       "then": {
-        "required": ["robot", "controller"],
+        "required": [
+          "robot",
+          "controller"
+        ],
         "properties": {
           "scene": {
-            "properties": {"mode": {"const": "reuse_configured_revision"}},
-            "required": ["mode"]
+            "properties": {
+              "mode": {
+                "const": "reuse_configured_revision"
+              }
+            },
+            "required": [
+              "mode"
+            ]
           },
           "construction": {
-            "properties": {"mode": {"const": "reuse_configured_scene"}},
-            "required": ["mode"]
+            "properties": {
+              "mode": {
+                "const": "reuse_configured_scene"
+              }
+            },
+            "required": [
+              "mode"
+            ]
           },
           "task": {
             "properties": {
-              "binding_mode": {"const": "reuse_configured_template"},
+              "binding_mode": {
+                "const": "reuse_configured_template"
+              },
               "destination": {
-                "required": ["native_probe"],
-                "not": {"required": ["placement_qualification"]}
+                "required": [
+                  "native_probe"
+                ],
+                "not": {
+                  "required": [
+                    "placement_qualification"
+                  ]
+                }
               },
               "subject": {
-                "properties": {"mode": {"const": "configured_scene_object"}},
-                "required": ["mode"]
+                "properties": {
+                  "mode": {
+                    "const": "configured_scene_object"
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
               }
             }
           }
@@ -563,33 +1280,81 @@
     },
     {
       "if": {
-        "properties": {"run_mode": {"const": "scene_configuration"}},
-        "required": ["run_mode"]
+        "properties": {
+          "run_mode": {
+            "const": "scene_configuration"
+          }
+        },
+        "required": [
+          "run_mode"
+        ]
       },
       "then": {
-        "not": {"anyOf": [{"required": ["robot"]}, {"required": ["controller"]}]},
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "robot"
+              ]
+            },
+            {
+              "required": [
+                "controller"
+              ]
+            }
+          ]
+        },
         "properties": {
           "spend": {
-            "required": ["provider_compute_spend_cap_usd", "external_service_caps"]
+            "required": [
+              "provider_compute_spend_cap_usd",
+              "external_service_caps"
+            ]
           },
           "scene": {
-            "properties": {"mode": {"const": "configure_source_scene"}},
-            "required": ["mode"]
+            "properties": {
+              "mode": {
+                "const": "configure_source_scene"
+              }
+            },
+            "required": [
+              "mode"
+            ]
           },
           "construction": {
-            "properties": {"mode": {"const": "production_recipe"}},
-            "required": ["mode"]
+            "properties": {
+              "mode": {
+                "const": "production_recipe"
+              }
+            },
+            "required": [
+              "mode"
+            ]
           },
           "task": {
             "properties": {
-              "binding_mode": {"const": "define_configuration_template"},
+              "binding_mode": {
+                "const": "define_configuration_template"
+              },
               "destination": {
-                "required": ["native_probe"],
-                "not": {"required": ["placement_qualification"]}
+                "required": [
+                  "native_probe"
+                ],
+                "not": {
+                  "required": [
+                    "placement_qualification"
+                  ]
+                }
               },
               "subject": {
-                "properties": {"mode": {"const": "construct_from_scene_object"}},
-                "required": ["mode"]
+                "properties": {
+                  "mode": {
+                    "const": "construct_from_scene_object"
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
               }
             }
           }
@@ -598,37 +1363,78 @@
     },
     {
       "if": {
-        "properties": {"run_mode": {"const": "episode_evaluation"}},
-        "required": ["run_mode"]
+        "properties": {
+          "run_mode": {
+            "const": "episode_evaluation"
+          }
+        },
+        "required": [
+          "run_mode"
+        ]
       },
       "then": {
-        "required": ["robot", "controller"],
+        "required": [
+          "robot",
+          "controller"
+        ],
         "not": {
           "properties": {
             "spend": {
               "anyOf": [
-                {"required": ["provider_compute_spend_cap_usd"]},
-                {"required": ["external_service_caps"]}
+                {
+                  "required": [
+                    "provider_compute_spend_cap_usd"
+                  ]
+                },
+                {
+                  "required": [
+                    "external_service_caps"
+                  ]
+                }
               ]
             }
           }
         },
         "properties": {
           "scene": {
-            "properties": {"mode": {"const": "reuse_configured_revision"}},
-            "required": ["mode"]
+            "properties": {
+              "mode": {
+                "const": "reuse_configured_revision"
+              }
+            },
+            "required": [
+              "mode"
+            ]
           },
           "construction": {
-            "properties": {"mode": {"const": "reuse_configured_scene"}},
-            "required": ["mode"]
+            "properties": {
+              "mode": {
+                "const": "reuse_configured_scene"
+              }
+            },
+            "required": [
+              "mode"
+            ]
           },
           "task": {
             "properties": {
-              "binding_mode": {"const": "reuse_configured_template"},
-              "destination": {"required": ["placement_qualification"]},
+              "binding_mode": {
+                "const": "reuse_configured_template"
+              },
+              "destination": {
+                "required": [
+                  "placement_qualification"
+                ]
+              },
               "subject": {
-                "properties": {"mode": {"const": "configured_scene_object"}},
-                "required": ["mode"]
+                "properties": {
+                  "mode": {
+                    "const": "configured_scene_object"
+                  }
+                },
+                "required": [
+                  "mode"
+                ]
               }
             }
           }
@@ -636,39 +1442,82 @@
       }
     },
     {
-      "if": {"required": ["policy_run_setup"]},
+      "if": {
+        "required": [
+          "policy_run_setup"
+        ]
+      },
       "then": {
-        "required": ["policy_run_setup", "policy_run_selection", "policy_run_configuration"],
+        "required": [
+          "policy_run_setup",
+          "policy_run_selection",
+          "policy_run_configuration"
+        ],
         "properties": {
-          "run_mode": {"const": "episode_evaluation"},
+          "run_mode": {
+            "const": "episode_evaluation"
+          },
           "controller": {
-            "properties": {"kind": {"const": "policy_container"}},
-            "required": ["kind"]
+            "properties": {
+              "kind": {
+                "const": "policy_container"
+              }
+            },
+            "required": [
+              "kind"
+            ]
           }
         }
       }
     }
   ],
   "$defs": {
-    "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
-    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 192,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
     "reference": {
       "type": "object",
-      "required": ["uri", "digest", "size_bytes"],
+      "required": [
+        "uri",
+        "digest",
+        "size_bytes"
+      ],
       "additionalProperties": false,
       "properties": {
-        "uri": {"type": "string", "pattern": "^(gs|s3|https)://[^\\s]+$"},
-        "digest": {"$ref": "#/$defs/digest"},
-        "size_bytes": {"type": "integer", "minimum": 1}
+        "uri": {
+          "type": "string",
+          "pattern": "^(gs|s3|https)://[^\\s]+$"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "versionedIdentity": {
       "type": "object",
-      "required": ["id", "version"],
+      "required": [
+        "id",
+        "version"
+      ],
       "additionalProperties": false,
       "properties": {
-        "id": {"$ref": "#/$defs/identifier"},
-        "version": {"$ref": "#/$defs/identifier"}
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "version": {
+          "$ref": "#/$defs/identifier"
+        }
       }
     },
     "configuredScenePublicDisplayAuthorization": {
@@ -700,43 +1549,97 @@
         "schema_version": {
           "const": "task_evaluation_configured_scene_public_display_authorization.v1"
         },
-        "status": {"const": "authorized"},
-        "scope": {"const": "configured_scene_derived_listing"},
-        "scene_identity": {"$ref": "#/$defs/versionedIdentity"},
-        "task_identity": {"$ref": "#/$defs/versionedIdentity"},
-        "subject_identity": {"$ref": "#/$defs/versionedIdentity"},
-        "rights_admission_digest": {"$ref": "#/$defs/digest"},
-        "human_authority_record_digest": {"$ref": "#/$defs/digest"},
+        "status": {
+          "const": "authorized"
+        },
+        "scope": {
+          "const": "configured_scene_derived_listing"
+        },
+        "scene_identity": {
+          "$ref": "#/$defs/versionedIdentity"
+        },
+        "task_identity": {
+          "$ref": "#/$defs/versionedIdentity"
+        },
+        "subject_identity": {
+          "$ref": "#/$defs/versionedIdentity"
+        },
+        "rights_admission_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "human_authority_record_digest": {
+          "$ref": "#/$defs/digest"
+        },
         "public_slug": {
           "type": "string",
           "minLength": 1,
           "maxLength": 96,
           "pattern": "^[a-z0-9][a-z0-9-]{0,95}$"
         },
-        "title": {"type": "string", "minLength": 1, "maxLength": 120},
-        "summary": {"type": "string", "minLength": 1, "maxLength": 500},
-        "category": {"type": "string", "minLength": 1, "maxLength": 80},
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
         "allowed_fields": {
           "type": "array",
           "minItems": 10,
           "maxItems": 10,
           "prefixItems": [
-            {"const": "status"},
-            {"const": "scene_identity"},
-            {"const": "task_identity"},
-            {"const": "task_kind"},
-            {"const": "task_strategy"},
-            {"const": "public_title"},
-            {"const": "public_summary"},
-            {"const": "public_category"},
-            {"const": "thumbnail"},
-            {"const": "proof_boundary"}
+            {
+              "const": "status"
+            },
+            {
+              "const": "scene_identity"
+            },
+            {
+              "const": "task_identity"
+            },
+            {
+              "const": "task_kind"
+            },
+            {
+              "const": "task_strategy"
+            },
+            {
+              "const": "public_title"
+            },
+            {
+              "const": "public_summary"
+            },
+            {
+              "const": "public_category"
+            },
+            {
+              "const": "thumbnail"
+            },
+            {
+              "const": "proof_boundary"
+            }
           ]
         },
-        "thumbnail_publication_authorized": {"const": true},
-        "derived_metadata_publication_authorized": {"const": true},
-        "private_artifact_uri_publication_authorized": {"const": false},
-        "raw_media_publication_authorized": {"const": false},
+        "thumbnail_publication_authorized": {
+          "const": true
+        },
+        "derived_metadata_publication_authorized": {
+          "const": true
+        },
+        "private_artifact_uri_publication_authorized": {
+          "const": false
+        },
+        "raw_media_publication_authorized": {
+          "const": false
+        },
         "authority_reference": {
           "type": "string",
           "minLength": 1,
@@ -747,7 +1650,9 @@
           "minLength": 1,
           "maxLength": 192
         },
-        "authorization_digest": {"$ref": "#/$defs/digest"}
+        "authorization_digest": {
+          "$ref": "#/$defs/digest"
+        }
       }
     }
   }

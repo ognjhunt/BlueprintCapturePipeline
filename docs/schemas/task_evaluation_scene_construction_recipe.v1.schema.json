@@ -20,14 +20,30 @@
   ],
   "additionalProperties": false,
   "properties": {
-    "schema_version": {"const": "task_evaluation_scene_construction_recipe.v1"},
-    "recipe_id": {"$ref": "#/$defs/identifier"},
-    "team_namespace": {"$ref": "#/$defs/identifier"},
-    "scene_identity": {"$ref": "#/$defs/versionedIdentity"},
-    "task_identity": {"$ref": "#/$defs/versionedIdentity"},
-    "subject_identity": {"$ref": "#/$defs/versionedIdentity"},
-    "source_manifest_digest": {"$ref": "#/$defs/digest"},
-    "rights_admission_digest": {"$ref": "#/$defs/digest"},
+    "schema_version": {
+      "const": "task_evaluation_scene_construction_recipe.v1"
+    },
+    "recipe_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "team_namespace": {
+      "$ref": "#/$defs/identifier"
+    },
+    "scene_identity": {
+      "$ref": "#/$defs/versionedIdentity"
+    },
+    "task_identity": {
+      "$ref": "#/$defs/versionedIdentity"
+    },
+    "subject_identity": {
+      "$ref": "#/$defs/versionedIdentity"
+    },
+    "source_manifest_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "rights_admission_digest": {
+      "$ref": "#/$defs/digest"
+    },
     "stage_sequence": {
       "type": "array",
       "minItems": 6,
@@ -44,7 +60,9 @@
         ],
         "additionalProperties": false,
         "properties": {
-          "stage_id": {"$ref": "#/$defs/identifier"},
+          "stage_id": {
+            "$ref": "#/$defs/identifier"
+          },
           "capability": {
             "enum": [
               "observed_appearance_object_removal",
@@ -55,19 +73,32 @@
               "scene_assembly"
             ]
           },
-          "adapter": {"$ref": "#/$defs/versionedIdentity"},
-          "execution_class": {"enum": ["no_spend", "gpu_canary"]},
-          "configuration": {"$ref": "#/$defs/reference"},
+          "adapter": {
+            "$ref": "#/$defs/versionedIdentity"
+          },
+          "execution_class": {
+            "enum": [
+              "no_spend",
+              "gpu_canary"
+            ]
+          },
+          "configuration": {
+            "$ref": "#/$defs/reference"
+          },
           "depends_on": {
             "type": "array",
             "maxItems": 1,
             "uniqueItems": true,
-            "items": {"$ref": "#/$defs/identifier"}
+            "items": {
+              "$ref": "#/$defs/identifier"
+            }
           }
         }
       }
     },
-    "output_identity": {"$ref": "#/$defs/versionedIdentity"},
+    "output_identity": {
+      "$ref": "#/$defs/versionedIdentity"
+    },
     "provider_disclosure": {
       "type": "object",
       "required": [
@@ -78,13 +109,63 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "raw_source_bytes_to_external_provider": {"const": false},
-        "derived_runtime_processing_allowed": {"const": true},
-        "provider_training_allowed": {"const": false},
-        "public_redistribution_allowed": {"const": false}
+        "raw_source_bytes_to_external_provider": {
+          "const": false
+        },
+        "derived_runtime_processing_allowed": {
+          "const": true
+        },
+        "provider_training_allowed": {
+          "const": false
+        },
+        "public_redistribution_allowed": {
+          "const": false
+        }
       }
     },
-    "recipe_digest": {"$ref": "#/$defs/digest"}
+    "recipe_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "supplemental_destination": {
+      "description": "Optional supplemental passive destination (for example a tray) that has no source object to remove. The scene-configuration run re-qualifies it statically and imports it natively alongside the subject replacement; it never receives source-removal lineage.",
+      "type": "object",
+      "required": [
+        "identity",
+        "relation",
+        "asset",
+        "static_qualification",
+        "rights_admission",
+        "authoring_receipt",
+        "simready_result"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/versionedIdentity"
+        },
+        "relation": {
+          "enum": [
+            "inside",
+            "on"
+          ]
+        },
+        "asset": {
+          "$ref": "#/$defs/reference"
+        },
+        "static_qualification": {
+          "$ref": "#/$defs/reference"
+        },
+        "rights_admission": {
+          "$ref": "#/$defs/reference"
+        },
+        "authoring_receipt": {
+          "$ref": "#/$defs/reference"
+        },
+        "simready_result": {
+          "$ref": "#/$defs/reference"
+        }
+      }
+    }
   },
   "$defs": {
     "identifier": {
@@ -93,24 +174,46 @@
       "maxLength": 192,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
     },
-    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
     "reference": {
       "type": "object",
-      "required": ["uri", "digest", "size_bytes"],
+      "required": [
+        "uri",
+        "digest",
+        "size_bytes"
+      ],
       "additionalProperties": false,
       "properties": {
-        "uri": {"type": "string", "pattern": "^(gs|s3|https)://[^\\s]+$"},
-        "digest": {"$ref": "#/$defs/digest"},
-        "size_bytes": {"type": "integer", "minimum": 1}
+        "uri": {
+          "type": "string",
+          "pattern": "^(gs|s3|https)://[^\\s]+$"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "versionedIdentity": {
       "type": "object",
-      "required": ["id", "version"],
+      "required": [
+        "id",
+        "version"
+      ],
       "additionalProperties": false,
       "properties": {
-        "id": {"$ref": "#/$defs/identifier"},
-        "version": {"$ref": "#/$defs/identifier"}
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "version": {
+          "$ref": "#/$defs/identifier"
+        }
       }
     }
   }

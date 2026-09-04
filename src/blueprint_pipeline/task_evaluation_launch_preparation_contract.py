@@ -165,6 +165,21 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
             raise TaskEvaluationLaunchPreparationContractError(
                 "launch_preparation_pick_place_destination_invalid"
             )
+        # A supplemental destination has no source object, so the scene
+        # configuration run itself must produce its Isaac-native import
+        # qualification and task geometry.  Later modes consume the published
+        # references and may not omit them.
+        run_produced = ("native_import_qualification", "geometry")
+        if request["run_mode"] == "scene_configuration":
+            if any(field in destination for field in run_produced):
+                raise TaskEvaluationLaunchPreparationContractError(
+                    "launch_preparation_scene_configuration_destination_"
+                    "prequalified_reference_forbidden"
+                )
+        elif any(field not in destination for field in run_produced):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_destination_qualification_reference_missing"
+            )
     construction = request["construction"]
     subject = task["subject"]
     expected_subject_mode = {

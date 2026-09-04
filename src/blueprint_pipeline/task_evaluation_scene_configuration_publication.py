@@ -23,6 +23,10 @@ from .task_evaluation_scene_configuration_disclosure import (
     render_inputs_disclosure_is_coherent,
     renders_on_provider,
 )
+from .task_evaluation_rigid_destination_geometry import (
+    RigidDestinationGeometryError,
+    derive_rigid_destination_geometry,
+)
 from .task_evaluation_scene_configuration_appearance_review import (
     AppearanceReviewContractError,
     PAUSED_UNGRADED_MODE,
@@ -239,6 +243,211 @@ def _deterministic_bundle(
         temporary.unlink(missing_ok=True)
 
 
+def _materialized_reference_file(
+    envelope: Mapping[str, Any], *, contract_path: str
+) -> tuple[dict[str, Any], Path]:
+    matches = [
+        dict(row)
+        for row in envelope.get("materialized_references") or []
+        if isinstance(row, Mapping) and row.get("contract_path") == contract_path
+    ]
+    if len(matches) != 1:
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            f"scene_configuration_publication_reference_missing:{contract_path}"
+        )
+    row = matches[0]
+    path = Path(str(row.get("materialized_path") or "")).resolve()
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or _sha256_and_size(path) != (row.get("digest"), row.get("size_bytes"))
+        or row.get("full_byte_service_account_readback_passed") is not True
+    ):
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            f"scene_configuration_publication_reference_invalid:{contract_path}"
+        )
+    return row, path
+
+
+def _read_json(path: Path, *, code: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise TaskEvaluationSceneConfigurationPublicationError(code) from exc
+    if not isinstance(value, Mapping):
+        raise TaskEvaluationSceneConfigurationPublicationError(code)
+    return dict(value)
+
+
+_DESTINATION_STAGE_ROLES = (
+    "statically_qualified_destination_asset",
+    "destination_static_qualification_receipt",
+    "destination_static_requalification_receipt",
+    "native_qualified_destination_asset",
+    "destination_native_import_qualification_receipt",
+)
+
+
+def _supplemental_destination_publication(
+    *,
+    envelope: Mapping[str, Any],
+    request: Mapping[str, Any],
+    recipe: Mapping[str, Any],
+    stage_results: Sequence[Mapping[str, Any]],
+    subject_static_receipt_path: Path,
+    output_root: Path,
+) -> dict[str, Path]:
+    """Return the destination files to publish, deriving its task geometry.
+
+    The run produced the destination's native-import receipt; publication is
+    where the subject's stage-4 static bounds and the destination's SimReady
+    interior first coexist, so the geometry is derived here and nowhere else.
+    """
+
+    task = request.get("task") if isinstance(request, Mapping) else None
+    destination = task.get("destination") if isinstance(task, Mapping) else None
+    supplemental = recipe.get("supplemental_destination")
+    declared_roles = {
+        str(row.get("role") or "")
+        for result in stage_results
+        for row in result.get("output_artifacts") or []
+        if isinstance(row, Mapping)
+    }
+    if destination is None:
+        if supplemental is not None or any(
+            role in declared_roles for role in _DESTINATION_STAGE_ROLES
+        ):
+            raise TaskEvaluationSceneConfigurationPublicationError(
+                "scene_configuration_publication_destination_undeclared"
+            )
+        return {}
+    if (
+        not isinstance(destination, Mapping)
+        or not isinstance(supplemental, Mapping)
+        or supplemental.get("identity") != destination.get("identity")
+        or supplemental.get("relation") != destination.get("relation")
+        or supplemental.get("asset") != destination.get("asset")
+        or supplemental.get("static_qualification")
+        != destination.get("static_qualification")
+        or "native_import_qualification" in destination
+        or "geometry" in destination
+        or "placement_qualification" in destination
+    ):
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "scene_configuration_publication_destination_binding_invalid"
+        )
+    identity = dict(destination["identity"])
+    _asset_record, asset = _artifact(stage_results, role="native_qualified_destination_asset")
+    _static_asset_record, static_asset = _artifact(
+        stage_results, role="statically_qualified_destination_asset"
+    )
+    _static_record, static_path = _artifact(
+        stage_results, role="destination_static_qualification_receipt"
+    )
+    _requalification_record, requalification_path = _artifact(
+        stage_results, role="destination_static_requalification_receipt"
+    )
+    _native_record, native_path = _artifact(
+        stage_results, role="destination_native_import_qualification_receipt"
+    )
+    asset_digest, asset_size = _sha256_and_size(asset)
+    static_digest, static_size = _sha256_and_size(static_path)
+    static = _read_json(
+        static_path, code="scene_configuration_publication_destination_static_invalid"
+    )
+    native = _read_json(
+        native_path, code="scene_configuration_publication_destination_native_invalid"
+    )
+    if (
+        _sha256_and_size(static_asset) != (asset_digest, asset_size)
+        or destination["asset"].get("digest") != asset_digest
+        or destination["asset"].get("size_bytes") != asset_size
+        or destination["static_qualification"].get("digest") != static_digest
+        or destination["static_qualification"].get("size_bytes") != static_size
+        or static.get("replacement_identity") != identity
+        or native.get("status") != "qualified"
+        or native.get("replacement_identity") != identity
+        or native.get("asset_digest") != asset_digest
+        or native.get("static_qualification_digest") != static_digest
+        or native.get("native_simulator_import_qualified") is not True
+        or native.get("result_digest")
+        != canonical_digest(native, digest_field="result_digest")
+    ):
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "scene_configuration_publication_destination_binding_invalid"
+        )
+    _definition_row, definition_path = _materialized_reference_file(
+        envelope, contract_path="task.definition"
+    )
+    _simready_row, simready_path = _materialized_reference_file(
+        envelope,
+        contract_path="construction.recipe.supplemental_destination.simready_result",
+    )
+    definition = _read_json(
+        definition_path,
+        code="scene_configuration_publication_task_definition_invalid",
+    )
+    task_spec = definition.get("task_spec")
+    affordance = (
+        task_spec.get("interaction_affordance") if isinstance(task_spec, Mapping) else None
+    )
+    transform = (
+        affordance.get("asset_root_from_scoring_frame")
+        if isinstance(affordance, Mapping)
+        else None
+    )
+    if not isinstance(transform, Mapping):
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "scene_configuration_publication_task_definition_invalid"
+        )
+    probe = destination.get("native_probe")
+    limits = probe.get("qualification_limits") if isinstance(probe, Mapping) else None
+    if not isinstance(limits, Mapping):
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "scene_configuration_publication_destination_probe_invalid"
+        )
+    try:
+        geometry = derive_rigid_destination_geometry(
+            subject_identity=recipe["subject_identity"],
+            destination_identity=identity,
+            relation=str(destination["relation"]),
+            pose_world=destination["pose_world"],
+            subject_static_qualification=_read_json(
+                subject_static_receipt_path,
+                code="scene_configuration_publication_subject_static_invalid",
+            ),
+            subject_static_qualification_digest=_sha256_and_size(
+                subject_static_receipt_path
+            )[0],
+            subject_scoring_transform=transform,
+            destination_static_qualification=static,
+            destination_static_qualification_digest=static_digest,
+            destination_simready_result=_read_json(
+                simready_path,
+                code="scene_configuration_publication_destination_simready_invalid",
+            ),
+            qualification_limits=limits,
+        )
+    except RigidDestinationGeometryError as exc:
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            f"scene_configuration_publication_destination_geometry_failed:{exc}"
+        ) from exc
+    geometry_path = output_root / "destination_geometry.v1.json"
+    if geometry_path.exists() or geometry_path.is_symlink():
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "scene_configuration_publication_destination_geometry_conflict"
+        )
+    geometry_path.write_text(canonical_json(geometry) + "\n", encoding="utf-8")
+    return {
+        "destination_asset": asset,
+        "destination_static_qualification": static_path,
+        "destination_static_requalification": requalification_path,
+        "destination_native_import_qualification": native_path,
+        "destination_geometry": geometry_path,
+        "destination_simready_result": simready_path,
+    }
+
+
 def publish_configured_scene_revision(
     *,
     envelope: Mapping[str, Any],
@@ -373,6 +582,15 @@ def publish_configured_scene_revision(
             "appearance_visual_review_receipt"
         ],
     }
+    destination_files = _supplemental_destination_publication(
+        envelope=envelope,
+        request=request,
+        recipe=recipe,
+        stage_results=stage_results,
+        subject_static_receipt_path=artifacts["static_qualification_receipt"],
+        output_root=root,
+    )
+    publish_roles.update(destination_files)
     published = {
         role: _publish(
             publisher=publisher,
@@ -510,8 +728,20 @@ def publish_configured_scene_revision(
             "success_criteria": dict(task["success_criteria"]),
             "execution": dict(task["execution"]),
             **(
-                {"destination": dict(task["destination"])}
-                if isinstance(task.get("destination"), Mapping)
+                {
+                    "destination": {
+                        **dict(task["destination"]),
+                        "native_import_qualification": {
+                            key: published["destination_native_import_qualification"][key]
+                            for key in ("uri", "digest", "size_bytes")
+                        },
+                        "geometry": {
+                            key: published["destination_geometry"][key]
+                            for key in ("uri", "digest", "size_bytes")
+                        },
+                    }
+                }
+                if destination_files
                 else {}
             ),
         },

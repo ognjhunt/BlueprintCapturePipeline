@@ -224,3 +224,23 @@ def test_builtin_producer_retains_redacted_partial_output_on_timeout(
     assert "signed-timeout-value" not in log
     assert "<redacted>" in log
     assert log.count("REDACTED_SECRET") == 2
+
+
+def test_expected_stage_roles_admit_the_destination_result_only_when_declared() -> None:
+    from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
+        expected_stage_artifact_roles,
+    )
+
+    base = expected_stage_artifact_roles(
+        "simready_native_import_qualification", supplemental_destination=False
+    )
+    assert base == {"native_import_runtime_result"}
+    assert expected_stage_artifact_roles(
+        "simready_native_import_qualification", supplemental_destination=True
+    ) == {"native_import_runtime_result", "destination_native_import_runtime_result"}
+    # Other adapters never grow a destination role.
+    assert expected_stage_artifact_roles(
+        "content_agents_rigid_replacement", supplemental_destination=True
+    ) == expected_stage_artifact_roles(
+        "content_agents_rigid_replacement", supplemental_destination=False
+    )
