@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 
 import pytest
 
@@ -386,6 +387,95 @@ def test_scene_neutral_rigid_task_scores_pose_volume_release_and_settle() -> Non
     assert report["task_succeeded"] is True
     assert report["subject_asset_id"] == "notebook_replacement"
     assert report["manipulation_strategy"] == "pick_and_place"
+
+
+def test_rigid_destination_is_scored_in_its_live_frame_and_must_stay_stable() -> None:
+    task_spec = _rigid_v2_spec()
+    half_sqrt = math.sqrt(0.5)
+    destination_pose = [1.15, 2.0, 0.8, 0.0, 0.0, half_sqrt, half_sqrt]
+    task_spec.update(
+        destination_relation="inside",
+        destination_pose_world=destination_pose,
+        destination_position_bounds_destination_frame_m={
+            "minimum": [0.04, -0.01, -0.01],
+            "maximum": [0.06, 0.01, 0.01],
+        },
+        subject_collision_bounds_scoring_frame_m={
+            "minimum": [-0.02, -0.005, -0.005],
+            "maximum": [0.02, 0.005, 0.005],
+        },
+        destination_interior_bounds_body_frame_m={
+            "minimum": [0.02, -0.03, -0.02],
+            "maximum": [0.08, 0.03, 0.02],
+        },
+        destination_reset_translation_tolerance_m=0.002,
+        destination_reset_rotation_tolerance_rad=0.01,
+    )
+    samples = [
+        _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+        _rigid_v2_sample(1, [1.0, 2.0, 0.83]),
+        _rigid_v2_sample(2, [1.15, 2.05, 0.83]),
+        _rigid_v2_sample(3, [1.15, 2.05, 0.8]),
+        _rigid_v2_sample(4, [1.15, 2.05, 0.8]),
+        _rigid_v2_sample(5, [1.15, 2.05, 0.8]),
+    ]
+    for sample in samples:
+        sample["destination_pose_world"] = destination_pose
+
+    report = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
+
+    assert report["task_succeeded"] is True
+    assert report["measurements"]["settle_destination_inside"] is True
+    assert report["measurements"]["destination_pose_stable"] is True
+
+    samples[-1]["destination_pose_world"] = [
+        1.16,
+        2.0,
+        0.8,
+        0.0,
+        0.0,
+        half_sqrt,
+        half_sqrt,
+    ]
+    moved_destination = score_task_episode_from_spec(
+        task_spec=task_spec, samples=samples
+    )
+    assert moved_destination["task_succeeded"] is False
+    assert "destination_pose_stability" in moved_destination["failed_criteria"]
+
+
+def test_rigid_destination_pose_readback_is_required() -> None:
+    task_spec = _rigid_v2_spec()
+    task_spec.update(
+        destination_relation="inside",
+        destination_pose_world=[1.15, 2.0, 0.8, 0.0, 0.0, 0.0, 1.0],
+        destination_position_bounds_destination_frame_m={
+            "minimum": [-0.01, -0.01, -0.01],
+            "maximum": [0.01, 0.01, 0.01],
+        },
+        subject_collision_bounds_scoring_frame_m={
+            "minimum": [-0.005, -0.005, -0.005],
+            "maximum": [0.005, 0.005, 0.005],
+        },
+        destination_interior_bounds_body_frame_m={
+            "minimum": [-0.02, -0.02, -0.02],
+            "maximum": [0.02, 0.02, 0.02],
+        },
+        destination_reset_translation_tolerance_m=0.002,
+        destination_reset_rotation_tolerance_rad=0.01,
+    )
+    report = score_task_episode_from_spec(
+        task_spec=task_spec,
+        samples=[
+            _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+            _rigid_v2_sample(1, [1.15, 2.0, 0.8]),
+            _rigid_v2_sample(2, [1.15, 2.0, 0.8]),
+            _rigid_v2_sample(3, [1.15, 2.0, 0.8]),
+        ],
+    )
+
+    assert report["status"] == "undetermined"
+    assert report["outcome"] == "native_destination_pose_readback_missing"
 
 
 def _held_out_groot_push_samples() -> list[dict]:

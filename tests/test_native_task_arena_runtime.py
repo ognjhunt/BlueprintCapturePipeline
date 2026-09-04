@@ -703,6 +703,23 @@ def test_rigid_task_keeps_locked_articulation_and_separate_support_collision_cha
     _install_fake_native_runtime(monkeypatch)
     plan = _sealed_scene_plan()
     plan["task_kind"] = "rigid_pick_place"
+    plan["objects"].append(
+        {
+            "name": "task_support",
+            "semantic_role": "task_support",
+            "asset_id": "document_tray",
+            "task_subject": False,
+            "prim_path": "{ENV_REGEX_NS}/task_support",
+            "object_type": "RIGID",
+            "usd_path": "/provider/assets/document-tray.usda",
+            "visible": True,
+            "pose_world": {
+                "position_world_m": [1.2, 2.0, 0.8],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+            "reset_state": {"joint_positions": {}},
+        }
+    )
     plan["articulation"]["contact_sensors"][1].update(
         sensor_instance_id="task_support_contact__rigid_00",
         logical_sensor_id="task_support_contact",
@@ -735,6 +752,15 @@ def test_rigid_task_keeps_locked_articulation_and_separate_support_collision_cha
     assert built.contact_sensor_names["task_scene_collision"] == (
         "task_scene_collision__rigid_00",
     )
+    support = next(
+        asset
+        for asset in _ArenaBuilder.last.arena_env.scene.assets
+        if asset.name == "task_support"
+    )
+    assert support.reset_event_name == "reset_task_support_state"
+    assert support.spawn_cfg_addon["semantic_tags"] == [("class", "task_support")]
+    assert support.reset_event_cfg.params["asset_cfg"].name == "task_support"
+    assert support.reset_event_cfg.params["reset_joints"] is False
 
 
 def test_many_to_many_contact_patterns_fail_before_native_build(monkeypatch) -> None:

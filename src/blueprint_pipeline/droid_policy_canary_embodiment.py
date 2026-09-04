@@ -63,6 +63,13 @@ def concrete_droid_task_instruction(task_spec: Mapping[str, Any]) -> str:
         target = "green target marker"
     verb = str(task_spec.get("instruction_verb") or "").strip()
     strategy = str(task_spec.get("manipulation_strategy") or "")
+    relation = str(task_spec.get("destination_relation") or "on")
+    if strategy == "pick_and_place":
+        if relation not in {"inside", "on"}:
+            raise ValueError("droid_policy_canary_destination_relation_invalid")
+        action = verb or "Pick up and place"
+        preposition = "into" if relation == "inside" else "on"
+        return f"{action} the {subject} {preposition} the {target}."
     if not verb:
         verb = "Push" if strategy == "planar_push" else "Move"
     return f"{verb} the {subject} onto the {target}."

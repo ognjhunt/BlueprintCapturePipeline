@@ -42,7 +42,12 @@ from .replacement_construction_bindings import (
 SCHEMA_VERSION = "native_task_runtime_contract.v1"
 PROGRAM_ID = "arm-decision-proof-v1"
 FROZEN_CANDIDATES = ("pi05_droid", "groot_n17_droid")
-SINGULAR_ASSET_ROLES = ("scene_collision", "scene_appearance", "task_object")
+SINGULAR_ASSET_ROLES = (
+    "scene_collision",
+    "scene_appearance",
+    "task_object",
+    "task_support",
+)
 REPEATABLE_REPLACEMENT_ROLE = "replacement"
 OBJECT_TYPES = frozenset({"RIGID", "ARTICULATION"})
 CAMERA_ROLES = ("external", "wrist", "overview")
@@ -263,7 +268,7 @@ def _asset_rows(
     rows: list[dict[str, Any]] = []
     ordered: list[tuple[str, Mapping[str, Any], bool]] = [
         (role, by_role[role], False)
-        for role in ("scene_collision", "scene_appearance")
+        for role in ("scene_collision", "scene_appearance", "task_support")
         if role in by_role
     ]
     if replacements:
@@ -302,8 +307,14 @@ def _asset_rows(
         object_type = str(source.get("object_type") or "")
         physical_task_asset = (
             replacements and role in {"task_object", REPEATABLE_REPLACEMENT_ROLE}
-        ) or (identified_task_object and role == "task_object")
-        error_scope = "replacement" if replacements else "task_object"
+        ) or (identified_task_object and role == "task_object") or role == "task_support"
+        error_scope = (
+            "task_support"
+            if role == "task_support"
+            else "replacement"
+            if replacements
+            else "task_object"
+        )
         if physical_task_asset:
             if object_type not in OBJECT_TYPES:
                 errors.append(
@@ -1020,7 +1031,8 @@ def materialize_native_task_runtime_contract(
             "per_object_reset_states": {
                 row["asset_id"]: row["reset_state"]
                 for row in asset_rows
-                if row["semantic_role"] in {"task_object", "replacement"}
+                if row["semantic_role"]
+                in {"task_object", "replacement", "task_support"}
             },
         },
         "scoring_contract": {

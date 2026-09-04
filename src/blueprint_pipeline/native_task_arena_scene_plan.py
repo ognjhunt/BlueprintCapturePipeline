@@ -700,6 +700,7 @@ def _articulation_plan(
     *,
     task_object_asset_path: Path | None,
     scene_collision_asset_path: Path | None,
+    task_support_asset_path: Path | None = None,
 ) -> dict[str, Any]:
     task_kind = contract["task_kind"]
     if task_kind != "articulated_open_close":
@@ -828,7 +829,38 @@ def _articulation_plan(
             )
             for path in source_task_body_paths
         ]
-        support_stage = Usd.Stage.Open(str(scene_collision_asset_path))
+        destination_support_id = str(
+            task_spec.get("destination_support_asset_id") or ""
+        )
+        support_object = next(
+            (
+                row
+                for row in contract["objects"]
+                if row.get("semantic_role") == "task_support"
+            ),
+            None,
+        )
+        if destination_support_id:
+            if (
+                task_support_asset_path is None
+                or not isinstance(support_object, Mapping)
+                or support_object.get("asset_id") != destination_support_id
+            ):
+                raise NativeTaskArenaScenePlanError(
+                    ["native_task_arena_rigid_destination_support_asset_invalid"]
+                )
+            support_asset_path = task_support_asset_path
+            support_spawn_role = str(
+                support_object.get("runtime_name") or "task_support"
+            )
+        else:
+            if support_object is not None:
+                raise NativeTaskArenaScenePlanError(
+                    ["native_task_arena_rigid_destination_support_asset_unbound"]
+                )
+            support_asset_path = scene_collision_asset_path
+            support_spawn_role = "scene_collision"
+        support_stage = Usd.Stage.Open(str(support_asset_path))
         support_root = (
             support_stage.GetDefaultPrim() if support_stage is not None else None
         )
@@ -839,20 +871,45 @@ def _articulation_plan(
         support_body_paths = [
             _source_to_spawned_prim(
                 str(path),
-                role="scene_collision",
+                role=support_spawn_role,
                 source_root_prim_path=str(support_root.GetPath()),
             )
             for path in affordance["intended_support_prim_paths"]
         ]
+        source_support_body_paths = sorted(
+            str(prim.GetPath())
+            for prim in support_stage.Traverse()
+            if prim.IsActive()
+            and prim.IsLoaded()
+            and prim.HasAPI(UsdPhysics.RigidBodyAPI)
+        )
         if (
             len(support_body_paths) != len(set(support_body_paths))
-            or any(path not in scene_contact_body_paths for path in support_body_paths)
+            or (
+                bool(destination_support_id)
+                and any(
+                    path not in source_support_body_paths
+                    for path in affordance["intended_support_prim_paths"]
+                )
+            )
+            or (
+                not destination_support_id
+                and any(
+                    path not in scene_contact_body_paths
+                    for path in support_body_paths
+                )
+            )
         ):
             raise NativeTaskArenaScenePlanError(
                 ["native_task_arena_rigid_support_body_paths_invalid"]
             )
-        non_support_scene_body_paths = sorted(
-            set(scene_contact_body_paths) - set(support_body_paths)
+        non_support_scene_body_paths = (
+            sorted(scene_contact_body_paths)
+            if destination_support_id
+            else sorted(set(scene_contact_body_paths) - set(support_body_paths))
+        )
+        robot_scene_filter_paths = sorted(
+            set(scene_contact_body_paths) | set(support_body_paths)
         )
         forbidden_robot_body_paths = sorted(
             set(robot_contact_topology["protected_collision_body_paths"])
@@ -909,7 +966,7 @@ def _articulation_plan(
                 "sensor_instance_id": f"robot_scene_contact__{index:02d}",
                 "logical_sensor_id": "robot_scene_contact",
                 "prim_path": body_path,
-                "filter_prim_paths_expr": scene_contact_body_paths,
+                "filter_prim_paths_expr": robot_scene_filter_paths,
             }
             for index, body_path in enumerate(
                 robot_contact_topology["protected_collision_body_paths"]
@@ -1311,6 +1368,14 @@ def materialize_native_task_arena_scene_plan(
         ),
         None,
     )
+    task_support_asset_path = next(
+        (
+            asset_directory / str(row["filename"])
+            for row in contract["objects"]
+            if row.get("semantic_role") == "task_support"
+        ),
+        None,
+    )
     scenario_parameter_applications = _apply_scenario_parameters(
         objects=objects,
         cameras=cameras,
@@ -1335,6 +1400,7 @@ def materialize_native_task_arena_scene_plan(
         effective_contract,
         task_object_asset_path=task_object_asset_path,
         scene_collision_asset_path=scene_collision_asset_path,
+        task_support_asset_path=task_support_asset_path,
     )
     appearance_frame_alignment = _appearance_frame_alignment(
         objects,

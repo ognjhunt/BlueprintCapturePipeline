@@ -350,6 +350,12 @@ def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
         "task_scene_contact",
     )
     del built.contact_sensor_names["task_scene_contact"]
+    built.env.unwrapped.scene["task_support"] = SimpleNamespace(
+        data=SimpleNamespace(
+            root_pose_w=[[3.2, -6.76, 0.82, 0.0, 0.0, 0.0, 1.0]]
+        )
+    )
+    built.scene_asset_names["task_support"] = "task_support"
 
     sample = NativeRigidTaskArenaReadback(built).read_task_sample()
 
@@ -360,6 +366,9 @@ def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
         [2.0742142, 1.4792181, 0.0, 0.0, 0.0, 0.0, 1.0]
     )
     assert sample["task_object_pose_world"] == sample["task_scoring_pose_world"]
+    assert sample["destination_pose_world"] == pytest.approx(
+        [3.2, -6.76, 0.82, 0.0, 0.0, 0.0, 1.0]
+    )
     assert sample["measurement_authority"] == (
         "native_rigid_root_pose_and_filtered_contact_sensors"
     )
@@ -525,6 +534,32 @@ def test_reset_readback_covers_active_and_inactive_replacements() -> None:
             joint_pos=[[0.25]],
         ),
     )
+    built.plan["objects"].append(
+        {
+            "semantic_role": "task_support",
+            "asset_id": "document_tray",
+            "name": "task_support",
+            "task_subject": False,
+            "object_type": "RIGID",
+            "pose_world": {
+                "position_world_m": [3.2, -6.76, 0.82],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+            "reset_state": {
+                "root_pose_world": {
+                    "position_world_m": [3.2, -6.76, 0.82],
+                    "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+                "joint_positions": {},
+            },
+        }
+    )
+    built.scene_asset_names["task_support"] = "task_support"
+    built.env.unwrapped.scene["task_support"] = SimpleNamespace(
+        data=SimpleNamespace(
+            root_pose_w=[[3.2, -6.76, 0.82, 0.0, 0.0, 0.0, 1.0]],
+        )
+    )
 
     report = read_native_task_arena_object_reset_state(built)
 
@@ -532,6 +567,7 @@ def test_reset_readback_covers_active_and_inactive_replacements() -> None:
     assert [row["asset_id"] for row in report["objects"]] == [
         "legacy_task_object",
         "inactive_drawer",
+        "document_tray",
     ]
     assert all(row["passed"] for row in report["objects"])
 

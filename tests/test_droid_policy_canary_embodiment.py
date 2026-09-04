@@ -65,6 +65,17 @@ def test_concrete_instruction_falls_back_to_dynamic_subject_label() -> None:
     ) == "Push the blue bottle onto the green target marker."
 
 
+def test_pick_place_instruction_uses_configured_relation_and_labels() -> None:
+    assert concrete_droid_task_instruction(
+        {
+            "manipulation_strategy": "pick_and_place",
+            "destination_relation": "inside",
+            "instruction_subject_label": "open book",
+            "visible_target_label": "blue document tray",
+        }
+    ) == "Pick up and place the open book into the blue document tray."
+
+
 def test_embodiment_parity_requires_real_approach_without_joint_clamping() -> None:
     episode = {
         "state_trace": {

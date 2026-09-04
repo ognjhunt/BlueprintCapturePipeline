@@ -1251,6 +1251,31 @@ def _quaternion_angle(a: Sequence[float], b: Sequence[float]) -> float:
     return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
 
 
+def _rotate_xyzw(
+    vector: Sequence[float], quaternion: Sequence[float]
+) -> list[float]:
+    x, y, z, w = quaternion
+    qx, qy, qz, qw = (x, y, z, w)
+    vx, vy, vz = vector
+    tx = 2.0 * (qy * vz - qz * vy)
+    ty = 2.0 * (qz * vx - qx * vz)
+    tz = 2.0 * (qx * vy - qy * vx)
+    return [
+        vx + qw * tx + (qy * tz - qz * ty),
+        vy + qw * ty + (qz * tx - qx * tz),
+        vz + qw * tz + (qx * ty - qy * tx),
+    ]
+
+
+def _rotate_inverse_xyzw(
+    vector: Sequence[float], quaternion: Sequence[float]
+) -> list[float]:
+    return _rotate_xyzw(
+        vector,
+        (-quaternion[0], -quaternion[1], -quaternion[2], quaternion[3]),
+    )
+
+
 def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     errors: list[str] = []
     if (
@@ -1342,6 +1367,109 @@ def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
         "release_required": True,
         **numbers,
     }
+    destination_relation = spec.get("destination_relation")
+    if destination_relation is not None:
+        if destination_relation not in {"inside", "on"}:
+            raise TaskNeutralScoringError(
+                ["rigid_task_destination_relation_invalid"]
+            )
+        destination_pose = _vector(
+            spec.get("destination_pose_world"),
+            7,
+            error="rigid_task_destination_pose_invalid",
+        )
+        local_bounds = spec.get(
+            "destination_position_bounds_destination_frame_m"
+        )
+        if not isinstance(local_bounds, Mapping):
+            raise TaskNeutralScoringError(
+                ["rigid_task_destination_local_bounds_invalid"]
+            )
+        local_lower = _vector(
+            local_bounds.get("minimum"),
+            3,
+            error="rigid_task_destination_local_bounds_invalid",
+        )
+        local_upper = _vector(
+            local_bounds.get("maximum"),
+            3,
+            error="rigid_task_destination_local_bounds_invalid",
+        )
+        subject_bounds = spec.get("subject_collision_bounds_scoring_frame_m")
+        interior_bounds = spec.get("destination_interior_bounds_body_frame_m")
+        if not isinstance(subject_bounds, Mapping) or not isinstance(
+            interior_bounds, Mapping
+        ):
+            raise TaskNeutralScoringError(
+                ["rigid_task_destination_collision_geometry_invalid"]
+            )
+        subject_lower = _vector(
+            subject_bounds.get("minimum"),
+            3,
+            error="rigid_task_destination_collision_geometry_invalid",
+        )
+        subject_upper = _vector(
+            subject_bounds.get("maximum"),
+            3,
+            error="rigid_task_destination_collision_geometry_invalid",
+        )
+        interior_lower = _vector(
+            interior_bounds.get("minimum"),
+            3,
+            error="rigid_task_destination_collision_geometry_invalid",
+        )
+        interior_upper = _vector(
+            interior_bounds.get("maximum"),
+            3,
+            error="rigid_task_destination_collision_geometry_invalid",
+        )
+        translation_tolerance = _finite(
+            spec.get("destination_reset_translation_tolerance_m")
+        )
+        rotation_tolerance = _finite(
+            spec.get("destination_reset_rotation_tolerance_rad")
+        )
+        if (
+            abs(sum(item * item for item in destination_pose[3:]) - 1.0)
+            > 1.0e-6
+            or any(
+                low >= high
+                for low, high in zip(local_lower, local_upper, strict=True)
+            )
+            or any(
+                low >= high
+                for low, high in zip(subject_lower, subject_upper, strict=True)
+            )
+            or any(
+                low >= high
+                for low, high in zip(interior_lower, interior_upper, strict=True)
+            )
+            or translation_tolerance is None
+            or translation_tolerance <= 0.0
+            or rotation_tolerance is None
+            or rotation_tolerance <= 0.0
+        ):
+            raise TaskNeutralScoringError(
+                ["rigid_task_destination_local_contract_invalid"]
+            )
+        normalized.update(
+            destination_relation=destination_relation,
+            destination_pose_world=destination_pose,
+            destination_position_bounds_destination_frame_m={
+                "minimum": local_lower,
+                "maximum": local_upper,
+            },
+            subject_collision_bounds_scoring_frame_m={
+                "minimum": subject_lower,
+                "maximum": subject_upper,
+            },
+            destination_interior_bounds_body_frame_m={
+                "minimum": interior_lower,
+                "maximum": interior_upper,
+            },
+            destination_reset_translation_tolerance_m=translation_tolerance,
+            destination_reset_rotation_tolerance_rad=rotation_tolerance,
+        )
     control_frequency_hz = _finite(spec.get("control_frequency_hz"))
     normalized["control_frequency_hz"] = (
         control_frequency_hz
@@ -1404,6 +1532,22 @@ def score_rigid_task_episode(
         )
         if abs(sum(item * item for item in pose[3:]) - 1.0) > 1.0e-3:
             raise TaskNeutralScoringError([f"rigid_task_sample_pose_invalid:{index}"])
+        destination_pose = None
+        if spec.get("destination_relation") is not None:
+            raw_destination_pose = sample.get("destination_pose_world")
+            if raw_destination_pose is not None:
+                destination_pose = _vector(
+                    raw_destination_pose,
+                    7,
+                    error=f"rigid_task_sample_destination_pose_invalid:{index}",
+                )
+                if (
+                    abs(sum(item * item for item in destination_pose[3:]) - 1.0)
+                    > 1.0e-3
+                ):
+                    raise TaskNeutralScoringError(
+                        [f"rigid_task_sample_destination_pose_invalid:{index}"]
+                    )
         native_readback = sample.get("native_readback")
         if not isinstance(native_readback, Mapping):
             native_readback = {}
@@ -1434,6 +1578,7 @@ def score_rigid_task_episode(
             {
                 "step_index": step,
                 "pose": pose,
+                "destination_pose": destination_pose,
                 "gripper_width_m": _finite(sample.get("gripper_width_m")),
                 "task_contact_active": sample.get("task_contact_active"),
                 "support_contact_active": sample.get("support_contact_active"),
@@ -1506,12 +1651,84 @@ def score_rigid_task_episode(
         else normalized[-1:]
     )
     destination_criteria = criteria["destination_containment"]
-    lower = destination_criteria["position_bounds_world_m"]["minimum"]
-    upper = destination_criteria["position_bounds_world_m"]["maximum"]
-    destination_inside = settle_available and all(
-        all(low <= value <= high for low, value, high in zip(lower, row["pose"][:3], upper, strict=True))
-        for row in settle
+    destination_pose_readback_complete = (
+        spec.get("destination_relation") is None
+        or all(row["destination_pose"] is not None for row in normalized)
     )
+    destination_pose_stable = destination_pose_readback_complete
+    if spec.get("destination_relation") is not None:
+        expected_destination_pose = spec["destination_pose_world"]
+        destination_pose_stable = destination_pose_readback_complete and all(
+            math.dist(row["destination_pose"][:3], expected_destination_pose[:3])
+            <= spec["destination_reset_translation_tolerance_m"]
+            and _quaternion_angle(
+                row["destination_pose"][3:], expected_destination_pose[3:]
+            )
+            <= spec["destination_reset_rotation_tolerance_rad"]
+            for row in normalized
+        )
+        subject_bounds = spec["subject_collision_bounds_scoring_frame_m"]
+        subject_lower = subject_bounds["minimum"]
+        subject_upper = subject_bounds["maximum"]
+        interior_bounds = spec["destination_interior_bounds_body_frame_m"]
+        lower = interior_bounds["minimum"]
+        upper = interior_bounds["maximum"]
+
+        def subject_inside_destination(row: Mapping[str, Any]) -> bool:
+            destination_pose = row["destination_pose"]
+            subject_corners_world = [
+                [
+                    row["pose"][axis] + rotated[axis]
+                    for axis in range(3)
+                ]
+                for rotated in (
+                    _rotate_xyzw([x, y, z], row["pose"][3:])
+                    for x in (subject_lower[0], subject_upper[0])
+                    for y in (subject_lower[1], subject_upper[1])
+                    for z in (subject_lower[2], subject_upper[2])
+                )
+            ]
+            corners_destination = [
+                _rotate_inverse_xyzw(
+                    [
+                        point[axis] - destination_pose[axis]
+                        for axis in range(3)
+                    ],
+                    destination_pose[3:],
+                )
+                for point in subject_corners_world
+            ]
+            return all(
+                low <= value <= high
+                for point in corners_destination
+                for low, value, high in zip(lower, point, upper, strict=True)
+            )
+
+        destination_inside = (
+            settle_available
+            and destination_pose_stable
+            and all(subject_inside_destination(row) for row in settle)
+        )
+    else:
+        lower = destination_criteria["position_bounds_world_m"]["minimum"]
+        upper = destination_criteria["position_bounds_world_m"]["maximum"]
+        destination_inside = settle_available and all(
+            all(
+                low <= value <= high
+                for low, value, high in zip(
+                    lower, row["pose"][:3], upper, strict=True
+                )
+            )
+            for row in settle
+        )
+
+        def subject_inside_destination(row: Mapping[str, Any]) -> bool:
+            return all(
+                low <= value <= high
+                for low, value, high in zip(
+                    lower, row["pose"][:3], upper, strict=True
+                )
+            )
     orientation_criteria = criteria["orientation"]
     orientation_errors = [
         _quaternion_angle(row["pose"][3:], orientation_criteria["reference_xyzw"])
@@ -1660,15 +1877,10 @@ def score_rigid_task_episode(
             support_recontact_step = None
             if support_recontact is not None:
                 support_recontact_step = support_recontact["step_index"]
-                destination_inside_at_recontact = all(
-                    low <= value <= high
-                    for low, value, high in zip(
-                        lower,
-                        support_recontact["pose"][:3],
-                        upper,
-                        strict=True,
-                    )
-                )
+                destination_inside_at_recontact = (
+                    support_recontact["destination_pose"] is not None
+                    or spec.get("destination_relation") is None
+                ) and subject_inside_destination(support_recontact)
             drop_events.append(
                 {
                     "contact_lost_step": candidate["contact_lost_step"],
@@ -1855,6 +2067,11 @@ def score_rigid_task_episode(
         "destination_containment": (
             destination_criteria["mode"] == "ignored" or destination_inside
         ),
+        **(
+            {"destination_pose_stability": destination_pose_stable}
+            if spec.get("destination_relation") is not None
+            else {}
+        ),
         "orientation": (
             orientation_criteria["mode"] == "ignored" or orientation_ok
         ),
@@ -1920,13 +2137,16 @@ def score_rigid_task_episode(
     required_task_contact_readback = task_contact_mode != "ignored"
     required_support_contact_readback = support_criteria["contact_mode"] == "required"
     if (
-        not safety_complete
+        not destination_pose_readback_complete
+        or not safety_complete
         or (required_support_contact_readback and not support_contact_complete)
         or (required_task_contact_readback and not task_contact_complete)
         or temporal_readback_gaps
     ):
         status = "undetermined"
-        if not safety_complete:
+        if not destination_pose_readback_complete:
+            outcome = "native_destination_pose_readback_missing"
+        elif not safety_complete:
             outcome = "native_safety_readback_missing"
         elif required_support_contact_readback and not support_contact_complete:
             outcome = "native_support_contact_readback_missing"
@@ -1971,6 +2191,7 @@ def score_rigid_task_episode(
     ]
     plain_reasons = {
         "destination_containment": "The object did not remain inside the authored destination.",
+        "destination_pose_stability": "The destination moved beyond its qualified pose tolerance.",
         "orientation": "The object did not finish in the required orientation.",
         "support_height": "The object did not finish at the required support height.",
         "support_contact": "The object was not supported at the end of the episode.",
@@ -2050,6 +2271,8 @@ def score_rigid_task_episode(
             "maximum_lift_m": max(lift),
             "settle_window_available": settle_available,
             "settle_destination_inside": destination_inside,
+            "destination_pose_readback_complete": destination_pose_readback_complete,
+            "destination_pose_stable": destination_pose_stable,
             "settle_orientation_ok": orientation_ok,
             "settle_support_height_ok": support_ok,
             "settle_support_contact_readback_complete": support_contact_complete,

@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_rigid_destination_native_observation.v1.schema.json",
+  "title": "Task Evaluation rigid destination native observation v1",
+  "description": "Executor-sealed native Isaac measurements used to qualify one destination placement.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "producer",
+    "native_isaac_executed",
+    "destination_identity",
+    "configured_scene_revision_digest",
+    "configured_scene_collision_digest",
+    "destination_asset_digest",
+    "destination_static_qualification_digest",
+    "destination_native_import_qualification_digest",
+    "destination_geometry_digest",
+    "pose_world",
+    "qualification_limits",
+    "settle_samples",
+    "reset_samples",
+    "camera_observations",
+    "observation_digest"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_rigid_destination_native_observation.v1"},
+    "status": {"const": "completed"},
+    "producer": {"const": "native_task_arena_destination_qualification"},
+    "native_isaac_executed": {"const": true},
+    "destination_identity": {"$ref": "#/$defs/versionedIdentity"},
+    "configured_scene_revision_digest": {"$ref": "#/$defs/digest"},
+    "configured_scene_collision_digest": {"$ref": "#/$defs/digest"},
+    "destination_asset_digest": {"$ref": "#/$defs/digest"},
+    "destination_static_qualification_digest": {"$ref": "#/$defs/digest"},
+    "destination_native_import_qualification_digest": {"$ref": "#/$defs/digest"},
+    "destination_geometry_digest": {"$ref": "#/$defs/digest"},
+    "pose_world": {"$ref": "#/$defs/poseMapping"},
+    "qualification_limits": {
+      "type": "object",
+      "required": [
+        "maximum_penetration_m",
+        "settle_translation_tolerance_m",
+        "settle_rotation_tolerance_rad",
+        "reset_translation_tolerance_m",
+        "reset_rotation_tolerance_rad",
+        "minimum_camera_pixels"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "maximum_penetration_m": {"type": "number", "exclusiveMinimum": 0},
+        "settle_translation_tolerance_m": {"type": "number", "exclusiveMinimum": 0},
+        "settle_rotation_tolerance_rad": {"type": "number", "exclusiveMinimum": 0},
+        "reset_translation_tolerance_m": {"type": "number", "exclusiveMinimum": 0},
+        "reset_rotation_tolerance_rad": {"type": "number", "exclusiveMinimum": 0},
+        "minimum_camera_pixels": {
+          "type": "object",
+          "required": ["external", "wrist", "overview"],
+          "additionalProperties": false,
+          "properties": {
+            "external": {"type": "integer", "minimum": 1},
+            "wrist": {"type": "integer", "minimum": 1},
+            "overview": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "settle_samples": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object",
+        "required": [
+          "destination_pose_world",
+          "maximum_penetration_m",
+          "support_contact_observed"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "destination_pose_world": {"$ref": "#/$defs/poseVector"},
+          "maximum_penetration_m": {"type": "number", "minimum": 0},
+          "support_contact_observed": {"type": "boolean"}
+        }
+      }
+    },
+    "reset_samples": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["destination_pose_world"],
+        "additionalProperties": false,
+        "properties": {
+          "destination_pose_world": {"$ref": "#/$defs/poseVector"}
+        }
+      }
+    },
+    "camera_observations": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["role", "task_support_pixel_count"],
+        "additionalProperties": false,
+        "properties": {
+          "role": {"enum": ["external", "wrist", "overview"]},
+          "task_support_pixel_count": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "observation_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 192,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "versionedIdentity": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "version": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "poseMapping": {
+      "type": "object",
+      "required": ["position_world_m", "orientation_xyzw"],
+      "additionalProperties": false,
+      "properties": {
+        "position_world_m": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"type": "number"}
+        },
+        "orientation_xyzw": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {"type": "number"}
+        }
+      }
+    },
+    "poseVector": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {"type": "number"}
+    }
+  }
+}

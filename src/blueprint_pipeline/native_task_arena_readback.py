@@ -465,7 +465,7 @@ def read_native_task_arena_object_reset_state(
     *,
     joint_tolerance_rad: float = 1.0e-4,
 ) -> dict[str, Any]:
-    """Read and qualify every replacement root/joint reset from native state.
+    """Read and qualify every replacement/support root and joint reset.
 
     The active task subject and every inactive replacement are intentionally
     treated alike.  This prevents an inactive asset from drifting across task
@@ -498,7 +498,8 @@ def read_native_task_arena_object_reset_state(
     for planned in built.plan["objects"]:
         if not (
             planned.get("task_subject") is True
-            or planned.get("semantic_role") in {"task_object", "replacement"}
+            or planned.get("semantic_role")
+            in {"task_object", "replacement", "task_support"}
         ):
             continue
         runtime_name = str(planned.get("name") or "")
@@ -974,6 +975,27 @@ class NativeRigidTaskArenaReadback:
             raise NativeTaskArenaReadbackError(
                 ["native_task_arena_task_root_pose_missing"]
             )
+        destination_pose = None
+        task_support_name = self._built.scene_asset_names.get("task_support")
+        if task_support_name is not None:
+            try:
+                task_support = scene[task_support_name]
+            except (KeyError, TypeError) as exc:
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_task_support_readback_missing"]
+                ) from exc
+            native_destination_pose = _first_environment(
+                getattr(getattr(task_support, "data", None), "root_pose_w", None),
+                error="native_task_arena_task_support_pose_missing",
+            )
+            if len(native_destination_pose) < 7:
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_task_support_pose_missing"]
+                )
+            destination_pose = [
+                *[float(value) for value in native_destination_pose[:3]],
+                *_native_xyzw_to_contract_xyzw(native_destination_pose[3:7]),
+            ]
         contact_peaks: dict[str, float] = {}
         for logical_sensor_id in (
             "task_robot_contact",
@@ -1126,6 +1148,8 @@ class NativeRigidTaskArenaReadback:
             **joint_state,
             "measurement_authority": "native_rigid_root_pose_and_filtered_contact_sensors",
         }
+        if destination_pose is not None:
+            sample["destination_pose_world"] = destination_pose
         sample["grasp_frame_position_source"] = grasp_position_source
         return sample
 

@@ -15,6 +15,8 @@ from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import (
     _json_reference,
     _reference_path,
     _materialize_native_particlefield_appearance,
+    _stage_destination_asset,
+    _subject_bounds_in_scoring_frame,
     compile_native_arena_episode,
 )
 from blueprint_pipeline.aura_nurec_usdz import write_aura_nurec_usdz
@@ -39,6 +41,252 @@ def _write_json(root: Path, name: str, value: dict) -> Path:
     path = root / name
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _sha(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _destination_case(
+    tmp_path: Path,
+    *,
+    subject_identity: dict | None = None,
+    subject_static_path: Path | None = None,
+    subject_static: dict | None = None,
+    subject_scoring_transform: dict | None = None,
+    configured_scene_revision_digest: str | None = None,
+    configured_scene_collision_path: Path | None = None,
+) -> tuple[dict, dict[str, dict], dict]:
+    subject_identity = subject_identity or {"id": "book", "version": "v1"}
+    identity = {"id": "document-tray", "version": "v1"}
+    pose = {
+        "position_world_m": [3.2, -6.76, 0.82],
+        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+    }
+    asset = tmp_path / "document-tray.usda"
+    asset.write_bytes(b"#usda 1.0\n")
+    if subject_static is None:
+        subject_static = {
+            "schema_version": "task_evaluation_rigid_replacement_static_qualification.v1",
+            "status": "authored_structure_statically_qualified",
+            "replacement_identity": subject_identity,
+            "observed_structure": {
+                "center_of_mass_m": [0.0, 0.0, 0.0],
+                "collision_bounds_body_frame_m": {
+                    "minimum": [-0.04, -0.05, -0.01],
+                    "maximum": [0.04, 0.05, 0.01],
+                },
+                "rigid_body_paths": ["/Book"],
+            },
+            "result_digest": "",
+        }
+        subject_static["result_digest"] = canonical_digest(
+            subject_static, digest_field="result_digest"
+        )
+    if subject_static_path is None:
+        subject_static_path = _write_json(
+            tmp_path, "subject-static.json", subject_static
+        )
+    subject_scoring_transform = subject_scoring_transform or {
+        "position_m": [0.0, 0.0, 0.0],
+        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+    }
+    subject_lower, subject_upper = _subject_bounds_in_scoring_frame(
+        bounds=subject_static["observed_structure"][
+            "collision_bounds_body_frame_m"
+        ],
+        transform=subject_scoring_transform,
+    )
+    rights_value = {
+        "schema_version": "task_evaluation_rigid_destination_rights_admission.v1",
+        "status": "admitted",
+        "destination_identity": identity,
+        "private_provider_processing_allowed": True,
+        "provider_training_allowed": False,
+        "public_redistribution_allowed": False,
+        "license_identifier": "Blueprint-generated-development-asset",
+        "rights_admission_digest": "",
+    }
+    rights_value["rights_admission_digest"] = canonical_digest(
+        rights_value, digest_field="rights_admission_digest"
+    )
+    rights = _write_json(tmp_path, "rights.json", rights_value)
+    static = {
+        "schema_version": "task_evaluation_rigid_replacement_static_qualification.v1",
+        "status": "authored_structure_statically_qualified",
+        "replacement_identity": identity,
+        "replacement_usd": {
+            "path": str(asset),
+            "sha256": _sha(asset),
+            "size_bytes": asset.stat().st_size,
+        },
+        "observed_structure": {
+            "center_of_mass_m": [0.0, 0.0, 0.02],
+            "collision_bounds_body_frame_m": {
+                "minimum": [-0.12, -0.12, 0.0],
+                "maximum": [0.12, 0.12, 0.06],
+            },
+            "rigid_body_paths": ["/Tray"],
+        },
+        "result_digest": "",
+    }
+    static["result_digest"] = canonical_digest(static, digest_field="result_digest")
+    static_path = _write_json(tmp_path, "destination-static.json", static)
+    native = {
+        "schema_version": "task_evaluation_replacement_native_import_result.v1",
+        "status": "qualified",
+        "replacement_identity": identity,
+        "asset_digest": _sha(asset),
+        "static_qualification_digest": _sha(static_path),
+        "native_isaac_executed": True,
+        "native_simulator_import_qualified": True,
+        "support_contact_observed": True,
+        "deterministic_reset_state_digest_repeat_count": 3,
+        "blockers": [],
+        "result_digest": "",
+    }
+    native["result_digest"] = canonical_digest(native, digest_field="result_digest")
+    native_path = _write_json(tmp_path, "destination-native.json", native)
+    interior_lower = [-0.11, -0.11, -0.005]
+    interior_upper = [0.11, 0.11, 0.25]
+    center_lower = [
+        interior_lower[axis] - subject_lower[axis] for axis in range(3)
+    ]
+    center_upper = [
+        interior_upper[axis] - subject_upper[axis] for axis in range(3)
+    ]
+    geometry = {
+        "schema_version": "task_evaluation_rigid_destination_geometry.v1",
+        "status": "qualified",
+        "subject_identity": subject_identity,
+        "destination_identity": identity,
+        "relation": "inside",
+        "pose_world": pose,
+        "subject_static_qualification_digest": _sha(subject_static_path),
+        "destination_static_qualification_digest": _sha(static_path),
+        "subject_collision_bounds_scoring_frame_m": {
+            "minimum": subject_lower,
+            "maximum": subject_upper,
+        },
+        "destination_interior_bounds_body_frame_m": {
+            "minimum": interior_lower,
+            "maximum": interior_upper,
+        },
+        "destination_position_bounds_destination_frame_m": {
+            "minimum": center_lower,
+            "maximum": center_upper,
+        },
+        "subject_orientation_destination_frame_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "support_height_interval_m": [0.80, 0.84],
+        "intended_support_prim_paths": ["/Tray"],
+        "insertion_withdrawal_unit_destination_frame": [0.0, 0.0, 1.0],
+        "whole_subject_containment_encoded_by_shrunk_bounds": True,
+        "geometry_digest": "",
+    }
+    geometry["geometry_digest"] = canonical_digest(
+        geometry, digest_field="geometry_digest"
+    )
+    geometry_path = _write_json(tmp_path, "destination-geometry.json", geometry)
+    if configured_scene_collision_path is None:
+        configured_scene_collision_path = tmp_path / "configured-collision.usda"
+        configured_scene_collision_path.write_bytes(b"#usda 1.0\n# collision\n")
+    collision_digest = _sha(configured_scene_collision_path)
+    scene_revision_digest = (
+        configured_scene_revision_digest or "sha256:" + "e" * 64
+    )
+    placement = {
+        "schema_version": "task_evaluation_rigid_destination_placement_qualification.v1",
+        "status": "qualified",
+        "producer": "task_evaluation_rigid_destination_placement_qualification",
+        "native_observation_digest": "sha256:" + "f" * 64,
+        "destination_identity": identity,
+        "configured_scene_revision_digest": scene_revision_digest,
+        "configured_scene_collision_digest": collision_digest,
+        "destination_asset_digest": _sha(asset),
+        "destination_static_qualification_digest": _sha(static_path),
+        "destination_native_import_qualification_digest": _sha(native_path),
+        "destination_geometry_digest": geometry["geometry_digest"],
+        "pose_world": pose,
+        "nonpenetration_passed": True,
+        "support_stability_passed": True,
+        "camera_visibility": {"external": True, "wrist": True, "overview": True},
+        "repeated_reset_readback": {
+            "repeat_count": 3,
+            "maximum_translation_error_m": 0.0001,
+            "maximum_rotation_error_rad": 0.0001,
+            "translation_tolerance_m": 0.002,
+            "rotation_tolerance_rad": 0.01,
+        },
+        "placement_qualification_digest": "",
+    }
+    placement["placement_qualification_digest"] = canonical_digest(
+        placement, digest_field="placement_qualification_digest"
+    )
+    docs = {
+        "task.destination.asset": asset,
+        "task.destination.rights_admission": rights,
+        "task.destination.static_qualification": static_path,
+        "task.destination.native_import_qualification": native_path,
+        "task.destination.geometry": geometry_path,
+        "task.destination.placement_qualification": _write_json(
+            tmp_path, "destination-placement.json", placement
+        ),
+        "scene.configured_revision.replacement.static_qualification": subject_static_path,
+    }
+    references = {
+        contract_path: _record(path, contract_path)
+        for contract_path, path in docs.items()
+    }
+    request_value = {
+        "task": {
+            "strategy": "pick_and_place",
+            "configured_scene_revision_digest": scene_revision_digest,
+            "subject": {"identity": subject_identity},
+            "destination": {
+                "schema_version": "task_evaluation_rigid_destination_asset.v1",
+                "identity": identity,
+                "relation": "inside",
+                "visible_label": "blue document tray",
+                "pose_world": pose,
+                "provider_disclosure_allowed": True,
+            },
+        }
+    }
+    context = {
+        "configured_collision_path": configured_scene_collision_path,
+        "task_spec": {
+            "interaction_affordance": {
+                "asset_root_from_scoring_frame": subject_scoring_transform
+            }
+        },
+    }
+    return request_value, references, context
+
+
+def test_destination_asset_is_qualified_staged_and_compiler_ready(
+    tmp_path: Path,
+) -> None:
+    request_value, references, context = _destination_case(tmp_path)
+    output = tmp_path / "output"
+    output.mkdir()
+
+    result = _stage_destination_asset(
+        request=request_value,
+        materialized_references=references,
+        output_root=output,
+        configured_collision_path=context["configured_collision_path"],
+        task_spec=context["task_spec"],
+    )
+
+    assert result["asset_id"] == "document_tray"
+    assert result["source_asset_id"] == "document-tray"
+    assert result["relation"] == "inside"
+    assert result["intended_support_prim_paths"] == ["/Tray"]
+    assert result["target_position_world_m"] == pytest.approx(
+        [3.2, -6.76, 0.9425]
+    )
+    assert Path(result["path"]).is_file()
+    assert output in Path(result["path"]).parents
 
 
 def test_large_nurec_requires_a_cached_official_particlefield(
@@ -237,6 +485,10 @@ def _configured_runtime_documents(configured: dict[str, object]) -> dict[str, di
         "replacement_identity": configured["replacement"]["identity"],
         "observed_structure": {
             "center_of_mass_m": [0.0, 0.0, 0.063819],
+            "collision_bounds_body_frame_m": {
+                "minimum": [-0.0638749, -0.0658936, 0.0],
+                "maximum": [0.0638749, 0.0658936, 0.127638],
+            },
             "rigid_body_paths": ["/Asset"],
         },
         "result_digest": "",
@@ -267,9 +519,15 @@ def _configured_runtime_documents(configured: dict[str, object]) -> dict[str, di
     }
 
 
-@pytest.mark.parametrize("policy_observation_override", [False, True])
+@pytest.mark.parametrize(
+    ("policy_observation_override", "destination_support"),
+    [(False, False), (True, False), (False, True)],
+)
 def test_closed_compiler_joins_revision_and_robot_team_inputs(
-    tmp_path: Path, monkeypatch, policy_observation_override: bool
+    tmp_path: Path,
+    monkeypatch,
+    policy_observation_override: bool,
+    destination_support: bool,
 ) -> None:
     inputs = tmp_path / "inputs"
     inputs.mkdir()
@@ -391,6 +649,24 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
         },
         **_configured_runtime_documents(configured),
     }
+    if destination_support:
+        value["task"]["strategy"] = "pick_and_place"
+        docs["scene.configured_revision.task_template.definition"][
+            "strategy"
+        ] = "pick_and_place"
+        docs["scene.configured_revision.task_template.definition"][
+            "interaction_affordance"
+        ] = {
+            "contact_point_scoring_frame_m": [-0.06, 0.0, 0.0],
+            "approach_unit_scoring_frame": [-1.0, 0.0, 0.0],
+            "jaw_unit_scoring_frame": [0.0, 1.0, 0.0],
+            "lift_unit_world": [0.0, 0.0, 1.0],
+            "pregrasp_clearance_m": 0.12,
+            "minimum_lift_m": 0.08,
+        }
+        docs["scene.configured_revision.task_template.execution"][
+            "strategy"
+        ] = "pick_and_place"
     document_paths = {
         contract_path: _write_json(inputs, f"input-{index}.json", document)
         for index, (contract_path, document) in enumerate(docs.items())
@@ -447,6 +723,51 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     )
     for contract_path, path in document_paths.items():
         references[contract_path] = _record(path, contract_path)
+
+    if destination_support:
+        qualification_collision = inputs / "configured-collision-for-qualification.usda"
+        qualification_collision.write_bytes(b"#usda 1.0\n# collision\n")
+        subject_static_path = document_paths[
+            "scene.configured_revision.replacement.static_qualification"
+        ]
+        subject_static = docs[
+            "scene.configured_revision.replacement.static_qualification"
+        ]
+        destination_request, destination_references, _context = _destination_case(
+            inputs,
+            subject_identity=configured["replacement"]["identity"],
+            subject_static_path=subject_static_path,
+            subject_static=subject_static,
+            subject_scoring_transform={
+                "position_m": subject_static["observed_structure"][
+                    "center_of_mass_m"
+                ],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            },
+            configured_scene_revision_digest=configured["revision_digest"],
+            configured_scene_collision_path=qualification_collision,
+        )
+        destination = destination_request["task"]["destination"]
+        for field, contract_path in (
+            ("asset", "task.destination.asset"),
+            ("rights_admission", "task.destination.rights_admission"),
+            ("static_qualification", "task.destination.static_qualification"),
+            (
+                "native_import_qualification",
+                "task.destination.native_import_qualification",
+            ),
+            ("geometry", "task.destination.geometry"),
+            (
+                "placement_qualification",
+                "task.destination.placement_qualification",
+            ),
+        ):
+            record = destination_references[contract_path]
+            destination[field] = {
+                key: record[key] for key in ("uri", "digest", "size_bytes")
+            }
+        value["task"]["destination"] = destination
+        references.update(destination_references)
 
     if policy_observation_override:
         appearance = inputs / "policy-observation.usdc"
@@ -699,7 +1020,10 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     )
     assert observed["packet_request"]["assets"][2]["asset_id"] == (runtime_subject_id)
     assert observed["packet_request"]["assets"][2]["source_asset_id"] == (source_subject_id)
-    assert observed["packet_request"]["task_spec"]["manipulation_strategy"] == ("planar_push")
+    expected_strategy = "pick_and_place" if destination_support else "planar_push"
+    assert observed["packet_request"]["task_spec"]["manipulation_strategy"] == (
+        expected_strategy
+    )
     assert observed["packet_request"]["task_spec"]["task_kind"] == ("rigid_pick_place")
     assert observed["packet_request"]["task_spec"]["schema_version"] == ("adp_task_spec.v2")
     assert observed["packet_request"]["task_spec"]["start_pose_world"][:3] == [
@@ -723,7 +1047,7 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     )
     assert (
         observed["packet_request"]["configured_task_template_adapter"]["manipulation_strategy"]
-        == "planar_push"
+        == expected_strategy
     )
     assert result["configured_task_template_adapter"]["source_documents_digest"].startswith(
         "sha256:"
@@ -733,6 +1057,20 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     )
     assert replacement["asset_id"] == configured["replacement"]["identity"]["id"].replace("-", "_")
     assert replacement["source_asset_id"] == configured["replacement"]["identity"]["id"]
+    if destination_support:
+        support = next(
+            row
+            for row in observed["packet_request"]["assets"]
+            if row["semantic_role"] == "task_support"
+        )
+        assert support["asset_id"] == "document_tray"
+        assert support["source_asset_id"] == "document-tray"
+        assert observed["packet_request"]["task_spec"][
+            "destination_relation"
+        ] == "inside"
+        assert observed["packet_request"]["task_spec"][
+            "visible_target_label"
+        ] == "blue document tray"
 
 
 def test_closed_compiler_refuses_sensor_calibration_from_another_scene(

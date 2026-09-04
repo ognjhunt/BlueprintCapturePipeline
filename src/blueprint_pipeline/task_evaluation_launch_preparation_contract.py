@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from functools import lru_cache
+import math
 from pathlib import Path
 from typing import Any
 
@@ -143,6 +144,27 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
         raise TaskEvaluationLaunchPreparationContractError(
             "launch_preparation_task_strategy_kind_mismatch"
         )
+    destination = task.get("destination")
+    if task["strategy"] == "pick_and_place":
+        pose = destination.get("pose_world") if isinstance(destination, Mapping) else None
+        orientation = (
+            pose.get("orientation_xyzw") if isinstance(pose, Mapping) else None
+        )
+        if (
+            not isinstance(destination, Mapping)
+            or destination.get("identity") == task["subject"]["identity"]
+            or not isinstance(orientation, list)
+            or len(orientation) != 4
+            or not math.isclose(
+                sum(float(value) * float(value) for value in orientation),
+                1.0,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+        ):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_pick_place_destination_invalid"
+            )
     construction = request["construction"]
     subject = task["subject"]
     expected_subject_mode = {

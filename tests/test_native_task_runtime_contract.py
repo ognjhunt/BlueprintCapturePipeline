@@ -225,6 +225,35 @@ def test_identified_inserted_rigid_task_object_preserves_independent_identity() 
     assert task_object["reset_state"]["joint_positions"] == {}
 
 
+def test_runtime_preserves_one_passive_destination_support_asset() -> None:
+    fixture = _identified_rigid_fixture()
+    fixture["task_spec"]["destination_support_asset_id"] = "document_tray"
+    fixture["assets"].append(
+        {
+            "semantic_role": "task_support",
+            "asset_id": "document_tray",
+            "object_type": "RIGID",
+            "filename": "document_tray.usda",
+            "sha256": _sha("e"),
+            "pose_world": _pose(1.2, 2.0, 0.8),
+            "reset_state": {"joint_positions": {}},
+        }
+    )
+
+    contract = materialize_native_task_runtime_contract(**fixture)
+
+    support = next(
+        row for row in contract["objects"] if row["semantic_role"] == "task_support"
+    )
+    assert support["asset_id"] == "document_tray"
+    assert support["runtime_name"] == "task_support"
+    assert support["task_subject"] is False
+    assert support["reset_state"]["root_pose_world"] == _pose(1.2, 2.0, 0.8)
+    assert contract["reset_contract"]["per_object_reset_states"][
+        "document_tray"
+    ] == support["reset_state"]
+
+
 def test_identified_inserted_task_object_fails_closed_on_identity_mismatch() -> None:
     fixture = _identified_rigid_fixture()
     fixture["assets"][2]["asset_id"] = "different_can"
