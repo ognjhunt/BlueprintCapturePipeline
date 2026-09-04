@@ -23,7 +23,7 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {"const": "task_evaluation_launch_preparation_request.v1"},
-    "run_mode": {"enum": ["scene_configuration", "episode_evaluation"]},
+    "run_mode": {"enum": ["scene_configuration", "destination_qualification", "episode_evaluation"]},
     "expected_production_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "preparation_id": {"$ref": "#/$defs/identifier"},
     "team_namespace": {"$ref": "#/$defs/identifier"},
@@ -193,7 +193,6 @@
             "static_qualification",
             "native_import_qualification",
             "geometry",
-            "placement_qualification",
             "pose_world",
             "provider_disclosure_allowed"
           ],
@@ -209,6 +208,54 @@
             "native_import_qualification": {"$ref": "#/$defs/reference"},
             "geometry": {"$ref": "#/$defs/reference"},
             "placement_qualification": {"$ref": "#/$defs/reference"},
+            "native_probe": {
+              "type": "object",
+              "required": [
+                "schema_version", "placement_support_scene_prim_paths",
+                "qualification_limits", "settle_sample_count",
+                "settle_steps_per_sample"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "schema_version": {"const": "task_evaluation_rigid_destination_native_probe_configuration.v1"},
+                "placement_support_scene_prim_paths": {
+                  "type": "array", "minItems": 1, "maxItems": 64,
+                  "uniqueItems": true,
+                  "items": {"type": "string", "pattern": "^/[^\\s]+$"}
+                },
+                "qualification_limits": {
+                  "type": "object",
+                  "required": [
+                    "maximum_penetration_m", "minimum_support_contact_force_n",
+                    "maximum_forbidden_contact_force_n", "settle_translation_tolerance_m",
+                    "settle_rotation_tolerance_rad", "reset_translation_tolerance_m",
+                    "reset_rotation_tolerance_rad", "minimum_camera_pixels"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "maximum_penetration_m": {"type": "number", "exclusiveMinimum": 0},
+                    "minimum_support_contact_force_n": {"type": "number", "exclusiveMinimum": 0},
+                    "maximum_forbidden_contact_force_n": {"type": "number", "exclusiveMinimum": 0},
+                    "settle_translation_tolerance_m": {"type": "number", "exclusiveMinimum": 0},
+                    "settle_rotation_tolerance_rad": {"type": "number", "exclusiveMinimum": 0},
+                    "reset_translation_tolerance_m": {"type": "number", "exclusiveMinimum": 0},
+                    "reset_rotation_tolerance_rad": {"type": "number", "exclusiveMinimum": 0},
+                    "minimum_camera_pixels": {
+                      "type": "object",
+                      "required": ["external", "wrist", "overview"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "external": {"type": "integer", "minimum": 1},
+                        "wrist": {"type": "integer", "minimum": 1},
+                        "overview": {"type": "integer", "minimum": 1}
+                      }
+                    }
+                  }
+                },
+                "settle_sample_count": {"type": "integer", "minimum": 3},
+                "settle_steps_per_sample": {"type": "integer", "minimum": 1}
+              }
+            },
             "pose_world": {
               "type": "object",
               "required": ["position_world_m", "orientation_xyzw"],
@@ -484,6 +531,38 @@
   "allOf": [
     {
       "if": {
+        "properties": {"run_mode": {"const": "destination_qualification"}},
+        "required": ["run_mode"]
+      },
+      "then": {
+        "required": ["robot", "controller"],
+        "properties": {
+          "scene": {
+            "properties": {"mode": {"const": "reuse_configured_revision"}},
+            "required": ["mode"]
+          },
+          "construction": {
+            "properties": {"mode": {"const": "reuse_configured_scene"}},
+            "required": ["mode"]
+          },
+          "task": {
+            "properties": {
+              "binding_mode": {"const": "reuse_configured_template"},
+              "destination": {
+                "required": ["native_probe"],
+                "not": {"required": ["placement_qualification"]}
+              },
+              "subject": {
+                "properties": {"mode": {"const": "configured_scene_object"}},
+                "required": ["mode"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
         "properties": {"run_mode": {"const": "scene_configuration"}},
         "required": ["run_mode"]
       },
@@ -504,6 +583,10 @@
           "task": {
             "properties": {
               "binding_mode": {"const": "define_configuration_template"},
+              "destination": {
+                "required": ["native_probe"],
+                "not": {"required": ["placement_qualification"]}
+              },
               "subject": {
                 "properties": {"mode": {"const": "construct_from_scene_object"}},
                 "required": ["mode"]
@@ -542,6 +625,7 @@
           "task": {
             "properties": {
               "binding_mode": {"const": "reuse_configured_template"},
+              "destination": {"required": ["placement_qualification"]},
               "subject": {
                 "properties": {"mode": {"const": "configured_scene_object"}},
                 "required": ["mode"]

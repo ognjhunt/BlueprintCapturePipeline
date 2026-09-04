@@ -604,6 +604,23 @@ def _load_verified_preparation(
             raise TaskEvaluationLaunchActivationWorkerError(
                 "launch_activation_episode_compilation_invalid"
             )
+        if request.get("run_mode") == "destination_qualification":
+            probe_path = Path(
+                str(compilation.get("destination_native_probe_request_path") or "")
+            ).resolve()
+            if (
+                not _under(probe_path, compiled_root)
+                or probe_path.is_symlink()
+                or not probe_path.is_file()
+                or _sha256_file(probe_path)
+                != compilation.get("destination_native_probe_request_digest")
+            ):
+                raise TaskEvaluationLaunchActivationWorkerError(
+                    "launch_activation_destination_probe_request_invalid"
+                )
+            materialized_references[
+                "execution_adapter.destination_probe_request"
+            ] = probe_path
         adapter_root = adapter_path.parent
         expected_adapter_digest = compilation.get("adapter_result_digest")
     else:
@@ -665,7 +682,10 @@ def _build_native_context(
     service_group: str,
 ) -> dict[str, Any]:
     configured_revision: dict[str, Any] | None = None
-    if preparation_request["run_mode"] == "episode_evaluation":
+    if preparation_request["run_mode"] in {
+        "episode_evaluation",
+        "destination_qualification",
+    }:
         configured_revision = validate_configured_scene_revision(
             _read_json(
                 preparation_materialized["scene.configured_revision"],
@@ -749,6 +769,32 @@ def _build_native_context(
         "service_account": service_account,
         "service_group": service_group,
     }
+    if preparation_request["run_mode"] == "destination_qualification":
+        operations.update(
+            {
+                "destination_probe_request": str(
+                    preparation_materialized[
+                        "execution_adapter.destination_probe_request"
+                    ]
+                ),
+                "configured_scene_support_plane": str(
+                    preparation_materialized[
+                        "scene.configured_revision.registration.support_plane"
+                    ]
+                ),
+                "destination_static_qualification": str(
+                    preparation_materialized["task.destination.static_qualification"]
+                ),
+                "destination_native_import_qualification": str(
+                    preparation_materialized[
+                        "task.destination.native_import_qualification"
+                    ]
+                ),
+                "destination_geometry": str(
+                    preparation_materialized["task.destination.geometry"]
+                ),
+            }
+        )
     if _control_search_warm_retention_requested(
         packet_request=packet_request, lane=str(activation_request["lane"])
     ):
@@ -772,9 +818,16 @@ def _build_native_context(
             "prior_webapp_sync",
             "prior_provider_zero",
             "prior_spend_reconciliation",
-            "construction_result",
         ):
             operations[name] = str(activation_materialized[f"lineage.{name}"])
+        for name in (
+            "construction_result",
+            "destination_qualification_result",
+        ):
+            if name in lineage:
+                operations[name] = str(
+                    activation_materialized[f"lineage.{name}"]
+                )
         if "zero_action_result" in lineage:
             operations["zero_action_result"] = str(
                 activation_materialized["lineage.zero_action_result"]

@@ -188,6 +188,7 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
     adapter = request["execution_adapter"]
     expected_adapter = {
         "scene_configuration": ("scene_configuration_pipeline", "v1"),
+        "destination_qualification": ("native_task_arena", "v1"),
         "episode_evaluation": ("native_task_arena", "v1"),
     }[request["run_mode"]]
     capability = EXECUTION_ADAPTER_PROVIDER_CAPABILITIES.get(

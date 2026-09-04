@@ -977,6 +977,7 @@ def run_arena_native_control_vast(
         # local path.  A self-digest on the target alone is replaceable.
         "native_control_result_digest": (
             (extracted.get("execution") or {}).get("result_digest")
+            or (extracted.get("execution") or {}).get("observation_digest")
         ),
         "adapter_result_path": str(provider_run / "vast_provider_adapter_result.json"),
         "teardown_manifest_path": str(provider_run / "vast_teardown_manifest.json"),

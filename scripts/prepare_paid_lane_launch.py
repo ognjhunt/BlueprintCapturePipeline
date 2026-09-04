@@ -254,12 +254,16 @@ SEMANTIC_TEACHER_IMAGE_EDIT_STEPS: tuple[LaneStep, ...] = (
 
 
 def _native_task_arena_steps(
-    link: str, *, control_selection: str = "control_pair"
+    link: str,
+    *,
+    control_selection: str = "control_pair",
+    predecessor_lineage: bool = False,
 ) -> tuple[LaneStep, ...]:
-    """Return the reusable construction or controls preparation graph."""
+    """Return the reusable destination, construction, or controls graph."""
 
-    if link not in {"construction", "controls"}:
+    if link not in {"destination", "construction", "controls"}:
         raise ValueError(f"native_task_arena_preparation_link_invalid:{link}")
+    destination = link == "destination"
     controls = link == "controls"
     if (
         (not controls and control_selection != "control_pair")
@@ -271,11 +275,13 @@ def _native_task_arena_steps(
         }
     ):
         raise ValueError("native_task_arena_control_selection_invalid")
-    bundle_module = (
-        "blueprint_pipeline.native_task_arena_controls_bundle"
-        if controls
-        else "blueprint_pipeline.native_task_arena_construction_bundle"
-    )
+    bundle_module = {
+        "destination": (
+            "blueprint_pipeline.native_task_arena_destination_qualification_bundle"
+        ),
+        "construction": "blueprint_pipeline.native_task_arena_construction_bundle",
+        "controls": "blueprint_pipeline.native_task_arena_controls_bundle",
+    }[link]
     probe_kind = f"native-task-arena-{link}"
     bundle_argv = [
         "{python}",
@@ -292,6 +298,21 @@ def _native_task_arena_steps(
         "--container-image",
         "{container_image}",
     ]
+    if destination:
+        bundle_argv.extend(
+            (
+                "--probe-request",
+                "{destination_probe_request}",
+                "--configured-scene-support-plane",
+                "{configured_scene_support_plane}",
+                "--destination-static-qualification",
+                "{destination_static_qualification}",
+                "--destination-native-import-qualification",
+                "{destination_native_import_qualification}",
+                "--destination-geometry",
+                "{destination_geometry}",
+            )
+        )
     if controls:
         bundle_argv.extend(
             (
@@ -316,7 +337,7 @@ def _native_task_arena_steps(
             "--prior-spend-reconciliation",
             "{prior_spend_reconciliation}",
         )
-        if controls
+        if controls or predecessor_lineage
         else (
             "--project-spend-reconciliation",
             "{project_spend_reconciliation}",
@@ -346,7 +367,7 @@ def _native_task_arena_steps(
             repeated_argv=(
                 ("--terminal-feedback-adoption", "terminal_feedback_adoption"),
             )
-            if not controls
+            if not controls and not destination and not predecessor_lineage
             else (),
         ),
         LaneStep(
@@ -402,7 +423,7 @@ def _native_task_arena_steps(
                 ("--retain-warm-session", "terminal_feedback_adoption"),
                 ("--retain-warm-session", "retain_warm_control_search"),
             )
-            if not controls
+            if not controls and not destination and not predecessor_lineage
             else (),
         ),
         LaneStep(
@@ -455,7 +476,7 @@ def _native_task_arena_steps(
                             "terminal_feedback_adoption",
                         ),
                     )
-                    if not controls
+                    if not controls and not destination and not predecessor_lineage
                     else ()
                 ),
             ),
@@ -469,7 +490,7 @@ def _native_task_arena_steps(
                     "retain_warm_control_search",
                 ),
             )
-            if not controls
+            if not controls and not destination and not predecessor_lineage
             else (),
         ),
         LaneStep(
@@ -520,7 +541,7 @@ def _native_task_arena_steps(
                             "terminal_feedback_adoption",
                         ),
                     )
-                    if not controls
+                    if not controls and not destination and not predecessor_lineage
                     else ()
                 ),
             ),
@@ -535,7 +556,13 @@ def _native_task_arena_steps(
                 "--lane-module",
                 "adp_isaac_lab_arena_vast.py",
                 "--lane",
-                f"native_task_arena_{link}",
+                (
+                    "native_task_arena_destination_qualification"
+                    if destination
+                    else "native_task_arena_construction_after_destination"
+                    if predecessor_lineage
+                    else f"native_task_arena_{link}"
+                ),
                 "--receipt-out",
                 "{set_root}/terminal_rehearsal-{revision}.v1.json",
             ),
@@ -874,7 +901,13 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
 
 LANES: dict[str, tuple[LaneStep, ...]] = {
     "semantic_teacher_image_edit": SEMANTIC_TEACHER_IMAGE_EDIT_STEPS,
+    "native_task_arena_destination_qualification": _native_task_arena_steps(
+        "destination"
+    ),
     "native_task_arena_construction": _native_task_arena_steps("construction"),
+    "native_task_arena_construction_after_destination": _native_task_arena_steps(
+        "construction", predecessor_lineage=True
+    ),
     "native_task_arena_controls": _native_task_arena_steps("controls"),
     "native_task_arena_zero_action": _native_task_arena_steps(
         "controls", control_selection="zero_action_negative"

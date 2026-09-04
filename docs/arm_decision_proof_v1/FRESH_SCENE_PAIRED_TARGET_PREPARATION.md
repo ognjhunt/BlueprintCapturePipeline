@@ -196,6 +196,17 @@ recomputes digests, pose errors, penetration, support stability, per-camera
 pixel gates, and repeated-reset tolerances. A caller-authored summary boolean is
 not accepted as placement evidence.
 
+Destination tasks use the v3 configured-controls autostart/progression plan.
+The production worker compiles a qualification-only Arena packet before a
+placement receipt exists, launches `native-task-arena-destination-qualification`
+with no policy loaded, seals three repeated reset/settle samples plus exact
+support and forbidden-contact forces, transformed penetration, camera
+calibration, semantic pixel counts, and render artifacts, then materializes and
+publishes the placement qualification. Construction is submitted only from the
+zero-closed destination predecessor and final episode preparation is rebuilt
+with the published qualification reference. Operator-authored observation JSON
+or a manual phase skip is not an admitted path.
+
 Before a destination is used in a paid episode, retain its authoring source and
 parameters, renderer/kernel/export versions, USD bytes and digest, license and
 provider-disclosure authority, static validators, Isaac import/readback, exact

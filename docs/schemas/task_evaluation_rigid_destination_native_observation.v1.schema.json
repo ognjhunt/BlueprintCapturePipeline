@@ -9,9 +9,13 @@
     "status",
     "producer",
     "native_isaac_executed",
+    "execution_commit",
+    "runtime_identity",
+    "container_identity",
     "destination_identity",
     "configured_scene_revision_digest",
     "configured_scene_collision_digest",
+    "configured_scene_support_plane_digest",
     "destination_asset_digest",
     "destination_static_qualification_digest",
     "destination_native_import_qualification_digest",
@@ -21,6 +25,8 @@
     "settle_samples",
     "reset_samples",
     "camera_observations",
+    "raw_measurement_artifacts",
+    "no_policy_execution",
     "observation_digest"
   ],
   "additionalProperties": false,
@@ -29,9 +35,21 @@
     "status": {"const": "completed"},
     "producer": {"const": "native_task_arena_destination_qualification"},
     "native_isaac_executed": {"const": true},
+    "execution_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "runtime_identity": {"$ref": "#/$defs/versionedIdentity"},
+    "container_identity": {
+      "type": "object",
+      "required": ["image", "digest"],
+      "additionalProperties": false,
+      "properties": {
+        "image": {"type": "string", "pattern": "@sha256:[0-9a-f]{64}$"},
+        "digest": {"$ref": "#/$defs/digest"}
+      }
+    },
     "destination_identity": {"$ref": "#/$defs/versionedIdentity"},
     "configured_scene_revision_digest": {"$ref": "#/$defs/digest"},
     "configured_scene_collision_digest": {"$ref": "#/$defs/digest"},
+    "configured_scene_support_plane_digest": {"$ref": "#/$defs/digest"},
     "destination_asset_digest": {"$ref": "#/$defs/digest"},
     "destination_static_qualification_digest": {"$ref": "#/$defs/digest"},
     "destination_native_import_qualification_digest": {"$ref": "#/$defs/digest"},
@@ -41,6 +59,8 @@
       "type": "object",
       "required": [
         "maximum_penetration_m",
+        "minimum_support_contact_force_n",
+        "maximum_forbidden_contact_force_n",
         "settle_translation_tolerance_m",
         "settle_rotation_tolerance_rad",
         "reset_translation_tolerance_m",
@@ -50,6 +70,8 @@
       "additionalProperties": false,
       "properties": {
         "maximum_penetration_m": {"type": "number", "exclusiveMinimum": 0},
+        "minimum_support_contact_force_n": {"type": "number", "exclusiveMinimum": 0},
+        "maximum_forbidden_contact_force_n": {"type": "number", "exclusiveMinimum": 0},
         "settle_translation_tolerance_m": {"type": "number", "exclusiveMinimum": 0},
         "settle_rotation_tolerance_rad": {"type": "number", "exclusiveMinimum": 0},
         "reset_translation_tolerance_m": {"type": "number", "exclusiveMinimum": 0},
@@ -74,13 +96,17 @@
         "required": [
           "destination_pose_world",
           "maximum_penetration_m",
-          "support_contact_observed"
+          "support_contact_peak_force_n",
+          "forbidden_contact_peak_force_n",
+          "sample_index"
         ],
         "additionalProperties": false,
         "properties": {
           "destination_pose_world": {"$ref": "#/$defs/poseVector"},
           "maximum_penetration_m": {"type": "number", "minimum": 0},
-          "support_contact_observed": {"type": "boolean"}
+          "support_contact_peak_force_n": {"type": "number", "minimum": 0},
+          "forbidden_contact_peak_force_n": {"type": "number", "minimum": 0},
+          "sample_index": {"type": "integer", "minimum": 0}
         }
       }
     },
@@ -89,10 +115,11 @@
       "minItems": 3,
       "items": {
         "type": "object",
-        "required": ["destination_pose_world"],
+        "required": ["destination_pose_world", "sample_index"],
         "additionalProperties": false,
         "properties": {
-          "destination_pose_world": {"$ref": "#/$defs/poseVector"}
+          "destination_pose_world": {"$ref": "#/$defs/poseVector"},
+          "sample_index": {"type": "integer", "minimum": 0}
         }
       }
     },
@@ -102,12 +129,40 @@
       "maxItems": 3,
       "items": {
         "type": "object",
-        "required": ["role", "task_support_pixel_count"],
+        "required": ["role", "task_support_pixel_count", "camera_calibration", "render_receipt_digest"],
         "additionalProperties": false,
         "properties": {
           "role": {"enum": ["external", "wrist", "overview"]},
-          "task_support_pixel_count": {"type": "integer", "minimum": 0}
+          "task_support_pixel_count": {"type": "integer", "minimum": 0},
+          "camera_calibration": {"type": "object"},
+          "render_receipt_digest": {"$ref": "#/$defs/digest"}
         }
+      }
+    },
+    "raw_measurement_artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["role", "relative_path", "sha256", "size_bytes"],
+        "additionalProperties": false,
+        "properties": {
+          "role": {"$ref": "#/$defs/identifier"},
+          "relative_path": {"type": "string", "minLength": 1},
+          "sha256": {"$ref": "#/$defs/digest"},
+          "size_bytes": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "no_policy_execution": {
+      "type": "object",
+      "required": ["policy_loaded", "candidate_policy_queried", "candidate_outcomes_accessed", "policy_actions_executed"],
+      "additionalProperties": false,
+      "properties": {
+        "policy_loaded": {"const": false},
+        "candidate_policy_queried": {"const": false},
+        "candidate_outcomes_accessed": {"const": false},
+        "policy_actions_executed": {"const": 0}
       }
     },
     "observation_digest": {"$ref": "#/$defs/digest"}

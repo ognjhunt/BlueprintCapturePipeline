@@ -644,6 +644,43 @@ def _plan(tmp_path: Path) -> Path:
     return path
 
 
+def _destination_plan(tmp_path: Path) -> Path:
+    path = _plan(tmp_path)
+    plan = json.loads(path.read_text(encoding="utf-8"))
+    plan["schema_version"] = worker.DESTINATION_PLAN_SCHEMA_VERSION
+    plan["phases"]["construction"].pop("lineage_path")
+    plan["phases"]["destination"] = {}
+    for name in (
+        "release_window_template_path",
+        "lineage_path",
+        "authorization_path",
+        "launch_authority_path",
+    ):
+        artifact = tmp_path / "inputs" / "destination" / f"{name}.json"
+        _write(artifact, {"kind": f"destination-{name}"})
+        plan["phases"]["destination"][name] = str(artifact)
+    terminal_path = Path(
+        json.loads(
+            (
+                tmp_path
+                / "launch-runs"
+                / plan["source_launch_id"]
+                / "launch_receipt.json"
+            ).read_text()
+        )["terminal_evidence"]["result"]["path"]
+    )
+    terminal = json.loads(terminal_path.read_text())
+    plan["future_outputs"]["destination"] = {
+        "expected_activation_id": (
+            f"{terminal['run_id']}-franka-destination-qualification-"
+            f"{str(plan['expected_production_commit'])[:12]}-probe-destination"
+        )
+    }
+    _seal_plan(plan)
+    _write(path, plan)
+    return path
+
+
 def test_qualifying_terminal_and_post_teardown_zero_auto_queue_preparation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -669,6 +706,114 @@ def test_qualifying_terminal_and_post_teardown_zero_auto_queue_preparation(
     assert observed["expected_production_commit"] == "a" * 40
     assert observed["queue_root"] == tmp_path / "preparations"
     assert observed["submitted_by"] == "configured-controls-progression"
+
+
+def test_destination_plan_stages_native_qualification_before_episode_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch_root, _ = _source(tmp_path)
+    plan = _destination_plan(tmp_path)
+    observed: dict[str, object] = {}
+
+    def stage(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "destination_qualification_preparation_queued"}
+
+    monkeypatch.setattr(worker, "stage_configured_controls_episode_preparation", stage)
+    result = worker.advance_configured_controls_plan(
+        plan_path=plan,
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progressions",
+        preparation_queue_root=tmp_path / "preparations",
+        activation_queue_root=tmp_path / "activations",
+        publisher_factory=lambda: object(),
+    )
+
+    assert result["status"] == "destination_qualification_preparation_queued"
+    assert observed["destination_qualification_only"] is True
+    assert str(observed["output_root"]).endswith("destination-qualification")
+
+
+def test_destination_terminal_automatically_stages_final_episode_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch_root, _ = _source(tmp_path)
+    plan_path = _destination_plan(tmp_path)
+    plan = json.loads(plan_path.read_text())
+    state = (
+        tmp_path
+        / "progressions"
+        / plan["source_launch_id"]
+        / f"franka-controls-{str(plan['expected_production_commit'])[:12]}"
+    )
+    destination_state = state / "destination-qualification"
+    destination_base = _sealed_progression(
+        "destination_qualification_preparation_queued",
+        episode_preparation_request={
+            "preparation_id": "destination-prep",
+            "run_id": str(
+                plan["future_outputs"]["destination"]["expected_activation_id"]
+            ).removesuffix("-destination"),
+        },
+    )
+    _write(
+        destination_state
+        / "configured_destination_qualification_progression.v1.json",
+        destination_base,
+    )
+    _write(
+        destination_state / "destination_activation_progression.json",
+        _sealed_progression("destination_qualification_activation_queued"),
+    )
+    _write(
+        destination_state / "destination_launch_progression.json",
+        _sealed_progression(
+            "destination_qualification_launch_queued",
+            launch_id="destination-launch",
+        ),
+    )
+    preparation_root = tmp_path / "preparations"
+    _write(
+        preparation_root / "identities" / "destination-prep.json",
+        {"identity": "destination-prep"},
+    )
+    _write(
+        preparation_root / "results" / "destination-prep-a.json",
+        {"status": "prepared", "references": []},
+    )
+    placement_reference = {
+        "uri": "s3://test/destination-placement.json",
+        "digest": "sha256:" + "d" * 64,
+        "size_bytes": 123,
+    }
+    monkeypatch.setattr(
+        worker,
+        "_destination_predecessor",
+        lambda **_: (
+            {"kind": "predecessor"},
+            {"prior_result": "/tmp/prior"},
+            placement_reference,
+        ),
+    )
+    observed: dict[str, object] = {}
+
+    def stage(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "episode_preparation_queued"}
+
+    monkeypatch.setattr(worker, "stage_configured_controls_episode_preparation", stage)
+    result = worker.advance_configured_controls_plan(
+        plan_path=plan_path,
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progressions",
+        preparation_queue_root=preparation_root,
+        activation_queue_root=tmp_path / "activations",
+        publisher_factory=lambda: object(),
+    )
+    assert result["status"] == "episode_preparation_queued"
+    assert observed["destination_qualification_only"] is False
+    assert observed["destination_placement_qualification"] == placement_reference
+    assert str(observed["output_root"]).endswith("/episode")
 
 
 def test_missing_post_teardown_global_zero_fails_before_queue_mutation(
@@ -1071,6 +1216,135 @@ def _construction_run(tmp_path: Path) -> tuple[Path, str, Path]:
     )
     _write(run_root / "post_teardown_provider_zero_receipt.json", zero)
     return run_root.parent, launch_id, construction_path
+
+
+def test_destination_predecessor_materializes_qualification_before_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch_root, launch_id, observation_path = _construction_run(tmp_path)
+    run_root = launch_root / launch_id
+    observation = {
+        "schema_version": "task_evaluation_rigid_destination_native_observation.v1",
+        "status": "completed",
+        "observation_digest": "",
+    }
+    observation["observation_digest"] = canonical_digest(
+        observation, digest_field="observation_digest"
+    )
+    _write(observation_path, observation)
+    allocator_path = run_root / "allocator" / "result.json"
+    allocator = json.loads(allocator_path.read_text())
+    allocator["native_control_result_digest"] = observation["observation_digest"]
+    _write(allocator_path, allocator)
+    receipt_path = run_root / "launch_receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["terminal_evidence"]["result"]["digest"] = _digest(allocator_path)
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    _write(receipt_path, receipt)
+    sync_path = run_root / "webapp_sync_succeeded.json"
+    sync = json.loads(sync_path.read_text())
+    sync["receipt_digest"] = receipt["receipt_digest"]
+    sync["response"]["receipt_digest"] = receipt["receipt_digest"]
+    sync["sync_result_digest"] = canonical_digest(
+        sync, digest_field="sync_result_digest"
+    )
+    _write(sync_path, sync)
+    zero_path = run_root / "post_teardown_provider_zero_receipt.json"
+    zero = json.loads(zero_path.read_text())
+    zero["receipt_digest"] = receipt["receipt_digest"]
+    zero["provider_zero_receipt_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_receipt_digest"
+    )
+    _write(zero_path, zero)
+    collision = tmp_path / "inputs" / "configured-collision.usda"
+    collision.parent.mkdir(parents=True, exist_ok=True)
+    collision.write_bytes(b"#usda 1.0\n")
+    profile_path = run_root / "launch_profile.json"
+    profile = json.loads(profile_path.read_text())
+    profile["immutable_inputs"].append(
+        {
+            "name": "native_task_arena_packet_asset_scene_collision",
+            "path": str(collision),
+            "digest": _digest(collision),
+        }
+    )
+    profile["profile_digest"] = canonical_digest(
+        profile, digest_field="profile_digest"
+    )
+    _write(profile_path, profile)
+    receipt["launch_profile_digest"] = profile["profile_digest"]
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    _write(receipt_path, receipt)
+    sync["receipt_digest"] = receipt["receipt_digest"]
+    sync["response"]["receipt_digest"] = receipt["receipt_digest"]
+    sync["sync_result_digest"] = canonical_digest(
+        sync, digest_field="sync_result_digest"
+    )
+    _write(sync_path, sync)
+    zero["receipt_digest"] = receipt["receipt_digest"]
+    zero["launch_profile_digest"] = profile["profile_digest"]
+    zero["provider_zero_receipt_digest"] = canonical_digest(
+        zero, digest_field="provider_zero_receipt_digest"
+    )
+    _write(zero_path, zero)
+    references = []
+    for contract_path, name in (
+        ("task.destination.asset", "tray.usda"),
+        ("task.destination.static_qualification", "tray-static.json"),
+        ("task.destination.native_import_qualification", "tray-native.json"),
+        ("task.destination.geometry", "tray-geometry.json"),
+    ):
+        path = tmp_path / "inputs" / name
+        path.write_bytes(b"{}\n")
+        references.append(
+            {"contract_path": contract_path, "materialized_path": str(path)}
+        )
+
+    def materialize(**kwargs: object) -> dict[str, object]:
+        output = Path(str(kwargs["output_path"]))
+        value = {
+            "status": "qualified",
+            "native_observation_digest": observation["observation_digest"],
+            "placement_qualification_digest": "sha256:" + "f" * 64,
+        }
+        _write(output, value)
+        return value
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_rigid_destination_placement_qualification."
+        "materialize_rigid_destination_placement_qualification",
+        materialize,
+    )
+
+    def publish(*, path: Path, object_name: str) -> dict[str, object]:
+        return {
+            "uri": f"s3://test/{object_name}",
+            "digest": _digest(path),
+            "size_bytes": path.stat().st_size,
+            "full_byte_service_account_readback_passed": True,
+            "readback_digest": _digest(path),
+            "readback_size_bytes": path.stat().st_size,
+        }
+
+    lineage, artifact_paths, placement = worker._destination_predecessor(
+        launch_state_root=launch_root,
+        destination_launch_id=launch_id,
+        preparation_result={"references": references},
+        qualification_output_path=tmp_path / "qualification.json",
+        publisher=publish,
+    )
+    assert lineage["kind"] == "predecessor"
+    assert "destination_qualification_result" in lineage
+    assert artifact_paths["destination_qualification_result"] == str(
+        observation_path
+    )
+    assert placement["uri"].endswith(
+        "task_evaluation_rigid_destination_placement_qualification.v1.json"
+    )
 
 
 def test_construction_predecessor_is_derived_only_after_terminal_provider_zero(

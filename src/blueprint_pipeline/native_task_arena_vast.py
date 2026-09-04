@@ -16,6 +16,9 @@ from .native_task_arena_construction_bundle import (
 from .native_task_arena_controls_bundle import (
     RESULT_FILENAME as CONTROLS_RESULT_FILENAME,
 )
+from .native_task_arena_destination_qualification_bundle import (
+    RESULT_FILENAME as DESTINATION_QUALIFICATION_RESULT_FILENAME,
+)
 from .native_task_arena_policy_bundle import RESULT_FILENAME as POLICY_RESULT_FILENAME
 from .native_task_arena_policy_diagnostic_bundle import (
     RESULT_FILENAME as POLICY_DIAGNOSTIC_RESULT_FILENAME,
@@ -212,6 +215,93 @@ def run_native_task_arena_vast(
         ),
         authorization_consumption=consumption,
         retain_warm_instance=retain_warm_instance,
+    )
+
+
+def run_native_task_arena_destination_qualification_vast(
+    *,
+    job_dir: str | Path,
+    prepared_bundle: Mapping[str, Any],
+    paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
+    execute: bool,
+    machine_avoidlist_path: str | Path | None = None,
+    max_hourly_rate_usd: float = 0.80,
+    hard_cap_usd: float = 1.00,
+    hard_ttl_seconds: int = 1_800,
+    allowed_active_instance_ids: Sequence[int] = (),
+    paid_attempt_authority: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run one zero-retry, policy-free destination qualification probe."""
+
+    if (
+        prepared_bundle.get("schema_version")
+        != "native_task_arena_provider_bundle.v1"
+        or prepared_bundle.get("execution_mode") != "destination_qualification"
+        or prepared_bundle.get("policy_candidate_id") is not None
+        or prepared_bundle.get("candidate_policy_queried") is not False
+        or prepared_bundle.get("expected_output_filename")
+        != DESTINATION_QUALIFICATION_RESULT_FILENAME
+    ):
+        raise ValueError("native_task_arena_destination_qualification_bundle_invalid")
+    allowed_ids = tuple(sorted({int(value) for value in allowed_active_instance_ids}))
+    authority = (
+        validate_native_task_arena_paid_attempt_authority(
+            paid_attempt_authority,
+            prepared_bundle=prepared_bundle,
+            max_hourly_rate_usd=max_hourly_rate_usd,
+            hard_cap_usd=hard_cap_usd,
+            hard_ttl_seconds=hard_ttl_seconds,
+            allowed_active_instance_ids=allowed_ids,
+        )
+        if paid_attempt_authority is not None
+        else None
+    )
+    if execute and authority is None:
+        raise ValueError("native_task_arena_paid_execution_authority_missing")
+    consumption = consume_native_task_arena_authority_once(authority) if execute else None
+    if consumption is not None and consumption.get("status") != "consumed":
+        return {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "provider_mutations_performed": 0,
+            "retry_cap": 0,
+            "authorization_consumption": consumption,
+            "blockers": list(consumption.get("blockers") or []),
+        }
+    job = Path(job_dir).expanduser().resolve()
+    return run_arena_native_control_vast(
+        approval_path=".",
+        job_dir=job,
+        paid_resource_admission_grant=paid_resource_admission_grant,
+        execute=execute,
+        prepared_bundle=prepared_bundle,
+        machine_avoidlist_path=machine_avoidlist_path,
+        max_hourly_rate_usd=max_hourly_rate_usd,
+        hard_cap_usd=hard_cap_usd,
+        hard_ttl_seconds=hard_ttl_seconds,
+        expected_output_filename=DESTINATION_QUALIFICATION_RESULT_FILENAME,
+        container_image=str(prepared_bundle["container_image"]),
+        provider_bundle_kind=PROVIDER_BUNDLE_KIND,
+        result_schema_version=RESULT_SCHEMA_VERSION,
+        object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/destination-qualification",
+        instance_label_prefix="blueprint-native-task-destination-qualification-",
+        blocker_prefix="native_task_arena_destination_qualification",
+        min_gpu_ram_mb=NO_POLICY_MIN_GPU_RAM_MB,
+        allowed_active_instance_ids=allowed_ids,
+        vast_launch_lock_file=(
+            job / "native_task_arena_destination_qualification_paid_launch.lock"
+            if allowed_ids
+            else None
+        ),
+        candidate_policy_query_expected=False,
+        preferred_gpu_keywords=NO_POLICY_PREFERRED_GPU_KEYWORDS,
+        minimum_driver_version=MINIMUM_DRIVER_VERSION,
+        require_independent_watchdog=True,
+        allowed_geolocation_country_codes=(
+            NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        authorization_consumption=consumption,
+        stale_offer_create_retry_limit=0,
     )
 
 
@@ -683,6 +773,7 @@ __all__ = [
     "PROBE_KIND",
     "RESULT_SCHEMA_VERSION",
     "run_native_task_arena_vast",
+    "run_native_task_arena_destination_qualification_vast",
     "run_native_task_arena_runtime_preflight_vast",
     "run_native_task_arena_controls_vast",
     "run_native_task_arena_policy_vast",

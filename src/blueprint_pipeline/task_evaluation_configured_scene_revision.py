@@ -99,6 +99,14 @@ def validate_configured_scene_revision(
         raise TaskEvaluationConfiguredSceneRevisionError(
             "configured_scene_revision_task_scene_identity_conflict"
         )
+    destination = task.get("destination")
+    if isinstance(destination, Mapping) and (
+        destination.get("identity") == revision["replacement"]["identity"]
+        or "placement_qualification" in destination
+    ):
+        raise TaskEvaluationConfiguredSceneRevisionError(
+            "configured_scene_revision_destination_binding_invalid"
+        )
     presentation = revision.get("presentation")
     if isinstance(presentation, Mapping) and (
         presentation["selection"]["frame_digest"]

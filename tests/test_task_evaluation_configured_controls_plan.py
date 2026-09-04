@@ -86,6 +86,30 @@ def _bindings(tmp_path: Path) -> dict[str, object]:
     return {**top, "phases": phases}
 
 
+def _destination_bindings(tmp_path: Path) -> dict[str, object]:
+    bindings = _bindings(tmp_path)
+    phases = bindings["phases"]
+    phases["construction"].pop("lineage_path")
+    phases["destination"] = {
+        name: str(
+            _write(
+                tmp_path / "inputs" / "destination" / f"{name}.json",
+                {
+                    "schema_version": f"test.destination.{name}.v1",
+                    "expected_production_commit": TARGET_COMMIT,
+                },
+            )
+        )
+        for name in (
+            "release_window_template_path",
+            "lineage_path",
+            "authorization_path",
+            "launch_authority_path",
+        )
+    }
+    return bindings
+
+
 def _qualifying_source(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         worker,
@@ -135,6 +159,30 @@ def test_materializes_exact_present_inputs_and_binds_future_identities(
     assert "lineage_path" not in plan["phases"]["controls"]
     assert "lineage_artifact_paths" not in plan["phases"]["controls"]
     assert plan["provider_mutation_performed"] is False
+
+
+def test_destination_plan_inserts_probe_before_construction_and_controls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _qualifying_source(monkeypatch)
+    (tmp_path / "profiles").mkdir()
+    result = materialize_configured_controls_plan(
+        source_launch_id=SOURCE_LAUNCH_ID,
+        launch_state_root=tmp_path / "launch-runs",
+        expected_production_commit=TARGET_COMMIT,
+        submitted_by="configured-controls-materializer",
+        bindings=_destination_bindings(tmp_path),
+        plan_root=tmp_path / "plans",
+        profile_dir=tmp_path / "profiles",
+    )
+    plan = worker._plan(Path(result["plan_path"]))
+    assert plan["schema_version"].endswith(".v3")
+    assert set(plan["phases"]) == {"destination", "construction", "controls"}
+    assert "lineage_path" in plan["phases"]["destination"]
+    assert "lineage_path" not in plan["phases"]["construction"]
+    assert plan["future_outputs"]["destination"][
+        "expected_activation_id"
+    ].endswith("-probe-destination")
 
 
 def test_plan_destination_is_scoped_to_the_expected_production_commit(

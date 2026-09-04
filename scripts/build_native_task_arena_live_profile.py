@@ -39,6 +39,10 @@ from blueprint_pipeline.native_task_arena_construction_bundle import (
     PROBE_KIND as CONSTRUCTION_PROBE_KIND,
     load_verified_native_task_arena_construction_bundle,
 )
+from blueprint_pipeline.native_task_arena_destination_qualification_bundle import (
+    PROBE_KIND as DESTINATION_QUALIFICATION_PROBE_KIND,
+    load_verified_native_task_arena_destination_qualification_bundle,
+)
 from blueprint_pipeline.native_task_arena_controls_bundle import (
     PROBE_KIND as CONTROLS_PROBE_KIND,
     load_verified_native_task_arena_controls_bundle,
@@ -156,6 +160,12 @@ class ArenaLink:
 
 
 LINKS: dict[str, ArenaLink] = {
+    "destination": ArenaLink(
+        DESTINATION_QUALIFICATION_PROBE_KIND,
+        "arena-destination-qualification-live",
+        "arena-destination-qualification-job",
+        {},
+    ),
     "construction": ArenaLink(
         CONSTRUCTION_PROBE_KIND, "arena-construction-live", "arena-construction-job", {}
     ),
@@ -188,6 +198,9 @@ LINKS: dict[str, ArenaLink] = {
 }
 
 BUNDLE_LOADERS = {
+    DESTINATION_QUALIFICATION_PROBE_KIND: (
+        load_verified_native_task_arena_destination_qualification_bundle
+    ),
     CONSTRUCTION_PROBE_KIND: load_verified_native_task_arena_construction_bundle,
     CONTROLS_PROBE_KIND: load_verified_native_task_arena_controls_bundle,
     POLICY_PROBE_KIND: load_verified_native_task_arena_policy_bundle,

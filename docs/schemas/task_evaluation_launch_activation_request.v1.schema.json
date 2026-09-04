@@ -31,6 +31,8 @@
       "enum": [
         "task_evaluation_scene_configuration",
         "native_task_arena_construction",
+        "native_task_arena_construction_after_destination",
+        "native_task_arena_destination_qualification",
         "native_task_arena_controls",
         "native_task_arena_zero_action",
         "native_task_arena_scripted_positive",
@@ -69,8 +71,11 @@
             "prior_launch_receipt",
             "prior_webapp_sync",
             "prior_provider_zero",
-            "prior_spend_reconciliation",
-            "construction_result"
+            "prior_spend_reconciliation"
+          ],
+          "anyOf": [
+            {"required": ["construction_result"]},
+            {"required": ["destination_qualification_result"]}
           ],
           "additionalProperties": false,
           "properties": {
@@ -82,6 +87,7 @@
             "prior_provider_zero": {"$ref": "#/$defs/reference"},
             "prior_spend_reconciliation": {"$ref": "#/$defs/reference"},
             "construction_result": {"$ref": "#/$defs/reference"},
+            "destination_qualification_result": {"$ref": "#/$defs/reference"},
             "zero_action_result": {"$ref": "#/$defs/reference"},
             "controls_qualification_manifest": {"$ref": "#/$defs/reference"}
           }
@@ -120,9 +126,12 @@
   },
   "allOf": [
     {
-      "if": {"properties": {"lane": {"enum": ["task_evaluation_scene_configuration", "native_task_arena_construction"]}}},
-      "then": {"properties": {"lineage": {"properties": {"kind": {"const": "initial_project"}}}}},
-      "else": {"properties": {"lineage": {"properties": {"kind": {"const": "predecessor"}}}}}
+      "if": {"properties": {"lane": {"enum": ["task_evaluation_scene_configuration", "native_task_arena_destination_qualification", "native_task_arena_construction"]}}},
+      "then": {"properties": {"lineage": {"properties": {"kind": {"const": "initial_project"}}}}}
+    },
+    {
+      "if": {"properties": {"lane": {"not": {"enum": ["task_evaluation_scene_configuration", "native_task_arena_destination_qualification", "native_task_arena_construction"]}}}},
+      "then": {"properties": {"lineage": {"properties": {"kind": {"const": "predecessor"}}}}}
     },
     {
       "if": {"properties": {"lane": {"const": "native_task_arena_scripted_positive"}}},

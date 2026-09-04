@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_rigid_destination_native_probe_request.v1.schema.json",
+  "title": "Task Evaluation rigid destination native probe request v1",
+  "description": "Immutable policy-free request for executor-owned destination placement measurements.",
+  "type": "object",
+  "required": [
+    "schema_version", "execution_commit", "runtime_identity", "container_identity",
+    "destination_identity", "configured_scene_revision_digest",
+    "configured_scene_collision_digest", "configured_scene_support_plane_digest",
+    "destination_asset_digest", "destination_static_qualification_digest",
+    "destination_native_import_qualification_digest", "destination_geometry_digest",
+    "pose_world", "qualification_limits", "settle_sample_count",
+    "settle_steps_per_sample", "candidate_policy_queried", "policy_loaded",
+    "request_digest"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "task_evaluation_rigid_destination_native_probe_request.v1"},
+    "execution_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "runtime_identity": {"$ref": "#/$defs/versionedIdentity"},
+    "container_identity": {
+      "type": "object",
+      "required": ["image", "digest"],
+      "additionalProperties": false,
+      "properties": {
+        "image": {"type": "string", "pattern": "@sha256:[0-9a-f]{64}$"},
+        "digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "destination_identity": {"$ref": "#/$defs/versionedIdentity"},
+    "configured_scene_revision_digest": {"$ref": "#/$defs/digest"},
+    "configured_scene_collision_digest": {"$ref": "#/$defs/digest"},
+    "configured_scene_support_plane_digest": {"$ref": "#/$defs/digest"},
+    "destination_asset_digest": {"$ref": "#/$defs/digest"},
+    "destination_static_qualification_digest": {"$ref": "#/$defs/digest"},
+    "destination_native_import_qualification_digest": {"$ref": "#/$defs/digest"},
+    "destination_geometry_digest": {"$ref": "#/$defs/digest"},
+    "pose_world": {"$ref": "#/$defs/pose"},
+    "qualification_limits": {
+      "type": "object",
+      "required": [
+        "maximum_penetration_m", "minimum_support_contact_force_n",
+        "maximum_forbidden_contact_force_n", "settle_translation_tolerance_m",
+        "settle_rotation_tolerance_rad", "reset_translation_tolerance_m",
+        "reset_rotation_tolerance_rad", "minimum_camera_pixels"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "maximum_penetration_m": {"type": "number", "exclusiveMinimum": 0},
+        "minimum_support_contact_force_n": {"type": "number", "exclusiveMinimum": 0},
+        "maximum_forbidden_contact_force_n": {"type": "number", "exclusiveMinimum": 0},
+        "settle_translation_tolerance_m": {"type": "number", "exclusiveMinimum": 0},
+        "settle_rotation_tolerance_rad": {"type": "number", "exclusiveMinimum": 0},
+        "reset_translation_tolerance_m": {"type": "number", "exclusiveMinimum": 0},
+        "reset_rotation_tolerance_rad": {"type": "number", "exclusiveMinimum": 0},
+        "minimum_camera_pixels": {
+          "type": "object",
+          "required": ["external", "wrist", "overview"],
+          "additionalProperties": false,
+          "properties": {
+            "external": {"type": "integer", "minimum": 1},
+            "wrist": {"type": "integer", "minimum": 1},
+            "overview": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "settle_sample_count": {"type": "integer", "minimum": 3},
+    "settle_steps_per_sample": {"type": "integer", "minimum": 1},
+    "candidate_policy_queried": {"const": false},
+    "policy_loaded": {"const": false},
+    "request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 192, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "versionedIdentity": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {"id": {"$ref": "#/$defs/identifier"}, "version": {"$ref": "#/$defs/identifier"}}
+    },
+    "pose": {
+      "type": "object",
+      "required": ["position_world_m", "orientation_xyzw"],
+      "additionalProperties": false,
+      "properties": {
+        "position_world_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "orientation_xyzw": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}}
+      }
+    }
+  }
+}

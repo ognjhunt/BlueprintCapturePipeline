@@ -75,6 +75,16 @@ RUNTIME_PREFLIGHT_MODULE_NAMES = tuple(
     )
 )
 
+DESTINATION_QUALIFICATION_RUNTIME_MODULE_NAMES = tuple(
+    sorted(
+        {
+            *RUNTIME_PREFLIGHT_MODULE_NAMES,
+            "native_task_arena_runtime_preflight_worker.py",
+            "task_evaluation_rigid_destination_native_observation.py",
+        }
+    )
+)
+
 CONTROLS_RUNTIME_MODULE_NAMES = (
     "adp009d_control_episode.py",
     "adp009d_contact_envelope.py",
@@ -183,6 +193,12 @@ class NativeTaskArenaExecutionContract:
 
 
 EXECUTION_MODE_CONTRACTS = {
+    "destination_qualification": NativeTaskArenaExecutionContract(
+        expected_output_filename=(
+            "task_evaluation_rigid_destination_native_observation.v1.json"
+        ),
+        runtime_module_names=DESTINATION_QUALIFICATION_RUNTIME_MODULE_NAMES,
+    ),
     "runtime_preflight": NativeTaskArenaExecutionContract(
         expected_output_filename="native_task_arena_runtime_preflight.v1.json",
         runtime_module_names=RUNTIME_PREFLIGHT_MODULE_NAMES,
@@ -356,6 +372,7 @@ def required_archive_entries(execution_mode: str) -> set[str]:
 __all__ = [
     "CONSTRUCTION_RUNTIME_MODULE_NAMES",
     "CONTROLS_RUNTIME_MODULE_NAMES",
+    "DESTINATION_QUALIFICATION_RUNTIME_MODULE_NAMES",
     "CONTROLS_RESULT_FILENAME",
     "CONTROLS_RESULT_SCHEMA_VERSION",
     "DOWNSTREAM_DIAGNOSTIC_RESULT_SCHEMA_VERSION",

@@ -990,7 +990,7 @@ def _camera_snapshot(
                         id_to_labels=labels,
                         target_label=label,
                     )
-                    for label in ("task_object", "robot")
+                    for label in ("task_object", "task_support", "robot")
                 },
                 "semantic_id_to_labels": labels,
                 "raw_shapes": diagnostics["cameras"][-1],

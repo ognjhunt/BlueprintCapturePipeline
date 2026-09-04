@@ -62,6 +62,9 @@ from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_r
 
 
 PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v2"
+DESTINATION_PLAN_SCHEMA_VERSION = (
+    "task_evaluation_configured_controls_progression_plan.v3"
+)
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 WORKER_RESULT_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_worker.v1"
 CONFIGURED_CONTROLS_KEY_PREFIX = (
@@ -144,8 +147,17 @@ def _sealed_progression(path: Path, *, statuses: set[str]) -> dict[str, Any] | N
 
 def _plan(path: Path) -> dict[str, Any]:
     value = _load(path, blocker="configured_controls_worker_plan_invalid")
+    schema = value.get("schema_version")
+    expected_phases = (
+        {"destination", "construction", "controls"}
+        if schema == DESTINATION_PLAN_SCHEMA_VERSION
+        else {"construction", "controls"}
+    )
+    first_phase = (
+        "destination" if "destination" in expected_phases else "construction"
+    )
     if (
-        value.get("schema_version") != PLAN_SCHEMA_VERSION
+        schema not in {PLAN_SCHEMA_VERSION, DESTINATION_PLAN_SCHEMA_VERSION}
         or value.get("enabled") is not True
         or value.get("plan_digest") != canonical_digest(value, digest_field="plan_digest")
         or not str(value.get("source_launch_id") or "").strip()
@@ -159,20 +171,17 @@ def _plan(path: Path) -> dict[str, Any]:
         or _COMMIT.fullmatch(str(value.get("expected_production_commit") or ""))
         is None
         or not str(value.get("submitted_by") or "").strip()
-        or set(value.get("phases") or {}) != {"construction", "controls"}
-        or set(value["phases"].get("construction") or {})
-        != {
-            "release_window_template_path",
-            "lineage_path",
-            "authorization_path",
-            "launch_authority_path",
-        }
-        or set(value["phases"].get("controls") or {})
-        != {
-            "release_window_template_path",
-            "authorization_path",
-            "launch_authority_path",
-        }
+        or set(value.get("phases") or {}) != expected_phases
+        or any(
+            set(value["phases"].get(phase) or {})
+            != {
+                "release_window_template_path",
+                "authorization_path",
+                "launch_authority_path",
+                *({"lineage_path"} if phase == first_phase else set()),
+            }
+            for phase in expected_phases
+        )
         or not Path(str(value.get("profile_dir") or "")).is_absolute()
         or Path(str(value.get("profile_dir") or "")).is_symlink()
         or not Path(str(value.get("profile_dir") or "")).is_dir()
@@ -231,11 +240,11 @@ def _plan(path: Path) -> dict[str, Any]:
             )
         inventory_paths.add(str(artifact))
     future = value.get("future_outputs")
-    if not isinstance(future, Mapping) or set(future) != {"construction", "controls"}:
+    if not isinstance(future, Mapping) or set(future) != expected_phases:
         raise TaskEvaluationConfiguredControlsProgressionWorkerError(
             "configured_controls_worker_plan_future_outputs_invalid"
         )
-    for phase in ("construction", "controls"):
+    for phase in expected_phases:
         row = future.get(phase)
         if (
             not isinstance(row, Mapping)
@@ -966,6 +975,222 @@ def _construction_predecessor(
     return lineage, published_paths
 
 
+def _destination_predecessor(
+    *,
+    launch_state_root: Path,
+    destination_launch_id: str,
+    preparation_result: Mapping[str, Any],
+    qualification_output_path: Path,
+    publisher: Callable[..., Mapping[str, Any]],
+) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]] | None:
+    """Seal the native observation, publish its decision, and chain spend."""
+
+    run_root = launch_state_root / destination_launch_id
+    receipt_path = run_root / "launch_receipt.json"
+    if not receipt_path.exists():
+        return None
+    receipt = _load(
+        receipt_path,
+        blocker="configured_controls_worker_destination_launch_receipt_invalid",
+    )
+    expected_receipt_digest = (
+        cross_runtime_canonical_digest(receipt, digest_field="receipt_digest")
+        if receipt.get("receipt_digest_canonicalization")
+        == LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+        else canonical_digest(receipt, digest_field="receipt_digest")
+    )
+    terminal = receipt.get("terminal_evidence")
+    terminal_artifact = terminal.get("result") if isinstance(terminal, Mapping) else None
+    if (
+        receipt.get("schema_version") != "task_evaluation_launch_receipt.v1"
+        or receipt.get("status") != "completed"
+        or receipt.get("launch_id") != destination_launch_id
+        or receipt.get("run_id") != destination_launch_id
+        or receipt.get("receipt_digest") != expected_receipt_digest
+        or not isinstance(terminal, Mapping)
+        or terminal.get("status") != "passed"
+        or not isinstance(terminal_artifact, Mapping)
+        or terminal_artifact.get("exists") is not True
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_launch_receipt_invalid"
+        )
+    result_path = Path(str(terminal_artifact.get("path") or "")).expanduser()
+    result = _load(
+        result_path,
+        blocker="configured_controls_worker_destination_terminal_result_invalid",
+    )
+    observation_path = Path(
+        str(result.get("native_control_result_path") or "")
+    ).expanduser()
+    observation = _load(
+        observation_path,
+        blocker="configured_controls_worker_destination_observation_invalid",
+    )
+    if (
+        result_path.is_symlink()
+        or _sha256(result_path) != terminal_artifact.get("digest")
+        or result.get("schema_version") != "native_task_arena_vast_run.v1"
+        or result.get("status") != "completed"
+        or result.get("blockers") not in ([], ())
+        or observation.get("schema_version")
+        != "task_evaluation_rigid_destination_native_observation.v1"
+        or observation.get("status") != "completed"
+        or observation.get("candidate_policy_queried") is True
+        or observation.get("observation_digest")
+        != canonical_digest(observation, digest_field="observation_digest")
+        or result.get("native_control_result_digest")
+        != observation.get("observation_digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_observation_invalid"
+        )
+    sync_path = run_root / "webapp_sync_succeeded.json"
+    sync = _load(
+        sync_path,
+        blocker="configured_controls_worker_destination_webapp_sync_missing",
+    )
+    try:
+        validated_succeeded_webapp_sync_row(receipt=receipt, attempt=sync)
+    except Exception as exc:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_webapp_sync_invalid"
+        ) from exc
+    zero_path = run_root / "post_teardown_provider_zero_receipt.json"
+    zero = _load(
+        zero_path,
+        blocker="configured_controls_worker_destination_provider_zero_missing",
+    )
+    if (
+        zero.get("status") != "provider_zero_confirmed"
+        or zero.get("provider_zero_verified") is not True
+        or zero.get("continuing_spend_from_this_run") is not False
+        or zero.get("blockers") != []
+        or zero.get("provider_zero_receipt_digest")
+        != canonical_digest(zero, digest_field="provider_zero_receipt_digest")
+    ):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_provider_zero_invalid"
+        )
+    profile = _load(
+        run_root / "launch_profile.json",
+        blocker="configured_controls_worker_destination_profile_invalid",
+    )
+    immutable_inputs = profile.get("immutable_inputs")
+    if not isinstance(immutable_inputs, list):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_profile_invalid"
+        )
+
+    def profile_input(name: str) -> Path:
+        matches = [
+            row
+            for row in immutable_inputs
+            if isinstance(row, Mapping) and row.get("name") == name
+        ]
+        if len(matches) != 1:
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_destination_profile_invalid"
+            )
+        path = Path(str(matches[0].get("path") or "")).expanduser()
+        if path.is_symlink() or not path.is_file() or _sha256(path) != matches[0].get(
+            "digest"
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_destination_profile_input_invalid"
+            )
+        return path
+
+    references = {
+        str(row.get("contract_path") or ""): Path(
+            str(row.get("materialized_path") or "")
+        ).expanduser()
+        for row in preparation_result.get("references") or []
+        if isinstance(row, Mapping)
+    }
+    required = {
+        "task.destination.asset",
+        "task.destination.static_qualification",
+        "task.destination.native_import_qualification",
+        "task.destination.geometry",
+    }
+    if not required.issubset(references):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_inputs_missing"
+        )
+    from .task_evaluation_rigid_destination_placement_qualification import (
+        materialize_rigid_destination_placement_qualification,
+    )
+
+    if qualification_output_path.is_file() and not qualification_output_path.is_symlink():
+        qualification = _load(
+            qualification_output_path,
+            blocker="configured_controls_worker_destination_qualification_invalid",
+        )
+        if (
+            qualification.get("placement_qualification_digest")
+            != canonical_digest(
+                qualification, digest_field="placement_qualification_digest"
+            )
+            or qualification.get("native_observation_digest")
+            != observation.get("observation_digest")
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_destination_qualification_invalid"
+            )
+    else:
+        qualification = materialize_rigid_destination_placement_qualification(
+            observation_path=observation_path,
+            configured_scene_collision_path=profile_input(
+                "native_task_arena_packet_asset_scene_collision"
+            ),
+            destination_asset_path=references["task.destination.asset"],
+            destination_static_qualification_path=references[
+                "task.destination.static_qualification"
+            ],
+            destination_native_import_qualification_path=references[
+                "task.destination.native_import_qualification"
+            ],
+            destination_geometry_path=references["task.destination.geometry"],
+            output_path=qualification_output_path,
+        )
+    placement_reference = _publish_materialized_file(
+        path=qualification_output_path,
+        object_name=(
+            f"destination-qualification/{destination_launch_id}/"
+            "task_evaluation_rigid_destination_placement_qualification.v1.json"
+        ),
+        publisher=publisher,
+    )
+    artifact_paths = {
+        "prior_authority": profile_input("native_task_arena_attempt_authority"),
+        "prior_result": result_path,
+        "prior_launch_receipt": receipt_path,
+        "prior_webapp_sync": sync_path,
+        "prior_provider_zero": zero_path,
+        "prior_spend_reconciliation": profile_input(
+            "native_task_arena_attempt_authority_prior_spend_reconciliation"
+        ),
+        "destination_qualification_result": observation_path,
+    }
+    lineage: dict[str, Any] = {"kind": "predecessor"}
+    published_paths: dict[str, str] = {}
+    for role, path in sorted(artifact_paths.items()):
+        lineage[role] = _publish_materialized_file(
+            path=path,
+            object_name=(
+                f"destination-predecessor/{destination_launch_id}/{role}.json"
+            ),
+            publisher=publisher,
+        )
+        published_paths[role] = str(path)
+    if qualification.get("status") != "qualified":
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_worker_destination_qualification_invalid"
+        )
+    return lineage, published_paths, placement_reference
+
+
 def _production_submitter(
     *, repo_root: Path, secret_file: Path, endpoint: str, state_root: Path
 ) -> Submitter:
@@ -1049,9 +1274,23 @@ def advance_configured_controls_plan(
         / f"franka-controls-{plan['expected_production_commit'][:12]}"
     )
     state.mkdir(parents=True, exist_ok=True, mode=0o750)
-    base_path = state / "configured_controls_progression.v1.json"
-    base = _sealed_progression(base_path, statuses={"episode_preparation_queued"})
-    if base is None:
+    destination_enabled = (
+        plan.get("schema_version") == DESTINATION_PLAN_SCHEMA_VERSION
+    )
+    episode_state = state / "episode" if destination_enabled else state
+    episode_state.mkdir(parents=True, exist_ok=True, mode=0o750)
+    destination_lineage: dict[str, Any] | None = None
+    destination_artifact_paths: dict[str, str] | None = None
+    placement_reference: dict[str, Any] | None = None
+
+    def source_inputs() -> tuple[
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ]:
         terminal, receipt, _ = _validate_source(run_root)
         if (
             receipt.get("receipt_digest")
@@ -1062,6 +1301,194 @@ def advance_configured_controls_plan(
             raise TaskEvaluationConfiguredControlsProgressionWorkerError(
                 "configured_controls_worker_source_receipt_mismatch"
             )
+        publication = _input(
+            terminal.get("publication_result_path"),
+            blocker="configured_controls_worker_publication_missing",
+        )
+        revision = _input(
+            terminal.get("configured_scene_revision_path"),
+            blocker="configured_controls_worker_revision_missing",
+        )
+        base_pose = _input(
+            plan.get("base_pose_candidate_path"),
+            blocker="configured_controls_worker_base_pose_missing",
+        )
+        cameras = _input(
+            plan.get("cameras_path"),
+            blocker="configured_controls_worker_cameras_missing",
+        )
+        runtime = _input(
+            plan.get("runtime_binding_path"),
+            blocker="configured_controls_worker_runtime_missing",
+        )
+        rows = cameras.get("cameras")
+        if not isinstance(rows, list):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_cameras_invalid"
+            )
+        return terminal, publication, revision, base_pose, rows, runtime
+
+    if destination_enabled:
+        destination_state = state / "destination-qualification"
+        destination_state.mkdir(parents=True, exist_ok=True, mode=0o750)
+        destination_base_path = (
+            destination_state
+            / "configured_destination_qualification_progression.v1.json"
+        )
+        destination_base = _sealed_progression(
+            destination_base_path,
+            statuses={"destination_qualification_preparation_queued"},
+        )
+        if destination_base is None:
+            terminal, publication, revision, base_pose, rows, runtime = source_inputs()
+            result = stage_configured_controls_episode_preparation(
+                terminal_result=terminal,
+                publication_result=publication,
+                configured_revision=revision,
+                expected_production_commit=plan["expected_production_commit"],
+                robot_mount_interface_path=plan["robot_mount_interface_path"],
+                scene_camera_calibration_path=plan["scene_camera_calibration_path"],
+                base_pose_candidate=base_pose,
+                cameras=rows,
+                runtime_binding=runtime,
+                output_root=destination_state,
+                publisher=publisher_factory(),
+                queue_root=preparation_queue_root,
+                submitted_by=plan["submitted_by"],
+                destination_qualification_only=True,
+            )
+            return {
+                "status": result["status"],
+                "source_launch_id": plan["source_launch_id"],
+            }
+        destination_preparation_id = destination_base[
+            "episode_preparation_request"
+        ]["preparation_id"]
+        if plan["future_outputs"]["destination"]["expected_activation_id"] != (
+            destination_base["episode_preparation_request"]["run_id"]
+            + "-destination"
+        ):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_future_activation_identity_mismatch"
+            )
+        destination_preparation = _queue_result(
+            Path(preparation_queue_root), destination_preparation_id
+        )
+        if destination_preparation is None:
+            return {
+                "status": "awaiting_destination_qualification_preparation",
+                "source_launch_id": plan["source_launch_id"],
+            }
+        destination_phase = _phase(plan, "destination")
+        destination_activation_path = (
+            destination_state / "destination_activation_progression.json"
+        )
+        destination_activation = _sealed_progression(
+            destination_activation_path,
+            statuses={"destination_qualification_activation_queued"},
+        )
+        if destination_activation is None:
+            lineage = _input(
+                destination_phase.get("lineage_path"),
+                blocker="configured_controls_worker_lineage_missing",
+            )
+            authorization = _input(
+                destination_phase.get("authorization_path"),
+                blocker="configured_controls_worker_authorization_missing",
+            )
+            release_window = _materialize_phase_release_window(
+                state=destination_base,
+                preparation=destination_preparation,
+                phase=destination_phase,
+                lineage=lineage,
+                authorization=authorization,
+                lane="native_task_arena_destination_qualification",
+                root=destination_state,
+                publisher=release_window_publisher_factory(),
+            )
+            result = stage_configured_controls_activation(
+                progression=destination_base,
+                preparation_result=destination_preparation,
+                release_window=release_window,
+                lineage=lineage,
+                authorization=authorization,
+                lane="native_task_arena_destination_qualification",
+                queue_root=activation_queue_root,
+                submitted_by=plan["submitted_by"],
+            )
+            _write_immutable(destination_activation_path, result)
+            return {
+                "status": result["status"],
+                "source_launch_id": plan["source_launch_id"],
+            }
+        destination_launch_path = (
+            destination_state / "destination_launch_progression.json"
+        )
+        destination_launch = _sealed_progression(
+            destination_launch_path,
+            statuses={"destination_qualification_launch_queued"},
+        )
+        if destination_launch is None:
+            authority = _activation_authority(
+                activation_queue_root=Path(activation_queue_root),
+                profile_dir=Path(plan["profile_dir"]),
+                activation_id=plan["future_outputs"]["destination"][
+                    "expected_activation_id"
+                ],
+            )
+            if authority is None:
+                return {
+                    "status": "awaiting_destination_qualification_activation",
+                    "source_launch_id": plan["source_launch_id"],
+                }
+            activation_result, profile = authority
+            if submitter is None:
+                if repo_root is None or webapp_secret_file is None:
+                    raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                        "configured_controls_worker_webapp_configuration_missing"
+                    )
+                submitter = _production_submitter(
+                    repo_root=Path(repo_root),
+                    secret_file=Path(webapp_secret_file),
+                    endpoint=webapp_endpoint,
+                    state_root=destination_state,
+                )
+            result = submit_authorized_progression_launch(
+                activation_progression=destination_activation,
+                activation_result=activation_result,
+                profile=profile,
+                launch_authority=_input(
+                    destination_phase.get("launch_authority_path"),
+                    blocker="configured_controls_worker_launch_authority_missing",
+                ),
+                submitter=submitter,
+            )
+            _write_immutable(destination_launch_path, result)
+            return {
+                "status": result["status"],
+                "source_launch_id": plan["source_launch_id"],
+            }
+        predecessor = _destination_predecessor(
+            launch_state_root=Path(launch_state_root),
+            destination_launch_id=str(destination_launch["launch_id"]),
+            preparation_result=destination_preparation,
+            qualification_output_path=(
+                destination_state
+                / "task_evaluation_rigid_destination_placement_qualification.v1.json"
+            ),
+            publisher=publisher_factory(),
+        )
+        if predecessor is None:
+            return {
+                "status": "awaiting_destination_qualification_terminal",
+                "source_launch_id": plan["source_launch_id"],
+            }
+        destination_lineage, destination_artifact_paths, placement_reference = predecessor
+
+    base_path = episode_state / "configured_controls_progression.v1.json"
+    base = _sealed_progression(base_path, statuses={"episode_preparation_queued"})
+    if base is None:
+        terminal, publication, revision, base_pose, rows, runtime = source_inputs()
         namespace = (
             f"{terminal['run_id']}-franka-controls-"
             f"{plan['expected_production_commit'][:12]}-episode"
@@ -1074,20 +1501,6 @@ def advance_configured_controls_plan(
             raise TaskEvaluationConfiguredControlsProgressionWorkerError(
                 "configured_controls_worker_future_activation_identity_mismatch"
             )
-        publication = _input(
-            terminal.get("publication_result_path"), blocker="configured_controls_worker_publication_missing"
-        )
-        revision = _input(
-            terminal.get("configured_scene_revision_path"), blocker="configured_controls_worker_revision_missing"
-        )
-        base_pose = _input(plan.get("base_pose_candidate_path"), blocker="configured_controls_worker_base_pose_missing")
-        cameras = _input(plan.get("cameras_path"), blocker="configured_controls_worker_cameras_missing")
-        runtime = _input(plan.get("runtime_binding_path"), blocker="configured_controls_worker_runtime_missing")
-        rows = cameras.get("cameras")
-        if not isinstance(rows, list):
-            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
-                "configured_controls_worker_cameras_invalid"
-            )
         result = stage_configured_controls_episode_preparation(
             terminal_result=terminal,
             publication_result=publication,
@@ -1098,10 +1511,12 @@ def advance_configured_controls_plan(
             base_pose_candidate=base_pose,
             cameras=rows,
             runtime_binding=runtime,
-            output_root=state,
+            output_root=episode_state,
             publisher=publisher_factory(),
             queue_root=preparation_queue_root,
             submitted_by=plan["submitted_by"],
+            destination_qualification_only=False,
+            destination_placement_qualification=placement_reference,
         )
         return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}
 
@@ -1116,7 +1531,23 @@ def advance_configured_controls_plan(
         construction_activation_path, statuses={"construction_activation_queued"}
     )
     if construction_activation is None:
-        lineage = _input(construction_phase.get("lineage_path"), blocker="configured_controls_worker_lineage_missing")
+        construction_lane = (
+            "native_task_arena_construction_after_destination"
+            if destination_enabled
+            else "native_task_arena_construction"
+        )
+        lineage = (
+            destination_lineage
+            if destination_enabled
+            else _input(
+                construction_phase.get("lineage_path"),
+                blocker="configured_controls_worker_lineage_missing",
+            )
+        )
+        if not isinstance(lineage, Mapping):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_lineage_missing"
+            )
         authorization = _input(construction_phase.get("authorization_path"), blocker="configured_controls_worker_authorization_missing")
         release_window = _materialize_phase_release_window(
             state=base,
@@ -1124,9 +1555,10 @@ def advance_configured_controls_plan(
             phase=construction_phase,
             lineage=lineage,
             authorization=authorization,
-            lane="native_task_arena_construction",
+            lane=construction_lane,
             root=state,
             publisher=release_window_publisher_factory(),
+            lineage_artifact_paths=destination_artifact_paths,
         )
         result = stage_configured_controls_activation(
             progression=base,
@@ -1134,9 +1566,10 @@ def advance_configured_controls_plan(
             release_window=release_window,
             lineage=lineage,
             authorization=authorization,
-            lane="native_task_arena_construction",
+            lane=construction_lane,
             queue_root=activation_queue_root,
             submitted_by=plan["submitted_by"],
+            lineage_artifact_paths=destination_artifact_paths,
         )
         _write_immutable(construction_activation_path, result)
         return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}

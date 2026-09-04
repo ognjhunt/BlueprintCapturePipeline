@@ -104,12 +104,15 @@ the score. Conflicts are visible and fail closed.
    rigid assets.
 5. Solve CPU base/reset/IK inventory for the entire pick/place/release/retreat
    phase plan; refuse the task if no exact feasible inventory exists.
-6. Run a no-policy render/camera/task-contract probe and deterministic
+6. Let the production v3 progression run the executor-owned rigid-destination
+   qualification probe and derive the placement receipt from its native
+   measurements; do not stage the receipt by hand.
+7. Run a no-policy render/camera/task-contract probe and deterministic
    zero-action plus scripted-positive controls.
-7. Run one paired diagnostic cell with the two frozen DROID-compatible policies.
+8. Run one paired diagnostic cell with the two frozen DROID-compatible policies.
    Continue only when observations, actions, motion, task-directed progress,
    scoring readbacks, and evidence delivery are valid.
-8. Run the ten aligned Quick-10 cells, close billing/provider-zero, stream the
+9. Run the ten aligned Quick-10 cells, close billing/provider-zero, stream the
    full result archive, invoke deterministic scoring and independent learned
    interpretation, and verify the Website exposes all twenty learned-policy
    episodes plus controls and digest-bound downloads.

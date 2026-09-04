@@ -26,6 +26,7 @@ def request(*, lane: str = "native_task_arena_construction") -> dict[str, object
     if lane in {
         "task_evaluation_scene_configuration",
         "native_task_arena_construction",
+        "native_task_arena_destination_qualification",
     }:
         lineage = {
             "kind": "initial_project",
@@ -43,6 +44,10 @@ def request(*, lane: str = "native_task_arena_construction") -> dict[str, object
             "prior_spend_reconciliation": ref(9),
             "construction_result": ref(10),
         }
+        if lane == "native_task_arena_construction_after_destination":
+            lineage["destination_qualification_result"] = lineage.pop(
+                "construction_result"
+            )
         if lane == "native_task_arena_scripted_positive":
             lineage["zero_action_result"] = ref(11)
         if lane == "native_task_arena_policy_evaluation":
@@ -90,6 +95,8 @@ def request(*, lane: str = "native_task_arena_construction") -> dict[str, object
     "lane",
     [
         "native_task_arena_construction",
+        "native_task_arena_destination_qualification",
+        "native_task_arena_construction_after_destination",
         "task_evaluation_scene_configuration",
         "native_task_arena_controls",
         "native_task_arena_zero_action",

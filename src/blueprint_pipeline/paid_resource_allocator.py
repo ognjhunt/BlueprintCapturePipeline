@@ -176,6 +176,10 @@ from .native_task_arena_controls_bundle import (
     build_native_task_arena_controls_bundle,
     load_verified_native_task_arena_controls_bundle,
 )
+from .native_task_arena_destination_qualification_bundle import (
+    PROBE_KIND as NATIVE_TASK_ARENA_DESTINATION_QUALIFICATION_PROBE_KIND,
+    load_verified_native_task_arena_destination_qualification_bundle,
+)
 from .native_task_arena_policy_bundle import (
     PROBE_KIND as NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
     build_native_task_arena_policy_bundle,
@@ -195,6 +199,7 @@ from .native_task_arena_runtime_preflight_bundle import (
 from .native_task_arena_vast import (
     POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES,
     run_native_task_arena_controls_vast,
+    run_native_task_arena_destination_qualification_vast,
     run_native_task_arena_policy_vast,
     run_native_task_arena_policy_diagnostic_vast,
     run_native_task_arena_runtime_preflight_vast,
@@ -1649,6 +1654,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
             ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
+            NATIVE_TASK_ARENA_DESTINATION_QUALIFICATION_PROBE_KIND,
             NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
@@ -5118,6 +5124,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if success else 2
         if args.probe_kind in {
             NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
+            NATIVE_TASK_ARENA_DESTINATION_QUALIFICATION_PROBE_KIND,
             NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
@@ -5125,6 +5132,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         }:
             preflight_requested = (
                 args.probe_kind == NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND
+            )
+            destination_requested = (
+                args.probe_kind
+                == NATIVE_TASK_ARENA_DESTINATION_QUALIFICATION_PROBE_KIND
             )
             controls_requested = args.probe_kind == NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND
             policy_requested = args.probe_kind == NATIVE_TASK_ARENA_POLICY_PROBE_KIND
@@ -5153,7 +5164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ):
                 missing.append("native_task_arena_construction_result")
             if feedback_bootstrap_requested and (
-                preflight_requested or controls_requested or any_policy_requested or warm_attach_requested
+                preflight_requested or destination_requested or controls_requested or any_policy_requested or warm_attach_requested
                 or not args.native_task_arena_retain_warm_session
             ):
                 missing.append("native_task_arena_feedback_bootstrap_mode_invalid")
@@ -5162,7 +5173,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if any_policy_requested and not args.native_task_arena_policy_execution_spec:
                 missing.append("native_task_arena_policy_execution_spec")
             if warm_attach_requested and (
-                preflight_requested or any_policy_requested
+                preflight_requested or destination_requested or any_policy_requested
             ):
                 missing.append(
                     "native_task_arena_warm_attach_requires_construction_or_controls"
@@ -5288,6 +5299,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         bundle_loader = (
                             load_verified_native_task_arena_runtime_preflight_bundle
                             if preflight_requested
+                            else load_verified_native_task_arena_destination_qualification_bundle
+                            if destination_requested
                             else load_verified_native_task_arena_policy_diagnostic_bundle
                             if policy_diagnostic_requested
                             else load_verified_native_task_arena_policy_bundle
@@ -5315,6 +5328,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                             ),
                             "implementation_commit": control_identity["orchestrator_source_commit"],
                         }
+                        if destination_requested:
+                            raise ValueError(
+                                "native_task_arena_destination_qualification_requires_dry_run_bundle_receipt"
+                            )
                         prepared_bundle = (
                             build_native_task_arena_runtime_preflight_bundle(
                                 **bundle_kwargs
@@ -5484,6 +5501,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "execution_mode": (
                     "runtime_preflight"
                     if preflight_requested
+                    else "destination_qualification"
+                    if destination_requested
                     else "policy_diagnostic"
                     if policy_diagnostic_requested
                     else "policy"
@@ -5620,6 +5639,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_native = (
                     run_native_task_arena_runtime_preflight_vast
                     if preflight_requested
+                    else run_native_task_arena_destination_qualification_vast
+                    if destination_requested
                     else run_native_task_arena_policy_diagnostic_vast
                     if policy_diagnostic_requested
                     else run_native_task_arena_policy_vast
@@ -5653,7 +5674,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         if name in os.environ
                     }
                 if args.native_task_arena_retain_warm_session:
-                    if preflight_requested or any_policy_requested:
+                    if preflight_requested or destination_requested or any_policy_requested:
                         result = {
                             "status": "blocked",
                             "blockers": [
@@ -5671,7 +5692,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = continue_retained_feedback_if_requested(
                     execute=args.execute,
                     construction_requested=not (
-                        preflight_requested or controls_requested or any_policy_requested
+                        preflight_requested
+                        or destination_requested
+                        or controls_requested
+                        or any_policy_requested
                     ),
                     retain_warm_session=args.native_task_arena_retain_warm_session,
                     result=result,

@@ -920,6 +920,61 @@ def _articulation_plan(
                 ["native_task_arena_forbidden_robot_contact_topology_missing"]
             )
         contact_sensors = []
+        if destination_support_id:
+            scene_stage = Usd.Stage.Open(str(scene_collision_asset_path))
+            scene_default = (
+                scene_stage.GetDefaultPrim() if scene_stage is not None else None
+            )
+            if scene_default is None or not scene_default.IsValid():
+                raise NativeTaskArenaScenePlanError(
+                    ["native_task_arena_scene_collision_default_prim_missing"]
+                )
+            scene_collision_source_root = str(scene_default.GetPath())
+            placement_support_paths = [
+                _source_to_spawned_prim(
+                    str(path),
+                    role="scene_collision",
+                    source_root_prim_path=scene_collision_source_root,
+                )
+                for path in task_spec.get(
+                    "destination_placement_support_prim_paths", []
+                )
+            ]
+            placement_forbidden_paths = sorted(
+                set(scene_contact_body_paths) - set(placement_support_paths)
+            )
+            if bool(placement_support_paths) != bool(
+                task_spec.get("destination_qualification_probe") is True
+            ) or any(
+                path not in scene_contact_body_paths
+                for path in placement_support_paths + placement_forbidden_paths
+            ):
+                raise NativeTaskArenaScenePlanError(
+                    ["native_task_arena_destination_placement_contact_paths_invalid"]
+                )
+            for index, destination_body_path in enumerate(support_body_paths):
+                if placement_support_paths:
+                    contact_sensors.append(
+                        {
+                            "sensor_instance_id": (
+                                f"destination_scene_support_contact__rigid_{index:02d}"
+                            ),
+                            "logical_sensor_id": "destination_scene_support_contact",
+                            "prim_path": destination_body_path,
+                            "filter_prim_paths_expr": placement_support_paths,
+                        }
+                    )
+                if placement_forbidden_paths:
+                    contact_sensors.append(
+                        {
+                            "sensor_instance_id": (
+                                f"destination_scene_forbidden_contact__rigid_{index:02d}"
+                            ),
+                            "logical_sensor_id": "destination_scene_forbidden_contact",
+                            "prim_path": destination_body_path,
+                            "filter_prim_paths_expr": placement_forbidden_paths,
+                        }
+                    )
         for index, task_body_path in enumerate(contact_body_paths):
             contact_sensors.append(
                 {

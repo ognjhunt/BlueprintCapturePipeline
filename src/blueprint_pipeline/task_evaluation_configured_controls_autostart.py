@@ -71,6 +71,9 @@ from . import task_evaluation_openai_inference_usage as inference_usage
 from . import task_evaluation_configured_controls_autostart_validation as autostart_validation
 
 INTENT_SCHEMA_VERSION = "task_evaluation_configured_controls_autostart_intent.v2"
+DESTINATION_INTENT_SCHEMA_VERSION = (
+    "task_evaluation_configured_controls_autostart_intent.v3"
+)
 RESULT_SCHEMA_VERSION = "task_evaluation_configured_controls_autostart.v3"
 DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD = 2.56
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -83,10 +86,28 @@ _FIXED_PATHS = {
     "cameras_path",
     "runtime_binding_path",
 }
-_PHASE_PATHS = {
+_LEGACY_PHASE_PATHS = {
     "construction": {
         "release_window_template_path",
         "lineage_path",
+        "authorization_path",
+        "launch_authority_path",
+    },
+    "controls": {
+        "release_window_template_path",
+        "authorization_path",
+        "launch_authority_path",
+    },
+}
+_DESTINATION_PHASE_PATHS = {
+    "destination": {
+        "release_window_template_path",
+        "lineage_path",
+        "authorization_path",
+        "launch_authority_path",
+    },
+    "construction": {
+        "release_window_template_path",
         "authorization_path",
         "launch_authority_path",
     },
@@ -724,7 +745,8 @@ def _intent_paths(value: Mapping[str, Any]) -> dict[str, Path]:
         or not isinstance(paths.get("overview_image_paths"), list)
         or not paths["overview_image_paths"]
         or not isinstance(phases, Mapping)
-        or set(phases) != set(_PHASE_PATHS)
+        or set(phases)
+        not in (set(_LEGACY_PHASE_PATHS), set(_DESTINATION_PHASE_PATHS))
     ):
         raise TaskEvaluationConfiguredControlsAutostartError(
             "configured_controls_autostart_intent_paths_invalid"
@@ -732,7 +754,12 @@ def _intent_paths(value: Mapping[str, Any]) -> dict[str, Path]:
     flattened = {name: Path(str(paths[name])).expanduser() for name in _FIXED_PATHS}
     for index, item in enumerate(paths["overview_image_paths"]):
         flattened[f"overview_image_paths.{index}"] = Path(str(item)).expanduser()
-    for phase, expected in _PHASE_PATHS.items():
+    expected_phases = (
+        _DESTINATION_PHASE_PATHS
+        if set(phases) == set(_DESTINATION_PHASE_PATHS)
+        else _LEGACY_PHASE_PATHS
+    )
+    for phase, expected in expected_phases.items():
         row = phases.get(phase)
         if not isinstance(row, Mapping) or set(row) != expected:
             raise TaskEvaluationConfiguredControlsAutostartError(
@@ -760,7 +787,8 @@ def validate_configured_controls_autostart_intent(
     )
     adoption = intent.get("configuration_adoption")
     if (
-        intent.get("schema_version") != INTENT_SCHEMA_VERSION
+        intent.get("schema_version")
+        not in {INTENT_SCHEMA_VERSION, DESTINATION_INTENT_SCHEMA_VERSION}
         or intent.get("enabled") is not True
         or _COMMIT.fullmatch(str(intent.get("expected_production_commit") or "")) is None
         or _COMMIT.fullmatch(str(intent.get("configuration_source_commit") or "")) is None
@@ -825,6 +853,15 @@ def validate_configured_controls_autostart_intent(
         raise TaskEvaluationConfiguredControlsAutostartError(
             "configured_controls_autostart_intent_invalid"
         )
+    expected_schema = (
+        DESTINATION_INTENT_SCHEMA_VERSION
+        if set(intent.get("phases") or {}) == set(_DESTINATION_PHASE_PATHS)
+        else INTENT_SCHEMA_VERSION
+    )
+    if intent.get("schema_version") != expected_schema:
+        raise TaskEvaluationConfiguredControlsAutostartError(
+            "configured_controls_autostart_intent_invalid"
+        )
     if adoption.get("mode") == "same_commit_automatic":
         if (
             set(adoption) != {"mode"}
@@ -879,7 +916,7 @@ def validate_configured_controls_autostart_intent(
             raise TaskEvaluationConfiguredControlsAutostartError(
                 "configured_controls_autostart_inventory_invalid"
             )
-    for phase in ("construction", "controls"):
+    for phase in intent["phases"]:
         try:
             validate_shared_mutation_window_template(
                 _read(
@@ -924,7 +961,11 @@ def materialize_configured_controls_autostart_intent(
     """Seal all fixed downstream bytes before the configuration launch."""
 
     draft: dict[str, Any] = {
-        "schema_version": INTENT_SCHEMA_VERSION,
+        "schema_version": (
+            DESTINATION_INTENT_SCHEMA_VERSION
+            if set(phases) == set(_DESTINATION_PHASE_PATHS)
+            else INTENT_SCHEMA_VERSION
+        ),
         "enabled": True,
         "expected_production_commit": expected_production_commit,
         "configuration_source_commit": (

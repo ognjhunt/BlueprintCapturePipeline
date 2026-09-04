@@ -506,7 +506,8 @@ def adapt_rigid_relocation_task_template(
             ) from exc
         task = validated_request["task"]
         if (
-            validated_request["run_mode"] != "episode_evaluation"
+            validated_request["run_mode"]
+            not in {"episode_evaluation", "destination_qualification"}
             or task["binding_mode"] != "reuse_configured_template"
             or task["kind"] != "rigid_relocation"
             or task["strategy"] not in {"planar_push", "pick_and_place"}

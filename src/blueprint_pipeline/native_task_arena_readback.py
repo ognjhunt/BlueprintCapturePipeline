@@ -1003,8 +1003,13 @@ class NativeRigidTaskArenaReadback:
             "task_scene_collision",
             "robot_task_forbidden_collision",
             "robot_scene_contact",
+            "destination_scene_support_contact",
+            "destination_scene_forbidden_contact",
         ):
             scene_names = self._built.contact_sensor_names.get(logical_sensor_id)
+            if logical_sensor_id.startswith("destination_scene_") and not scene_names:
+                contact_peaks[logical_sensor_id] = 0.0
+                continue
             if (
                 logical_sensor_id == "task_scene_collision"
                 and not scene_names
@@ -1144,6 +1149,12 @@ class NativeRigidTaskArenaReadback:
             "robot_scene_contact_peak_force_n": contact_peaks["robot_scene_contact"],
             "robot_task_forbidden_collision_peak_force_n": contact_peaks[
                 "robot_task_forbidden_collision"
+            ],
+            "destination_scene_support_contact_peak_force_n": contact_peaks[
+                "destination_scene_support_contact"
+            ],
+            "destination_scene_forbidden_contact_peak_force_n": contact_peaks[
+                "destination_scene_forbidden_contact"
             ],
             **joint_state,
             "measurement_authority": "native_rigid_root_pose_and_filtered_contact_sensors",

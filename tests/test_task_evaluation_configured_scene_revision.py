@@ -151,6 +151,47 @@ def revision() -> dict[str, object]:
     return value
 
 
+def test_revision_preserves_unqualified_destination_for_native_probe() -> None:
+    value = revision()
+    value["task_template"]["destination"] = {
+        "schema_version": "task_evaluation_rigid_destination_asset.v1",
+        "identity": {"id": "blue-document-tray", "version": "v1"},
+        "relation": "inside",
+        "visible_label": "blue document tray",
+        "asset": ref(30),
+        "rights_admission": ref(31),
+        "static_qualification": ref(32),
+        "native_import_qualification": ref(33),
+        "geometry": ref(34),
+        "pose_world": {
+            "position_world_m": [3.2, -6.7, 0.3],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "provider_disclosure_allowed": True,
+        "native_probe": {
+            "schema_version": (
+                "task_evaluation_rigid_destination_native_probe_configuration.v1"
+            )
+        },
+    }
+    value["revision_digest"] = canonical_digest(
+        value, digest_field="revision_digest"
+    )
+    assert validate_configured_scene_revision(value)["task_template"][
+        "destination"
+    ]["identity"]["id"] == "blue-document-tray"
+
+    value["task_template"]["destination"]["placement_qualification"] = ref(35)
+    value["revision_digest"] = canonical_digest(
+        value, digest_field="revision_digest"
+    )
+    with pytest.raises(
+        TaskEvaluationConfiguredSceneRevisionError,
+        match="configured_scene_revision_invalid",
+    ):
+        validate_configured_scene_revision(value)
+
+
 def test_accepts_terminal_configuration_artifact_for_later_evaluations() -> None:
     value = revision()
     assert validate_configured_scene_revision(value) == value

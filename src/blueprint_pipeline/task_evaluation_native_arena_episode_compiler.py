@@ -36,6 +36,7 @@ from .native_task_wrist_camera_mount_sweep import (
     POLICY_RENDER_RESOLUTION,
     materialize_wrist_camera_mount_sweep_request,
 )
+from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .particlefield_usd import write_particlefield_usd_from_nurec
 from .particlefield_runtime_asset_cache import materialize_cached_particlefield
 from .task_evaluation_configured_scene_revision import (
@@ -51,6 +52,10 @@ from .task_evaluation_rigid_relocation_native_adapter import (
 )
 from .task_evaluation_native_construction_feedback_controller import (
     validate_native_construction_inventory,
+)
+from .task_evaluation_rigid_destination_native_observation import (
+    REQUEST_SCHEMA_VERSION as DESTINATION_PROBE_REQUEST_SCHEMA_VERSION,
+    validate_rigid_destination_native_probe_request,
 )
 
 
@@ -406,6 +411,7 @@ def _stage_destination_asset(
     output_root: Path,
     configured_collision_path: Path,
     task_spec: Mapping[str, Any],
+    qualification_only: bool = False,
 ) -> dict[str, Any] | None:
     task = request.get("task")
     destination = task.get("destination") if isinstance(task, Mapping) else None
@@ -444,10 +450,14 @@ def _stage_destination_asset(
         DESTINATION_GEOMETRY_CONTRACT_PATH,
         "task_evaluation_rigid_destination_geometry.v1",
     )
-    placement = _json_reference(
-        materialized_references,
-        DESTINATION_PLACEMENT_CONTRACT_PATH,
-        "task_evaluation_rigid_destination_placement_qualification.v1",
+    placement = (
+        None
+        if qualification_only
+        else _json_reference(
+            materialized_references,
+            DESTINATION_PLACEMENT_CONTRACT_PATH,
+            "task_evaluation_rigid_destination_placement_qualification.v1",
+        )
     )
     subject_static = _json_reference(
         materialized_references,
@@ -468,6 +478,12 @@ def _stage_destination_asset(
         )
     )[0]
     configured_collision_digest = _sha256_and_size(configured_collision_path)[0]
+    support_plane_digest = _sha256_and_size(
+        _reference_path(
+            materialized_references,
+            "scene.configured_revision.registration.support_plane",
+        )
+    )[0]
     rigid_paths = (static.get("observed_structure") or {}).get("rigid_body_paths")
     intended_paths = geometry.get("intended_support_prim_paths")
     pose = destination.get("pose_world")
@@ -615,13 +631,42 @@ def _stage_destination_asset(
     expected_upper = [
         interior_upper[axis] - oriented_subject_upper[axis] for axis in range(3)
     ]
-    reset = placement.get("repeated_reset_readback") or {}
+    probe = destination.get("native_probe")
+    reset = (
+        (probe or {}).get("qualification_limits") or {}
+        if qualification_only
+        else placement.get("repeated_reset_readback") or {}
+    )
     try:
-        reset_repeat_count = int(reset["repeat_count"])
-        reset_translation_error = float(reset["maximum_translation_error_m"])
-        reset_rotation_error = float(reset["maximum_rotation_error_rad"])
-        reset_translation_tolerance = float(reset["translation_tolerance_m"])
-        reset_rotation_tolerance = float(reset["rotation_tolerance_rad"])
+        reset_repeat_count = (
+            int((probe or {})["settle_sample_count"])
+            if qualification_only
+            else int(reset["repeat_count"])
+        )
+        reset_translation_error = (
+            0.0
+            if qualification_only
+            else float(reset["maximum_translation_error_m"])
+        )
+        reset_rotation_error = (
+            0.0
+            if qualification_only
+            else float(reset["maximum_rotation_error_rad"])
+        )
+        reset_translation_tolerance = float(
+            reset[
+                "reset_translation_tolerance_m"
+                if qualification_only
+                else "translation_tolerance_m"
+            ]
+        )
+        reset_rotation_tolerance = float(
+            reset[
+                "reset_rotation_tolerance_rad"
+                if qualification_only
+                else "rotation_tolerance_rad"
+            ]
+        )
     except (KeyError, TypeError, ValueError) as exc:
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             "episode_compiler_destination_placement_invalid"
@@ -641,25 +686,77 @@ def _stage_destination_asset(
                 (*lower, *upper), (*expected_lower, *expected_upper), strict=True
             )
         )
-        or placement.get("status") != "qualified"
-        or placement.get("producer")
-        != "task_evaluation_rigid_destination_placement_qualification"
-        or placement.get("destination_identity") != identity
-        or placement.get("configured_scene_revision_digest")
-        != task.get("configured_scene_revision_digest")
-        or placement.get("configured_scene_collision_digest")
-        != configured_collision_digest
-        or placement.get("destination_asset_digest") != asset_digest
-        or placement.get("destination_static_qualification_digest") != static_digest
-        or placement.get("destination_native_import_qualification_digest")
-        != native_digest
-        or placement.get("destination_geometry_digest")
-        != geometry.get("geometry_digest")
-        or placement.get("pose_world") != pose
-        or placement.get("nonpenetration_passed") is not True
-        or placement.get("support_stability_passed") is not True
-        or placement.get("camera_visibility")
-        != {"external": True, "wrist": True, "overview": True}
+        or (
+            qualification_only
+            and (
+                not isinstance(probe, Mapping)
+                or probe.get("schema_version")
+                != "task_evaluation_rigid_destination_native_probe_configuration.v1"
+                or not isinstance(probe.get("placement_support_scene_prim_paths"), list)
+                or not probe["placement_support_scene_prim_paths"]
+                or any(
+                    not str(path).startswith("/")
+                    for path in probe["placement_support_scene_prim_paths"]
+                )
+                or not isinstance(probe.get("settle_steps_per_sample"), int)
+                or isinstance(probe.get("settle_steps_per_sample"), bool)
+                or probe["settle_steps_per_sample"] < 1
+            )
+        )
+        or (
+            not qualification_only
+            and placement.get("status") != "qualified"
+        )
+        or (
+            not qualification_only
+            and (
+                placement.get("producer")
+                != "task_evaluation_rigid_destination_placement_qualification"
+                or placement.get("destination_identity") != identity
+                or placement.get("configured_scene_revision_digest")
+                != task.get("configured_scene_revision_digest")
+                or placement.get("configured_scene_collision_digest")
+                != configured_collision_digest
+                or placement.get("configured_scene_support_plane_digest")
+                != support_plane_digest
+                or placement.get("execution_commit")
+                != request.get("expected_production_commit")
+                or placement.get("runtime_identity")
+                != request.get("runtime", {}).get("identity")
+                or placement.get("container_identity")
+                != {
+                    "image": NATIVE_TASK_ARENA_IMAGE,
+                    "digest": "sha256:"
+                    + NATIVE_TASK_ARENA_IMAGE.rsplit("@sha256:", 1)[-1],
+                }
+                or placement.get("destination_asset_digest") != asset_digest
+                or placement.get("destination_static_qualification_digest")
+                != static_digest
+                or placement.get("destination_native_import_qualification_digest")
+                != native_digest
+                or placement.get("destination_geometry_digest")
+                != geometry.get("geometry_digest")
+                or placement.get("pose_world") != pose
+                or placement.get("nonpenetration_passed") is not True
+                or placement.get("support_stability_passed") is not True
+                or placement.get("no_policy_execution")
+                != {
+                    "policy_loaded": False,
+                    "candidate_policy_queried": False,
+                    "candidate_outcomes_accessed": False,
+                    "policy_actions_executed": 0,
+                }
+                or not isinstance(
+                    placement.get("native_measurement_summary"), Mapping
+                )
+                or placement.get("camera_visibility")
+                != {"external": True, "wrist": True, "overview": True}
+                or placement.get("placement_qualification_digest")
+                != canonical_digest(
+                    placement, digest_field="placement_qualification_digest"
+                )
+            )
+        )
         or isinstance(reset.get("repeat_count"), bool)
         or reset_repeat_count < 3
         or not all(
@@ -675,10 +772,6 @@ def _stage_destination_asset(
         or min(reset_translation_error, reset_rotation_error) < 0.0
         or reset_translation_error > reset_translation_tolerance
         or reset_rotation_error > reset_rotation_tolerance
-        or placement.get("placement_qualification_digest")
-        != canonical_digest(
-            placement, digest_field="placement_qualification_digest"
-        )
     ):
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             "episode_compiler_destination_placement_invalid"
@@ -743,6 +836,12 @@ def _stage_destination_asset(
         ),
         "rights_digest": rights["rights_admission_digest"],
         "geometry_digest": geometry["geometry_digest"],
+        "destination_identity": identity,
+        "asset_digest": asset_digest,
+        "static_qualification_digest": static_digest,
+        "native_import_qualification_digest": native_digest,
+        "qualification_only": qualification_only,
+        "native_probe": json.loads(json.dumps(probe)) if qualification_only else None,
     }
 
 
@@ -929,6 +1028,7 @@ def compile_native_arena_episode(
     """Compile one production-owned native packet without provider mutation."""
 
     request = envelope["request"]
+    qualification_only = request.get("run_mode") == "destination_qualification"
     root = Path(output_root).resolve()
     revision = validate_configured_scene_revision(
         _json_reference(
@@ -1029,6 +1129,7 @@ def compile_native_arena_episode(
         output_root=root,
         configured_collision_path=configured_assets["collision"],
         task_spec=task_spec,
+        qualification_only=qualification_only,
     )
     if destination_asset is not None:
         affordance = dict(task_spec["interaction_affordance"])
@@ -1075,6 +1176,14 @@ def compile_native_arena_episode(
             ),
             interaction_affordance=affordance,
         )
+        if qualification_only:
+            native_probe = destination_asset["native_probe"]
+            task_spec.update(
+                destination_qualification_probe=True,
+                destination_placement_support_prim_paths=list(
+                    native_probe["placement_support_scene_prim_paths"]
+                ),
+            )
     native_candidate_universe = robot.get("native_construction_candidate_universe")
     if native_candidate_universe is not None:
         if not isinstance(native_candidate_universe, Mapping):
@@ -1276,6 +1385,64 @@ def compile_native_arena_episode(
     packet_request["request_digest"] = canonical_digest(
         packet_request, digest_field="request_digest"
     )
+    destination_probe_request_path: Path | None = None
+    destination_probe_request: dict[str, Any] | None = None
+    if qualification_only:
+        if destination_asset is None:
+            raise TaskEvaluationNativeArenaEpisodeCompilerError(
+                "episode_compiler_destination_probe_missing"
+            )
+        support_plane_path = _reference_path(
+            materialized_references,
+            "scene.configured_revision.registration.support_plane",
+        )
+        native_probe = destination_asset["native_probe"]
+        destination_probe_request = {
+            "schema_version": DESTINATION_PROBE_REQUEST_SCHEMA_VERSION,
+            "execution_commit": request["expected_production_commit"],
+            "runtime_identity": dict(request["runtime"]["identity"]),
+            "container_identity": {
+                "image": NATIVE_TASK_ARENA_IMAGE,
+                "digest": "sha256:" + NATIVE_TASK_ARENA_IMAGE.rsplit(
+                    "@sha256:", 1
+                )[-1],
+            },
+            "destination_identity": destination_asset["destination_identity"],
+            "configured_scene_revision_digest": request["task"][
+                "configured_scene_revision_digest"
+            ],
+            "configured_scene_collision_digest": _sha256_and_size(
+                configured_assets["collision"]
+            )[0],
+            "configured_scene_support_plane_digest": _sha256_and_size(
+                support_plane_path
+            )[0],
+            "destination_asset_digest": destination_asset["asset_digest"],
+            "destination_static_qualification_digest": destination_asset[
+                "static_qualification_digest"
+            ],
+            "destination_native_import_qualification_digest": destination_asset[
+                "native_import_qualification_digest"
+            ],
+            "destination_geometry_digest": destination_asset["geometry_digest"],
+            "pose_world": destination_asset["pose_world"],
+            "qualification_limits": dict(native_probe["qualification_limits"]),
+            "settle_sample_count": int(native_probe["settle_sample_count"]),
+            "settle_steps_per_sample": int(native_probe["settle_steps_per_sample"]),
+            "candidate_policy_queried": False,
+            "policy_loaded": False,
+            "request_digest": "",
+        }
+        destination_probe_request["request_digest"] = canonical_digest(
+            destination_probe_request, digest_field="request_digest"
+        )
+        destination_probe_request = validate_rigid_destination_native_probe_request(
+            destination_probe_request
+        )
+        destination_probe_request_path = (
+            root / "rigid_destination_native_probe_request.v1.json"
+        )
+        write_json(destination_probe_request_path, destination_probe_request)
     if policy_observation_setup is not None:
         base_request_path = root / "policy_observation_base_packet_request.v1.json"
         write_json(base_request_path, packet_request)
@@ -1410,6 +1577,19 @@ def compile_native_arena_episode(
         "provider_mutation_performed": False,
         "paid_execution_requested": False,
         "raw_secret_values_recorded": False,
+        **(
+            {
+                "destination_native_probe_request": {
+                    "path": str(destination_probe_request_path),
+                    "digest": _sha256_and_size(destination_probe_request_path)[0],
+                    "size_bytes": _sha256_and_size(destination_probe_request_path)[1],
+                    "request_digest": destination_probe_request["request_digest"],
+                }
+            }
+            if destination_probe_request_path is not None
+            and destination_probe_request is not None
+            else {}
+        ),
         "compiler_output_digest": "",
     }
     output["compiler_output_digest"] = canonical_digest(

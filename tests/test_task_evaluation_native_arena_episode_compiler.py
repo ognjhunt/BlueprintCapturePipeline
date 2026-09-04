@@ -21,6 +21,7 @@ from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import (
 )
 from blueprint_pipeline.aura_nurec_usdz import write_aura_nurec_usdz
 from blueprint_pipeline.nurec_volume_codec import build_state_dict
+from blueprint_pipeline.native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from tests.test_task_evaluation_configured_scene_revision import revision
 from tests.test_task_evaluation_launch_preparation_contract import request
 
@@ -56,6 +57,7 @@ def _destination_case(
     subject_scoring_transform: dict | None = None,
     configured_scene_revision_digest: str | None = None,
     configured_scene_collision_path: Path | None = None,
+    configured_scene_support_plane_path: Path | None = None,
 ) -> tuple[dict, dict[str, dict], dict]:
     subject_identity = subject_identity or {"id": "book", "version": "v1"}
     identity = {"id": "document-tray", "version": "v1"}
@@ -191,6 +193,16 @@ def _destination_case(
         configured_scene_collision_path = tmp_path / "configured-collision.usda"
         configured_scene_collision_path.write_bytes(b"#usda 1.0\n# collision\n")
     collision_digest = _sha(configured_scene_collision_path)
+    support_plane_path = configured_scene_support_plane_path or _write_json(
+        tmp_path,
+        "destination-support-plane.json",
+        {
+            "schema_version": "task_evaluation_support_plane_input.v1",
+            "scene_id": "841757",
+            "sage_prim_path": "/Root/Support",
+            "top_z_m": 0.275,
+        },
+    )
     scene_revision_digest = (
         configured_scene_revision_digest or "sha256:" + "e" * 64
     )
@@ -199,9 +211,17 @@ def _destination_case(
         "status": "qualified",
         "producer": "task_evaluation_rigid_destination_placement_qualification",
         "native_observation_digest": "sha256:" + "f" * 64,
+        "execution_commit": "a" * 40,
+        "runtime_identity": {"id": "native-arena", "version": "v1"},
+        "container_identity": {
+            "image": NATIVE_TASK_ARENA_IMAGE,
+            "digest": "sha256:"
+            + NATIVE_TASK_ARENA_IMAGE.rsplit("@sha256:", 1)[-1],
+        },
         "destination_identity": identity,
         "configured_scene_revision_digest": scene_revision_digest,
         "configured_scene_collision_digest": collision_digest,
+        "configured_scene_support_plane_digest": _sha(support_plane_path),
         "destination_asset_digest": _sha(asset),
         "destination_static_qualification_digest": _sha(static_path),
         "destination_native_import_qualification_digest": _sha(native_path),
@@ -209,6 +229,18 @@ def _destination_case(
         "pose_world": pose,
         "nonpenetration_passed": True,
         "support_stability_passed": True,
+        "native_measurement_summary": {
+            "maximum_penetration_m": 0.0001,
+            "minimum_support_contact_force_n": 1.0,
+            "maximum_forbidden_contact_force_n": 0.0,
+            "raw_measurement_artifact_count": 5,
+        },
+        "no_policy_execution": {
+            "policy_loaded": False,
+            "candidate_policy_queried": False,
+            "candidate_outcomes_accessed": False,
+            "policy_actions_executed": 0,
+        },
         "camera_visibility": {"external": True, "wrist": True, "overview": True},
         "repeated_reset_readback": {
             "repeat_count": 3,
@@ -232,12 +264,15 @@ def _destination_case(
             tmp_path, "destination-placement.json", placement
         ),
         "scene.configured_revision.replacement.static_qualification": subject_static_path,
+        "scene.configured_revision.registration.support_plane": support_plane_path,
     }
     references = {
         contract_path: _record(path, contract_path)
         for contract_path, path in docs.items()
     }
     request_value = {
+        "expected_production_commit": "a" * 40,
+        "runtime": {"identity": {"id": "native-arena", "version": "v1"}},
         "task": {
             "strategy": "pick_and_place",
             "configured_scene_revision_digest": scene_revision_digest,
@@ -520,14 +555,20 @@ def _configured_runtime_documents(configured: dict[str, object]) -> dict[str, di
 
 
 @pytest.mark.parametrize(
-    ("policy_observation_override", "destination_support"),
-    [(False, False), (True, False), (False, True)],
+    ("policy_observation_override", "destination_support", "qualification_only"),
+    [
+        (False, False, False),
+        (True, False, False),
+        (False, True, False),
+        (False, True, True),
+    ],
 )
 def test_closed_compiler_joins_revision_and_robot_team_inputs(
     tmp_path: Path,
     monkeypatch,
     policy_observation_override: bool,
     destination_support: bool,
+    qualification_only: bool,
 ) -> None:
     inputs = tmp_path / "inputs"
     inputs.mkdir()
@@ -746,6 +787,9 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
             },
             configured_scene_revision_digest=configured["revision_digest"],
             configured_scene_collision_path=qualification_collision,
+            configured_scene_support_plane_path=document_paths[
+                "scene.configured_revision.registration.support_plane"
+            ],
         )
         destination = destination_request["task"]["destination"]
         for field, contract_path in (
@@ -767,7 +811,34 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
                 key: record[key] for key in ("uri", "digest", "size_bytes")
             }
         value["task"]["destination"] = destination
-        references.update(destination_references)
+        for contract_path, record in destination_references.items():
+            references.setdefault(contract_path, record)
+        if qualification_only:
+            value["run_mode"] = "destination_qualification"
+            value["task"]["destination"].pop("placement_qualification")
+            references.pop("task.destination.placement_qualification")
+            value["task"]["destination"]["native_probe"] = {
+                "schema_version": (
+                    "task_evaluation_rigid_destination_native_probe_configuration.v1"
+                ),
+                "placement_support_scene_prim_paths": ["/Root/Support"],
+                "qualification_limits": {
+                    "maximum_penetration_m": 0.001,
+                    "minimum_support_contact_force_n": 0.01,
+                    "maximum_forbidden_contact_force_n": 0.1,
+                    "settle_translation_tolerance_m": 0.002,
+                    "settle_rotation_tolerance_rad": 0.01,
+                    "reset_translation_tolerance_m": 0.002,
+                    "reset_rotation_tolerance_rad": 0.01,
+                    "minimum_camera_pixels": {
+                        "external": 100,
+                        "wrist": 100,
+                        "overview": 100,
+                    },
+                },
+                "settle_sample_count": 3,
+                "settle_steps_per_sample": 60,
+            }
 
     if policy_observation_override:
         appearance = inputs / "policy-observation.usdc"
@@ -957,6 +1028,16 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
     assert result["compiled_by_production"] is True
     assert result["customer_supplied_prebuilt_episode_packet"] is False
     assert result["provider_mutation_performed"] is False
+    assert ("destination_native_probe_request" in result) is qualification_only
+    if qualification_only:
+        probe = json.loads(
+            Path(result["destination_native_probe_request"]["path"]).read_text()
+        )
+        assert probe["execution_commit"] == value["expected_production_commit"]
+        assert probe["candidate_policy_queried"] is False
+        assert observed["packet_request"]["task_spec"][
+            "destination_qualification_probe"
+        ] is True
     assert result["adapter_result"]["packet_receipt_digest"] == ("sha256:" + "b" * 64)
     assert result["native_scene_appearance"]["representation"] == (
         "particlefield_3d_gaussian_splat"

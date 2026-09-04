@@ -41,6 +41,9 @@ def digest_pinned_container_image(value: Any) -> bool:
     return re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", str(value or "")) is not None
 DEFAULT_EXPECTED_OUTPUT_FILENAME = "native_task_arena_construction_result.v1.json"
 RESULT_SCHEMA_BY_MODE = {
+    "destination_qualification": (
+        "task_evaluation_rigid_destination_native_observation.v1"
+    ),
     "runtime_preflight": "native_task_arena_runtime_preflight.v1",
     "construction_canary": "native_task_arena_construction_result.v1",
     "controls": "native_task_arena_control_result.v1",
@@ -371,7 +374,7 @@ out = Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
 name = {quoted}
 (out / name).write_text(json.dumps({{
-    "schema_version": "native_task_arena_construction_result.v1",
+    "schema_version": {result_schema},
     "status": "blocked",
     "blockers": ["native_task_runtime_source_provisioning_failed"],
     "candidate_policy_queried": False,
@@ -468,7 +471,7 @@ runner_rc = int(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
 name = {quoted}
 (out / name).write_text(json.dumps({{
-    "schema_version": "native_task_arena_construction_result.v1",
+    "schema_version": {result_schema},
     "status": "blocked",
     "blockers": [
         "native_task_arena_worker_failed_without_runtime_result",
@@ -509,6 +512,7 @@ def build_native_task_arena_bundle(
             ["native_task_arena_bundle_implementation_commit_invalid"]
         )
     if execution_mode not in {
+        "destination_qualification",
         "runtime_preflight",
         "construction_canary",
         "controls",

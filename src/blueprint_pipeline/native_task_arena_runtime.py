@@ -43,6 +43,10 @@ LOGICAL_CONTACT_SENSOR_IDS = frozenset(
         # non-fingertip robot links -- knuckles, outer fingers, wrist --
         # striking the task object body. A forbidden contact, not a grasp.
         "robot_task_forbidden_collision",
+        # qualification-only sensors on a passive destination against the
+        # exact configured-scene support and forbidden bodies.
+        "destination_scene_support_contact",
+        "destination_scene_forbidden_contact",
     }
 )
 PINHOLE_HORIZONTAL_APERTURE_MM = 20.955
@@ -457,7 +461,12 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
 #: forbidden-contact channel is diagnostic: its absence is not a defect, and
 #: its presence must not be mistaken for an unknown channel.
 OPTIONAL_CONTACT_CHANNELS = frozenset(
-    {"task_scene_collision", "robot_task_forbidden_collision"}
+    {
+        "task_scene_collision",
+        "robot_task_forbidden_collision",
+        "destination_scene_support_contact",
+        "destination_scene_forbidden_contact",
+    }
 )
 
 
