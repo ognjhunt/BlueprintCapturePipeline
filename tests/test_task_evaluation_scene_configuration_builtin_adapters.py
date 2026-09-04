@@ -1063,3 +1063,384 @@ def test_scene_assembly_emits_robot_neutral_candidate_for_control_plane_publicat
     assert manifest["robot_specific_base_registration_included"] is False
     assert manifest["evaluation_episode_executed"] is False
     assert result["provider_mutations_performed"] == 0
+
+
+# --- supplemental passive destination (tray) inside the same stage chain -----
+
+from blueprint_pipeline.task_evaluation_scene_configuration_static_qualification import (  # noqa: E402
+    qualify_scene_configuration_rigid_asset_static,
+)
+
+
+DESTINATION_IDENTITY = {"id": "document-tray", "version": "v1"}
+DESTINATION_PHYSICS_BOUNDS = {
+    "mass_kg": [0.5, 1.0],
+    "static_friction": [0.4, 0.8],
+    "dynamic_friction": [0.3, 0.7],
+    "restitution": [0.0, 0.1],
+}
+
+
+def _tray_asset(path: Path, *, wall_height: float = 0.04) -> None:
+    outer_x, outer_y, base, wall = 0.33, 0.48, 0.005, 0.005
+    source = path.with_suffix(".usda")
+    stage = Usd.Stage.CreateNew(str(source))
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    asset = UsdGeom.Xform.Define(stage, "/Asset").GetPrim()
+    stage.SetDefaultPrim(asset)
+    UsdPhysics.RigidBodyAPI.Apply(asset)
+    mass = UsdPhysics.MassAPI.Apply(asset)
+    mass.CreateMassAttr(0.75)
+    mass.CreateCenterOfMassAttr(Gf.Vec3f(0.0, 0.0, 0.0046))
+    mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.0144, 0.0068, 0.0212))
+    physics_prim = stage.DefinePrim("/Asset/Materials/Physics", "Material")
+    physics = UsdPhysics.MaterialAPI.Apply(physics_prim)
+    physics.CreateStaticFrictionAttr(0.6)
+    physics.CreateDynamicFrictionAttr(0.45)
+    physics.CreateRestitutionAttr(0.05)
+    boxes = {
+        "/Asset/Colliders/Bottom": ((outer_x, outer_y, base), (0.0, 0.0, base / 2.0)),
+        "/Asset/Colliders/Left": ((wall, outer_y, wall_height), (-(outer_x - wall) / 2.0, 0.0, base + wall_height / 2.0)),
+        "/Asset/Colliders/Right": ((wall, outer_y, wall_height), ((outer_x - wall) / 2.0, 0.0, base + wall_height / 2.0)),
+        "/Asset/Colliders/Front": ((outer_x - 2 * wall, wall, wall_height), (0.0, -(outer_y - wall) / 2.0, base + wall_height / 2.0)),
+        "/Asset/Colliders/Back": ((outer_x - 2 * wall, wall, wall_height), (0.0, (outer_y - wall) / 2.0, base + wall_height / 2.0)),
+    }
+    for prim_path, (size, center) in boxes.items():
+        cube = UsdGeom.Cube.Define(stage, prim_path)
+        cube.CreateSizeAttr(1.0)
+        xform = UsdGeom.Xformable(cube.GetPrim())
+        xform.AddTranslateOp().Set(Gf.Vec3d(*center))
+        xform.AddScaleOp().Set(Gf.Vec3d(*size))
+        cube.CreatePurposeAttr(UsdGeom.Tokens.guide)
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        UsdShade.MaterialBindingAPI.Apply(cube.GetPrim()).Bind(
+            UsdShade.Material(physics_prim),
+            UsdShade.Tokens.weakerThanDescendants,
+            "physics",
+        )
+    stage.GetRootLayer().Save()
+    assert UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(source)), str(path))
+
+
+def _json_file(path: Path, value: dict) -> Path:
+    path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def supplemental_destination_inputs(root: Path, *, wall_height: float = 0.04) -> dict:
+    """Author a tray the way the production SimReady materializer does."""
+
+    root.mkdir(parents=True, exist_ok=True)
+    asset = root / "passive_destination_simready.usdz"
+    _tray_asset(asset, wall_height=wall_height)
+    _findings, observed = _usd_findings(asset, physics_bounds=DESTINATION_PHYSICS_BOUNDS)
+    assert _findings == []
+    completion = {
+        "schema_version": "task_evaluation_rigid_candidate_physics_completion.v1",
+        "status": "bounded_candidate_completed",
+        "physics_bounds": DESTINATION_PHYSICS_BOUNDS,
+        "candidate_prior_only": True,
+        "physical_truth_claimed": False,
+        "mass_kg": observed["mass_kg"],
+        "center_of_mass_m": observed["center_of_mass_m"],
+        "diagonal_inertia_kg_m2": observed["diagonal_inertia_kg_m2"],
+        "collision_bounds_body_frame_m": observed["collision_bounds_body_frame_m"],
+        "collision_dimensions_m": observed["collision_dimensions_m"],
+        "collision_prim_paths": observed["collision_prim_paths"],
+        "physics_materials": observed["physics_materials"],
+        "completion_digest": "",
+    }
+    completion["completion_digest"] = canonical_digest(
+        completion, digest_field="completion_digest"
+    )
+    authoring = {
+        "schema_version": "task_evaluation_rigid_replacement_authoring_result.v1",
+        "status": "authored_candidate_pending_qualification",
+        "replacement_identity": DESTINATION_IDENTITY,
+        "physics_authority_granted": False,
+        "output_usd": {"sha256": sha256(asset), "size_bytes": asset.stat().st_size},
+        "candidate_physics_completion": completion,
+        "result_digest": "",
+    }
+    authoring["result_digest"] = canonical_digest(authoring, digest_field="result_digest")
+    authoring_path = _json_file(root / "passive_destination_authoring_receipt.v1.json", authoring)
+    graph = {
+        "schema_version": "task_evaluation_rigid_replacement_graph.v1",
+        "asset_id": DESTINATION_IDENTITY["id"],
+        "asset_version": DESTINATION_IDENTITY["version"],
+        "articulation_graph": {"joints": []},
+        "single_rigid_candidate": True,
+        "physics_bounds": DESTINATION_PHYSICS_BOUNDS,
+        "physics_authority_granted": False,
+    }
+    static_path = root / "passive_destination_static_qualification.v1.json"
+    qualify_scene_configuration_rigid_asset_static(
+        asset_path=asset,
+        graph_spec=graph,
+        authoring_receipt=authoring,
+        replacement_identity=DESTINATION_IDENTITY,
+        output_path=static_path,
+    )
+    rights = {
+        "schema_version": "task_evaluation_rigid_destination_rights_admission.v1",
+        "status": "admitted",
+        "destination_identity": DESTINATION_IDENTITY,
+        "license_identifier": "Blueprint-generated-development-asset",
+        "private_provider_processing_allowed": True,
+        "provider_training_allowed": False,
+        "public_redistribution_allowed": False,
+        "rights_admission_digest": "",
+    }
+    rights["rights_admission_digest"] = canonical_digest(
+        rights, digest_field="rights_admission_digest"
+    )
+    rights_path = _json_file(root / "passive_destination_rights_admission.v1.json", rights)
+
+    def record(path: Path) -> dict:
+        return {"path": str(path), "sha256": sha256(path), "size_bytes": path.stat().st_size}
+
+    simready = {
+        "schema_version": "task_evaluation_passive_destination_simready.v1",
+        "status": "static_qualified_pending_native_import_and_placement",
+        "destination_identity": DESTINATION_IDENTITY,
+        "asset": record(asset),
+        "authoring_receipt": record(authoring_path),
+        "static_qualification": record(static_path),
+        "rights_admission": record(rights_path),
+        "static_result_digest": json.loads(static_path.read_text())["result_digest"],
+        "intended_support_prim_paths": ["/Asset/Colliders/Bottom"],
+        "interior_bounds_body_frame_m": {
+            "minimum": [-0.16, -0.235, 0.005],
+            "maximum": [0.16, 0.235, 0.005 + wall_height],
+        },
+        "native_import_qualified": False,
+        "placement_qualified": False,
+        "result_digest": "",
+    }
+    simready["result_digest"] = canonical_digest(simready, digest_field="result_digest")
+    simready_path = _json_file(root / "passive_destination_simready_result.v1.json", simready)
+
+    def reference(path: Path) -> dict:
+        return {
+            "uri": f"s3://blueprint-production-inputs/destination/{path.name}",
+            "digest": sha256(path),
+            "size_bytes": path.stat().st_size,
+        }
+
+    def materialized(contract_path: str, path: Path) -> dict:
+        return {
+            "contract_path": contract_path,
+            **reference(path),
+            "materialized_path": str(path),
+            "full_byte_service_account_readback_passed": True,
+        }
+
+    return {
+        "asset": asset,
+        "authoring_receipt": authoring_path,
+        "static_qualification": static_path,
+        "rights_admission": rights_path,
+        "simready_result": simready_path,
+        "recipe_supplemental_destination": {
+            "identity": DESTINATION_IDENTITY,
+            "relation": "inside",
+            "asset": reference(asset),
+            "static_qualification": reference(static_path),
+            "rights_admission": reference(rights_path),
+            "authoring_receipt": reference(authoring_path),
+            "simready_result": reference(simready_path),
+        },
+        "materialized_references": [
+            materialized("task.destination.asset", asset),
+            materialized("task.destination.static_qualification", static_path),
+            materialized("task.destination.rights_admission", rights_path),
+            materialized(
+                "construction.recipe.supplemental_destination.authoring_receipt",
+                authoring_path,
+            ),
+            materialized(
+                "construction.recipe.supplemental_destination.simready_result",
+                simready_path,
+            ),
+        ],
+    }
+
+
+def _subject_stage3_dependency(tmp_path: Path) -> tuple[tuple[dict, ...], dict, Path]:
+    dependency = tmp_path / "dependency"
+    dependency.mkdir()
+    asset = dependency / "mug.usdz"
+    _portable_rigid_asset(asset)
+    graph_spec = {
+        "schema_version": "task_evaluation_rigid_replacement_graph.v1",
+        "asset_id": "replacement-mug",
+        "asset_version": "v1",
+        "articulation_graph": {"joints": []},
+        "single_rigid_candidate": True,
+        "physics_bounds": PHYSICS_BOUNDS,
+        "physics_authority_granted": False,
+    }
+    graph_spec_path = _json_file(dependency / "graph-spec.json", graph_spec)
+    authoring = {
+        "schema_version": "task_evaluation_rigid_replacement_authoring_result.v1",
+        "status": "authored_candidate_pending_qualification",
+        "replacement_identity": {"id": "replacement-mug", "version": "v1"},
+        "output_usd": {
+            "path": str(asset),
+            "sha256": sha256(asset),
+            "size_bytes": asset.stat().st_size,
+        },
+        "candidate_physics_completion": _physics_completion(),
+        "physics_authority_granted": False,
+        "result_digest": "",
+    }
+    authoring["result_digest"] = canonical_digest(authoring, digest_field="result_digest")
+    authoring_path = _json_file(dependency / "authoring.json", authoring)
+    configuration = {
+        "schema_version": "replacement_static_qualification_configuration.v1",
+        "replacement_identity": {"id": "replacement-mug", "version": "v1"},
+        "required_checks": {
+            "usd_parses": True,
+            "meters_per_unit": 1.0,
+            "up_axis": "Z",
+            "single_movable_rigid_root": True,
+            "collision_geometry_present": True,
+            "collision_geometry_nonempty_and_finite": True,
+            "mass_and_inertia_positive_finite": True,
+            "materials_within_preregistered_bounds": True,
+            "no_external_unpinned_dependencies": True,
+            "no_articulation": True,
+            "no_scripts_or_credentials": True,
+        },
+        "center_of_mass_must_lie_inside_collision_bounds": True,
+    }
+    configuration_path = _json_file(tmp_path / "static.json", configuration)
+    dependency_results = (
+        {
+            "output_artifacts": [
+                artifact("replacement_asset", asset),
+                artifact("replacement_authoring_receipt", authoring_path),
+                artifact("replacement_graph_spec", graph_spec_path),
+            ]
+        },
+    )
+    return dependency_results, configuration, configuration_path
+
+
+def test_static_handler_requalifies_the_supplemental_destination_from_exact_bytes(
+    tmp_path: Path,
+) -> None:
+    dependency_results, configuration, configuration_path = _subject_stage3_dependency(tmp_path)
+    destination = supplemental_destination_inputs(tmp_path / "destination")
+    output = tmp_path / "output"
+    output.mkdir()
+
+    result = execute_simready_static_rigid_qualification(
+        envelope={
+            "recipe": {
+                "subject_identity": {"id": "replacement-mug", "version": "v1"},
+                "supplemental_destination": destination["recipe_supplemental_destination"],
+            },
+            "materialized_references": destination["materialized_references"],
+        },
+        stage={
+            "stage_id": "stage-4",
+            "capability": "replacement_static_qualification",
+            "execution_class": "no_spend",
+        },
+        configuration=configuration,
+        configuration_path=configuration_path,
+        dependency_results=dependency_results,
+        output_root=output,
+    )
+
+    rows = {row["role"]: row for row in result["output_artifacts"]}
+    assert set(rows) == {
+        "statically_qualified_replacement_asset",
+        "static_qualification_receipt",
+        "statically_qualified_destination_asset",
+        "destination_static_qualification_receipt",
+        "destination_static_requalification_receipt",
+    }
+    assert rows["statically_qualified_destination_asset"]["digest"] == sha256(
+        destination["asset"]
+    )
+    # The published receipt is the exact request-declared byte string ...
+    assert rows["destination_static_qualification_receipt"]["digest"] == sha256(
+        destination["static_qualification"]
+    )
+    # ... and the run independently re-derived the same qualification.
+    requalified = json.loads(
+        Path(rows["destination_static_requalification_receipt"]["path"]).read_text()
+    )
+    declared = json.loads(destination["static_qualification"].read_text())
+    assert requalified["observed_structure"] == declared["observed_structure"]
+    assert requalified["replacement_identity"] == DESTINATION_IDENTITY
+    assert requalified["replacement_usd"]["sha256"] == declared["replacement_usd"]["sha256"]
+
+
+def test_static_handler_refuses_a_destination_whose_declared_receipt_drifts(
+    tmp_path: Path,
+) -> None:
+    dependency_results, configuration, configuration_path = _subject_stage3_dependency(tmp_path)
+    destination = supplemental_destination_inputs(tmp_path / "destination")
+    # Drift the declared static receipt *consistently*: every digest join in
+    # the SimReady result, recipe, and materialized rows agrees with the drifted
+    # bytes, so only the run's own re-derivation can notice the lie.
+    declared = json.loads(destination["static_qualification"].read_text())
+    declared["observed_structure"]["mass_kg"] = 0.9
+    declared["result_digest"] = canonical_digest(declared, digest_field="result_digest")
+    destination["static_qualification"].write_text(json.dumps(declared, sort_keys=True))
+    simready = json.loads(destination["simready_result"].read_text())
+    simready["static_qualification"]["sha256"] = sha256(destination["static_qualification"])
+    simready["static_qualification"]["size_bytes"] = (
+        destination["static_qualification"].stat().st_size
+    )
+    simready["static_result_digest"] = declared["result_digest"]
+    simready["result_digest"] = canonical_digest(simready, digest_field="result_digest")
+    destination["simready_result"].write_text(json.dumps(simready, sort_keys=True))
+    rebind = {
+        "task.destination.static_qualification": destination["static_qualification"],
+        "construction.recipe.supplemental_destination.simready_result": destination[
+            "simready_result"
+        ],
+    }
+    for row in destination["materialized_references"]:
+        drifted = rebind.get(row["contract_path"])
+        if drifted is not None:
+            row["digest"] = sha256(drifted)
+            row["size_bytes"] = drifted.stat().st_size
+    for name, drifted in (
+        ("static_qualification", destination["static_qualification"]),
+        ("simready_result", destination["simready_result"]),
+    ):
+        destination["recipe_supplemental_destination"][name] = {
+            "uri": destination["recipe_supplemental_destination"][name]["uri"],
+            "digest": sha256(drifted),
+            "size_bytes": drifted.stat().st_size,
+        }
+    output = tmp_path / "output"
+    output.mkdir()
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationAdapterError,
+        match="simready_static_destination_requalification_mismatch",
+    ):
+        execute_simready_static_rigid_qualification(
+            envelope={
+                "recipe": {
+                    "subject_identity": {"id": "replacement-mug", "version": "v1"},
+                    "supplemental_destination": destination["recipe_supplemental_destination"],
+                },
+                "materialized_references": destination["materialized_references"],
+            },
+            stage={
+                "stage_id": "stage-4",
+                "capability": "replacement_static_qualification",
+                "execution_class": "no_spend",
+            },
+            configuration=configuration,
+            configuration_path=configuration_path,
+            dependency_results=dependency_results,
+            output_root=output,
+        )
