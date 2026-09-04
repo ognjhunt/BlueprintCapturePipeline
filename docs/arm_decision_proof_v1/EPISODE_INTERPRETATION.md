@@ -71,7 +71,7 @@ present:
   `OPENAI_PROJECT_ID` bindings;
 - `BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETATION_API_KEY_ID` and
   `BLUEPRINT_OPENAI_EPISODE_INTERPRETATION_COST_SCOPE_ATTESTATION_FILE`; and
-- `BLUEPRINT_LIVE_AGENTS_SDK=1`.
+- `BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true`.
 
 The profile's `max_cost_usd` is one aggregate cap for the whole batch. One
 official-cost reservation and one shared Agents SDK invoker cover every eligible

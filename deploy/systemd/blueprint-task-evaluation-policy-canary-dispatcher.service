@@ -54,7 +54,7 @@ Environment=OPENAI_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_api_key_e
 Environment=OPENAI_ADMIN_API_KEY_FILE=/etc/blueprint/provider-secrets/openai_admin_api_key
 Environment=BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETER_PROFILE_FILE=/opt/blueprint/task-evaluation-control-plane/docs/arm_decision_proof_v1/manifests/policy_canary_episode_interpreter_profile.v1.json
 Environment=BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETATION_RIGHTS_ROOT=/var/lib/blueprint/pipeline-control-plane/episode-interpretation-rights
-Environment=BLUEPRINT_LIVE_AGENTS_SDK=1
+Environment=BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=true
 Environment=PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token
 # Keep terminal report and notification publication reachable after a clean
 # production rebuild; EnvironmentFile remains the operator override.
