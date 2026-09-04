@@ -829,13 +829,20 @@ class OpenAIMultimodalEpisodeInterpreter:
         max_frames: int = 12,
         max_input_tokens: int = 240_000,
         max_output_tokens: int = 8_000,
+        run_id: str | None = None,
     ) -> None:
-        if not model.strip() or not model_version.strip() or max_frames < 2:
+        if (
+            not model.strip()
+            or not model_version.strip()
+            or max_frames < 2
+            or (run_id is not None and not run_id.strip())
+        ):
             raise EpisodeInterpretationError("openai_episode_interpreter_config_invalid")
         self._invoker = invoker
         self._max_frames = max_frames
         self._max_input_tokens = max_input_tokens
         self._max_output_tokens = max_output_tokens
+        self._run_id = run_id.strip() if run_id is not None else None
         self._identity = InterpreterIdentity(
             interpreter_id=OPENAI_ADAPTER_ID,
             principal_kind="independent_interpreter",
@@ -1143,7 +1150,7 @@ class OpenAIMultimodalEpisodeInterpreter:
                 ]
             )
         spec = AgentsSDKAgentSpec(
-            run_id=f"episode-interpretation-{request.episode_id}",
+            run_id=self._run_id or f"episode-interpretation-{request.episode_id}",
             capability="episode_interpretation",
             name="Blueprint Independent Episode Interpreter",
             instructions=_PROMPT,

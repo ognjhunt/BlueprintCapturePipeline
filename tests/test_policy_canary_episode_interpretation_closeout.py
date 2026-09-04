@@ -385,6 +385,7 @@ def test_production_route_uses_one_cost_gate_and_one_aggregate_sdk_budget(
         def __init__(self, config):
             self.config = config
             self.calls = 0
+            self.recorded_calls = []
             invokers.append(self)
 
         def configure_reservation_audit(self, **_kwargs):
@@ -392,6 +393,7 @@ def test_production_route_uses_one_cost_gate_and_one_aggregate_sdk_budget(
 
         def invoke(self, spec, _input_value):
             self.calls += 1
+            self.recorded_calls.append((spec, _input_value))
             return AgentsSDKInvocationResult(
                 output=_output(data),
                 provider="openai",
@@ -416,6 +418,9 @@ def test_production_route_uses_one_cost_gate_and_one_aggregate_sdk_budget(
 
     assert gate_calls == {"build": 1, "reserve": 1, "complete": 1}
     assert len(invokers) == 1 and invokers[0].calls == 20
+    assert {
+        spec.run_id for spec, _input_value in invokers[0].recorded_calls
+    } == {result["run_id"]}
     assert invokers[0].config.max_inference_cost_usd == profile["max_cost_usd"]
     assert interpreted["episode_interpretation"]["provider_call_count"] == 20
     assert interpreted["episode_interpretation"]["provider_invocation_attempt_count"] == 20

@@ -520,6 +520,7 @@ def materialize_policy_canary_episode_interpretations(
                 max_frames=int(profile["max_frames"]),
                 max_input_tokens=int(profile["max_input_tokens"]),
                 max_output_tokens=int(profile["max_output_tokens"]),
+                run_id=str(result.get("run_id") or root.name),
             )
             candidate_gate = build_openai_official_cost_run_gate(
                 scope_attestation_path=env[
