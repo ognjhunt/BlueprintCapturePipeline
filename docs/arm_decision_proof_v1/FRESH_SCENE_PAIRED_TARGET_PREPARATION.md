@@ -23,7 +23,7 @@ provider-zero closure.
 Before selecting a scene or task object, build the local visual review pack:
 
 ```bash
-blueprint-build-interiorgs-preselection-pack \
+python -m blueprint_pipeline.interiorgs_preselection_review_pack \
   --scene-id <publisher-scene-id> \
   --splat <scene>/3dgs_compressed.ply \
   --labels <scene>/labels.json \
