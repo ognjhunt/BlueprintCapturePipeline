@@ -285,6 +285,16 @@ def _validate_selection(
         {key: row[key] for key in ("cell_id", "seed", "cell_digest")}
         for row in matrix["cells"]
     ]
+    matching_robots = [
+        row
+        for row in setup["robot_presets"]
+        if row["robot_preset_id"] == selection.get("robot_preset_id")
+    ]
+    selected_candidates = (
+        [row["candidate_id"] for row in matching_robots[0]["policy_candidates"]]
+        if len(matching_robots) == 1
+        else []
+    )
     notification = _mapping(selection.get("notification"))
     selected_resource = _mapping(selection.get("resource_authority"))
     if (
@@ -293,8 +303,8 @@ def _validate_selection(
         or selection.get("claim_ceiling") != CLAIM_CEILING
         or selection.get("public_setup_digest") != setup["setup_digest"]
         or selection.get("scene_revision_digest") != setup["scene_revision_digest"]
-        or selection.get("robot_preset_id") != ROBOT_PRESET
-        or tuple(selection.get("candidate_ids") or ()) != CANDIDATES
+        or len(matching_robots) != 1
+        or list(selection.get("candidate_ids") or ()) != selected_candidates
         or selection.get("preset_id") != "quick_10"
         or selection.get("matrix_digest") != matrix["matrix_digest"]
         or selection.get("cells") != expected_cells

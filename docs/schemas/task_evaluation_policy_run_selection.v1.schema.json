@@ -16,8 +16,8 @@
     "claim_ceiling": {"const": "diagnostic_policy_execution"},
     "scene_revision_digest": {"$ref": "#/$defs/digest"},
     "scene_controls_status_at_submission": {"const": "configured_controls_pending"},
-    "robot_preset_id": {"enum": ["franka_panda_robotiq_2f85_v1", "droid_franka_panda_robotiq_2f85_v1"]},
-    "policy_candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{"const": "pi05_droid"}, {"const": "groot_n17_droid"}], "items": false},
+    "robot_preset_id": {"$ref": "#/$defs/identifier"},
+    "policy_candidate_ids": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}},
     "notification": {"type": "object", "required": ["email", "notify_on"], "additionalProperties": false, "properties": {"email": {"type": "string", "format": "email", "maxLength": 254}, "notify_on": {"type": "array", "minItems": 3, "maxItems": 3, "prefixItems": [{"const": "completed"}, {"const": "blocked"}, {"const": "cancelled"}], "items": false}}},
     "website_request_digest": {"$ref": "#/$defs/digest"}
     ,"task_success_contract": {"$ref": "#/$defs/taskSuccessContract"}

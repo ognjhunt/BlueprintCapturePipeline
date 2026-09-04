@@ -231,7 +231,9 @@ def reserve_control_plane_disk(
         lock_mode = stat.S_IMODE(os.fstat(lock.fileno()).st_mode)
         if lock_mode != 0o660:
             try:
-                os.chmod(lock_path, 0o660)
+                os.chmod(  # nosec B103 - shared root/blueprint ledger lock
+                    lock_path, 0o660
+                )
             except OSError as exc:
                 raise ControlPlaneDiskBudgetError(
                     f"control_plane_disk_budget_lock_mode_invalid:{lock_mode:04o}"

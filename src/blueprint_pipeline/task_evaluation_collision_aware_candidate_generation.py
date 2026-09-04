@@ -693,7 +693,7 @@ class JsonProcessCandidateGenerator:
                     text=True,
                     capture_output=True,
                     timeout=max(30.0, self._context.maximum_runtime_seconds + 30.0),
-                    cwd="/tmp",
+                    cwd="/tmp",  # nosec B108 - fixed remote provider work root
                     env={**os.environ, **self._environment},
                 )
             except (OSError, subprocess.SubprocessError) as exc:

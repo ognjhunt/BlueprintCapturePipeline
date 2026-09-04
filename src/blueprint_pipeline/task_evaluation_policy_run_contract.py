@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from copy import deepcopy
 from functools import lru_cache
@@ -66,6 +67,7 @@ REQUIRED_FAMILIES = (
     "held_out_composition",
 )
 MAX_TOTAL_EPISODES = 2000
+_REGISTRY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "docs" / "schemas"
 SETUP_SCHEMA_PATH = _SCHEMA_ROOT / f"{SETUP_SCHEMA_VERSION}.schema.json"
 SELECTION_SCHEMA_PATH = _SCHEMA_ROOT / f"{SELECTION_SCHEMA_VERSION}.schema.json"
@@ -78,6 +80,19 @@ CONTROLS_QUALIFICATION_SCHEMA_PATH = (
 
 class TaskEvaluationPolicyRunContractError(ValueError):
     """A policy-run setup, request, plan, or projection is unsafe."""
+
+
+def _registered_candidate_pair(value: Any) -> tuple[str, str]:
+    if not isinstance(value, list) or len(value) != 2:
+        raise TaskEvaluationPolicyRunContractError(
+            "policy_run_candidate_pair_invalid"
+        )
+    pair = tuple(str(item or "") for item in value)
+    if len(set(pair)) != 2 or any(_REGISTRY_ID.fullmatch(item) is None for item in pair):
+        raise TaskEvaluationPolicyRunContractError(
+            "policy_run_candidate_pair_invalid"
+        )
+    return pair  # type: ignore[return-value]
 
 
 @lru_cache(maxsize=5)
@@ -177,6 +192,11 @@ def validate_policy_run_setup(value: Mapping[str, Any]) -> dict[str, Any]:
         schema=policy_run_setup_schema(),
         code="policy_run_setup_invalid",
     )
+    _registered_candidate_pair(setup["candidate_ids"])
+    if _REGISTRY_ID.fullmatch(str(setup.get("embodiment_id") or "")) is None:
+        raise TaskEvaluationPolicyRunContractError(
+            "policy_run_setup_embodiment_invalid"
+        )
     presets = setup["presets"]
     if [row["preset_id"] for row in presets] != list(PRESET_IDS) or [
         row["scenario_count_per_policy"] for row in presets
@@ -307,13 +327,16 @@ def validate_policy_run_selection(value: Mapping[str, Any]) -> dict[str, Any]:
         required = {
             "claim_ceiling": CLAIM_CEILING_DIAGNOSTIC_POLICY_EXECUTION,
             "scene_controls_status_at_submission": CANARY_SCENE_CONTROLS_STATUS,
-            "robot_preset_id": CANARY_EMBODIMENT_ID,
-            "policy_candidate_ids": list(FROZEN_CANDIDATE_IDS),
         }
         if any(selection.get(field) != expected for field, expected in required.items()):
             raise TaskEvaluationPolicyRunContractError(
                 "policy_run_selection_canary_identity_invalid"
             )
+        if _REGISTRY_ID.fullmatch(str(selection.get("robot_preset_id") or "")) is None:
+            raise TaskEvaluationPolicyRunContractError(
+                "policy_run_selection_canary_identity_invalid"
+            )
+        _registered_candidate_pair(selection.get("policy_candidate_ids"))
         if not isinstance(selection.get("scene_revision_digest"), str):
             raise TaskEvaluationPolicyRunContractError(
                 "policy_run_selection_canary_scene_revision_missing"
@@ -372,6 +395,14 @@ def compile_policy_run_configuration(
     preset = matches[0]
     run_kind = selection.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION)
     if run_kind == RUN_KIND_INTERNAL_POLICY_CANARY:
+        if (
+            selection["robot_preset_id"] != bound_setup["embodiment_id"]
+            or tuple(selection["policy_candidate_ids"])
+            != tuple(bound_setup["candidate_ids"])
+        ):
+            raise TaskEvaluationPolicyRunContractError(
+                "policy_run_selection_registry_binding_mismatch"
+            )
         if any(
             isinstance(cell.get("seed"), bool) or not isinstance(cell.get("seed"), int)
             for cell in preset["cells"]
@@ -395,6 +426,11 @@ def compile_policy_run_configuration(
     if len(seeds) != len(set(seeds)):
         raise TaskEvaluationPolicyRunContractError("policy_run_configuration_seed_collision")
     scenario_count = preset["scenario_count_per_policy"]
+    candidate_ids = (
+        list(selection["policy_candidate_ids"])
+        if run_kind == RUN_KIND_INTERNAL_POLICY_CANARY
+        else list(FROZEN_CANDIDATE_IDS)
+    )
     configuration: dict[str, Any] = {
         "schema_version": CONFIGURATION_SCHEMA_VERSION,
         "run_id": selection["run_id"],
@@ -407,7 +443,7 @@ def compile_policy_run_configuration(
             if run_kind == RUN_KIND_INTERNAL_POLICY_CANARY
             else bound_setup["embodiment_id"]
         ),
-        "candidate_ids": list(FROZEN_CANDIDATE_IDS),
+        "candidate_ids": candidate_ids,
         "preset_id": preset["preset_id"],
         "scenario_count_per_policy": scenario_count,
         "compiler": deepcopy(bound_setup["scenario_compiler"]),
@@ -536,8 +572,9 @@ def validate_policy_run_configuration(
             configuration.get("claim_ceiling") != CLAIM_CEILING_DIAGNOSTIC_POLICY_EXECUTION
             or configuration.get("scene_controls_status_at_submission")
             != CANARY_SCENE_CONTROLS_STATUS
-            or configuration.get("robot_preset_id") != CANARY_EMBODIMENT_ID
-            or tuple(configuration.get("policy_candidate_ids") or ()) != FROZEN_CANDIDATE_IDS
+            or _REGISTRY_ID.fullmatch(str(configuration.get("robot_preset_id") or "")) is None
+            or tuple(configuration.get("policy_candidate_ids") or ())
+            != tuple(configuration.get("candidate_ids") or ())
             or configuration.get("unqualified_warning")
             != "Controls pending — results are unqualified."
             or configuration["execution_guards"].get("controls_gate_policy_execution") is not False
@@ -609,7 +646,7 @@ def build_policy_run_plan(value: Mapping[str, Any], *, setup: Mapping[str, Any])
         "setup_digest": configuration["setup_digest"],
         "run_kind": configuration.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION),
         "embodiment_id": configuration["embodiment_id"],
-        "candidate_ids": list(FROZEN_CANDIDATE_IDS),
+        "candidate_ids": list(configuration["candidate_ids"]),
         "matrix_profile_id": MATRIX_PROFILE_ID,
         "preset_id": configuration["preset_id"],
         "cells": deepcopy(cells),
@@ -627,7 +664,7 @@ def build_policy_run_plan(value: Mapping[str, Any], *, setup: Mapping[str, Any])
                 "seed": cell["seed"],
                 "cell_spec_digest": cell["cell_spec_digest"],
                 "family": cell["family"],
-                "candidate_ids": list(FROZEN_CANDIDATE_IDS),
+                "candidate_ids": list(configuration["candidate_ids"]),
                 "runtime_contract": "native_task_arena_policy_campaign.v1",
             }
             for cell in cells
@@ -764,8 +801,7 @@ def build_policy_campaign_activation_manifest(
         )
     else:
         qualification = None
-    if tuple(configuration["candidate_ids"]) != FROZEN_CANDIDATE_IDS:
-        raise TaskEvaluationPolicyRunContractError("policy_campaign_activation_member_pair_invalid")
+    candidate_ids = _registered_candidate_pair(configuration["candidate_ids"])
     controls = (
         {row["cell_id"]: row for row in qualification["cells"]} if qualification is not None else {}
     )
@@ -805,7 +841,7 @@ def build_policy_campaign_activation_manifest(
         "controls_qualification_digest": (
             qualification["qualification_digest"] if qualification else None
         ),
-        "candidate_ids": list(FROZEN_CANDIDATE_IDS),
+        "candidate_ids": list(candidate_ids),
         **(
             {
                 "task_success_contract": deepcopy(
@@ -824,7 +860,7 @@ def build_policy_campaign_activation_manifest(
             "configuration_digest": configuration["configuration_digest"],
             "plan_digest": plan["plan_digest"],
             "matrix_digest": configuration["matrix"]["scenario_set_digest"],
-            "candidate_ids": list(FROZEN_CANDIDATE_IDS),
+            "candidate_ids": list(candidate_ids),
             **(
                 {
                     "task_success_contract": deepcopy(
@@ -920,9 +956,18 @@ def validate_policy_run_result_projection(
     if result["projection_digest"] != policy_run_result_projection_digest(result):
         raise TaskEvaluationPolicyRunContractError("policy_run_result_projection_digest_mismatch")
     candidate_results = result["candidate_results"]
-    if [row["candidate_id"] for row in candidate_results] != list(FROZEN_CANDIDATE_IDS):
+    candidate_ids = _registered_candidate_pair(result["candidate_ids"])
+    if [row["candidate_id"] for row in candidate_results] != list(candidate_ids):
         raise TaskEvaluationPolicyRunContractError(
             "policy_run_result_projection_candidate_order_invalid"
+        )
+    if result["paired_comparison"]["decision"] not in {
+        *candidate_ids,
+        "tie",
+        "abstain",
+    }:
+        raise TaskEvaluationPolicyRunContractError(
+            "policy_run_result_projection_decision_invalid"
         )
     matrix = result["matrix"]
     expected_total = matrix["candidate_episode_count"] + matrix["control_episode_count"]
@@ -932,7 +977,7 @@ def validate_policy_run_result_projection(
         )
     if matrix["control_episode_count"] != matrix["scored_cell_count"] * 2 or matrix[
         "candidate_episode_count"
-    ] != matrix["scored_cell_count"] * len(FROZEN_CANDIDATE_IDS):
+    ] != matrix["scored_cell_count"] * len(candidate_ids):
         raise TaskEvaluationPolicyRunContractError(
             "policy_run_result_projection_matrix_count_invalid"
         )

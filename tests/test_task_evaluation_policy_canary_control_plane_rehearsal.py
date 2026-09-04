@@ -84,6 +84,8 @@ from tests.test_task_evaluation_policy_canary_scene_setup import (
 
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
 TEAM_NAMESPACE = "blueprint-internal"
+FRESH_SCENE_ID = "840999"
+FRESH_TASK_ID = "scene-840999-notebook-planar-push"
 CANARY_PREFIX = "s3://blueprint/policy-canary/"
 PRODUCTION_INPUT_PREFIX = "s3://blueprint/task-evaluation/production-inputs/"
 RELEASE_WINDOW_PREFIX = PRODUCTION_INPUT_PREFIX + "coordinator-release-windows/"
@@ -155,12 +157,13 @@ class _ObjectStore:
 
 
 def _fetchable_configured_scene(store: _ObjectStore) -> tuple[dict[str, Any], str]:
-    """The configured Scene 839873 revision with every reference fetchable."""
+    """A new configured scene revision with every reference fetchable."""
 
     value = preparation_contract_request()
     value["team_namespace"] = TEAM_NAMESPACE
     value["expected_production_commit"] = COMMIT
     value, payloads = request_with_fetchable_bytes(value)
+    value["scene"]["identity"]["id"] = f"interiorgs-{FRESH_SCENE_ID}"
     store.payloads.update(payloads)
     # The activation worker parses the revision's source manifest and rights
     # admission as JSON claims; the shared fixture fills them with opaque
@@ -168,6 +171,7 @@ def _fetchable_configured_scene(store: _ObjectStore) -> tuple[dict[str, Any], st
     revision_reference = value["scene"]["configured_revision"]
     revision = json.loads(store.payloads[revision_reference["uri"]])
     scene_id = str(value["scene"]["identity"]["id"])
+    revision["scene_identity"]["id"] = scene_id
     for field, schema, status, digest_field in (
         ("manifest", "task_evaluation_scene_source_manifest.v1", "retained", "source_manifest_digest"),
         ("rights_admission", "task_evaluation_scene_rights_admission.v1", "admitted", "rights_admission_digest"),
@@ -249,6 +253,21 @@ def _website_launch(
     kwargs = presubmission_kwargs(configured_root)
     for field in ("activation_digest", "capture_session_id", "intake_id"):
         kwargs.pop(field)
+    scene_plan_path = Path(kwargs["scene_plan_path"])
+    scene_plan = json.loads(scene_plan_path.read_text(encoding="utf-8"))
+    scene_plan["scene_id"] = f"interiorgs-{FRESH_SCENE_ID}"
+    scene_plan["task_id"] = FRESH_TASK_ID
+    scene_plan["task_spec"]["instruction_subject_label"] = "notebook"
+    scene_plan["task_spec"]["visible_target_label"] = "blue outlined destination"
+    _sealed(scene_plan, "plan_digest")
+    _write(scene_plan_path, scene_plan)
+    packet_path = Path(kwargs["packet_receipt_path"])
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    packet["scene_id"] = scene_plan["scene_id"]
+    packet["task_id"] = FRESH_TASK_ID
+    packet["arena_scene_plan_digest"] = scene_plan["plan_digest"]
+    _write(packet_path, packet)
+    kwargs["scene_id"] = FRESH_SCENE_ID
     configured_preparation, revision_digest = _fetchable_configured_scene(store)
     progression_path = _write(
         configured_root / "configured-progression.json",
@@ -261,7 +280,7 @@ def _website_launch(
         },
     )
     base_profile = base_launch_profile(configured_root)
-    base_profile["profile_id"] = "scene839873-configured-r4"
+    base_profile["profile_id"] = "scene840999-configured-r1"
     base_profile["source_commit"] = COMMIT
     _sealed(base_profile, "profile_digest")
     base_profile_path = _write(configured_root / "base-launch-profile.json", base_profile)
@@ -289,9 +308,9 @@ def _website_launch(
     runtime_bundle = zipfile_bytes({"runtime/README": b"rehearsal runtime source\n"})
     kwargs.update(
         {
-            "profile_id": "scene839873-internal-policy-canary-current",
+            "profile_id": "scene840999-internal-policy-canary-current",
             "configured_source_commit": COMMIT,
-            "configured_offering_configuration_run_id": "scene839873-configuration",
+            "configured_offering_configuration_run_id": "scene840999-configuration",
             "offering_digest": "sha256:" + "f" * 64,
             "scene_revision_digest": revision_digest,
             "launch_profile_path": base_profile_path,
@@ -425,8 +444,8 @@ def _production_shaped_episode_compiler(
         packet_root / "native_task_arena_packet_receipt.v1.json",
         {
             "schema_version": "native_task_arena_packet_receipt.v1",
-            "scene_id": "interiorgs-839873",
-            "task_id": "scene-839873-mug-planar-push",
+            "scene_id": f"interiorgs-{FRESH_SCENE_ID}",
+            "task_id": FRESH_TASK_ID,
         },
     )
     _write(
@@ -693,7 +712,9 @@ def test_policy_canary_control_plane_reaches_the_paid_boundary_end_to_end(
         execute=False,
     )
     dispatch = dispatched["results"][0]
-    assert dispatch["status"] == "prepared_no_execution", dispatch
+    assert dispatch["status"] == "prepared_no_execution", json.dumps(
+        dispatch, indent=2, sort_keys=True
+    )
     assert dispatch["retry_cap"] == 0
     assert dispatch["provider_mutation_performed"] is False
     assert (dispatch_queue / "completed" / envelopes[0].name).is_file()

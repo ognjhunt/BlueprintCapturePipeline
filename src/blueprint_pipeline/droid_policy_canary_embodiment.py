@@ -55,11 +55,17 @@ def _subject_label(task_spec: Mapping[str, Any]) -> str:
 def concrete_droid_task_instruction(task_spec: Mapping[str, Any]) -> str:
     """Return language that names both the visible subject and destination."""
 
-    subject = _subject_label(task_spec)
+    subject = str(task_spec.get("instruction_subject_label") or "").strip()
+    if not subject:
+        subject = _subject_label(task_spec)
+    target = str(task_spec.get("visible_target_label") or "").strip()
+    if not target:
+        target = "green target marker"
+    verb = str(task_spec.get("instruction_verb") or "").strip()
     strategy = str(task_spec.get("manipulation_strategy") or "")
-    if strategy == "planar_push":
-        return f"Push the {subject} onto the green target marker."
-    return f"Move the {subject} onto the green target marker."
+    if not verb:
+        verb = "Push" if strategy == "planar_push" else "Move"
+    return f"{verb} the {subject} onto the {target}."
 
 
 def apply_droid_policy_canary_profile(plan: Mapping[str, Any]) -> dict[str, Any]:

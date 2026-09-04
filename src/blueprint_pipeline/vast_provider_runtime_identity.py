@@ -35,7 +35,7 @@ def provider_remote_work_dir(startup_log_text: str) -> str | None:
     unique = sorted(set(matches))
     if len(unique) != 1 or unique[0] not in {
         "/workspace",
-        "/tmp/blueprint_vast_work",
+        "/tmp/blueprint_vast_work",  # nosec B108 - fixed remote provider root
     }:
         return None
     return unique[0]

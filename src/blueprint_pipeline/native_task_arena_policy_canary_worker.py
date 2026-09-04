@@ -23,7 +23,6 @@ from blueprint_pipeline.appearance_render_backend import (
     build_appearance_render_backend,
 )
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
-    CANDIDATE_IDS,
     PolicyCanaryEpisodeFailure,
     PROVIDER_RESULT_FILENAME,
     execute_paired_session,
@@ -1396,6 +1395,7 @@ def _aggregate_isolated_cell_results(
     output_root: Path,
     construction_lineage_mode: str,
 ) -> dict[str, Any]:
+    candidate_ids = tuple(str(value) for value in inputs["candidate_ids"])
     if len(child_results) != len(inputs["cells"]):
         raise RuntimeError("policy_canary_isolated_cell_result_count_invalid")
     episodes: list[dict[str, Any]] = []
@@ -1405,7 +1405,7 @@ def _aggregate_isolated_cell_results(
             or child.get("status")
             != "runtime_selected_cell_completed_pending_aggregation"
             or not isinstance(child.get("episodes"), list)
-            or len(child["episodes"]) != len(CANDIDATE_IDS)
+            or len(child["episodes"]) != len(candidate_ids)
             or child.get("task_success_contract")
             != inputs.get("task_success_contract")
             or child.get("task_success_contract_digest")
@@ -1419,7 +1419,7 @@ def _aggregate_isolated_cell_results(
         )
     expected = {
         (candidate, str(cell["cell_id"]), int(cell["seed"]))
-        for candidate in CANDIDATE_IDS
+        for candidate in candidate_ids
         for cell in inputs["cells"]
     }
     observed = {
@@ -1433,18 +1433,18 @@ def _aggregate_isolated_cell_results(
         "status": "runtime_completed_unqualified_pending_closeout",
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
-        "candidate_ids": list(CANDIDATE_IDS),
+        "candidate_ids": list(candidate_ids),
         "task_success_contract": inputs["task_success_contract"],
         "task_success_contract_digest": inputs["task_success_contract_digest"],
         "episodes_per_policy": 10,
-        "learned_policy_rollout_count": 20,
+        "learned_policy_rollout_count": len(candidate_ids) * len(inputs["cells"]),
         "provider_allocations_observed": None,
         "retry_cap": 0,
         "warm_session_open_count": 1,
         "isolated_simulation_process_count": len(child_results),
         "policy_loads": [
             {"candidate_id": candidate, "loaded_once": True}
-            for candidate in CANDIDATE_IDS
+            for candidate in candidate_ids
         ],
         "episodes": episodes,
         "session_closeout": {
@@ -1559,7 +1559,7 @@ def _run_isolated_cell_processes(
                 if isinstance(row, Mapping)
             ]
             if (
-                len(diagnostics) != len(CANDIDATE_IDS)
+                len(diagnostics) != len(inputs["candidate_ids"])
                 or any(
                     not isinstance(row, Mapping) or row.get("status") != "passed"
                     for row in diagnostics
@@ -1636,7 +1636,7 @@ def _run_selected_cell(
             / "runtime_inputs"
             / f"policy_execution_spec.{candidate}.json"
         )
-        for candidate in CANDIDATE_IDS
+        for candidate in inputs["candidate_ids"]
     }
     current_env: dict[str, Any] = {}
     current_session: dict[str, Any] = {}
@@ -1674,7 +1674,7 @@ def _run_selected_cell(
         spec = specs[candidate]
         groot_identity = None
         runtime_identity: Mapping[str, Any] = spec.get("runtime_identity") or {}
-        if candidate == "groot_n17_droid":
+        if spec.get("worker_identity_requirement") == "groot_droid_runtime_measurement":
             groot_identity, runtime_identity = bound_runtime.groot_worker_identity(
                 output_root=provider_output_root, spec=spec
             )
@@ -1837,7 +1837,7 @@ def _run_selected_cell(
                 evidence=_read(failure_path),
             ) from exc
         finally:
-            if str(context["candidate_id"]) == CANDIDATE_IDS[-1]:
+            if str(context["candidate_id"]) == str(inputs["candidate_ids"][-1]):
                 close = getattr(env, "close", None)
                 if callable(close):
                     close()
@@ -1881,7 +1881,7 @@ def _run_selected_cell(
             if isinstance(row, Mapping)
         ]
         observation_support_qualified = bool(
-            str(context["candidate_id"]) != "groot_n17_droid"
+            spec.get("require_observed_eef_support") is not True
             or (
                 observation_support_rows
                 and all(

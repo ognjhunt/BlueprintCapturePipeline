@@ -381,6 +381,7 @@ def test_compiles_exact_pair_and_shared_matrix_without_execution() -> None:
 
 def test_internal_canary_compiles_resolved_quick_10_without_controls_gate() -> None:
     setup_value = setup()
+    setup_value["embodiment_id"] = CANARY_EMBODIMENT_ID
     quick = setup_value["presets"][0]
     for index, cell in enumerate(quick["cells"]):
         cell["seed"] = 1000 + index
@@ -449,6 +450,65 @@ def test_internal_canary_compiles_resolved_quick_10_without_controls_gate() -> N
     assert activation["official_ranking_authorized"] is False
     assert activation["paired_session_request"]["maximum_provider_allocations"] == 1
     assert len(activation["paired_session_request"]["cells"]) == 10
+
+
+def test_internal_canary_uses_the_registry_bound_embodiment_and_candidate_pair() -> None:
+    setup_value = setup()
+    setup_value["embodiment_id"] = "site_arm_preset_v2"
+    setup_value["candidate_ids"] = ["team_policy_alpha", "team_policy_beta"]
+    quick = setup_value["presets"][0]
+    for index, cell in enumerate(quick["cells"]):
+        cell["seed"] = 20_000 + index
+        cell["resolved_scenario"] = {"family": cell["family"], "ordinal": index}
+        cell["cell_spec_digest"] = canonical_digest(cell["resolved_scenario"])
+    quick["scenario_set_digest"] = canonical_digest({"ordered_cells": quick["cells"]})
+    quick["nesting_proof_digest"] = canonical_digest(
+        {
+            "preset_id": quick["preset_id"],
+            "scenario_set_digest": quick["scenario_set_digest"],
+            "parent_preset_id": None,
+            "parent_prefix_count": 0,
+            "selection_rule": "published_ordered_prefix",
+        }
+    )
+    setup_value["setup_digest"] = canonical_digest(
+        setup_value, digest_field="setup_digest"
+    )
+    selected = selection(setup_value)
+    selected.update(
+        {
+            "run_kind": "internal_policy_canary",
+            "claim_ceiling": "diagnostic_policy_execution",
+            "scene_revision_digest": "sha256:" + "7" * 64,
+            "scene_controls_status_at_submission": "configured_controls_pending",
+            "robot_preset_id": "site_arm_preset_v2",
+            "policy_candidate_ids": ["team_policy_alpha", "team_policy_beta"],
+            "notification": {
+                "email": "robotics@example.com",
+                "notify_on": ["completed", "blocked", "cancelled"],
+            },
+            "website_request_digest": "sha256:" + "6" * 64,
+            "task_success_contract": public_canary_setup()["task_success_contract"],
+            "task_success_contract_digest": public_canary_setup()[
+                "task_success_contract_digest"
+            ],
+        }
+    )
+
+    configuration = compile_policy_run_configuration(selected, setup=setup_value)
+    plan = build_policy_run_plan(configuration, setup=setup_value)
+    activation = build_policy_campaign_activation_manifest(
+        configuration=configuration, plan=plan
+    )
+
+    assert configuration["embodiment_id"] == "site_arm_preset_v2"
+    assert configuration["candidate_ids"] == ["team_policy_alpha", "team_policy_beta"]
+    assert plan["candidate_ids"] == configuration["candidate_ids"]
+    assert activation["candidate_ids"] == configuration["candidate_ids"]
+    assert all(
+        unit["candidate_ids"] == configuration["candidate_ids"]
+        for unit in activation["campaign_units"]
+    )
 
 
 def test_activation_materializes_ten_existing_paired_campaign_units() -> None:
@@ -529,7 +589,7 @@ def test_fail_without_fix_rejects_candidate_family_and_seed_drift() -> None:
     swapped["configuration_digest"] = canonical_digest(swapped, digest_field="configuration_digest")
     with pytest.raises(
         TaskEvaluationPolicyRunContractError,
-        match="policy_run_configuration_invalid:candidate_ids",
+        match="policy_run_configuration_not_compiler_output",
     ):
         validate_policy_run_configuration(swapped, setup=setup_value)
 

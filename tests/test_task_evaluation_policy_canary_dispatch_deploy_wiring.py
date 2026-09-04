@@ -21,7 +21,7 @@ def test_activation_remains_no_spend_and_only_emits_paid_queue() -> None:
     assert "POLICY_CANARY_DISPATCH_QUEUE_ROOT" in activation
 
 
-def test_canary_paid_dispatcher_is_installed_but_never_always_armed() -> None:
+def test_canary_paid_dispatcher_is_installed_and_authority_gated_watcher_is_armed() -> None:
     service_name = "blueprint-task-evaluation-policy-canary-dispatcher.service"
     path_name = "blueprint-task-evaluation-policy-canary-dispatcher.path"
     service = _text(f"deploy/systemd/{service_name}")
@@ -64,7 +64,8 @@ def test_canary_paid_dispatcher_is_installed_but_never_always_armed() -> None:
     assert service_name in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
     assert path_name in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
     assert path_name not in deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS
-    assert f"systemctl enable --now {path_name}" not in installer
+    assert path_name in deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS
+    assert f"systemctl enable --now {path_name}" in installer
     assert f"deploy/systemd/{service_name}" in installer
     assert f"deploy/systemd/{path_name}" in installer
 

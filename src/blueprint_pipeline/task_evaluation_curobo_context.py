@@ -520,7 +520,10 @@ def materialize_remote_curobo_context(
         maximum_runtime_seconds=float(maximum_runtime_seconds),
     )
     remote_work_dir = str((warm_session or {}).get("remote_work_dir") or "/workspace")
-    if remote_work_dir not in {"/workspace", "/tmp/blueprint_vast_work"}:
+    if remote_work_dir not in {  # nosec B108 - fixed remote provider roots
+        "/workspace",
+        "/tmp/blueprint_vast_work",
+    }:
         raise CuroboContextError("curobo_remote_work_dir_invalid")
     return context, remote_work_dir + "/adp_arena_provider_bundle/provider_runtime"
 

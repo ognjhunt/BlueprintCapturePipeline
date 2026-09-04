@@ -387,6 +387,8 @@ def test_setup_accepts_a_new_interiorgs_scene_without_scene_specific_code(
     scene = json.loads(scene_path.read_text(encoding="utf-8"))
     scene["scene_id"] = "interiorgs-840999"
     scene["task_id"] = "scene-840999-notebook-planar-push"
+    scene["task_spec"]["instruction_subject_label"] = "notebook"
+    scene["task_spec"]["visible_target_label"] = "blue outlined destination"
     scene["plan_digest"] = canonical_digest(scene, digest_field="plan_digest")
     write_json(scene_path, scene)
     packet_path = Path(kwargs["packet_receipt_path"])
@@ -410,6 +412,7 @@ def test_setup_accepts_a_new_interiorgs_scene_without_scene_specific_code(
         spec = json.loads(Path(setup["records"][role]["path"]).read_text())
         assert spec["scene_id"] == "interiorgs-840999"
         assert spec["task_id"] == "scene-840999-notebook-planar-push"
+        assert spec["prompt"] == "Push the notebook onto the blue outlined destination."
 
 
 def test_setup_keeps_execution_commit_distinct_from_configured_scene_commit(
