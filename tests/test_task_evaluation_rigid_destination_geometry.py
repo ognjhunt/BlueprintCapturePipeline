@@ -73,7 +73,8 @@ def _inputs(*, wall_height: float = 0.04, transform_offset: float = 0.0) -> dict
     simready = {
         "schema_version": "task_evaluation_passive_destination_simready.v1",
         "destination_identity": DESTINATION_IDENTITY,
-        "intended_support_prim_paths": ["/Asset/Colliders/Bottom"],
+        "intended_support_prim_paths": ["/Asset"],
+        "intended_support_collision_prim_paths": ["/Asset/Colliders/Bottom"],
         "interior_bounds_body_frame_m": {
             "minimum": [-0.16, -0.235, 0.005],
             "maximum": [0.16, 0.235, 0.005 + wall_height],
@@ -165,9 +166,15 @@ def test_geometry_uses_the_task_scoring_transform_not_the_asset_root() -> None:
     [
         (
             lambda inputs: inputs["destination_simready_result"].update(
-                intended_support_prim_paths=["/Asset/Colliders/Lid"]
+                intended_support_collision_prim_paths=["/Asset/Colliders/Lid"]
             ),
             "rigid_destination_geometry_support_prim_unknown",
+        ),
+        (
+            lambda inputs: inputs["destination_simready_result"].update(
+                intended_support_prim_paths=["/Asset/Colliders/Bottom"]
+            ),
+            "rigid_destination_geometry_support_body_unknown",
         ),
         (
             lambda inputs: inputs.update(relation="beside"),

@@ -1209,7 +1209,8 @@ def supplemental_destination_inputs(root: Path, *, wall_height: float = 0.04) ->
         "static_qualification": record(static_path),
         "rights_admission": record(rights_path),
         "static_result_digest": json.loads(static_path.read_text())["result_digest"],
-        "intended_support_prim_paths": ["/Asset/Colliders/Bottom"],
+        "intended_support_prim_paths": ["/Asset"],
+        "intended_support_collision_prim_paths": ["/Asset/Colliders/Bottom"],
         "interior_bounds_body_frame_m": {
             "minimum": [-0.16, -0.235, 0.005],
             "maximum": [0.16, 0.235, 0.005 + wall_height],

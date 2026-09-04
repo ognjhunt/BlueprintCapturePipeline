@@ -726,7 +726,8 @@ def _destination_publication_case(tmp_path: Path, *, with_destination_artifacts:
         {
             "schema_version": "task_evaluation_passive_destination_simready.v1",
             "destination_identity": destination_identity,
-            "intended_support_prim_paths": ["/Asset/Colliders/Bottom"],
+            "intended_support_prim_paths": ["/Asset"],
+            "intended_support_collision_prim_paths": ["/Asset/Colliders/Bottom"],
             "interior_bounds_body_frame_m": {"minimum": [-0.16, -0.235, 0.005], "maximum": [0.16, 0.235, 0.045]},
         },
     )

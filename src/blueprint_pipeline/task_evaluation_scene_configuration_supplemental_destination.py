@@ -222,7 +222,9 @@ def supplemental_destination_inputs(
     )
     completion = authoring.get("candidate_physics_completion")
     interior = simready.get("interior_bounds_body_frame_m")
-    support_paths = simready.get("intended_support_prim_paths")
+    support_bodies = simready.get("intended_support_prim_paths")
+    support_colliders = simready.get("intended_support_collision_prim_paths")
+    structure = static.get("observed_structure") or {}
     if (
         static.get("schema_version") != STATIC_QUALIFICATION_SCHEMA_VERSION
         or static.get("status") != "authored_structure_statically_qualified"
@@ -262,14 +264,19 @@ def supplemental_destination_inputs(
         or (simready.get("rights_admission") or {}).get("sha256")
         != rows["rights_admission"]["digest"]
         or simready.get("static_result_digest") != static.get("result_digest")
-        or not isinstance(support_paths, list)
-        or not support_paths
+        or not isinstance(support_bodies, list)
+        or not support_bodies
         or any(
             not str(path).startswith("/")
-            or path not in (static.get("observed_structure") or {}).get(
-                "collision_prim_paths", []
-            )
-            for path in support_paths
+            or path not in (structure.get("rigid_body_paths") or [])
+            for path in support_bodies
+        )
+        or not isinstance(support_colliders, list)
+        or not support_colliders
+        or any(
+            not str(path).startswith("/")
+            or path not in (structure.get("collision_prim_paths") or [])
+            for path in support_colliders
         )
         or not isinstance(interior, Mapping)
         or simready.get("result_digest")

@@ -197,16 +197,28 @@ def derive_rigid_destination_geometry(
         )
     rigid_paths = destination_structure.get("rigid_body_paths")
     collision_paths = destination_structure.get("collision_prim_paths")
-    support_colliders = destination_simready_result.get("intended_support_prim_paths")
+    # The SimReady result names the exact support *rigid body* (contact routes
+    # to bodies) and, separately, the exact bottom collision prims retained as
+    # evidence.  Both must exist in the static qualification's observed structure.
+    support_bodies = destination_simready_result.get("intended_support_prim_paths")
+    support_colliders = destination_simready_result.get(
+        "intended_support_collision_prim_paths"
+    )
     if (
         not isinstance(rigid_paths, list)
         or len(rigid_paths) != 1
         or not isinstance(collision_paths, list)
+        or not isinstance(support_bodies, list)
+        or not support_bodies
         or not isinstance(support_colliders, list)
         or not support_colliders
     ):
         raise RigidDestinationGeometryError(
             "rigid_destination_geometry_support_structure_invalid"
+        )
+    if any(path not in rigid_paths for path in support_bodies):
+        raise RigidDestinationGeometryError(
+            "rigid_destination_geometry_support_body_unknown"
         )
     if any(path not in collision_paths for path in support_colliders):
         raise RigidDestinationGeometryError(
@@ -283,7 +295,7 @@ def derive_rigid_destination_geometry(
             rest_world_z + support_tolerance,
         ],
         "support_height_tolerance_m": support_tolerance,
-        "intended_support_prim_paths": [str(path) for path in rigid_paths],
+        "intended_support_prim_paths": [str(path) for path in support_bodies],
         "intended_support_collision_prim_paths": [str(path) for path in support_colliders],
         "insertion_withdrawal_unit_destination_frame": list(
             INSERTION_WITHDRAWAL_UNIT_DESTINATION_FRAME
