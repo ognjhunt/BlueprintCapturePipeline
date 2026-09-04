@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
+from .agent_operator_runtime import LIVE_AGENTS_SDK_ENV
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .episode_interpretation import (
     OPENAI_ADAPTER_ID,
@@ -267,7 +268,7 @@ def _production_prerequisite_reason(
             path = Path(value).expanduser()
             if not path.is_absolute() or path.is_symlink() or not path.is_file():
                 return reason
-    if str(environment.get("BLUEPRINT_LIVE_AGENTS_SDK") or "").lower() not in {
+    if str(environment.get(LIVE_AGENTS_SDK_ENV) or "").lower() not in {
         "1",
         "true",
         "yes",

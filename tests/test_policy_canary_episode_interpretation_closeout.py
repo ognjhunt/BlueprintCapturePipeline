@@ -226,7 +226,7 @@ def test_closeout_cli_writes_a_nonblocking_backfill_result(
     monkeypatch.delenv(
         "BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETER_PROFILE_FILE", raising=False
     )
-    monkeypatch.delenv("BLUEPRINT_LIVE_AGENTS_SDK", raising=False)
+    monkeypatch.delenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", raising=False)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -282,7 +282,7 @@ def _production_environment(tmp_path: Path, *, profile: dict) -> dict[str, str]:
     profile_path.write_text(canonical_json(profile) + "\n", encoding="utf-8")
     return {
         "BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETER_PROFILE_FILE": str(profile_path),
-        "BLUEPRINT_LIVE_AGENTS_SDK": "1",
+        "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS": "true",
         "OPENAI_API_KEY_FILE": str(files["key"]),
         "OPENAI_ADMIN_API_KEY_FILE": str(files["admin"]),
         "OPENAI_PROJECT_ID": "project-episode-interpretation",
