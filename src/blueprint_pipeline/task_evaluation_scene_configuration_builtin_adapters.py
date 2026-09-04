@@ -312,7 +312,7 @@ def execute_artifixer3d_observed_object_removal(
     request = envelope.get("request")
     try:
         review_mode = (
-            appearance_review_mode(request)
+            appearance_review_mode(request, allow_historical_paused=True)
             if isinstance(request, Mapping)
             else REQUIRED_MODE
         )

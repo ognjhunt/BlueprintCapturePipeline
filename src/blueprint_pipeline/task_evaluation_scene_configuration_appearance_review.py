@@ -16,11 +16,21 @@ PAUSED_RECEIPT_SCHEMA_VERSION = (
     "task_evaluation_artifixer_visual_review_pause_receipt.v1"
 )
 
+_HISTORICAL_PAUSED_OVERRIDE = {
+    "mode": PAUSED_UNGRADED_MODE,
+    "scope": PAUSED_UNGRADED_SCOPE,
+    "ungraded_publication_acknowledged": True,
+    "review_provider_call_permitted": False,
+    "warning_label": PAUSED_UNGRADED_WARNING,
+}
+
 class AppearanceReviewContractError(ValueError):
     """The appearance-review override or receipt is internally inconsistent."""
 
 
-def appearance_review_mode(request: Mapping[str, Any]) -> str:
+def appearance_review_mode(
+    request: Mapping[str, Any], *, allow_historical_paused: bool = False
+) -> str:
     """Require independent grading for every newly admitted configuration.
 
     Historical ``paused_ungraded`` receipts remain readable so the product can
@@ -28,11 +38,17 @@ def appearance_review_mode(request: Mapping[str, Any]) -> str:
     """
 
     override = request.get("appearance_review_override")
-    if override is not None:
-        raise AppearanceReviewContractError(
-            "scene_configuration_appearance_review_pause_forbidden"
-        )
-    return REQUIRED_MODE
+    if override is None:
+        return REQUIRED_MODE
+    if (
+        allow_historical_paused
+        and isinstance(override, Mapping)
+        and dict(override) == _HISTORICAL_PAUSED_OVERRIDE
+    ):
+        return PAUSED_UNGRADED_MODE
+    raise AppearanceReviewContractError(
+        "scene_configuration_appearance_review_pause_forbidden"
+    )
 
 
 def paused_review_receipt_valid(

@@ -306,7 +306,9 @@ def publish_configured_scene_revision(
             "scene_configuration_publication_envelope_invalid"
         )
     try:
-        review_mode = appearance_review_mode(request)
+        review_mode = appearance_review_mode(
+            request, allow_historical_paused=True
+        )
     except AppearanceReviewContractError as exc:
         raise TaskEvaluationSceneConfigurationPublicationError(str(exc)) from exc
     root = Path(output_root).resolve()
