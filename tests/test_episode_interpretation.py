@@ -505,6 +505,7 @@ def test_openai_adapter_uses_agents_sdk_and_discloses_frame_sampling_gap(
         model="gpt-5.6-terra",
         model_version="gpt-5.6-terra-2026-09-03",
         max_frames=2,
+        run_id="quick10-interpretation-batch",
     )
     rights_path = tmp_path / "rights.json"
     materialize_episode_interpretation_rights(
@@ -530,6 +531,7 @@ def test_openai_adapter_uses_agents_sdk_and_discloses_frame_sampling_gap(
     assert len(invoker.calls) == 1
     spec, provider_input = invoker.calls[0]
     assert spec.output_type is EpisodeInterpreterOutput
+    assert spec.run_id == "quick10-interpretation-batch"
     images = [
         item
         for message in provider_input
