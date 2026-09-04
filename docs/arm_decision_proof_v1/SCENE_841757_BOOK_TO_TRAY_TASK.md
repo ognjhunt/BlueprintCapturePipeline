@@ -126,6 +126,19 @@ the score. Conflicts are visible and fail closed.
    interpretation, and verify the Website exposes all twenty learned-policy
    episodes plus controls and digest-bound downloads.
 
+## Tray qualification path
+
+The tray has no source object, so its Isaac-native import qualification and its
+task geometry are produced by the production scene-configuration run itself:
+the `scene_configuration` request declares the tray under `task.destination`
+without `native_import_qualification` or `geometry`, the recipe binds the same
+tray as `supplemental_destination`, stage 4 re-derives the static
+qualification from the exact bytes, stage 5 settles the tray natively in the
+same Isaac session as the book replacement, and publication derives the
+whole-book containment geometry and completes the revision's destination.
+Only that published destination is admissible for the later
+`destination_qualification` probe and Quick-10 episodes.
+
 ## Production admission safeguards
 
 New passive-destination CAD requests use `task_evaluation_passive_destination_cad_request.v2`.

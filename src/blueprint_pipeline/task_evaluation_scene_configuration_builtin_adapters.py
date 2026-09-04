@@ -46,6 +46,10 @@ from .task_evaluation_scene_configuration_static_qualification import (
     SCHEMA_VERSION as STATIC_QUALIFICATION_SCHEMA_VERSION,
     qualify_scene_configuration_rigid_asset_static,
 )
+from .task_evaluation_scene_configuration_supplemental_destination import (
+    supplemental_destination_native_artifacts,
+    supplemental_destination_static_artifacts,
+)
 
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -1229,6 +1233,9 @@ def execute_simready_static_rigid_qualification(
         raise TaskEvaluationSceneConfigurationAdapterError(
             "simready_static_rigid_asset_copy_mismatch"
         )
+    destination_artifacts = supplemental_destination_static_artifacts(
+        envelope=envelope, output_root=output_root
+    )
     result: dict[str, Any] = {
         "schema_version": STAGE_RESULT_SCHEMA_VERSION,
         "status": "completed",
@@ -1255,6 +1262,7 @@ def execute_simready_static_rigid_qualification(
                 "digest": _sha256_and_size(qualification_path)[0],
                 "size_bytes": _sha256_and_size(qualification_path)[1],
             },
+            *destination_artifacts,
         ],
         "stage_result_digest": "",
     }
@@ -1322,13 +1330,22 @@ def execute_simready_native_import_qualification(
     retained_receipt = _copy_artifact(
         runtime_path, output_root / "native_import_qualification_receipt.v1.json"
     )
+    output_artifacts = [
+        {"role": "native_qualified_replacement_asset", **retained_asset},
+        {"role": "native_import_qualification_receipt", **retained_receipt},
+    ]
+    output_artifacts.extend(
+        supplemental_destination_native_artifacts(
+            envelope=envelope,
+            dependency_results=dependency_results,
+            provider_runtime_artifacts=provider_runtime_artifacts,
+            output_root=output_root,
+        )
+    )
     return _stage_result(
         stage=stage,
         configuration_path=configuration_path,
-        output_artifacts=[
-            {"role": "native_qualified_replacement_asset", **retained_asset},
-            {"role": "native_import_qualification_receipt", **retained_receipt},
-        ],
+        output_artifacts=output_artifacts,
     )
 
 
