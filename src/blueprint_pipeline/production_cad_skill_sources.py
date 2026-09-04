@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pwd
 import shutil
 import stat
 import subprocess  # nosec B404 - fixed git argv and pinned public repositories
@@ -20,6 +21,7 @@ SCHEMA_VERSION = "production_cad_skill_sources.v1"
 DEFAULT_ROOT = (
     "/var/lib/blueprint/task-evaluation-inputs/sources/cad-authoring"
 )
+DEFAULT_SERVICE_ACCOUNT = "blueprint"
 SOURCE_SPECS = (
     {
         "id": "text-to-cad",
@@ -129,6 +131,7 @@ def validate_production_cad_skill_sources(
     root: str | Path,
     *,
     specs: Sequence[Mapping[str, Any]] = SOURCE_SPECS,
+    service_account: str | None = None,
 ) -> dict[str, Any]:
     source_root = Path(root).expanduser().resolve()
     rows = [
@@ -137,6 +140,15 @@ def validate_production_cad_skill_sources(
         )
         for spec in specs
     ]
+    if service_account is not None and _service_account_ids(service_account) is not None:
+        # The control-plane CAD authoring stage runs as the service account;
+        # a root-only checkout passes every byte check and still blocks it.
+        for spec, row in zip(specs, rows, strict=True):
+            if service_account_tree_read_blocker(Path(row["path"]), service_account):
+                raise ProductionCadSkillSourcesError(
+                    "production_cad_skill_source_unreadable_by_service_account:"
+                    f"{spec['id']}"
+                )
     value: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "ready",
@@ -160,12 +172,86 @@ def _read_only_tree(root: Path) -> None:
     root.chmod(stat.S_IMODE(root.stat().st_mode) & ~0o222)
 
 
+def _service_account_ids(account: str) -> tuple[int, int] | None:
+    try:
+        record = pwd.getpwnam(account)
+    except KeyError:
+        return None
+    return record.pw_uid, record.pw_gid
+
+
+def _account_can_read(metadata: os.stat_result, *, uid: int, gid: int) -> bool:
+    """Read (and traverse, for directories) without root's bypass of mode bits."""
+
+    want = stat.S_IRUSR | (stat.S_IXUSR if stat.S_ISDIR(metadata.st_mode) else 0)
+    if metadata.st_uid == uid:
+        return metadata.st_mode & want == want
+    if metadata.st_gid == gid:
+        want_group = want >> 3
+        return metadata.st_mode & want_group == want_group
+    want_other = want >> 6
+    return metadata.st_mode & want_other == want_other
+
+
+def _tree_paths(root: Path) -> list[Path]:
+    return [root, *sorted(root.rglob("*"))]
+
+
+def service_account_tree_read_blocker(root: Path, account: str) -> str | None:
+    """Return the first path the service account could not read, or ``None``."""
+
+    ids = _service_account_ids(account)
+    if ids is None:
+        return None
+    uid, gid = ids
+    for path in _tree_paths(root):
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            continue
+        if not _account_can_read(metadata, uid=uid, gid=gid):
+            return str(path)
+    return None
+
+
+def grant_service_account_tree_read(root: Path, account: str) -> dict[str, Any]:
+    """Make a read-only source tree readable by the service account's group.
+
+    Ownership stays with the provisioning root user so the service account
+    cannot rewrite pinned sources; the group gains read (and traverse) only.
+    """
+
+    ids = _service_account_ids(account)
+    if ids is None:
+        return {"account": account, "status": "not_applicable_no_service_account"}
+    _uid, gid = ids
+    for path in _tree_paths(root):
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            continue
+        if metadata.st_gid != gid:
+            os.chown(path, -1, gid, follow_symlinks=False)
+        mode = stat.S_IMODE(metadata.st_mode) & ~0o222
+        mode |= stat.S_IRGRP | (stat.S_IXGRP if stat.S_ISDIR(metadata.st_mode) else 0)
+        path.chmod(mode)
+    blocker = service_account_tree_read_blocker(root, account)
+    if blocker is not None:
+        raise ProductionCadSkillSourcesError(
+            f"production_cad_skill_source_unreadable_by_service_account:{blocker}"
+        )
+    return {"account": account, "status": "readable"}
+
+
 def provision_production_cad_skill_sources(
     root: str | Path = DEFAULT_ROOT,
     *,
     specs: Sequence[Mapping[str, Any]] = SOURCE_SPECS,
+    service_account: str | None = DEFAULT_SERVICE_ACCOUNT,
 ) -> dict[str, Any]:
-    """Clone missing pinned sources atomically; never replace existing bytes."""
+    """Clone missing pinned sources atomically; never replace existing bytes.
+
+    Every provisioned tree is left read-only and readable by the service
+    account, which is the identity the control-plane CAD stage runs under.
+    """
 
     destination = Path(root).expanduser().absolute()
     if destination.is_symlink():
@@ -177,6 +263,8 @@ def provision_production_cad_skill_sources(
         target = destination / f"{spec['id']}-{str(spec['commit'])[:8]}"
         if target.exists():
             _source_record(target, spec)
+            if service_account is not None:
+                grant_service_account_tree_read(target, service_account)
             continue
         staging = Path(
             tempfile.mkdtemp(
@@ -210,10 +298,14 @@ def provision_production_cad_skill_sources(
                 _source_record(target, spec)
             else:
                 _read_only_tree(target)
+                if service_account is not None:
+                    grant_service_account_tree_read(target, service_account)
         finally:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=True)
-    result = validate_production_cad_skill_sources(destination, specs=specs)
+    result = validate_production_cad_skill_sources(
+        destination, specs=specs, service_account=service_account
+    )
     receipt_path = destination / f"{SCHEMA_VERSION}.json"
     payload = json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n"
     if receipt_path.exists():
@@ -224,11 +316,19 @@ def provision_production_cad_skill_sources(
     else:
         receipt_path.write_text(payload, encoding="utf-8")
         receipt_path.chmod(0o444)
-    return result
+    access = (
+        {"account": service_account, "status": "not_applicable_no_service_account"}
+        if service_account is None or _service_account_ids(service_account) is None
+        else {"account": service_account, "status": "readable"}
+    )
+    return {**result, "service_account_access": access}
 
 
 __all__ = [
     "DEFAULT_ROOT",
+    "DEFAULT_SERVICE_ACCOUNT",
+    "grant_service_account_tree_read",
+    "service_account_tree_read_blocker",
     "ProductionCadSkillSourcesError",
     "SCHEMA_VERSION",
     "SOURCE_SPECS",
