@@ -494,6 +494,92 @@ def test_rigid_construction_contact_paths_bind_exact_usd_rigid_bodies(
     )
 
 
+def test_rigid_destination_support_binds_contact_to_passive_asset(
+    tmp_path: Path,
+) -> None:
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    task_path = tmp_path / "book.usda"
+    task_stage = Usd.Stage.CreateNew(str(task_path))
+    task_root = UsdGeom.Xform.Define(task_stage, "/Book")
+    task_stage.SetDefaultPrim(task_root.GetPrim())
+    task_body = UsdGeom.Xform.Define(task_stage, "/Book/body").GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(task_body)
+    task_stage.GetRootLayer().Save()
+
+    scene_path = tmp_path / "scene.usda"
+    scene_stage = Usd.Stage.CreateNew(str(scene_path))
+    scene_root = UsdGeom.Xform.Define(scene_stage, "/Scene")
+    scene_stage.SetDefaultPrim(scene_root.GetPrim())
+    floor = UsdGeom.Cube.Define(scene_stage, "/Scene/floor").GetPrim()
+    UsdPhysics.CollisionAPI.Apply(floor)
+    scene_stage.GetRootLayer().Save()
+
+    support_path = tmp_path / "tray.usda"
+    support_stage = Usd.Stage.CreateNew(str(support_path))
+    support_root = UsdGeom.Xform.Define(support_stage, "/Tray")
+    support_stage.SetDefaultPrim(support_root.GetPrim())
+    UsdPhysics.RigidBodyAPI.Apply(support_root.GetPrim())
+    support_stage.GetRootLayer().Save()
+
+    affordance = {
+        "allowed_contact_prim_paths": ["/Book/body"],
+        "intended_support_prim_paths": ["/Tray"],
+        "affordance_digest": "",
+    }
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+    contract = {
+        "task_kind": "rigid_pick_place",
+        "task_spec": {
+            "destination_support_asset_id": "document_tray",
+            "task_contact_minimum_force_n": 0.5,
+            "collision_failure_minimum_force_n": 1.0,
+            "reset_translation_tolerance_m": 0.001,
+            "reset_orientation_tolerance_rad": 0.01,
+            "interaction_affordance": affordance,
+        },
+        "robot": {"robot_id": "franka_panda"},
+        "objects": [
+            {
+                "task_subject": True,
+                "semantic_role": "task_object",
+                "asset_id": "book",
+                "runtime_name": "task_object",
+                "object_type": "RIGID",
+                "reset_state": {"joint_positions": {}},
+            },
+            {
+                "task_subject": False,
+                "semantic_role": "task_support",
+                "asset_id": "document_tray",
+                "runtime_name": "task_support",
+                "object_type": "RIGID",
+                "reset_state": {"joint_positions": {}},
+            },
+        ],
+    }
+
+    topology = _articulation_plan(
+        contract,
+        task_object_asset_path=task_path,
+        scene_collision_asset_path=scene_path,
+        task_support_asset_path=support_path,
+    )
+
+    assert topology["support_contact_body_paths"] == [
+        "{ENV_REGEX_NS}/task_support"
+    ]
+    support_sensors = [
+        row
+        for row in topology["contact_sensors"]
+        if row["logical_sensor_id"] == "task_support_contact"
+    ]
+    assert support_sensors[0]["filter_prim_paths_expr"] == [
+        "{ENV_REGEX_NS}/task_support"
+    ]
+
 def test_graph_articulation_plan_binds_complete_joint_and_body_topology(
     tmp_path: Path,
 ) -> None:

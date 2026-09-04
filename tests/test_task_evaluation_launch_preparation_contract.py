@@ -250,6 +250,51 @@ def test_configuration_external_service_caps_fit_total_authority() -> None:
     ):
         validate_launch_preparation_request(value)
 
+
+def test_pick_and_place_requires_a_distinct_qualified_destination_asset() -> None:
+    value = request()
+    value["task"]["strategy"] = "pick_and_place"
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationContractError,
+        match="launch_preparation_request_invalid",
+    ):
+        validate_launch_preparation_request(value)
+
+    reference = {
+        "uri": "s3://blueprint-production-inputs/task/destination.json",
+        "digest": "sha256:" + "d" * 64,
+        "size_bytes": 123,
+    }
+    value["task"]["destination"] = {
+        "schema_version": "task_evaluation_rigid_destination_asset.v1",
+        "identity": {"id": "document-tray", "version": "v1"},
+        "relation": "inside",
+        "visible_label": "blue document tray",
+        "asset": reference,
+        "rights_admission": reference,
+        "static_qualification": reference,
+        "native_import_qualification": reference,
+        "geometry": reference,
+        "placement_qualification": reference,
+        "pose_world": {
+            "position_world_m": [3.25, -6.76, 0.82],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "provider_disclosure_allowed": True,
+    }
+    assert validate_launch_preparation_request(value) == value
+
+    value["task"]["destination"]["identity"] = value["task"]["subject"][
+        "identity"
+    ]
+    with pytest.raises(
+        TaskEvaluationLaunchPreparationContractError,
+        match="launch_preparation_pick_place_destination_invalid",
+    ):
+        validate_launch_preparation_request(value)
+
+
+def test_configuration_external_service_caps_keep_stage_and_total_bounds() -> None:
     value = test_configuration_request()
     value["spend"]["external_service_caps"]["openai"][
         "stage_max_cost_usd"

@@ -276,6 +276,11 @@ def _affordance(task_spec: Mapping[str, Any], *, subject_asset_id: str) -> dict[
         value.get("lift_unit_world"),
         error="native_rigid_construction_lift_direction_invalid",
     )
+    if value.get("insertion_withdrawal_unit_world") is not None:
+        value["insertion_withdrawal_unit_world"] = _unit(
+            value.get("insertion_withdrawal_unit_world"),
+            error="native_rigid_construction_insertion_withdrawal_direction_invalid",
+        )
     orientation = value["gripper_orientation_scoring_frame_xyzw"] = _quaternion(
         value.get("gripper_orientation_scoring_frame_xyzw"),
         error="native_rigid_construction_gripper_orientation_invalid",
@@ -1524,6 +1529,9 @@ def materialize_rigid_construction_phase_plan(
     destination_approach_world = _quaternion_rotate_xyzw(
         destination_orientation, affordance["approach_unit_scoring_frame"]
     )
+    destination_withdrawal_world = affordance.get(
+        "insertion_withdrawal_unit_world", destination_approach_world
+    )
     lift_world = affordance["lift_unit_world"]
     contact_start_offset = _quaternion_rotate_xyzw(start_orientation, contact_local)
     contact_start = [start[index] + contact_start_offset[index] for index in range(3)]
@@ -1834,7 +1842,7 @@ def materialize_rigid_construction_phase_plan(
                     "settle_observe",
                     [
                         contact_destination[index]
-                        + destination_approach_world[index] * pregrasp_clearance
+                        + destination_withdrawal_world[index] * pregrasp_clearance
                         for index in range(3)
                     ],
                     gripper_state="open",
@@ -1847,7 +1855,7 @@ def materialize_rigid_construction_phase_plan(
                     "retreat",
                     [
                         contact_destination[index]
-                        + destination_approach_world[index] * pregrasp_clearance
+                        + destination_withdrawal_world[index] * pregrasp_clearance
                         for index in range(3)
                     ],
                     gripper_state="open",

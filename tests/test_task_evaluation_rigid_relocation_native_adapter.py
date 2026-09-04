@@ -318,6 +318,102 @@ def test_scene839873_task_truth_is_preserved_in_native_packet_inputs(
     assert phase_plan["phases"][1]["phase_id"] == "push_contact"
 
 
+def test_pick_and_place_preserves_explicit_grasp_and_builds_native_phases(
+    tmp_path: Path,
+) -> None:
+    launch, configured, references, docs = _case(tmp_path)
+    launch["task"]["strategy"] = "pick_and_place"
+    reference = {
+        "uri": "s3://blueprint-production-inputs/task/document-tray.json",
+        "digest": "sha256:" + "d" * 64,
+        "size_bytes": 123,
+    }
+    launch["task"]["destination"] = {
+        "schema_version": "task_evaluation_rigid_destination_asset.v1",
+        "identity": {"id": "document-tray", "version": "v1"},
+        "relation": "inside",
+        "visible_label": "blue document tray",
+        "asset": reference,
+        "rights_admission": reference,
+        "static_qualification": reference,
+        "native_import_qualification": reference,
+        "geometry": reference,
+        "placement_qualification": reference,
+        "pose_world": {
+            "position_world_m": [3.0942285, -6.7605156, 0.818319],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "provider_disclosure_allowed": True,
+    }
+    definition = copy.deepcopy(docs[DEFINITION])
+    definition["strategy"] = "pick_and_place"
+    definition["interaction_affordance"] = {
+        "contact_point_scoring_frame_m": [-0.06, 0.0, 0.0],
+        "approach_unit_scoring_frame": [-1.0, 0.0, 0.0],
+        "jaw_unit_scoring_frame": [0.0, 1.0, 0.0],
+        "lift_unit_world": [0.0, 0.0, 1.0],
+        "pregrasp_clearance_m": 0.12,
+        "minimum_lift_m": 0.08,
+    }
+    execution = copy.deepcopy(docs[EXECUTION])
+    execution["strategy"] = "pick_and_place"
+    _rewrite(
+        tmp_path=tmp_path,
+        configured=configured,
+        references=references,
+        contract_path=DEFINITION,
+        document=definition,
+    )
+    _rewrite(
+        tmp_path=tmp_path,
+        configured=configured,
+        references=references,
+        contract_path=EXECUTION,
+        document=execution,
+    )
+    launch["task"]["configured_scene_revision_digest"] = configured[
+        "revision_digest"
+    ]
+
+    result = adapt_rigid_relocation_task_template(
+        request=launch,
+        configured_revision=configured,
+        materialized_references=references,
+    )
+
+    task_spec = result["native_task_definition"]["task_spec"]
+    assert result["manipulation_strategy"] == "pick_and_place"
+    assert task_spec["minimum_lift_m"] == 0.08
+    assert task_spec["interaction_affordance"][
+        "contact_point_scoring_frame_m"
+    ] == [-0.06, 0.0, 0.0]
+    phase_plan = materialize_rigid_construction_phase_plan(
+        {
+            "task_kind": "rigid_pick_place",
+            "cadence": {"maximum_action_steps": task_spec["maximum_action_steps"]},
+            "task_spec": task_spec,
+            "objects": [
+                {
+                    "task_subject": True,
+                    "asset_id": configured["replacement"]["identity"]["id"],
+                    "object_type": "RIGID",
+                    "pose_world": result["native_task_definition"][
+                        "task_object_pose_world"
+                    ],
+                    "reset_state": {
+                        "root_pose_world": result["native_task_definition"][
+                            "task_object_pose_world"
+                        ],
+                        "joint_positions": {},
+                    },
+                }
+            ],
+        }
+    )
+    phase_ids = [row["phase_id"] for row in phase_plan["phases"]]
+    assert phase_ids[:3] == ["pregrasp", "grasp_contact", "lift_clearance"]
+    assert "place" in phase_ids
+    assert "release" in phase_ids
 def test_rigid_root_cannot_begin_below_registered_support(tmp_path: Path) -> None:
     launch, configured, references, docs = _case(tmp_path)
     source = copy.deepcopy(docs[SOURCE_OBJECT])

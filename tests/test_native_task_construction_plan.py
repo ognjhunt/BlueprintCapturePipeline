@@ -284,6 +284,31 @@ def test_840313_rigid_fixture_has_complete_construction_gate_sequence() -> None:
     )
 
 
+def test_pick_place_withdraws_along_destination_qualified_clearance_axis() -> None:
+    scene = _rigid_fixture(asset_id="book_replacement")
+    affordance = scene["task_spec"]["interaction_affordance"]
+    affordance["insertion_withdrawal_unit_world"] = [0.0, 0.0, 1.0]
+    affordance["affordance_digest"] = canonical_digest(
+        affordance, digest_field="affordance_digest"
+    )
+
+    plan = materialize_native_task_construction_phase_plan(
+        scene, rigid_waypoint_count=3
+    )
+    phases = {row["phase_id"]: row for row in plan["phases"]}
+
+    assert phases["settle_observe"]["position_world_m"][:2] == pytest.approx(
+        phases["place"]["position_world_m"][:2]
+    )
+    assert phases["settle_observe"]["position_world_m"][2] == pytest.approx(
+        phases["place"]["position_world_m"][2]
+        + affordance["pregrasp_clearance_m"]
+    )
+    assert phases["retreat"]["position_world_m"] == phases[
+        "settle_observe"
+    ]["position_world_m"]
+
+
 def test_planar_push_compiles_without_a_fake_lift_or_grasp() -> None:
     plan = materialize_native_task_construction_phase_plan(
         _planar_push_fixture(), rigid_waypoint_count=3

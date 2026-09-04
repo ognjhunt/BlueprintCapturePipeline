@@ -181,6 +181,56 @@
         "kind": {"enum": ["rigid_relocation", "articulated_manipulation"]},
         "strategy": {"enum": ["planar_push", "pick_and_place", "articulated_open_close"]},
         "configured_scene_revision_digest": {"$ref": "#/$defs/digest"},
+        "destination": {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "identity",
+            "relation",
+            "visible_label",
+            "asset",
+            "rights_admission",
+            "static_qualification",
+            "native_import_qualification",
+            "geometry",
+            "placement_qualification",
+            "pose_world",
+            "provider_disclosure_allowed"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {"const": "task_evaluation_rigid_destination_asset.v1"},
+            "identity": {"$ref": "#/$defs/versionedIdentity"},
+            "relation": {"enum": ["inside", "on"]},
+            "visible_label": {"type": "string", "minLength": 1, "maxLength": 200},
+            "asset": {"$ref": "#/$defs/reference"},
+            "rights_admission": {"$ref": "#/$defs/reference"},
+            "static_qualification": {"$ref": "#/$defs/reference"},
+            "native_import_qualification": {"$ref": "#/$defs/reference"},
+            "geometry": {"$ref": "#/$defs/reference"},
+            "placement_qualification": {"$ref": "#/$defs/reference"},
+            "pose_world": {
+              "type": "object",
+              "required": ["position_world_m", "orientation_xyzw"],
+              "additionalProperties": false,
+              "properties": {
+                "position_world_m": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {"type": "number"}
+                },
+                "orientation_xyzw": {
+                  "type": "array",
+                  "minItems": 4,
+                  "maxItems": 4,
+                  "items": {"type": "number"}
+                }
+              }
+            },
+            "provider_disclosure_allowed": {"const": true}
+          }
+        },
         "subject": {
           "oneOf": [
             {
@@ -238,6 +288,14 @@
         {
           "if": {"properties": {"kind": {"const": "rigid_relocation"}}, "required": ["kind"]},
           "then": {"properties": {"strategy": {"enum": ["planar_push", "pick_and_place"]}}}
+        },
+        {
+          "if": {"properties": {"strategy": {"const": "pick_and_place"}}, "required": ["strategy"]},
+          "then": {"required": ["destination"]}
+        },
+        {
+          "if": {"properties": {"strategy": {"const": "planar_push"}}, "required": ["strategy"]},
+          "then": {"not": {"required": ["destination"]}}
         },
         {
           "if": {"properties": {"kind": {"const": "articulated_manipulation"}}, "required": ["kind"]},

@@ -506,7 +506,8 @@ def materialize_scene839873_policy_canary_setup(
         scene_plan.get("scene_id") != f"interiorgs-{scene_id}"
         or scene_plan.get("task_kind") != "rigid_pick_place"
         or scene_plan.get("robot", {}).get("robot_id") != "franka_panda"
-        or scene_plan.get("task_spec", {}).get("manipulation_strategy") != "planar_push"
+        or scene_plan.get("task_spec", {}).get("manipulation_strategy")
+        not in {"planar_push", "pick_and_place"}
     ):
         blockers.append("policy_canary_scene_task_embodiment_incompatible")
     task_spec = _mapping_or_empty(scene_plan.get("task_spec"))

@@ -152,6 +152,46 @@ uncaptured regions.
      cameras and exact repair masks. Re-run ArtiFixer and grade all cameras again.
      Never repaint an orientation or camera-calibration failure.
 
+## Rigid destination tasks
+
+`pick_and_place` launches may bind one additional passive SimReady destination
+at `task.destination`. This is additive to the configured movable subject. It
+does not turn every scene object into a runtime asset and it does not hard-code
+a bowl, tray, or task name into the canary.
+
+The destination must provide immutable, file-backed references for its USD
+asset, `task_evaluation_rigid_destination_rights_admission.v1` receipt, static qualification, Isaac-native import
+qualification, and
+`task_evaluation_rigid_destination_geometry.v1` record. The geometry record
+binds the world pose, the authored `inside` or `on` relationship, the exact
+rigid-body paths that may support the subject, a support-height interval, and
+destination-local interior bounds. The compiler independently re-derives the
+subject scoring-frame collision bounds from the subject's exact static
+qualification, then shrinks the interior volume by that full footprint. The
+scorer transforms every subject sample into the live destination frame, so it
+requires whole-subject containment instead of accepting a center point that
+leaves part of the object outside.
+
+The episode compiler copies the destination into the sealed runtime packet as
+the singular `task_support` asset. The runtime resets it independently from the
+movable subject, requires its live pose to remain within the qualified reset
+tolerance, and routes destination contact sensing to its exact rigid-body
+paths. A scene-specific
+`task_evaluation_rigid_destination_placement_qualification.v1` receipt must bind
+the exact configured revision/collision, destination bytes and qualifications,
+pose, nonpenetration, support stability, all three cameras, and repeated native
+reset readback. The DROID instruction names the configured subject and visible
+destination dynamically, for example `Pick up and place the open book into the
+blue document tray.` Planar-push launches retain their existing target-region
+contract and must not include `task.destination`.
+
+Before a destination is used in a paid episode, retain its authoring source and
+parameters, renderer/kernel/export versions, USD bytes and digest, license and
+provider-disclosure authority, static validators, Isaac import/readback, exact
+mass/collider/material properties, and camera-visible review frames. Generated
+geometry remains `development_only` support and never replaces observed source
+geometry.
+
 ## Droplet capability contract
 
 The droplet needs repository code at the deployed protected-main commit, the

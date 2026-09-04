@@ -230,6 +230,24 @@ def _scene_plan() -> dict[str, Any]:
                 "sha256": "1bfd4438e057587c785b8211a70e26b896dd1ef90626e7923c541dbfd7c125cc",
                 "pose_world": json.loads(json.dumps(pose)),
             },
+            {
+                "name": "task_support",
+                "semantic_role": "task_support",
+                "asset_id": "document_tray",
+                "task_subject": False,
+                "object_type": "RIGID",
+                "pose_world": {
+                    "position_world_m": list(_DESTINATION),
+                    "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                },
+                "reset_state": {
+                    "root_pose_world": {
+                        "position_world_m": list(_DESTINATION),
+                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    },
+                    "joint_positions": {},
+                },
+            },
         ],
         "appearance_frame_alignment": {
             "status": "aligned",
@@ -503,6 +521,7 @@ class FakeIsaac:
         self.result_sealed_at_close: bool | None = None
         self.built_control_frequencies: list[float] = []
         self.built_cell_ids: list[str] = []
+        self.built_object_roles: list[tuple[str, ...]] = []
 
     def launch(
         self, receipt_path: Path, *, device: str, appearance_render_path: str
@@ -531,6 +550,12 @@ class FakeIsaac:
             float(scene_plan["cadence"]["control_frequency_hz"])
         )
         self.built_cell_ids.append(str(scene_plan["scenario"]["cell_id"]))
+        self.built_object_roles.append(
+            tuple(
+                str(row.get("semantic_role") or row.get("name") or "")
+                for row in scene_plan["objects"]
+            )
+        )
         return SimpleNamespace(env=_FakeEnvironment(self))
 
 
@@ -1071,6 +1096,12 @@ def test_quick10_rehearsal_runs_twenty_real_client_rollouts_in_ten_isolated_proc
     assert all(isaac.launches == 1 and isaac.builds == 1 for isaac in isaacs)
     assert all(isaac.result_sealed_at_close is True for isaac in isaacs)
     assert all(isaac.built_control_frequencies == [15.0] for isaac in isaacs)
+    assert all(
+        isaac.built_object_roles == [
+            ("task_object", "scene_appearance", "task_support")
+        ]
+        for isaac in isaacs
+    )
     roles = {row["role"] for row in result["artifact_inventory"]}
     assert {"indexed_episode_telemetry", "review_video", "policy_query_receipt"} <= roles
     assert "episode_interpretation_receipt" not in roles

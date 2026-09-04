@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -55,6 +56,12 @@ from .task_evaluation_native_construction_feedback_controller import (
 
 OUTPUT_SCHEMA_VERSION = "task_evaluation_episode_compiler_output.v1"
 MAXIMUM_INLINE_NUREC_CONVERSION_BYTES = 32 * 1024 * 1024
+DESTINATION_ASSET_CONTRACT_PATH = "task.destination.asset"
+DESTINATION_RIGHTS_CONTRACT_PATH = "task.destination.rights_admission"
+DESTINATION_STATIC_CONTRACT_PATH = "task.destination.static_qualification"
+DESTINATION_NATIVE_CONTRACT_PATH = "task.destination.native_import_qualification"
+DESTINATION_GEOMETRY_CONTRACT_PATH = "task.destination.geometry"
+DESTINATION_PLACEMENT_CONTRACT_PATH = "task.destination.placement_qualification"
 
 
 class TaskEvaluationNativeArenaEpisodeCompilerError(RuntimeError):
@@ -295,6 +302,438 @@ def _identity(value: Mapping[str, Any], expected: Mapping[str, Any], *, label: s
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             f"episode_compiler_identity_mismatch:{label}"
         )
+
+
+def _runtime_asset_id(value: Any, *, label: str) -> str:
+    source = str(value or "")
+    runtime = re.sub(r"[^A-Za-z0-9_]", "_", source)
+    if not runtime or not runtime.replace("_", "a").isalnum():
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            f"episode_compiler_runtime_asset_id_invalid:{label}"
+        )
+    return runtime
+
+
+def _numeric_bounds(value: Any) -> tuple[list[float], list[float]]:
+    try:
+        lower = [float(item) for item in value["minimum"]]
+        upper = [float(item) for item in value["maximum"]]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_destination_geometry_invalid"
+        ) from exc
+    if (
+        len(lower) != 3
+        or len(upper) != 3
+        or any(low >= high for low, high in zip(lower, upper, strict=True))
+        or not all(math.isfinite(item) for item in (*lower, *upper))
+    ):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_destination_geometry_invalid"
+        )
+    return lower, upper
+
+
+def _rotate_xyzw(vector: list[float], quaternion: list[float]) -> list[float]:
+    x, y, z, w = quaternion
+    vx, vy, vz = vector
+    tx = 2.0 * (y * vz - z * vy)
+    ty = 2.0 * (z * vx - x * vz)
+    tz = 2.0 * (x * vy - y * vx)
+    return [
+        vx + w * tx + (y * tz - z * ty),
+        vy + w * ty + (z * tx - x * tz),
+        vz + w * tz + (x * ty - y * tx),
+    ]
+
+
+def _multiply_xyzw(left: list[float], right: list[float]) -> list[float]:
+    lx, ly, lz, lw = left
+    rx, ry, rz, rw = right
+    result = [
+        lw * rx + lx * rw + ly * rz - lz * ry,
+        lw * ry - lx * rz + ly * rw + lz * rx,
+        lw * rz + lx * ry - ly * rx + lz * rw,
+        lw * rw - lx * rx - ly * ry - lz * rz,
+    ]
+    norm = math.sqrt(sum(value * value for value in result))
+    return [value / norm for value in result]
+
+
+def _subject_bounds_in_scoring_frame(
+    *, bounds: Any, transform: Any
+) -> tuple[list[float], list[float]]:
+    lower, upper = _numeric_bounds(bounds)
+    try:
+        offset = [float(item) for item in transform["position_m"]]
+        orientation = [float(item) for item in transform["orientation_xyzw"]]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_destination_subject_geometry_invalid"
+        ) from exc
+    if (
+        len(offset) != 3
+        or len(orientation) != 4
+        or not math.isclose(
+            sum(item * item for item in orientation),
+            1.0,
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        )
+    ):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_destination_subject_geometry_invalid"
+        )
+    inverse = [-orientation[0], -orientation[1], -orientation[2], orientation[3]]
+    corners = [
+        _rotate_xyzw(
+            [x - offset[0], y - offset[1], z - offset[2]], inverse
+        )
+        for x in (lower[0], upper[0])
+        for y in (lower[1], upper[1])
+        for z in (lower[2], upper[2])
+    ]
+    return (
+        [min(point[axis] for point in corners) for axis in range(3)],
+        [max(point[axis] for point in corners) for axis in range(3)],
+    )
+
+
+def _stage_destination_asset(
+    *,
+    request: Mapping[str, Any],
+    materialized_references: Mapping[str, Mapping[str, Any]],
+    output_root: Path,
+    configured_collision_path: Path,
+    task_spec: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    task = request.get("task")
+    destination = task.get("destination") if isinstance(task, Mapping) else None
+    if destination is None:
+        return None
+    if (
+        not isinstance(destination, Mapping)
+        or task.get("strategy") != "pick_and_place"
+    ):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_destination_contract_invalid"
+        )
+    identity = destination.get("identity")
+    source_id = str(identity.get("id") or "") if isinstance(identity, Mapping) else ""
+    runtime_id = _runtime_asset_id(source_id, label="destination")
+    asset_source = _reference_path(
+        materialized_references, DESTINATION_ASSET_CONTRACT_PATH
+    )
+    rights = _json_reference(
+        materialized_references,
+        DESTINATION_RIGHTS_CONTRACT_PATH,
+        "task_evaluation_rigid_destination_rights_admission.v1",
+    )
+    static = _json_reference(
+        materialized_references,
+        DESTINATION_STATIC_CONTRACT_PATH,
+        "task_evaluation_rigid_replacement_static_qualification.v1",
+    )
+    native = _json_reference(
+        materialized_references,
+        DESTINATION_NATIVE_CONTRACT_PATH,
+        "task_evaluation_replacement_native_import_result.v1",
+    )
+    geometry = _json_reference(
+        materialized_references,
+        DESTINATION_GEOMETRY_CONTRACT_PATH,
+        "task_evaluation_rigid_destination_geometry.v1",
+    )
+    placement = _json_reference(
+        materialized_references,
+        DESTINATION_PLACEMENT_CONTRACT_PATH,
+        "task_evaluation_rigid_destination_placement_qualification.v1",
+    )
+    subject_static = _json_reference(
+        materialized_references,
+        "scene.configured_revision.replacement.static_qualification",
+        "task_evaluation_rigid_replacement_static_qualification.v1",
+    )
+    asset_digest, asset_size = _sha256_and_size(asset_source)
+    static_digest = _sha256_and_size(
+        _reference_path(materialized_references, DESTINATION_STATIC_CONTRACT_PATH)
+    )[0]
+    native_digest = _sha256_and_size(
+        _reference_path(materialized_references, DESTINATION_NATIVE_CONTRACT_PATH)
+    )[0]
+    subject_static_digest = _sha256_and_size(
+        _reference_path(
+            materialized_references,
+            "scene.configured_revision.replacement.static_qualification",
+        )
+    )[0]
+    configured_collision_digest = _sha256_and_size(configured_collision_path)[0]
+    rigid_paths = (static.get("observed_structure") or {}).get("rigid_body_paths")
+    intended_paths = geometry.get("intended_support_prim_paths")
+    pose = destination.get("pose_world")
+    subject_bounds = geometry.get("subject_collision_bounds_scoring_frame_m")
+    interior_bounds = geometry.get("destination_interior_bounds_body_frame_m")
+    bounds = geometry.get("destination_position_bounds_destination_frame_m")
+    support_interval = geometry.get("support_height_interval_m")
+    try:
+        orientation = [float(value) for value in pose["orientation_xyzw"]]
+        position = [float(value) for value in pose["position_world_m"]]
+        subject_lower, subject_upper = _numeric_bounds(subject_bounds)
+        interior_lower, interior_upper = _numeric_bounds(interior_bounds)
+        lower, upper = _numeric_bounds(bounds)
+        support = [float(value) for value in support_interval]
+        withdrawal = [
+            float(value)
+            for value in geometry["insertion_withdrawal_unit_destination_frame"]
+        ]
+        subject_destination_orientation = [
+            float(value)
+            for value in geometry[
+                "subject_orientation_destination_frame_xyzw"
+            ]
+        ]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_destination_geometry_invalid"
+        ) from exc
+    if (
+        destination.get("schema_version")
+        != "task_evaluation_rigid_destination_asset.v1"
+        or destination.get("identity") is None
+        or destination.get("relation") not in {"inside", "on"}
+        or not str(destination.get("visible_label") or "").strip()
+        or destination.get("provider_disclosure_allowed") is not True
+        or rights.get("status") != "admitted"
+        or rights.get("destination_identity") != identity
+        or rights.get("private_provider_processing_allowed") is not True
+        or rights.get("rights_admission_digest")
+        != canonical_digest(rights, digest_field="rights_admission_digest")
+        or static.get("status") != "authored_structure_statically_qualified"
+        or static.get("replacement_identity") != identity
+        or (static.get("replacement_usd") or {}).get("sha256") != asset_digest
+        or (static.get("replacement_usd") or {}).get("size_bytes") != asset_size
+        or static.get("result_digest")
+        != canonical_digest(static, digest_field="result_digest")
+        or not isinstance(rigid_paths, list)
+        or not rigid_paths
+        or native.get("status") != "qualified"
+        or native.get("replacement_identity") != identity
+        or native.get("native_simulator_import_qualified") is not True
+        or native.get("native_isaac_executed") is not True
+        or native.get("asset_digest") != asset_digest
+        or native.get("static_qualification_digest") != static_digest
+        or native.get("support_contact_observed") is not True
+        or native.get("deterministic_reset_state_digest_repeat_count", 0) < 3
+        or native.get("blockers") not in ([], ())
+        or native.get("result_digest")
+        != canonical_digest(native, digest_field="result_digest")
+        or geometry.get("status") != "qualified"
+        or geometry.get("subject_identity") != task.get("subject", {}).get("identity")
+        or geometry.get("destination_identity") != identity
+        or geometry.get("relation") != destination.get("relation")
+        or geometry.get("pose_world") != pose
+        or geometry.get("subject_static_qualification_digest")
+        != subject_static_digest
+        or geometry.get("destination_static_qualification_digest") != static_digest
+        or geometry.get("whole_subject_containment_encoded_by_shrunk_bounds")
+        is not True
+        or geometry.get("geometry_digest")
+        != canonical_digest(geometry, digest_field="geometry_digest")
+        or not isinstance(intended_paths, list)
+        or not intended_paths
+        or any(path not in rigid_paths for path in intended_paths)
+        or len(position) != 3
+        or len(orientation) != 4
+        or len(lower) != 3
+        or len(upper) != 3
+        or len(support) != 2
+        or len(withdrawal) != 3
+        or len(subject_destination_orientation) != 4
+        or any(low >= high for low, high in zip(lower, upper, strict=True))
+        or support[0] >= support[1]
+        or not all(
+            math.isfinite(value)
+            for value in (
+                *position,
+                *orientation,
+                *subject_lower,
+                *subject_upper,
+                *interior_lower,
+                *interior_upper,
+                *lower,
+                *upper,
+                *support,
+                *withdrawal,
+                *subject_destination_orientation,
+            )
+        )
+        or not math.isclose(
+            sum(value * value for value in orientation),
+            1.0,
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        )
+        or not math.isclose(
+            sum(value * value for value in withdrawal),
+            1.0,
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        )
+        or not math.isclose(
+            sum(value * value for value in subject_destination_orientation),
+            1.0,
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        )
+    ):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_destination_geometry_invalid"
+        )
+    computed_subject_lower, computed_subject_upper = _subject_bounds_in_scoring_frame(
+        bounds=(subject_static.get("observed_structure") or {}).get(
+            "collision_bounds_body_frame_m"
+        ),
+        transform=(task_spec.get("interaction_affordance") or {}).get(
+            "asset_root_from_scoring_frame"
+        ),
+    )
+    oriented_subject_corners = [
+        _rotate_xyzw([x, y, z], subject_destination_orientation)
+        for x in (computed_subject_lower[0], computed_subject_upper[0])
+        for y in (computed_subject_lower[1], computed_subject_upper[1])
+        for z in (computed_subject_lower[2], computed_subject_upper[2])
+    ]
+    oriented_subject_lower = [
+        min(point[axis] for point in oriented_subject_corners) for axis in range(3)
+    ]
+    oriented_subject_upper = [
+        max(point[axis] for point in oriented_subject_corners) for axis in range(3)
+    ]
+    expected_lower = [
+        interior_lower[axis] - oriented_subject_lower[axis] for axis in range(3)
+    ]
+    expected_upper = [
+        interior_upper[axis] - oriented_subject_upper[axis] for axis in range(3)
+    ]
+    reset = placement.get("repeated_reset_readback") or {}
+    try:
+        reset_repeat_count = int(reset["repeat_count"])
+        reset_translation_error = float(reset["maximum_translation_error_m"])
+        reset_rotation_error = float(reset["maximum_rotation_error_rad"])
+        reset_translation_tolerance = float(reset["translation_tolerance_m"])
+        reset_rotation_tolerance = float(reset["rotation_tolerance_rad"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_destination_placement_invalid"
+        ) from exc
+    if (
+        any(
+            not math.isclose(observed, expected, rel_tol=0.0, abs_tol=1e-9)
+            for observed, expected in zip(
+                (*subject_lower, *subject_upper),
+                (*computed_subject_lower, *computed_subject_upper),
+                strict=True,
+            )
+        )
+        or any(
+            not math.isclose(observed, expected, rel_tol=0.0, abs_tol=1e-9)
+            for observed, expected in zip(
+                (*lower, *upper), (*expected_lower, *expected_upper), strict=True
+            )
+        )
+        or placement.get("status") != "qualified"
+        or placement.get("destination_identity") != identity
+        or placement.get("configured_scene_revision_digest")
+        != task.get("configured_scene_revision_digest")
+        or placement.get("configured_scene_collision_digest")
+        != configured_collision_digest
+        or placement.get("destination_asset_digest") != asset_digest
+        or placement.get("destination_static_qualification_digest") != static_digest
+        or placement.get("destination_native_import_qualification_digest")
+        != native_digest
+        or placement.get("destination_geometry_digest")
+        != geometry.get("geometry_digest")
+        or placement.get("pose_world") != pose
+        or placement.get("nonpenetration_passed") is not True
+        or placement.get("support_stability_passed") is not True
+        or placement.get("camera_visibility")
+        != {"external": True, "wrist": True, "overview": True}
+        or isinstance(reset.get("repeat_count"), bool)
+        or reset_repeat_count < 3
+        or not all(
+            math.isfinite(value)
+            for value in (
+                reset_translation_error,
+                reset_rotation_error,
+                reset_translation_tolerance,
+                reset_rotation_tolerance,
+            )
+        )
+        or min(reset_translation_tolerance, reset_rotation_tolerance) <= 0.0
+        or min(reset_translation_error, reset_rotation_error) < 0.0
+        or reset_translation_error > reset_translation_tolerance
+        or reset_rotation_error > reset_rotation_tolerance
+        or placement.get("placement_qualification_digest")
+        != canonical_digest(
+            placement, digest_field="placement_qualification_digest"
+        )
+    ):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_destination_placement_invalid"
+        )
+    destination_root = output_root / "task-destination"
+    destination_root.mkdir(mode=0o750)
+    suffix = asset_source.suffix.lower()
+    target = destination_root / f"task_support{suffix}"
+    if target.exists() or target.is_symlink():
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_destination_asset_output_conflict"
+        )
+    try:
+        os.link(asset_source, target, follow_symlinks=False)
+    except OSError:
+        shutil.copyfile(asset_source, target)
+    target.chmod(0o440)
+    if _sha256_and_size(target) != _sha256_and_size(asset_source):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_destination_asset_copy_mismatch"
+        )
+    target_local = [
+        (low + high) / 2.0 for low, high in zip(lower, upper, strict=True)
+    ]
+    target_offset_world = _rotate_xyzw(target_local, orientation)
+    return {
+        "asset_id": runtime_id,
+        "source_asset_id": source_id,
+        "path": target,
+        "pose_world": pose,
+        "relation": destination["relation"],
+        "visible_label": str(destination["visible_label"]).strip(),
+        "destination_position_bounds_destination_frame_m": {
+            "minimum": lower,
+            "maximum": upper,
+        },
+        "target_position_world_m": [
+            position[axis] + target_offset_world[axis] for axis in range(3)
+        ],
+        "destination_pose_world": [*position, *orientation],
+        "destination_orientation_world_xyzw": _multiply_xyzw(
+            orientation, subject_destination_orientation
+        ),
+        "destination_reset_translation_tolerance_m": float(
+            reset_translation_tolerance
+        ),
+        "destination_reset_rotation_tolerance_rad": float(
+            reset_rotation_tolerance
+        ),
+        "support_height_interval_m": support,
+        "intended_support_prim_paths": list(intended_paths),
+        "insertion_withdrawal_unit_world": _rotate_xyzw(
+            withdrawal, orientation
+        ),
+        "rights_digest": rights["rights_admission_digest"],
+        "geometry_digest": geometry["geometry_digest"],
+    }
 
 
 def _materialize_native_particlefield_appearance(
@@ -567,6 +1006,59 @@ def compile_native_arena_episode(
     task_spec["manipulation_strategy"] = request["task"]["strategy"]
     task_spec["success_criteria"] = success.get("criteria")
     task_spec = _runtime_subject_task_spec(task_spec)
+    configured_assets = _extract_configured_assets(
+        _reference_path(
+            materialized_references,
+            "scene.configured_revision.configured_scene_bundle",
+        ),
+        output_root=root,
+    )
+    destination_asset = _stage_destination_asset(
+        request=request,
+        materialized_references=materialized_references,
+        output_root=root,
+        configured_collision_path=configured_assets["collision"],
+        task_spec=task_spec,
+    )
+    if destination_asset is not None:
+        affordance = dict(task_spec["interaction_affordance"])
+        affordance["intended_support_prim_paths"] = destination_asset[
+            "intended_support_prim_paths"
+        ]
+        affordance["insertion_withdrawal_unit_world"] = destination_asset[
+            "insertion_withdrawal_unit_world"
+        ]
+        affordance["affordance_digest"] = canonical_digest(
+            affordance, digest_field="affordance_digest"
+        )
+        task_spec.update(
+            destination_relation=destination_asset["relation"],
+            destination_support_asset_id=destination_asset["asset_id"],
+            destination_position_bounds_destination_frame_m=destination_asset[
+                "destination_position_bounds_destination_frame_m"
+            ],
+            destination_pose_world=destination_asset["destination_pose_world"],
+            destination_orientation_xyzw=destination_asset[
+                "destination_orientation_world_xyzw"
+            ],
+            destination_reset_translation_tolerance_m=destination_asset[
+                "destination_reset_translation_tolerance_m"
+            ],
+            destination_reset_rotation_tolerance_rad=destination_asset[
+                "destination_reset_rotation_tolerance_rad"
+            ],
+            target_position_world_m=destination_asset["target_position_world_m"],
+            support_height_interval_m=destination_asset[
+                "support_height_interval_m"
+            ],
+            visible_target_label=destination_asset["visible_label"],
+            prompt=(
+                f"Pick up the configured rigid object and place it "
+                f"{destination_asset['relation']} the "
+                f"{destination_asset['visible_label']}."
+            ),
+            interaction_affordance=affordance,
+        )
     native_candidate_universe = robot.get("native_construction_candidate_universe")
     if native_candidate_universe is not None:
         if not isinstance(native_candidate_universe, Mapping):
@@ -587,13 +1079,6 @@ def compile_native_arena_episode(
             ) from exc
     source_subject_asset_id = task_spec["source_subject_identity"]
     runtime_subject_asset_id = task_spec["subject_asset_id"]
-    configured_assets = _extract_configured_assets(
-        _reference_path(
-            materialized_references,
-            "scene.configured_revision.configured_scene_bundle",
-        ),
-        output_root=root,
-    )
     policy_observation_setup = request["execution_adapter"].get(
         "policy_observation_setup"
     )
@@ -674,6 +1159,29 @@ def compile_native_arena_episode(
                 reset_state={"root_pose_world": object_pose, "joint_positions": {}},
             )
         packet_assets.append(row)
+    if destination_asset is not None:
+        path = destination_asset["path"]
+        digest, size = _sha256_and_size(path)
+        packet_assets.append(
+            {
+                "semantic_role": "task_support",
+                "filename": path.name,
+                "asset_id": destination_asset["asset_id"],
+                "source_asset_id": destination_asset["source_asset_id"],
+                "object_type": "RIGID",
+                "source": {
+                    "root": "evidence",
+                    "relative_path": path.relative_to(root).as_posix(),
+                    "size_bytes": size,
+                    "sha256": digest,
+                },
+                "pose_world": destination_asset["pose_world"],
+                "reset_state": {
+                    "root_pose_world": destination_asset["pose_world"],
+                    "joint_positions": {},
+                },
+            }
+        )
     control_search = None
     if native_candidate_universe is not None:
         control_search = {

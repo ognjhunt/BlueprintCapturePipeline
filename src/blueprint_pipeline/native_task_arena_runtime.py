@@ -1192,6 +1192,8 @@ def build_native_task_arena_environment(
             articulation_adaptations[runtime_name] = dict(adaptation)
         if task_subject:
             spawn_addon["semantic_tags"] = [("class", "task_object")]
+        elif role == "task_support":
+            spawn_addon["semantic_tags"] = [("class", "task_support")]
         elif role == "replacement":
             spawn_addon["semantic_tags"] = [("class", "inactive_replacement")]
         object_kwargs: dict[str, Any] = {
@@ -1206,7 +1208,7 @@ def build_native_task_arena_environment(
             "spawn_cfg_addon": spawn_addon,
         }
         object_class = Object
-        if task_subject or role == "replacement":
+        if task_subject or role in {"replacement", "task_support"}:
             object_class = ResettableObject
             object_kwargs.update(
                 reset_event_name=f"reset_{runtime_name}_state",

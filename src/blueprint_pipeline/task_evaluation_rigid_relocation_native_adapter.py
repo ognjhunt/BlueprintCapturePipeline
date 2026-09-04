@@ -4,9 +4,9 @@ Scene configuration publishes robot-neutral task truth.  The native episode
 compiler consumes a simulator-specific packet.  This module is the one
 production-owned boundary between those contracts: it reopens the exact three
 digest-bound source documents, cross-compares every duplicated task fact, and
-emits a sealed native representation without changing the external
-``planar_push`` manipulation strategy.  ``rigid_pick_place`` remains only the
-legacy native runtime's umbrella task kind.
+emits a sealed native representation without changing the external strategy.
+Both planar push and explicitly authored rigid pick-and-place compile into the
+existing native ``rigid_pick_place`` runtime task kind.
 """
 
 from __future__ import annotations
@@ -244,6 +244,7 @@ def _runtime_geometry(
     native_import: Mapping[str, Any],
     start: Sequence[float],
     target: Sequence[float],
+    strategy: str,
 ) -> dict[str, Any]:
     observed = static.get("observed_structure")
     if (
@@ -305,7 +306,7 @@ def _runtime_geometry(
             "rigid_relocation_native_adapter_executable_geometry_missing"
         )
     delta = [float(target[index]) - float(start[index]) for index in range(3)]
-    if abs(delta[2]) > 1.0e-9:
+    if strategy == "planar_push" and abs(delta[2]) > 1.0e-9:
         raise TaskEvaluationRigidRelocationNativeAdapterError(
             "rigid_relocation_native_adapter_planar_height_mismatch"
         )
@@ -343,16 +344,17 @@ def _runtime_geometry(
     # precontact descent.  Raise the contact point up the pushed face until
     # the envelope clears, and refuse the task when the face is too short to
     # push at a clearing height.
-    required_contact_z_world = (
-        support_top
-        + CLOSED_HAND_SUPPORT_ENVELOPE_BELOW_GRASP_FRAME_M
-        + PUSH_SUPPORT_CLEARANCE_MARGIN_M
-    )
-    contact[2] = max(contact[2], required_contact_z_world - float(start[2]))
-    if contact[2] > float(upper[2]) - 0.005:
-        raise TaskEvaluationRigidRelocationNativeAdapterError(
-            "rigid_relocation_native_adapter_push_support_clearance_unauthorable"
+    if strategy == "planar_push":
+        required_contact_z_world = (
+            support_top
+            + CLOSED_HAND_SUPPORT_ENVELOPE_BELOW_GRASP_FRAME_M
+            + PUSH_SUPPORT_CLEARANCE_MARGIN_M
         )
+        contact[2] = max(contact[2], required_contact_z_world - float(start[2]))
+        if contact[2] > float(upper[2]) - 0.005:
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_push_support_clearance_unauthorable"
+            )
     root_position = [float(start[index]) - center[index] for index in range(3)]
     # The task start is a scoring-frame center, while Isaac spawns the rigid
     # asset at its authored root.  Those frames are normally related by the
@@ -487,6 +489,7 @@ def adapt_rigid_relocation_task_template(
         task = {
             "identity": template.get("task_identity"),
             "subject": {"identity": template.get("object_identity")},
+            "strategy": template.get("strategy"),
         }
         replacement_identity = template.get("object_identity")
         authority_digest = authority["receipt_digest"]
@@ -506,7 +509,7 @@ def adapt_rigid_relocation_task_template(
             validated_request["run_mode"] != "episode_evaluation"
             or task["binding_mode"] != "reuse_configured_template"
             or task["kind"] != "rigid_relocation"
-            or task["strategy"] != "planar_push"
+            or task["strategy"] not in {"planar_push", "pick_and_place"}
             or task["identity"] != revision["task_template"]["identity"]
             or task["subject"]["identity"] != revision["replacement"]["identity"]
             or task["configured_scene_revision_digest"] != revision["revision_digest"]
@@ -558,8 +561,8 @@ def adapt_rigid_relocation_task_template(
         or execution.get("status") != "preregistered_before_any_episode"
         or template.get("task_identity") != task["identity"]
         or template.get("object_identity") != task["subject"]["identity"]
-        or template.get("strategy") != "planar_push"
-        or execution.get("strategy") != "planar_push"
+        or template.get("strategy") != task["strategy"]
+        or execution.get("strategy") != task["strategy"]
     ):
         raise TaskEvaluationRigidRelocationNativeAdapterError(
             "rigid_relocation_native_adapter_identity_or_strategy_mismatch"
@@ -580,7 +583,10 @@ def adapt_rigid_relocation_task_template(
         raise TaskEvaluationRigidRelocationNativeAdapterError(
             "rigid_relocation_native_adapter_task_pose_mismatch"
         )
-    if not math.isclose(start[2], target[2], rel_tol=0.0, abs_tol=1.0e-9):
+    strategy = str(task["strategy"])
+    if strategy == "planar_push" and not math.isclose(
+        start[2], target[2], rel_tol=0.0, abs_tol=1.0e-9
+    ):
         raise TaskEvaluationRigidRelocationNativeAdapterError(
             "rigid_relocation_native_adapter_planar_height_mismatch"
         )
@@ -656,6 +662,7 @@ def adapt_rigid_relocation_task_template(
         native_import=documents[NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH],
         start=start,
         target=target,
+        strategy=strategy,
     )
     source_documents = {
         "bindings": bindings,
@@ -722,6 +729,64 @@ def adapt_rigid_relocation_task_template(
         raise TaskEvaluationRigidRelocationNativeAdapterError(
             "rigid_relocation_native_adapter_support_bounds_invalid"
         )
+    configured_affordance = template.get("interaction_affordance")
+    if strategy == "pick_and_place":
+        if not isinstance(configured_affordance, Mapping):
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_pick_affordance_missing"
+            )
+        contact_point = _vector(
+            configured_affordance.get("contact_point_scoring_frame_m"),
+            field="interaction_affordance.contact_point",
+        )
+        outward = _vector(
+            configured_affordance.get("approach_unit_scoring_frame"),
+            field="interaction_affordance.approach_unit",
+        )
+        jaw_axis = _vector(
+            configured_affordance.get("jaw_unit_scoring_frame"),
+            field="interaction_affordance.jaw_unit",
+        )
+        lift_unit = _vector(
+            configured_affordance.get("lift_unit_world"),
+            field="interaction_affordance.lift_unit",
+        )
+        pregrasp_clearance = _positive_number(
+            configured_affordance.get("pregrasp_clearance_m"),
+            field="interaction_affordance.pregrasp_clearance_m",
+        )
+        minimum_lift = _positive_number(
+            configured_affordance.get("minimum_lift_m"),
+            field="interaction_affordance.minimum_lift_m",
+        )
+        for field, vector in (
+            ("approach_unit", outward),
+            ("jaw_unit", jaw_axis),
+            ("lift_unit", lift_unit),
+        ):
+            if not math.isclose(
+                math.sqrt(sum(value * value for value in vector)),
+                1.0,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            ):
+                raise TaskEvaluationRigidRelocationNativeAdapterError(
+                    "rigid_relocation_native_adapter_pick_affordance_invalid:"
+                    + field
+                )
+        contact_approach = [-float(value) for value in outward]
+        if abs(sum(a * b for a, b in zip(contact_approach, jaw_axis, strict=True))) > 1e-6:
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_pick_affordance_invalid:jaw_axis"
+            )
+    else:
+        contact_point = geometry["contact_point_scoring_frame_m"]
+        outward = geometry["approach_unit_scoring_frame"]
+        contact_approach = [-float(value) for value in outward]
+        jaw_axis = [-contact_approach[1], contact_approach[0], 0.0]
+        lift_unit = [0.0, 0.0, 1.0]
+        pregrasp_clearance = 0.12
+        minimum_lift = 0.0
     interaction_affordance: dict[str, Any] = {
         "schema_version": "native_rigid_interaction_affordance.v1",
         "subject_asset_id": task["subject"]["identity"]["id"],
@@ -730,19 +795,11 @@ def adapt_rigid_relocation_task_template(
             "position_m": geometry["center_body_frame_m"],
             "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
         },
-        "contact_point_scoring_frame_m": geometry[
-            "contact_point_scoring_frame_m"
-        ],
-        "approach_unit_scoring_frame": geometry[
-            "approach_unit_scoring_frame"
-        ],
-        "lift_unit_world": [0.0, 0.0, 1.0],
+        "contact_point_scoring_frame_m": contact_point,
+        "approach_unit_scoring_frame": outward,
+        "lift_unit_world": lift_unit,
         "gripper_orientation_scoring_frame_xyzw": [],
-        "pregrasp_clearance_m": 0.12,
-        "closed_fingertip_forward_offset_m": (
-            ROBOTIQ_2F85_CLOSED_FINGERTIP_FORWARD_OFFSET_M
-        ),
-        "push_contact_interference_m": PUSH_CONTACT_INTERFERENCE_M,
+        "pregrasp_clearance_m": pregrasp_clearance,
         "arrival_orientation_tolerance_rad": 0.08,
         "allowed_contact_prim_paths": geometry["allowed_contact_prim_paths"],
         "intended_support_prim_paths": geometry[
@@ -751,21 +808,25 @@ def adapt_rigid_relocation_task_template(
         "support_alignment": geometry["support_alignment"],
         "affordance_digest": "",
     }
+    if strategy == "planar_push":
+        interaction_affordance.update(
+            closed_fingertip_forward_offset_m=(
+                ROBOTIQ_2F85_CLOSED_FINGERTIP_FORWARD_OFFSET_M
+            ),
+            push_contact_interference_m=PUSH_CONTACT_INTERFERENCE_M,
+        )
     # ``approach_unit_scoring_frame`` points outward from the contact face;
     # the gripper's +Z approach axis must point the other way, into the object.
     # Keep the parallel-jaw axis horizontal and tangent to the planar push so
     # neither finger is authored through the support.  Identity here is not a
     # harmless default: it points +Z upward and made native Isaac spend every
     # phase rotating toward an unrelated frame instead of reaching the mug.
-    outward = interaction_affordance["approach_unit_scoring_frame"]
-    contact_approach = [-float(value) for value in outward]
-    horizontal_jaw = [-contact_approach[1], contact_approach[0], 0.0]
     try:
         interaction_affordance[
             "gripper_orientation_scoring_frame_xyzw"
         ] = grasp_orientation_contact_xyzw(
             approach_axis=contact_approach,
-            jaw_axis=horizontal_jaw,
+            jaw_axis=jaw_axis,
         )
     except NativeFrankaActionMathError as exc:
         raise TaskEvaluationRigidRelocationNativeAdapterError(
@@ -778,9 +839,13 @@ def adapt_rigid_relocation_task_template(
     native_task_spec = {
         "schema_version": "adp_task_spec.v2",
         "task_kind": "rigid_pick_place",
-        "manipulation_strategy": "planar_push",
+        "manipulation_strategy": strategy,
         "subject_asset_id": task["subject"]["identity"]["id"],
-        "prompt": "Move the configured rigid object to the registered target by planar push.",
+        "prompt": (
+            "Pick up the configured rigid object and place it at the registered target."
+            if strategy == "pick_and_place"
+            else "Move the configured rigid object to the registered target by planar push."
+        ),
         "start_pose_world": [*start, 0.0, 0.0, 0.0, 1.0],
         "target_position_world_m": target,
         "destination_position_tolerance_m": target_tolerance,
@@ -796,11 +861,11 @@ def adapt_rigid_relocation_task_template(
                 target[2] + 0.01,
             ],
         },
-        "support_height_interval_m": [start[2] - 0.01, start[2] + 0.01],
+        "support_height_interval_m": [target[2] - 0.01, target[2] + 0.01],
         "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
         "destination_orientation_tolerance_rad": 0.08,
         "minimum_translation_m": minimum_displacement,
-        "minimum_lift_m": 0.0,
+        "minimum_lift_m": minimum_lift,
         "movement_epsilon_m": min(0.005, minimum_displacement / 10.0),
         "control_frequency_hz": control_frequency,
         "maximum_action_steps": maximum_steps,
@@ -815,10 +880,13 @@ def adapt_rigid_relocation_task_template(
         "settle_position_tolerance_m": 0.005,
         "settle_orientation_tolerance_rad": 0.03,
         "relocation_tracking_tolerance_m": target_tolerance,
-        "push_contact_max_displacement_m": PUSH_CONTACT_MAX_DISPLACEMENT_M,
         "workspace_position_bounds_world_m": {
-            "minimum": [support_minimum[0], support_minimum[1], start[2] - 0.25],
-            "maximum": [support_maximum[0], support_maximum[1], start[2] + 0.25],
+            "minimum": [support_minimum[0], support_minimum[1], min(start[2], target[2]) - 0.25],
+            "maximum": [
+                support_maximum[0],
+                support_maximum[1],
+                max(start[2], target[2]) + minimum_lift + 0.25,
+            ],
         },
         "interaction_affordance": interaction_affordance,
         "action_bounds_m_per_step": {
@@ -830,6 +898,10 @@ def adapt_rigid_relocation_task_template(
             "source_documents_digest"
         ],
     }
+    if strategy == "planar_push":
+        native_task_spec["push_contact_max_displacement_m"] = (
+            PUSH_CONTACT_MAX_DISPLACEMENT_M
+        )
     native_definition = {
         "schema_version": "task_evaluation_native_task_definition.v1",
         "identity": dict(task["identity"]),
@@ -867,7 +939,7 @@ def adapt_rigid_relocation_task_template(
         "status": "adapted",
         "external_task_kind": "rigid_relocation",
         "native_task_kind": "rigid_pick_place",
-        "manipulation_strategy": "planar_push",
+        "manipulation_strategy": strategy,
         "source_documents": source_documents,
         "native_task_definition": native_definition,
         "native_success_criteria": native_success,
