@@ -209,13 +209,23 @@ def test_iteration_refuses_a_commit_that_is_not_on_origin_main(
 
 
 def test_iteration_accepts_a_commit_that_is_on_origin_main(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A merged commit clears the ancestry guard and proceeds past it."""
 
     clone, merged, _unmerged = _repo_with_main(tmp_path)
     roots = _disjoint_roots(tmp_path)
     roots["source_repo"] = str(clone)
+    monkeypatch.setattr(
+        deploy_mod,
+        "provision_production_cad_skill_sources",
+        lambda *_args, **_kwargs: {
+            "sources": [
+                {"id": "text-to-cad", "path": str(tmp_path / "text-to-cad")},
+                {"id": "multi-agent-cad", "path": str(tmp_path / "Multi-Agent-CAD")},
+            ]
+        },
+    )
 
     with pytest.raises(deploy_mod.ControlPlaneDeployError) as excinfo:
         deploy_mod.deploy_control_plane_commit(
@@ -258,7 +268,9 @@ def _push_branch(clone: Path, commit: str, branch: str) -> None:
     )
 
 
-def test_canary_accepts_a_pushed_branch_commit(tmp_path: Path) -> None:
+def test_canary_accepts_a_pushed_branch_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Canary trades the merge wait, never immutability.
 
     A fix-and-fire loop that merges before every deploy spends 5-15 minutes
@@ -271,6 +283,16 @@ def test_canary_accepts_a_pushed_branch_commit(tmp_path: Path) -> None:
     _push_branch(clone, unmerged, "debug/canary")
     roots = _disjoint_roots(tmp_path)
     roots["source_repo"] = str(clone)
+    monkeypatch.setattr(
+        deploy_mod,
+        "provision_production_cad_skill_sources",
+        lambda *_args, **_kwargs: {
+            "sources": [
+                {"id": "text-to-cad", "path": str(tmp_path / "text-to-cad")},
+                {"id": "multi-agent-cad", "path": str(tmp_path / "Multi-Agent-CAD")},
+            ]
+        },
+    )
 
     with pytest.raises(deploy_mod.ControlPlaneDeployError) as excinfo:
         deploy_mod.deploy_control_plane_commit(

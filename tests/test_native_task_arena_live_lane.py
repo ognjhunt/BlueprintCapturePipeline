@@ -162,6 +162,7 @@ def _provider_bundle(
     root.mkdir()
     bundle = root / "native_task_arena_provider_bundle.zip"
     mode = {
+        "destination": "destination_qualification",
         "construction": "construction_canary",
         "controls": "controls",
         "policy": "policy",
@@ -179,6 +180,7 @@ def _provider_bundle(
     else:
         bundle.write_bytes(f"production-shaped-{link}-bundle".encode())
     bound_names = {
+        "destination": (),
         "construction": (),
         "controls": (
             "native_task_arena_construction_result.v1.json",
@@ -271,6 +273,9 @@ def _provider_bundle(
         },
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
         "expected_output_filename": {
+            "destination": (
+                "task_evaluation_rigid_destination_native_observation.v1.json"
+            ),
             "construction": "native_task_arena_construction_result.v1.json",
             "controls": "native_task_arena_control_result.v1.json",
             "policy": "native_task_arena_policy_result.v1.json",
@@ -1110,6 +1115,7 @@ def test_policy_profile_refuses_tampered_preallocation_closeout_binding(
 @pytest.mark.parametrize(
     "link,probe_kind",
     [
+        ("destination", "native-task-arena-destination-qualification"),
         ("construction", "native-task-arena-construction"),
         ("controls", "native-task-arena-controls"),
         ("policy", "native-task-arena-policy"),
