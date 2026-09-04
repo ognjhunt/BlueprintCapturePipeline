@@ -530,3 +530,324 @@ def test_revision_reports_provider_disclosure_truthfully(tmp_path: Path) -> None
     assert semantic_revision["source"]["raw_source_sent_to_external_provider"] is False
     assert semantic_revision["source"]["production_semantic_input_reuse"] is True
     assert semantic_revision["source"]["provider_disclosure_decision"] == decision
+
+
+# --- supplemental passive destination ----------------------------------------
+
+from blueprint_pipeline.task_evaluation_rigid_destination_geometry import (  # noqa: E402
+    SCHEMA_VERSION as GEOMETRY_SCHEMA_VERSION,
+)
+
+
+def _write_json(path: Path, value: dict) -> Path:
+    path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def _reference(path: Path, *, uri: str) -> dict[str, object]:
+    return {"uri": uri, "digest": _sha256(path), "size_bytes": path.stat().st_size}
+
+
+def _materialized(contract_path: str, path: Path, *, uri: str) -> dict[str, object]:
+    return {
+        "contract_path": contract_path,
+        **_reference(path, uri=uri),
+        "materialized_path": str(path),
+        "full_byte_service_account_readback_passed": True,
+    }
+
+
+def _static_receipt(identity: dict, bounds: dict, rigid: list[str], colliders: list[str], asset: Path) -> dict:
+    receipt = {
+        "schema_version": "task_evaluation_rigid_replacement_static_qualification.v1",
+        "status": "authored_structure_statically_qualified",
+        "replacement_identity": identity,
+        "replacement_usd": {"path": str(asset), "sha256": _sha256(asset), "size_bytes": asset.stat().st_size},
+        "authored_structure_statically_qualified": True,
+        "structural_findings": [],
+        "claim_boundary": {"native_simulator_import_qualified": False},
+        "observed_structure": {
+            "collision_bounds_body_frame_m": bounds,
+            "rigid_body_paths": rigid,
+            "collision_prim_paths": colliders,
+        },
+        "result_digest": "",
+    }
+    receipt["result_digest"] = canonical_digest(receipt, digest_field="result_digest")
+    return receipt
+
+
+def _native_receipt(identity: dict, asset: Path, static: Path) -> dict:
+    receipt = {
+        "schema_version": "task_evaluation_replacement_native_import_result.v1",
+        "status": "qualified",
+        "replacement_identity": identity,
+        "asset_digest": _sha256(asset),
+        "static_qualification_digest": _sha256(static),
+        "native_isaac_executed": True,
+        "native_simulator_import_qualified": True,
+        "support_contact_observed": True,
+        "deterministic_reset_state_digest_repeat_count": 3,
+        "blockers": [],
+        "result_digest": "",
+    }
+    receipt["result_digest"] = canonical_digest(receipt, digest_field="result_digest")
+    return receipt
+
+
+def _destination_publication_case(tmp_path: Path, *, with_destination_artifacts: bool = True):
+    request = configuration_request_fixture()
+    _authorize_public_display(request)
+    subject_identity = request["task"]["subject"]["identity"]
+    destination_identity = {"id": "document-tray", "version": "v1"}
+    artifacts = tmp_path / "provider-artifacts"
+    artifacts.mkdir()
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+
+    # Subject artifacts (real static receipt so geometry can read its bounds).
+    subject_asset = artifacts / "replacement.usda"
+    subject_asset.write_bytes(b"#usda 1.0\n# book\n")
+    subject_static_path = _write_json(
+        artifacts / "static-receipt.json",
+        _static_receipt(
+            subject_identity,
+            {"minimum": [-0.14765, -0.19885, -0.01057], "maximum": [0.14765, 0.19885, 0.01057]},
+            ["/Asset"],
+            ["/Asset/Collider"],
+            subject_asset,
+        ),
+    )
+    roles = {
+        "configured_appearance_without_source_object": "appearance.usdc",
+        "appearance_removal_receipt": "appearance-receipt.json",
+        "configured_collision_without_source_object": "collision.usda",
+        "collision_excision_receipt": "collision-receipt.json",
+        "native_import_qualification_receipt": "native-receipt.json",
+        "configured_scene_bundle_candidate_manifest": "bundle-candidate.json",
+        "scene_assembly_receipt": "assembly-receipt.json",
+    }
+    rows = [
+        _artifact("statically_qualified_replacement_asset", subject_asset),
+        _artifact("native_qualified_replacement_asset", subject_asset),
+        _artifact("static_qualification_receipt", subject_static_path),
+    ]
+    for role, name in roles.items():
+        path = artifacts / name
+        path.write_bytes((role + "\n").encode())
+        rows.append(_artifact(role, path))
+    rows.extend(_thumbnail_artifacts(artifacts))
+
+    # Destination artifacts exactly as stages 4 and 5 retain them.
+    tray = artifacts / "statically_qualified_destination_asset.usdz"
+    tray.write_bytes(b"PK-tray-bytes")
+    tray_static_path = _write_json(
+        artifacts / "destination_static_qualification_receipt.v1.json",
+        _static_receipt(
+            destination_identity,
+            {"minimum": [-0.165, -0.24, 0.0], "maximum": [0.165, 0.24, 0.045]},
+            ["/Asset"],
+            ["/Asset/Colliders/Bottom", "/Asset/Colliders/Left", "/Asset/Colliders/Right", "/Asset/Colliders/Front", "/Asset/Colliders/Back"],
+            tray,
+        ),
+    )
+    tray_requalification_path = _write_json(
+        artifacts / "destination_static_requalification_receipt.v1.json",
+        json.loads(tray_static_path.read_text()),
+    )
+    tray_native_path = _write_json(
+        artifacts / "destination_native_import_qualification_receipt.v1.json",
+        _native_receipt(destination_identity, tray, tray_static_path),
+    )
+    if with_destination_artifacts:
+        rows.extend(
+            [
+                _artifact("statically_qualified_destination_asset", tray),
+                _artifact("destination_static_qualification_receipt", tray_static_path),
+                _artifact("destination_static_requalification_receipt", tray_requalification_path),
+                _artifact("native_qualified_destination_asset", tray),
+                _artifact("destination_native_import_qualification_receipt", tray_native_path),
+            ]
+        )
+    stage_results = [{"output_artifacts": rows}]
+
+    # Request-declared destination (no native import or geometry yet).
+    rights_path = _write_json(inputs / "tray-rights.json", {"status": "admitted"})
+    destination_uri = "s3://blueprint-production-inputs/destination/"
+    request["task"]["strategy"] = "pick_and_place"
+    request["task"]["destination"] = {
+        "schema_version": "task_evaluation_rigid_destination_asset.v1",
+        "identity": destination_identity,
+        "relation": "inside",
+        "visible_label": "blue document tray",
+        "asset": _reference(tray, uri=destination_uri + "tray.usdz"),
+        "rights_admission": _reference(rights_path, uri=destination_uri + "tray-rights.json"),
+        "static_qualification": _reference(tray_static_path, uri=destination_uri + "tray-static.json"),
+        "native_probe": {
+            "schema_version": "task_evaluation_rigid_destination_native_probe_configuration.v1",
+            "placement_support_scene_prim_paths": ["/Root/_J6IMDBVAV27YPTUKI888888"],
+            "qualification_limits": {
+                "maximum_penetration_m": 0.001,
+                "minimum_support_contact_force_n": 0.01,
+                "maximum_forbidden_contact_force_n": 0.1,
+                "settle_translation_tolerance_m": 0.002,
+                "settle_rotation_tolerance_rad": 0.01,
+                "reset_translation_tolerance_m": 0.002,
+                "reset_rotation_tolerance_rad": 0.01,
+                "minimum_camera_pixels": {"external": 100, "wrist": 100, "overview": 100},
+            },
+            "settle_sample_count": 3,
+            "settle_steps_per_sample": 60,
+        },
+        "pose_world": {"position_world_m": [3.25, -6.76, 0.275], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]},
+        "provider_disclosure_allowed": True,
+    }
+    definition_path = _write_json(
+        inputs / "task-definition.json",
+        {
+            "identity": request["task"]["identity"],
+            "task_spec": {
+                "subject_asset_id": subject_identity["id"],
+                "interaction_affordance": {
+                    "subject_asset_id": subject_identity["id"],
+                    "asset_root_from_scoring_frame": {
+                        "position_m": [0.0, 0.0, 0.0],
+                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    },
+                },
+            },
+        },
+    )
+    request["task"]["definition"] = _reference(
+        definition_path, uri="s3://blueprint-production-inputs/task/definition.json"
+    )
+    simready_path = _write_json(
+        inputs / "tray-simready.json",
+        {
+            "schema_version": "task_evaluation_passive_destination_simready.v1",
+            "destination_identity": destination_identity,
+            "intended_support_prim_paths": ["/Asset/Colliders/Bottom"],
+            "interior_bounds_body_frame_m": {"minimum": [-0.16, -0.235, 0.005], "maximum": [0.16, 0.235, 0.045]},
+        },
+    )
+    authoring_path = _write_json(inputs / "tray-authoring.json", {"status": "authored_candidate_pending_qualification"})
+    envelope = {
+        "run_id": request["run_id"],
+        "team_namespace": request["team_namespace"],
+        "expected_production_commit": request["expected_production_commit"],
+        "request": request,
+        "recipe": {
+            "scene_identity": request["scene"]["identity"],
+            "task_identity": request["task"]["identity"],
+            "subject_identity": subject_identity,
+            "provider_disclosure": {"raw_source_bytes_to_external_provider": False},
+            "supplemental_destination": {
+                "identity": destination_identity,
+                "relation": "inside",
+                "asset": request["task"]["destination"]["asset"],
+                "static_qualification": request["task"]["destination"]["static_qualification"],
+                "rights_admission": request["task"]["destination"]["rights_admission"],
+                "authoring_receipt": _reference(authoring_path, uri=destination_uri + "tray-authoring.json"),
+                "simready_result": _reference(simready_path, uri=destination_uri + "tray-simready.json"),
+            },
+        },
+        "materialized_references": [
+            _materialized("task.definition", definition_path, uri=request["task"]["definition"]["uri"]),
+            _materialized(
+                "construction.recipe.supplemental_destination.simready_result",
+                simready_path,
+                uri=destination_uri + "tray-simready.json",
+            ),
+        ],
+        "render_inputs_result": {
+            "status": "derived_method_inputs_materialized",
+            "raw_interiorgs_bytes_in_provider_packet": False,
+            "disclosure_decision": _disclosure_decision(provider=False),
+        },
+        "provider_disclosure_receipt": {"raw_interiorgs_bytes_in_provider_bundle": False},
+    }
+    object_store = tmp_path / "object-store"
+    object_store.mkdir()
+
+    def publish(*, path: Path, object_name: str):
+        destination = object_store / object_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, destination)
+        return {
+            "uri": f"s3://blueprint-production-inputs/{object_name}",
+            "digest": _sha256(path),
+            "size_bytes": path.stat().st_size,
+            "full_byte_service_account_readback_passed": True,
+            "readback_digest": _sha256(destination),
+            "readback_size_bytes": destination.stat().st_size,
+        }
+
+    output = tmp_path / "publication"
+    output.mkdir()
+    return envelope, stage_results, output, publish, object_store, {
+        "tray": tray,
+        "tray_static": tray_static_path,
+        "tray_native": tray_native_path,
+        "subject_static": subject_static_path,
+        "destination_identity": destination_identity,
+    }
+
+
+def test_publication_qualifies_the_supplemental_destination_and_completes_the_revision(
+    tmp_path: Path,
+) -> None:
+    envelope, stage_results, output, publish, object_store, refs = _destination_publication_case(tmp_path)
+    result = publish_configured_scene_revision(
+        envelope=envelope, stage_results=stage_results, output_root=output, publisher=publish
+    )
+    revision = validate_configured_scene_revision(
+        json.loads(Path(result["configured_scene_revision"]["path"]).read_text())
+    )
+    destination = revision["task_template"]["destination"]
+    assert destination["identity"] == refs["destination_identity"]
+    assert destination["native_import_qualification"]["digest"] == _sha256(refs["tray_native"])
+    assert destination["asset"]["digest"] == _sha256(refs["tray"])
+    assert destination["static_qualification"]["digest"] == _sha256(refs["tray_static"])
+    assert "placement_qualification" not in destination
+    geometry_uri = destination["geometry"]["uri"]
+    geometry_path = object_store / geometry_uri.removeprefix("s3://blueprint-production-inputs/")
+    geometry = json.loads(geometry_path.read_text())
+    assert _sha256(geometry_path) == destination["geometry"]["digest"]
+    assert geometry["schema_version"] == GEOMETRY_SCHEMA_VERSION
+    assert geometry["destination_identity"] == refs["destination_identity"]
+    assert geometry["subject_identity"] == envelope["request"]["task"]["subject"]["identity"]
+    assert geometry["subject_static_qualification_digest"] == _sha256(refs["subject_static"])
+    assert geometry["destination_static_qualification_digest"] == _sha256(refs["tray_static"])
+    assert geometry["pose_world"] == envelope["request"]["task"]["destination"]["pose_world"]
+    assert geometry["intended_support_prim_paths"] == ["/Asset"]
+    offering = result["configured_scene_offering"]
+    assert offering["task"]["destination"]["geometry"] == destination["geometry"]
+    assert offering["task"]["destination"]["native_import_qualification"] == destination[
+        "native_import_qualification"
+    ]
+    published_roles = {row["role"] for row in json.loads(
+        (output / "configured_scene_publication_receipt.v1.json").read_text()
+    )["objects"]}
+    assert {
+        "destination_asset",
+        "destination_static_qualification",
+        "destination_static_requalification",
+        "destination_native_import_qualification",
+        "destination_geometry",
+        "destination_simready_result",
+    } <= published_roles
+
+
+def test_publication_refuses_a_declared_destination_the_run_never_qualified(
+    tmp_path: Path,
+) -> None:
+    envelope, stage_results, output, publish, _store, _refs = _destination_publication_case(
+        tmp_path, with_destination_artifacts=False
+    )
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationPublicationError,
+        match="scene_configuration_publication_artifact_missing:native_qualified_destination_asset",
+    ):
+        publish_configured_scene_revision(
+            envelope=envelope, stage_results=stage_results, output_root=output, publisher=publish
+        )
