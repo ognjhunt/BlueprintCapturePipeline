@@ -185,3 +185,61 @@ def test_request_rejects_malformed_source_and_terms_digests() -> None:
         "standard_splat_rights_invalid",
         "standard_splat_source_sha256_invalid",
     }
+
+
+def test_production_decoder_runtime_and_inputs_do_not_modify_source_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import standard_splat_conversion as conversion
+    paths = _fixture(tmp_path)
+    request = paths["data"] / "request.json"
+    shutil.copyfile(paths["request"], request)
+    decoder = tmp_path / "sealed-decoder"
+    shutil.copytree(paths["repo"] / "tools", decoder / "tools")
+    calls = []
+    runtime_identity = {"runtime_digest": "sha256:" + "c" * 64}
+    def validate(**kwargs):
+        assert kwargs["repo_root"] == paths["repo"]
+        return {"node": "/sealed/node", "renderer_root": str(decoder), "identity": runtime_identity}
+    def convert(source, destination, **kwargs):
+        calls.append(kwargs)
+        shutil.copyfile(source, destination)
+        return {"status": "completed"}
+    monkeypatch.setattr(conversion, "validate_splat_render_runtime", validate)
+    monkeypatch.setattr(conversion, "convert_to_standard_ply", convert)
+    monkeypatch.setattr(conversion, "read_compressed_ply_chunk_bounds",
+                        lambda _path: SimpleNamespace(vertex_count=18))
+    receipt = materialize_standard_splat_conversion(
+        request_path=request, repo_root=paths["repo"], data_root=paths["data"],
+        output_root=paths["data"] / "conversion",
+        receipt_output=paths["data"] / "retained/receipt.json",
+        production_runtime_root=tmp_path / "sealed-runtime",
+    )
+    assert calls[0]["node"] == "/sealed/node"
+    assert calls[0]["repo_root"] == decoder
+    assert receipt["decoder"]["command"][0] == "/sealed/node"
+    assert receipt["decoder"]["production_runtime_identity"] == runtime_identity
+    assert subprocess.run(
+        ["git", "-C", str(paths["repo"]), "status", "--porcelain"],
+        check=True, capture_output=True, text=True,
+    ).stdout == ""
+
+
+def test_failed_decoder_retains_original_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import standard_splat_conversion as conversion
+    paths = _fixture(tmp_path)
+    failure = {"status": "blocked", "blockers": ["decoder_failed"], "stderr": "fixture decoder refusal"}
+    monkeypatch.setattr(conversion, "convert_to_standard_ply", lambda *_args, **_kwargs: failure)
+    monkeypatch.setattr(conversion, "read_compressed_ply_chunk_bounds",
+                        lambda _path: SimpleNamespace(vertex_count=18))
+    output = paths["data"] / "failed"
+    with pytest.raises(StandardSplatConversionError, match="decoder_failed"):
+        materialize_standard_splat_conversion(
+            request_path=paths["request"], repo_root=paths["repo"],
+            data_root=paths["data"], output_root=output,
+        )
+    recorded = json.loads((output / "standard_splat_conversion_failure.v1.json").read_text())
+    assert recorded["conversion"] == failure
+    assert recorded["failure_digest"] == canonical_digest(recorded, digest_field="failure_digest")
