@@ -98,3 +98,57 @@ def test_recipe_digest_binds_every_adapter_and_configuration() -> None:
         match="scene_construction_recipe_digest_invalid",
     ):
         validate_scene_construction_recipe(value)
+
+
+def _supplemental_destination() -> dict[str, object]:
+    return {
+        "identity": {"id": "document-tray", "version": "v1"},
+        "relation": "inside",
+        "asset": _ref(41),
+        "static_qualification": _ref(42),
+        "rights_admission": _ref(43),
+        "authoring_receipt": _ref(44),
+        "simready_result": _ref(45),
+    }
+
+
+def test_accepts_one_supplemental_passive_destination_bound_by_reference() -> None:
+    value = _recipe()
+    value["supplemental_destination"] = _supplemental_destination()
+    value["recipe_digest"] = canonical_digest(value, digest_field="recipe_digest")
+    assert validate_scene_construction_recipe(value) == value
+
+
+@pytest.mark.parametrize(
+    ("mutate", "blocker"),
+    [
+        (
+            lambda destination, recipe: destination.update(
+                identity=dict(recipe["subject_identity"])
+            ),
+            "scene_construction_recipe_supplemental_destination_identity_conflict",
+        ),
+        (
+            lambda destination, recipe: destination.pop("simready_result"),
+            "scene_construction_recipe_invalid:supplemental_destination",
+        ),
+        (
+            lambda destination, recipe: destination.update(relation="beside"),
+            "scene_construction_recipe_invalid:supplemental_destination.relation",
+        ),
+        (
+            lambda destination, recipe: destination.update(
+                native_import_qualification=_ref(46)
+            ),
+            "scene_construction_recipe_invalid:supplemental_destination",
+        ),
+    ],
+)
+def test_supplemental_destination_fails_closed(mutate, blocker) -> None:
+    value = _recipe()
+    destination = _supplemental_destination()
+    mutate(destination, value)
+    value["supplemental_destination"] = destination
+    value["recipe_digest"] = canonical_digest(value, digest_field="recipe_digest")
+    with pytest.raises(TaskEvaluationSceneConstructionRecipeError, match=blocker):
+        validate_scene_construction_recipe(value)
