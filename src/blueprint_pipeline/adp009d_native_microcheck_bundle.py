@@ -1116,6 +1116,7 @@ def build_native_microcheck_bundle(
         "rigid_frame_transforms.py",
         "adp009d_task_scoring.py",
         "adp_task_scoring.py",
+        "adp_rigid_task_scoring.py",
         "articulation_graph_contract.py",
         "episode_visual_evidence.py",
         "adp009d_policy_server_worker.py",
