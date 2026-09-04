@@ -119,10 +119,14 @@ def test_production_agent_executes_only_pinned_skill_then_reopens_step(
     def runner(argv, **kwargs):
         observed["argv"] = argv
         observed["env"] = kwargs["env"]
+        cwd = Path(kwargs["cwd"])
+        resolve = lambda value: (  # noqa: E731 - compact fake subprocess path rule
+            Path(value) if Path(value).is_absolute() else cwd / value
+        )
         output_index = argv.index("--output") + 1
-        Path(argv[output_index]).write_bytes(b"STEP fixture")
-        Path(argv[argv.index("--stl") + 1]).write_bytes(b"STL fixture")
-        Path(argv[argv.index("--glb") + 1]).write_bytes(b"GLB fixture")
+        resolve(argv[output_index]).write_bytes(b"STEP fixture")
+        resolve(argv[argv.index("--stl") + 1]).write_bytes(b"STL fixture")
+        resolve(argv[argv.index("--glb") + 1]).write_bytes(b"GLB fixture")
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
     def inspect(*, step_path, output_path):
@@ -151,7 +155,14 @@ def test_production_agent_executes_only_pinned_skill_then_reopens_step(
     assert result["simready_qualified"] is False
     assert observed["argv"][0] == "/sealed/python"
     assert observed["argv"][1] == str(text_root / "skills/cad/scripts/step")
+    assert observed["argv"][observed["argv"].index("--stl") + 1] == (
+        "passive_destination.stl"
+    )
+    assert observed["argv"][observed["argv"].index("--glb") + 1] == (
+        "passive_destination.glb"
+    )
     assert "packages/cadpy/src" in observed["env"]["PYTHONPATH"]
+    assert Path(result["artifacts"]["agent_invocation"]["path"]).is_file()
 
 
 def test_agent_generator_cannot_access_files_or_network() -> None:
