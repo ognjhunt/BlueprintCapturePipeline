@@ -23,6 +23,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest
 from .production_cad_skill_sources import (
     DEFAULT_ROOT as DEFAULT_CAD_SOURCE_ROOT,
@@ -394,6 +395,33 @@ def execute_passive_destination_cad_agent(
     generator.write_text(proposal.generator_source, encoding="utf-8")
     brief = output / "CAD_BRIEF.md"
     brief.write_text(proposal.cad_brief_markdown + "\n", encoding="utf-8")
+    invocation_receipt: dict[str, Any] = {
+        "schema_version": "task_evaluation_passive_destination_cad_agent_invocation.v1",
+        "status": "agent_output_persisted_before_cad_execution",
+        "run_id": request["run_id"],
+        "request_digest": request["request_digest"],
+        "provider": invocation.provider,
+        "model": invocation.model,
+        "sdk_version": invocation.sdk_version,
+        "usage": dict(invocation.usage),
+        "actual_cost_usd": invocation.cost_usd,
+        "cost_status": invocation.cost_status,
+        "cad_brief": _file(brief),
+        "generator_source": _file(generator),
+        "proposal_digest": canonical_digest(proposal.model_dump(mode="json")),
+        "web_research_allowed": False,
+        "web_research_performed": False,
+        "agent_self_grading_forbidden": True,
+        "invocation_digest": "",
+    }
+    invocation_receipt["invocation_digest"] = canonical_digest(
+        invocation_receipt, digest_field="invocation_digest"
+    )
+    invocation_path = output / "agent_invocation.v1.json"
+    invocation_path.write_text(
+        json.dumps(invocation_receipt, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
     step = output / "passive_destination.step"
     stl = output / "passive_destination.stl"
     glb = output / "passive_destination.glb"
@@ -412,9 +440,9 @@ def execute_passive_destination_cad_agent(
             "--output",
             str(step),
             "--stl",
-            str(stl),
+            stl.name,
             "--glb",
-            str(glb),
+            glb.name,
             "--force",
         ],
         cwd=output,
@@ -425,6 +453,27 @@ def execute_passive_destination_cad_agent(
         timeout=600,
     )
     if completed.returncode != 0:
+        failure: dict[str, Any] = {
+            "schema_version": "task_evaluation_passive_destination_cad_failure.v1",
+            "status": "blocked",
+            "run_id": request["run_id"],
+            "request_digest": request["request_digest"],
+            "agent_invocation": _file(invocation_path),
+            "blocker": "passive_destination_cad_skill_execution_failed",
+            "returncode": completed.returncode,
+            "stdout": redacted_failure_text(completed.stdout)[-16_000:],
+            "stderr": redacted_failure_text(completed.stderr)[-16_000:],
+            "automatic_retry_performed": False,
+            "provider_mutations_performed": 0,
+            "failure_digest": "",
+        }
+        failure["failure_digest"] = canonical_digest(
+            failure, digest_field="failure_digest"
+        )
+        (output / "cad_skill_failure.v1.json").write_text(
+            json.dumps(failure, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
         raise PassiveDestinationCadAgentError(
             "passive_destination_cad_skill_execution_failed"
         )
@@ -478,6 +527,7 @@ def execute_passive_destination_cad_agent(
             "stl": _file(stl),
             "glb": _file(glb),
             "inspection": _file(inspection_path),
+            "agent_invocation": _file(invocation_path),
         },
         "measured_envelope_mm": inspection["measured_envelope_mm"],
         "review_render_required": True,
