@@ -94,7 +94,7 @@ def endpoint_for(*, origin: str, run_id: str) -> str:
         (
             "https",
             parsed.netloc,
-            "/api/internal/capture-task-evaluation-runs/"
+            "/api/internal/pipeline/capture-task-evaluation-runs/"
             + urllib.parse.quote(run_id, safe="")
             + "/episode-interpretation-backfills",
             "",

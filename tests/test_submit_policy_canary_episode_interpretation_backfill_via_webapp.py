@@ -42,7 +42,8 @@ def test_reads_exact_sidecar_and_builds_run_scoped_endpoint(tmp_path) -> None:
         origin="https://tryblueprint.io",
         run_id=sidecar["source_binding"]["source_run_id"],
     ).endswith(
-        "/scene839873-quick10/episode-interpretation-backfills"
+        "/api/internal/pipeline/capture-task-evaluation-runs/"
+        "scene839873-quick10/episode-interpretation-backfills"
     )
 
 
