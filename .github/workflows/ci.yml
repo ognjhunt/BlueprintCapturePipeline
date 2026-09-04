@@ -409,7 +409,7 @@ jobs:
       - name: Keyless attest distribution provenance on main
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: attest-provenance
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: |
             ${{ runner.temp }}/blueprint-ci/dist/*.whl
@@ -418,7 +418,7 @@ jobs:
       - name: Keyless attest distribution SBOM on main
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: attest-sbom
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: |
             ${{ runner.temp }}/blueprint-ci/dist/*.whl
