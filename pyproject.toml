@@ -260,6 +260,7 @@ blueprint-analyze-capture-quality = "blueprint_pipeline.capture_quality_analyzer
 blueprint-capture-pipeline = "blueprint_pipeline.capture_orchestrator:main"
 blueprint-render-splat-scene = "blueprint_pipeline.splat_scene_render:main"
 blueprint-build-public-scene-survey = "blueprint_pipeline.public_scene_viewpoint_survey:main"
+blueprint-build-interiorgs-preselection-pack = "blueprint_pipeline.interiorgs_preselection_review_pack:main"
 blueprint-materialize-public-scene-suite = "blueprint_pipeline.public_scene_suite_materializer:main"
 blueprint-materialize-public-scene-method-prerequisites = "blueprint_pipeline.public_scene_method_prerequisites:main"
 blueprint-build-public-scene-simready-control = "blueprint_pipeline.public_scene_simready_control:main"

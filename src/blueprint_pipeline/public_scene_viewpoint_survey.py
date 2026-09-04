@@ -155,6 +155,16 @@ def build_room_viewpoint_survey(
                     "ins_id": item.id,
                     "label": item.extra.get("raw_label", item.label),
                     "centroid_world_m": [round(value, 9) for value in item.centroid],
+                    "aabb_min_world_m": [
+                        round(value, 9) for value in item.bbox_min
+                    ],
+                    "aabb_max_world_m": [
+                        round(value, 9) for value in item.bbox_max
+                    ],
+                    "aabb_size_m": [round(value, 9) for value in item.size()],
+                    "oriented_bounding_box": item.extra.get(
+                        "oriented_bounding_box"
+                    ),
                 }
                 for item in objects
                 if point_in_polygon((item.centroid[0], item.centroid[1]), polygon)
@@ -201,7 +211,11 @@ def build_room_viewpoint_survey(
         )
         if not target_room_indices:
             raise ValueError(f"target_instance_not_in_room:{target_ins_id}")
-        radius = max(0.75, 2.5 * max(target.size()[0], target.size()[1]))
+        # Novel views that sit too close to a captured splat often expose holes
+        # and view-dependent blur even though the target is geometrically in
+        # frame. Start with a wider context distance, then retain the existing
+        # bounded inward fallbacks for small or wall-adjacent rooms.
+        radius = max(1.25, 4.0 * max(target.size()[0], target.size()[1]))
         target_cameras: list[dict[str, Any]] = []
         selected_radius: float | None = None
         radius_attempts: list[dict[str, Any]] = []
@@ -267,6 +281,16 @@ def build_room_viewpoint_survey(
             ),
             "room_boundary_tolerance_m": TARGET_ROOM_BOUNDARY_TOLERANCE_M,
             "target_centroid_world_m": [round(value, 9) for value in target.centroid],
+            "target_aabb_min_world_m": [
+                round(value, 9) for value in target.bbox_min
+            ],
+            "target_aabb_max_world_m": [
+                round(value, 9) for value in target.bbox_max
+            ],
+            "target_aabb_size_m": [round(value, 9) for value in target.size()],
+            "target_oriented_bounding_box": target.extra.get(
+                "oriented_bounding_box"
+            ),
             "planner": "scene_placement.perception_views.generate_view_ring",
             "planner_parameters": {
                 "radius_m": round(float(selected_radius), 9),
