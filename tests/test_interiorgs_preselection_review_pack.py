@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PIL import Image
 import pytest
+import blueprint_pipeline.interiorgs_preselection_review_pack as pack
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.interiorgs_preselection_review_pack import (
@@ -182,6 +183,64 @@ def test_pack_refuses_unknown_target_and_existing_output(tmp_path: Path) -> None
             target_ins_ids=["missing"],
             renderer=lambda *_args, **_kwargs: {},
         )
+
+
+def test_production_pack_uses_sealed_renderer_and_executing_python_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    splat, labels, structure = _sources(tmp_path)
+    renderer_root = tmp_path / "sealed-renderer"
+    repository = Path(__file__).resolve().parents[1]
+    for relative in (
+        "tools/splat_render/render_splat.mjs",
+        "tools/splat_render/src/render_entry.mjs",
+        "tools/splat_render/package-lock.json",
+    ):
+        destination = renderer_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((repository / relative).read_bytes())
+    assert not (renderer_root / "src").exists()
+    validation_calls = []
+    def validate(**kwargs):
+        validation_calls.append(kwargs)
+        return {
+            "renderer_root": str(renderer_root), "node": "node",
+            "browser_executable": "/sealed/browser/chrome",
+            "identity": {"runtime_digest": "sha256:" + "a" * 64},
+        }
+    monkeypatch.setattr(pack, "validate_splat_render_runtime", validate)
+    observed = {}
+    result = build_interiorgs_preselection_review_pack(
+        scene_id="841757", splat_path=splat, labels_path=labels,
+        structure_path=structure, output_root=tmp_path / "review",
+        approved_roots=[tmp_path], target_ins_ids=["115"],
+        production_runtime_root=tmp_path / "sealed-runtime",
+        renderer=_completed_renderer(observed),
+    )
+    assert validation_calls[0]["repo_root"] == repository
+    assert observed["repo_root"] == renderer_root
+    assert observed["browser_executable"] == "/sealed/browser/chrome"
+    sources = result["runtime_identity"]["renderer_sources"]
+    assert sources[0]["path"] == str(Path(pack.__file__).resolve())
+    assert sources[1]["path"] == str(Path(pack.__file__).resolve().with_name("splat_scene_render.py"))
+    assert result["runtime_identity"]["production_runtime"]["runtime_digest"] == "sha256:" + "a" * 64
+
+
+def test_runtime_identity_failure_happens_before_source_render(
+    tmp_path: Path,
+) -> None:
+    splat, labels, structure = _sources(tmp_path)
+    observed = {}
+    with pytest.raises(InteriorGSPreselectionReviewPackError, match="source_invalid"):
+        build_interiorgs_preselection_review_pack(
+            scene_id="841757", splat_path=splat, labels_path=labels,
+            structure_path=structure, output_root=tmp_path / "review",
+            approved_roots=[tmp_path], target_ins_ids=["115"],
+            repo_root=tmp_path / "incomplete-runtime",
+            renderer=_completed_renderer(observed),
+        )
+    assert observed == {}
+    assert not (tmp_path / "review").exists()
 
     existing = tmp_path / "existing"
     existing.mkdir()

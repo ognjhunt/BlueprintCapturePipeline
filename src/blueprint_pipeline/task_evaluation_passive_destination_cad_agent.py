@@ -39,7 +39,7 @@ from .task_evaluation_supervisor.agents_sdk import (
 )
 
 
-REQUEST_SCHEMA_VERSION = "task_evaluation_passive_destination_cad_request.v1"
+REQUEST_SCHEMA_VERSION = "task_evaluation_passive_destination_cad_request.v2"
 RESULT_SCHEMA_VERSION = "task_evaluation_passive_destination_cad_result.v1"
 MODEL = "gpt-5.6-sol"
 REASONING_EFFORT = "high"
@@ -136,6 +136,7 @@ def validate_passive_destination_cad_request(value: Mapping[str, Any]) -> dict[s
         "wall_height_above_base",
         "minimum_interior_x",
         "minimum_interior_y",
+        "minimum_interior_z",
     }
     if (
         request.get("schema_version") != REQUEST_SCHEMA_VERSION
@@ -160,6 +161,8 @@ def validate_passive_destination_cad_request(value: Mapping[str, Any]) -> dict[s
         or float(dimensions["outer_y"])
         - 2.0 * float(dimensions["wall_thickness"])
         < float(dimensions["minimum_interior_y"])
+        or float(dimensions["wall_height_above_base"])
+        < float(dimensions["minimum_interior_z"])
         or not isinstance(backend, Mapping)
         or any(
             backend.get(field) != expected_backend[field]

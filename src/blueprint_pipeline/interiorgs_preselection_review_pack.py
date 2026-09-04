@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw, ImageFont
 from .decision_evidence_contracts import canonical_digest
 from .public_scene_viewpoint_survey import build_room_viewpoint_survey
 from .splat_scene_render import render_splat_scene
+from .task_evaluation_splat_render_runtime import validate_splat_render_runtime
 
 
 SCHEMA_VERSION = "interiorgs_preselection_review_pack.v1"
@@ -197,7 +198,8 @@ def _runtime_identity(node: str, repo_root: Path) -> dict[str, Any]:
     except (OSError, subprocess.SubprocessError):
         node_version = None
     paths = (
-        repo_root / "src/blueprint_pipeline/splat_scene_render.py",
+        Path(__file__).resolve(),
+        Path(__file__).resolve().with_name("splat_scene_render.py"),
         repo_root / "tools/splat_render/render_splat.mjs",
         repo_root / "tools/splat_render/src/render_entry.mjs",
         repo_root / "tools/splat_render/package-lock.json",
@@ -319,6 +321,7 @@ def build_interiorgs_preselection_review_pack(
     browser_executable: str | Path | None = None,
     apply_overlay: bool = False,
     repo_root: str | Path | None = None,
+    production_runtime_root: str | Path | None = None,
     renderer: Callable[..., Mapping[str, Any]] = render_splat_scene,
 ) -> dict[str, Any]:
     """Create room and target renders, labeled tables, and one sealed manifest."""
@@ -333,6 +336,26 @@ def build_interiorgs_preselection_review_pack(
         raise InteriorGSPreselectionReviewPackError(
             "interiorgs_preselection_dimensions_invalid"
         )
+    root = (
+        Path(repo_root).expanduser().resolve()
+        if repo_root is not None
+        else Path(__file__).resolve().parents[2]
+    )
+    production_identity = None
+    if production_runtime_root is not None:
+        runtime = validate_splat_render_runtime(
+            runtime_root=production_runtime_root,
+            repo_root=Path(__file__).resolve().parents[2],
+        )
+        root = Path(runtime["renderer_root"])
+        node = runtime["node"]
+        browser_executable = runtime["browser_executable"]
+        production_identity = runtime["identity"]
+    # Validate provenance before rendering; Python and JavaScript are shipped
+    # in separate trees in the sealed production runtime.
+    runtime_identity = _runtime_identity(node, root)
+    if production_identity is not None:
+        runtime_identity["production_runtime"] = production_identity
     output = _resolved_under(output_root, approved_roots)
     if output.exists() or output.is_symlink():
         raise InteriorGSPreselectionReviewPackError(
@@ -391,11 +414,6 @@ def build_interiorgs_preselection_review_pack(
     cameras_path.write_text(
         json.dumps(cameras, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    root = (
-        Path(repo_root).expanduser().resolve()
-        if repo_root is not None
-        else Path(__file__).resolve().parents[2]
-    )
     render_output = output / "render"
     render = dict(
         renderer(
@@ -451,7 +469,7 @@ def build_interiorgs_preselection_review_pack(
         "frames": frames,
         "contact_sheet": _source_record(contact_sheet) if contact_sheet else None,
         "html_review": _source_record(html_path) if html_path else None,
-        "runtime_identity": _runtime_identity(node, root),
+        "runtime_identity": runtime_identity,
         "claim_boundary": {
             "selection_reconnaissance_only": True,
             "method_input": False,
@@ -501,6 +519,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--repo-root",
         help="optional checkout containing the pinned local Spark renderer runtime",
     )
+    parser.add_argument(
+        "--production-runtime-root",
+        help="validate and use the sealed production Node/browser/renderer runtime",
+    )
     args = parser.parse_args(argv)
     result = build_interiorgs_preselection_review_pack(
         scene_id=args.scene_id,
@@ -517,6 +539,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         browser_executable=args.browser_executable,
         apply_overlay=args.apply_overlay,
         repo_root=args.repo_root,
+        production_runtime_root=args.production_runtime_root,
     )
     print(
         json.dumps(

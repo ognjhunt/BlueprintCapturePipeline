@@ -125,3 +125,23 @@ the score. Conflicts are visible and fail closed.
    full result archive, invoke deterministic scoring and independent learned
    interpretation, and verify the Website exposes all twenty learned-policy
    episodes plus controls and digest-bound downloads.
+
+## Production admission safeguards
+
+New passive-destination CAD requests use `task_evaluation_passive_destination_cad_request.v2`.
+They must specify minimum interior clearance on all three axes. A draft that fits
+XY but is shallower than its minimum Z is refused before model invocation.
+These proposal-level checks do not replace orientation-aware eight-corner
+containment, full trajectory IK, native contacts, or scene placement qualification.
+
+The static USD gate resolves the physics-purpose material binding of every
+collider and verifies that every collider belongs to the single intended rigid
+body. An unbound material with plausible coefficients is insufficient. Destination
+outputs distinguish the owning support rigid-body path from the exact bottom
+collision-prim path; native qualification must establish the actual support contact.
+
+The preselection command accepts `--production-runtime-root` to validate the
+sealed renderer runtime independently from the executing Python source checkout.
+It remains reconnaissance only, not a calibrated method-input or camera
+qualification substitute. These safeguards do not claim that the supplemental
+CAD-to-Content-Agents construction sequence has been executed or qualified.

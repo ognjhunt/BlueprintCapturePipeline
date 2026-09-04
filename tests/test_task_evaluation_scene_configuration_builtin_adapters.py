@@ -61,6 +61,8 @@ def _portable_rigid_asset(
     dynamic_triangle_mesh: bool = False,
     embedded_texture: bool = False,
     body_translation: tuple[float, float, float] | None = None,
+    bind_physics_material: bool = True,
+    unowned_collision: bool = False,
 ) -> None:
     dependency_path = path.with_suffix(".body.usda")
     dependency = Usd.Stage.CreateNew(str(dependency_path))
@@ -92,6 +94,10 @@ def _portable_rigid_asset(
     physics_material.CreateStaticFrictionAttr(0.5)
     physics_material.CreateDynamicFrictionAttr(0.4)
     physics_material.CreateRestitutionAttr(0.1)
+    if bind_physics_material:
+        UsdShade.MaterialBindingAPI.Apply(collider.GetPrim()).Bind(
+            material, UsdShade.Tokens.weakerThanDescendants, "physics"
+        )
     if embedded_texture:
         texture_path = path.with_suffix(".png")
         texture_path.write_bytes(b"digest-bound-packaged-texture")
@@ -109,10 +115,34 @@ def _portable_rigid_asset(
     referenced_body.GetReferences().AddReference(
         str(dependency_path), "/Body"
     )
+    if unowned_collision:
+        outside = UsdGeom.Cube.Define(stage, "/Asset/UnownedCollision").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(outside)
+        UsdShade.MaterialBindingAPI.Apply(outside).Bind(
+            UsdShade.Material(stage.GetPrimAtPath("/Asset/Body/PhysicsMaterial")),
+            UsdShade.Tokens.weakerThanDescendants,
+            "physics",
+        )
     if body_translation is not None:
         UsdGeom.Xformable(referenced_body).AddTranslateOp().Set(Gf.Vec3d(*body_translation))
     stage.GetRootLayer().Save()
     assert UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(source)), str(path))
+
+
+def test_static_gate_rejects_valid_coefficients_on_an_unbound_material(tmp_path: Path) -> None:
+    path = tmp_path / "unbound.usdz"
+    _portable_rigid_asset(path, bind_physics_material=False)
+    findings, observed = _usd_findings(path, physics_bounds=PHYSICS_BOUNDS)
+    assert observed["physics_materials"]
+    assert "replacement_collision_physics_material_unbound" in findings
+
+
+def test_static_gate_rejects_collider_outside_the_only_rigid_body(tmp_path: Path) -> None:
+    path = tmp_path / "unowned.usdz"
+    _portable_rigid_asset(path, unowned_collision=True)
+    findings, _ = _usd_findings(path, physics_bounds=PHYSICS_BOUNDS)
+    assert "replacement_collision_rigid_body_owner_invalid" in findings
+    assert "replacement_collision_physics_material_unbound" not in findings
 
 
 def _physics_completion() -> dict[str, object]:
