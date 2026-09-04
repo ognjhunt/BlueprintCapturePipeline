@@ -1092,3 +1092,158 @@ def test_worker_refuses_request_bound_to_a_different_deployed_commit(
     assert run["results"][0]["blockers"] == [
         "launch_preparation_worker_source_commit_mismatch"
     ]
+
+
+def _rebind_recipe(value: dict[str, object], payloads: dict[str, bytes], recipe: dict[str, object]) -> None:
+    recipe["recipe_digest"] = canonical_digest(recipe, digest_field="recipe_digest")
+    recipe_bytes = json.dumps(recipe, sort_keys=True).encode()
+    recipe_ref = value["construction"]["recipe"]
+    recipe_ref["digest"] = "sha256:" + hashlib.sha256(recipe_bytes).hexdigest()
+    recipe_ref["size_bytes"] = len(recipe_bytes)
+    payloads[recipe_ref["uri"]] = recipe_bytes
+
+
+def production_request_with_supplemental_destination() -> tuple[
+    dict[str, object], dict[str, bytes]
+]:
+    value, payloads = production_request_with_fetchable_bytes()
+
+    def fetchable(name: str) -> dict[str, object]:
+        uri = f"s3://blueprint-production-inputs/destination/{name}"
+        payload = ("payload-for-" + uri).encode()
+        payloads[uri] = payload
+        return {
+            "uri": uri,
+            "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "size_bytes": len(payload),
+        }
+
+    identity = {"id": "document-tray", "version": "v1"}
+    asset = fetchable("tray.usdz")
+    static = fetchable("tray-static.json")
+    rights = fetchable("tray-rights.json")
+    value["task"]["strategy"] = "pick_and_place"
+    value["task"]["destination"] = {
+        "schema_version": "task_evaluation_rigid_destination_asset.v1",
+        "identity": identity,
+        "relation": "inside",
+        "visible_label": "blue document tray",
+        "asset": asset,
+        "rights_admission": rights,
+        "static_qualification": static,
+        "native_probe": {
+            "schema_version": (
+                "task_evaluation_rigid_destination_native_probe_configuration.v1"
+            ),
+            "placement_support_scene_prim_paths": ["/Root/Support"],
+            "qualification_limits": {
+                "maximum_penetration_m": 0.001,
+                "minimum_support_contact_force_n": 0.01,
+                "maximum_forbidden_contact_force_n": 0.1,
+                "settle_translation_tolerance_m": 0.002,
+                "settle_rotation_tolerance_rad": 0.01,
+                "reset_translation_tolerance_m": 0.002,
+                "reset_rotation_tolerance_rad": 0.01,
+                "minimum_camera_pixels": {"external": 100, "wrist": 100, "overview": 100},
+            },
+            "settle_sample_count": 3,
+            "settle_steps_per_sample": 60,
+        },
+        "pose_world": {
+            "position_world_m": [3.25, -6.76, 0.82],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "provider_disclosure_allowed": True,
+    }
+    recipe = json.loads(payloads[value["construction"]["recipe"]["uri"]])
+    recipe["supplemental_destination"] = {
+        "identity": identity,
+        "relation": "inside",
+        "asset": dict(asset),
+        "static_qualification": dict(static),
+        "rights_admission": dict(rights),
+        "authoring_receipt": fetchable("tray-authoring.json"),
+        "simready_result": fetchable("tray-simready.json"),
+    }
+    _rebind_recipe(value, payloads, recipe)
+    return value, payloads
+
+
+def _run_production_preparation(tmp_path, value, payloads):
+    queue = tmp_path / "queue"
+    stage_launch_preparation_request(
+        value=value, queue_root=queue, submitted_by="blueprint-webapp"
+    )
+    return process_launch_preparation_queue(
+        queue_root=queue,
+        input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=fetcher(payloads),
+        adapter_materializer=fake_adapter,
+        scene_render_input_materializer=fake_scene_render_inputs,
+        construction_queue_root=tmp_path / "construction-queue",
+    )
+
+
+def test_worker_materializes_supplemental_destination_bound_to_the_request(tmp_path) -> None:
+    value, payloads = production_request_with_supplemental_destination()
+    run = _run_production_preparation(tmp_path, value, payloads)
+    result = run["results"][0]
+    assert result["status"] == "queued_for_production_scene_configuration"
+    queued = list((tmp_path / "construction-queue" / "pending").glob("*.json"))
+    envelope = json.loads(queued[0].read_text())
+    by_path = {
+        row["contract_path"]: row for row in envelope["materialized_references"]
+    }
+    for contract_path in (
+        "task.destination.asset",
+        "task.destination.static_qualification",
+        "task.destination.rights_admission",
+        "construction.recipe.supplemental_destination.authoring_receipt",
+        "construction.recipe.supplemental_destination.simready_result",
+    ):
+        row = by_path[contract_path]
+        assert row["full_byte_service_account_readback_passed"] is True
+        assert Path(row["materialized_path"]).read_bytes() == payloads[row["uri"]]
+    assert envelope["recipe"]["supplemental_destination"]["identity"] == {
+        "id": "document-tray",
+        "version": "v1",
+    }
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda recipe: recipe["supplemental_destination"]["identity"].update(version="v2"),
+        lambda recipe: recipe["supplemental_destination"]["asset"].update(
+            digest="sha256:" + "9" * 64
+        ),
+        lambda recipe: recipe["supplemental_destination"].update(relation="on"),
+        lambda recipe: recipe.pop("supplemental_destination"),
+    ],
+)
+def test_worker_blocks_supplemental_destination_that_drifts_from_the_request(
+    tmp_path, mutate
+) -> None:
+    value, payloads = production_request_with_supplemental_destination()
+    recipe = json.loads(payloads[value["construction"]["recipe"]["uri"]])
+    mutate(recipe)
+    _rebind_recipe(value, payloads, recipe)
+    run = _run_production_preparation(tmp_path, value, payloads)
+    assert run["results"][0]["status"] == "blocked"
+    assert run["results"][0]["blockers"] == [
+        "launch_preparation_supplemental_destination_binding_mismatch"
+    ]
+
+
+def test_worker_blocks_recipe_destination_the_request_never_declared(tmp_path) -> None:
+    value, payloads = production_request_with_supplemental_destination()
+    value["task"]["strategy"] = "planar_push"
+    value["task"].pop("destination")
+    run = _run_production_preparation(tmp_path, value, payloads)
+    assert run["results"][0]["status"] == "blocked"
+    assert run["results"][0]["blockers"] == [
+        "launch_preparation_supplemental_destination_binding_mismatch"
+    ]

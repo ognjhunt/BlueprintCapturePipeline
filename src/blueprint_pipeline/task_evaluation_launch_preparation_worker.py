@@ -656,6 +656,68 @@ def materialize_recipe_configuration_references(
     return rows
 
 
+SUPPLEMENTAL_DESTINATION_RECIPE_REFERENCE_FIELDS = (
+    "authoring_receipt",
+    "simready_result",
+)
+SUPPLEMENTAL_DESTINATION_CONTRACT_PREFIX = (
+    "construction.recipe.supplemental_destination"
+)
+
+
+def materialize_recipe_supplemental_destination_references(
+    *,
+    recipe: Mapping[str, Any],
+    input_root: str | Path,
+    content_store_root: str | Path | None = None,
+    allowed_uri_prefixes: Sequence[str],
+    fetcher: ReferenceFetcher = default_reference_fetcher,
+) -> list[dict[str, Any]]:
+    """Read back the recipe-only inputs of one supplemental passive destination.
+
+    The destination's asset, static qualification, and rights admission are
+    already request references (``task.destination.*``); the recipe adds the
+    authoring receipt and SimReady result that the provider run and publication
+    need to re-derive the static qualification and destination geometry.
+    """
+
+    validated_recipe = validate_scene_construction_recipe(recipe)
+    destination = validated_recipe.get("supplemental_destination")
+    if destination is None:
+        return []
+    validated_prefixes = validate_allowed_uri_prefixes(allowed_uri_prefixes)
+    root = Path(input_root).expanduser()
+    if root.is_symlink():
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_input_root_unsafe"
+        )
+    root.mkdir(parents=True, exist_ok=True, mode=0o750)
+    content_root = Path(content_store_root or root).expanduser()
+    if content_root.is_symlink():
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_content_store_root_unsafe"
+        )
+    content_root.mkdir(parents=True, exist_ok=True, mode=0o750)
+    content_root = content_root.resolve(strict=True)
+    references = [
+        {
+            "contract_path": (
+                f"{SUPPLEMENTAL_DESTINATION_CONTRACT_PREFIX}.{field}"
+            ),
+            **destination[field],
+        }
+        for field in SUPPLEMENTAL_DESTINATION_RECIPE_REFERENCE_FIELDS
+    ]
+    rows, _ = _materialize_reference_records(
+        references=references,
+        input_root=root,
+        content_store_root=content_root,
+        allowed_uri_prefixes=validated_prefixes,
+        fetcher=fetcher,
+    )
+    return rows
+
+
 def _load_envelope(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -706,6 +768,31 @@ def _validated_production_recipe(
         raise TaskEvaluationLaunchPreparationWorkerError(
             "launch_preparation_construction_recipe_binding_mismatch"
         )
+    # A pick_and_place request declares its supplemental destination once; the
+    # recipe must bind the same identity, relation, and exact asset, static
+    # qualification, and rights bytes, and may not smuggle in a destination the
+    # request never declared.
+    destination = request["task"].get("destination")
+    supplemental = recipe.get("supplemental_destination")
+    if (destination is None) != (supplemental is None):
+        raise TaskEvaluationLaunchPreparationWorkerError(
+            "launch_preparation_supplemental_destination_binding_mismatch"
+        )
+    if supplemental is not None:
+        expected_binding = {
+            "identity": destination["identity"],
+            "relation": destination["relation"],
+            "asset": destination["asset"],
+            "static_qualification": destination["static_qualification"],
+            "rights_admission": destination["rights_admission"],
+        }
+        if any(
+            supplemental.get(key) != expected_value
+            for key, expected_value in expected_binding.items()
+        ):
+            raise TaskEvaluationLaunchPreparationWorkerError(
+                "launch_preparation_supplemental_destination_binding_mismatch"
+            )
     return recipe
 
 
@@ -1239,6 +1326,19 @@ def process_launch_preparation_queue(
                     )
                 )
                 result["references"].extend(recipe_configuration_references)
+                result["references"].extend(
+                    materialize_recipe_supplemental_destination_references(
+                        recipe=recipe,
+                        input_root=(
+                            Path(input_root)
+                            / str(envelope["request"]["preparation_id"])
+                            / "construction-supplemental-destination"
+                        ),
+                        content_store_root=content_store_root,
+                        allowed_uri_prefixes=allowed_uri_prefixes,
+                        fetcher=fetcher,
+                    )
+                )
                 result["reference_count"] = len(result["references"])
                 result["unique_object_count"] = len(
                     {
