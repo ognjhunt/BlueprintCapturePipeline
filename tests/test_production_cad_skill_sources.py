@@ -92,3 +92,81 @@ def test_deploy_refuses_existing_drifted_cad_source(tmp_path: Path) -> None:
         provision_production_cad_skill_sources(
             root, specs=(text_spec, multi_spec)
         )
+
+
+def test_provisioned_sources_are_readable_by_the_service_account(tmp_path: Path) -> None:
+    """The control-plane CAD stage runs as the service account, never as root."""
+
+    import grp
+    import os
+    import pwd
+    import stat
+
+    _text, text_spec = _source(tmp_path, "text-to-cad")
+    _multi, multi_spec = _source(tmp_path, "multi-agent-cad")
+    root = tmp_path / "production-sources"
+    account = pwd.getpwuid(os.getuid()).pw_name
+    result = provision_production_cad_skill_sources(
+        root, specs=(text_spec, multi_spec), service_account=account
+    )
+    assert result["service_account_access"] == {
+        "account": account,
+        "status": "readable",
+    }
+    expected_gid = pwd.getpwnam(account).pw_gid
+    for checkout in (
+        root / f"text-to-cad-{text_spec['commit'][:8]}",
+        root / f"multi-agent-cad-{multi_spec['commit'][:8]}",
+    ):
+        for path in (checkout, *checkout.rglob("*")):
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                continue
+            assert metadata.st_gid == expected_gid, path
+            assert metadata.st_mode & stat.S_IRGRP, path
+            if stat.S_ISDIR(metadata.st_mode):
+                assert metadata.st_mode & stat.S_IXGRP, path
+            assert not metadata.st_mode & 0o222, path
+    assert grp.getgrgid(expected_gid).gr_gid == expected_gid
+
+
+def test_validation_fails_closed_when_the_service_account_cannot_traverse(tmp_path: Path) -> None:
+    import os
+    import pwd
+
+    _text, text_spec = _source(tmp_path, "text-to-cad")
+    _multi, multi_spec = _source(tmp_path, "multi-agent-cad")
+    root = tmp_path / "production-sources"
+    # Provision without a service account, then reproduce the historical drift:
+    # an owner-only 0500 checkout that another account cannot enter even though
+    # every byte check still passes for the owner.
+    provision_production_cad_skill_sources(
+        root, specs=(text_spec, multi_spec), service_account=None
+    )
+    checkout = root / f"text-to-cad-{text_spec['commit'][:8]}"
+    checkout.chmod(0o500)
+    other_account = pwd.getpwnam("nobody").pw_name
+    assert pwd.getpwnam(other_account).pw_uid != os.getuid()
+    try:
+        with pytest.raises(
+            ProductionCadSkillSourcesError,
+            match="production_cad_skill_source_unreadable_by_service_account:text-to-cad",
+        ):
+            validate_production_cad_skill_sources(
+                root, specs=(text_spec, multi_spec), service_account=other_account
+            )
+    finally:
+        checkout.chmod(0o550)
+
+
+def test_unknown_service_account_is_reported_not_guessed(tmp_path: Path) -> None:
+    _text, text_spec = _source(tmp_path, "text-to-cad")
+    _multi, multi_spec = _source(tmp_path, "multi-agent-cad")
+    root = tmp_path / "production-sources"
+    result = provision_production_cad_skill_sources(
+        root, specs=(text_spec, multi_spec), service_account="no-such-account-xyz"
+    )
+    assert result["service_account_access"] == {
+        "account": "no-such-account-xyz",
+        "status": "not_applicable_no_service_account",
+    }
