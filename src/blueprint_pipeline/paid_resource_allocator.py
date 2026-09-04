@@ -167,28 +167,36 @@ from .adp009d_franka_vast import (
     run_adp009d_native_microcheck_vast,
 )
 from .native_task_arena_construction_bundle import (
+    PROBE_KIND as NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
     build_native_task_arena_construction_bundle,
 )
 from .native_task_arena_controls_bundle import (
+    PROBE_KIND as NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
     build_native_task_arena_controls_bundle,
 )
+from .native_task_arena_destination_qualification_bundle import (
+    PROBE_KIND as NATIVE_TASK_ARENA_DESTINATION_QUALIFICATION_PROBE_KIND,
+)
 from .native_task_arena_policy_bundle import (
+    PROBE_KIND as NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
     build_native_task_arena_policy_bundle,
 )
 from .native_task_arena_policy_diagnostic_bundle import (
+    PROBE_KIND as NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
     build_native_task_arena_policy_diagnostic_bundle,
 )
 from . import policy_canary_allocator_lane as policy_canary_lane
 from .native_task_arena_runtime_preflight_bundle import (
+    PROBE_KIND as NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
     build_native_task_arena_runtime_preflight_bundle,
 )
 from .native_task_arena_allocator_dispatch import (
-    NATIVE_TASK_ARENA_PROBE_KINDS,
     POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES,
     native_task_arena_probe_mode,
     native_task_arena_vast_runner,
     native_task_arena_verified_bundle_loader,
 )
+from .native_task_arena_vast import run_native_task_arena_policy_diagnostic_vast
 from .native_task_arena_paid_authority import (
     native_task_arena_attempt_budget_blockers,
     validate_native_task_arena_paid_attempt_authority,
@@ -1637,7 +1645,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             ADP_SIMPLER_PUBLIC_REFERENCE_PROBE_KIND,
             ADP_ISAAC_LAB_ARENA_PROBE_KIND,
             ADP009D_NATIVE_MICROCHECK_PROBE_KIND,
-            *NATIVE_TASK_ARENA_PROBE_KINDS,
+            NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
+            NATIVE_TASK_ARENA_DESTINATION_QUALIFICATION_PROBE_KIND,
+            NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
+            NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
+            NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
+            NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
             policy_canary_lane.PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
@@ -5101,7 +5114,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
-        if args.probe_kind in NATIVE_TASK_ARENA_PROBE_KINDS:
+        if args.probe_kind in {
+            NATIVE_TASK_ARENA_RUNTIME_PREFLIGHT_PROBE_KIND,
+            NATIVE_TASK_ARENA_DESTINATION_QUALIFICATION_PROBE_KIND,
+            NATIVE_TASK_ARENA_CONSTRUCTION_PROBE_KIND,
+            NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
+            NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
+            NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
+        }:
             probe_mode = native_task_arena_probe_mode(args.probe_kind)
             preflight_requested = probe_mode == "runtime_preflight"
             destination_requested = probe_mode == "destination_qualification"
@@ -5580,7 +5600,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     }
                     print(json.dumps({"success": success}, sort_keys=True))
                     return 0 if success else 2
-                run_native = native_task_arena_vast_runner(args.probe_kind)
+                run_native = (
+                    run_native_task_arena_policy_diagnostic_vast
+                    if policy_diagnostic_requested
+                    else native_task_arena_vast_runner(args.probe_kind)
+                )
                 run_kwargs = {
                     "job_dir": args.adp_job_dir,
                     "prepared_bundle": prepared_bundle,
