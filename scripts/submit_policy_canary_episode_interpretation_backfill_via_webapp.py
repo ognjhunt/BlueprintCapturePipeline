@@ -5,11 +5,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import math
 import sys
 import urllib.parse
-import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -103,6 +103,22 @@ def endpoint_for(*, origin: str, run_id: str) -> str:
     )
 
 
+def signed_pipeline_headers(
+    *, secret: bytes, body: bytes, timestamp: str
+) -> dict[str, str]:
+    signature = hmac.new(
+        secret,
+        f"{timestamp}.".encode("utf-8") + body,
+        "sha256",
+    ).hexdigest()
+    return {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-Blueprint-Pipeline-Timestamp": timestamp,
+        "X-Blueprint-Pipeline-Signature": f"sha256={signature}",
+    }
+
+
 def validate_webapp_receipt(
     *,
     status_code: int,
@@ -168,14 +184,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         endpoint = endpoint_for(origin=args.origin, run_id=run_id)
         secret = web_client.read_private_secret_file(args.secret_file)
         reservation = web_client.reserve_receipt_exclusive(args.receipt_out)
-        timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-        nonce = uuid.uuid4().hex
-        headers = web_client.signed_headers(
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+            "+00:00", "Z"
+        )
+        headers = signed_pipeline_headers(
             secret=secret,
             body=body,
             timestamp=timestamp,
-            nonce=nonce,
-            launch_id=run_id,
         )
         status_code, response = web_client.post_signed_launch(
             endpoint=endpoint,

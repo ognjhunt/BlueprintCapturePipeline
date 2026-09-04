@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 
 import pytest
 
@@ -8,6 +9,7 @@ from scripts.submit_policy_canary_episode_interpretation_backfill_via_webapp imp
     EpisodeInterpretationBackfillSubmissionError,
     endpoint_for,
     read_exact_sidecar,
+    signed_pipeline_headers,
     validate_webapp_receipt,
 )
 from tests.test_policy_canary_episode_interpretation_backfill import (
@@ -89,3 +91,20 @@ def test_validates_created_and_explicit_replay_receipts() -> None:
             sidecar=sidecar,
             allow_replay=False,
         )
+
+
+def test_signs_the_exact_pipeline_sync_canonical_bytes() -> None:
+    secret = b"s" * 32
+    body = b'{"exact":"bytes"}\n'
+    timestamp = "2026-09-04T01:40:00.000Z"
+
+    headers = signed_pipeline_headers(
+        secret=secret,
+        body=body,
+        timestamp=timestamp,
+    )
+
+    expected = hmac.new(secret, timestamp.encode() + b"." + body, "sha256").hexdigest()
+    assert headers["X-Blueprint-Pipeline-Timestamp"] == timestamp
+    assert headers["X-Blueprint-Pipeline-Signature"] == f"sha256={expected}"
+    assert "X-Blueprint-Launch-Signature" not in headers
