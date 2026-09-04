@@ -37,6 +37,7 @@ def _request(tmp_path: Path) -> Path:
             "wall_height_above_base": 0.02,
             "minimum_interior_x": 0.32,
             "minimum_interior_y": 0.47,
+            "minimum_interior_z": 0.018,
         },
         output_path=output,
     )
@@ -173,3 +174,23 @@ def test_agent_generator_cannot_access_files_or_network() -> None:
         cad_agent._validate_generator_source(
             "import requests\n\ndef gen_step():\n    return requests.get('https://example.com')\n"
         )
+
+
+def test_request_rejects_insufficient_vertical_clearance_before_agent_call(
+    tmp_path: Path,
+) -> None:
+    request = json.loads(_request(tmp_path).read_text(encoding="utf-8"))
+    # The outer XY footprint fits, but all eight subject corners cannot fit Z.
+    request["dimensions_m"]["minimum_interior_z"] = 0.0211374
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    with pytest.raises(cad_agent.PassiveDestinationCadAgentError, match="request_invalid"):
+        cad_agent.validate_passive_destination_cad_request(request)
+
+
+def test_old_two_dimensional_request_cannot_author_new_geometry(tmp_path: Path) -> None:
+    request = json.loads(_request(tmp_path).read_text(encoding="utf-8"))
+    request["schema_version"] = "task_evaluation_passive_destination_cad_request.v1"
+    request["dimensions_m"].pop("minimum_interior_z")
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    with pytest.raises(cad_agent.PassiveDestinationCadAgentError, match="request_invalid"):
+        cad_agent.validate_passive_destination_cad_request(request)

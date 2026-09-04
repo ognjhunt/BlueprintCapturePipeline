@@ -178,7 +178,7 @@ def _usd_findings(
     path: Path, *, physics_bounds: Mapping[str, list[float]]
 ) -> tuple[list[str], dict[str, Any]]:
     try:
-        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdUtils
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils
     except ImportError as exc:  # pragma: no cover - provider image owns OpenUSD
         raise TaskEvaluationSceneConfigurationStaticQualificationError(
             ["replacement_openusd_runtime_missing"]
@@ -247,6 +247,13 @@ def _usd_findings(
     ]
     dynamic_mesh_collision_rows: list[dict[str, str]] = []
     for prim in collision_prims:
+        owner = prim
+        while owner.IsValid() and not owner.IsPseudoRoot():
+            if owner.HasAPI(UsdPhysics.RigidBodyAPI):
+                break
+            owner = owner.GetParent()
+        if body is None or owner != body:
+            findings.append("replacement_collision_rigid_body_owner_invalid")
         if not prim.IsA(UsdGeom.Mesh):
             continue
         approximation = (
@@ -390,6 +397,21 @@ def _usd_findings(
     if not physics_materials or len(material_rows) != len(physics_materials):
         findings.append("replacement_physics_material_bounds_invalid")
 
+    # A Material prim with plausible coefficients has no effect unless the
+    # collider resolves a physics-purpose binding to that exact material.
+    material_paths = {row["path"] for row in material_rows}
+    collision_material_bindings: list[dict[str, str]] = []
+    for prim in collision_prims:
+        bound, _relationship = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial(
+            materialPurpose="physics"
+        )
+        bound_path = str(bound.GetPath()) if bound else ""
+        if bound_path not in material_paths:
+            findings.append("replacement_collision_physics_material_unbound")
+        collision_material_bindings.append(
+            {"collision_prim_path": str(prim.GetPath()), "material_path": bound_path}
+        )
+
     return findings, {
         "default_prim": str(stage.GetDefaultPrim().GetPath()),
         "rigid_body_paths": [str(prim.GetPath()) for prim in rigid],
@@ -402,6 +424,7 @@ def _usd_findings(
         "center_of_mass_m": center_of_mass,
         "diagonal_inertia_kg_m2": inertia,
         "physics_materials": material_rows,
+        "collision_physics_material_bindings": collision_material_bindings,
         "dependency_layer_count": len(layers),
         "external_asset_count": len(unpinned_external_assets),
         "embedded_package_asset_count": len(external_assets)

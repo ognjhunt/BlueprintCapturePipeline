@@ -105,7 +105,11 @@ def materialize_passive_destination_simready(
         or not _matches(projection.get("output_usd"))
     ):
         raise PassiveDestinationSimReadyError("passive_destination_cad_join_invalid")
+    if not _matches(cad.get("request")):
+        raise PassiveDestinationSimReadyError("passive_destination_request_join_invalid")
     request_path, request = _read(cad["request"]["path"])
+    if cad.get("request_digest") != request.get("request_digest"):
+        raise PassiveDestinationSimReadyError("passive_destination_request_join_invalid")
     request = validate_passive_destination_cad_request(request)
     dimensions = request["dimensions_m"]
     outer_x = float(dimensions["outer_x"])
@@ -157,6 +161,13 @@ def materialize_passive_destination_simready(
     _box(stage, "/Asset/Colliders/Right", (wall, outer_y, height), ((outer_x - wall) / 2.0, 0.0, base + height / 2.0))
     _box(stage, "/Asset/Colliders/Front", (interior_x, wall, height), (0.0, -(outer_y - wall) / 2.0, base + height / 2.0))
     _box(stage, "/Asset/Colliders/Back", (interior_x, wall, height), (0.0, (outer_y - wall) / 2.0, base + height / 2.0))
+    for prim in stage.Traverse():
+        if prim.HasAPI(UsdPhysics.CollisionAPI):
+            UsdShade.MaterialBindingAPI.Apply(prim).Bind(
+                UsdShade.Material(physics_prim),
+                UsdShade.Tokens.weakerThanDescendants,
+                "physics",
+            )
     asset.SetCustomDataByKey("blueprint:intendedSupportPrim", INTENDED_SUPPORT_PRIM)
     asset.SetCustomDataByKey("blueprint:sourceStepSha256", cad["artifacts"]["step"]["sha256"])
     asset.SetCustomDataByKey("blueprint:passiveDestination", True)
@@ -181,7 +192,7 @@ def materialize_passive_destination_simready(
     rights["rights_admission_digest"] = canonical_digest(rights, digest_field="rights_admission_digest")
     rights_path = root / "passive_destination_rights_admission.v1.json"
     rights_path.write_text(json.dumps(rights, sort_keys=True, separators=(",", ":")) + "\n")
-    result = {"schema_version": SCHEMA_VERSION, "status": "static_qualified_pending_native_import_and_placement", "destination_identity": identity, "asset": _record(usdz), "authoring_receipt": _record(authoring_path), "static_qualification": _record(static_path), "rights_admission": _record(rights_path), "intended_support_prim_paths": [INTENDED_SUPPORT_PRIM], "interior_bounds_body_frame_m": {"minimum": [-interior_x / 2.0, -interior_y / 2.0, base], "maximum": [interior_x / 2.0, interior_y / 2.0, base + height]}, "static_result_digest": static["result_digest"], "native_import_qualified": False, "placement_qualified": False, "result_digest": ""}
+    result = {"schema_version": SCHEMA_VERSION, "status": "static_qualified_pending_native_import_and_placement", "destination_identity": identity, "asset": _record(usdz), "authoring_receipt": _record(authoring_path), "static_qualification": _record(static_path), "rights_admission": _record(rights_path), "intended_support_prim_paths": ["/Asset"], "intended_support_collision_prim_paths": [INTENDED_SUPPORT_PRIM], "interior_bounds_body_frame_m": {"minimum": [-interior_x / 2.0, -interior_y / 2.0, base], "maximum": [interior_x / 2.0, interior_y / 2.0, base + height]}, "static_result_digest": static["result_digest"], "native_import_qualified": False, "placement_qualified": False, "result_digest": ""}
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     (root / "passive_destination_simready_result.v1.json").write_text(json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
     return result

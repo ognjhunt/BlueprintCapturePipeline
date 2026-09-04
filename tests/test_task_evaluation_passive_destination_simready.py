@@ -5,7 +5,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_passive_destination_cad_agent import (
@@ -50,6 +50,7 @@ def test_exact_step_visual_gets_five_colliders_and_static_qualification(
             "wall_height_above_base": 0.02,
             "minimum_interior_x": 0.32,
             "minimum_interior_y": 0.47,
+            "minimum_interior_z": 0.018,
         },
         output_path=request_path,
     )
@@ -107,6 +108,16 @@ def test_exact_step_visual_gets_five_colliders_and_static_qualification(
     )
 
     assert result["status"] == "static_qualified_pending_native_import_and_placement"
-    assert result["intended_support_prim_paths"] == [INTENDED_SUPPORT_PRIM]
+    assert result["intended_support_prim_paths"] == ["/Asset"]
+    assert result["intended_support_collision_prim_paths"] == [INTENDED_SUPPORT_PRIM]
+    reopened = Usd.Stage.Open(result["asset"]["path"])
+    assert reopened.GetPrimAtPath("/Asset").HasAPI(UsdPhysics.RigidBodyAPI)
+    colliders = [p for p in reopened.Traverse() if p.HasAPI(UsdPhysics.CollisionAPI)]
+    assert len(colliders) == 5
+    for collider in colliders:
+        material, _ = UsdShade.MaterialBindingAPI(collider).ComputeBoundMaterial(
+            materialPurpose="physics"
+        )
+        assert str(material.GetPath()) == "/Asset/Materials/Physics"
     assert result["interior_bounds_body_frame_m"]["minimum"] == [-0.16, -0.235, 0.005]
     assert result["static_qualification"]["sha256"].startswith("sha256:")
