@@ -18,6 +18,31 @@ Gaussian contribution accounting, derived PLY byte accounting, digests,
 rights/spend admission, immutable receipts, outside-support checks, and
 provider-zero closure.
 
+## Visual scene preselection
+
+Before selecting a scene or task object, build the local visual review pack:
+
+```bash
+python -m blueprint_pipeline.interiorgs_preselection_review_pack \
+  --scene-id <publisher-scene-id> \
+  --splat <scene>/3dgs_compressed.ply \
+  --labels <scene>/labels.json \
+  --structure <scene>/structure.json \
+  --target-ins-id <publisher-instance-id> \
+  --approved-root <dataset-root> \
+  --approved-root <review-output-parent> \
+  --out <review-output-parent>/<scene-and-target> \
+  --repo-root <checkout-with-pinned-renderer-runtime> \
+  --browser-executable <existing-chrome-or-chromium> \
+  --graphics-backend metal
+```
+
+The resulting `index.html`, contact sheet, labeled object/support tables, exact
+room and target camera rows, and digest-bound manifest are selection
+reconnaissance only. They never become appearance-fidelity, collision, physics,
+reachability, task, or evaluation authority, and moving a camera cannot recover
+uncaptured regions.
+
 ## Required stages
 
 1. `calibrated_scene_views`
