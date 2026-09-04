@@ -46,7 +46,10 @@ def test_inputs_cross_bind_every_declared_destination_reference(tmp_path: Path) 
     assert inputs is not None
     assert inputs["identity"] == DESTINATION_IDENTITY
     assert inputs["asset_digest"] == sha256(destination["asset"])
-    assert inputs["simready_result"]["intended_support_prim_paths"] == ["/Asset/Colliders/Bottom"]
+    assert inputs["simready_result"]["intended_support_prim_paths"] == ["/Asset"]
+    assert inputs["simready_result"]["intended_support_collision_prim_paths"] == [
+        "/Asset/Colliders/Bottom"
+    ]
 
 
 def test_inputs_refuse_a_recipe_reference_that_names_different_bytes(tmp_path: Path) -> None:
@@ -76,7 +79,30 @@ def test_inputs_refuse_a_missing_materialized_reference(tmp_path: Path) -> None:
 def test_inputs_refuse_a_support_prim_that_is_not_a_declared_collider(tmp_path: Path) -> None:
     destination = _fixture_inputs(tmp_path / "destination")
     simready = json.loads(destination["simready_result"].read_text())
-    simready["intended_support_prim_paths"] = ["/Asset/Colliders/Lid"]
+    simready["intended_support_collision_prim_paths"] = ["/Asset/Colliders/Lid"]
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    simready["result_digest"] = canonical_digest(simready, digest_field="result_digest")
+    destination["simready_result"].write_text(json.dumps(simready, sort_keys=True))
+    for row in destination["materialized_references"]:
+        if row["contract_path"].endswith("simready_result"):
+            row["digest"] = sha256(destination["simready_result"])
+            row["size_bytes"] = destination["simready_result"].stat().st_size
+    destination["recipe_supplemental_destination"]["simready_result"].update(
+        digest=sha256(destination["simready_result"]),
+        size_bytes=destination["simready_result"].stat().st_size,
+    )
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationAdapterError,
+        match="simready_supplemental_destination_binding_invalid",
+    ):
+        supplemental_destination_inputs(_envelope(destination))
+
+
+def test_inputs_refuse_a_support_body_that_is_not_the_rigid_body(tmp_path: Path) -> None:
+    destination = _fixture_inputs(tmp_path / "destination")
+    simready = json.loads(destination["simready_result"].read_text())
+    simready["intended_support_prim_paths"] = ["/Asset/Colliders/Bottom"]
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
     simready["result_digest"] = canonical_digest(simready, digest_field="result_digest")
