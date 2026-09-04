@@ -396,6 +396,28 @@ def test_adapter_refuses_task_subject_bytes_or_strategy_not_in_packet(
 
     changed = copy.deepcopy(value)
     changed["task"]["strategy"] = "pick_and_place"
+    reference = {
+        "uri": "s3://blueprint-production-inputs/destination/qualified.json",
+        "digest": "sha256:" + "d" * 64,
+        "size_bytes": 123,
+    }
+    changed["task"]["destination"] = {
+        "schema_version": "task_evaluation_rigid_destination_asset.v1",
+        "identity": {"id": "document-tray", "version": "v1"},
+        "relation": "inside",
+        "visible_label": "blue document tray",
+        "asset": reference,
+        "rights_admission": reference,
+        "static_qualification": reference,
+        "native_import_qualification": reference,
+        "geometry": reference,
+        "placement_qualification": reference,
+        "pose_world": {
+            "position_world_m": [3.2, -6.76, 0.82],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "provider_disclosure_allowed": True,
+    }
     with pytest.raises(
         TaskEvaluationNativeArenaAdapterError,
         match="task_evaluation_adapter_task_subject_binding_mismatch",
