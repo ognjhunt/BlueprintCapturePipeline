@@ -78,6 +78,7 @@ from .wam_provider_object_store import (
 
 
 from .spend_authority_consumption_root import consumption_root
+from .vast_pre_mutation_reselection import RESELECTION_ENV as _VAST_SINGLE_ATTEMPT_ENV, pre_mutation_offer_reselection_attempts
 
 PROBE_KIND = "adp-usd-content-agents"
 RESULT_SCHEMA_VERSION = "adp_content_agents_vast_run.v1"
@@ -122,7 +123,6 @@ _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
 )
-_VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 _FORWARDED_SECRET_NAMES = (
     "OPENAI_API_KEY",
 )
@@ -2489,7 +2489,7 @@ def _authority_environment():
     try:
         for name in _VAST_MUTATION_ENV:
             os.environ[name] = "1"
-        os.environ[_VAST_SINGLE_ATTEMPT_ENV] = "0"
+        os.environ[_VAST_SINGLE_ATTEMPT_ENV] = pre_mutation_offer_reselection_attempts()
         for name in _FORWARDED_SECRET_NAMES:
             os.environ[name] = secret
         os.environ["BLUEPRINT_VAST_FORWARD_SECRET_ENV_VARS"] = ",".join(
