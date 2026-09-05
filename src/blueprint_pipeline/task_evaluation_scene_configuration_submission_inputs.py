@@ -121,10 +121,12 @@ def source_inputs(*, installation_path: Path, publisher_path: Path,
         require(relative not in inventory_paths, "source_inventory_duplicate")
         inventory_paths.add(relative)
         path = checked_file(beneath(root, relative), row)
-        if row.get("kind") == "rights_receipt":
+        if "receipt_id" in row or row.get("kind") == "rights_receipt":
             # The real installer inventories rights records alongside source
             # files. They must still be rehashed, but are not publisher assets.
-            require(not row.get("role") and bool(row.get("receipt_id")),
+            require(not row.get("role") and bool(row.get("receipt_id"))
+                    and "rights_receipt_ids" not in row
+                    and row.get("kind") in {None, "rights_receipt"},
                     "source_role_invalid")
             continue
         role = row.get("role")

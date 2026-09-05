@@ -57,9 +57,13 @@ def _rights(installation: dict[str, Any]) -> None:
     receipts = {}
     source_rows = []
     for row in installation["files"]:
-        if row.get("kind") != "rights_receipt":
+        # The canonical installer preserves receipt_id but omits archive-only
+        # kind markers. Never let a source-role row masquerade as authority.
+        if "receipt_id" not in row and row.get("kind") != "rights_receipt":
             source_rows.append(row)
             continue
+        _require(not row.get("role") and "rights_receipt_ids" not in row
+                 and row.get("kind") in {None, "rights_receipt"}, "rights_invalid")
         identifier = row.get("receipt_id")
         _require(isinstance(identifier, str) and bool(identifier)
                  and identifier not in receipts, "rights_invalid")
