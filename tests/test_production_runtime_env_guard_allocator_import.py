@@ -40,7 +40,7 @@ def test_covers_every_module_the_systemd_units_execute() -> None:
     referenced = set()
     for unit in SYSTEMD_DIR.glob("*.service"):
         referenced.update(
-            re.findall(r"-m (blueprint_pipeline\.[a-z_]+)", unit.read_text(encoding="utf-8"))
+            re.findall(r"-m (blueprint_pipeline\.[a-z0-9_]+)", unit.read_text(encoding="utf-8"))
         )
     missing = referenced - set(CONTROL_PLANE_ENTRYPOINTS)
     assert not missing, f"systemd units execute unchecked entrypoints: {sorted(missing)}"

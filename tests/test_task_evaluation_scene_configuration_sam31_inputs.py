@@ -58,7 +58,10 @@ def _sam_case(tmp_path, *, review_kind="human", monkeypatch=None, removal_only=F
         raw.write_bytes(b"test-only-compressed-source")
     else:
         installation = json.loads(removal_fixture["installation_receipt"].read_text())
-        raw = Path(installation["destination_root"]) / installation["files"][0]["relative_path"]
+        appearance = next(
+            row for row in installation["files"] if row.get("role") == "appearance_3dgs"
+        )
+        raw = Path(installation["destination_root"]) / appearance["relative_path"]
     conversion_path = _seal(tmp_path / "conversion.json", {
         "schema_version": "standard_splat_conversion_receipt.v1",
         "status": "standard_splat_conversion_materialized",

@@ -492,10 +492,10 @@ def materialize_scene_configuration_render_inputs(
         )
     if gaussian_cutout["selection_rule"] == SAM31_SELECTION_RULE:
         from .task_evaluation_scene_configuration_sam31_inputs import (
-            materialize_sam31_exact_mask_render_inputs,
+            _materialize_sam31_exact_mask_render_inputs,
         )
         try:
-            return materialize_sam31_exact_mask_render_inputs(
+            return _materialize_sam31_exact_mask_render_inputs(
                 envelope=envelope, stage_one_configuration=stage_one_configuration,
                 output_root=output_root,
             )
