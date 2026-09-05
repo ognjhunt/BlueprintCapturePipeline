@@ -64,6 +64,7 @@ from .task_evaluation_launch_dispatcher import (
 )
 from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_row
 from . import task_evaluation_policy_canary_handoff as policy_canary_handoff
+from .task_evaluation_release_identity import running_release_commit
 
 
 PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v2"
@@ -1733,6 +1734,9 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
         materialize_configured_controls_autostart,
     )
 
+    # Canary launches bound to another release can never activate here; a branch
+    # checkout has no release identity and filters nothing.
+    release = running_release_commit() or None
     for run_root in sorted(launch_state_root.iterdir()) if launch_state_root.is_dir() else []:
         if not run_root.is_dir() or run_root.is_symlink():
             continue
@@ -1753,6 +1757,10 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
                 )
                 continue
             if launch_request.get("run_kind") == "internal_policy_canary":
+                bound = str(launch_request.get("source_commit") or "")
+                if release and re.fullmatch(r"[0-9a-f]{40}", bound) and bound != release:
+                    rows.append({"status": "launch_bound_to_superseded_release", "source_launch_id": run_root.name, "source_commit": bound, "running_commit": release})
+                    continue
                 try:
                     rows.append(
                         advance_policy_canary_activation(
