@@ -1884,6 +1884,9 @@ def _machine_avoidlist_reason(blockers: Sequence[str]) -> str | None:
     """Return the evidence-bounded machine exclusion reason, if any."""
 
     observed = set(blockers)
+    if {"provider_remote_blocker:download_failed:28", "provider_bundle_download_marker_missing",
+            "provider_entrypoint_start_marker_missing"}.issubset(observed):
+        return "vast_provider_bootstrap_input_download_transport_timeout"
     if "provider_instance_exited_before_bundle_terminal_marker" in observed:
         return "vast_provider_bundle_instance_exited_before_terminal_marker"
     startup_blockers = {
