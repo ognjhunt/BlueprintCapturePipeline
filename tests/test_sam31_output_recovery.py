@@ -67,6 +67,7 @@ def _harness(tmp_path, monkeypatch, failure):
         def launch(self, job_dir, request, **kwargs):
             assert (root/'output_recovery_readiness.json').is_file()
             assert kwargs['allow_cold_fallback'] is False
+            assert request['maximum_create_attempts'] == 1
             events.append('launch')
             return super().launch(job_dir, request, **kwargs)
         def inspect(self, instance_id):

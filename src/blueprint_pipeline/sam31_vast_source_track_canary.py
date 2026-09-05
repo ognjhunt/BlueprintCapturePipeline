@@ -643,6 +643,7 @@ def run_sam31_vast_source_track_canary(
             preferred_geolocation_regex=SAM31_PREFERRED_GEOLOCATION_REGEX,
         )
         provider_request = provider.build_request(spec, root)
+        provider_request["maximum_create_attempts"] = 1
         provider_request["prelaunch_spend_guard"] = {
             "schema_version": "semantic_sam31_gpu_prelaunch_spend_guard.v1",
             "required_before_provider_launch": True,
