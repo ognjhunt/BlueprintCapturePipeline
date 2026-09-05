@@ -333,13 +333,16 @@ def _severity_for_directory(
     if status == "writable" or status == "readable":
         return "ok"
     if status in {"read_only", "permission_denied", "error", "writable_unlink_failed"}:
-        if declared_ro and not in_rw:
-            # The unit names this path in ReadOnlyPaths: read-only is the operator's intent.
+        if declared_ro:
+            # ReadOnlyPaths is the more specific declaration and systemd honours it
+            # over an enclosing ReadWritePaths entry: read-only is the operator's intent.
+            return "info"
+        if storage_class in {"container", "release"}:
+            # A container or release tree is never written by a unit; the code
+            # names it only to derive children.  Root ownership there is by design.
             return "info"
         if in_rw or storage_class in WRITTEN_STORAGE_CLASSES:
             return "blocker"
-        if storage_class in {"container", "release"}:
-            return "info"
         return "warning"
     if status.startswith("missing_not_creatable"):
         return "warning" if storage_class in WRITTEN_STORAGE_CLASSES or in_rw else "info"
