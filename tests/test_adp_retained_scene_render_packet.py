@@ -38,6 +38,7 @@ from blueprint_pipeline.vast_provider_adapter import (
     _probe_shell_script,
 )
 from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_output_zip
+from blueprint_pipeline.vast_pre_mutation_reselection import pre_mutation_offer_reselection_attempts
 
 
 def _sha256(path: Path) -> str:
@@ -104,7 +105,8 @@ def test_retained_scene_render_authority_environment_restores_retry_setting(
     with _authority_environment():
         assert os.environ["BLUEPRINT_ALLOW_VAST_API_CALLS"] == "1"
         assert os.environ["BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"] == "1"
-        assert os.environ["BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"] == "0"
+        # Bounded pre-mutation re-selection; the paid attempt itself stays single.
+        assert os.environ["BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"] == pre_mutation_offer_reselection_attempts()
 
     assert os.environ["BLUEPRINT_ALLOW_VAST_API_CALLS"] == "caller-api"
     assert os.environ["BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH"] == "caller-launch"

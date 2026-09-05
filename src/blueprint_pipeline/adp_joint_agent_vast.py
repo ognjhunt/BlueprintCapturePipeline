@@ -79,6 +79,7 @@ from .wam_provider_object_store import (
     cleanup_staged_wam_provider_objects,
     stage_wam_provider_bundle_object_store,
 )
+from .vast_pre_mutation_reselection import RESELECTION_ENV as _VAST_SINGLE_ATTEMPT_ENV, pre_mutation_offer_reselection_attempts
 
 
 PROVIDER_BUNDLE_KIND = "adp_joint_agent"
@@ -145,7 +146,6 @@ _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
 )
-_VAST_SINGLE_ATTEMPT_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 
 
 def _sha256(path: Path) -> str:
@@ -1127,7 +1127,7 @@ def _authority_environment(model_backend: str):
     try:
         for name in _VAST_MUTATION_ENV:
             os.environ[name] = "1"
-        os.environ[_VAST_SINGLE_ATTEMPT_ENV] = "0"
+        os.environ[_VAST_SINGLE_ATTEMPT_ENV] = pre_mutation_offer_reselection_attempts()
         os.environ[secret_env] = secret
         os.environ["BLUEPRINT_VAST_FORWARD_SECRET_ENV_VARS"] = secret_env
         yield

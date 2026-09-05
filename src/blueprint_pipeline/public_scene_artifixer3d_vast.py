@@ -68,6 +68,7 @@ from .wam_provider_object_store import (
     cleanup_staged_wam_provider_objects,
     stage_wam_provider_bundle_object_store,
 )
+from .vast_pre_mutation_reselection import RESELECTION_ENV as _RETRY_ENV, pre_mutation_offer_reselection_attempts
 
 
 PROBE_KIND = "adp-artifixer3d-exact-support"
@@ -119,7 +120,6 @@ def _default_authorization_consumption_root() -> Path:
 
 AUTHORIZATION_CONSUMPTION_ROOT = _default_authorization_consumption_root()
 _MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
-_RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 DUAL_TARGET_CANDIDATE_MEMBER = (
     "provider_runtime/input/public_scene_artifixer3d_dual_target_inputs.v1.json"
 )
@@ -1323,7 +1323,7 @@ def _authority_environment():
     previous = {name: os.environ.get(name) for name in (*_MUTATION_ENV, _RETRY_ENV)}
     for name in _MUTATION_ENV:
         os.environ[name] = "true"
-    os.environ[_RETRY_ENV] = "0"
+    os.environ[_RETRY_ENV] = pre_mutation_offer_reselection_attempts()
     try:
         yield
     finally:

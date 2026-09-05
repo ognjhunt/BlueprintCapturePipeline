@@ -115,6 +115,7 @@ from .wam_provider_object_store import (
     cleanup_staged_wam_provider_objects,
     stage_wam_provider_bundle_object_store,
 )
+from .vast_pre_mutation_reselection import RESELECTION_ENV as _VAST_STALE_OFFER_RETRY_ENV, pre_mutation_offer_reselection_attempts
 
 
 RESULT_SCHEMA_VERSION = "task_evaluation_scene_configuration_vast_result.v1"
@@ -129,9 +130,6 @@ WATCHDOG_POD_NAME_PREFIX = "blueprint-task-evaluation-scene-config-"
 _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
-)
-_VAST_STALE_OFFER_RETRY_ENV = (
-    "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 )
 # One exclusive (key file, key id, operator attestation) triple per OpenAI
 # stage. The official-cost gate binds the observed same-day baseline for each
@@ -902,7 +900,7 @@ def _authority_environment():
     try:
         for name in _VAST_MUTATION_ENV:
             os.environ[name] = "1"
-        os.environ[_VAST_STALE_OFFER_RETRY_ENV] = "0"
+        os.environ[_VAST_STALE_OFFER_RETRY_ENV] = pre_mutation_offer_reselection_attempts()
         yield
     finally:
         for name, value in previous.items():

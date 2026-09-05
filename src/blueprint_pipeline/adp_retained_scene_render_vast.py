@@ -44,6 +44,7 @@ from .spend_authority_consumption_root import (
     SpendAuthorityRootError,
     prepare_consumption_root,
 )
+from .vast_pre_mutation_reselection import RESELECTION_ENV as _VAST_STALE_OFFER_RETRY_ENV, pre_mutation_offer_reselection_attempts
 
 PROVIDER_BUNDLE_KIND = "adp_retained_scene_render"
 #: The Vast instance label this lane creates. The independent watchdog arms on
@@ -54,7 +55,6 @@ PAID_ATTEMPT_AUTHORITY_SCHEMA = "adp009d_retained_scene_gpu_render_paid_attempt_
 ATTEMPT_RECEIPT_SCHEMA = "adp009d_retained_scene_gpu_render_attempt_receipt.v1"
 OUTPUT_RELOCATION_SCHEMA = "adp009d_retained_scene_gpu_render_output_relocation.v1"
 _VAST_MUTATION_ENV = ("BLUEPRINT_ALLOW_VAST_API_CALLS", "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH")
-_VAST_STALE_OFFER_RETRY_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS"
 
 
 def _sha256(path: Path) -> str:
@@ -506,7 +506,7 @@ def _authority_environment():
     try:
         for name in _VAST_MUTATION_ENV:
             os.environ[name] = "1"
-        os.environ[_VAST_STALE_OFFER_RETRY_ENV] = "0"
+        os.environ[_VAST_STALE_OFFER_RETRY_ENV] = pre_mutation_offer_reselection_attempts()
         yield
     finally:
         for name, value in previous.items():
