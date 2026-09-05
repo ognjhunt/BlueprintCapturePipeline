@@ -56,7 +56,12 @@ def validate_strict_camera_gate(gate: Mapping[str, Any]) -> None:
 
 def _control_candidate(scene_plan: Mapping[str, Any], phase_plan: Mapping[str, Any]) -> dict[str, Any]:
     spec = scene_plan["task_spec"]
-    phases = phase_plan["phases"]
+    # Construction qualification retains its recovery/reset rehearsal. A scored
+    # positive control must instead preserve the released destination state and
+    # withdrawn gripper through its terminal scoring window.
+    phases = [row for row in phase_plan["phases"] if row["phase_id"] != "recovery"]
+    if not phases or phases[-1]["phase_id"] != "retreat":
+        raise RuntimeError("strict_controls_terminal_retreat_required")
     execution = phase_plan["execution_parameters"]
     settle = int(spec["settle_window_samples"])
     maximum = min(int(execution["maximum_steps_per_phase"]),
