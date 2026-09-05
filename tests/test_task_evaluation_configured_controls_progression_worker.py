@@ -454,6 +454,106 @@ def test_process_plans_does_not_forward_canary_only_compilation_root_to_controls
     assert "episode_compilation_queue_root" not in observed
 
 
+def _canary_launch_run(tmp_path: Path, *, launch_id: str, source_commit: str) -> Path:
+    """A policy-canary launch directory as the dispatcher leaves it (request only matters here)."""
+
+    run_root = tmp_path / "launch-runs" / launch_id
+    _write(
+        run_root / "launch_request.json",
+        {
+            "schema_version": "task_evaluation_launch_request.v1",
+            "run_kind": "internal_policy_canary",
+            "launch_id": launch_id,
+            "run_id": launch_id,
+            "source_commit": source_commit,
+        },
+    )
+    return run_root.parent
+
+
+def _process_launch_runs(tmp_path: Path, launch_root: Path) -> dict[str, object]:
+    plan_root = tmp_path / "plans"
+    plan_root.mkdir(exist_ok=True)
+    return worker.process_plans(
+        plan_root=plan_root,
+        autostart_intent_root=tmp_path / "intents",
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progression",
+        preparation_queue_root=tmp_path / "preparations",
+        episode_compilation_queue_root=tmp_path / "compilations",
+        activation_queue_root=tmp_path / "activations",
+        repo_root=tmp_path / "repo",
+        webapp_secret_file=tmp_path / "secret",
+        webapp_endpoint="https://tryblueprint.io/api/internal/task-evaluation-launch-submissions",
+    )
+
+
+def test_process_plans_skips_canary_launches_bound_to_a_superseded_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Historical canary launch directories from earlier releases are not standing alarms.
+
+    Their request, profile and receipt bindings predate the current contract, so
+    validating them blocks the tick forever; a run bound to another release can
+    never be activated by this deployment and is reported as superseded.
+    """
+
+    launch_root = _canary_launch_run(tmp_path, launch_id="scene-839873-policy-canary-old", source_commit="1" * 40)
+    monkeypatch.setattr(worker, "running_release_commit", lambda: "a" * 40)
+    monkeypatch.setattr(
+        worker,
+        "advance_policy_canary_activation",
+        lambda **kwargs: pytest.fail("a superseded canary launch must not be advanced"),
+    )
+    report = _process_launch_runs(tmp_path, launch_root)
+    assert report["status"] == "completed"
+    assert report["rows"] == [
+        {
+            "status": "launch_bound_to_superseded_release",
+            "source_launch_id": "scene-839873-policy-canary-old",
+            "source_commit": "1" * 40,
+            "running_commit": "a" * 40,
+        }
+    ]
+
+
+def test_process_plans_still_advances_canary_launches_at_the_running_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launch_root = _canary_launch_run(tmp_path, launch_id="scene-841757-policy-canary-current", source_commit="a" * 40)
+    monkeypatch.setattr(worker, "running_release_commit", lambda: "a" * 40)
+    advanced: dict[str, object] = {}
+
+    def advance(**kwargs: object) -> dict[str, object]:
+        advanced.update(kwargs)
+        return {"status": "awaiting_policy_canary_preparation", "run_id": "scene-841757-policy-canary-current"}
+
+    monkeypatch.setattr(worker, "advance_policy_canary_activation", advance)
+    report = _process_launch_runs(tmp_path, launch_root)
+    assert report["status"] == "completed"
+    assert [row["status"] for row in report["rows"]] == ["awaiting_policy_canary_preparation"]
+    assert advanced["run_root"] == launch_root / "scene-841757-policy-canary-current"
+
+
+def test_process_plans_advances_every_canary_launch_when_the_checkout_is_not_a_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A branch checkout has no release identity, so nothing is filtered (today's behaviour)."""
+
+    launch_root = _canary_launch_run(tmp_path, launch_id="scene-839873-policy-canary-old", source_commit="1" * 40)
+    monkeypatch.setattr(worker, "running_release_commit", lambda: "")
+    monkeypatch.setattr(
+        worker,
+        "advance_policy_canary_activation",
+        lambda **kwargs: {"status": "awaiting_policy_canary_preparation", "run_id": "scene-839873-policy-canary-old"},
+    )
+    report = _process_launch_runs(tmp_path, launch_root)
+    assert [row["status"] for row in report["rows"]] == ["awaiting_policy_canary_preparation"]
+
+
 def test_process_plans_advances_scene_configuration_activations_from_the_intent_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
