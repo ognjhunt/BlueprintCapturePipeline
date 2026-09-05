@@ -33,6 +33,7 @@ RUNTIME_RESULT_FILENAMES = (
     "adp009d_ovrtx_live_camera_result.json",
     "adp009d_aura_native_live_camera_result.json",
     "adp009d_retained_scene_gpu_render_result.v1.json",
+    "adp009d_source_calibration_gpu_render_result.v1.json",
     "adp009b_gaussian_excision_result.json",
     "native_task_arena_construction_result.v1.json",
     "native_task_arena_control_result.v1.json",
@@ -282,6 +283,12 @@ def inspect_provider_runtime_output_zip(
                     try:
                         parsed = json.loads(archive.read(candidate).decode("utf-8"))
                         if isinstance(parsed, Mapping):
+                            if Path(candidate).name == "adp009d_source_calibration_gpu_render_result.v1.json" and (
+                                parsed.get("schema_version") != "adp009d_source_calibration_gpu_render_result.v1"
+                                or parsed.get("render_scope") != "source_calibration"
+                            ):
+                                json_parse_errors.append(f"{candidate}:SourceCalibrationResultIdentityMismatch")
+                                break
                             runtime_result = dict(parsed)
                             runtime_result_member = candidate
                         break
