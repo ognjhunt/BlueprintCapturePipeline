@@ -163,6 +163,8 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
 #: commit named anywhere here is never retired by the deploy that supersedes it.
 DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS = (
     "/etc/blueprint/task-evaluation-launch-profiles",
+    # Terminal evidence can still require an older renderer after its queues empty.
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-release-retention-bindings",
     "/var/lib/blueprint/pipeline-control-plane/standing-authorizations",
     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches/pending",
     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches/processing",
