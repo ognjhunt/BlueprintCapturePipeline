@@ -63,6 +63,7 @@ from .task_evaluation_launch_dispatcher import (
     validate_launch_request,
 )
 from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_row
+from .task_evaluation_release_identity import running_release_commit
 
 
 PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v2"
@@ -1722,6 +1723,8 @@ def _scene_configuration_activation_rows(
         if repo_root and webapp_secret_file
         else None
     )
+    # Historical results bound to other releases can never activate under this
+    # deployment; a branch checkout has no release identity and filters nothing.
     rows = scene_configuration_activation.process_scene_configuration_activations(
         preparation_queue_root=preparation_queue_root,
         activation_queue_root=activation_queue_root,
@@ -1731,6 +1734,7 @@ def _scene_configuration_activation_rows(
         standing_authorization_dir=standing_authorization_dir,
         configured_controls_intent_root=configured_controls_intent_root,
         submitter=submitter,
+        running_commit=running_release_commit() or None,
     )
     return [{"lane": "task_evaluation_scene_configuration", **row} for row in rows]
 
