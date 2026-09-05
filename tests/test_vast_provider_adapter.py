@@ -9591,7 +9591,7 @@ def test_source_calibration_render_bundle_is_required_by_its_own_manifest_layers
         + ["provider_runtime/source_calibration_execution_authority.json", "provider_runtime/input/cameras.v1.json"],
     )
     preflight = _retained_render_preflight(tmp_path / "layerless", layerless)
-    assert "source_calibration_render_manifest_layers_missing" in preflight["blockers"]
+    assert "source_calibration_render_manifest_layers_invalid" in preflight["blockers"]
 
 
 def test_retained_scene_render_bundle_still_requires_the_retained_layers(tmp_path):

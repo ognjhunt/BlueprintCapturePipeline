@@ -2688,8 +2688,7 @@ def _blueprint_bundle_preflight(
     # The SAM source-calibration variant of that bundle
     # (adp009d_source_calibration_gpu_render_bundle.v1) runs the same renderer
     # against the raw scene's layers and carries its own authority member.  Its
-    # input entries follow the manifest's layers so the contract tracks the
-    # packet rather than one scene's layer names; without layers it fails closed.
+    # The exact three roles are part of this sealed schema, not scene names.
     adp_source_calibration_render_common_entries = {
         "provider_runtime/run_adp_retained_scene_render_provider_runtime.sh",
         "provider_runtime/adp_retained_scene_render_provider_runner.mjs",
@@ -3346,8 +3345,12 @@ def _blueprint_bundle_preflight(
                 required_entries = adp_source_calibration_render_common_entries | {
                     f"provider_runtime/input/{role}.ply" for role in roles
                 }
-                if not roles:
-                    blockers.append("source_calibration_render_manifest_layers_missing")
+                if set(roles) != {"images", "target_support", "scene_without_target"}:
+                    blockers.append("source_calibration_render_manifest_layers_invalid")
+                if retained_render_manifest.get("manifest_digest") != canonical_digest(
+                    retained_render_manifest, digest_field="manifest_digest"
+                ):
+                    blockers.append("source_calibration_render_manifest_digest_invalid")
             missing_entries = sorted(required_entries - set(zip_entries))
             if provider_bundle_kind == "adp_content_agents":
                 # This used to require exactly one reference image. The bundle
