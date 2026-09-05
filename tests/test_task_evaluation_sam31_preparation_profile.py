@@ -113,15 +113,31 @@ def test_materializer_binds_evidence_without_reading_secrets(inputs, monkeypatch
     host = {n: inputs['sam31_review_rights_attestation_path'] for n in
             ('task_request', 'installation_receipt', 'publisher_intake',
              'source_preparation_receipt', 'interiorgs_terms')}
+    from tests.test_sam31_camera_geometry import geometry_fixture
+
+    geometry = geometry_fixture(tmp_path / "camera-geometry")
+    lower, upper = geometry.pop("source_min"), geometry.pop("source_max")
     plan = build_sam31_preparation_plan(
         source_commit=inputs['source_commit'], task={'task_identity': {'id': 'task'},
             'scene_identity': {'id': 'scene'}, 'publisher_scene_id': '841757'},
-        host_inputs=host, source_min=[0., 0., 0.], source_max=[.3, .4, .02],
-        server_profile_path=profile)
+        host_inputs=host, source_min=lower, source_max=upper,
+        server_profile_path=profile, camera_geometry=geometry)
     assert validate_sam31_preparation_plan(plan, source_commit=inputs['source_commit'],
                                          approved_roots=(tmp_path,)) == plan
     assert plan['human_review_required'] is False
     assert plan['review_model'] == 'gpt-5.6-terra'
+    tampered = json.loads(json.dumps(plan))
+    tampered["camera_policy"]["views"][0]["position_offset_m"][0] += 0.1
+    tampered["plan_digest"] = canonical_digest(tampered, digest_field="plan_digest")
+    with pytest.raises(ValueError, match="camera_geometry_policy_mismatch"):
+        validate_sam31_preparation_plan(tampered, source_commit=inputs['source_commit'],
+                                       approved_roots=(tmp_path,))
+    escaped = json.loads(json.dumps(plan))
+    escaped["camera_policy"]["geometry_screen"]["source_files"]["labels"]["path"] = "/unapproved/labels.json"
+    escaped["plan_digest"] = canonical_digest(escaped, digest_field="plan_digest")
+    with pytest.raises(ValueError, match="camera_geometry_reference_outside_roots"):
+        validate_sam31_preparation_plan(escaped, source_commit=inputs['source_commit'],
+                                       approved_roots=(tmp_path,))
 
 
 @pytest.mark.parametrize('defect,code', [
