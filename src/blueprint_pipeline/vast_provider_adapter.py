@@ -3162,7 +3162,7 @@ def _blueprint_bundle_preflight(
                                 len(camera_ids) >= 3
                                 and len(camera_ids) == len(set(camera_ids))
                                 and all(
-                                    re.fullmatch(r"[a-z][a-z0-9_]{0,63}", camera_id)
+                                    re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", camera_id)
                                     for camera_id in camera_ids
                                 )
                             )
