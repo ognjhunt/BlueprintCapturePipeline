@@ -91,6 +91,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     # --- queues and scratch
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launches", "work", "blueprint", "launch queue"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-preparations", "work", "blueprint", "preparation queue"),
+    StorageRoot(f"{_CONTROL_PLANE}/sam31-preparation-executions", "work", "blueprint", "SAM preparation child queue"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-episode-compilations", "work", "blueprint", "compilation queue"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-activations", "work", "blueprint", "activation queue"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-policy-canary-dispatches", "work", "blueprint", "canary dispatch queue"),
@@ -106,6 +107,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/var/lib/blueprint/pubsub-handoffs", "work", "blueprint", "pubsub handoff spool"),
     # --- reproducible derived inputs
     StorageRoot(f"{_INPUTS}/prepared-references", "cache", "blueprint", "materialized references and content store"),
+    StorageRoot(f"{_INPUTS}/sam31-preparations", "cache", "blueprint", "reproducible SAM preparation artifacts"),
     StorageRoot(f"{_INPUTS}/compiled-episodes", "cache", "blueprint", "compiled episodes and adapter member store"),
     StorageRoot(f"{_INPUTS}/launch-activations", "cache", "blueprint", "activation launch sets"),
     StorageRoot(f"{_INPUTS}/scene-object-discoveries", "cache", "blueprint", "scene object discovery inputs"),

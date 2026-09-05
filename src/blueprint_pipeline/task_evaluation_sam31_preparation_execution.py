@@ -17,7 +17,6 @@ from .task_evaluation_launch_preparation_contract import (
 from .task_evaluation_launch_preparation_queue import (
     QUEUE_STATES, write_launch_preparation_record_exclusive,
 )
-from .task_evaluation_launch_preparation_worker import collect_preparation_references
 from .task_evaluation_release_reference_lock import release_reference_lock
 from .task_evaluation_sam31_preparation_queue import (
     WAITING_STATE, load_progress, stage_resume_signal, verify_evidence_reference,
@@ -48,6 +47,38 @@ class Sam31PhaseExecutionError(ValueError):
 def _require(value: bool, reason: str) -> None:
     if not value:
         raise Sam31PhaseExecutionError("sam31_phase_" + reason)
+
+
+def _collect_preparation_references(value: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Collect typed immutable references without importing the hot launch worker."""
+
+    references: list[dict[str, Any]] = []
+
+    def visit(node: Any, path: tuple[str, ...]) -> None:
+        if isinstance(node, Mapping):
+            if set(node) == {"uri", "digest", "size_bytes"}:
+                references.append(
+                    {
+                        "contract_path": ".".join(path),
+                        "uri": str(node["uri"]),
+                        "digest": str(node["digest"]),
+                        "size_bytes": int(node["size_bytes"]),
+                    }
+                )
+                return
+            for key, child in node.items():
+                visit(child, (*path, str(key)))
+        elif isinstance(node, Sequence) and not isinstance(node, (str, bytes)):
+            for index, child in enumerate(node):
+                visit(child, (*path, str(index)))
+
+    visit(value, ())
+    identities: dict[str, tuple[str, int]] = {}
+    for reference in references:
+        identity = (reference["digest"], reference["size_bytes"])
+        prior = identities.setdefault(reference["uri"], identity)
+        _require(prior == identity, "reference_uri_identity_conflict")
+    return references
 
 
 def _read(path: Path) -> dict:
@@ -170,7 +201,7 @@ def _validated_job(job: dict, *, parent_queue: Path, input_root: Path,
     plan_ref = _ref(job["plan_ref"])
     plan_path = verify_evidence_reference(plan_ref, approved_roots)
     _require(plan_ref["sha256"] == job["plan_digest"], "plan_identity_mismatch")
-    bound = [ref for ref in collect_preparation_references(request)
+    bound = [ref for ref in _collect_preparation_references(request)
              if ref["contract_path"].startswith("runtime.mounts.")
              and ref["digest"] == plan_ref["sha256"] and ref["size_bytes"] == plan_ref["size_bytes"]]
     _require(bool(bound), "plan_not_bound_to_parent")

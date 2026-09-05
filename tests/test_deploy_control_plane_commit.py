@@ -469,6 +469,9 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-dispatcher.path",
         "blueprint-task-evaluation-launch-preparation.service",
         "blueprint-task-evaluation-launch-preparation.path",
+        "blueprint-task-evaluation-sam31-preparation-execution.service",
+        "blueprint-task-evaluation-sam31-preparation-execution.path",
+        "blueprint-task-evaluation-sam31-preparation-execution.timer",
         "blueprint-task-evaluation-episode-compilation.service",
         "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-launch-activation.service",
@@ -492,9 +495,14 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-object-discovery.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
+        "blueprint-task-evaluation-sam31-preparation-execution.timer",
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-control-plane-storage-gc.timer",
+    )
+    assert deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS == (
+        "blueprint-task-evaluation-sam31-preparation-execution.path",
+        "blueprint-task-evaluation-policy-canary-dispatcher.path",
     )
 
 

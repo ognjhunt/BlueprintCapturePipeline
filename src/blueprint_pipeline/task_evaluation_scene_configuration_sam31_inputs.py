@@ -186,7 +186,7 @@ def _cutout(candidate_path, candidate, source, task, camera_ids, mask_paths):
     return deleted, retained, shared["counts"], sweep, original
 
 
-def materialize_sam31_exact_mask_render_inputs(
+def _materialize_sam31_exact_mask_render_inputs(
     *, envelope, stage_one_configuration, output_root,
 ):
     config = stage_one_configuration
