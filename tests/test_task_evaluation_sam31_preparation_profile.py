@@ -18,7 +18,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_sam31_plan import (
 from blueprint_pipeline.task_evaluation_supervisor.openai_cost_authority import (
     derive_operator_scope_attestation,
 )
-from tests.test_sam31_source_track_provider import _request
+from tests import test_sam31_provider_launch_packet as launch_fixture
 
 
 def _write(path: Path, value: dict, field: str | None = None) -> Path:
@@ -59,7 +59,8 @@ def inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
                          for n, v in sorted(excision.DEPENDENCY_REQUIREMENTS.items())],
         'provider_network_install_required': False, 'sdists_allowed': False, 'wheels': rows,
     }, 'manifest_digest')
-    provider = _write(tmp_path / 'provider.json', _request()['provider_profile'])
+    monkeypatch.setattr(launch_fixture, 'COMMIT', commit)
+    _, _, provider = launch_fixture._profile(tmp_path)
     rights = _write(tmp_path / 'rights.json', {
         'schema_version': module.AI_RIGHTS_SCHEMA_VERSION,
         'status': 'accepted_for_private_derived_visual_review',
@@ -227,3 +228,107 @@ def test_released_source_or_submodule_drift_is_rejected(inputs, monkeypatch):
     monkeypatch.setattr(excision, '_git', changed)
     with pytest.raises(module.Sam31PreparationProfileError, match='flashsplat_identity_invalid'):
         module.materialize_sam31_preparation_profile(**inputs)
+
+
+@pytest.mark.parametrize(('drift', 'blocker'), [
+    ('profile_commit', 'sam31_provider_source_commit_mismatch'),
+    ('profile_commit_missing', 'sam31_provider_source_commit_mismatch'),
+    ('stack_commit', 'sam31_worker_stack_manifest_invalid'),
+    ('image_commit', 'sam31_worker_stack_manifest_invalid'),
+    ('execution_commit', 'sam31_authorization_source_invalid'),
+    ('image_missing', 'sam31_runtime_image_build_receipt_bytes_changed'),
+    ('execution_missing', 'sam31_execution_authorization_bytes_changed'),
+    ('privacy_bytes_changed', 'sam31_privacy_use_authorization_bytes_changed'),
+])
+def test_nested_worker_sources_refused_before_preparation_publication(inputs, monkeypatch, tmp_path, drift, blocker):
+    path = inputs['sam31_provider_profile_path']
+    profile = json.loads(path.read_text())
+    if drift == 'profile_commit':
+        profile['source_commit_sha'] = 'f' * 40
+    elif drift == 'profile_commit_missing':
+        profile.pop('source_commit_sha')
+    elif drift == 'execution_missing':
+        profile['authorization_sources'].pop('execution')
+    elif drift == 'privacy_bytes_changed':
+        Path(profile['authorization_sources']['privacy_use']['path']).write_text('{}')
+    else:
+        record = (profile['authorization_sources']['execution'] if drift == 'execution_commit'
+                  else profile['worker_stack_manifest'] if drift == 'stack_commit'
+                  else profile['runtime_image_build_receipt'])
+        source = Path(record['path'])
+        if drift == 'image_missing':
+            source.unlink()
+        else:
+            value = json.loads(source.read_text())
+            value['source_commit_sha'] = 'f' * 40 if drift == 'execution_commit' else 'invalid-commit'
+            field = 'manifest_digest' if drift == 'stack_commit' else 'receipt_digest'
+            launch_fixture._write_receipt(source, value, field=field)
+            record.update(module._file_record(source), **{field: value[field]})
+            if drift == 'execution_commit':
+                profile['execution_authorization_digest'] = record['sha256']
+    profile['profile_digest'] = launch_fixture.canonical_json_digest(
+        {key: value for key, value in profile.items() if key != 'profile_digest'})
+    path.write_text(json.dumps(profile))
+    retained = {p: p.read_bytes() for p in tmp_path.glob('*.json')}
+
+    def too_late(*args, **kwargs):
+        raise AssertionError('nested source validation was postponed beyond profile admission')
+
+    monkeypatch.setattr(module, '_validate_flashsplat', too_late)
+    with pytest.raises(module.Sam31PreparationProfileError, match=blocker):
+        module.materialize_sam31_preparation_profile(**inputs)
+    assert {p: p.read_bytes() for p in tmp_path.glob('*.json')} == retained
+    assert not list(inputs['runtime_root'].iterdir())
+
+
+@pytest.mark.parametrize('older_runtime', [False, True])
+def test_admitted_profile_reaches_real_source_input_bundle_and_gpu_request(inputs, tmp_path, older_runtime):
+    if older_runtime:
+        provider_path = inputs['sam31_provider_profile_path']
+        provider = json.loads(provider_path.read_text())
+        for key, field in [('worker_stack_manifest', 'manifest_digest'),
+                           ('runtime_image_build_receipt', 'receipt_digest')]:
+            record = provider[key]
+            source = Path(record['path'])
+            value = json.loads(source.read_text())
+            value['source_commit_sha'] = 'e' * 40
+            launch_fixture._write_receipt(source, value, field=field)
+            record.update(module._file_record(source), **{field: value[field]})
+        fresh_path = tmp_path / 'fresh-provider-older-runtime.json'
+        authority = provider['authorization_sources']
+        launch_fixture.materialize_sam31_provider_profile(
+            worker_stack_manifest_path=provider['worker_stack_manifest']['path'],
+            runtime_image_build_receipt_path=provider['runtime_image_build_receipt']['path'],
+            license_use_authorization_path=authority['license_use']['path'],
+            privacy_use_authorization_path=authority['privacy_use']['path'],
+            trade_controls_review_path=authority['trade_controls']['path'],
+            execution_authorization_path=authority['execution']['path'],
+            source_commit_sha=inputs['source_commit'], runtime_image_identity=provider['runtime_image_identity'],
+            method_version=provider['method_version'], output_probability_threshold=0.5,
+            max_num_objects=5, multiplex_count=16, use_fa3=False, compile_model=False,
+            warm_up=False, async_loading_frames=False, output_path=fresh_path)
+        inputs['sam31_provider_profile_path'] = fresh_path
+    profile = module.materialize_sam31_preparation_profile(**inputs)
+    provider_path = Path(profile['artifact_references']['sam31_provider_profile']['path'])
+    provider = json.loads(provider_path.read_text())
+    run_request = launch_fixture._run_request(tmp_path, provider)
+    bundle, receipt = tmp_path / 'input.zip', tmp_path / 'input-receipt.json'
+    launch_fixture.build_sam31_source_track_input_bundle(
+        request_path=run_request, bundle_path=bundle, receipt_path=receipt)
+    request = launch_fixture.materialize_sam31_gpu_canary_request(
+        provider_profile_path=provider_path, source_track_run_request_path=run_request,
+        input_bundle_path=bundle, input_bundle_receipt_path=receipt,
+        source_profile=module.SAM31_SOURCE_PROFILE, source_commit_sha=inputs['source_commit'],
+        expected_camera_count=2, expected_frame_count=2, max_spend_usd=1.,
+        hard_ttl_seconds=600, retry_cap=0, authority_id='fixture-admitted-scene',
+        output_path=tmp_path / 'gpu-request.json')
+    assert request['source_commit_sha'] == profile['source_commit']
+    assert request['worker_image_digest'] == provider['runtime_image_identity']
+    assert request['source_records']['worker_stack_manifest'] == provider['worker_stack_manifest']
+    assert request['source_records']['authorization_sources'] == provider['authorization_sources']
+    assert request['provider_mutations_performed'] == 0
+    assert request['paid_execution_started'] is False
+    if older_runtime:
+        assert json.loads(Path(provider['worker_stack_manifest']['path']).read_text())['source_commit_sha'] == 'e' * 40
+        assert json.loads(Path(provider['runtime_image_build_receipt']['path']).read_text())['source_commit_sha'] == 'e' * 40
+        assert json.loads(Path(provider['authorization_sources']['execution']['path']).read_text())['source_commit_sha'] == inputs['source_commit']
