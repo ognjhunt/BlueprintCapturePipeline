@@ -13,6 +13,8 @@ from blueprint_pipeline.sam31_gpu_admission import (
     LICENSE_TERMS_DIGEST,
     OFFICIAL_CODE_REVISION,
     PREFLIGHT_SCHEMA_VERSION,
+    SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
+    SAM31_PREFERRED_GEOLOCATION_REGEX,
     build_sam31_gpu_canary_admission,
 )
 from blueprint_pipeline.sam31_provider_launch_packet import (
@@ -370,6 +372,10 @@ def test_materialized_gpu_request_passes_existing_dry_admission(tmp_path: Path) 
     assert request["worker_image_digest"] == IMAGE
     assert request["camera_count"] == request["frame_count"] == 2
     assert request["retry_cap"] == 0
+    assert request["allowed_geolocation_country_codes"] == list(
+        SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+    )
+    assert request["preferred_geolocation_regex"] == SAM31_PREFERRED_GEOLOCATION_REGEX
     assert request["provider_mutations_performed"] == 0
     assert request["source_records"]["runtime_image_build_receipt"][
         "receipt_digest"
@@ -387,6 +393,13 @@ def test_materialized_gpu_request_passes_existing_dry_admission(tmp_path: Path) 
         "gpu_memory_bytes": 48 * 1024**3,
         "container_disk_bytes": 80 * 1024**3,
         "on_demand_price_usd_per_hour": 0.5,
+        "selected_offer": {"gpu_name": "L40S", "geolocation": "California, US"},
+        "capacity_request": {
+            "allowed_geolocation_country_codes": list(
+                SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+            ),
+            "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
+        },
     }
     admission, bound = build_sam31_gpu_canary_admission(
         request=request,

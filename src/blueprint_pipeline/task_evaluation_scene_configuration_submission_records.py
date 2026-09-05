@@ -622,6 +622,11 @@ def pick_and_place_task_records(
         "whole_subject_containment_required": True,
         "object_must_rest_on_destination_support": True,
     }
+    for field in ("retreat_clearance_m", "drop_minimum_fall_m",
+                  "maximum_task_contact_force_n", "forbidden_contact_classes",
+                  "robot_workspace_position_bounds_world_m", "collision_failure_minimum_force_n"):
+        if field in success:
+            bounds[field] = success[field]
     success_record = {
         "schema_version": "task_evaluation_rigid_relocation_success_criteria.v1",
         "status": "preregistered_before_any_episode",

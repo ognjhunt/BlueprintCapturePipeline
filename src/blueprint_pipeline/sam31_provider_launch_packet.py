@@ -31,6 +31,8 @@ from .sam31_gpu_admission import (
     OFFICIAL_CODE_REVISION,
     OPERATION,
     REQUEST_SCHEMA_VERSION,
+    SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
+    SAM31_PREFERRED_GEOLOCATION_REGEX,
     SOURCE_PROFILES,
 )
 from .sam31_source_track_canary_worker import BUNDLE_RECEIPT_SCHEMA_VERSION
@@ -653,6 +655,10 @@ def materialize_sam31_gpu_canary_request(
         "hard_ttl_seconds": hard_ttl_seconds,
         "retry_cap": retry_cap,
         "authority_id": authority_id.strip(),
+        "allowed_geolocation_country_codes": list(
+            SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
         "source_records": source_records,
         "proof_effect": "none",
         "comparative_policy_ranking_verdict": "thesis_not_supported",

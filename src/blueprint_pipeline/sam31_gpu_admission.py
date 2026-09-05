@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .openai_api_geography import vast_geolocation_country_code
 from .task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
 
 
@@ -34,12 +35,18 @@ MAX_TTL_SECONDS = 3_600
 MAX_RETRY_CAP = 0
 MAX_CANARY_FRAMES = 128
 MAX_CANARY_INPUT_BUNDLE_BYTES = 512 * 1024**2
+SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES = ("US",)
+SAM31_PREFERRED_GEOLOCATION_REGEX = (
+    "california|oregon|washington|nevada|arizona|utah|idaho|montana|"
+    "wyoming|colorado|new mexico"
+)
 SOURCE_PROFILES = {
     "iphone_arkit_lidar",
     "iphone_arkit_non_lidar",
     "camera_360_equirectangular",
     "camera_360_native",
     "monocular_video",
+    "render_derived_synthetic_method_inputs",
 }
 
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -88,6 +95,10 @@ def collect_sam31_vast_preflight(
         "require_known_supported_isaac_driver": False,
         "require_direct_port": False,
         "preferred_gpu_keywords": ["L40S", "L40", "A40", "RTX 6000Ada", "RTX A6000"],
+        "allowed_geolocation_country_codes": list(
+            SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
     }
     capacity = dict(capacity_probe(capacity_request))
     scoped_inventory = dict(inventory_probe(name_prefix))
@@ -126,6 +137,8 @@ def collect_sam31_vast_preflight(
         and 0 < hourly_rate <= float(max_hourly_rate_usd)
     ):
         blockers.append("sam31_gpu_single_gpu_unavailable")
+    if vast_geolocation_country_code(offer.get("geolocation")) != "us":
+        blockers.append("sam31_gpu_selected_offer_outside_us")
     if container_disk_bytes < MIN_CONTAINER_DISK_BYTES:
         blockers.append("sam31_gpu_container_disk_below_floor")
     result = {
@@ -194,6 +207,10 @@ def build_sam31_gpu_canary_admission(
         "license_terms_digest": LICENSE_TERMS_DIGEST,
         "proof_effect": "none",
         "comparative_policy_ranking_verdict": "thesis_not_supported",
+        "allowed_geolocation_country_codes": list(
+            SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
     }
     for field, expected in exact_values.items():
         if source.get(field) != expected:
@@ -278,6 +295,23 @@ def build_sam31_gpu_canary_admission(
         blockers.append("sam31_gpu_independent_watchdog_not_armed")
     if provider_snapshot.get("single_gpu_available") is not True:
         blockers.append("sam31_gpu_single_gpu_unavailable")
+    capacity_request = provider_snapshot.get("capacity_request")
+    capacity_request = (
+        capacity_request if isinstance(capacity_request, Mapping) else {}
+    )
+    selected_offer = provider_snapshot.get("selected_offer")
+    selected_offer = selected_offer if isinstance(selected_offer, Mapping) else {}
+    if capacity_request.get("allowed_geolocation_country_codes") != list(
+        SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+    ):
+        blockers.append("sam31_gpu_preflight_country_allowlist_mismatch")
+    if (
+        capacity_request.get("preferred_geolocation_regex")
+        != SAM31_PREFERRED_GEOLOCATION_REGEX
+    ):
+        blockers.append("sam31_gpu_preflight_geolocation_preference_mismatch")
+    if vast_geolocation_country_code(selected_offer.get("geolocation")) != "us":
+        blockers.append("sam31_gpu_preflight_selected_offer_outside_us")
     memory = provider_snapshot.get("gpu_memory_bytes")
     if not isinstance(memory, int) or isinstance(memory, bool) or memory < MIN_GPU_MEMORY_BYTES:
         blockers.append("sam31_gpu_memory_below_floor")
@@ -367,6 +401,10 @@ def build_sam31_gpu_canary_admission(
         "hard_ttl_seconds": hard_ttl_seconds,
         "retry_cap": retry_cap,
         "authority_id": authority_id,
+        "allowed_geolocation_country_codes": list(
+            SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
         "watchdog_armed": watchdog.get("status") == "armed",
         "provider_zero_verified": provider_snapshot.get("provider_inventory_verified_zero") is True,
         "provider_mutations_performed": 0,
@@ -474,6 +512,8 @@ __all__ = [
     "PREFLIGHT_SCHEMA_VERSION",
     "PROBE_KIND",
     "REQUEST_SCHEMA_VERSION",
+    "SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES",
+    "SAM31_PREFERRED_GEOLOCATION_REGEX",
     "build_sam31_gpu_canary_admission",
     "collect_sam31_vast_preflight",
     "prepare_sam31_gpu_canary",

@@ -12,7 +12,12 @@ from blueprint_pipeline.paid_resource_admission import (
     build_paid_lane_admission,
     require_paid_resource_admission,
 )
-from blueprint_pipeline.sam31_gpu_admission import CHECKPOINT_DIGEST, OPERATION
+from blueprint_pipeline.sam31_gpu_admission import (
+    CHECKPOINT_DIGEST,
+    OPERATION,
+    SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
+    SAM31_PREFERRED_GEOLOCATION_REGEX,
+)
 from blueprint_pipeline.sam31_source_track_canary_worker import RUNTIME_RESULT_SCHEMA_VERSION
 from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
     canonical_json_digest,
@@ -60,6 +65,10 @@ def _bound_request() -> dict:
         "hard_ttl_seconds": 60,
         "retry_cap": 0,
         "authority_id": "fixture-authority",
+        "allowed_geolocation_country_codes": list(
+            SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
         "request_digest": D1,
         "bound_provider": "vast",
         "bound_preflight_digest": D1,
@@ -212,6 +221,8 @@ class _Provider:
         assert spec.name.startswith("blueprint-sam31-source-tracks-")
         assert spec.image == IMAGE
         assert spec.requires_rtx is False
+        assert spec.allowed_geolocation_country_codes == ("US",)
+        assert spec.preferred_geolocation_regex == SAM31_PREFERRED_GEOLOCATION_REGEX
         assert spec.env["HF_TOKEN"] == TOKEN
         assert spec.env["BLUEPRINT_SAM31_INPUT_BUNDLE_GET_URL"] == INPUT_URL
         assert spec.env["BLUEPRINT_SAM31_RUNTIME_DIGEST"] == "sha256:" + "b" * 64
@@ -284,6 +295,9 @@ def test_one_instance_canary_tears_down_and_persists_no_secrets(tmp_path: Path) 
         == _runtime_result()["normalized_source_tracks"]["result_digest"]
     )
     assert provider.requests[0]["create_payload"]["env"]
+    teardown = json.loads((tmp_path / "teardown_receipt.json").read_text())
+    assert teardown["allowed_geolocation_country_codes"] == ["US"]
+    assert teardown["preferred_geolocation_regex"] == SAM31_PREFERRED_GEOLOCATION_REGEX
     persisted = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in tmp_path.rglob("*")
@@ -292,6 +306,32 @@ def test_one_instance_canary_tears_down_and_persists_no_secrets(tmp_path: Path) 
     for secret in (TOKEN, INPUT_URL, PUT_URL, GET_URL):
         assert secret not in persisted
     assert not list((tmp_path / "leases").glob("*.lease.json"))
+
+
+def test_canary_rejects_tampered_country_policy_before_provider_access(
+    tmp_path: Path,
+) -> None:
+    request = _bound_request()
+    request["allowed_geolocation_country_codes"] = ["US", "CA"]
+    request["bound_request_digest"] = canonical_digest(
+        request, digest_field="bound_request_digest"
+    )
+    provider = _Provider()
+
+    with pytest.raises(Sam31VastCanaryError, match="bound_request_not_executable"):
+        run_sam31_vast_source_track_canary(
+            bound_request=request,
+            preflight=_preflight(),
+            job_dir=tmp_path,
+            input_bundle_get_url=INPUT_URL,
+            output_put_url=PUT_URL,
+            output_get_url=GET_URL,
+            hf_token=TOKEN,
+            provider=provider,
+            paid_resource_admission_grant=_grant(),
+        )
+
+    assert provider.requests == []
 
 
 def test_output_404_polls_until_worker_upload_is_available(tmp_path: Path, monkeypatch) -> None:

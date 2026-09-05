@@ -54,6 +54,7 @@ class _ReadOnlyProvider:
             "status": "available",
             "selected_offer": {
                 "gpu_name": "L40S",
+                "geolocation": "California, US",
                 "gpu_ram_mb": 48_000,
                 "on_demand_price_usd_per_hour": 0.5,
             },

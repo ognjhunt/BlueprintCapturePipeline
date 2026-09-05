@@ -425,9 +425,11 @@ def _require_strict_owner_success_contract(
                 or not isinstance(paths[0], str) or not paths[0].startswith("/")):
             raise TaskNeutralScoringError(["policy_canary_owner_success_contract_exact_support_missing"])
     if configured.get("retreat_clearance_required") is True:
-        # The current rigid contract/scorer has no distance-qualified retreat
-        # criterion. An open gripper and cleared contact cannot prove clearance.
-        raise TaskNeutralScoringError(["policy_canary_owner_success_contract_retreat_scoring_unsupported"])
+        from .adp_rigid_retreat_scoring import validate_retreat_binding
+
+        errors = validate_retreat_binding(task_spec, contract)
+        if errors:
+            raise TaskNeutralScoringError(errors)
 
 
 def _candidate_spec(

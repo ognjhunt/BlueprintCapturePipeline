@@ -993,6 +993,23 @@ def test_strict_owner_contract_does_not_equate_contact_clearance_with_retreat_di
     packet["arena_scene_plan_digest"] = scene["plan_digest"]
     write_json(packet_path, packet)
     with pytest.raises(canary_setup_module.PolicyCanarySetupError,
-                       match="policy_canary_owner_success_contract_retreat_scoring_unsupported"):
+                       match="rigid_task_success_contract_retreat_invalid"):
         materialize_scene839873_policy_canary_setup(**kwargs, task_success_contract=contract)
     assert not Path(kwargs["output_dir"]).exists()
+
+
+def test_strict_owner_contract_accepts_bound_measured_retreat_criterion(tmp_path: Path) -> None:
+    kwargs, contract = _strict_owner_setup_inputs(tmp_path)
+    spec = json.loads(Path(kwargs["scene_plan_path"]).read_text())["task_spec"]
+    spec["configured_success_criteria"]["retreat_clearance_required"] = True
+    spec["retreat_clearance_m"] = 0.05
+    spec["destination_pose_world"] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    spec["interaction_affordance"]["insertion_withdrawal_unit_world"] = [0.0, 0.0, 1.0]
+    contract["criteria"]["retreat"] = {
+        "mode": "required", "minimum_clearance_m": 0.05,
+        "withdrawal_unit_destination_frame": [0.0, 0.0, 1.0],
+    }
+    canary_setup_module._require_strict_owner_success_contract(task_spec=spec, contract=contract)
+    spec["retreat_clearance_m"] = 0.01
+    with pytest.raises(canary_setup_module.TaskNeutralScoringError, match="retreat_binding_mismatch"):
+        canary_setup_module._require_strict_owner_success_contract(task_spec=spec, contract=contract)

@@ -51,11 +51,12 @@ authority. Raw source uploads and provider training remain forbidden.
 
 ## Boundaries that must not be confused
 
-- Current admitted appearance removal is `registered_source_bounds`: a
-  registered bounding-box cutout and projected bounds masks. The task must select
-  this method explicitly. SAM3.1 accepted-track/exact-mask requests fail before
-  staging until their typed production route is wired; the assembler must not
-  silently substitute bounding boxes.
+- A `sam31` submission queues calibrated source views, SAM tracking, required
+  OpenAI Agents SDK selection review, exact masks, contribution measurement and
+  global segment cutout. The retained task authorizes bounded private review;
+  the executor binds that authorization to the actual overlays automatically.
+  No human overlay approval is required. The explicit `registered_source_bounds`
+  compatibility method cannot silently replace requested SAM masks.
 - The passive destination is a statically qualified candidate. Native import,
   scene placement, contact, reset and camera qualification remain pipeline stages.
 - The task documents preserve existing immutable candidate-preregistration

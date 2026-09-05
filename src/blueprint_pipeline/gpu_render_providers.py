@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from blueprint_pipeline import safe_outbound_http, vast_compute_capability as vcc
+from .vast_offer_selection_helpers import geolocation_selection_kwargs
 from blueprint_pipeline.paid_resource_admission import (
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
@@ -183,6 +184,9 @@ class RenderLaunchSpec:
     # geography-restricted external API. Vast applies this during both the
     # advisory capacity probe and the authoritative live offer selection.
     allowed_geolocation_country_codes: tuple[str, ...] = ()
+    # Soft ranking preference applied only after the hard country allowlist.
+    # Vast retains this in both its capacity and paid-selection manifests.
+    preferred_geolocation_regex: str = ""
 
     @property
     def bootstrap_script(self) -> str:
@@ -1938,6 +1942,7 @@ class VastRenderProvider(GpuRenderProvider):
             "allowed_geolocation_country_codes": list(
                 spec.allowed_geolocation_country_codes
             ),
+            "preferred_geolocation_regex": spec.preferred_geolocation_regex,
             "bootstrap_transport": script_transport,
             "bootstrap_transport_env_keys": sorted(bootstrap_env),
             "entrypoint_override": entrypoint_override,
@@ -2081,13 +2086,8 @@ class VastRenderProvider(GpuRenderProvider):
             selection_kwargs["excluded_machine_ids"] = excluded_machine_ids
         if allowed_machine_ids:
             selection_kwargs["allowed_machine_ids"] = allowed_machine_ids
-        allowed_geolocation_country_codes = _string_list(
-            req.get("allowed_geolocation_country_codes")
-        )
-        if allowed_geolocation_country_codes:
-            selection_kwargs["allowed_geolocation_country_codes"] = (
-                allowed_geolocation_country_codes
-            )
+        geography = geolocation_selection_kwargs(req)
+        selection_kwargs.update(geography)
         selected = _select_offer(offers, **selection_kwargs)
         viable: list[dict[str, Any]] = []
         for offer in offers:
@@ -2171,7 +2171,7 @@ class VastRenderProvider(GpuRenderProvider):
                 "expected_provider_download_bytes": expected_download_bytes,
                 "expected_provider_upload_bytes": expected_upload_bytes,
                 "allowed_geolocation_country_codes": sorted(
-                    allowed_geolocation_country_codes
+                    geography.get("allowed_geolocation_country_codes", [])
                 ),
             },
             "global_billable_inventory": global_inventory,
@@ -2244,9 +2244,6 @@ class VastRenderProvider(GpuRenderProvider):
             request.get("excluded_machine_ids")
         )
         allowed_machine_ids = _string_list(request.get("allowed_machine_ids"))
-        allowed_geolocation_country_codes = _string_list(
-            request.get("allowed_geolocation_country_codes")
-        )
         selection_overrides = vcc.capacity_selection_overrides(request)
         minimum_driver_version = str(
             request.get("minimum_driver_version") or ""
@@ -2324,10 +2321,7 @@ class VastRenderProvider(GpuRenderProvider):
                 selection_kwargs["excluded_machine_ids"] = excluded_machine_ids
             if allowed_machine_ids:
                 selection_kwargs["allowed_machine_ids"] = allowed_machine_ids
-            if allowed_geolocation_country_codes:
-                selection_kwargs["allowed_geolocation_country_codes"] = (
-                    allowed_geolocation_country_codes
-                )
+            selection_kwargs.update(geolocation_selection_kwargs(request))
             offer = _select_offer(remaining, **selection_kwargs)
             if not offer:
                 break

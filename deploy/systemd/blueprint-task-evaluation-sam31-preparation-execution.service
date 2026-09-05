@@ -31,7 +31,7 @@ TasksMax=512
 LimitNOFILE=4096
 MemoryMax=8G
 CPUQuota=200%
-TimeoutStartSec=15m
+TimeoutStartSec=75m
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env

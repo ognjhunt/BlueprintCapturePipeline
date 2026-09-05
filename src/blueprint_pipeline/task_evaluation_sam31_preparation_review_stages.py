@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 import numpy as np
 
-from .decision_evidence_contracts import canonical_digest, canonical_json
+from .decision_evidence_contracts import canonical_digest
 from .fresh_scene_removal_freezes import materialize_fresh_scene_removal_freezes
 from .fresh_scene_supervisor_bindings import materialize_fresh_scene_removal_freeze_request
 from .gaussian_splat_decode import read_standard_3dgs_ply
@@ -25,6 +25,7 @@ from .public_scene_calibrated_object_masks import materialize_calibrated_object_
 from .public_scene_segment_contribution_cutout import materialize_segment_contribution_cutout_set
 from .task_evaluation_sam31_preparation_cpu_stages import _input, _resident, _record
 from .task_evaluation_scene_configuration_submission_inputs import beneath, checked_file, read
+from .task_evaluation_sam31_preparation_review_authority import resolve_sam31_review_rights
 
 STAGES = {"sam31_review", "calibrated_masks", "removal_freezes", "segment_cutout"}
 
@@ -113,7 +114,16 @@ def execute_review_stage(job: Mapping[str, Any]) -> dict[str, Any]:
             artifacts.update(selection_inputs=_record(prepared), track_selection_candidate=_record(candidate))
             review_profile = profile.get("sam31_visual_review")
             _require(isinstance(review_profile, Mapping), "visual_review_profile_missing")
-            rights = _profile_file(review_profile, "rights_attestation")
+            authority = _profile_file(review_profile, "rights_attestation")
+            task_request = _input(plan["host_inputs"], "task_request", root)
+            rights = resolve_sam31_review_rights(
+                authority_path=authority, task_request_path=task_request,
+                candidate_path=candidate, output_path=output / "review-rights.json",
+            )
+            artifacts["review_rights"] = _record(rights)
+            derivation = rights.with_suffix(".derivation.json")
+            if derivation.is_file():
+                artifacts["review_rights_derivation"] = _record(derivation)
             validate_sam31_ai_visual_review_rights(candidate_path=candidate, rights_attestation_path=rights)
             scope = _profile_file(review_profile, "openai_cost_scope_attestation")
             admin = _secret_path(review_profile.get("openai_admin_api_key_file"))

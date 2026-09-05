@@ -35,6 +35,8 @@ from .sam31_gpu_admission import (
     CHECKPOINT_REPOSITORY_REVISION,
     OFFICIAL_CODE_REVISION,
     OPERATION,
+    SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
+    SAM31_PREFERRED_GEOLOCATION_REGEX,
 )
 from .sam31_source_track_canary_worker import RUNTIME_RESULT_SCHEMA_VERSION
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
@@ -488,6 +490,10 @@ def run_sam31_vast_source_track_canary(
         request.get("bound_provider") != "vast"
         or request.get("provider_mutation_authorized") is not True
         or request.get("operation") != OPERATION
+        or request.get("allowed_geolocation_country_codes")
+        != list(SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES)
+        or request.get("preferred_geolocation_regex")
+        != SAM31_PREFERRED_GEOLOCATION_REGEX
         or provider.name != "vast"
     ):
         raise Sam31VastCanaryError("sam31_bound_request_not_executable")
@@ -610,6 +616,10 @@ def run_sam31_vast_source_track_canary(
             min_gpu_ram_mb=max(24_000, int(preflight.get("gpu_memory_bytes") or 0) // 1_000_000),
             requires_rtx=False,
             vast_launch_mode="args",
+            allowed_geolocation_country_codes=(
+                SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+            ),
+            preferred_geolocation_regex=SAM31_PREFERRED_GEOLOCATION_REGEX,
         )
         provider_request = provider.build_request(spec, root)
         provider_request["prelaunch_spend_guard"] = {
@@ -712,6 +722,10 @@ def run_sam31_vast_source_track_canary(
             "request_digest": request_digest,
             "bound_request_digest": request.get("bound_request_digest"),
             "worker_image_digest": image,
+            "allowed_geolocation_country_codes": list(
+                SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+            ),
+            "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
             "instance_id": instance_id,
             "terminate_result": terminate_result,
             "provider_zero_verified": provider_zero,
@@ -785,6 +799,10 @@ def run_sam31_vast_source_track_canary(
         "source_track_run_request_digest": request.get("source_track_run_request_digest"),
         "checkpoint_digest": CHECKPOINT_DIGEST,
         "provider": "vast",
+        "allowed_geolocation_country_codes": list(
+            SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
+        ),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
         "instance_id": instance_id,
         "provider_runtime_result_digest": (
             validated_result.get("runtime_result_digest") if validated_result else None

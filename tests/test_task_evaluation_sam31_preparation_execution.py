@@ -242,3 +242,4 @@ def test_deployer_installs_and_authority_gates_exact_child_units():
     assert "-m blueprint_pipeline.task_evaluation_sam31_preparation_execution" in service
     assert "--max-messages 1" in service
     assert "paid_resource_allocator" not in service
+    assert "TimeoutStartSec=75m" in service

@@ -84,6 +84,17 @@ def _validate_task(task: dict[str, Any]) -> None:
         value = task["success"].get(field)
         require(isinstance(value, (int, float)) and not isinstance(value, bool) and
                 math.isfinite(value) and value > 0, "task_success_bounds_invalid")
+    for field in ("retreat_clearance_m", "drop_minimum_fall_m", "maximum_task_contact_force_n",
+                  "collision_failure_minimum_force_n"):
+        if field in task["success"]:
+            value = task["success"][field]
+            require(isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(value) and value > 0, "task_success_bounds_invalid")
+    if "forbidden_contact_classes" in task["success"]:
+        classes = task["success"]["forbidden_contact_classes"]
+        require(isinstance(classes, list) and bool(classes) and
+                all(isinstance(value, str) and bool(value.strip()) for value in classes),
+                "task_success_contact_classes_invalid")
     for field in ("maximum_retries", "maximum_regrasps"):
         value = task["success"].get(field)
         require(type(value) is int and value == 0, "retry_contract_amendment_required")
@@ -201,6 +212,14 @@ def materialize_scene_configuration_submission(
                    f"place it fully inside the {task['destination']['visible_label']}, "
                    "release it, and move the gripper clear.")
     require(task.get("instruction", instruction) == instruction, "instruction_semantics_mismatch")
+    # Confirmation refers to the retained owner task request. Do not invent
+    # confirmation for a request that contains only provider-processing rights.
+    if task["human_authority"].get("task_success_contract_confirmed") is True:
+        template["owner_success_contract_authority"] = {
+            "confirmation_status": "confirmed",
+            "accepted_by": task["human_authority"]["accepted_by"],
+            "authority_reference": task["human_authority"]["authority_reference"],
+        }
     template["instruction"] = instruction
     template["instruction_subject_label"] = task["subject"]["review_label"].replace("_", " ")
     template["visible_target_label"] = task["destination"]["visible_label"]
