@@ -47,7 +47,7 @@ PROVIDER_RESULT_FILENAME = "native_task_arena_policy_canary_session_result.v1.js
 CANONICAL_ALLOCATOR = (
     "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
 )
-CONTROL_MODES = frozenset({"nonblocking_diagnostic_pending", "nonblocking_diagnostic_bound"})
+CONTROL_MODES = frozenset({"nonblocking_diagnostic_pending", "nonblocking_diagnostic_bound", "required_before_policy"})
 _REGISTRY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -251,10 +251,13 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
             or not scenario
             or row.get("resolved_scenario_digest") != canonical_digest(scenario)
             or mode not in CONTROL_MODES
-            or control.get("policy_execution_blocked") is not False
+            or control.get("policy_execution_blocked") is not (mode == "required_before_policy")
         ):
             raise PolicyCanarySessionError("policy_canary_runtime_input_cell_invalid")
-        if mode == "nonblocking_diagnostic_pending":
+        strict_controls = (task_success_contract.get("criteria") or {}).get("controls", {}).get("mode") == "required_per_cell"
+        if strict_controls != (mode == "required_before_policy"):
+            raise PolicyCanarySessionError("policy_canary_control_requirement_mismatch")
+        if mode in {"nonblocking_diagnostic_pending", "required_before_policy"}:
             if control.get("typed_gap") != "controls_pending_at_submission" or "receipt" in control:
                 raise PolicyCanarySessionError("policy_canary_control_gap_invalid")
         else:
@@ -553,6 +556,9 @@ def validate_session_result(
 ) -> dict[str, Any]:
     payload = json.loads(json.dumps(value, allow_nan=False))
     candidate_ids = _candidate_pair(payload.get("candidate_ids"))
+    from .native_policy_canary_control_gate import controls_required, strict_result_controls_valid
+    strict_partial = (controls_required(payload.get("task_success_contract") or {})
+                      and payload.get("status") == "blocked" and bool(payload.get("strict_gate_blockers")))
     episodes = payload.get("episodes")
     closeout = _mapping(payload.get("session_closeout"))
     if (
@@ -567,7 +573,9 @@ def validate_session_result(
         or payload.get("scene_promotion_performed") is not False
         or payload.get("official_ranking_performed") is not False
         or not isinstance(episodes, list)
-        or len(episodes) != payload.get("learned_policy_rollout_count")
+        or (len(episodes) != payload.get("learned_policy_rollout_count") and not strict_partial)
+        or len(episodes) > payload.get("learned_policy_rollout_count", 0)
+        or not strict_result_controls_valid(payload)
     ):
         raise PolicyCanarySessionError("policy_canary_session_result_identity_invalid")
     raw_success_contract = payload.get("task_success_contract")
@@ -624,12 +632,12 @@ def validate_session_result(
         observed.add(key)
         by_candidate[candidate].append((cell_id, seed))
     if (
-        len(observed) != payload["learned_policy_rollout_count"]
+        (len(observed) != payload["learned_policy_rollout_count"] and not strict_partial)
         or sorted(by_candidate[candidate_ids[0]])
         != sorted(by_candidate[candidate_ids[1]])
     ):
         raise PolicyCanarySessionError("policy_canary_session_pairing_invalid")
-    completed = all(row.get("status") == "completed" for row in episodes)
+    completed = not strict_partial and all(row.get("status") == "completed" for row in episodes)
     expected_status = "completed_unqualified" if completed else "blocked"
     if payload.get("status") != expected_status:
         raise PolicyCanarySessionError("policy_canary_session_terminal_status_invalid")
@@ -653,6 +661,7 @@ def execute_paired_session(
     provider_closeout_pending: bool = False,
     selected_cell_index: int | None = None,
     prepolicy_observation_gate: Callable[[Any], Mapping[str, Any]] | None = None,
+    prepolicy_control_gate: Callable[[Any], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Execute all twenty learned rollouts in one caller-owned warm session.
 
@@ -710,6 +719,9 @@ def execute_paired_session(
                 raise PolicyCanarySessionError(
                     "policy_canary_session_observation_integrity_blocked"
                 )
+        if (inputs["task_success_contract"].get("criteria") or {}).get("controls", {}).get("mode") == "required_per_cell":
+            if prepolicy_control_gate is None or prepolicy_control_gate(session).get("status") != "passed":
+                raise PolicyCanarySessionError("policy_canary_strict_controls_unproven")
         for candidate_id in candidate_ids:
             policy = load_policy(session, candidate_id)
             policy_loads.append({"candidate_id": candidate_id, "loaded_once": True})

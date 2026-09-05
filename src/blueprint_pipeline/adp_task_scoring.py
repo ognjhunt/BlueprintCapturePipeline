@@ -93,6 +93,7 @@ class RigidTaskSuccessContractCriteria(TypedDict):
     motion: dict[str, Any]
     temporal_invariants: RigidTaskEventLedgerExpectation
     retreat: NotRequired[dict[str, Any]]
+    controls: NotRequired[dict[str, Any]]
 
 
 class RigidTaskSuccessContract(TypedDict):
@@ -363,10 +364,16 @@ def validate_rigid_task_success_contract(
                 "motion",
                 "temporal_invariants",
                 *({"retreat"} if "retreat" in criteria else set()),
+                *({"controls"} if "controls" in criteria else set()),
             },
             label="criteria",
             errors=errors,
         )
+
+    if "controls" in criteria and criteria["controls"] != {
+        "mode": "required_per_cell", "control_ids": ["zero_action_negative", "deterministic_scripted_positive"]
+    }:
+        errors.append("rigid_task_success_contract_controls_invalid")
 
     if "retreat" in criteria:
         from .adp_rigid_retreat_scoring import validate_retreat_criterion

@@ -32,8 +32,12 @@ from tests.test_task_evaluation_scene_configuration_submission import (
 )
 
 
-def _assembled_native_case(tmp_path: Path):
+def _assembled_native_case(tmp_path: Path, task_mutator=None):
     fixture = production_fixture(tmp_path)
+    if task_mutator is not None:
+        task = json.loads(fixture["task_request"].read_text())
+        task_mutator(task)
+        fixture["task_request"].write_text(json.dumps(task))
     result = _materialize(fixture)
     staging = Path(result["staging_root"])
     assembled = json.loads(
@@ -44,6 +48,8 @@ def _assembled_native_case(tmp_path: Path):
     launch, configured, references, _ = _case(adapter_root)
     task_identity = assembled["task"]["identity"]
     subject_identity = assembled["task"]["subject"]["identity"]
+    configured["team_namespace"] = assembled["team_namespace"]
+    launch["team_namespace"] = assembled["team_namespace"]
     configured["source_commit"] = SHA
     configured["scene_identity"] = assembled["scene"]["identity"]
     configured["task_template"]["identity"] = task_identity

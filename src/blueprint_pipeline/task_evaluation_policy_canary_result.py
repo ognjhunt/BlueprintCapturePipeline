@@ -123,6 +123,36 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
             raise TaskEvaluationPolicyCanaryResultError(
                 "policy_canary_result_completed_episode_evidence_incomplete"
             )
+    from .policy_canary_control_result_delivery import WARNINGS, CONTROL_IDS, control_summary
+    if result["warning"] != WARNINGS[result["scene_controls_status"]]:
+        raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_controls_warning_invalid")
+    controls = result.get("controls")
+    if controls is not None:
+        summary = control_summary(controls, result["episodes"])
+        pairs = {(row["cell_id"], row["control_id"]) for row in controls}
+        if (len(pairs) != len(controls) or result.get("controls_summary") != summary
+                or counts["completed_diagnostic_control_rollout_count"] != summary["completed_count"]
+                or any(row["control_id"] not in CONTROL_IDS for row in controls)):
+            raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_controls_counts_invalid")
+        for row in controls:
+            score = row["score"]
+            expected = score.get("task_succeeded") is (row["control_id"] == "deterministic_scripted_positive")
+            if row["control_id"] == "zero_action_negative":
+                expected = expected and score.get("outcome") == "never_moved"
+            if row["control_passed"] and (not expected or score.get("status") != "scored"
+                    or row["terminal_state"] != "completed" or row["evidence_gaps"]):
+                raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_control_score_invalid")
+        gate = result.get("controls_gate") or {}
+        verified = (summary["recorded_count"] == summary["passed_count"] == 20 and summary["verified_cell_count"] == 10
+                    and gate.get("status") == "passed" and gate.get("required_control_episode_count") == 20
+                    and gate.get("candidate_policies_loaded_during_controls") is False)
+        expected_status = "controls_verified_development_only" if verified else "controls_failed"
+        if result["scene_controls_status"] != expected_status:
+            raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_controls_status_invalid")
+        if not verified and result["result_status"] == "completed_unqualified":
+            raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_required_controls_unverified")
+    elif result["scene_controls_status"] != "configured_controls_pending":
+        raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_controls_evidence_missing")
     notification = result["notification_delivery"]
     if notification["status"] == "pending":
         if (

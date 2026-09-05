@@ -250,14 +250,23 @@ def compact_policy_canary_website_delivery(
             "policy_canary_source_delivery_invalid"
         )
     source_delivery_digest = value["delivery_digest"]
-    inline_artifacts = [
-        artifact
-        for artifact in artifacts
-        if not (
-            isinstance(artifact, Mapping)
-            and artifact.get("role") in POLICY_CANARY_INLINE_OMITTED_ARTIFACT_ROLES
-        )
-    ]
+    retained_control_ids: set[str] = set()
+    def collect_control_ids(value):
+        if isinstance(value, Mapping):
+            if isinstance(value.get("artifact_id"), str):
+                retained_control_ids.add(value["artifact_id"])
+            for item in value.values():
+                collect_control_ids(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect_control_ids(item)
+    collect_control_ids(value.get("controls", []))
+    omitted_roles = set(POLICY_CANARY_INLINE_OMITTED_ARTIFACT_ROLES)
+    if any(row.get("role") == "control_evidence" for row in artifacts):
+        omitted_roles.add("control_evidence")
+    inline_artifacts = [artifact for artifact in artifacts
+                        if artifact.get("role") not in omitted_roles
+                        or artifact.get("artifact_id") in retained_control_ids]
     compact_episodes: list[dict[str, Any]] = []
     source_timeline_samples = 0
     inline_timeline_samples = 0
@@ -290,7 +299,7 @@ def compact_policy_canary_website_delivery(
     value["inline_compaction"] = {
         "schema_version": "task_evaluation_policy_canary_inline_compaction.v1",
         "source_delivery_digest": source_delivery_digest,
-        "omitted_artifact_roles": sorted(POLICY_CANARY_INLINE_OMITTED_ARTIFACT_ROLES),
+        "omitted_artifact_roles": sorted(omitted_roles),
         "source_artifact_count": len(artifacts),
         "inline_artifact_count": len(inline_artifacts),
         "omitted_artifact_count": len(artifacts) - len(inline_artifacts),
@@ -1381,6 +1390,13 @@ def materialize_policy_canary_result_delivery(
             }
         )
 
+    from .policy_canary_control_result_delivery import materialize_control_delivery
+    control_delivery = materialize_control_delivery(
+        result=result, evidence_root=evidence, delivery_root=delivery_root,
+        public_artifacts=public_artifacts, add_artifact=add_artifact,
+        write_immutable=_write_immutable, write_zip=_write_zip_immutable,
+        error_factory=TaskEvaluationResultDeliveryError)
+
     evidence_manifest = {
         "schema_version": "task_evaluation_policy_canary_evidence_manifest.v1",
         "run_id": run,
@@ -1422,7 +1438,8 @@ def materialize_policy_canary_result_delivery(
         "summary": {
             "episode_count": len(rich_episodes),
             "learned_candidate_episode_count": len(rich_episodes),
-            "control_episode_count": int(result.get("completed_control_episode_count") or 0),
+            "control_episode_count": (control_delivery.get("controls_summary") or {}).get("recorded_count",
+                int(result.get("completed_control_episode_count") or 0)),
             "successful_episode_count": sum(
                 episode["score"]["task_succeeded"] is True for episode in rich_episodes
             ),
@@ -1498,7 +1515,7 @@ def materialize_policy_canary_result_delivery(
             "cross_team_leaderboard_authorized": False,
             "result_is_unqualified": True,
             "official_ranking_contribution": False,
-            "controls_pending_results_unqualified": True,
+            "controls_pending_results_unqualified": control_delivery.get("scene_controls_status") != "controls_verified_development_only",
             "scene_promotion_authorized": False,
             "official_policy_ranking_authorized": False,
             "winner_selection_authorized": False,
@@ -1506,6 +1523,9 @@ def materialize_policy_canary_result_delivery(
         },
         "delivery_digest": "",
     }
+    delivery.update({key: value for key, value in control_delivery.items() if key != "controls_csv"})
+    if "controls_csv" in control_delivery:
+        delivery["report"]["controls_csv"] = control_delivery["controls_csv"]
     # This digest is verified by the Website's JavaScript runtime.  Use the
     # cross-runtime number encoding so integral-valued floats (for example a
     # posted provider cost of 1.0) cannot hash differently after JSON.parse.

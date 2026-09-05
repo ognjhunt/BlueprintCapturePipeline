@@ -96,6 +96,13 @@
             "orientation_tolerance_rad": {"type": "number", "minimum": 0}
           }
         },
+        "controls": {
+          "type": "object", "additionalProperties": false, "required": ["mode", "control_ids"],
+          "properties": {
+            "mode": {"const": "required_per_cell"},
+            "control_ids": {"const": ["zero_action_negative", "deterministic_scripted_positive"]}
+          }
+        },
         "retreat": {
           "type": "object",
           "required": ["mode", "minimum_clearance_m", "withdrawal_unit_destination_frame"],

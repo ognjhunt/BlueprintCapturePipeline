@@ -59,6 +59,10 @@ def _derive_configured_owner_success_contract(
         maximum_regrasps=configured["maximum_regrasps"],
     )
     criteria["retreat"] = _derive_retreat_criterion(task_spec)
+    if configured.get("per_cell_controls_required") is True:
+        criteria["controls"] = {"mode": "required_per_cell", "control_ids": [
+            "zero_action_negative", "deterministic_scripted_positive"]}
+
     if agent_proposal:
         proposal = authority.get("agent_proposal")
         proposal_digest = authority.get("proposal_digest")

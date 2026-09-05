@@ -618,6 +618,7 @@ def pick_and_place_task_records(
         "forbidden_collision_allowed": False,
         "joint_limit_violation_allowed": False,
         "owner_success_contract_required": True,
+        "per_cell_controls_required": True,
         "retreat_clearance_required": True,
         "whole_subject_containment_required": True,
         "object_must_rest_on_destination_support": True,

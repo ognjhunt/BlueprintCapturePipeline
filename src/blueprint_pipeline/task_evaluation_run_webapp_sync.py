@@ -199,8 +199,8 @@ def build_task_evaluation_policy_canary_webapp_publication(
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "result_status": result_status,
-        "scene_controls_status": "configured_controls_pending",
-        "warning": "Controls pending — results are unqualified.",
+        "scene_controls_status": canary["scene_controls_status"],
+        "warning": canary["warning"],
         "result_delivery": delivery,
         "policy_canary_result": canary,
         "proof_boundary": {

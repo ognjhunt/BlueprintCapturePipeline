@@ -570,6 +570,10 @@ def run_native_task_arena_policy_canary_session_vast(
             raise ValueError("policy_canary_session_resource_bounds_mismatch")
     if authority is None:
         raise ValueError("policy_canary_session_authority_missing")
+    validated_environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
+    from .native_task_arena_paired_witness_staging import build_paired_witness_binding
+    witness_binding = build_paired_witness_binding(prepared_bundle, authority, validated_environment)
+    witness_capacity = witness_binding['maximum_archive_bytes']
     consumption = (
         consume_session_authority_once(
             authority,
@@ -590,9 +594,6 @@ def run_native_task_arena_policy_canary_session_vast(
         }
     pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
     groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
-    validated_environment = _validated_policy_provider_runtime_environment(
-        provider_runtime_environment
-    )
     return run_arena_native_control_vast(
         approval_path=".",
         job_dir=job_dir,
@@ -627,9 +628,10 @@ def run_native_task_arena_policy_canary_session_vast(
         ),
         authorization_consumption=consumption,
         stale_offer_create_retry_limit=0,
-        expected_provider_download_bytes=pi_download + groot_download,
-        expected_provider_upload_bytes=8_000_000_000,
+        expected_provider_download_bytes=pi_download + groot_download + witness_capacity,
+        expected_provider_upload_bytes=8_000_000_000 + witness_capacity,
         provider_runtime_environment=validated_environment,
+        paired_witness_binding=witness_binding,
     )
 
 
