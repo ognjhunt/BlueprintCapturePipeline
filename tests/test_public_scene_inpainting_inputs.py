@@ -182,7 +182,7 @@ def _fake_render(**kwargs) -> dict:
     return {"command": ["fake-observed-render"], "result": {"status": "completed"}}
 
 
-def _write_v2_fixture(tmp_path: Path) -> dict[str, Path]:
+def _write_v2_fixture(tmp_path: Path, *, include_background: bool = False) -> dict[str, Path]:
     repo = tmp_path / "repo"
     data = tmp_path / "data"
     repo.mkdir()
@@ -215,6 +215,8 @@ def _write_v2_fixture(tmp_path: Path) -> dict[str, Path]:
         ],
         dtype=np.float32,
     )
+    if include_background:
+        points = np.vstack((points, upper + np.float32(0.5))).astype(np.float32)
     standard = source_dir / "scene_standard.ply"
     write_standard_3dgs_ply(
         SplatData(
