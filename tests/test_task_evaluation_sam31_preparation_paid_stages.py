@@ -267,7 +267,7 @@ def test_resumed_paid_stage_without_terminal_result_never_allocates_again(
 
 
 @pytest.mark.parametrize("fault", [None, "teardown_missing", "array_corrupt", "bundle_foreign", "freeze_foreign"])
-def test_contribution_sweep_builds_only_derived_splat_and_returns_manifest(
+def test_contribution_sweep_requires_explicit_full_source_authority_and_returns_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault,
 ) -> None:
     job, output = _job(tmp_path, "contribution_sweep")
@@ -278,7 +278,26 @@ def test_contribution_sweep_builds_only_derived_splat_and_returns_manifest(
         },
     }, digest_field="freeze_digest")
     source = tmp_path / "data" / "source-standard.ply"
-    source.write_bytes(b"derived-standard-splat")
+    source.write_bytes(b"ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\nend_header\n" + b"\0" * 4)
+    from tests.test_sam31_contribution_disclosure import authorize_full_source
+    terms = source.parent / "publisher-terms.txt"
+    terms.write_text("Hermetic test-only full source processing permission.")
+    job["inputs"]["interiorgs_terms"] = _record(terms)
+    conversion = _write(source.parent / "conversion.json", {
+        "schema_version": "standard_splat_conversion_receipt.v1",
+        "status": "standard_splat_conversion_materialized", "repository": {"commit": COMMIT},
+        "claim_ceiling": "local_format_conversion_only",
+        "source": {**_record(source), "source_bytes_unchanged": True, "source_gaussian_count": 1,
+                   "dataset": "hermetic", "revision": COMMIT},
+        "output": {**_record(source), "gaussian_count": 1, "gaussian_count_preserved": True,
+                   "standard_3dgs_schema_validated": True},
+        "rights": {"conversion_execution_location": "local_only", "raw_private_upload_authorized": False,
+                   "training_authorized": False, "terms_digest": paid.sha(terms)},
+    }, digest_field="receipt_digest")
+    authorize_full_source(job, source=source, original=source, receipt=conversion)
+    frozen = json.loads(freeze.read_text())
+    frozen["source_standard_splat"] = _record(source)
+    _write(freeze, frozen, digest_field="freeze_digest")
     cameras = _write(tmp_path / "data" / "cameras.json", [])
     job["inputs"].update(
         segment_sweep_freeze=_record(freeze),
@@ -297,7 +316,8 @@ def test_contribution_sweep_builds_only_derived_splat_and_returns_manifest(
         _write(root / "adp_gaussian_excision_bundle_receipt.json", {
             "schema_version": "adp009b_gaussian_excision_vast_bundle.v1",
             "status": "ready",
-            "execution_authority_digest": "sha256:" + "c" * 64,
+            "execution_authority_digest": json.loads((root.parent / "gaussian-execution-authority.json").read_text())["authorization_digest"],
+            "standard_splat_sha256": paid.sha(source),
             "freeze_digest": json.loads(freeze.read_text())["freeze_digest"],
             "bundle_sha256": paid.sha(bundle),
             "bundle_path": str(bundle), "bundle_size_bytes": bundle.stat().st_size,
