@@ -135,6 +135,12 @@ def test_exact_git_trust_handles_other_owner_and_restores_environment(configurat
     # Real Git refuses even this same-user hermetic checkout under its explicit
     # ownership-test mode unless the provisioning scope trusts the exact path.
     monkeypatch.setenv('GIT_TEST_ASSUME_DIFFERENT_OWNER', '1')
+    # Hosted runner trust settings must not pre-admit this temporary checkout.
+    # Disable external config only inside this ownership regression.
+    monkeypatch.setenv('GIT_CONFIG_NOSYSTEM', '1')
+    monkeypatch.setenv('GIT_CONFIG_GLOBAL', os.devnull)
+    for name in ('GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR'):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv('GIT_CONFIG_COUNT', '1')
     monkeypatch.setenv('GIT_CONFIG_KEY_0', 'safe.directory')
     monkeypatch.setenv('GIT_CONFIG_VALUE_0', '/unrelated-preserved-root')
