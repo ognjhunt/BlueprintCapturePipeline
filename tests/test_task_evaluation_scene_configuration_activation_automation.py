@@ -480,6 +480,71 @@ def test_provision_intent_authors_its_own_release_window_template(tmp_path: Path
     assert again == intent
 
 
+COMMIT_NEXT = "1359447d4" + "2" * 31
+
+
+def _provision(tmp_path: Path, *, commit: str = COMMIT, reference: str | None = None) -> dict:
+    spend = _project_spend(tmp_path / "spend.json")
+    return automation.provision_scene_configuration_activation_intent(
+        expected_production_commit=commit,
+        team_namespace=TEAM,
+        scene_id=SCENE_ID,
+        task_id=TASK_ID,
+        authorization_reference=reference
+        or "Blueprint owner direction 2026-09-04: scene 841757 book-to-tray end to end",
+        authorized_by="nijelhunt_1",
+        profile_revision="r1",
+        valid_for_seconds=21_600,
+        project_spend_reconciliation_path=spend,
+        rights_scope="internal_noncommercial_research_only",
+        maximum_hard_cap_usd=12.0,
+        release_reference="Scene 841757 scene-configuration automatic activation",
+        intent_root=tmp_path / "intents",
+        materialization_root=tmp_path / "activation-intent-inputs",
+    )
+
+
+def test_reprovisioning_at_a_new_release_supersedes_the_stale_registration(tmp_path: Path) -> None:
+    """Every deploy changes the commit; the same owner decision must re-register without a conflict.
+
+    The registry keeps one live entry per identity (what the workers read) and
+    retires the superseded entry under a name no worker resolves.
+    """
+
+    (tmp_path / "intents").mkdir()
+    first = _provision(tmp_path)
+    second = _provision(tmp_path, commit=COMMIT_NEXT)
+    assert second["expected_production_commit"] == COMMIT_NEXT
+    live = automation.load_scene_configuration_activation_intent(
+        intent_root=tmp_path / "intents", team_namespace=TEAM, scene_id=SCENE_ID, task_id=TASK_ID
+    )
+    assert live == second
+    identity = automation.scene_configuration_activation_registry_name(
+        team_namespace=TEAM, scene_id=SCENE_ID, task_id=TASK_ID
+    ).removesuffix(".json")
+    retired = tmp_path / "intents" / f"{identity}.superseded-{COMMIT}.json"
+    assert json.loads(retired.read_text()) == first
+    assert retired.stat().st_mode & 0o777 == 0o440
+    assert sorted(path.name for path in (tmp_path / "intents").iterdir()) == sorted(
+        [f"{identity}.json", retired.name]
+    )
+    # Both releases keep their own immutable inputs.
+    for commit in (COMMIT, COMMIT_NEXT):
+        assert (tmp_path / "activation-intent-inputs" / identity / commit / "release_window_template.v1.json").is_file()
+    # Re-provisioning the live release is still a byte-identical no-op.
+    assert _provision(tmp_path, commit=COMMIT_NEXT) == second
+
+
+def test_reprovisioning_the_same_release_with_a_different_decision_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "intents").mkdir()
+    _provision(tmp_path)
+    with pytest.raises(
+        automation.SceneConfigurationActivationAutomationError,
+        match="scene_configuration_activation_immutable_conflict",
+    ):
+        _provision(tmp_path, reference="a different owner decision at the same release")
+
+
 def test_activation_refuses_a_live_provider_and_stages_nothing(tmp_path: Path) -> None:
     intent_root, _intent_value = _intent(tmp_path)
     result_path = _preparation(tmp_path)

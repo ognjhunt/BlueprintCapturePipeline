@@ -74,7 +74,9 @@ def _reference_row(path: Path, contract_path: str) -> dict:
     }
 
 
-def _preparation(tmp_path: Path, *, run_mode: str = "scene_configuration") -> Path:
+def _preparation(
+    tmp_path: Path, *, run_mode: str = "scene_configuration", commit: str = COMMIT
+) -> Path:
     prepared = tmp_path / "prepared-references" / PREPARATION_ID
     template = _write(
         prepared / "task_template.json",
@@ -99,7 +101,7 @@ def _preparation(tmp_path: Path, *, run_mode: str = "scene_configuration") -> Pa
     request = {
         "schema_version": "task_evaluation_launch_preparation_request.v1",
         "run_mode": run_mode,
-        "expected_production_commit": COMMIT,
+        "expected_production_commit": commit,
         "preparation_id": PREPARATION_ID,
         "team_namespace": TEAM,
         "run_id": PREPARATION_ID.removesuffix("-preparation") + "-scene-configuration",
@@ -123,7 +125,7 @@ def _preparation(tmp_path: Path, *, run_mode: str = "scene_configuration") -> Pa
         "preparation_id": PREPARATION_ID,
         "run_mode": run_mode,
         "team_namespace": TEAM,
-        "source_commit": COMMIT,
+        "source_commit": commit,
         "references": references,
         "result_digest": "",
     }
@@ -386,6 +388,53 @@ def test_provisioning_is_idempotent_and_refuses_a_non_configuration_preparation(
             preparation_result_path=_preparation(other, run_mode="episode_evaluation"),
             preparation_queue_root=other / "preparations",
             controls_root=other / "controls",
+        )
+
+
+COMMIT_NEXT = "1359447d4" + "2" * 31
+
+
+def test_registry_install_supersedes_a_stale_release_registration(tmp_path: Path) -> None:
+    """Every deploy changes the commit; the same continuation re-installs without a conflict."""
+
+    result, _publisher = _provision(tmp_path)
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    first = provisioning.install_intent_into_registry(
+        intent_path=result["intent_path"], intent_root=registry,
+        expected_production_commit=COMMIT, service_group=None,
+    )
+    next_result, _next_publisher = _provision(
+        tmp_path,
+        expected_production_commit=COMMIT_NEXT,
+        preparation_result_path=_preparation(tmp_path / "next", commit=COMMIT_NEXT),
+        preparation_queue_root=tmp_path / "next" / "preparations",
+        controls_root=tmp_path / "controls" / "scene841757-1359447d",
+    )
+    second = provisioning.install_intent_into_registry(
+        intent_path=next_result["intent_path"], intent_root=registry,
+        expected_production_commit=COMMIT_NEXT, service_group=None,
+    )
+    assert second["registry_path"] == first["registry_path"]
+    assert Path(second["registry_path"]).read_bytes() == Path(next_result["intent_path"]).read_bytes()
+    identity = Path(first["registry_path"]).name.removesuffix(".json")
+    retired = registry / f"{identity}.superseded-{COMMIT}.json"
+    assert retired.read_bytes() == Path(result["intent_path"]).read_bytes()
+    assert retired.stat().st_mode & 0o777 == 0o440
+    assert sorted(path.name for path in registry.iterdir()) == sorted([f"{identity}.json", retired.name])
+    # Re-installing the live release is a no-op; another decision at that release is refused.
+    assert provisioning.install_intent_into_registry(
+        intent_path=next_result["intent_path"], intent_root=registry,
+        expected_production_commit=COMMIT_NEXT, service_group=None,
+    )["registry_path"] == first["registry_path"]
+    conflicting = json.loads(Path(next_result["intent_path"]).read_text())
+    conflicting["authorization_reference"] = "another decision at the same release"
+    conflicting["intent_digest"] = canonical_digest(conflicting, digest_field="intent_digest")
+    conflicting_path = _write(tmp_path / "controls" / "conflicting" / Path(next_result["intent_path"]).name, conflicting)
+    with pytest.raises(provisioning.ConfiguredControlsProvisioningError):
+        provisioning.install_intent_into_registry(
+            intent_path=conflicting_path, intent_root=registry,
+            expected_production_commit=COMMIT_NEXT, service_group=None,
         )
 
 
