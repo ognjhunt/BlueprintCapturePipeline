@@ -44,11 +44,12 @@ SCHEMA = "task_evaluation_stage_replay_report.v1"
 JOB_STATES = ("failed", "completed", "waiting_external", "processing", "pending")
 DEFAULT_QUEUE_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions")
 DEFAULT_PARENT_QUEUE_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations")
-DEFAULT_INPUT_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs")
-DEFAULT_REPLAY_ROOT = DEFAULT_INPUT_ROOT / "stage-replays"
+DEFAULT_INPUT_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs/prepared-references")
+DEFAULT_REPLAY_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs/stage-replays")
 DEFAULT_APPROVED_ROOTS = (Path("/var/lib/blueprint"), Path("/opt/blueprint"), Path("/etc/blueprint"))
 DEFAULT_ENVIRONMENT_FILES = ("/etc/blueprint/pipeline-control-plane.env",)
-_BOUNDARY_MARKERS = ("connection", "timeout", "unreachable", "name resolution", "gaierror", "urlerror", "apiconnection")
+_BOUNDARY_MARKERS = ("connection", "timeout", "unreachable", "name resolution", "gaierror", "urlerror", "apiconnection",
+                     "openaiofficialcostgate", "provider_zero", "vast_api")
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,22 @@ def _sha(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def discover_input_root(job: Mapping[str, Any]) -> Path | None:
+    """The preparation input root the job was materialized under.
+
+    The plan is written at ``<input_root>/<preparation_id>/<digest>`` and the
+    content-addressed store the worker validates against lives beside it, so the
+    job itself says where to look; a replay must not guess a root the worker never
+    used (the first host run did, one level too high, and every blob was "missing").
+    """
+
+    plan_path = Path(str((job.get("plan_ref") or {}).get("path") or ""))
+    for candidate in plan_path.parents[1:3] if plan_path.is_absolute() else ():
+        if (candidate / "content-addressed" / "sha256").is_dir():
+            return candidate
+    return None
+
+
 def discover_server_profile(plan_path: Path, input_root: Path) -> Path | None:
     """The profile the job ran under: the one whose digest the plan pins."""
 
@@ -88,7 +105,8 @@ def discover_server_profile(plan_path: Path, input_root: Path) -> Path | None:
         return None
     current = os.environ.get(PROFILE_ENV)
     candidates = [Path(current)] if current else []
-    candidates.extend(sorted(Path(input_root).glob("*/sam31-hardware-profile*/sam31_preparation_profile.v1.json")))
+    for root in (Path(input_root), Path(input_root).parent):
+        candidates.extend(sorted(root.glob("*/sam31-hardware-profile*/sam31_preparation_profile.v1.json")))
     for candidate in candidates:
         try:
             if candidate.is_file() and _sha(candidate) == pinned:
@@ -144,6 +162,8 @@ def replay_child(
     located = locate_child(queue_root, child_id)
     job = _read(located.job_path)
     saved = _read(located.result_path) if located.result_path.is_file() else None
+    if not (Path(input_root) / "content-addressed" / "sha256").is_dir():
+        input_root = discover_input_root(job) or input_root
     Path(replay_root).mkdir(parents=True, exist_ok=True)
     run_root = Path(
         tempfile.mkdtemp(prefix=f"{child_id[:20]}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-", dir=str(replay_root))
@@ -208,6 +228,9 @@ def replay_child(
             report["status"] = "refused"
             blockers = outcome.get("blockers") or []
             report["blocker"] = ";".join(str(item) for item in blockers)[:700] or "stage_failed"
+            lowered = report["blocker"].lower()
+            if any(marker in lowered for marker in _BOUNDARY_MARKERS):
+                report["boundary_hint"] = "external_boundary_unreachable_by_design"
     report["report_path"] = _write_report(run_root, report)
     return report
 
@@ -295,7 +318,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     return {"completed": 0, "waiting": 3}.get(str(report.get("status")), 2)
 
 
-__all__ = ["LocatedChild", "discover_server_profile", "isolation_command", "locate_child", "main", "replay_child"]
+__all__ = ["LocatedChild", "discover_input_root", "discover_server_profile", "isolation_command", "locate_child", "main", "replay_child"]
 
 if __name__ == "__main__":
     raise SystemExit(main())
