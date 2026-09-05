@@ -15,7 +15,7 @@ from tests.test_public_scene_inpainting_inputs import _write_v2_fixture, _fake_s
 
 
 def _prepare(tmp_path):
-    paths = _write_v2_fixture(tmp_path)
+    paths = _write_v2_fixture(tmp_path, include_background=True)
     request = json.loads((paths["repo"] / "request.json").read_text())
     original = request["camera_policy"]["views"]
     request["camera_policy"]["views"] = []
@@ -64,6 +64,8 @@ def test_prepare_binds_three_actual_layers_and_16_clipped_cameras_without_render
     assert prepared == validate_prepared_inputs(prepared["preparation_path"])
     assert prepared["rendered"] is False and prepared["candidate_policy_queried"] is False
     assert set(prepared["layers"]) == {"images", "target_support", "scene_without_target"}
+    assert {role: row["retained_gaussian_count"] for role, row in prepared["layers"].items()} == {
+        "images": 25, "target_support": 24, "scene_without_target": 1}
     assert len(prepared["cameras"]) == 16
     assert all(row["intrinsics"]["near"] > 0 and row["intrinsics"]["far"] > row["intrinsics"]["near"]
                for row in prepared["cameras"])
