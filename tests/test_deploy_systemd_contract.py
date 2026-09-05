@@ -138,6 +138,19 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
             assert "ProtectSystem=strict" in text
             assert "ReadWritePaths=/var/lib/blueprint " not in text
             continue
+        if unit.name == "blueprint-control-plane-preflight.service":
+            # Root housekeeping: replays each unit's sandbox through PID 1 and
+            # writes one evidence root; blockers are content, so exit 2 is success.
+            text = unit.read_text(encoding="utf-8")
+            assert "User=root" in text
+            assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE" in text
+            assert "AmbientCapabilities=CAP_DAC_OVERRIDE" in text
+            assert "NoNewPrivileges=true" in text
+            assert "ProtectSystem=strict" in text
+            assert "SuccessExitStatus=2" in text
+            assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/preflight" in text
+            assert "ReadWritePaths=/var/lib/blueprint " not in text
+            continue
         if unit.name == "blueprint-control-plane-capacity.service":
             # Root housekeeping like the reaper: growing the work volume needs the
             # block device and the online-resize ioctl, nothing wider.  It writes

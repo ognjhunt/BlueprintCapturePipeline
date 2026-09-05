@@ -950,6 +950,22 @@ def intake_check(units: Mapping[str, dict[str, Any]], ids: tuple[int, int]) -> l
     return findings
 
 
+def append_history(path: Path, report: Mapping[str, Any], *, blockers: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Append one bounded line per run so blocker drift is visible over time."""
+
+    row = {
+        "generated_at": report.get("generated_at"),
+        "active_sha": report.get("active_sha"),
+        "blocker_count": len(blockers),
+        "warning_count": report.get("warning_count"),
+        "blocker_codes": sorted({str(f.get("code")) for f in blockers}),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(row, sort_keys=True) + "\n")
+    return row
+
+
 def run_chain(args: argparse.Namespace) -> int:
     if os.geteuid() != 0:
         print("run must execute as root on the control-plane host", file=sys.stderr)
@@ -1033,7 +1049,10 @@ def run_chain(args: argparse.Namespace) -> int:
     report["blocker_count"] = len(blockers)
     report["warning_count"] = len(warnings)
     if args.json_out:
+        Path(args.json_out).parent.mkdir(parents=True, exist_ok=True, mode=0o750)
         Path(args.json_out).write_text(json.dumps(report, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    if getattr(args, "history_out", None):
+        append_history(Path(args.history_out), report, blockers=[f for _s, f in blockers])
 
     def line(scope: str | None, finding: Mapping[str, Any]) -> str:
         detail = {k: v for k, v in finding.items() if k not in {"severity", "code"}}
@@ -1061,6 +1080,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     run = sub.add_parser("run", help="root: probe every chain unit under its own sandbox and run the host checks")
     run.add_argument("--unit", action="append", help="restrict to these units (repeatable)")
     run.add_argument("--json-out")
+    run.add_argument("--history-out")
     run.add_argument("--probe-script", help="path of this file as visible inside the sandboxes")
     run.add_argument("--skip-sandbox", action="store_true")
     run.add_argument("--show-unset", action="store_true")

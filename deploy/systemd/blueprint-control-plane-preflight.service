@@ -1,0 +1,44 @@
+[Unit]
+Description=Look ahead at the production task-evaluation chain: probe every unit under its own sandbox and record the blockers
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Each unit's sandbox is replayed as a transient unit started through PID 1 as
+# that unit's user; this caller only reads the release tree, systemd state and
+# host configuration, and writes its own report root.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_DAC_OVERRIDE
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/preflight
+ReadOnlyPaths=/etc/blueprint/provider-secrets
+# Blockers are the report's content, not a failure of the unit that found them.
+SuccessExitStatus=2
+TasksMax=128
+MemoryMax=1G
+TimeoutStartSec=20min
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_production_chain_preflight run --json-out /var/lib/blueprint/pipeline-control-plane/preflight/latest.json --history-out /var/lib/blueprint/pipeline-control-plane/preflight/history.jsonl'
