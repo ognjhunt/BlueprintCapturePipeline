@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .fail_closed_blocker_explainer import annotate_blocker
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_release_identity import running_release_commit
 from .task_evaluation_sam31_preparation_queue import (
@@ -1523,7 +1524,9 @@ def process_launch_preparation_queue(
                             TaskEvaluationEpisodeCompilationQueueError,
                         ),
                     )
-                    else f"launch_preparation_worker_failed:{type(exc).__name__}"
+                    else annotate_blocker(
+                        f"launch_preparation_worker_failed:{type(exc).__name__}", exc
+                    )
                 ],
                 "provider_mutation_performed": False,
                 "catalog_mutation_performed": False,
@@ -1686,7 +1689,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "blockers": [
                         str(exc)
                         if isinstance(exc, TaskEvaluationLaunchPreparationWorkerError)
-                        else f"launch_preparation_worker_failed:{type(exc).__name__}"
+                        else annotate_blocker(
+                            f"launch_preparation_worker_failed:{type(exc).__name__}", exc
+                        )
                     ],
                     "provider_mutation_performed": False,
                     "catalog_mutation_performed": False,
