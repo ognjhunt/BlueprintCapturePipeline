@@ -20,6 +20,9 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_articulated_motion_geometry.py",
     "native_articulated_task_state.py",
     "native_task_construction_plan.py",
+    # native_task_construction_plan imports the retreat planner at module level;
+    # the bundle must ship it wherever the plan ships or the pod fails at import.
+    "adp_rigid_retreat_scoring.py",
     "native_task_construction_authored_contract.py",
     "native_task_construction_validation.py",
     "native_task_rigid_gate_evaluation.py",
