@@ -1,0 +1,51 @@
+[Unit]
+Description=Measure control-plane capacity, forecast the admission floor, alert, and grow the work volume
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Online filesystem growth needs the block device and the resize ioctl; nothing else.
+PrivateDevices=false
+DevicePolicy=closed
+DeviceAllow=block-* rw
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_RESOURCE CAP_SYS_ADMIN
+AmbientCapabilities=CAP_DAC_OVERRIDE CAP_SYS_RESOURCE CAP_SYS_ADMIN
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/capacity
+ReadOnlyPaths=/etc/blueprint/provider-secrets /var/lib/blueprint/pipeline-control-plane/disk-reservations
+TasksMax=64
+MemoryMax=512M
+TimeoutStartSec=15min
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_CAPACITY_MOUNTS=/var/lib/blueprint
+Environment=BLUEPRINT_CAPACITY_REPORT_ROOT=/var/lib/blueprint/pipeline-control-plane/capacity
+Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
+Environment=DIGITALOCEAN_API_TOKEN_FILE=/etc/blueprint/provider-secrets/digitalocean_api_token
+# Volume growth is opt-in per host: set BLUEPRINT_CAPACITY_VOLUME_ID, _MOUNT, _DEVICE,
+# _MAX_GIB and BLUEPRINT_CAPACITY_AUTORESIZE_ACK=grow-control-plane-volume in the
+# environment file once the work volume is attached.  Without them the controller
+# only measures, forecasts and alerts.
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.control_plane_capacity_controller'
