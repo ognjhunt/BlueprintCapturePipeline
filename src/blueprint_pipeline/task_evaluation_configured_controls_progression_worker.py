@@ -64,7 +64,7 @@ from .task_evaluation_launch_dispatcher import (
 )
 from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_row
 from . import task_evaluation_policy_canary_handoff as policy_canary_handoff
-from .task_evaluation_release_identity import running_release_commit
+from .task_evaluation_release_identity import bound_to_other_release, running_release_commit
 
 
 PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v2"
@@ -1899,6 +1899,10 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
     # to fail before it could revisit the completed canary compilation.
     configured_controls_kwargs.pop("episode_compilation_queue_root", None)
     for path in sorted(plan_root.glob("*.json")) if plan_root.is_dir() else []:
+        foreign = bound_to_other_release(path, release)
+        if foreign:  # sealed for another release: never admissible here, not an alarm
+            rows.append({"status": "plan_bound_to_superseded_release", "plan": path.name, "source_commit": foreign, "running_commit": release})
+            continue
         try:
             row = advance_configured_controls_plan(plan_path=path, **configured_controls_kwargs)
         except (TaskEvaluationConfiguredControlsProgressionError, TaskEvaluationConfiguredControlsProgressionWorkerError) as exc:
