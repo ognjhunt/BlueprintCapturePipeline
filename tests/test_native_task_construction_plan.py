@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 
 import pytest
 
@@ -307,6 +308,77 @@ def test_pick_place_withdraws_along_destination_qualified_clearance_axis() -> No
     assert phases["retreat"]["position_world_m"] == phases[
         "settle_observe"
     ]["position_world_m"]
+
+
+@pytest.mark.parametrize('rotated', [False, True])
+def test_confirmed_retreat_clears_oriented_collision_bounds_and_grasp_offset(rotated):
+    from blueprint_pipeline.adp_rigid_retreat_scoring import _derive_retreat_criterion, score_retreat
+
+    scene = _rigid_fixture(asset_id='authored_rigid_subject')
+    spec = scene['task_spec']
+    affordance = spec['interaction_affordance']
+    # Actual Scene841757 task135 authored an 8cm approach and a 10cm retreat,
+    # with an edge grasp rather than the subject center. These are hermetic
+    # geometry cases, not claims of native scene or asset qualification.
+    affordance['pregrasp_clearance_m'] = .08
+    spec['retreat_clearance_m'] = .10
+    affordance['contact_point_scoring_frame_m'] = [0., -.198848014, 0.]
+    spec['subject_collision_bounds_scoring_frame_m'] = {
+        'minimum': [-.147652001, -.198848014, -.0105687],
+        'maximum': [.147652001, .198848014, .0105687]}
+    direction = [0., 0., 1.]
+    expected_displacement = .10 + .0105687 + .02
+    if rotated:
+        # Asymmetric local X bounds project onto negative world Y after a
+        # quarter-turn. The authored grasp already starts 15cm along that axis.
+        spec['destination_orientation_xyzw'] = [0., 0., math.sqrt(.5), math.sqrt(.5)]
+        affordance['contact_point_scoring_frame_m'] = [-.15, .02, .005]
+        spec['subject_collision_bounds_scoring_frame_m'] = {
+            'minimum': [-.2, -.04, -.01], 'maximum': [.1, .03, .02]}
+        direction = [0., -1., 0.]
+        expected_displacement = .2 - .15 + .10 + .02
+    affordance['insertion_withdrawal_unit_world'] = direction
+    affordance['affordance_digest'] = canonical_digest(affordance, digest_field='affordance_digest')
+    plan = materialize_native_task_construction_phase_plan(scene, rigid_waypoint_count=3)
+    phases = {row['phase_id']: row for row in plan['phases']}
+    place = phases['place']['position_world_m']
+    retreat = phases['retreat']['position_world_m']
+    assert retreat == pytest.approx([x + u*expected_displacement for x, u in zip(place, direction)])
+    assert phases['settle_observe']['position_world_m'] == retreat
+    assert math.dist(phases['pregrasp']['position_world_m'], phases['grasp_contact']['position_world_m']) == pytest.approx(.08)
+    target = phases['place']['expected_scoring_position_world_m']
+    # Destination frame rotation is distinct from subject geometry orientation.
+    spec['destination_pose_world'] = [*target, 0., 0., math.sqrt(.5), math.sqrt(.5)]
+    criterion = _derive_retreat_criterion(spec)
+
+    def measured_result(grasp):
+        return score_retreat(criterion=criterion, task_spec=spec, window_samples=3, release_width_m=.07,
+            samples=[{'step_index': i, 'grasp_frame_position_world_m': grasp,
+                      'task_object_pose_world': [*target, *spec['destination_orientation_xyzw']],
+                      'destination_pose_world': spec['destination_pose_world'],
+                      'gripper_width_m': .08, 'task_contact_active': False} for i in range(3)])
+
+    assert measured_result([x + u*.08 for x, u in zip(place, direction)])['satisfied'] is False
+    assert measured_result(retreat)['satisfied'] is True
+    assert measured_result(retreat)['minimum_observed_clearance_m'] == pytest.approx(.12)
+    assert measured_result([x - u*.01 for x, u in zip(retreat, direction)])['satisfied'] is True
+
+
+@pytest.mark.parametrize('missing', ['subject_collision_bounds_scoring_frame_m', 'qualified_direction'])
+def test_confirmed_retreat_never_falls_back_when_required_geometry_is_missing(missing):
+    scene = _rigid_fixture(asset_id='authored_rigid_subject')
+    spec = scene['task_spec']
+    spec['retreat_clearance_m'] = .1
+    spec['subject_collision_bounds_scoring_frame_m'] = {'minimum': [-.01]*3, 'maximum': [.01]*3}
+    affordance = spec['interaction_affordance']
+    affordance['insertion_withdrawal_unit_world'] = [0., 0., 1.]
+    if missing == 'qualified_direction':
+        del affordance['insertion_withdrawal_unit_world']
+    else:
+        del spec[missing]
+    affordance['affordance_digest'] = canonical_digest(affordance, digest_field='affordance_digest')
+    with pytest.raises(NativeTaskConstructionPlanError, match='retreat_geometry_or_clearance_invalid'):
+        materialize_native_task_construction_phase_plan(scene)
 
 
 def test_planar_push_compiles_without_a_fake_lift_or_grasp() -> None:
