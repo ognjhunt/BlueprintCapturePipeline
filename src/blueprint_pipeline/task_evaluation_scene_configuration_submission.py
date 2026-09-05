@@ -255,7 +255,13 @@ def materialize_scene_configuration_submission(
                 "source_preparation_receipt": Path(source_preparation_receipt_path),
                 "interiorgs_terms": Path(rights_evidence["interiorgs_terms"]),
             },
-            source_min=lower, source_max=upper, server_profile_path=Path(configured_profile))
+            source_min=lower, source_max=upper, server_profile_path=Path(configured_profile),
+            camera_geometry={
+                "labels_path": inputs["raw"]["semantic_metadata"]["path"],
+                "structure_path": inputs["raw"]["scene_structure"]["path"],
+                "collision_identity_path": source["path"],
+                "target_instance_id": str(task["subject"]["source_instance_id"]),
+            })
     stage = Staging(Path(staging_root), namespace)
     sam_plan_ref = (stage.json("configuration/sam31_preparation_plan.v1.json", sam_plan)
                     if sam_plan is not None else None)

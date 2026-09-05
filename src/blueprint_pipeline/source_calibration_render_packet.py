@@ -128,6 +128,17 @@ def build_source_calibration_gpu_render_bundle(
         'dimensions':{'width':1280,'height':1280},'render_options':options,'renderer_identity':renderer_identity,
         'source_disclosure_proof_digest':proof['proof_digest'],'expected_png_count':48,
         'candidate_policy_queried':False,'paid_inference_performed':False,'digest_canonicalization':'rfc8785','runtime_request_digest':''}
+    from .source_calibration_camera_resolution import validate_recovery_contract
+    recovery = validate_recovery_contract(prepared)
+    if recovery is not None:
+        replacement_path = runtime / 'input/replacement_cameras.json'
+        _link_or_copy(Path(recovery['replacement_camera_file']['path']), replacement_path)
+        shutil.copy2(repo / 'scripts/source_calibration_camera_recovery.mjs',
+                     runtime / 'source_calibration_camera_recovery.mjs')
+        request['camera_recovery'] = {
+            'schema_version': recovery['schema_version'], 'maximum_rounds': 1,
+            'replacement_camera_contract': _record(replacement_path, root=runtime),
+            'visibility_gate': recovery['visibility_gate']}
     request['runtime_request_digest']=cross_runtime_canonical_digest(request,digest_field='runtime_request_digest')
     (runtime/'render_request.json').write_text(canonical_json(request)+'\n')
     # Exact allowlist inventory includes only renderer/code, the three appearance

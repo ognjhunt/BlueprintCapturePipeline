@@ -255,3 +255,35 @@ def test_intent_checks_require_an_activation_intent_at_the_active_release(tmp_pa
     assert "activation_intent_missing_for_active_release" not in codes
     st = (activation / "live.json").stat()
     assert stat.S_ISREG(st.st_mode)
+
+
+def test_sam31_provider_profile_from_another_release_is_a_blocker_before_submission(tmp_path: Path) -> None:
+    """Scene 841757's hardware profile referenced scene 840920's provider profile from
+    three weeks earlier; the launch-packet validator refused it after a paid render."""
+    stack = tmp_path / "worker-stack.json"
+    stack.write_text(json.dumps({"source_commit_sha": "b" * 40}), encoding="utf-8")
+    provider = tmp_path / "sam31_provider_profile.v1.json"
+    provider.write_text(
+        json.dumps({"source_commit_sha": "b" * 40, "worker_stack_manifest": {"path": str(stack)}}), encoding="utf-8"
+    )
+    hardware = tmp_path / "sam31_preparation_profile.v1.json"
+    hardware.write_text(
+        json.dumps({"artifact_references": {"sam31_provider_profile": {"path": str(provider)}}}), encoding="utf-8"
+    )
+
+    findings = preflight._sam31_provider_profile_findings(hardware, "sam.service", "a" * 40)
+
+    [finding] = findings
+    assert finding["severity"] == "blocker"
+    assert finding["code"] == "sam31_provider_profile_bound_to_other_release"
+    assert finding["bound"] == {"provider_profile": "b" * 12, "worker_stack_manifest": "b" * 12}
+
+    provider.write_text(
+        json.dumps({"source_commit_sha": "a" * 40, "worker_stack_manifest": {"path": str(stack)}}), encoding="utf-8"
+    )
+    stack.write_text(json.dumps({"source_commit_sha": "a" * 40}), encoding="utf-8")
+    [current] = preflight._sam31_provider_profile_findings(hardware, "sam.service", "a" * 40)
+    assert current["code"] == "sam31_provider_profile_bound_to_active_release"
+    hardware.write_text(json.dumps({"artifact_references": {}}), encoding="utf-8")
+    [missing] = preflight._sam31_provider_profile_findings(hardware, "sam.service", "a" * 40)
+    assert missing["code"] == "sam31_provider_profile_reference_missing"

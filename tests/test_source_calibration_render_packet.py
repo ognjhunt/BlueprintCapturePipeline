@@ -25,7 +25,8 @@ def valid_source_bundle_inputs(tmp_path, monkeypatch):
         for name in ['tools/splat_render/render_splat.mjs','tools/splat_render/src/render_entry.mjs',
                      'tools/splat_render/harness.html','tools/splat_render/package.json','tools/splat_render/package-lock.json',
                      'scripts/run_adp_retained_scene_render_provider_runtime.sh',
-                     'scripts/adp_retained_scene_render_provider_runner.mjs','scripts/adp_retained_scene_render_rehearsal.py']:
+                     'scripts/adp_retained_scene_render_provider_runner.mjs','scripts/adp_retained_scene_render_rehearsal.py',
+                     'scripts/source_calibration_camera_recovery.mjs']:
             destination=paths['repo']/name
             destination.parent.mkdir(parents=True,exist_ok=True)
             shutil.copy2(project/name,destination)

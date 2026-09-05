@@ -759,9 +759,57 @@ def binding_checks(units: Mapping[str, dict[str, Any]], active_sha: str, ids: tu
         sha8 = SHA8_IN_INPUT.search(profile)
         if sha8 and sha8.group(1) != active_sha[:8]:
             findings.append(_finding("blocker", "sam31_profile_bound_to_other_release", unit=unit_name, path=profile, bound_sha8=sha8.group(1), active_sha8=active_sha[:8]))
+        findings.extend(_sam31_provider_profile_findings(path, unit_name, active_sha))
         for env_file, _ignore in unit.get("environment_files", []):
             if not Path(env_file).is_file():
                 findings.append(_finding("blocker", "environment_file_missing", unit=unit_name, path=env_file))
+    return findings
+
+
+def _sam31_provider_profile_findings(hardware_profile: Path, unit_name: str, active_sha: str) -> list[dict[str, Any]]:
+    """The provider profile a SAM hardware profile references must be bound to the active release.
+
+    The SAM launch-packet validator refuses a GPU request whose provider profile,
+    worker stack manifest or runtime image build receipt carries another commit.
+    On 2026-09-05 the hardware profile for scene 841757 pointed at scene 840920's
+    provider profile from three weeks earlier; the refusal surfaced only after a
+    paid calibration render, as one anonymous blocker among forty predicates.
+    """
+
+    findings: list[dict[str, Any]] = []
+    document = _read_json(hardware_profile) or {}
+    references = document.get("artifact_references")
+    reference = references.get("sam31_provider_profile") if isinstance(references, Mapping) else None
+    provider_path = Path(str(reference.get("path") or "")) if isinstance(reference, Mapping) else None
+    if provider_path is None or not str(provider_path).startswith("/"):
+        findings.append(_finding("warning", "sam31_provider_profile_reference_missing", unit=unit_name, hardware_profile=str(hardware_profile)))
+        return findings
+    provider = _read_json(provider_path)
+    if provider is None:
+        findings.append(_finding("blocker", "sam31_provider_profile_unreadable", unit=unit_name, path=str(provider_path)))
+        return findings
+    bound = str(provider.get("source_commit_sha") or "")
+    records = {"provider_profile": bound}
+    for role in ("worker_stack_manifest", "runtime_image_build_receipt"):
+        record = provider.get(role)
+        record_path = Path(str(record.get("path") or "")) if isinstance(record, Mapping) else None
+        if record_path is not None and record_path.is_file():
+            records[role] = str((_read_json(record_path) or {}).get("source_commit_sha") or "")
+    stale = {role: sha for role, sha in records.items() if sha and sha != active_sha}
+    if stale:
+        findings.append(
+            _finding(
+                "blocker",
+                "sam31_provider_profile_bound_to_other_release",
+                unit=unit_name,
+                path=str(provider_path),
+                bound={role: sha[:12] for role, sha in stale.items()},
+                active_sha=active_sha[:12],
+                consequence="sam31_gpu_canary_request_configuration_invalid after the paid calibration render",
+            )
+        )
+    else:
+        findings.append(_finding("info", "sam31_provider_profile_bound_to_active_release", path=str(provider_path)))
     return findings
 
 

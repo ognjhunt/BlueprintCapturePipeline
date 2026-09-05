@@ -1,5 +1,5 @@
 // Execute the exact retained-scene render packet. This script never fetches a
-// dependency or opens a provider API; it renders only the derived PLY inputs
+// dependency or opens a provider API; it renders only the admitted PLY inputs
 // copied into its immutable bundle.
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -325,7 +325,13 @@ async function renderSourceCalibration(request) {
     const file = checkedFile(runtime, request.layers[role]);
     if (standardPlyCount(file) !== request.layers[role].gaussian_count) throw new Error("source_calibration_runtime_count_invalid");
   }
-  const cameras = cameraSpecs(JSON.parse(fs.readFileSync(checkedFile(runtime,request.camera_contract),"utf8")));
+  const rawCameras = JSON.parse(fs.readFileSync(checkedFile(runtime,request.camera_contract),"utf8"));
+  const cameras = cameraSpecs(rawCameras);
+  let recoveryHelper = null, reserveCameras = [];
+  if (request.camera_recovery) {
+    recoveryHelper = await import("./source_calibration_camera_recovery.mjs");
+    reserveCameras = recoveryHelper.validateRecovery(request.camera_recovery, runtime, rawCameras, cameraSpecs);
+  }
   if (cameras.length !== 16 || cameras.some(row=>row.spec.intrinsics.width!==1280 || row.spec.intrinsics.height!==1280)) {
     throw new Error("source_calibration_runtime_camera_invalid");
   }
@@ -336,17 +342,32 @@ async function renderSourceCalibration(request) {
     fs.mkdirSync(output,{recursive:true});fs.writeFileSync(path.join(output,"provider_bundle_rehearsal.json"),JSON.stringify(result));
     return;
   }
-  const gpu=gpuIdentity(); const groups=[];
-  for (const role of SOURCE_ROLES) {
-    const row=await renderOne({request,lane:{task_id:"source-calibration",camera_contract:request.camera_contract,
-      dimensions:request.dimensions},variant:{layer:role,background_rgb:"#000000"},gpu});
-    groups.push({role,manifest:{relative_path:path.relative(output,row.manifest_path),
-      sha256:sha256(row.manifest_path),size_bytes:fs.statSync(row.manifest_path).size}});
+  const gpu=gpuIdentity();
+  const renderGroups = async (taskId, cameraContract) => {
+    const groups=[];
+    for (const role of SOURCE_ROLES) {
+      const row=await renderOne({request,lane:{task_id:taskId,camera_contract:cameraContract,
+        dimensions:request.dimensions},variant:{layer:role,background_rgb:"#000000"},gpu});
+      groups.push({role,manifest:{relative_path:path.relative(output,row.manifest_path),
+        sha256:sha256(row.manifest_path),size_bytes:fs.statSync(row.manifest_path).size}});
+    }
+    return groups;
+  };
+  let groups=await renderGroups("source-calibration",request.camera_contract), resolution=null;
+  if (recoveryHelper) {
+    resolution=await recoveryHelper.resolveCameraRecovery({request,output,originalCameras:rawCameras,
+      reserveCameras,originalCameraFile:checkedFile(runtime,request.camera_contract),originalGroups:groups,cameraSpecs,
+      renderReserve:()=>renderGroups("source-calibration-reserve",request.camera_recovery.replacement_camera_contract)});
+    groups=resolution.groups;
   }
-  const result={schema_version:SOURCE_RESULT_SCHEMA,status:"completed",render_scope:"source_calibration",digest_canonicalization:"rfc8785",
+  const blocked=resolution?.status==="blocked";
+  const result={schema_version:SOURCE_RESULT_SCHEMA,status:blocked ? "blocked" : "completed",render_scope:"source_calibration",digest_canonicalization:"rfc8785",
     preparation_digest:request.preparation_digest,blueprint_commit:request.blueprint_commit,
     request_digest:request.runtime_request_digest,released_renderer_executed:true,gpu_runtime_started:true,
-    paid_inference_performed:false,candidate_policy_queried:false,provider_mutations_performed:0,render_groups:groups,blockers:[]};
+    paid_inference_performed:false,candidate_policy_queried:false,provider_mutations_performed:0,render_groups:groups,
+    blockers:blocked ? ["source_calibration_camera_recovery_exhausted"] : []};
+  if (resolution) result.camera_resolution=resolution.camera_resolution;
+  if (blocked) process.exitCode=2;
   result.result_digest=canonicalDigest(result,"result_digest");write(result);
 }
 
