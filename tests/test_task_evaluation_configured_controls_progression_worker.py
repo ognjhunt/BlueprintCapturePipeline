@@ -755,6 +755,7 @@ def test_process_plans_hands_off_the_policy_canary_after_the_controls_pair_launc
 
     from blueprint_pipeline import task_evaluation_policy_canary_handoff as handoff
 
+    monkeypatch.setattr(worker, "running_release_commit", lambda: "a" * 40)
     launch_root, _ = _source(tmp_path)
     plan_path = _plan(tmp_path)
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -823,6 +824,7 @@ def test_process_plans_does_not_hand_off_before_the_controls_pair_is_launched(
 ) -> None:
     from blueprint_pipeline import task_evaluation_policy_canary_handoff as handoff
 
+    monkeypatch.setattr(worker, "running_release_commit", lambda: "a" * 40)
     launch_root, _ = _source(tmp_path)
     plan_path = _plan(tmp_path)
     monkeypatch.setattr(
