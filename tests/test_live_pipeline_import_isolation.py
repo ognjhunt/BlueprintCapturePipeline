@@ -126,3 +126,12 @@ def test_control_plane_lane_does_not_import_hot_lane() -> None:
         "Control-plane / intake lane transitively imports hot-lane modules: "
         f"{leaked}"
     )
+
+
+def test_sam_phase_queue_stays_independent_of_execution_services() -> None:
+    reachable = _transitive_local_modules(("task_evaluation_sam31_phase_queue",))
+    assert "task_evaluation_launch_preparation_queue" in reachable
+    assert not reachable.intersection(HOT_LANE_MODULES)
+    assert not reachable.intersection({"task_evaluation_sam31_preparation_execution",
+                                       "task_evaluation_sam31_preparation_stages",
+                                       "task_evaluation_sam31_preparation_paid_stages"})

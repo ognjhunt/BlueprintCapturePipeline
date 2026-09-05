@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
+from .native_rigid_episode_telemetry import NativeRigidEpisodeTelemetry
 from .native_franka_pose_servo import (
     DEFAULT_VELOCITY_FEEDFORWARD_SCALE,
     PHYSX_DLS_JOINT_LIMIT_AVOIDANCE_GAIN,
@@ -103,6 +104,7 @@ class NativeRigidScoringEnvironment:
             raise NativeTaskEpisodeEnvironmentError(
                 ["native_task_rigid_scoring_contract_invalid"]
             )
+        self._telemetry = NativeRigidEpisodeTelemetry(task_spec)
         self._environment = environment
         self._task_readback = task_readback
         self._contact_threshold = contact_threshold
@@ -112,6 +114,14 @@ class NativeRigidScoringEnvironment:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._environment, name)
+
+    def begin_episode(self) -> None:
+        self._telemetry.begin_episode()
+
+    def reset(self) -> Any:
+        result = self._environment.reset()
+        self._telemetry.reset_executed()
+        return result
 
     def read_object_sample(self) -> dict[str, Any]:
         base = self._environment.read_object_sample()
@@ -159,6 +169,17 @@ class NativeRigidScoringEnvironment:
         # retain robot/task link or contact-pair identities without this
         # overlay inventing them for older samples that never measured them.
         sample.update(native)
+        # Preserve both readbacks, but score the calibrated physical grasp frame.
+        # The generic native sampler may report raw body origins 46 mm away.
+        if "grasp_frame_position_world_m" in native:
+            sample["native_grasp_frame_position_world_m"] = native["grasp_frame_position_world_m"]
+        if native.get("grasp_frame_position_source") == "native_franka_pose_servo.live_physical_pad_centers":
+            pass  # Exact measured pads already own this field.
+        elif "grasp_frame_position_world_m" in base:
+            sample["grasp_frame_position_world_m"] = base["grasp_frame_position_world_m"]
+            sample["grasp_frame_position_source"] = "isaac_episode_adapter.calibrated_native_finger_tool_midpoint"
+        elif native.get("grasp_frame_position_source") == "native_inner_finger_body_origin_midpoint":
+            sample.pop("grasp_frame_position_world_m", None)
         sample.update(
             {
                 "task_object_pose_world": pose,
@@ -191,6 +212,7 @@ class NativeRigidScoringEnvironment:
                 ),
             }
         )
+        self._telemetry.observe(sample)
         return sample
 
 

@@ -25,6 +25,18 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_sam31_preparation_queue import (
+    Sam31PreparationQueueError,
+    Sam31PreparationWait,
+    WAITING_STATE,
+    advance_sam31_for_preparation,
+    resume_waiting_preparations,
+)
+from .task_evaluation_installed_source_bindings import (
+    InstalledSourceBindingError,
+    InstalledSourceBindings,
+    load_installed_source_bindings,
+)
 from .control_plane_disk_budget import (
     ControlPlaneDiskBudgetError,
     DiskReservation,
@@ -455,8 +467,18 @@ def materialize_preparation_references(
         )
     content_root.mkdir(parents=True, exist_ok=True, mode=0o750)
     content_root = content_root.resolve(strict=True)
+    references = collect_preparation_references(validated)
+    try:
+        installed_sources = load_installed_source_bindings(
+            expected_source_commit=validated["expected_production_commit"],
+            service_account=service_account,
+            requested_uris=[reference["uri"] for reference in references],
+        )
+    except (InstalledSourceBindingError, OSError, ValueError) as exc:
+        raise TaskEvaluationLaunchPreparationWorkerError(str(exc)) from exc
     rows, unique_object_count = _materialize_reference_records(
-        references=collect_preparation_references(validated),
+        references=references,
+        installed_sources=installed_sources,
         input_root=root,
         content_store_root=content_root,
         allowed_uri_prefixes=validated_prefixes,
@@ -499,6 +521,7 @@ def _materialize_reference_records(
     content_store_root: str | Path | None = None,
     allowed_uri_prefixes: Sequence[str],
     fetcher: ReferenceFetcher,
+    installed_sources: InstalledSourceBindings | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Fetch and hash typed references without assuming their parent contract."""
 
@@ -510,7 +533,14 @@ def _materialize_reference_records(
         uri = reference["uri"]
         digest = reference["digest"]
         size = reference["size_bytes"]
-        if not _prefix_allowed(uri, allowed_uri_prefixes):
+        try:
+            installed_source = (
+                installed_sources.resolve(uri, digest, size)
+                if installed_sources is not None else None
+            )
+        except (InstalledSourceBindingError, OSError, ValueError) as exc:
+            raise TaskEvaluationLaunchPreparationWorkerError(str(exc)) from exc
+        if installed_source is None and not _prefix_allowed(uri, allowed_uri_prefixes):
             raise TaskEvaluationLaunchPreparationWorkerError(
                 "launch_preparation_reference_prefix_not_allowed"
             )
@@ -530,7 +560,13 @@ def _materialize_reference_records(
                     f".{cached.name}.partial-{os.getpid()}-{uuid.uuid4().hex}"
                 )
                 try:
-                    fetcher(uri, temporary, size)
+                    if installed_source is not None:
+                        try:
+                            installed_source.copy_to(temporary)
+                        except (InstalledSourceBindingError, OSError, ValueError) as exc:
+                            raise TaskEvaluationLaunchPreparationWorkerError(str(exc)) from exc
+                    else:
+                        fetcher(uri, temporary, size)
                     observed_digest, observed_size = _sha256_and_size(temporary)
                     if observed_digest != digest or observed_size != size:
                         raise TaskEvaluationLaunchPreparationWorkerError(
@@ -608,6 +644,15 @@ def _materialize_reference_records(
                 **reference,
                 "materialized_path": str(destination),
                 "content_addressed_reuse": reused,
+                **({
+                    "host_source_readback": {
+                        "installation_receipt_digest": installed_source.installation_receipt_digest,
+                        "publisher_intake_sha256": installed_source.publisher_intake_sha256,
+                        "publisher_uri": uri,
+                        "network_fetch_performed": False,
+                        "raw_source_uploaded": False,
+                    },
+                } if installed_source is not None else {}),
                 "full_byte_service_account_readback_passed": True,
             }
         )
@@ -973,6 +1018,7 @@ def process_launch_preparation_queue(
     max_messages: int = 1,
     fetcher: ReferenceFetcher = default_reference_fetcher,
     adapter_materializer: AdapterMaterializer = materialize_native_arena_adapter,
+    sam31_preparation_advancer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     scene_render_input_materializer: SceneRenderInputMaterializer = (
         materialize_scene_configuration_render_inputs
     ),
@@ -997,6 +1043,12 @@ def process_launch_preparation_queue(
     results_root.mkdir(mode=0o750, exist_ok=True)
     conflicts_root = results_root / "conflicts"
     conflicts_root.mkdir(mode=0o750, exist_ok=True)
+    source_evidence_roots = (
+        Path(input_root), root, Path("/var/lib/blueprint/pipeline-control-plane"),
+    )
+    resume_results = resume_waiting_preparations(
+        queue_root=root, approved_roots=source_evidence_roots, max_messages=max_messages,
+    )
     content_store_root = Path(input_root) / "content-addressed" / "sha256"
     processed: list[dict[str, Any]] = []
     for source in sorted((root / "pending").glob("*.json"))[:max_messages]:
@@ -1361,9 +1413,33 @@ def process_launch_preparation_queue(
                     raise TaskEvaluationLaunchPreparationWorkerError(
                         "launch_preparation_scene_render_configuration_invalid"
                     ) from exc
+                sam31_fields: dict[str, Any] = {}
+                if stage_one_configuration.get("required_views", {}).get("mask_source") in {
+                    "sam31_reviewed_calibrated_object_masks",
+                    "sam31_human_reviewed_calibrated_object_masks",
+                }:
+                    advancement = advance_sam31_for_preparation(
+                        queue_root=root,
+                        envelope_context={
+                            **envelope, "recipe": recipe,
+                            "materialized_references": result["references"],
+                            "stage_one_configuration": stage_one_configuration,
+                            "output_root": str(
+                                Path(input_root) / str(envelope["request"]["preparation_id"])
+                                / "sam31-source-preparation"
+                            ),
+                        },
+                        approved_roots=source_evidence_roots,
+                        advancer=sam31_preparation_advancer,
+                    )
+                    sam31_fields = {
+                        "sam31_preparation_result": advancement.get("sam31_preparation_result"),
+                        "sam31_exact_mask_inputs": advancement.get("sam31_exact_mask_inputs"),
+                    }
                 render_inputs = scene_render_input_materializer(
                     envelope={
                         **envelope,
+                        **sam31_fields,
                         "recipe": recipe,
                         "materialized_references": result["references"],
                     },
@@ -1447,6 +1523,9 @@ def process_launch_preparation_queue(
             result["result_digest"] = canonical_digest(
                 result, digest_field="result_digest"
             )
+        except Sam31PreparationWait as pause:
+            terminal_state = WAITING_STATE
+            result = pause.progress
         except Exception as exc:
             terminal_state = "blocked"
             result = {
@@ -1461,6 +1540,7 @@ def process_launch_preparation_queue(
                         exc,
                         (
                             TaskEvaluationLaunchPreparationWorkerError,
+                            Sam31PreparationQueueError,
                             TaskEvaluationLaunchPreparationQueueError,
                             TaskEvaluationSceneConstructionQueueError,
                             TaskEvaluationEpisodeCompilationQueueError,
@@ -1491,6 +1571,10 @@ def process_launch_preparation_queue(
                 )
             except (ControlPlaneStoragePinError, OSError):
                 pass
+        if terminal_state == WAITING_STATE:
+            os.replace(claimed, root / WAITING_STATE / source.name)
+            processed.append(result)
+            continue
         result_path = results_root / source.name
         try:
             write_launch_preparation_record_exclusive(result_path, result)
@@ -1537,6 +1621,7 @@ def process_launch_preparation_queue(
         "schema_version": "task_evaluation_launch_preparation_queue_run.v1",
         "status": "processed" if processed else "idle",
         "processed_count": len(processed),
+        "resume_results": resume_results,
         "results": processed,
         "provider_mutation_performed": False,
         "catalog_mutation_performed": False,

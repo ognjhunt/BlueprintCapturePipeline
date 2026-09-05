@@ -33,6 +33,9 @@ from .gaussian_splat_decode import (
     write_standard_3dgs_ply_subset_exact,
 )
 from .sealed_camera_render import render_splat_at_exact_cameras
+from .task_evaluation_scene_configuration_stage_configuration import (
+    SAM31_SELECTION_RULE, stage_one_gaussian_inputs_refusal,
+)
 from .task_evaluation_scene_configuration_semantic_locality import (
     MAX_INNER_FEATHER_RADIUS_PIXELS,
 )
@@ -461,17 +464,11 @@ def materialize_scene_configuration_render_inputs(
         != "observed_appearance_object_removal_configuration.v1"
         or stage_one_configuration.get("production_render_required") is not True
         or not isinstance(source_object, Mapping)
-        or not isinstance(gaussian_cutout, Mapping)
-        or gaussian_cutout.get("selection_rule")
-        != "gaussian_center_inside_registered_source_object_aabb"
-        or not isinstance(gaussian_cutout.get("aabb_padding_m"), (int, float))
-        or isinstance(gaussian_cutout.get("aabb_padding_m"), bool)
-        or not 0.0 <= float(gaussian_cutout["aabb_padding_m"]) <= 0.10
-        or gaussian_cutout.get("retained_rows_must_remain_byte_exact") is not True
+        or stage_one_gaussian_inputs_refusal(stage_one_configuration) is not None
         or not isinstance(required_views, Mapping)
-        or required_views.get("minimum", 0) > 8
+        or required_views.get("minimum", 0) > (
+            16 if gaussian_cutout["selection_rule"] == SAM31_SELECTION_RULE else 8)
         or required_views.get("lossless_inputs") is not True
-        or required_views.get("mask_source") != "registered_source_object_bounds_projection"
         or not str(source_object.get("publisher_instance_id") or "").strip()
         or not isinstance(disclosure, Mapping)
         # Whether source appearance bytes may reach the provider is decided
@@ -493,6 +490,17 @@ def materialize_scene_configuration_render_inputs(
         raise TaskEvaluationSceneConfigurationRenderInputsError(
             "scene_configuration_render_stage_configuration_invalid"
         )
+    if gaussian_cutout["selection_rule"] == SAM31_SELECTION_RULE:
+        from .task_evaluation_scene_configuration_sam31_inputs import (
+            _materialize_sam31_exact_mask_render_inputs,
+        )
+        try:
+            return _materialize_sam31_exact_mask_render_inputs(
+                envelope=envelope, stage_one_configuration=stage_one_configuration,
+                output_root=output_root,
+            )
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            raise TaskEvaluationSceneConfigurationRenderInputsError(str(exc)) from exc
     appearance_row, appearance_path = _materialized(
         envelope, contract_path="scene.appearance.representation"
     )

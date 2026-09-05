@@ -534,6 +534,7 @@ def test_rigid_destination_support_binds_contact_to_passive_asset(
         "task_kind": "rigid_pick_place",
         "task_spec": {
             "destination_support_asset_id": "document_tray",
+            "destination_placement_support_prim_paths": ["/Scene/floor"],
             "task_contact_minimum_force_n": 0.5,
             "collision_failure_minimum_force_n": 1.0,
             "reset_translation_tolerance_m": 0.001,
@@ -580,6 +581,9 @@ def test_rigid_destination_support_binds_contact_to_passive_asset(
         "{ENV_REGEX_NS}/task_support"
     ]
 
+    episode_contact_sensors = topology["contact_sensors"]
+    assert topology["destination_placement_support_body_paths"] == ["{ENV_REGEX_NS}/scene_collision/floor"]
+    assert topology["destination_placement_forbidden_body_paths"] == []
     contract["task_spec"].update(
         destination_qualification_probe=True,
         destination_placement_support_prim_paths=["/Scene/floor"],
@@ -590,6 +594,7 @@ def test_rigid_destination_support_binds_contact_to_passive_asset(
         scene_collision_asset_path=scene_path,
         task_support_asset_path=support_path,
     )
+    assert topology["contact_sensors"] == episode_contact_sensors
     by_id = {
         row["logical_sensor_id"]: row for row in topology["contact_sensors"]
     }

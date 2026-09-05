@@ -4,6 +4,7 @@ Description=Watch the durable Blueprint Task Evaluation preparation queue
 [Path]
 PathChanged=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/pending
 PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/pending/*.json
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/source-resume-pending/*.json
 Unit=blueprint-task-evaluation-launch-preparation.service
 
 [Install]

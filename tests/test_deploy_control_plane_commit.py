@@ -297,6 +297,12 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "PathExistsGlob=/preparations/pending/*.json\n",
         encoding="utf-8",
     )
+    sam31_service = unit_dir / "blueprint-task-evaluation-sam31-preparation-execution.service"
+    sam31_service.write_text("[Service]\nExecStart=/usr/bin/blueprint-sam31-phase\n", encoding="utf-8")
+    sam31_path = unit_dir / "blueprint-task-evaluation-sam31-preparation-execution.path"
+    sam31_path.write_text("[Path]\nPathExistsGlob=/sam31/pending/*.json\n", encoding="utf-8")
+    sam31_timer = unit_dir / "blueprint-task-evaluation-sam31-preparation-execution.timer"
+    sam31_timer.write_text("[Timer]\nOnUnitInactiveSec=30s\n", encoding="utf-8")
     compilation_service = (
         unit_dir / "blueprint-task-evaluation-episode-compilation.service"
     )
@@ -415,6 +421,9 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         path_unit,
         preparation_service,
         preparation_path,
+        sam31_service,
+        sam31_path,
+        sam31_timer,
         compilation_service,
         compilation_path,
         activation_service,
@@ -460,6 +469,9 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-dispatcher.path",
         "blueprint-task-evaluation-launch-preparation.service",
         "blueprint-task-evaluation-launch-preparation.path",
+        "blueprint-task-evaluation-sam31-preparation-execution.service",
+        "blueprint-task-evaluation-sam31-preparation-execution.path",
+        "blueprint-task-evaluation-sam31-preparation-execution.timer",
         "blueprint-task-evaluation-episode-compilation.service",
         "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-launch-activation.service",
@@ -483,9 +495,14 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-object-discovery.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
+        "blueprint-task-evaluation-sam31-preparation-execution.timer",
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-control-plane-storage-gc.timer",
+    )
+    assert deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS == (
+        "blueprint-task-evaluation-sam31-preparation-execution.path",
+        "blueprint-task-evaluation-policy-canary-dispatcher.path",
     )
 
 

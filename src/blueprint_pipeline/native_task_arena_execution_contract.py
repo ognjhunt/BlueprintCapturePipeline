@@ -95,6 +95,8 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "adp009d_task_scoring.py",
     "adp_task_scoring.py",
     "adp_rigid_task_scoring.py",
+    "adp_rigid_retreat_scoring.py",
+    "native_rigid_episode_telemetry.py",
     "task_control_diagnostic_boundary.py",
     "articulation_graph_contract.py",
     "articulated_control_planner.py",

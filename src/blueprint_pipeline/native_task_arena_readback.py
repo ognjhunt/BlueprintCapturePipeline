@@ -1008,6 +1008,15 @@ class NativeRigidTaskArenaReadback:
         ):
             scene_names = self._built.contact_sensor_names.get(logical_sensor_id)
             if logical_sensor_id.startswith("destination_scene_") and not scene_names:
+                empty_forbidden_partition = (
+                    logical_sensor_id == "destination_scene_forbidden_contact"
+                    and self._built.plan["articulation"].get("destination_placement_forbidden_body_paths") == []
+                    and bool(self._built.plan["articulation"].get("destination_placement_support_body_paths"))
+                )
+                if task_support_name is not None and not empty_forbidden_partition:
+                    raise NativeTaskArenaReadbackError(
+                        [f"native_task_arena_contact_sensor_missing:{logical_sensor_id}"]
+                    )
                 contact_peaks[logical_sensor_id] = 0.0
                 continue
             if (

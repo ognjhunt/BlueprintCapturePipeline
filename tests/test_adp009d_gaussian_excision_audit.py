@@ -874,6 +874,11 @@ def test_gaussian_excision_vast_dry_run_is_zero_mutation(tmp_path: Path) -> None
     assert result["status"] == "dry_run_ready"
     assert result["provider_mutations_performed"] == 0
     assert result["retry_cap"] == 0
+    assert result["allowed_geolocation_country_codes"] == ["US"]
+    assert (
+        result["preferred_geolocation_regex"]
+        == excision_vast.GAUSSIAN_EXCISION_PREFERRED_GEOLOCATION_REGEX
+    )
 
 
 def test_corrected_paid_attempt_authority_binds_legacy_terminal_receipt(
@@ -1353,6 +1358,11 @@ def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
         events.append("adapter")
         assert kwargs["provider_bundle_kind"] == "adp_gaussian_excision"
         assert kwargs["machine_avoidlist_path"] == tmp_path / "avoidlist.json"
+        assert kwargs["allowed_geolocation_country_codes"] == ("US",)
+        assert (
+            kwargs["preferred_geolocation_regex"]
+            == excision_vast.GAUSSIAN_EXCISION_PREFERRED_GEOLOCATION_REGEX
+        )
         output_zip = Path(kwargs["provider_runtime_output_zip"])
         output_zip.parent.mkdir(parents=True)
         with zipfile.ZipFile(output_zip, "w") as archive:
@@ -1407,6 +1417,7 @@ def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(
     assert result["status"] == "completed"
     assert result["continuing_spend_from_this_run"] is False
     assert result["authorization_consumption"]["status"] == "consumed"
+    assert result["allowed_geolocation_country_codes"] == ["US"]
 
     repeated = excision_vast.run_gaussian_excision_vast(
         job_dir=tmp_path / "second-job",

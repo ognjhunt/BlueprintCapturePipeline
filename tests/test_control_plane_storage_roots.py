@@ -62,6 +62,12 @@ def test_storage_table_is_well_formed() -> None:
     assert "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs" in roots_of_class(
         "evidence_cold"
     )
+    assert "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions" in roots_of_class(
+        "work"
+    )
+    assert "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations" in roots_of_class(
+        "cache"
+    )
 
 
 def test_most_specific_root_wins_and_tools_refuse_wrong_classes() -> None:

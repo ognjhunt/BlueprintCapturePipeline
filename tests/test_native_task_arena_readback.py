@@ -356,6 +356,12 @@ def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
         )
     )
     built.scene_asset_names["task_support"] = "task_support"
+    with pytest.raises(NativeTaskArenaReadbackError, match="contact_sensor_missing:destination_scene_support_contact"):
+        NativeRigidTaskArenaReadback(built).read_task_sample()
+    built.contact_sensor_names["destination_scene_support_contact"] = ("task_scene_contact",)
+    with pytest.raises(NativeTaskArenaReadbackError, match="contact_sensor_missing:destination_scene_forbidden_contact"):
+        NativeRigidTaskArenaReadback(built).read_task_sample()
+    built.contact_sensor_names["destination_scene_forbidden_contact"] = ("robot_scene_contact",)
 
     sample = NativeRigidTaskArenaReadback(built).read_task_sample()
 

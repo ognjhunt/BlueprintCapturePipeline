@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 try:  # flat provider-bundle layout
     from adp009d_task_scoring import TaskScoringError, score_task_episode
@@ -92,6 +92,7 @@ class RigidTaskSuccessContractCriteria(TypedDict):
     safety: dict[str, Any]
     motion: dict[str, Any]
     temporal_invariants: RigidTaskEventLedgerExpectation
+    retreat: NotRequired[dict[str, Any]]
 
 
 class RigidTaskSuccessContract(TypedDict):
@@ -361,10 +362,16 @@ def validate_rigid_task_success_contract(
                 "safety",
                 "motion",
                 "temporal_invariants",
+                *({"retreat"} if "retreat" in criteria else set()),
             },
             label="criteria",
             errors=errors,
         )
+
+    if "retreat" in criteria:
+        from .adp_rigid_retreat_scoring import validate_retreat_criterion
+
+        errors.extend(validate_retreat_criterion(criteria["retreat"]))
 
     destination = criteria.get("destination_containment")
     if not isinstance(destination, Mapping):

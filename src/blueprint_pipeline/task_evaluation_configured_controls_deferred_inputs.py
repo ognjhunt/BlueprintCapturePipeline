@@ -20,6 +20,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import os
+import tempfile
 import urllib.request
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -107,13 +109,20 @@ def _reference(value: Any, *, blocker: str) -> dict[str, Any]:
 
 def _write_immutable_bytes(path: Path, payload: bytes, *, conflict: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-    try:
-        with path.open("xb") as stream:
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".deferred-", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
             stream.write(payload)
-        path.chmod(0o440)
-    except FileExistsError:
-        if path.is_symlink() or path.read_bytes() != payload:
-            raise ConfiguredControlsDeferredInputError(conflict) from None
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.fchmod(stream.fileno(), 0o440)
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                if path.is_symlink() or path.read_bytes() != payload:
+                    raise ConfiguredControlsDeferredInputError(conflict) from None
+        finally:
+            temporary.unlink(missing_ok=True)
     return path
 
 
@@ -152,13 +161,22 @@ def concrete_paths(paths: Mapping[str, Any]) -> dict[str, Any]:
 # ------------------------------------------------------------------ trajectory
 
 
+def _document_references(revision: Mapping[str, Any]) -> dict[str, Any]:
+    refs = {path: (revision.get(section) or {}).get(key)
+            for path, (section, key) in REVISION_DOCUMENTS.items()}
+    destination = (revision.get("task_template") or {}).get("destination")
+    if destination is not None:
+        refs["task.destination.geometry"] = destination.get("geometry")
+    return refs
+
+
 def _materialized_references(
     *, revision: Mapping[str, Any], documents: Mapping[str, Path]
 ) -> dict[str, dict[str, Any]]:
     references: dict[str, dict[str, Any]] = {}
-    for contract_path, (section, key) in REVISION_DOCUMENTS.items():
+    for contract_path, declared_reference in _document_references(revision).items():
         reference = _reference(
-            (revision.get(section) or {}).get(key),
+            declared_reference,
             blocker=f"configured_controls_deferred_revision_reference_invalid:{contract_path}",
         )
         local = documents.get(contract_path)
@@ -212,6 +230,23 @@ def derive_native_trajectory_plan(
     )
     task_spec["success_criteria"] = adapted["native_success_criteria"].get("criteria")
     task_spec = _runtime_subject_task_spec(task_spec)
+    destination = revision["task_template"].get("destination")
+    if destination is not None:
+        from .task_evaluation_rigid_destination_geometry import (
+            RigidDestinationGeometryError, bind_destination_trajectory, destination_trajectory_geometry,
+        )
+        try:
+            geometry = json.loads(documents["task.destination.geometry"].read_text())
+        except (OSError, ValueError) as exc:
+            raise ConfiguredControlsDeferredInputError("configured_controls_deferred_destination_geometry_invalid") from exc
+        if (not isinstance(geometry, Mapping) or geometry.get("subject_identity") != revision["replacement"]["identity"]
+                or geometry.get("subject_static_qualification_digest") != revision["replacement"]["static_qualification"]["digest"]
+                or geometry.get("destination_static_qualification_digest") != destination["static_qualification"]["digest"]):
+            raise ConfiguredControlsDeferredInputError("configured_controls_deferred_destination_binding_invalid")
+        try:
+            task_spec = bind_destination_trajectory(task_spec, destination_trajectory_geometry(destination, geometry))
+        except RigidDestinationGeometryError as exc:
+            raise ConfiguredControlsDeferredInputError("configured_controls_deferred_destination_geometry_invalid") from exc
     scene_plan = {
         "schema_version": "native_task_arena_scene_plan.v1",
         "task_kind": "rigid_pick_place",
@@ -380,7 +415,9 @@ def resolve_runtime_binding(
     )
     resolved = json.loads(json.dumps(binding))
     resolved["runtime"]["mounts"][0]["source"] = bundle
-    destination = Path(output_root).expanduser() / DEFERRED_DIRECTORY / RUNTIME_BINDING_FILE_NAME
+    binding_digest = canonical_digest(resolved).removeprefix("sha256:")
+    destination = (Path(output_root).expanduser() / DEFERRED_DIRECTORY /
+                   f"{binding_digest}-{RUNTIME_BINDING_FILE_NAME}")
     _write_immutable_bytes(
         destination,
         (json.dumps(resolved, sort_keys=True, separators=(",", ":")) + "\n").encode(),
@@ -413,41 +450,27 @@ def resolve_deferred_inputs(
         )
     if not declared:
         return paths
-    root = Path(output_root).expanduser() / DEFERRED_DIRECTORY
+    identity = canonical_digest({"configured_revision_digest": revision.get("revision_digest"),
+                                 "execution_commit": intent.get("expected_production_commit")})
+    root = Path(output_root).expanduser() / DEFERRED_DIRECTORY / identity.removeprefix("sha256:")
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
     if "native_trajectory_plan_path" in declared:
         plan_path = root / TRAJECTORY_FILE_NAME
-        if plan_path.is_file() and not plan_path.is_symlink():
-            plan = json.loads(plan_path.read_text(encoding="utf-8"))
-            if (
-                not isinstance(plan, Mapping)
-                or plan.get("schema_version") != RIGID_PLAN_SCHEMA_VERSION
-                or plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest")
-            ):
-                raise ConfiguredControlsDeferredInputError(
-                    "configured_controls_deferred_plan_conflict"
-                )
-        else:
-            documents: dict[str, Path] = {}
-            for contract_path, (section, key) in REVISION_DOCUMENTS.items():
-                reference = _reference(
-                    (revision.get(section) or {}).get(key),
-                    blocker=f"configured_controls_deferred_revision_reference_invalid:{contract_path}",
-                )
-                document_path = root / "documents" / _document_name(contract_path)
-                if not _retained_matches(document_path, reference=reference):
-                    _write_immutable_bytes(
-                        document_path,
-                        _fetched(reference, fetcher=fetcher),
-                        conflict="configured_controls_deferred_document_conflict",
-                    )
-                documents[contract_path] = document_path
-            plan = derive_native_trajectory_plan(revision=revision, documents=documents)
-            _write_immutable_bytes(
-                plan_path,
-                (json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n").encode(),
-                conflict="configured_controls_deferred_plan_conflict",
-            )
+        documents: dict[str, Path] = {}
+        for contract_path, declared_reference in _document_references(revision).items():
+            reference = _reference(declared_reference,
+                blocker=f"configured_controls_deferred_revision_reference_invalid:{contract_path}")
+            document_path = root / "documents" / _document_name(contract_path)
+            if not _retained_matches(document_path, reference=reference):
+                _write_immutable_bytes(document_path, _fetched(reference, fetcher=fetcher),
+                    conflict="configured_controls_deferred_document_conflict")
+            documents[contract_path] = document_path
+        # Re-derive from the bound retained inputs on every restart. A self-sealed
+        # cache alone cannot prove it belongs to this revision or execution code.
+        plan = derive_native_trajectory_plan(revision=revision, documents=documents)
+        _write_immutable_bytes(plan_path,
+            (json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n").encode(),
+            conflict="configured_controls_deferred_plan_conflict")
         paths["native_trajectory_plan_path"] = str(plan_path)
     if "overview_image_paths" in declared:
         presentation = revision.get("presentation")

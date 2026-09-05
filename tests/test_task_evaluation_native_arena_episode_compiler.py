@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import blueprint_pipeline.task_evaluation_native_arena_episode_compiler as compiler
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import (
     OUTPUT_SCHEMA_VERSION,
@@ -691,6 +693,20 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
         **_configured_runtime_documents(configured),
     }
     if destination_support:
+        native_adapter = compiler.adapt_rigid_relocation_task_template
+
+        def grounded_adapter(**kwargs):
+            result = native_adapter(**kwargs)
+            spec = result["native_task_definition"]["task_spec"]
+            spec.update(
+                instruction_subject_label="open book",
+                prompt="Pick up the open book, place it fully inside the blue document tray, release it, and move the gripper clear.",
+            )
+            result["adapter_digest"] = canonical_digest(result, digest_field="adapter_digest")
+            return result
+
+        monkeypatch.setattr(compiler, "adapt_rigid_relocation_task_template", grounded_adapter)
+    if destination_support:
         value["task"]["strategy"] = "pick_and_place"
         docs["scene.configured_revision.task_template.definition"][
             "strategy"
@@ -1144,7 +1160,12 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
             for row in observed["packet_request"]["assets"]
             if row["semantic_role"] == "task_support"
         )
+        assert observed["packet_request"]["task_spec"]["prompt"] == (
+            "Pick up the open book, place it fully inside the blue document tray, "
+            "release it, and move the gripper clear."
+        )
         assert support["asset_id"] == "document_tray"
+        assert observed["packet_request"]["task_spec"]["destination_placement_support_prim_paths"] == ["/Root/Support"]
         assert support["source_asset_id"] == "document-tray"
         assert observed["packet_request"]["task_spec"][
             "destination_relation"

@@ -34,6 +34,7 @@ from blueprint_pipeline.adp009d_task_scoring import (
     SUPPORT_PLANE_Z_M,
 )
 from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
+from blueprint_pipeline.task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.groot_n17_droid_policy_runtime import (
     CHECKPOINT_REVISION,
@@ -125,7 +126,15 @@ class _RigidSafetyReadbackEnvironment:
                 ],
                 task_contact_active=carrying,
                 support_contact_active=not carrying,
+                task_contact_force_n=1.0 if carrying else 0.0,
+                workspace_excursion=False, retry_count=0, regrasp_count=0,
+
             )
+        if self.destination_relative and self.environment._t > 0:
+            task_fields["grasp_frame_position_world_m"] = [
+                sample["can_pose_world"][0], sample["can_pose_world"][1],
+                sample["can_pose_world"][2] + (0.0 if carrying else 0.1),
+            ]
         sample.update(
             {
                 **task_fields,
@@ -387,6 +396,24 @@ def _destination_scene_plan() -> dict[str, Any]:
         "control_frequency_hz": 20.0,
         "maximum_action_steps": 240,
     }
+    value["task_spec"].update(
+        retreat_clearance_m=0.05,
+        robot_workspace_position_bounds_world_m={"minimum": [-5.]*3, "maximum": [5.]*3},
+        collision_failure_minimum_force_n=1.0,
+        interaction_affordance={"insertion_withdrawal_unit_world": [0.0, 0.0, 1.0]},
+        configured_success_criteria={
+            "owner_success_contract_required": True, "minimum_lift_m": 0.0,
+            "drop_minimum_fall_m": 0.02, "maximum_task_contact_force_n": 20.0,
+            "forbidden_contact_classes": [], "maximum_retries": 0,
+            "maximum_regrasps": 0, "retreat_clearance_m": 0.05,
+            "robot_workspace_position_bounds_world_m": {"minimum": [-5.]*3, "maximum": [5.]*3},
+            "collision_failure_minimum_force_n": 1.0,
+        },
+        configured_owner_authority={
+            "confirmation_status": "confirmed", "accepted_by": "fixture_owner",
+            "authority_reference": "fixture:destination-owner-request",
+        },
+    )
     value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
     return value
 
@@ -514,6 +541,10 @@ def _stage_runtime_root(
             author_id="blueprint:manipulation_strategy_defaults.v1",
             confirmation_status="confirmed",
         )
+        if plan["task_spec"].get("destination_relation"):
+            task_success_contract = _derive_configured_owner_success_contract(
+                plan["task_spec"], site_id="interiorgs-839873", task_id="book-into-tray-rehearsal"
+            )
         activation["task_success_contract"] = task_success_contract
         activation["task_success_contract_digest"] = task_success_contract[
             "contract_digest"
@@ -1241,6 +1272,8 @@ def test_quick10_rehearsal_runs_twenty_real_client_rollouts_in_ten_isolated_proc
         is True
         for row in result["episodes"]
     )
+    assert all(row["episode"]["score"]["criteria_satisfied"]["retreat"] is True
+               for row in result["episodes"])
     assert all(row["candidate_policy_queried"] is True for row in result["episodes"])
     assert result["candidate_policy_queried"] is True
     # Learned interpretation is attached only by the control-plane closeout,

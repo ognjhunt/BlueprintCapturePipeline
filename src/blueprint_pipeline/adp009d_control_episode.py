@@ -2142,6 +2142,8 @@ def _run_task_control_episode(
         environment.reset()
     else:
         initial_reset_callback()
+    if callable(getattr(environment, "begin_episode", None)):
+        environment.begin_episode()
     samples = [
         _task_neutral_sample(environment, task_kind=task_kind, step_index=0)
     ]

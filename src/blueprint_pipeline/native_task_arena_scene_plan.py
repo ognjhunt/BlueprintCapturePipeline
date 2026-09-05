@@ -943,9 +943,7 @@ def _articulation_plan(
             placement_forbidden_paths = sorted(
                 set(scene_contact_body_paths) - set(placement_support_paths)
             )
-            if bool(placement_support_paths) != bool(
-                task_spec.get("destination_qualification_probe") is True
-            ) or any(
+            if not placement_support_paths or any(
                 path not in scene_contact_body_paths
                 for path in placement_support_paths + placement_forbidden_paths
             ):
@@ -1062,6 +1060,10 @@ def _articulation_plan(
             "robot_contact_topology": robot_contact_topology,
             "scene_contact_body_paths": scene_contact_body_paths,
             "support_contact_body_paths": support_body_paths,
+            **({
+                "destination_placement_support_body_paths": placement_support_paths,
+                "destination_placement_forbidden_body_paths": placement_forbidden_paths,
+            } if destination_support_id else {}),
             "non_support_scene_contact_body_paths": non_support_scene_body_paths,
             "task_contact_body_paths": contact_body_paths,
             "task_all_body_paths": all_task_body_paths,

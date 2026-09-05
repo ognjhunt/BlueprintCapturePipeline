@@ -943,6 +943,41 @@ def adapt_rigid_relocation_task_template(
             "source_documents_digest"
         ],
     }
+    if "instruction" in template:
+        instruction = template["instruction"]
+        if not isinstance(instruction, str) or not instruction.strip():
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_instruction_invalid")
+        native_task_spec["prompt"] = instruction
+        for label in ("instruction_subject_label", "visible_target_label"):
+            value = template.get(label)
+            if not isinstance(value, str) or not value.strip():
+                raise TaskEvaluationRigidRelocationNativeAdapterError(
+                    "rigid_relocation_native_adapter_instruction_grounding_missing")
+            native_task_spec[label] = value
+    if "robot_workspace_position_bounds_world_m" in success:
+        bounds = success["robot_workspace_position_bounds_world_m"]
+        if not isinstance(bounds, Mapping):
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_robot_workspace_invalid")
+        lower = _vector(bounds.get("minimum"), field="robot_workspace.minimum")
+        upper = _vector(bounds.get("maximum"), field="robot_workspace.maximum")
+        if any(lo >= hi for lo, hi in zip(lower, upper, strict=True)):
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_robot_workspace_invalid")
+        native_task_spec["robot_workspace_position_bounds_world_m"] = {
+            "minimum": lower, "maximum": upper}
+    if "collision_failure_minimum_force_n" in success:
+        native_task_spec["collision_failure_minimum_force_n"] = _positive_number(
+            success["collision_failure_minimum_force_n"], field="collision_failure_minimum_force_n")
+    if "retreat_clearance_m" in success:
+        native_task_spec["retreat_clearance_m"] = _positive_number(
+            success["retreat_clearance_m"], field="success.retreat_clearance_m"
+        )
+    if "owner_success_contract_authority" in template:
+        native_task_spec["configured_owner_authority"] = dict(
+            template["owner_success_contract_authority"]
+        )
     if strategy == "planar_push":
         native_task_spec["push_contact_max_displacement_m"] = (
             PUSH_CONTACT_MAX_DISPLACEMENT_M

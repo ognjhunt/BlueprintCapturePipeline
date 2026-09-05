@@ -26,6 +26,7 @@ from .adp_task_scoring import (
     validate_rigid_task_success_contract,
 )
 from .decision_evidence_contracts import canonical_digest
+from .adp_rigid_retreat_scoring import score_retreat, validate_retreat_binding
 
 def _quaternion_angle(a: Sequence[float], b: Sequence[float]) -> float:
     qa = _vector(a, 4, error="rigid_task_quaternion_invalid")
@@ -287,6 +288,10 @@ def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
             raise TaskNeutralScoringError(
                 ["rigid_task_success_contract_default_criteria_mismatch"]
             )
+        if "retreat" in validated_success_contract["criteria"]:
+            retreat_errors = validate_retreat_binding(spec, validated_success_contract)
+            if retreat_errors:
+                raise TaskNeutralScoringError(retreat_errors)
         normalized["task_success_contract"] = validated_success_contract
     return normalized
 
@@ -919,6 +924,14 @@ def score_rigid_task_episode(
             )
         ),
     }
+    retreat = None
+    if "retreat" in criteria:
+        retreat = score_retreat(
+            criterion=criteria["retreat"], task_spec=spec, samples=samples,
+            window_samples=settle_window_samples,
+            release_width_m=spec["release_gripper_width_min_m"],
+        )
+        criterion_results["retreat"] = retreat["satisfied"]
     succeeded = all(criterion_results.values())
     planar_push = spec["manipulation_strategy"] == "planar_push"
     required_task_contact_readback = task_contact_mode != "ignored"
@@ -929,6 +942,7 @@ def score_rigid_task_episode(
         or (required_support_contact_readback and not support_contact_complete)
         or (required_task_contact_readback and not task_contact_complete)
         or temporal_readback_gaps
+        or (retreat is not None and not retreat["readback_complete"])
     ):
         status = "undetermined"
         if not destination_pose_readback_complete:
@@ -939,6 +953,8 @@ def score_rigid_task_episode(
             outcome = "native_support_contact_readback_missing"
         elif required_task_contact_readback and not task_contact_complete:
             outcome = "native_task_contact_readback_missing"
+        elif retreat is not None and not retreat["readback_complete"]:
+            outcome = "native_retreat_readback_missing"
         else:
             outcome = "native_temporal_event_readback_missing"
     elif not safety_ok:
@@ -977,6 +993,7 @@ def score_rigid_task_episode(
         name for name, satisfied in criterion_results.items() if not satisfied
     ]
     plain_reasons = {
+        "retreat": "The released gripper did not maintain the authored withdrawal clearance from the object.",
         "destination_containment": "The object did not remain inside the authored destination.",
         "destination_pose_stability": "The destination moved beyond its qualified pose tolerance.",
         "orientation": "The object did not finish in the required orientation.",
@@ -1051,6 +1068,7 @@ def score_rigid_task_episode(
             "derived_only_from_episode_samples": True,
         },
         "measurements": {
+            **({"retreat": retreat} if retreat is not None else {}),
             "sample_count": len(normalized),
             "reset_translation_error_m": reset_translation_error,
             "reset_orientation_error_rad": reset_orientation_error,

@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch bounded Blueprint SAM preparation child jobs
+
+[Path]
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/pending/*.json
+Unit=blueprint-task-evaluation-sam31-preparation-execution.service
+
+[Install]
+WantedBy=multi-user.target

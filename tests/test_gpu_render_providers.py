@@ -1257,10 +1257,11 @@ def test_vast_build_request_offer_search_and_create(tmp_path: Path) -> None:
     assert req["create_endpoint"] == "PUT /asks/{ask_contract_id}/"
     assert req["entrypoint_override"] == "bash"
     assert spec.vast_launch_mode == "args"
-    assert list(RenderLaunchSpec.__dataclass_fields__)[-3:] == [
+    assert list(RenderLaunchSpec.__dataclass_fields__)[-4:] == [
         "vast_launch_mode",
         "excluded_machine_ids",
         "allowed_geolocation_country_codes",
+        "preferred_geolocation_regex",
     ]
     assert req["vast_launch_mode"] == "args"
     assert req["require_direct_port"] is False
@@ -2457,6 +2458,7 @@ def test_vast_launch_forwards_episode_offer_selection_policy(
             "require_avx": True,
             "require_known_supported_isaac_driver": True,
             "preferred_gpu_keywords": ["L40S"],
+            "preferred_geolocation_regex": "California|Oregon|Washington",
         }
     )
 
@@ -2473,6 +2475,7 @@ def test_vast_launch_forwards_episode_offer_selection_policy(
             "min_reliability": 0.99,
             "require_direct_port": False,
             "preferred_gpu_keywords": ["L40S"],
+            "preferred_geolocation_regex": "California|Oregon|Washington",
             "minimum_driver_version": "",
             "disk_gb": 140,
             "required_provider_disk_gb": 140,
