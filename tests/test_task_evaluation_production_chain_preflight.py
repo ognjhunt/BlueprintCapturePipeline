@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import textwrap
 from collections import namedtuple
 from pathlib import Path
 
@@ -351,3 +352,47 @@ def test_installation_receipt_from_another_release_is_provenance_not_a_blocker(t
     receipt.write_text(json.dumps({"source_commit_sha": "nope"}), encoding="utf-8")
     codes = {f["code"]: f["severity"] for f in preflight.binding_checks(units, "a" * 40, (os.getuid(), os.getgid()))}
     assert codes["installation_receipt_commit_invalid"] == "blocker"
+
+
+def test_probe_replays_the_paid_admission_identity_gate_from_the_release(tmp_path: Path) -> None:
+    """Submission #8 (2026-09-05): every static check was clean and the paid
+    allocator refused the release at admission because main had moved after the
+    deploy.  The probe now runs that gate from the release tree, so the refusal
+    is a pre-submission finding, and it reports the evidence grade the release
+    will stamp on its runs."""
+    src = _package(tmp_path)
+    package = src / "blueprint_pipeline"
+    (package / "paid_resource_allocator.py").write_text(
+        textwrap.dedent(
+            """
+            def _source_checkout_blockers(expected, *, allow_pushed_branch_diagnostic=False):
+                return (["gpu_canary_checkout_not_remote_main"], expected)
+
+
+            def _control_plane_checkout_blockers():
+                return ([], {"release_promotion_eligible": False, "evidence_grade_ceiling": "development_only"})
+            """
+        ),
+        encoding="utf-8",
+    )
+    # The SAM child reaches the allocator by module name on an argv, not by import.
+    (package / "admitter.py").write_text(
+        'ARGV = ["python", "-m", "blueprint_pipeline.paid_resource_allocator", "gpu-canary"]\n', encoding="utf-8"
+    )
+    args = preflight.argparse.Namespace(
+        unit="blueprint-task-evaluation-sam31-preparation-execution.service",
+        module="blueprint_pipeline.admitter",
+        release=str(tmp_path / "release"),
+        active_sha="a" * 40,
+        read_write_paths="",
+        read_only_paths="",
+    )
+
+    report = preflight.run_probe(args)
+
+    findings = {(row["code"], row.get("blocker")) for row in report["findings"]}
+    assert ("paid_admission_checkout_identity_refused", "gpu_canary_checkout_not_remote_main") in findings
+    assert ("release_evidence_grade_development_only", None) in findings
+    assert report["paid_admission_identity"]["observed_commit"] == "a" * 40
+    assert not any(row["code"] == "paid_admission_identity_probe_failed" for row in report["findings"])
+

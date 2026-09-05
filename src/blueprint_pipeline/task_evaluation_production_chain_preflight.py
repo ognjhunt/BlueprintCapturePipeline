@@ -46,6 +46,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import textwrap
 import time
 import urllib.request
 from collections.abc import Mapping, Sequence
@@ -362,6 +363,49 @@ def _in_read_write_paths(path_text: str, read_write: Sequence[str]) -> bool:
     return False
 
 
+ADMISSION_IDENTITY_REPLAY = textwrap.dedent(
+    """
+    import json, sys
+    from blueprint_pipeline import paid_resource_allocator as allocator
+    blockers, observed = allocator._source_checkout_blockers(sys.argv[1])
+    _, identity = allocator._control_plane_checkout_blockers()
+    print(json.dumps({
+        "blockers": list(blockers), "observed_commit": observed,
+        "release_promotion_eligible": identity.get("release_promotion_eligible"),
+        "evidence_grade_ceiling": identity.get("evidence_grade_ceiling"),
+    }))
+    """
+)
+
+
+def paid_admission_identity(src: Path, release: Path, active_sha: str, *, timeout: float = 120.0) -> dict[str, Any]:
+    """Replay the paid allocator's checkout-identity gate from the release, as the unit will.
+
+    Submission #8 (2026-09-05) passed every static check here and was refused at
+    paid admission with ``gpu_canary_checkout_not_remote_main``: main had moved
+    after the deploy and the sandboxed release could not show ancestry.  That gate
+    reads the remote and the deploy receipts at admission time, so only running it
+    from the release tree, inside the unit's sandbox, before a submission predicts
+    it.  A fresh interpreter keeps the replay on the release's own package.
+    """
+
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", ADMISSION_IDENTITY_REPLAY, active_sha],
+            cwd=str(release), env={**os.environ, "PYTHONPATH": str(src)},
+            capture_output=True, text=True, timeout=timeout, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"[:300]}
+    if completed.returncode != 0:
+        return {"error": f"exit {completed.returncode}: {completed.stderr.strip()[-300:]}"}
+    try:
+        value = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError) as exc:
+        return {"error": f"unparseable replay output: {type(exc).__name__}"}
+    return value if isinstance(value, dict) else {"error": "replay output is not an object"}
+
+
 def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     release = Path(args.release)
     src = release / "src"
@@ -479,6 +523,19 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             examine(os.environ.get(module.CHILD_QUEUE_ENV, str(module.DEFAULT_CHILD_QUEUE)), source="resolver:sam31_driver.child_queue", modules=[driver])
         except BaseException as exc:  # noqa: BLE001
             findings.append(_finding("warning", "root_resolver_failed", resolver=f"{driver}.child_queue", error=f"{type(exc).__name__}: {exc}"[:300]))
+
+    allocator_name = f"{PACKAGE}.paid_resource_allocator"
+    if active_sha and (allocator_name in closure or any(allocator_name in text for text in sources.values())):
+        admission = paid_admission_identity(src, release, active_sha)
+        report["paid_admission_identity"] = admission
+        if admission.get("error"):
+            findings.append(_finding("warning", "paid_admission_identity_probe_failed", error=admission["error"]))
+        else:
+            for code in admission.get("blockers") or []:
+                findings.append(_finding("blocker", "paid_admission_checkout_identity_refused", blocker=str(code), release_commit=active_sha))
+            if admission.get("release_promotion_eligible") is False:
+                findings.append(_finding("warning", "release_evidence_grade_development_only", release_commit=active_sha,
+                                         evidence_grade_ceiling=admission.get("evidence_grade_ceiling")))
 
     home_users = sorted(name for name, text in sources.items() if "Path.home()" in text or "expanduser(" in text)
     if home_users:

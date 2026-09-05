@@ -260,7 +260,9 @@ def process_sam31_phase_queue(
                               "job_digest": job["job_digest"], "parent_request_digest": job["parent_request_digest"],
                               "plan_digest": job["plan_digest"], "phase": job["phase"],
                               "source_commit": observed_commit, "status": outcome["status"],
-                              "artifacts": artifacts, "executor_result": outcome}
+                              "artifacts": artifacts, "executor_result": outcome,
+                              **({"blocker": ";".join(str(b) for b in (outcome.get("blockers") or ["sam31_stage_failed"]))[:700]}
+                                 if outcome["status"] != "completed" else {})}
                     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
                     _write(result_path, result)
             except Exception as exc:
