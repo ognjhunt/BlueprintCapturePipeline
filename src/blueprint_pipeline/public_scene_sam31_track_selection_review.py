@@ -204,11 +204,14 @@ def _validate_candidate_file(candidate_path: Path, candidate: Mapping[str, Any])
         raise Sam31TrackSelectionReviewError("sam31_review_candidate_invalid")
     for binding in bindings:
         _verify_record(binding.get("task_freeze"), root=root)
-        _verify_record(binding.get("source_track_result"), root=root)
+        source_tracks_path = _verify_record(binding.get("source_track_result"), root=root)
         _verify_record(binding.get("camera_contract"), root=root)
         if "task_input_packet" in binding or "calibrated_view_receipt" in binding:
-            _verify_record(binding.get("task_input_packet"), root=root)
+            packet_path = _verify_record(binding.get("task_input_packet"), root=root)
             _verify_record(binding.get("calibrated_view_receipt"), root=root)
+            from .public_scene_calibrated_object_masks import _frame_map
+            _frame_map(_read(source_tracks_path, code="sam31_review_source_tracks_invalid")[1],
+                       task_input_packet_path=packet_path)
     if [str(row.get("task_id") or "") for row in review_media] != task_ids:
         raise Sam31TrackSelectionReviewError("sam31_review_candidate_invalid")
     for task in review_media:
@@ -1227,7 +1230,7 @@ def materialize_sam31_track_selection_review_candidate(
         image_root = Path(str(task_input["source_image_root"])).expanduser().resolve()
         source_tracks = _verified_source_tracks(tracks_path)
         tracks = _track_map(source_tracks)
-        frames = _frame_map(source_tracks)
+        frames = _frame_map(source_tracks, task_input_packet_path=task_input.get("task_input_packet_path"))
         cameras = _camera_rows(cameras_path)
         camera_frame_map = {
             str(camera_id): str(frame_id)

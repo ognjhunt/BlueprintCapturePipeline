@@ -59,6 +59,14 @@ def _inventory(output: Path) -> dict[str, Any]:
             for path in sorted(output.rglob("*")) if path.is_file() and not path.is_symlink()}
 
 
+def _failure_blocker(exc: Exception) -> str:
+    from .public_scene_sam31_frame_inventory import FRAME_REGISTRY_ERROR, FRAME_BINDING_ERROR
+    safe_codes = {FRAME_REGISTRY_ERROR, FRAME_BINDING_ERROR, "sam31_review_camera_frame_set_invalid",
+                  "sam31_review_source_image_invalid", "sam31_review_prepared_inputs_invalid"}
+    detail = str(exc) if str(exc) in safe_codes else type(exc).__name__
+    return "sam31_preparation_review_stage_failed:" + detail
+
+
 def execute_review_stage(job: Mapping[str, Any]) -> dict[str, Any]:
     """Run one server-derived stage; preserve typed outputs even when review fails."""
     stage_id = job.get("stage_id")
@@ -225,7 +233,7 @@ def execute_review_stage(job: Mapping[str, Any]) -> dict[str, Any]:
         # Official-cost receipts, SDK responses and negative decisions stay in
         # the stage root. Do not copy exception text that may contain secrets.
         return {"status": "blocked", "stage_id": stage_id, "artifacts": artifacts,
-                "blockers": ["sam31_preparation_review_stage_failed:" + type(exc).__name__],
+                "blockers": [_failure_blocker(exc)],
                 "retained_artifacts": _inventory(output), "candidate_policy_queried": False,
                 "provider_compute_allocated": False}
     return {"status": "completed", "stage_id": stage_id, "artifacts": artifacts,
