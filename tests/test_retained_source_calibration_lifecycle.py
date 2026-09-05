@@ -263,8 +263,13 @@ def _json_record(path):
 
 
 def _seal_json(path, value, field):
-    from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
-    value[field] = canonical_digest(value, digest_field=field)
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json, cross_runtime_canonical_digest
+    node_record = value.get('schema_version') in {
+        'sealed_camera_render_manifest.v1', 'adp009d_source_calibration_gpu_render_result.v1'}
+    if node_record:
+        value['digest_canonicalization'] = 'rfc8785'
+    digest = cross_runtime_canonical_digest if node_record else canonical_digest
+    value[field] = digest(value, digest_field=field)
     path.write_text(canonical_json(value) + '\n')
 
 
@@ -348,13 +353,16 @@ def test_frame_and_gpu_authority_never_disclose_full_source_before_bundle_creati
 
     paths, prepared = _prepared_source(tmp_path, monkeypatch)
     source = prepared['layers']['images']
+    original = paths['data']/'original-commented-source.ply'
+    original.write_bytes(Path(source['path']).read_bytes().replace(b'ply\n', b'ply\ncomment fixture original encoding\n', 1))
+    original_record = _json_record(original)
     # Synthetic identity conversion of the actual fixture source bytes. This
     # receipt grants local conversion only; neither it nor paid/frame consent
     # grants whole-scene provider processing.
     conversion = {'schema_version': 'standard_splat_conversion_receipt.v1',
         'status': 'standard_splat_conversion_materialized', 'repository': prepared['repository'],
         'claim_ceiling': 'local_format_conversion_only',
-        'source': {'sha256': source['sha256'], 'size_bytes': source['size_bytes'],
+        'source': {'sha256': original_record['sha256'], 'size_bytes': original_record['size_bytes'],
                    'source_bytes_unchanged': True, 'source_gaussian_count': source['retained_gaussian_count'],
                    'dataset': 'synthetic-fixture', 'revision': 'a'*40},
         'output': {'sha256': source['sha256'], 'size_bytes': source['size_bytes'],
@@ -379,7 +387,7 @@ def test_frame_and_gpu_authority_never_disclose_full_source_before_bundle_creati
         packet.build_source_calibration_gpu_render_bundle(
             prepared_inputs_path=prepared['preparation_path'], repo_root=paths['repo'],
             renderer_vendor_root=tmp_path/'must-not-read-vendor', task_request_path=task_path,
-            conversion_receipt_path=conversion_path, original_source_path=Path(source['path']),
+            conversion_receipt_path=conversion_path, original_source_path=original,
             job_dir=output, expected_source_commit=prepared['repository']['commit'], approved_roots=(tmp_path,))
     assert not output.exists()
 
@@ -439,7 +447,151 @@ def test_exact_48_frame_return_is_required_before_publishing_or_finalizing(tmp_p
         verified = returned.verify_source_calibration_return(prepared, final_path)
         assert set(verified) == set(returned.ROLES)
         assert sum(len(value['manifest']['renders']) for value in verified.values()) == 48
-        final = finalize_public_scene_inpainting_inputs(preparation_path=prepared['preparation_path'], returned_group_path=final_path)
+        with pytest.raises(ValueError, match='execution_closure_missing'):
+            finalize_public_scene_inpainting_inputs(preparation_path=prepared['preparation_path'], returned_group_path=final_path)
+        assert not list(paths['output'].glob('*/frames/*.png'))
+
+
+def _closed_source_fixture(tmp_path, monkeypatch):
+    from tests.test_source_calibration_render_packet import valid_source_bundle_inputs
+    from tests.test_vast_official_billing_extractor import _charge
+    from blueprint_pipeline import source_calibration_render_packet as packet
+    from blueprint_pipeline import source_calibration_render_return as returned
+    from blueprint_pipeline import source_calibration_private_store as store
+    from blueprint_pipeline.vast_official_billing_extractor import extract_vast_official_instance_charge
+    from blueprint_pipeline.provider_billing_reconciler import BILLING_SOURCE_SCHEMA_VERSION, VAST_CHARGES_URL
+
+    args, prepared = valid_source_bundle_inputs(tmp_path, monkeypatch)
+    bundle = packet.build_source_calibration_gpu_render_bundle(**args)
+    root = args['job_dir'].parent/'closed-evidence'
+    root.mkdir()
+    result_path, _ = _rendered_source_matrix(prepared, root/'provider-output')
+    render_return = root/'render-only-return.json'
+    returned.materialize_source_calibration_return(prepared_inputs=prepared, result_path=result_path,
+                                                  output_path=render_return)
+    disclosure_path = root/'source-disclosure.json'
+    _seal_json(disclosure_path, bundle['source_disclosure'], 'proof_digest')
+    configuration = {'access_key_id_file': 'fixture-access', 'secret_access_key_file': 'fixture-secret',
+                     'endpoint_url_file': 'https://s3.us-east-005.backblazeb2.com',
+                     'bucket_file': store.EXPECTED_BUCKET, 'region_file': 'us-east-005'}
+    for key, value in configuration.items():
+        path = root/key
+        path.write_text(value)
+        path.chmod(0o600)
+        monkeypatch.setenv(store.ENV[key], str(path))
+
+    def native_read(method, url, headers, body):
+        if method == 'GET':
+            return {'accountId': 'fixture-account', 'authorizationToken': 'fixture-token',
+                    'apiInfo': {'storageApi': {'apiUrl': 'https://api005.backblazeb2.com',
+                                               's3ApiUrl': configuration['endpoint_url_file']}}}
+        return {'buckets': [{'bucketName': store.EXPECTED_BUCKET, 'bucketType': 'allPrivate',
+                             'bucketId': 'fixture-bucket'}]}
+
+    private_path = root/'private-store.json'
+    private = store.verify_private_source_store(output_path=private_path, transport=native_read)['readback']
+    instance = 123
+    label = 'blueprint-adp-retained-render-source-fixture'
+    teardown_path = root/'vast_teardown_manifest.json'
+    teardown_path.write_text(json.dumps({'schema_version': 'vast_teardown_manifest.v1',
+        'vast_instance_ids': [instance], 'continuing_spend_from_this_run': False, 'runner_gpu_teardown_completed': True}))
+    execution_path = root/'retained_scene_render_vast_result.json'
+    execution = {'schema_version': 'adp009d_retained_scene_gpu_render_vast_run.v1',
+        'status': 'completed', 'render_scope': 'source_calibration', 'vast_instance_ids': [instance],
+        'bundle_sha256': bundle['bundle_sha256'], 'continuing_spend_from_this_run': False,
+        'all_staged_objects_absent': True, 'private_source_store_readback': private,
+        'execution_result_path': str(result_path), 'teardown_manifest_path': str(teardown_path)}
+    _seal_json(execution_path, execution, 'receipt_digest')
+    inventory = {'status': 'observed', 'provider': 'vast', 'name_prefix': '', 'api_confirmed': True,
+                 'live_resource_count': 0, 'resources': []}
+    inspect = {'instance_id': instance, 'status': 'absent', 'api_confirmed': True, 'provider_absence_confirmed': True}
+    zero_path = root/'provider-zero.json'
+    zero_path.write_text(json.dumps({'status': 'provider_terminal', 'provider': 'vast',
+        'provider_absence_confirmed': True, 'recorded_vast_instance_teardown': {
+            'instance_id': instance, 'status': 'absent', 'provider_absence_confirmed': True,
+            'inspect_attempts': [dict(inspect), dict(inspect)]},
+        'initial_global_inventory': dict(inventory), 'final_global_inventory': dict(inventory)}))
+    response_path = root/'official-vast-response.json'
+    response_path.write_text(json.dumps({'success': True, 'results': [_charge(instance_id=instance,
+        label=label, total=.4, gpu=.3, disk=.1)]}))
+    source_path = root/'provider-billing-source.json'
+    _seal_json(source_path, {'schema_version': BILLING_SOURCE_SCHEMA_VERSION, 'status': 'reconciled',
+        'provider_totals_usd': {'vast': .4}, 'provider_mutation_performed': False, 'raw_secret_values_recorded': False,
+        'sources': [{'provider': 'vast', 'retained_path': str(response_path), 'endpoint': VAST_CHARGES_URL,
+                     'response_digest': _json_record(response_path)['sha256'],
+                     'response_size_bytes': response_path.stat().st_size}]}, 'receipt_digest')
+    charge = extract_vast_official_instance_charge(provider_billing_source_receipt_path=source_path,
+                                                  instance_id=instance, launch_label=label)
+    charge_path = root/'official-charge.json'
+    _seal_json(charge_path, charge, 'charge_digest')
+    closure = {name: _json_record(path) for name, path in {
+        'source_disclosure': disclosure_path, 'private_store': private_path, 'provider_execution': execution_path,
+        'official_billing': charge_path, 'teardown': teardown_path, 'provider_zero': zero_path}.items()}
+    return prepared, render_return, closure, root
+
+
+@pytest.mark.parametrize('defect', [None, 'missing_billing', 'source_scope', 'public_store', 'foreign_execution_result',
+    'execution_schema', 'teardown_schema', 'foreign_teardown', 'foreign_inspect', 'one_inspect',
+    'initial_scoped_zero', 'final_nonzero', 'changed_charge'])
+def test_finalization_requires_real_disclosure_billing_and_exact_terminal_closure(tmp_path, monkeypatch, defect):
+    from blueprint_pipeline import source_calibration_render_return as returned
+    from blueprint_pipeline.public_scene_inpainting_inputs import finalize_public_scene_inpainting_inputs
+
+    prepared, render_return, closure, root = _closed_source_fixture(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match='execution_closure_missing'):
+        returned.require_source_calibration_closure(prepared, render_return)
+    if defect == 'missing_billing':
+        closure.pop('official_billing')
+    elif defect:
+        role = {'source_scope': 'source_disclosure', 'public_store': 'private_store',
+                'foreign_execution_result': 'provider_execution', 'execution_schema': 'provider_execution',
+                'teardown_schema': 'teardown', 'foreign_teardown': 'teardown',
+                'changed_charge': 'official_billing'}.get(defect, 'provider_zero')
+        path = Path(closure[role]['path'])
+        value = json.loads(path.read_text())
+        if defect == 'source_scope':
+            value['purpose'] = 'released_code_segment_contribution_sweep'
+        elif defect == 'public_store':
+            value['bucket_type'] = 'allPublic'
+        elif defect == 'foreign_execution_result':
+            foreign = root/'different-provider-result.json'
+            foreign.write_bytes(Path(value['execution_result_path']).read_bytes())
+            value['execution_result_path'] = str(foreign)
+        elif defect in {'execution_schema', 'teardown_schema'}:
+            value['schema_version'] = 'unrelated_receipt.v1'
+        elif defect == 'foreign_teardown':
+            value['vast_instance_ids'] = [456]
+        elif defect == 'foreign_inspect':
+            value['recorded_vast_instance_teardown']['inspect_attempts'][1]['instance_id'] = 456
+        elif defect == 'one_inspect':
+            value['recorded_vast_instance_teardown']['inspect_attempts'].pop()
+        elif defect == 'initial_scoped_zero':
+            value['initial_global_inventory']['name_prefix'] = 'only-this-run'
+        elif defect == 'final_nonzero':
+            value['final_global_inventory'].update(live_resource_count=1, resources=[{'id': '456'}])
+        elif defect == 'changed_charge':
+            value['official_charge_usd'] = .99
+        field = {'source_disclosure': 'proof_digest', 'private_store': 'readback_digest',
+                 'provider_execution': 'receipt_digest', 'official_billing': 'charge_digest'}.get(role)
+        if field:
+            _seal_json(path, value, field)
+        else:
+            path.write_text(json.dumps(value))
+        closure[role] = _json_record(path)
+    closed_path = root/'closed-return.json'
+    if defect:
+        with pytest.raises(ValueError):
+            returned.materialize_source_calibration_closed_return(prepared_inputs=prepared,
+                returned_group_path=render_return, execution_closure=closure, output_path=closed_path)
+        assert not closed_path.exists()
+        assert not list(Path(prepared['context']['paths']['output']).glob('*/frames/*.png'))
+    else:
+        result = returned.materialize_source_calibration_closed_return(prepared_inputs=prepared,
+            returned_group_path=render_return, execution_closure=closure, output_path=closed_path)
+        assert returned.require_source_calibration_closure(prepared, closed_path) == result
+        final = finalize_public_scene_inpainting_inputs(preparation_path=prepared['preparation_path'],
+                                                       returned_group_path=closed_path)
         assert final['status'] == 'render_derived_input_packet_materialized'
         assert len(final['derived_artifacts']['images']) == len(final['derived_artifacts']['masks']) == 16
-        assert len(list(paths['output'].glob('*/frames/*.png'))) == 48
+        assert final['source_calibration_render']['execution_closure'] == closure
+        assert final['source_calibration_render']['full_source_scene_content_transferred'] is True
