@@ -607,3 +607,54 @@ def test_submission_refuses_ungranted_authority_or_unsupported_method_before_sta
     with pytest.raises(SceneConfigurationSubmissionError, match=error):
         _materialize(fixture)
     assert not fixture["staging_root"].exists()
+
+
+@pytest.mark.parametrize(("field", "bounds"), [
+    ("static_friction_bounds", [0.2, 1.2]),
+    ("dynamic_friction_bounds", [0.2, 1.2]),
+    ("restitution_bounds", [0.0, 1.01]),
+    ("mass_kg_bounds", [0.0, 1.2]),
+    ("mass_kg_bounds", [1.2, 0.3]),
+    ("static_friction_bounds", [-0.2, 0.8]),
+    ("static_friction_bounds", [0.2, float("nan")]),
+    ("mass_kg_bounds", [0.2, float("inf")]),
+    ("mass_kg_bounds", [0.3]),
+    ("mass_kg_bounds", None),
+    (None, None),
+])
+def test_submission_rejects_invalid_subject_physics_before_staging(
+        tmp_path: Path, field: str | None, bounds: list | None) -> None:
+    fixture = production_fixture(tmp_path)
+    task = json.loads(fixture["task_request"].read_text())
+    if field is None:
+        task["subject"].pop("physics_bounds")
+    else:
+        task["subject"]["physics_bounds"][field] = bounds
+    _write_json(fixture["task_request"], task)
+    with pytest.raises(SceneConfigurationSubmissionError, match="task_subject_physics_bounds_invalid"):
+        _materialize(fixture)
+    assert not fixture["staging_root"].exists()
+
+
+def test_submission_rejects_infeasible_friction_before_staging(tmp_path: Path) -> None:
+    fixture = production_fixture(tmp_path)
+    task = json.loads(fixture["task_request"].read_text())
+    task["subject"]["physics_bounds"].update(
+        static_friction_bounds=[0.2, 0.4], dynamic_friction_bounds=[0.5, 0.6])
+    _write_json(fixture["task_request"], task)
+    with pytest.raises(SceneConfigurationSubmissionError, match="task_subject_friction_bounds_infeasible"):
+        _materialize(fixture)
+    assert not fixture["staging_root"].exists()
+
+
+def test_submission_accepts_canonical_friction_ceiling_without_changing_it(tmp_path: Path) -> None:
+    fixture = production_fixture(tmp_path)
+    task = json.loads(fixture["task_request"].read_text())
+    task["subject"]["physics_bounds"]["static_friction_bounds"] = [0.2, 1.0]
+    _write_json(fixture["task_request"], task)
+    result = _materialize(fixture)
+    stages = [json.loads(path.read_text()) for path in Path(result["staging_root"]).rglob("*.json")]
+    authoring = next(stage for stage in stages
+                     if stage.get("schema_version") == "rigid_replacement_authoring_configuration.v1")
+    assert authoring["required_output"]["static_friction_bounds"] == [0.2, 1.0]
+    assert authoring["required_output"]["mass_kg_bounds"] == [0.3, 1.2]
