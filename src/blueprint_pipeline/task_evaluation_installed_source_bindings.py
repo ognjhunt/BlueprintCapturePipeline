@@ -90,6 +90,7 @@ class InstalledSource:
     size_bytes: int
     installation_receipt_digest: str
     publisher_intake_sha256: str
+    installed_by_commit: str = ""
 
     def verify(self) -> None:
         path = _resident(self.path, (self.path.parent,))
@@ -134,6 +135,14 @@ def load_installed_source_bindings(
     A pinned publisher inventory is authenticated before filtering; unrelated
     installations are not checked against this request\'s execution commit.
     None retains full validation for operator audits and direct callers.
+
+    An installation is identified by its content, not by the release that
+    installed it: every member is bound by SHA-256 and size to the publisher's
+    pinned inventory and read back before use.  The installing commit is still
+    required to be a real commit and is recorded for provenance, but it need
+    not equal this request's execution commit.  Requiring equality forced a
+    fresh multi-gigabyte re-installation and a drop-in re-pin after every
+    control-plane deploy, and added nothing the digests do not already prove.
     """
     env = os.environ if environment is None else environment
     raw = env.get(BINDINGS_ENV, "")
@@ -205,7 +214,7 @@ def load_installed_source_bindings(
                 or installation.get("status") != "installed"
                 or installation.get("service_readable") is not True
                 or installation.get("service_account") != service_account
-                or installation.get("source_commit_sha") != expected_source_commit
+                or not _COMMIT.fullmatch(str(installation.get("source_commit_sha") or ""))
                 or installation.get("destination_root") != str(installation_path.parent)
                 or installation.get("receipt_digest") != canonical_digest(
                     installation, digest_field="receipt_digest")):
@@ -229,7 +238,10 @@ def load_installed_source_bindings(
             path = _resident(installation_path.parent / relative, (installation_path.parent,))
             if uri in sources:
                 _fail("publisher_uri_duplicate")
-            source = InstalledSource(path, digest, size, installation["receipt_digest"], publisher_hash)
+            source = InstalledSource(
+                path, digest, size, installation["receipt_digest"], publisher_hash,
+                str(installation["source_commit_sha"]),
+            )
             source.verify()
             sources[uri] = source
     return InstalledSourceBindings(sources)

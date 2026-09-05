@@ -147,7 +147,6 @@ def _validate_regular_file(
     audit_device: int,
     owner_uid: int,
     owner_gid: int,
-    expected_mode: int = OBJECT_MODE,
 ) -> os.stat_result:
     if path.is_symlink() or not path.is_file():
         raise ProviderBillingAuditRetentionError(
@@ -159,7 +158,9 @@ def _validate_regular_file(
         or info.st_dev != audit_device
         or info.st_uid != owner_uid
         or info.st_gid != owner_gid
-        or stat.S_IMODE(info.st_mode) != expected_mode
+        # Admission may freeze a retained hard link and therefore its CAS inode.
+        # Preserve that already-supported read-only mode; never chmod evidence.
+        or stat.S_IMODE(info.st_mode) not in {OBJECT_MODE, 0o440}
         or info.st_size != expected_size
     ):
         raise ProviderBillingAuditRetentionError(

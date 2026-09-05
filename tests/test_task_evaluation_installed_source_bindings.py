@@ -104,9 +104,23 @@ def test_empty_operator_configuration_retains_existing_behavior():
     ).sources
 
 
-def test_stale_execution_commit_fails(packet):
+def test_installation_from_another_release_is_bound_by_content_identity(packet):
+    """The receipt's digests and readback prove the bytes; the installing commit
+    is provenance.  Requiring it to equal the execution commit forced a fresh
+    re-installation and a drop-in re-pin after every deploy for no added proof."""
+    loaded = _load(packet, commit="c" * 40)
+    assert set(loaded.sources) == {URI}
+    assert loaded.sources[URI].installed_by_commit == COMMIT
+    assert loaded.sources[URI].installed_by_commit != "c" * 40
+
+
+def test_installing_commit_must_still_be_a_real_commit(packet):
+    root, _, installation_path, _, _ = packet
+    document = json.loads(installation_path.read_text())
+    document["source_commit_sha"] = "not-a-commit"
+    _write(installation_path, document, seal=True)
     with pytest.raises(binding.InstalledSourceBindingError, match="installation_invalid"):
-        _load(packet, commit="c" * 40)
+        _load(packet)
 
 
 def test_tampered_publisher_receipt_fails_its_operator_pin(packet):
@@ -238,9 +252,10 @@ def test_unrelated_stale_installation_is_not_bound_to_current_request(packet, re
     ).sources
 
 
-def test_requested_stale_installation_still_fails_without_network_fallback(packet):
-    with pytest.raises(binding.InstalledSourceBindingError, match="installation_invalid"):
-        _load(packet, commit="c" * 40, requested_uris=[URI])
+def test_requested_installation_from_another_release_resolves_without_network(packet):
+    loaded = _load(packet, commit="c" * 40, requested_uris=[URI])
+    assert set(loaded.sources) == {URI}
+    assert loaded.resolve(URI, loaded.sources[URI].digest, loaded.sources[URI].size_bytes) is not None
 
 
 def test_requested_tampered_installation_still_fails(packet):

@@ -358,3 +358,49 @@ def test_audit_root_requires_invoking_owner_identity(
         build_provider_billing_audit_retention_plan(
             audit_root=fixture["audit_root"]
         )
+
+
+def test_frozen_cas_object_remains_readable_to_producer_and_retention(tmp_path: Path) -> None:
+    from blueprint_pipeline import provider_billing_audit_retention as retention
+
+    fixture = _fixture(tmp_path)
+    root = fixture["audit_root"]
+    with retention.audit_root_lock(root) as (locked_root, root_info):
+        obj, digest = retention._publish_object(
+            audit_root=locked_root, root_info=root_info, payload=fixture["response"]
+        )
+        obj.chmod(0o440)
+        reused, reused_digest = retention._publish_object(
+            audit_root=locked_root, root_info=root_info, payload=fixture["response"]
+        )
+    assert reused == obj
+    assert reused_digest == digest
+    assert obj.stat().st_mode & 0o777 == 0o440
+    plan = build_provider_billing_audit_retention_plan(audit_root=root)
+    plan_path = tmp_path / "frozen-object-plan.json"
+    plan_path.write_text(json.dumps(plan))
+    result = apply_provider_billing_audit_retention_plan(
+        dry_run_plan_path=plan_path, acknowledgement=APPLY_ACKNOWLEDGEMENT,
+        receipt_out=tmp_path / "frozen-object-apply.json",
+    )
+    assert result["status"] == "applied"
+    for name in ("first", "second"):
+        receipt, response, receipt_bytes = fixture[name]
+        assert response.stat().st_ino == obj.stat().st_ino
+        assert response.read_bytes() == fixture["response"]
+        assert receipt.read_bytes() == receipt_bytes
+    assert obj.stat().st_mode & 0o777 == 0o440
+
+
+@pytest.mark.parametrize("mode", [0o640, 0o644, 0o660, 0o400])
+def test_cas_object_rejects_unrecognized_modes(tmp_path: Path, mode: int) -> None:
+    from blueprint_pipeline import provider_billing_audit_retention as retention
+
+    fixture = _fixture(tmp_path)
+    with retention.audit_root_lock(fixture["audit_root"]) as (root, info):
+        obj, _digest = retention._publish_object(
+            audit_root=root, root_info=info, payload=fixture["response"]
+        )
+        obj.chmod(mode)
+    with pytest.raises(ProviderBillingAuditRetentionError, match="response_metadata_invalid"):
+        build_provider_billing_audit_retention_plan(audit_root=fixture["audit_root"])
