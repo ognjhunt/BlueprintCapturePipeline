@@ -243,3 +243,63 @@ def test_deployer_installs_and_authority_gates_exact_child_units():
     assert "--max-messages 1" in service
     assert "paid_resource_allocator" not in service
     assert "TimeoutStartSec=75m" in service
+
+
+def test_real_source_selection_stage_crosses_outer_queue_with_canonical_frame_reference(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_sam31_preparation_stages as stages
+    from tests.test_task_evaluation_sam31_preparation_cpu_stages import _fixture as source_fixture
+    root = tmp_path/'real-source-chain'
+    root.mkdir()
+    source_root = root/'source'
+    source_root.mkdir()
+    source_job = source_fixture(source_root)
+    commit = source_job['request']['expected_production_commit']
+    profile = {'schema_version':stages.PROFILE_SCHEMA, 'source_commit':commit,
+               'repo_root':source_job['repo_root'], 'server_data_root':str(root),
+               'runtime_root':source_job['runtime_root']}
+    profile['profile_digest'] = canonical_digest(profile, digest_field='profile_digest')
+    profile_path = root/'profile.json'
+    profile_path.write_text(json.dumps(profile))
+    monkeypatch.setenv(stages.PROFILE_ENV, str(profile_path))
+    plan = {**source_job['plan'], 'server_profile_sha256':_ref(profile_path)['sha256']}
+    plan_data = json.dumps(plan).encode()
+    plan_uri = 's3://blueprint-production-inputs/real-source-plan.json'
+    plan_ref = {'uri':plan_uri, 'digest':'sha256:'+hashlib.sha256(plan_data).hexdigest(),
+                'size_bytes':len(plan_data)}
+    request, payloads = production_request_with_fetchable_bytes()
+    request['expected_production_commit'] = commit
+    payloads[plan_uri] = plan_data
+    request['runtime']['mounts'].append({'source':plan_ref, 'container_path':'/inputs/sam31-plan.json',
+                                       'mode':'read_only'})
+    recipe = json.loads(payloads[request['construction']['recipe']['uri']])
+    stage_ref = recipe['stage_sequence'][0]['configuration']
+    stage = {'required_views':{'mask_source':'sam31_reviewed_calibrated_object_masks'},
+             'sam31_review_kind':'ai', 'sam31_preparation_plan':plan_ref}
+    data = json.dumps(stage).encode()
+    payloads[stage_ref['uri']] = data
+    stage_ref.update(digest='sha256:'+hashlib.sha256(data).hexdigest(), size_bytes=len(data))
+    _rebind_recipe(request, payloads, recipe)
+    parent, inputs, queue = root/'parents', root/'inputs', root/'children'
+    stage_launch_preparation_request(value=request, queue_root=parent, submitted_by='fixture-webapp')
+    worker.process_launch_preparation_queue(queue_root=parent, input_root=inputs,
+        allowed_uri_prefixes=['s3://blueprint-production-inputs/'], service_account=SERVICE_ACCOUNT,
+        source_commit=commit, fetcher=fetcher(payloads),
+        sam31_preparation_advancer=lambda _: {'status':'waiting_for_child', 'evidence_refs':[]})
+    plan_path = inputs/'content-addressed/sha256'/plan_ref['digest'][7:]
+    intake = execution.enqueue_sam31_phase(queue_root=queue, parent_preparation_id=request['preparation_id'],
+        parent_request_digest=launch_preparation_request_digest(request), expected_source_commit=commit,
+        plan_ref=_ref(plan_path), phase='source_selections', inputs=plan['host_inputs'])
+    source_preparation = Path(plan['host_inputs']['source_preparation_receipt']['path'])
+    frame = source_preparation.parent/'shared_frame_candidate.json'
+    original = frame.read_bytes()
+    assert json.loads(original)['receipt_digest']
+    monkeypatch.setattr(execution, '_verified_checkout_head', lambda: commit)
+    result = execution.process_sam31_phase_queue(queue_root=queue, parent_queue_root=parent,
+        preparation_input_root=inputs, execution_root=root/'executions', approved_roots=(root,))
+    assert result['results'][0]['status'] == 'completed', Path(intake['result_path']).read_text()
+    sealed = json.loads(Path(intake['result_path']).read_text())
+    ref = sealed['artifacts']['registered_frame']
+    assert set(ref) == {'path','sha256','size_bytes'}
+    assert Path(ref['path']).read_bytes() == original
+    assert ref == _ref(frame)
+    assert json.loads(frame.read_text())['receipt_digest'] == json.loads(original)['receipt_digest']

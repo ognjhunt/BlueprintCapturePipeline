@@ -98,7 +98,10 @@ def execute_cpu_stage(job: Mapping[str, Any], *, prepare_hardware_render: bool =
             source_preparation_receipt_path=paths["source_preparation_receipt"],
             expected_production_commit=commit, output_root=output,
         )
-        artifacts.update({key: result[key] for key in ("scene_selection", "task_selection", "registered_frame")})
+        # Producer convenience metadata (for example a frame receipt's self-digest)
+        # stays in its immutable file; phase transport carries exact file identity.
+        artifacts.update({key: _record(checked_file(result[key]["path"], result[key]))
+                          for key in ("scene_selection", "task_selection", "registered_frame")})
         installation = read(paths["installation_receipt"], digest_field="receipt_digest")
         for row in installation["files"]:
             if row.get("role") in RAW_ROLES:
