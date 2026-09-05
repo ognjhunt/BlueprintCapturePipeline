@@ -14,6 +14,12 @@ from blueprint_pipeline.sam31_gpu_admission import (
     LICENSE_TERMS_DIGEST,
     OFFICIAL_CODE_REVISION,
     REQUEST_SCHEMA_VERSION,
+    SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
+    SAM31_PREFERRED_GEOLOCATION_REGEX,
+)
+from blueprint_pipeline.sam31_gpu_admission import (
+    SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
+    SAM31_PREFERRED_GEOLOCATION_REGEX,
 )
 from blueprint_pipeline.sam31_paid_attempt_authority import (
     materialize_sam31_paid_attempt_authority,
@@ -55,6 +61,8 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
         "schema_version": REQUEST_SCHEMA_VERSION,
         "operation": "source_track_canary",
         "source_profile": "monocular_video",
+        "allowed_geolocation_country_codes": list(SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
         "source_commit_sha": COMMIT,
         "worker_image_digest": "registry.example/sam31@sha256:" + "b" * 64,
         "worker_stack_manifest_digest": evidence_digest,
@@ -93,6 +101,8 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
         "authority_id": "fresh-scene-sam31-1",
         "proof_effect": "none",
         "comparative_policy_ranking_verdict": "thesis_not_supported",
+        "allowed_geolocation_country_codes": list(SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
     }
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     request_path = tmp_path / "sam31-request.json"
@@ -221,8 +231,10 @@ def test_published_profile_reaches_real_dry_run_with_fresh_preflight(
                 "status": "available",
                 "selected_offer": {
                     "gpu_name": "L40S",
+                    "geolocation": "California, US",
                     "gpu_ram_mb": 48_000,
                     "on_demand_price_usd_per_hour": 0.5,
+                    "geolocation": "California, US",
                 },
             }
 
@@ -255,7 +267,7 @@ def test_published_profile_reaches_real_dry_run_with_fresh_preflight(
     )
 
     preflight = json.loads(Path(args.preflight_bundle).read_text(encoding="utf-8"))
-    assert result["status"] == "dry_run_ready"
+    assert result["status"] == "dry_run_ready", result.get("blockers")
     assert result["blockers"] == []
     assert preflight["schema_version"] == "semantic_sam31_gpu_provider_preflight.v1"
     assert preflight["status"] == "verified"

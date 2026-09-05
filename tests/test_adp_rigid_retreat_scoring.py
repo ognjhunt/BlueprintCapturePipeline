@@ -102,7 +102,7 @@ def test_retreat_rejects_unqualified_direction_or_changed_clearance(mutation):
 
 def test_owner_contract_materializer_seals_exact_configured_retreat_and_temporal_limits():
     from blueprint_pipeline.task_evaluation_rigid_owner_contract import (
-        materialize_configured_owner_success_contract,
+        _derive_configured_owner_success_contract,
     )
     from blueprint_pipeline.rigid_task_success_contract_schema import rigid_task_success_contract_schema
     import jsonschema
@@ -122,23 +122,23 @@ def test_owner_contract_materializer_seals_exact_configured_retreat_and_temporal
         "confirmation_status": "confirmed", "accepted_by": "fixture_owner",
         "authority_reference": "fixture:owner-task-request",
     }
-    contract = materialize_configured_owner_success_contract(spec, site_id="fixture_scene", task_id="fixture_task")
+    contract = _derive_configured_owner_success_contract(spec, site_id="fixture_scene", task_id="fixture_task")
     jsonschema.validate(contract, rigid_task_success_contract_schema())
     assert contract["criteria"]["retreat"]["minimum_clearance_m"] == .05
     assert contract["criteria"]["temporal_invariants"]["no_drop"] == {"mode": "required", "minimum_fall_m": .005}
     assert contract["criteria"]["temporal_invariants"]["maximum_regrasps"] == 0
     spec["configured_success_criteria"].pop("retreat_clearance_m")
     with pytest.raises(TaskNeutralScoringError, match="explicit_field_missing:retreat_clearance_m"):
-        materialize_configured_owner_success_contract(spec, site_id="fixture_scene", task_id="fixture_task")
+        _derive_configured_owner_success_contract(spec, site_id="fixture_scene", task_id="fixture_task")
 
 
 def test_owner_contract_materializer_never_invents_confirmation_from_provider_authority():
-    from blueprint_pipeline.task_evaluation_rigid_owner_contract import materialize_configured_owner_success_contract
+    from blueprint_pipeline.task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
 
     spec, _ = _fixture()
     spec["configured_success_criteria"] = {"owner_success_contract_required": True}
     with pytest.raises(TaskNeutralScoringError, match="authority_missing"):
-        materialize_configured_owner_success_contract(spec, site_id="fixture_scene", task_id="fixture_task")
+        _derive_configured_owner_success_contract(spec, site_id="fixture_scene", task_id="fixture_task")
 
 
 def _agent_owner_spec():
@@ -167,10 +167,10 @@ def _agent_owner_spec():
 
 
 def test_sdk_proposal_keeps_agent_provenance_and_real_delegating_team():
-    from blueprint_pipeline.task_evaluation_rigid_owner_contract import materialize_configured_owner_success_contract
+    from blueprint_pipeline.task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
 
     spec = _agent_owner_spec()
-    result = materialize_configured_owner_success_contract(
+    result = _derive_configured_owner_success_contract(
         spec, site_id="fixture_scene", task_id="fixture_task", team_namespace="fixture_team")
     provenance = result["provenance"]
     assert provenance["author_source"] == "agent_proposal"
@@ -181,7 +181,7 @@ def test_sdk_proposal_keeps_agent_provenance_and_real_delegating_team():
 
 @pytest.mark.parametrize("changed", ["proposal_digest", "confirmed_by_team_id", "delegation_authority_reference", "threshold"])
 def test_sdk_owner_contract_rejects_unbound_proposal_or_delegation(changed):
-    from blueprint_pipeline.task_evaluation_rigid_owner_contract import materialize_configured_owner_success_contract
+    from blueprint_pipeline.task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
 
     spec = _agent_owner_spec()
     if changed == "threshold":
@@ -189,5 +189,5 @@ def test_sdk_owner_contract_rejects_unbound_proposal_or_delegation(changed):
     else:
         spec["configured_owner_authority"][changed] = ""
     with pytest.raises(TaskNeutralScoringError, match="agent_authority_invalid"):
-        materialize_configured_owner_success_contract(
+        _derive_configured_owner_success_contract(
             spec, site_id="fixture_scene", task_id="fixture_task", team_namespace="fixture_team")

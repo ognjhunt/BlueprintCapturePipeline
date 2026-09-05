@@ -520,6 +520,7 @@ def test_process_plans_advances_scene_configuration_activations_from_the_intent_
     assert observed["progression_root"] == tmp_path / "progression"
     assert observed["profile_dir"] == tmp_path / "profiles"
     assert observed["standing_authorization_dir"] == tmp_path / "standing"
+    assert observed["configured_controls_intent_root"] == tmp_path / "intents"
     assert callable(observed["submitter"])
     # The configured-controls transition keeps its exact signature.
     for name in (

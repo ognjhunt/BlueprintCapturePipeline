@@ -22,7 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from .common import write_json
-from .task_evaluation_rigid_owner_contract import materialize_configured_owner_success_contract
+from .task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
 from .decision_evidence_contracts import canonical_digest
 from .gaussian_field_quality import (
     gaussian_quality_is_qualified,
@@ -803,10 +803,8 @@ def _stage_destination_asset(
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             "episode_compiler_destination_asset_copy_mismatch"
         )
-    target_local = [
-        (low + high) / 2.0 for low, high in zip(lower, upper, strict=True)
-    ]
-    target_offset_world = _rotate_xyzw(target_local, orientation)
+    from .task_evaluation_rigid_destination_geometry import destination_trajectory_geometry
+    trajectory_geometry = destination_trajectory_geometry(destination, geometry)
     return {
         "asset_id": runtime_id,
         "source_asset_id": source_id,
@@ -826,24 +824,14 @@ def _stage_destination_asset(
             "minimum": interior_lower,
             "maximum": interior_upper,
         },
-        "target_position_world_m": [
-            position[axis] + target_offset_world[axis] for axis in range(3)
-        ],
         "destination_pose_world": [*position, *orientation],
-        "destination_orientation_world_xyzw": _multiply_xyzw(
-            orientation, subject_destination_orientation
-        ),
         "destination_reset_translation_tolerance_m": float(
             reset_translation_tolerance
         ),
         "destination_reset_rotation_tolerance_rad": float(
             reset_rotation_tolerance
         ),
-        "support_height_interval_m": support,
-        "intended_support_prim_paths": list(intended_paths),
-        "insertion_withdrawal_unit_world": _rotate_xyzw(
-            withdrawal, orientation
-        ),
+        **trajectory_geometry,
         "rights_digest": rights["rights_admission_digest"],
         "geometry_digest": geometry["geometry_digest"],
         "destination_identity": identity,
@@ -1143,16 +1131,8 @@ def compile_native_arena_episode(
         qualification_only=qualification_only,
     )
     if destination_asset is not None:
-        affordance = dict(task_spec["interaction_affordance"])
-        affordance["intended_support_prim_paths"] = destination_asset[
-            "intended_support_prim_paths"
-        ]
-        affordance["insertion_withdrawal_unit_world"] = destination_asset[
-            "insertion_withdrawal_unit_world"
-        ]
-        affordance["affordance_digest"] = canonical_digest(
-            affordance, digest_field="affordance_digest"
-        )
+        from .task_evaluation_rigid_destination_geometry import bind_destination_trajectory
+        task_spec = bind_destination_trajectory(task_spec, destination_asset)
         task_spec.update(
             destination_relation=destination_asset["relation"],
             destination_support_asset_id=destination_asset["asset_id"],
@@ -1167,33 +1147,18 @@ def compile_native_arena_episode(
                 "destination_interior_bounds_body_frame_m"
             ],
             destination_pose_world=destination_asset["destination_pose_world"],
-            destination_orientation_xyzw=destination_asset[
-                "destination_orientation_world_xyzw"
-            ],
             destination_reset_translation_tolerance_m=destination_asset[
                 "destination_reset_translation_tolerance_m"
             ],
             destination_reset_rotation_tolerance_rad=destination_asset[
                 "destination_reset_rotation_tolerance_rad"
             ],
-            target_position_world_m=destination_asset["target_position_world_m"],
-            support_height_interval_m=destination_asset[
-                "support_height_interval_m"
-            ],
-            visible_target_label=destination_asset["visible_label"],
-            prompt=(
-                task_spec["prompt"] if task_spec.get("instruction_subject_label") else
-                f"Pick up the configured rigid object and place it "
-                f"{destination_asset['relation']} the "
-                f"{destination_asset['visible_label']}."
-            ),
-            interaction_affordance=affordance,
         )
         if qualification_only:
             task_spec.update(
                 destination_qualification_probe=True,
             )
-    owner_contract = materialize_configured_owner_success_contract(
+    owner_contract = _derive_configured_owner_success_contract(
         task_spec, site_id=request["scene"]["identity"]["id"],
         task_id=request["task"]["identity"]["id"], team_namespace=request["team_namespace"],
     )

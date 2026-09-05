@@ -1,15 +1,15 @@
 """Seal configured owner criteria after native destination geometry is joined.
 
-This materializer does not confirm a proposal or select numerical thresholds.
+This internal compiler helper does not confirm a proposal or select numerical thresholds.
 The retained configured task must supply an explicit confirmed owner authority
 and every additional temporal limit before the compiler can seal its contract.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .adp_rigid_retreat_scoring import materialize_retreat_criterion
+from .adp_rigid_retreat_scoring import _derive_retreat_criterion
 from .decision_evidence_contracts import canonical_digest
 from .adp_task_scoring import (
     TaskNeutralScoringError,
@@ -19,7 +19,7 @@ from .adp_task_scoring import (
 )
 
 
-def materialize_configured_owner_success_contract(
+def _derive_configured_owner_success_contract(
     task_spec: Mapping[str, Any], *, site_id: str, task_id: str, team_namespace: str | None = None
 ) -> dict[str, Any] | None:
     configured = task_spec.get("configured_success_criteria") or {}
@@ -58,7 +58,7 @@ def materialize_configured_owner_success_contract(
         maximum_retries=configured["maximum_retries"],
         maximum_regrasps=configured["maximum_regrasps"],
     )
-    criteria["retreat"] = materialize_retreat_criterion(task_spec)
+    criteria["retreat"] = _derive_retreat_criterion(task_spec)
     if agent_proposal:
         proposal = authority.get("agent_proposal")
         proposal_digest = authority.get("proposal_digest")
@@ -88,3 +88,40 @@ def materialize_configured_owner_success_contract(
         confirmation_status="confirmed", confirmed_by_team_id=authority["accepted_by"],
         criteria=criteria,
     )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Seal the configured owner success contract for one native task spec."""
+
+    import argparse
+    import json
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task-spec", required=True, help="native task spec JSON")
+    parser.add_argument("--site-id", required=True)
+    parser.add_argument("--task-id", required=True)
+    parser.add_argument("--team-namespace", default=None)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args(argv)
+    task_spec = json.loads(Path(args.task_spec).read_text(encoding="utf-8"))
+    contract = _derive_configured_owner_success_contract(
+        task_spec, site_id=args.site_id, task_id=args.task_id, team_namespace=args.team_namespace
+    )
+    result = {
+        "owner_success_contract": contract,
+        "retreat_criterion": (
+            _derive_retreat_criterion(task_spec)
+            if contract is not None and task_spec.get("destination_pose_world") is not None
+            else None
+        ),
+    }
+    destination = Path(args.output)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({"output": str(destination), "sealed": contract is not None}))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

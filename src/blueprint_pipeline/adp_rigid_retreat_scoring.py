@@ -43,8 +43,8 @@ def validate_retreat_criterion(value: Any) -> list[str]:
 
 
 
-def materialize_retreat_criterion(task_spec: Mapping[str, Any]) -> dict[str, Any]:
-    """Derive the criterion using only explicit clearance and qualified geometry."""
+def _derive_retreat_criterion(task_spec: Mapping[str, Any]) -> dict[str, Any]:
+    """Internal compiler derivation; no artifact publication or stand-alone lane."""
     pose = _vector(task_spec.get("destination_pose_world"), 7)
     direction = _vector((task_spec.get("interaction_affordance") or {}).get(
         "insertion_withdrawal_unit_world"), 3)

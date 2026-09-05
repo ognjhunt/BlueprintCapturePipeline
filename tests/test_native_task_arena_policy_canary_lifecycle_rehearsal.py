@@ -34,7 +34,7 @@ from blueprint_pipeline.adp009d_task_scoring import (
     SUPPORT_PLANE_Z_M,
 )
 from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
-from blueprint_pipeline.task_evaluation_rigid_owner_contract import materialize_configured_owner_success_contract
+from blueprint_pipeline.task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.groot_n17_droid_policy_runtime import (
     CHECKPOINT_REVISION,
@@ -542,7 +542,7 @@ def _stage_runtime_root(
             confirmation_status="confirmed",
         )
         if plan["task_spec"].get("destination_relation"):
-            task_success_contract = materialize_configured_owner_success_contract(
+            task_success_contract = _derive_configured_owner_success_contract(
                 plan["task_spec"], site_id="interiorgs-839873", task_id="book-into-tray-rehearsal"
             )
         activation["task_success_contract"] = task_success_contract

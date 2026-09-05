@@ -778,7 +778,7 @@ def test_post_activation_template_separates_configured_and_canary_requests(
     assert setup["activation_digest"] == ACTIVATION
 
 
-def test_controller_and_rights_source_artifacts_are_exact_and_self_digesting() -> None:
+def test_controller_and_rights_source_artifacts_are_exact_and_self_digesting(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     controller = json.loads(
         (
@@ -814,7 +814,20 @@ def test_controller_and_rights_source_artifacts_are_exact_and_self_digesting() -
     ]
     assert rights["historical_runtime_smoke"]["input_evidence_only"] is True
     assert rights["historical_runtime_smoke"]["current_scene_runtime_proof"] is False
-    for module in rights["blueprint_adapter_code"]["modules"]:
+    from blueprint_pipeline.task_evaluation_policy_canary_model_rights import materialize_policy_canary_model_rights
+    import subprocess
+    source_commit = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                   check=True, capture_output=True, text=True).stdout.strip()
+    # The historical Scene839873 document is preserved. Current adapter bytes
+    # belong in a new exact-commit binding, not retroactively in old evidence.
+    current = materialize_policy_canary_model_rights(
+        template_path=root / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_model_rights.v1.json",
+        repo_root=root, source_commit=source_commit, scene_id="841757", task_id="scene-841757-book-to-tray",
+        output_path=tmp_path / "current-model-rights.json")
+    assert current["source_template"]["rights_digest"] == rights["rights_digest"]
+    assert current["historical_runtime_smoke"] == rights["historical_runtime_smoke"]
+    assert current["current_scene_runtime_proof"] is False
+    for module in current["blueprint_adapter_code"]["modules"]:
         path = root / module["path"]
         observed = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
         assert observed == module["sha256"]
