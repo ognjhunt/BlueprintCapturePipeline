@@ -112,7 +112,7 @@ def _identity_receipt(*, labels: Path, collision: Path, instance: str, label: st
     return _digested(receipt, "receipt_digest")
 
 
-def production_fixture(tmp_path: Path) -> dict:
+def production_fixture(tmp_path: Path, *, room_topology: bool = False) -> dict:
     root = tmp_path / "production"
     inputs = root / "task-evaluation-inputs" / "scene-841757-raw-v2"
     inputs.mkdir(parents=True)
@@ -124,7 +124,9 @@ def production_fixture(tmp_path: Path) -> dict:
         {"ins_id": "85", "label": "TV cabinet", "bounding_box": CABINET_CORNERS},
         {"ins_id": "7", "label": "sofa", "bounding_box": [{"x": 1.0 + (i % 2), "y": 1.0 + (i // 2 % 2), "z": 0.4 * (i // 4)} for i in range(8)]},
     ])
-    _write_json(inputs / "structure.json", {"rooms": []})
+    _write_json(inputs / "structure.json", {"rooms": [
+        {"profile": [[-3., -5.], [1., -5.], [1., 2.], [-3., 2.]]}
+    ] if room_topology else []})
     collision = inputs / "841757_collision.usd"
     collision.write_bytes(b"PXR-USDC-fixture-collision-bytes")
     usdz = inputs / "841757.usdz"
@@ -742,3 +744,24 @@ def test_iteration_admission_preserves_exact_release_and_truth_boundaries(tmp_pa
     with pytest.raises(SceneConfigurationSubmissionError):
         _materialize(fixture, release_admission_mode=mode)
     assert not fixture["staging_root"].exists()
+
+
+def test_sam31_submission_binds_real_source_geometry_before_any_render(tmp_path: Path) -> None:
+    fixture = production_fixture(tmp_path, room_topology=True)
+    task = json.loads(fixture["task_request"].read_text())
+    task["appearance_removal_method"] = "sam31"
+    _write_json(fixture["task_request"], task)
+    profile = _write_json(tmp_path / "sam-profile.json", _digested({
+        "schema_version": "task_evaluation_sam31_preparation_profile.v1",
+        "source_commit": SHA, "review_model": "gpt-5.6-terra", "review_maximum_cost_usd": 1.0,
+        "candidate_policy_queried": False,
+    }, "profile_digest"))
+    result = _materialize(fixture, sam31_server_profile_path=profile)
+    plan = json.loads((Path(result["staging_root"]) / "configuration/sam31_preparation_plan.v1.json").read_text())
+    assert len(plan["camera_policy"]["views"]) == 16
+    assert len(plan["camera_policy"]["replacement_views"]) == 16
+    screen = plan["camera_policy"]["geometry_screen"]
+    assert screen["target_instance_id"] == "115"
+    assert screen["source_files"]["labels"]["path"].endswith("labels.json")
+    assert screen["source_files"]["collision_identity"]["path"].endswith("source_identity_00.json")
+    assert screen["source_files"]["structure"]["sha256"] == _sha(Path(screen["source_files"]["structure"]["path"]))

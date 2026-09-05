@@ -1,11 +1,11 @@
 """Immutable SAM precursor plans for one production construction submission."""
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .sam31_camera_geometry import select_geometry_aware_camera_policy
 from .task_evaluation_scene_configuration_submission_inputs import (
     checked_file, read, require, sha,
 )
@@ -26,28 +26,10 @@ def file_record(path: str | Path) -> dict[str, Any]:
     return {"path": str(source), "sha256": sha(source), "size_bytes": source.stat().st_size}
 
 
-def camera_policy(source_min: list[float], source_max: list[float]) -> dict[str, Any]:
-    """Sixteen distinct metric proposals; the renderer must verify actual visibility."""
-    extent = max(high - low for low, high in zip(source_min, source_max, strict=True))
-    require(math.isfinite(extent) and extent > 0, "sam31_source_bounds_invalid")
-    views = []
-    for index in range(16):
-        angle = 2.0 * math.pi * index / 16.0
-        radius = extent * (1.5, 1.8, 2.1, 2.4)[index % 4]
-        height = extent * (0.65, 0.95, 1.3, 1.7)[index % 4]
-        views.append({
-            "camera_id": f"source-{index + 1:02d}",
-            "position_offset_m": [round(radius * math.cos(angle), 9),
-                                  round(radius * math.sin(angle), 9), round(height, 9)],
-            "target_offset_m": [0.0, 0.0, 0.0],
-        })
-    return {"generator": "translated_target_coverage_v1",
-            "orbit_only_forbidden": True, "views": views}
-
-
 def build_sam31_preparation_plan(
     *, source_commit: str, task: dict[str, Any], host_inputs: dict[str, Path],
     source_min: list[float], source_max: list[float], server_profile_path: Path,
+    camera_geometry: dict[str, Any],
 ) -> dict[str, Any]:
     profile = read(server_profile_path, digest_field="profile_digest")
     require(profile.get("schema_version") == PROFILE_SCHEMA and
@@ -66,7 +48,8 @@ def build_sam31_preparation_plan(
         # Only a digest crosses publication. Operator secret/configuration paths
         # are resolved from the service environment, never from client parameters.
         "server_profile_sha256": sha(server_profile_path),
-        "camera_policy": camera_policy(source_min, source_max),
+        "camera_policy": select_geometry_aware_camera_policy(
+            source_min=source_min, source_max=source_max, **camera_geometry),
         "rendering": {"renderer": "reference_spark_renderer_exact_camera",
                       "graphics_backend": ("egl" if profile.get("calibrated_views", {}).get("hardware_required") is True else "swiftshader"),
                       "width": 1280, "height": 1280,
@@ -112,4 +95,26 @@ def validate_sam31_preparation_plan(
             path.resolve().is_relative_to(root.resolve()) for root in approved_roots),
             "sam31_plan_reference_outside_roots")
         checked_file(path, row)
+    policy = plan.get("camera_policy", {})
+    screen = policy.get("geometry_screen", {})
+    geometry_files = screen.get("source_files", {})
+    require(set(geometry_files) == {"labels", "structure", "collision_identity"},
+            "sam31_camera_geometry_sources_missing")
+    for row in geometry_files.values():
+        require(isinstance(row, dict) and set(row) == {"path", "sha256", "size_bytes"},
+                "sam31_camera_geometry_reference_invalid")
+        path = Path(row["path"])
+        require(path.is_absolute() and any(
+            path.resolve().is_relative_to(root.resolve()) for root in approved_roots),
+            "sam31_camera_geometry_reference_outside_roots")
+        checked_file(path, row)
+    expected_policy = select_geometry_aware_camera_policy(
+        labels_path=Path(geometry_files["labels"]["path"]),
+        structure_path=Path(geometry_files["structure"]["path"]),
+        collision_identity_path=Path(geometry_files["collision_identity"]["path"]),
+        target_instance_id=screen.get("target_instance_id"),
+        source_min=screen.get("target_bounds_min_m", []),
+        source_max=screen.get("target_bounds_max_m", []),
+    )
+    require(policy == expected_policy, "sam31_camera_geometry_policy_mismatch")
     return plan
