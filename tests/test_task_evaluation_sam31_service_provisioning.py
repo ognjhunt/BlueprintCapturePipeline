@@ -122,3 +122,53 @@ def test_cli_installs_both_bindings_and_writes_receipt(configuration, tmp_path, 
     ]) == 0
     assert json.loads(out.read_text()) == json.loads(capsys.readouterr().out)
     assert json.loads(out.read_text())['allow_live_agents_sdk'] is True
+
+
+def test_exact_git_trust_handles_other_owner_and_restores_environment(configuration, monkeypatch):
+    import os
+    from blueprint_pipeline import adp_gaussian_excision_vast as excision
+
+    profile = json.loads(configuration['profile_path'].read_text())
+    repo = Path(profile['repo_root'])
+    flash = Path(profile['released_dependencies']['flashsplat_root'])
+    expected = {str(repo), str(flash), *(str(flash/name) for name in excision.EXPECTED_SUBMODULES)}
+    # Real Git refuses even this same-user hermetic checkout under its explicit
+    # ownership-test mode unless the provisioning scope trusts the exact path.
+    monkeypatch.setenv('GIT_TEST_ASSUME_DIFFERENT_OWNER', '1')
+    monkeypatch.setenv('GIT_CONFIG_COUNT', '1')
+    monkeypatch.setenv('GIT_CONFIG_KEY_0', 'safe.directory')
+    monkeypatch.setenv('GIT_CONFIG_VALUE_0', '/unrelated-preserved-root')
+    with pytest.raises(ValueError, match='source_checkout_unverified'):
+        module._git(repo, 'rev-parse', 'HEAD')
+    original = excision._git
+    observed = []
+    def checked(path, *args):
+        actual = {os.environ[f'GIT_CONFIG_VALUE_{i}']
+                  for i in range(1, int(os.environ['GIT_CONFIG_COUNT']))}
+        assert actual == expected
+        assert all(os.environ[f'GIT_CONFIG_KEY_{i}'] == 'safe.directory'
+                   for i in range(1, int(os.environ['GIT_CONFIG_COUNT'])))
+        observed.append(path)
+        return original(path, *args)
+    monkeypatch.setattr(excision, '_git', checked)
+    before = dict(os.environ)
+    git_config_before = (repo/'.git/config').read_bytes()
+    receipt = module.provision_sam31_service_environment(**configuration)
+    assert receipt['status'] == 'installed'
+    assert set(observed) == {flash, *(flash/name for name in excision.EXPECTED_SUBMODULES)}
+    assert dict(os.environ) == before
+    assert (repo/'.git/config').read_bytes() == git_config_before
+
+
+def test_git_scope_restored_when_dependency_validation_fails(configuration, monkeypatch):
+    import os
+    from blueprint_pipeline import adp_gaussian_excision_vast as excision
+
+    def broken(*_args):
+        raise ValueError('retained_source_invalid')
+    monkeypatch.setattr(excision, '_source_identity', broken)
+    before = dict(os.environ)
+    with pytest.raises(ValueError, match='flashsplat_identity_invalid'):
+        module.provision_sam31_service_environment(**configuration)
+    assert dict(os.environ) == before
+    assert not configuration['systemd_unit_root'].exists()

@@ -11,6 +11,8 @@ import os
 import re
 import subprocess
 import tempfile
+from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -66,6 +68,43 @@ def _atomic_write(path: Path, content: str, *, immutable: bool = False) -> None:
             temporary.unlink(missing_ok=True)
 
 
+@contextmanager
+def _profile_git_trust(profile: dict[str, Any]) -> Iterator[None]:
+    """Trust only validated checkout paths for this process's Git children.
+
+    Root installs system configuration, while blueprint owns the pinned source
+    mirrors. No global Git setting or wildcard trust is needed for this readback.
+    """
+    from .adp_gaussian_excision_vast import EXPECTED_SUBMODULES
+
+    roots = tuple(_safe_path(p, kind="directory", code="approved_root_invalid")
+                  for p in profile["approved_paid_input_roots"])
+    flash = _safe_path(profile["released_dependencies"]["flashsplat_root"],
+                       kind="directory", code="flashsplat_root_invalid")
+    paths = [Path(profile["repo_root"]), flash,
+             *(flash / name for name in sorted(EXPECTED_SUBMODULES))]
+    for path in paths:
+        _safe_path(path, kind="directory", code="git_checkout_invalid")
+        _require(any(path.is_relative_to(root) for root in roots), "git_checkout_outside_roots")
+    previous_count = os.environ.get("GIT_CONFIG_COUNT")
+    _require(previous_count is None or previous_count.isdigit(), "git_config_count_invalid")
+    offset = int(previous_count or 0)
+    updates = {"GIT_CONFIG_COUNT": str(offset + len(paths))}
+    for index, path in enumerate(paths, start=offset):
+        updates[f"GIT_CONFIG_KEY_{index}"] = "safe.directory"
+        updates[f"GIT_CONFIG_VALUE_{index}"] = str(path)
+    previous = {key: os.environ.get(key) for key in updates}
+    os.environ.update(updates)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _validated_profile(path: Path, commit: str) -> dict[str, Any]:
     profile = _read_json(_safe_path(path, kind="file", code="profile_invalid"),
                          code="profile_invalid")
@@ -73,26 +112,27 @@ def _validated_profile(path: Path, commit: str) -> dict[str, Any]:
              and profile.get("source_commit") == commit
              and profile.get("profile_digest") == canonical_digest(profile, digest_field="profile_digest"),
              "profile_identity_invalid")
-    repo = Path(profile["repo_root"])
-    _require(_git(repo, "rev-parse", "HEAD") == commit and not _git(repo, "status", "--short"),
-             "source_checkout_mismatch")
-    review, dependencies = profile["sam31_visual_review"], profile["released_dependencies"]
-    reopened = materialize_sam31_preparation_profile(
-        source_commit=commit, repo_root=repo, server_data_root=profile["server_data_root"],
-        runtime_root=profile["runtime_root"],
-        sam31_provider_profile_path=profile["artifact_references"]["sam31_provider_profile"]["path"],
-        sam31_review_rights_attestation_path=review["rights_attestation"]["path"],
-        sam31_review_cost_scope_attestation_path=review["openai_cost_scope_attestation"]["path"],
-        sam31_hf_token_file=profile["paid_stages"]["sam31_tracking"]["hf_token_file"],
-        openai_admin_api_key_file=review["openai_admin_api_key_file"],
-        openai_project_id=review["openai_project_id"], openai_api_key_id=review["openai_api_key_id"],
-        flashsplat_root=dependencies["flashsplat_root"],
-        dependency_wheelhouse_path=dependencies["dependency_wheelhouse_path"],
-        dependency_manifest_path=dependencies["dependency_manifest"]["path"],
-        approved_roots=profile["approved_paid_input_roots"],
-        ffmpeg_executable=profile["ffmpeg_executable"],
-    )
-    _require(reopened == profile, "profile_evidence_changed")
+    with _profile_git_trust(profile):
+        repo = Path(profile["repo_root"])
+        _require(_git(repo, "rev-parse", "HEAD") == commit and not _git(repo, "status", "--short"),
+                 "source_checkout_mismatch")
+        review, dependencies = profile["sam31_visual_review"], profile["released_dependencies"]
+        reopened = materialize_sam31_preparation_profile(
+            source_commit=commit, repo_root=repo, server_data_root=profile["server_data_root"],
+            runtime_root=profile["runtime_root"],
+            sam31_provider_profile_path=profile["artifact_references"]["sam31_provider_profile"]["path"],
+            sam31_review_rights_attestation_path=review["rights_attestation"]["path"],
+            sam31_review_cost_scope_attestation_path=review["openai_cost_scope_attestation"]["path"],
+            sam31_hf_token_file=profile["paid_stages"]["sam31_tracking"]["hf_token_file"],
+            openai_admin_api_key_file=review["openai_admin_api_key_file"],
+            openai_project_id=review["openai_project_id"], openai_api_key_id=review["openai_api_key_id"],
+            flashsplat_root=dependencies["flashsplat_root"],
+            dependency_wheelhouse_path=dependencies["dependency_wheelhouse_path"],
+            dependency_manifest_path=dependencies["dependency_manifest"]["path"],
+            approved_roots=profile["approved_paid_input_roots"],
+            ffmpeg_executable=profile["ffmpeg_executable"],
+        )
+        _require(reopened == profile, "profile_evidence_changed")
     return profile
 
 

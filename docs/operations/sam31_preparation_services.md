@@ -33,6 +33,11 @@ service receives the profile path alone. Existing generic credential files stay
 untouched. Both drop-ins load a final `EnvironmentFile`, because a systemd
 `Environment=` override cannot supersede values from an `EnvironmentFile`.
 
+Root validation applies process-scoped Git trust only to the validated profile
+checkout, pinned FlashSplat root, and its fixed submodule paths. It restores the
+previous environment after validation, including on failure. Global Git
+configuration is unchanged and wildcard trust is never introduced.
+
 The command retains immutable environment snapshots for each binding, verifies
 written bytes, and reloads definitions only when `--reload-systemd` is present.
 It never starts or restarts a service, submits a scene, allocates a provider, or
