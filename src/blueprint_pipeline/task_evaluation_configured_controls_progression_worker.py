@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import stat
 import subprocess  # nosec B404 - fixed repository-owned launch-only client
@@ -22,6 +23,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from . import (
+    task_evaluation_scene_configuration_activation_automation as scene_configuration_activation,
+)
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .task_evaluation_configured_controls_progression import (
     PROGRESSION_SCHEMA_VERSION,
@@ -1683,9 +1687,60 @@ def advance_configured_controls_plan(
     return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}
 
 
+def _scene_configuration_activation_rows(
+    *,
+    intent_root: Path,
+    profile_dir: str | Path | None,
+    standing_authorization_dir: str | Path | None,
+    preparation_queue_root: str | Path,
+    activation_queue_root: str | Path,
+    progression_root: str | Path,
+    repo_root: str | Path | None,
+    webapp_secret_file: str | Path | None,
+    webapp_endpoint: str,
+) -> list[dict[str, Any]]:
+    """Drive the Website-started configuration activation from the same timer."""
+
+    if not profile_dir or not standing_authorization_dir:
+        return [
+            {
+                "lane": "task_evaluation_scene_configuration",
+                "status": "blocked",
+                "blockers": ["scene_configuration_activation_directories_missing"],
+            }
+        ]
+    submitter = (
+        scene_configuration_activation.webapp_submitter(
+            repo_root=repo_root,
+            secret_file=webapp_secret_file,
+            endpoint=webapp_endpoint,
+            state_root=Path(progression_root).expanduser()
+            / scene_configuration_activation.STATE_DIRECTORY
+            / "webapp-submissions",
+        )
+        if repo_root and webapp_secret_file
+        else None
+    )
+    rows = scene_configuration_activation.process_scene_configuration_activations(
+        preparation_queue_root=preparation_queue_root,
+        activation_queue_root=activation_queue_root,
+        progression_root=progression_root,
+        intent_root=intent_root,
+        profile_dir=profile_dir,
+        standing_authorization_dir=standing_authorization_dir,
+        submitter=submitter,
+    )
+    return [{"lane": "task_evaluation_scene_configuration", **row} for row in rows]
+
+
 def process_plans(**kwargs: Any) -> dict[str, Any]:
     plan_root = Path(kwargs.pop("plan_root")).expanduser()
     intent_root_value = kwargs.pop("autostart_intent_root", None)
+    scene_configuration_intent_root = kwargs.pop(
+        "scene_configuration_activation_intent_root", None
+    )
+    profile_dir = kwargs.pop("profile_dir", None)
+    standing_authorization_dir = kwargs.pop("standing_authorization_dir", None)
     intent_root = (
         Path(intent_root_value).expanduser()
         if intent_root_value is not None
@@ -1693,6 +1748,23 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
     )
     launch_state_root = Path(kwargs["launch_state_root"]).expanduser()
     rows: list[dict[str, Any]] = []
+    if scene_configuration_intent_root is not None:
+        rows.extend(
+            _scene_configuration_activation_rows(
+                intent_root=Path(scene_configuration_intent_root).expanduser(),
+                profile_dir=profile_dir,
+                standing_authorization_dir=standing_authorization_dir,
+                preparation_queue_root=kwargs["preparation_queue_root"],
+                activation_queue_root=kwargs["activation_queue_root"],
+                progression_root=kwargs["progression_root"],
+                repo_root=kwargs.get("repo_root"),
+                webapp_secret_file=kwargs.get("webapp_secret_file"),
+                webapp_endpoint=str(
+                    kwargs.get("webapp_endpoint")
+                    or scene_configuration_activation.DEFAULT_WEBAPP_ENDPOINT
+                ),
+            )
+        )
     # Configuration profiles carrying the required autostart intent need no
     # operator-written plan.  The no-spend materializer reopens the completed
     # revision, runs the full CPU placement inventory/trajectory gate, and
@@ -1891,6 +1963,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--repo-root", required=True)
     parser.add_argument("--webapp-secret-file", required=True)
     parser.add_argument("--webapp-endpoint", default="https://tryblueprint.io/api/internal/task-evaluation-launch-submissions")
+    parser.add_argument(
+        "--scene-configuration-activation-intent-root",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_ACTIVATION_INTENT_ROOT") or None,
+        help="Registry of owner activation intents; omitted means no configuration is activated here.",
+    )
+    parser.add_argument(
+        "--profile-dir",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR") or None,
+    )
+    parser.add_argument(
+        "--standing-authorization-dir",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR") or None,
+    )
     args = parser.parse_args(argv)
     report = process_plans(**vars(args))
     print(json.dumps(report, sort_keys=True))
