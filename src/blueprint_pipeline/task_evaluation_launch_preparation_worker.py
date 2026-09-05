@@ -33,6 +33,7 @@ from .task_evaluation_sam31_preparation_queue import (
     WAITING_STATE,
     advance_sam31_for_preparation,
     resume_waiting_preparations,
+    preparation_evidence_roots,
 )
 from .task_evaluation_installed_source_bindings import (
     InstalledSourceBindingError,
@@ -1021,9 +1022,7 @@ def process_launch_preparation_queue(
     results_root.mkdir(mode=0o750, exist_ok=True)
     conflicts_root = results_root / "conflicts"
     conflicts_root.mkdir(mode=0o750, exist_ok=True)
-    source_evidence_roots = (
-        Path(input_root), root, Path("/var/lib/blueprint/pipeline-control-plane"),
-    )
+    source_evidence_roots = preparation_evidence_roots(input_root, root)
     resume_results = resume_waiting_preparations(
         queue_root=root, approved_roots=source_evidence_roots, max_messages=max_messages,
     )

@@ -12,6 +12,8 @@ from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_launch_preparation_queue import write_launch_preparation_record_exclusive
 
 WAITING_STATE = "awaiting_source_preparation"
+CONTROL_PLANE_ROOT = Path("/var/lib/blueprint/pipeline-control-plane")
+SAM31_EXECUTION_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs/sam31-preparations")
 PROGRESS_SCHEMA = "task_evaluation_sam31_preparation_progress.v1"
 RESUME_SCHEMA = "task_evaluation_sam31_preparation_resume.v1"
 _WAIT_STATUSES = {"waiting_for_child", "awaiting_human_review"}
@@ -46,6 +48,22 @@ def _filename(preparation_id: str, digest: str) -> str:
              and isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is not None,
              "identity_invalid")
     return f"{preparation_id}-{digest.removeprefix('sha256:')}.json"
+
+
+def preparation_evidence_roots(input_root: str | Path, queue_root: str | Path) -> tuple[Path, ...]:
+    """Where the parent accepts SAM evidence from.
+
+    The parent's own input root (the content store under ``prepared-references``),
+    its queue, the control plane, and the phase executors' output tree.  Until
+    2026-09-05 the last one was missing: every ``waiting_for_child`` advancement
+    only referenced child job files under the control plane, so the parent's
+    roots were never tested against the executors' artifacts until the first
+    ``ready`` advancement of scene 841757 returned its five evidence artifacts
+    from ``sam31-preparations`` and the parent refused them as
+    ``evidence_path_invalid`` after every GPU stage had succeeded.
+    """
+
+    return (Path(input_root), Path(queue_root), CONTROL_PLANE_ROOT, SAM31_EXECUTION_ROOT)
 
 
 def ensure_progress_roots(root: Path) -> None:
