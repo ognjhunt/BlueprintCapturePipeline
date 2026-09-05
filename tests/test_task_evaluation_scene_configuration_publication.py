@@ -557,7 +557,15 @@ def _materialized(contract_path: str, path: Path, *, uri: str) -> dict[str, obje
     }
 
 
-def _static_receipt(identity: dict, bounds: dict, rigid: list[str], colliders: list[str], asset: Path) -> dict:
+def _static_receipt(
+    identity: dict,
+    bounds: dict,
+    rigid: list[str],
+    colliders: list[str],
+    asset: Path,
+    *,
+    center_of_mass_m: list[float] | None = (0.0, 0.0, 0.0),
+) -> dict:
     receipt = {
         "schema_version": "task_evaluation_rigid_replacement_static_qualification.v1",
         "status": "authored_structure_statically_qualified",
@@ -573,6 +581,8 @@ def _static_receipt(identity: dict, bounds: dict, rigid: list[str], colliders: l
         },
         "result_digest": "",
     }
+    if center_of_mass_m is not None:
+        receipt["observed_structure"]["center_of_mass_m"] = list(center_of_mass_m)
     receipt["result_digest"] = canonical_digest(receipt, digest_field="result_digest")
     return receipt
 
@@ -595,7 +605,16 @@ def _native_receipt(identity: dict, asset: Path, static: Path) -> dict:
     return receipt
 
 
-def _destination_publication_case(tmp_path: Path, *, with_destination_artifacts: bool = True):
+SUBJECT_CENTER_OF_MASS_M = [0.012, -0.021, 0.0]
+
+
+def _destination_publication_case(
+    tmp_path: Path,
+    *,
+    with_destination_artifacts: bool = True,
+    definition_extra: dict | None = None,
+    subject_center_of_mass_m: list[float] | None = None,
+):
     request = configuration_request_fixture()
     _authorize_public_display(request)
     subject_identity = request["task"]["subject"]["identity"]
@@ -616,6 +635,11 @@ def _destination_publication_case(tmp_path: Path, *, with_destination_artifacts:
             ["/Asset"],
             ["/Asset/Collider"],
             subject_asset,
+            center_of_mass_m=(
+                SUBJECT_CENTER_OF_MASS_M
+                if subject_center_of_mass_m is None
+                else subject_center_of_mass_m
+            ),
         ),
     )
     roles = {
@@ -702,20 +726,17 @@ def _destination_publication_case(tmp_path: Path, *, with_destination_artifacts:
         "pose_world": {"position_world_m": [3.25, -6.76, 0.275], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]},
         "provider_disclosure_allowed": True,
     }
+    # The production template carries no scoring transform: the runtime derives
+    # it from the subject's static receipt, and publication must do the same.
     definition_path = _write_json(
         inputs / "task-definition.json",
         {
-            "identity": request["task"]["identity"],
-            "task_spec": {
-                "subject_asset_id": subject_identity["id"],
-                "interaction_affordance": {
-                    "subject_asset_id": subject_identity["id"],
-                    "asset_root_from_scoring_frame": {
-                        "position_m": [0.0, 0.0, 0.0],
-                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
-                    },
-                },
-            },
+            "schema_version": "task_evaluation_rigid_relocation_template.v1",
+            "status": "preregistered_candidate_pending_configured_scene_revision",
+            "task_identity": request["task"]["identity"],
+            "object_identity": subject_identity,
+            "strategy": "pick_and_place",
+            **(definition_extra or {}),
         },
     )
     request["task"]["definition"] = _reference(
@@ -848,6 +869,111 @@ def test_publication_refuses_a_declared_destination_the_run_never_qualified(
     with pytest.raises(
         TaskEvaluationSceneConfigurationPublicationError,
         match="scene_configuration_publication_artifact_missing:native_qualified_destination_asset",
+    ):
+        publish_configured_scene_revision(
+            envelope=envelope, stage_results=stage_results, output_root=output, publisher=publish
+        )
+
+
+def _published_geometry(result: dict, object_store: Path) -> dict:
+    revision = validate_configured_scene_revision(
+        json.loads(Path(result["configured_scene_revision"]["path"]).read_text())
+    )
+    geometry_uri = revision["task_template"]["destination"]["geometry"]["uri"]
+    return json.loads(
+        (object_store / geometry_uri.removeprefix("s3://blueprint-production-inputs/")).read_text()
+    )
+
+
+def test_publication_derives_the_subject_scoring_frame_from_its_static_receipt(
+    tmp_path: Path,
+) -> None:
+    """The template has no scoring transform; the receipt's centre of mass is the origin."""
+
+    envelope, stage_results, output, publish, object_store, _refs = _destination_publication_case(
+        tmp_path
+    )
+    result = publish_configured_scene_revision(
+        envelope=envelope, stage_results=stage_results, output_root=output, publisher=publish
+    )
+    geometry = _published_geometry(result, object_store)
+    bounds = geometry["subject_collision_bounds_scoring_frame_m"]
+    expected_lower = [-0.14765 - 0.012, -0.19885 + 0.021, -0.01057 - 0.0]
+    expected_upper = [0.14765 - 0.012, 0.19885 + 0.021, 0.01057 - 0.0]
+    assert bounds["minimum"] == pytest.approx(expected_lower, abs=1e-9)
+    assert bounds["maximum"] == pytest.approx(expected_upper, abs=1e-9)
+
+
+def test_publication_refuses_a_template_scoring_transform_that_disagrees_with_the_receipt(
+    tmp_path: Path,
+) -> None:
+    envelope, stage_results, output, publish, _store, _refs = _destination_publication_case(
+        tmp_path,
+        definition_extra={
+            "task_spec": {
+                "interaction_affordance": {
+                    "asset_root_from_scoring_frame": {
+                        "position_m": [0.0, 0.0, 0.0],
+                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    }
+                }
+            }
+        },
+    )
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationPublicationError,
+        match="scene_configuration_publication_task_definition_scoring_transform_mismatch",
+    ):
+        publish_configured_scene_revision(
+            envelope=envelope, stage_results=stage_results, output_root=output, publisher=publish
+        )
+
+
+def test_publication_accepts_a_template_scoring_transform_that_matches_the_receipt(
+    tmp_path: Path,
+) -> None:
+    envelope, stage_results, output, publish, object_store, _refs = _destination_publication_case(
+        tmp_path,
+        definition_extra={
+            "task_spec": {
+                "interaction_affordance": {
+                    "asset_root_from_scoring_frame": {
+                        "position_m": list(SUBJECT_CENTER_OF_MASS_M),
+                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    }
+                }
+            }
+        },
+    )
+    result = publish_configured_scene_revision(
+        envelope=envelope, stage_results=stage_results, output_root=output, publisher=publish
+    )
+    assert _published_geometry(result, object_store)["status"] == "qualified"
+
+
+def test_publication_refuses_a_subject_static_receipt_without_a_centre_of_mass(
+    tmp_path: Path,
+) -> None:
+    envelope, stage_results, output, publish, _store, _refs = _destination_publication_case(
+        tmp_path, subject_center_of_mass_m=None
+    )
+    # ``None`` above keeps the fixture default; drop the field from the retained receipt.
+    subject_static = next(
+        Path(row["path"])
+        for row in stage_results[0]["output_artifacts"]
+        if row["role"] == "static_qualification_receipt"
+    )
+    receipt = json.loads(subject_static.read_text())
+    del receipt["observed_structure"]["center_of_mass_m"]
+    receipt["result_digest"] = canonical_digest(receipt, digest_field="result_digest")
+    subject_static.write_text(json.dumps(receipt, sort_keys=True))
+    for row in stage_results[0]["output_artifacts"]:
+        if row["role"] == "static_qualification_receipt":
+            row["digest"] = _sha256(subject_static)
+            row["size_bytes"] = subject_static.stat().st_size
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationPublicationError,
+        match="scene_configuration_publication_subject_static_invalid",
     ):
         publish_configured_scene_revision(
             envelope=envelope, stage_results=stage_results, output_root=output, publisher=publish

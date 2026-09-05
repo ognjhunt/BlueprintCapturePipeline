@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import tempfile
 import zipfile
@@ -288,6 +289,74 @@ _DESTINATION_STAGE_ROLES = (
 )
 
 
+_IDENTITY_XYZW = (0.0, 0.0, 0.0, 1.0)
+
+
+def _subject_scoring_transform(
+    *, definition: Mapping[str, Any], subject_static: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return the subject's ``asset_root_from_scoring_frame`` as the runtime derives it.
+
+    The native adapter places the task scoring frame at the statically qualified
+    centre of mass with identity orientation, so publication derives the same
+    transform from the same receipt. A template may restate that transform but
+    never redefine it: a disagreeing ``task_spec`` is refused rather than chosen.
+    """
+
+    structure = subject_static.get("observed_structure")
+    center = structure.get("center_of_mass_m") if isinstance(structure, Mapping) else None
+    try:
+        position = [float(value) for value in center]
+    except (TypeError, ValueError) as exc:
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "scene_configuration_publication_subject_static_invalid"
+        ) from exc
+    if len(position) != 3 or not all(math.isfinite(value) for value in position):
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "scene_configuration_publication_subject_static_invalid"
+        )
+    transform = {"position_m": position, "orientation_xyzw": list(_IDENTITY_XYZW)}
+    task_spec = definition.get("task_spec")
+    affordance = (
+        task_spec.get("interaction_affordance") if isinstance(task_spec, Mapping) else None
+    )
+    declared = (
+        affordance.get("asset_root_from_scoring_frame")
+        if isinstance(affordance, Mapping)
+        else None
+    )
+    if declared is None:
+        return transform
+    if not isinstance(declared, Mapping) or not _same_rigid_transform(declared, transform):
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "scene_configuration_publication_task_definition_scoring_transform_mismatch"
+        )
+    return transform
+
+
+def _same_rigid_transform(declared: Mapping[str, Any], derived: Mapping[str, Any]) -> bool:
+    try:
+        position = [float(value) for value in declared.get("position_m")]
+        orientation = [float(value) for value in declared.get("orientation_xyzw")]
+    except (TypeError, ValueError):
+        return False
+    if len(position) != 3 or len(orientation) != 4:
+        return False
+    if any(
+        not math.isclose(a, b, rel_tol=0.0, abs_tol=1e-9)
+        for a, b in zip(position, derived["position_m"], strict=True)
+    ):
+        return False
+    # A quaternion and its negation describe the same rotation.
+    return any(
+        all(
+            math.isclose(sign * a, b, rel_tol=0.0, abs_tol=1e-9)
+            for a, b in zip(orientation, derived["orientation_xyzw"], strict=True)
+        )
+        for sign in (1.0, -1.0)
+    )
+
+
 def _supplemental_destination_publication(
     *,
     envelope: Mapping[str, Any],
@@ -387,19 +456,13 @@ def _supplemental_destination_publication(
         definition_path,
         code="scene_configuration_publication_task_definition_invalid",
     )
-    task_spec = definition.get("task_spec")
-    affordance = (
-        task_spec.get("interaction_affordance") if isinstance(task_spec, Mapping) else None
+    subject_static = _read_json(
+        subject_static_receipt_path,
+        code="scene_configuration_publication_subject_static_invalid",
     )
-    transform = (
-        affordance.get("asset_root_from_scoring_frame")
-        if isinstance(affordance, Mapping)
-        else None
+    transform = _subject_scoring_transform(
+        definition=definition, subject_static=subject_static
     )
-    if not isinstance(transform, Mapping):
-        raise TaskEvaluationSceneConfigurationPublicationError(
-            "scene_configuration_publication_task_definition_invalid"
-        )
     probe = destination.get("native_probe")
     limits = probe.get("qualification_limits") if isinstance(probe, Mapping) else None
     if not isinstance(limits, Mapping):
@@ -412,10 +475,7 @@ def _supplemental_destination_publication(
             destination_identity=identity,
             relation=str(destination["relation"]),
             pose_world=destination["pose_world"],
-            subject_static_qualification=_read_json(
-                subject_static_receipt_path,
-                code="scene_configuration_publication_subject_static_invalid",
-            ),
+            subject_static_qualification=subject_static,
             subject_static_qualification_digest=_sha256_and_size(
                 subject_static_receipt_path
             )[0],
