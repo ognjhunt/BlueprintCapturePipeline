@@ -41,7 +41,8 @@ def inputs(tmp_path, monkeypatch):
     now = datetime.now(timezone.utc)
     scope = _write(tmp_path/'scope.json', derive_operator_scope_attestation(provider_id='openai',
         paid_resource_class=module.RESOURCE_CLASS, project_id='project', api_key_id='key',
-        operator_id='operator', exclusive_from=now-timedelta(hours=1), exclusive_until=now+timedelta(hours=1)))
+        operator_id='operator', exclusive_from=now-timedelta(hours=1),
+        exclusive_until=module._required_scope_end(now)+timedelta(days=1)))
     admin, key = tmp_path/'admin.secret', tmp_path/'inference.secret'
     for path in (admin, key):
         path.write_text('fake-secret-must-not-be-read-by-profile')
@@ -367,3 +368,54 @@ def test_execution_receipt_retains_observed_checkout_identity(inputs, tmp_path):
     assert result['execution_identity']['checkout_clean'] is True
     started = json.loads((tmp_path/'execution/invocation_started.json').read_text())
     assert started['execution_identity'] == result['execution_identity']
+
+
+@pytest.mark.parametrize('hour', [10, 23])
+@pytest.mark.parametrize('short', [True, False])
+@pytest.mark.parametrize('stage', ['profile', 'execution'])
+def test_scope_must_cover_official_attribution_before_creating_output(
+        inputs, tmp_path, monkeypatch, hour, short, stage):
+    moment = datetime(2026, 9, 5, hour, 30, tzinfo=timezone.utc)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment.astimezone(tz)
+
+    monkeypatch.setattr(module, 'datetime', Clock)
+    # The authority's one-hour window must be covered through the following
+    # UTC midnight, including when that hour itself crosses midnight.
+    required_end = datetime(2026, 9, 6 if hour == 10 else 7, tzinfo=timezone.utc)
+    profile = json.loads(inputs[2].read_text())
+    scope_path = Path(profile['cost_scope_attestation_path'])
+    scope = derive_operator_scope_attestation(provider_id='openai',
+        paid_resource_class=module.RESOURCE_CLASS, project_id='project', api_key_id='key',
+        operator_id='operator', exclusive_from=moment-timedelta(hours=1),
+        exclusive_until=required_end-timedelta(seconds=1) if short else required_end)
+    _write(scope_path, scope)
+    profile['cost_scope_attestation_reference'] = module._record(scope_path)
+    profile['scope_attestation_digest'] = scope['scope_attestation_digest']
+    _write(inputs[2], profile, 'profile_digest')
+    output = tmp_path/('new-profile.json' if stage == 'profile' else 'execution')
+    events = []
+
+    def run():
+        if stage == 'execution':
+            return _execute(inputs, tmp_path, events)
+        return module.materialize_task_parameter_profile(expected_source_commit=SHA,
+            cost_scope_attestation_path=scope_path,
+            openai_admin_api_key_file=profile['openai_admin_api_key_file'],
+            openai_api_key_file=profile['openai_api_key_file'],
+            openai_project_id='project', openai_api_key_id='key', output_path=output)
+
+    if short:
+        with pytest.raises(module.TaskParameterProposalError,
+                           match='cost_scope_attribution_window_insufficient'):
+            run()
+        assert not output.exists()
+        assert events == []
+    else:
+        run()
+        assert output.exists()
+        if stage == 'execution':
+            assert events.count('official_reservation') == events.count('model_call') == 1

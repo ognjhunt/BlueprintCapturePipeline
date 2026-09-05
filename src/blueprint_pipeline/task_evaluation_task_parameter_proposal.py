@@ -22,6 +22,7 @@ from .openai_official_cost_gate import build_openai_official_cost_run_gate
 from .public_scene_removal_selection import _source_context
 from .public_scene_host_input_intake import _verified_checkout_head
 from .task_evaluation_sam31_preparation_profile import _git
+from .task_evaluation_scene_configuration_openai_gate import _required_scope_end
 from .task_evaluation_supervisor.openai_cost_authority import validate_openai_cost_scope_attestation
 from .task_evaluation_scene_configuration_submission import _destination
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, sha
@@ -161,6 +162,7 @@ def _cost_scope(path, project_id, api_key_id):
     start = datetime.fromisoformat(value['exclusive_from'].replace('Z', '+00:00'))
     end = datetime.fromisoformat(value['exclusive_until'].replace('Z', '+00:00'))
     _require(start <= now < end, 'cost_scope_outside_window')
+    _require(end >= _required_scope_end(now), 'cost_scope_attribution_window_insufficient')
     return value
 
 
