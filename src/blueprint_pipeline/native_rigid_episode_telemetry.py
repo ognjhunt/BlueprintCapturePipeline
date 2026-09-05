@@ -17,7 +17,7 @@ CONTACT_CHANNELS = {
 
 
 class NativeRigidEpisodeTelemetry:
-    """Track real resets and contact acquisitions only within an episode."""
+    """Track resets and measured release/reclose acquisition cycles per episode."""
 
     def __init__(self, task_spec: Mapping[str, Any]):
         self.spec = task_spec
@@ -25,6 +25,8 @@ class NativeRigidEpisodeTelemetry:
         self.retries = 0
         self.acquisitions = 0
         self.previous_acquired = False
+        self.release_observed = False
+        self.contact_gaps = 0
         self.trace_complete = True
 
     def begin_episode(self) -> None:
@@ -33,6 +35,8 @@ class NativeRigidEpisodeTelemetry:
         self.retries = 0
         self.acquisitions = 0
         self.previous_acquired = False
+        self.release_observed = False
+        self.contact_gaps = 0
         self.trace_complete = True
 
     def reset_executed(self) -> None:
@@ -93,9 +97,18 @@ class NativeRigidEpisodeTelemetry:
             self.trace_complete = False
         else:
             acquired = contact and width < release
-            if self.active and acquired and not self.previous_acquired:
-                self.acquisitions += 1
+            if self.active:
+                # A contact-sensor dropout while the jaws remain closed is a
+                # contact gap, not evidence of a deliberate second grasp.
+                if self.previous_acquired and not contact and width < release:
+                    self.contact_gaps += 1
+                if self.acquisitions and not contact and width >= release:
+                    self.release_observed = True
+                if acquired and (not self.acquisitions or self.release_observed):
+                    self.acquisitions += 1
+                    self.release_observed = False
             self.previous_acquired = acquired
         sample["retry_count"] = self.retries if self.active else None
         sample["regrasp_count"] = max(0, self.acquisitions - 1) if self.active and self.trace_complete else None
-        sample["episode_event_measurement_source"] = "runner_initial_reset_boundary_and_filtered_task_contact_acquisitions"
+        sample["closed_grasp_contact_gap_count"] = self.contact_gaps if self.active and self.trace_complete else None
+        sample["episode_event_measurement_source"] = "runner_resets_and_measured_release_reclose_acquisition_cycles"

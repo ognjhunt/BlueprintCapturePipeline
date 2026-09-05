@@ -101,3 +101,55 @@ def test_native_overlay_keeps_calibrated_measured_grasp_instead_of_raw_body_orig
     assert sample["retry_count"] == 0
     env.reset()
     assert env.read_object_sample()["retry_count"] == 1
+
+
+def test_closed_gripper_contact_flicker_is_retained_as_gap_not_regrasp():
+    telemetry = NativeRigidEpisodeTelemetry(_spec())
+    telemetry.begin_episode()
+    telemetry.observe(_sample())
+    missing_contact = {**_sample(), "task_contact_active": False}
+    telemetry.observe(missing_contact)
+    recovered_contact = _sample()
+    telemetry.observe(recovered_contact)
+    assert recovered_contact["regrasp_count"] == 0
+    assert recovered_contact["closed_grasp_contact_gap_count"] == 1
+    # A measured reopen with cleared contact, then a measured closed
+    # acquisition, does establish an actual second grasp.
+    telemetry.observe({**_sample(), "task_contact_active": False, "gripper_width_m": .08})
+    telemetry.observe(recovered_contact)
+    assert recovered_contact["regrasp_count"] == 1
+    assert recovered_contact["closed_grasp_contact_gap_count"] == 1
+
+
+def test_dropped_then_recovered_closed_grasp_still_fails_no_drop_without_regrasp():
+    import copy
+
+    from blueprint_pipeline.adp_task_scoring import score_task_episode_from_spec, seal_rigid_task_success_contract
+    from tests.test_adp_task_scoring import _dropped_then_placed_samples, _rigid_v2_sample, _rigid_v2_spec
+
+    spec = _rigid_v2_spec()
+    rows = _dropped_then_placed_samples()
+    # The hand catches the dropped object without a measured reopen. It later
+    # releases onto support and clears contact over a full final settle window.
+    rows[3].update(task_contact_active=True, gripper_width_m=.03)
+    rows.append(_rigid_v2_sample(6, [1.15, 2., .8]))
+    baseline = score_task_episode_from_spec(task_spec=spec, samples=rows)
+    criteria = copy.deepcopy(baseline["task_success_contract"]["criteria"])
+    criteria["temporal_invariants"]["no_drop"]["mode"] = "required"
+    criteria["temporal_invariants"]["maximum_regrasps"] = 0
+    spec["task_success_contract"] = seal_rigid_task_success_contract(
+        task_spec=spec, site_id="fixture_scene", task_id="fixture_task",
+        author_source="task_owner", author_id="fixture_owner", confirmation_status="confirmed",
+        confirmed_by_team_id="fixture_owner", criteria=criteria)
+    telemetry = NativeRigidEpisodeTelemetry(_spec())
+    telemetry.begin_episode()
+    for row in rows:
+        retained = {**_sample(), **row}
+        telemetry.observe(retained)
+        row.update(retained)
+    report = score_task_episode_from_spec(task_spec=spec, samples=rows)
+    assert report["task_succeeded"] is False
+    assert report["failed_criteria"] == ["no_drop"]
+    assert report["event_ledger"]["drop_events"]
+    assert report["event_ledger"]["maximum_regrasps_observed"] == 0
+    assert rows[-1]["closed_grasp_contact_gap_count"] == 1
