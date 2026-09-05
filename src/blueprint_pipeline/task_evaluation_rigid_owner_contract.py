@@ -10,21 +10,25 @@ from collections.abc import Mapping
 from typing import Any
 
 from .adp_rigid_retreat_scoring import materialize_retreat_criterion
+from .decision_evidence_contracts import canonical_digest
 from .adp_task_scoring import (
     TaskNeutralScoringError,
     _compatibility_rigid_success_criteria,
     seal_rigid_task_success_contract,
+    confirm_rigid_task_success_contract,
 )
 
 
 def materialize_configured_owner_success_contract(
-    task_spec: Mapping[str, Any], *, site_id: str, task_id: str
+    task_spec: Mapping[str, Any], *, site_id: str, task_id: str, team_namespace: str | None = None
 ) -> dict[str, Any] | None:
     configured = task_spec.get("configured_success_criteria") or {}
     if configured.get("owner_success_contract_required") is not True:
         return None
     authority = task_spec.get("configured_owner_authority") or {}
-    if (authority.get("confirmation_status") != "confirmed"
+    agent_proposal = authority.get("author_source") == "agent_proposal"
+    if (authority.get("author_source", "task_owner") not in {"task_owner", "agent_proposal"}
+            or authority.get("confirmation_status") != "confirmed"
             or not isinstance(authority.get("accepted_by"), str)
             or not authority["accepted_by"].strip()
             or not isinstance(authority.get("authority_reference"), str)
@@ -55,6 +59,28 @@ def materialize_configured_owner_success_contract(
         maximum_regrasps=configured["maximum_regrasps"],
     )
     criteria["retreat"] = materialize_retreat_criterion(task_spec)
+    if agent_proposal:
+        proposal = authority.get("agent_proposal")
+        proposal_digest = authority.get("proposal_digest")
+        confirmed_team = authority.get("confirmed_by_team_id")
+        if (not isinstance(proposal, Mapping)
+                or proposal_digest != canonical_digest(proposal, digest_field="proposal_digest")
+                or not isinstance(authority.get("delegation_authority_reference"), str)
+                or not authority["delegation_authority_reference"].strip()
+                or not isinstance(authority.get("author_id"), str)
+                or not authority["author_id"].strip()
+                or not isinstance(confirmed_team, str) or not confirmed_team.strip()
+                or team_namespace is None or confirmed_team != team_namespace
+                or not isinstance(proposal.get("success"), Mapping)
+                or any(proposal["success"].get(field) != configured[field]
+                       for field in (*required, "minimum_lift_m"))):
+            raise TaskNeutralScoringError(["configured_owner_success_contract_agent_authority_invalid"])
+        proposed = seal_rigid_task_success_contract(
+            task_spec=task_spec, site_id=site_id, task_id=task_id,
+            author_source="agent_proposal", author_id=authority["author_id"] + ":" + proposal_digest,
+            confirmation_status="proposal_only", criteria=criteria,
+        )
+        return confirm_rigid_task_success_contract(proposed, confirmed_by_team_id=confirmed_team)
     return seal_rigid_task_success_contract(
         task_spec=task_spec, site_id=site_id, task_id=task_id,
         author_source="task_owner",

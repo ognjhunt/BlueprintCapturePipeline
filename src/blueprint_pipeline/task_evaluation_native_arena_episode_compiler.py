@@ -479,6 +479,14 @@ def _stage_destination_asset(
         )
     )[0]
     configured_collision_digest = _sha256_and_size(configured_collision_path)[0]
+    support_plane = _json_reference(
+        materialized_references, "scene.configured_revision.registration.support_plane",
+        "task_evaluation_support_plane_input.v1",
+    )
+    placement_support_path = support_plane.get("sage_prim_path")
+    if not isinstance(placement_support_path, str) or not placement_support_path.startswith("/"):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_destination_placement_support_identity_missing")
     support_plane_digest = _sha256_and_size(
         _reference_path(
             materialized_references,
@@ -695,6 +703,7 @@ def _stage_destination_asset(
                 != "task_evaluation_rigid_destination_native_probe_configuration.v1"
                 or not isinstance(probe.get("placement_support_scene_prim_paths"), list)
                 or not probe["placement_support_scene_prim_paths"]
+                or probe["placement_support_scene_prim_paths"] != [placement_support_path]
                 or any(
                     not str(path).startswith("/")
                     for path in probe["placement_support_scene_prim_paths"]
@@ -841,6 +850,7 @@ def _stage_destination_asset(
         "asset_digest": asset_digest,
         "static_qualification_digest": static_digest,
         "native_import_qualification_digest": native_digest,
+        "placement_support_scene_prim_paths": [placement_support_path],
         "qualification_only": qualification_only,
         "native_probe": json.loads(json.dumps(probe)) if qualification_only else None,
     }
@@ -1146,6 +1156,7 @@ def compile_native_arena_episode(
         task_spec.update(
             destination_relation=destination_asset["relation"],
             destination_support_asset_id=destination_asset["asset_id"],
+            destination_placement_support_prim_paths=destination_asset["placement_support_scene_prim_paths"],
             destination_position_bounds_destination_frame_m=destination_asset[
                 "destination_position_bounds_destination_frame_m"
             ],
@@ -1179,16 +1190,12 @@ def compile_native_arena_episode(
             interaction_affordance=affordance,
         )
         if qualification_only:
-            native_probe = destination_asset["native_probe"]
             task_spec.update(
                 destination_qualification_probe=True,
-                destination_placement_support_prim_paths=list(
-                    native_probe["placement_support_scene_prim_paths"]
-                ),
             )
     owner_contract = materialize_configured_owner_success_contract(
         task_spec, site_id=request["scene"]["identity"]["id"],
-        task_id=request["task"]["identity"]["id"],
+        task_id=request["task"]["identity"]["id"], team_namespace=request["team_namespace"],
     )
     if owner_contract is not None:
         task_spec["task_success_contract"] = owner_contract

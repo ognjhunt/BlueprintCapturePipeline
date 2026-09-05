@@ -139,3 +139,55 @@ def test_owner_contract_materializer_never_invents_confirmation_from_provider_au
     spec["configured_success_criteria"] = {"owner_success_contract_required": True}
     with pytest.raises(TaskNeutralScoringError, match="authority_missing"):
         materialize_configured_owner_success_contract(spec, site_id="fixture_scene", task_id="fixture_task")
+
+
+def _agent_owner_spec():
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    spec, _ = _fixture()
+    bounds = {"minimum": [0., 0., 0.], "maximum": [3., 3., 3.]}
+    spec.update(robot_workspace_position_bounds_world_m=bounds, collision_failure_minimum_force_n=1.)
+    success = {
+        "owner_success_contract_required": True, "minimum_lift_m": .02,
+        "retreat_clearance_m": .05, "drop_minimum_fall_m": .005,
+        "maximum_task_contact_force_n": 10., "forbidden_contact_classes": ["robot_background"],
+        "maximum_retries": 0, "maximum_regrasps": 0,
+        "robot_workspace_position_bounds_world_m": bounds, "collision_failure_minimum_force_n": 1.,
+    }
+    proposal = {"success": copy.deepcopy(success), "model": "fixture-sdk-model"}
+    spec["configured_success_criteria"] = success
+    spec["configured_owner_authority"] = {
+        "author_source": "agent_proposal", "author_id": "fixture:agents-sdk",
+        "agent_proposal": proposal, "proposal_digest": canonical_digest(proposal, digest_field="proposal_digest"),
+        "delegation_authority_reference": "fixture:user-standing-delegation",
+        "confirmation_status": "confirmed", "accepted_by": "fixture_user",
+        "authority_reference": "fixture:retained-task-request", "confirmed_by_team_id": "fixture_team",
+    }
+    return spec
+
+
+def test_sdk_proposal_keeps_agent_provenance_and_real_delegating_team():
+    from blueprint_pipeline.task_evaluation_rigid_owner_contract import materialize_configured_owner_success_contract
+
+    spec = _agent_owner_spec()
+    result = materialize_configured_owner_success_contract(
+        spec, site_id="fixture_scene", task_id="fixture_task", team_namespace="fixture_team")
+    provenance = result["provenance"]
+    assert provenance["author_source"] == "agent_proposal"
+    assert provenance["confirmed_by_team_id"] == "fixture_team"
+    assert provenance["proposal_digest"].startswith("sha256:")
+    assert spec["configured_owner_authority"]["proposal_digest"] in provenance["author_id"]
+
+
+@pytest.mark.parametrize("changed", ["proposal_digest", "confirmed_by_team_id", "delegation_authority_reference", "threshold"])
+def test_sdk_owner_contract_rejects_unbound_proposal_or_delegation(changed):
+    from blueprint_pipeline.task_evaluation_rigid_owner_contract import materialize_configured_owner_success_contract
+
+    spec = _agent_owner_spec()
+    if changed == "threshold":
+        spec["configured_owner_authority"]["agent_proposal"]["success"]["maximum_task_contact_force_n"] = 100.
+    else:
+        spec["configured_owner_authority"][changed] = ""
+    with pytest.raises(TaskNeutralScoringError, match="agent_authority_invalid"):
+        materialize_configured_owner_success_contract(
+            spec, site_id="fixture_scene", task_id="fixture_task", team_namespace="fixture_team")

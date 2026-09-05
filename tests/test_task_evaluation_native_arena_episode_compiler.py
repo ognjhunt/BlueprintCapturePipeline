@@ -1165,6 +1165,7 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
             "release it, and move the gripper clear."
         )
         assert support["asset_id"] == "document_tray"
+        assert observed["packet_request"]["task_spec"]["destination_placement_support_prim_paths"] == ["/Root/Support"]
         assert support["source_asset_id"] == "document-tray"
         assert observed["packet_request"]["task_spec"][
             "destination_relation"
