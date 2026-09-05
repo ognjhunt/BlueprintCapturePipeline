@@ -82,10 +82,13 @@ def diagnose_empty_create_400(
         if not 200 <= int(status_code or 0) < 300 or not isinstance(raw, (list, Mapping)):
             raise ValueError("vast_create_inventory_unrecognized")
         rows = instance_rows(response)
-        if ((isinstance(raw, list) and (len(rows) != len(raw) or not all(isinstance(row, Mapping) for row in raw)))
-                or (isinstance(raw, Mapping) and not rows)):
-            raise ValueError("vast_create_inventory_unrecognized")
-        malformed = False
+        if isinstance(raw, list):
+            raw_rows = raw
+        elif any(key in raw for key in ("id", "instance_id", "contract_id", "actual_status", "cur_state", "status", "intended_status")):
+            raw_rows = [raw]
+        else:
+            raw_rows = list(raw.values())
+        malformed = len(rows) != len(raw_rows) or not all(isinstance(row, Mapping) for row in raw_rows)
         matches = set()
         for row in rows:
             identifier = row.get("id") or row.get("instance_id") or row.get("contract_id")
