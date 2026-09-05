@@ -82,6 +82,10 @@ def install_release_intent(*, destination: Path, payload: bytes, expected_commit
             f"{destination.stem}.superseded-{expected_commit}.json")
         current = _read(destination) if destination.exists() or destination.is_symlink() else None
         if current == payload:
+            metadata = destination.stat(follow_symlinks=False)
+            if (stat.S_IMODE(metadata.st_mode) != 0o440
+                    or (group_id is not None and metadata.st_gid != group_id)):
+                raise IntentRegistryError("intent_registry_live_access_invalid")
             return
         if retired_target.exists() or retired_target.is_symlink():
             raise IntentRegistryError("intent_registry_retired_release_reactivation_forbidden")

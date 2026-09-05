@@ -47,6 +47,24 @@ def test_archive_conflict_never_overwrites_old_or_live_bytes(registry):
     assert archive.read_bytes() == b"retained-conflicting-evidence"
 
 
+@pytest.mark.parametrize("defect", ["mode", "group"])
+def test_identical_intent_cannot_claim_installed_with_wrong_service_access(registry, monkeypatch, defect):
+    before = registry.read_bytes()
+    group = None
+    if defect == "mode":
+        registry.chmod(0o600)
+    else:
+        group = "expected-service-group"
+        monkeypatch.setattr(module.grp, "getgrnam", lambda name:
+            SimpleNamespace(gr_gid=registry.stat().st_gid + 1))
+        # Avoid changing real OS groups; the live-file readback remains real.
+        monkeypatch.setattr(module.os, "fchown", lambda *args: None)
+    with pytest.raises(module.IntentRegistryError, match="live_access_invalid"):
+        _install(registry, A, service_group=group)
+    assert registry.read_bytes() == before
+    assert not list(registry.parent.glob("*.superseded-*.json"))
+
+
 @pytest.mark.parametrize("failure", ["unknown_group", "ownership", "replacement"])
 def test_successor_access_or_publication_failure_keeps_live_intent(registry, monkeypatch, failure):
     def fail(*args, **kwargs):
