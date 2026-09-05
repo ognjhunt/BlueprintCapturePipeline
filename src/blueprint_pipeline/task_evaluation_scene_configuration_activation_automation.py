@@ -40,6 +40,7 @@ from .task_evaluation_configured_controls_autostart import (
     configured_controls_autostart_registry_name,
 )
 from .task_evaluation_launch_activation_queue import stage_launch_activation_request
+from .task_evaluation_release_identity import running_release_commit
 from .task_evaluation_shared_mutation_window import (
     TaskEvaluationSharedMutationWindowError,
     materialize_shared_mutation_window,
@@ -1360,6 +1361,55 @@ def process_scene_configuration_activations(
                 {"preparation_id": preparation_id, "status": "blocked", "blockers": [str(exc)]}
             )
     return rows
+
+
+def progression_rows(
+    *,
+    intent_root: str | Path,
+    configured_controls_intent_root: str | Path | None,
+    profile_dir: str | Path | None,
+    standing_authorization_dir: str | Path | None,
+    preparation_queue_root: str | Path,
+    activation_queue_root: str | Path,
+    progression_root: str | Path,
+    repo_root: str | Path | None,
+    webapp_secret_file: str | Path | None,
+    webapp_endpoint: str,
+) -> list[dict[str, Any]]:
+    """Drive the Website-started configuration activation from the progression timer."""
+
+    if not profile_dir or not standing_authorization_dir:
+        return [
+            {
+                "lane": LANE,
+                "status": "blocked",
+                "blockers": ["scene_configuration_activation_directories_missing"],
+            }
+        ]
+    submitter = (
+        webapp_submitter(
+            repo_root=repo_root,
+            secret_file=webapp_secret_file,
+            endpoint=webapp_endpoint,
+            state_root=Path(progression_root).expanduser() / STATE_DIRECTORY / "webapp-submissions",
+        )
+        if repo_root and webapp_secret_file
+        else None
+    )
+    # Historical results bound to other releases can never activate under this
+    # deployment; a branch checkout has no release identity and filters nothing.
+    rows = process_scene_configuration_activations(
+        preparation_queue_root=preparation_queue_root,
+        activation_queue_root=activation_queue_root,
+        progression_root=progression_root,
+        intent_root=intent_root,
+        profile_dir=profile_dir,
+        standing_authorization_dir=standing_authorization_dir,
+        configured_controls_intent_root=configured_controls_intent_root,
+        submitter=submitter,
+        running_commit=running_release_commit() or None,
+    )
+    return [{"lane": LANE, **row} for row in rows]
 
 
 # ---------------------------------------------------------------- CLI
