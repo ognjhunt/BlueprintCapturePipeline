@@ -36,6 +36,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .vast_create_failure_diagnosis import diagnose_empty_create_400
+from .vast_render_bundle_inventory import RETAINED_ENTRIES, read_render_manifest, resolve_render_inventory
 from .lane_hardware_requirements import KNOWN_GPU_VRAM_GB
 from .isaac_driver_support import (
     driver_newer_branch_sort_rank as _driver_newer_branch_sort_rank,
@@ -2675,16 +2676,6 @@ def _blueprint_bundle_preflight(
         "input/cameras.v1.json",
         "freeze/adp009b_gaussian_excision_audit_freeze.v1.json",
     }
-    adp_retained_scene_render_required_entries = {
-        "provider_runtime/run_adp_retained_scene_render_provider_runtime.sh",
-        "provider_runtime/adp_retained_scene_render_provider_runner.mjs",
-        "provider_runtime/adp_retained_scene_gpu_render_manifest.json",
-        "provider_runtime/render_request.json",
-        "provider_runtime/execution_authority.json",
-        "provider_runtime/input/shared_deleted_source_layer.ply",
-        "provider_runtime/input/shared_retained_scene.ply",
-        "provider_runtime/renderer/render_splat.mjs",
-    }
     scene_configuration_required_entries = {
         "provider_runtime/run_task_evaluation_scene_configuration_provider.sh",
         "provider_runtime/task_evaluation_scene_configuration_provider_runner.py",
@@ -2785,7 +2776,7 @@ def _blueprint_bundle_preflight(
         runner_member = "provider_runtime/adp_inpaint360_interiorgs_provider_runner.py"
         readiness_name = "adp_inpaint360_interiorgs_provider_manifest.json"
     elif provider_bundle_kind == "adp_retained_scene_render":
-        required_entries = adp_retained_scene_render_required_entries
+        required_entries = RETAINED_ENTRIES
         entrypoint_member = "provider_runtime/run_adp_retained_scene_render_provider_runtime.sh"
         runner_member = "provider_runtime/adp_retained_scene_render_provider_runner.mjs"
         readiness_name = "adp_retained_scene_gpu_render_bundle_receipt.json"
@@ -2832,6 +2823,7 @@ def _blueprint_bundle_preflight(
     zip_parse_error = None
     zip_testzip_result: str | None = None
     json_member_parse_errors: list[str] = []
+    retained_render_manifest: dict[str, Any] = {}
     entrypoint_text = ""
     runner_text = ""
     eval_manifest: dict[str, Any] = {}
@@ -2916,6 +2908,7 @@ def _blueprint_bundle_preflight(
                         )
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
+                    retained_render_manifest = read_render_manifest(archive, provider_bundle_kind)
                     if provider_bundle_kind == "native_task_arena_policy_canary_session":
                         readiness_member = (
                             "provider_runtime/adp_arena_provider_manifest.json"
@@ -3298,6 +3291,10 @@ def _blueprint_bundle_preflight(
                 blockers.append(
                     f"provider_runtime_bundle_zip_inspection_failed:{type(exc).__name__}"
                 )
+            required_entries, render_blockers = resolve_render_inventory(
+                provider_bundle_kind, retained_render_manifest, required_entries,
+            )
+            blockers.extend(render_blockers)
             missing_entries = sorted(required_entries - set(zip_entries))
             if provider_bundle_kind == "adp_content_agents":
                 # This used to require exactly one reference image. The bundle
@@ -3722,6 +3719,7 @@ def _blueprint_bundle_preflight(
         and zip_testzip_result is None,
         "zip_testzip_result": zip_testzip_result,
         "json_member_parse_errors": json_member_parse_errors,
+        "render_scope": retained_render_manifest.get("render_scope"),
         "missing_zip_entries": missing_entries,
         "zip_parse_error": zip_parse_error,
         "provider_eval_manifest_parse_error": eval_manifest_parse_error,

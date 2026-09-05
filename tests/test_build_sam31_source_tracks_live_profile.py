@@ -57,7 +57,6 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
         "schema_version": REQUEST_SCHEMA_VERSION,
         "operation": "source_track_canary",
         "source_profile": "monocular_video",
-        "allowed_geolocation_country_codes": list(SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES),
         "source_commit_sha": COMMIT,
         "worker_image_digest": "registry.example/sam31@sha256:" + "b" * 64,
         "worker_stack_manifest_digest": evidence_digest,
