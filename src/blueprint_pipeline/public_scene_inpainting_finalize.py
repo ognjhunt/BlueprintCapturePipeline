@@ -246,7 +246,7 @@ def finish_prepared_inputs(context: Mapping[str, Any], *, sealed_render_manifest
             else "method_native_interiorgs_adapter_and_unchanged_author_runtime_required"
         ),
         "claim_ceiling": "synthetic_public_scene_inpainting_input_candidate",
-        "replay_command": shlex.join([
+        "replay_command": context.get("replay_command") or shlex.join([
             "python", "-m", "blueprint_pipeline.public_scene_inpainting_inputs",
             "--request", str(request_file), "--repo-root", str(repo),
             "--data-root", str(data), "--output-root", str(output),

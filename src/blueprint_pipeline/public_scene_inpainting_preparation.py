@@ -54,6 +54,23 @@ def prepare_public_scene_inpainting_inputs(**kwargs) -> dict[str, Any]:
         "render_options": dict(context["request"]["rendering"]),
         "context": context, "rendered": False, "candidate_policy_queried": False,
         "preparation_digest": ""}
+    replacements = context["request"]["camera_policy"].get("replacement_views", [])
+    if replacements:
+        from .public_scene_inpainting_inputs import _camera_rows
+        from .source_calibration_camera_resolution import RECOVERY_SCHEMA, visibility_gate
+        candidate_request = {**context["request"], "camera_policy": {
+            **context["request"]["camera_policy"], "views": replacements}}
+        rows = _camera_rows(candidate_request, np.asarray(context["corners"]).mean(axis=0))
+        rows = [{"camera_id": row["camera_id"],
+                 "T_world_camera_provider_frame": row["T_world_camera_opencv"],
+                 "intrinsics": row["intrinsics"]} for row in rows]
+        replacement_path = output / "replacement_cameras.json"
+        with replacement_path.open("x", encoding="utf-8") as stream:
+            stream.write(canonical_json(rows) + "\n")
+        prepared["camera_recovery"] = {
+            "schema_version": RECOVERY_SCHEMA, "maximum_rounds": 1,
+            "replacement_camera_file": _artifact(replacement_path),
+            "replacement_cameras": rows, "visibility_gate": visibility_gate(prepared)}
     prepared["preparation_digest"] = canonical_digest(prepared, digest_field="preparation_digest")
     with path.open("x", encoding="utf-8") as stream:
         stream.write(canonical_json(prepared) + "\n")
@@ -107,6 +124,8 @@ def validate_prepared_inputs(preparation_path: str | Path) -> dict[str, Any]:
             and prepared["layers"]["target_support"]["retained_gaussian_count"] == context["target_count"]
             and prepared["layers"]["scene_without_target"]["retained_gaussian_count"]
             == context["scene_gaussian_count"] - context["target_count"], "counts_changed")
+    from .source_calibration_camera_resolution import validate_recovery_contract
+    validate_recovery_contract(prepared)
     return prepared
 
 
@@ -124,8 +143,34 @@ def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
     returned = require_source_calibration_closure(prepared, returned_path)
     if set(groups) != set(ROLES):
         raise PublicSceneInpaintingInputError(["edit_input_returned_render_groups_incomplete"])
-    context = prepared["context"]
+    import copy
+    from .source_calibration_camera_resolution import resolve_verified_cameras
+    effective, camera_resolution = prepared, None
+    if prepared.get("camera_recovery") is not None:
+        provider_result = Path(returned["provider_result"]["path"])
+        effective, camera_resolution = resolve_verified_cameras(
+            prepared, json.loads(provider_result.read_text()), provider_result.parent)
+    context = copy.deepcopy(prepared["context"])
     output = Path(context["paths"]["output"])
+    if camera_resolution is not None:
+        import shlex
+        context["replay_command"] = shlex.join([
+            "python", "-m", "blueprint_pipeline.public_scene_inpainting_preparation",
+            "--prepared-inputs", str(preparation_path), "--returned-group", str(returned_path),
+            "--verify-existing"])
+        selected_file = Path(effective["camera_file"]["path"])
+        selected_copy = output / "resolved_cameras.json"
+        if selected_copy.exists():
+            if selected_copy.is_symlink() or selected_copy.read_bytes() != selected_file.read_bytes():
+                raise PublicSceneInpaintingInputError(["edit_input_resolved_camera_conflict"])
+        else:
+            with selected_copy.open("xb") as stream:
+                stream.write(selected_file.read_bytes())
+        context["paths"]["camera_file"] = str(selected_copy)
+        context["sealed_cameras"] = effective["cameras"]
+        context["cameras"] = [{"camera_id": row["camera_id"], "intrinsics": row["intrinsics"],
+                               "T_world_camera_opencv": row["T_world_camera_provider_frame"]}
+                              for row in effective["cameras"]]
     receipt_name = "public_scene_interiorgs_edit_input_receipt.v2.json"
     retained = context["paths"]["retained_receipt"]
     if not _adopt_existing and ((output / receipt_name).exists() or (retained and Path(retained).exists())):
@@ -171,7 +216,9 @@ def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
             "returned_group": _artifact(returned_path), "return_digest": returned["return_digest"],
             "full_source_scene_content_transferred": True,
             "original_downloaded_file_uploaded": False, "private_only": True,
-            "execution_closure": returned["execution_closure"]}, validate_only=_adopt_existing)
+            "execution_closure": returned["execution_closure"],
+            **({"camera_resolution": camera_resolution} if camera_resolution is not None else {})},
+        validate_only=_adopt_existing)
     if _adopt_existing and receipt != existing:
         raise PublicSceneInpaintingInputError(["edit_input_retained_receipt_binding_mismatch"])
     return receipt
@@ -182,3 +229,21 @@ def adopt_finalized_public_scene_inpainting_inputs(*, preparation_path: str | Pa
     """Verify an existing terminal receipt against source bytes, closed renders and original mask logic."""
     return finalize_public_scene_inpainting_inputs(preparation_path=preparation_path,
         returned_group_path=returned_group_path, _adopt_existing=True)
+
+
+def main(argv=None) -> int:
+    """Finalize or independently replay a retained, closed GPU render return."""
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prepared-inputs", required=True)
+    parser.add_argument("--returned-group", required=True)
+    parser.add_argument("--verify-existing", action="store_true")
+    args = parser.parse_args(argv)
+    receipt = finalize_public_scene_inpainting_inputs(preparation_path=args.prepared_inputs,
+        returned_group_path=args.returned_group, _adopt_existing=args.verify_existing)
+    print(canonical_json({"status": receipt["status"], "receipt_digest": receipt["receipt_digest"]}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

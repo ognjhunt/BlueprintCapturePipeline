@@ -113,7 +113,7 @@ def _verify_group(prepared: dict, role: str, manifest_path: Path) -> dict[str, A
                            ("package_lock_sha256", "package-lock.json")):
         require(identity.get(name) == sha(repo/"tools/splat_render"/relative), "renderer_source_changed")
     rows = manifest.get("renders", [])
-    require(len(rows) == 16 and manifest.get("render_count") == 16
+    require(len(rows) == len(expected_cameras) and manifest.get("render_count") == len(expected_cameras)
             and {row.get("camera_id") for row in rows} == {row["id"] for row in expected_cameras}, "frame_inventory_invalid")
     for row in rows:
         require(row.get("relative_path") == f"frames/{row['camera_id']}.png"
@@ -150,9 +150,11 @@ def _verify_return_value(prepared: dict, returned: dict) -> dict[str, dict]:
             and result.get("candidate_policy_queried") is False and result.get("paid_inference_performed") is False
             and result.get("provider_mutations_performed") == 0
             and result.get("render_scope") == "source_calibration", "provider_result_invalid")
+    from .source_calibration_camera_resolution import resolve_verified_cameras
+    effective, _ = resolve_verified_cameras(prepared, result, result_path.parent)
     groups = result.get("render_groups", [])
     require(len(groups) == 3 and {row.get("role") for row in groups} == set(ROLES), "group_inventory_invalid")
-    verified = {row["role"]: _verify_group(prepared, row["role"],
+    verified = {row["role"]: _verify_group(effective, row["role"],
                 _local_manifest(result_path.parent, row["manifest"])) for row in groups}
     require(returned.get("render_groups") == {role: record(row["manifest_path"]) for role, row in verified.items()},
             "return_group_paths_changed")

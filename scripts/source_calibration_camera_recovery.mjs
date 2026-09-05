@@ -161,10 +161,10 @@ export async function resolveCameraRecovery({request, output, originalCameras, o
       const row=source.manifest.renders.find(r=>r.camera_id===candidate_camera_id);
       const destination=path.join(frames,`${camera_id}.png`);
       fs.copyFileSync(checked(source.root,row),destination);
-      renders.push({...row,camera_id,relative_path:path.relative(root,destination)});
+      renders.push({...row,camera_id,source_candidate_camera_id:candidate_camera_id,relative_path:path.relative(root,destination)});
     }
     manifest.renders=renders; manifest.calibrated_cameras=cameraSpecs(resolved);
-    manifest.calibrated_camera_file={digest:resolution.resolved_camera_file.sha256,binding:"caller_file_exact_match",camera_count:16};
+    manifest.calibrated_camera_file={digest:resolution.resolved_camera_file.sha256,binding:"resolved_frozen_candidate_camera_file",camera_count:16};
     manifest.sealed_camera_render_manifest_digest=digest(manifest,"sealed_camera_render_manifest_digest");
     const file=path.join(root,"sealed_camera_render_manifest.v1.json");
     fs.writeFileSync(file,`${JSON.stringify(manifest,null,2)}\n`);
