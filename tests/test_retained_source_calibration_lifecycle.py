@@ -19,6 +19,7 @@ import pytest
 from blueprint_pipeline.adp_retained_scene_render_vast import PROVIDER_BUNDLE_KIND
 from blueprint_pipeline import vast_provider_output_recovery as recovery
 from tests.test_vast_provider_output_recovery import _install_identity
+from blueprint_pipeline.vast_pre_mutation_reselection import pre_mutation_offer_reselection_attempts
 
 
 @pytest.mark.parametrize('failure', [None, 'size', 'digest'])
@@ -135,7 +136,7 @@ def test_source_variant_lifecycle_preserves_allocation_and_terminal_boundaries(t
         assert kwargs['startup_timeout_seconds'] == 1800
         assert kwargs['machine_avoidlist_path'] == avoidlist
         assert kwargs['allowed_active_instance_ids'] == ()
-        assert os.environ['BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS'] == '0'
+        assert os.environ['BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS'] == pre_mutation_offer_reselection_attempts()
         assert kwargs['forward_hf_token'] is False
         assert kwargs['instance_label_prefix'] == lane.RETAINED_RENDER_INSTANCE_LABEL_PREFIX
         root = kwargs['job_dir']
