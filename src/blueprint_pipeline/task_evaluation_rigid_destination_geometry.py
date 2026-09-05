@@ -19,6 +19,7 @@ from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_native_arena_episode_compiler import (
     TaskEvaluationNativeArenaEpisodeCompilerError,
     _rotate_xyzw,
+    _multiply_xyzw,
     _subject_bounds_in_scoring_frame,
 )
 
@@ -307,9 +308,56 @@ def derive_rigid_destination_geometry(
     return geometry
 
 
+def destination_trajectory_geometry(destination: Mapping[str, Any], geometry: Mapping[str, Any]) -> dict[str, Any]:
+    """Transform admitted geometry for candidate planning; confer no native qualification."""
+    code = "rigid_destination_trajectory_geometry_invalid"
+    pose = destination.get("pose_world") or {}
+    position = _finite_vector(pose.get("position_world_m"), length=3, code=code)
+    orientation = _unit_quaternion(pose.get("orientation_xyzw"), code=code)
+    subject_orientation = _unit_quaternion(geometry.get("subject_orientation_destination_frame_xyzw"), code=code)
+    lower, upper = _bounds(geometry.get("destination_position_bounds_destination_frame_m"), code=code)
+    withdrawal = _finite_vector(geometry.get("insertion_withdrawal_unit_destination_frame"), length=3, code=code)
+    support = _finite_vector(geometry.get("support_height_interval_m"), length=2, code=code)
+    intended = geometry.get("intended_support_prim_paths")
+    if (geometry.get("schema_version") != SCHEMA_VERSION or geometry.get("status") != "qualified"
+            or geometry.get("geometry_digest") != canonical_digest(geometry, digest_field="geometry_digest")
+            or geometry.get("destination_identity") != destination.get("identity")
+            or geometry.get("pose_world") != pose or geometry.get("relation") != destination.get("relation")
+            or geometry.get("whole_subject_containment_encoded_by_shrunk_bounds") is not True
+            or not math.isclose(sum(v*v for v in withdrawal), 1., abs_tol=1e-6)
+            or support[0] >= support[1] or not isinstance(intended, list) or not intended
+            or not all(isinstance(item, str) and item.startswith("/") for item in intended)):
+        raise RigidDestinationGeometryError(code)
+    offset = _rotate_xyzw([(lo+hi)/2 for lo,hi in zip(lower,upper,strict=True)], orientation)
+    return {"target_position_world_m": [p+q for p,q in zip(position,offset,strict=True)],
+            "destination_orientation_world_xyzw": _multiply_xyzw(orientation, subject_orientation),
+            "insertion_withdrawal_unit_world": _rotate_xyzw(withdrawal, orientation),
+            "support_height_interval_m": support, "intended_support_prim_paths": list(intended),
+            "relation": destination["relation"], "visible_label": destination["visible_label"]}
+
+
+def bind_destination_trajectory(task_spec: Mapping[str, Any], destination: Mapping[str, Any]) -> dict[str, Any]:
+    """Use identical placement/withdrawal semantics in CPU and native plan construction."""
+    result = dict(task_spec)
+    affordance = dict(result["interaction_affordance"])
+    for name in ("intended_support_prim_paths", "insertion_withdrawal_unit_world"):
+        affordance[name] = destination[name]
+    affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
+    result.update(target_position_world_m=destination["target_position_world_m"],
+                  destination_orientation_xyzw=destination["destination_orientation_world_xyzw"],
+                  support_height_interval_m=destination["support_height_interval_m"],
+                  visible_target_label=destination["visible_label"], interaction_affordance=affordance)
+    if not result.get("instruction_subject_label"):
+        result["prompt"] = (f"Pick up the configured rigid object and place it "
+                            f"{destination['relation']} the {destination['visible_label']}.")
+    return result
+
+
 __all__ = [
     "PRODUCER",
     "RigidDestinationGeometryError",
     "SCHEMA_VERSION",
     "derive_rigid_destination_geometry",
+    "destination_trajectory_geometry",
+    "bind_destination_trajectory",
 ]

@@ -343,3 +343,117 @@ def test_resolution_refuses_fetched_bytes_that_do_not_match_the_reference(tmp_pa
             output_root=tmp_path / "progression",
             fetcher=lambda reference: b"junk",
         )
+
+
+def test_deferred_book_to_tray_phases_match_native_destination_binding(tmp_path, monkeypatch):
+    import copy
+    from tests.test_task_evaluation_rigid_relocation_native_adapter import (
+        DEFINITION, EXECUTION, STATIC, _rewrite,
+    )
+    from tests.test_task_evaluation_native_arena_episode_compiler import _destination_case
+    from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import _stage_destination_asset
+    from blueprint_pipeline.task_evaluation_rigid_destination_geometry import bind_destination_trajectory
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import adapt_rigid_relocation_task_template
+
+    launch, revision, references, docs = _case(tmp_path)
+    definition = copy.deepcopy(docs[DEFINITION])
+    definition["strategy"] = "pick_and_place"
+    definition["interaction_affordance"] = {
+        "contact_point_scoring_frame_m": [-.06, 0., 0.], "approach_unit_scoring_frame": [-1., 0., 0.],
+        "jaw_unit_scoring_frame": [0., 1., 0.], "lift_unit_world": [0., 0., 1.],
+        "pregrasp_clearance_m": .12, "minimum_lift_m": .08,
+    }
+    execution = copy.deepcopy(docs[EXECUTION])
+    execution["strategy"] = "pick_and_place"
+    for contract, document in ((DEFINITION, definition), (EXECUTION, execution)):
+        _rewrite(tmp_path=tmp_path, configured=revision, references=references,
+                 contract_path=contract, document=document)
+    docs[STATIC]["observed_structure"]["collision_bounds_body_frame_m"] = {
+        "minimum": [-.04, -.05, 0.], "maximum": [.04, .05, .127638]}
+    docs[STATIC]["result_digest"] = canonical_digest(docs[STATIC], digest_field="result_digest")
+    _rewrite(tmp_path=tmp_path, configured=revision, references=references,
+             contract_path=STATIC, document=docs[STATIC])
+    adapted = adapt_rigid_relocation_task_template(configured_revision=revision, materialized_references=references)
+    native_spec = deferred._runtime_subject_task_spec({
+        **adapted["native_task_definition"]["task_spec"],
+        "subject_asset_id": revision["replacement"]["identity"]["id"],
+        "success_criteria": adapted["native_success_criteria"]["criteria"],
+    })
+    destination_root = tmp_path / "destination"
+    destination_root.mkdir()
+    native_request, destination_refs, context = _destination_case(destination_root,
+        subject_identity=revision["replacement"]["identity"],
+        subject_static_path=Path(references[STATIC]["materialized_path"]), subject_static=docs[STATIC],
+        subject_scoring_transform=native_spec["interaction_affordance"]["asset_root_from_scoring_frame"],
+        configured_scene_support_plane_path=Path(references[deferred.SUPPORT_PLANE_CONTRACT_PATH]["materialized_path"]),
+    )
+    destination = dict(native_request["task"]["destination"])
+    for name in ("asset", "rights_admission", "static_qualification", "native_import_qualification", "geometry"):
+        destination[name] = {key: destination_refs["task.destination." + name][key]
+                             for key in ("uri", "digest", "size_bytes")}
+    destination["native_probe"] = {}  # CPU planning does not execute or qualify the native probe.
+    revision["task_template"]["destination"] = destination
+    revision["revision_digest"] = canonical_digest(revision, digest_field="revision_digest")
+    geometry = Path(destination_refs["task.destination.geometry"]["materialized_path"])
+    documents = {key: Path(row["materialized_path"]) for key, row in references.items()}
+    documents["task.destination.geometry"] = geometry
+    captured = {}
+    materialize = deferred.materialize_native_task_construction_phase_plan
+
+    def observe(plan):
+        captured["scene_plan"] = copy.deepcopy(plan)
+        return materialize(plan)
+
+    monkeypatch.setattr(deferred, "materialize_native_task_construction_phase_plan", observe)
+    cpu_plan = deferred.derive_native_trajectory_plan(revision=revision, documents=documents)
+    # The native compiler still performs full rights, static/native import,
+    # geometry, scene placement, and exact support admission before this binding.
+    native_out = tmp_path / "native"
+    native_out.mkdir()
+    admitted = _stage_destination_asset(request=native_request, materialized_references=destination_refs,
+        output_root=native_out, configured_collision_path=context["configured_collision_path"], task_spec=native_spec)
+    native_scene_plan = captured["scene_plan"]
+    native_scene_plan["task_spec"] = bind_destination_trajectory(native_spec, admitted)
+    native_scene_plan["plan_digest"] = canonical_digest(native_scene_plan, digest_field="plan_digest")
+    native_plan = materialize(native_scene_plan)
+    assert cpu_plan["phases"] == native_plan["phases"]
+    assert captured["scene_plan"]["task_spec"]["interaction_affordance"]["insertion_withdrawal_unit_world"] == [0., 0., 1.]
+    assert native_scene_plan["task_spec"]["target_position_world_m"] != native_spec["target_position_world_m"]
+
+
+def test_cached_plan_is_rederived_and_rejects_self_sealed_tampering(tmp_path):
+    _, revision, references, _ = _case(tmp_path)
+    payloads = {row["uri"]: Path(row["materialized_path"]).read_bytes() for row in references.values()}
+    intent = {"expected_production_commit": COMMIT,
+              "paths": {"native_trajectory_plan_path": {"deferred": deferred.TRAJECTORY_MODE}}}
+    resolved = deferred.resolve_deferred_inputs(intent=intent, revision=revision, output_root=tmp_path / "out",
+                                                fetcher=lambda ref: payloads[ref["uri"]])
+    path = Path(resolved["native_trajectory_plan_path"])
+    value = json.loads(path.read_text())
+    value["tampered"] = True
+    value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
+    path.chmod(0o600)
+    path.write_text(json.dumps(value))
+    with pytest.raises(deferred.ConfiguredControlsDeferredInputError, match="plan_conflict"):
+        deferred.resolve_deferred_inputs(intent=intent, revision=revision, output_root=tmp_path / "out",
+                                         fetcher=lambda ref: pytest.fail("retained documents should be rehashed"))
+    new_intent = {**intent, "expected_production_commit": "f" * 40}
+    new = deferred.resolve_deferred_inputs(intent=new_intent, revision=revision, output_root=tmp_path / "out",
+                                           fetcher=lambda ref: payloads[ref["uri"]])
+    assert new["native_trajectory_plan_path"] != str(path)
+
+
+def test_deferred_publish_failure_leaves_no_partial_replay_file(tmp_path, monkeypatch):
+    path = tmp_path / "plan.json"
+    original = deferred.os.link
+
+    def interrupted(*args):
+        raise OSError("injected interruption before atomic publication")
+
+    monkeypatch.setattr(deferred.os, "link", interrupted)
+    with pytest.raises(OSError, match="injected interruption"):
+        deferred._write_immutable_bytes(path, b"complete bytes", conflict="conflict")
+    assert not path.exists()
+    assert not list(tmp_path.glob(".deferred-*"))
+    monkeypatch.setattr(deferred.os, "link", original)
+    assert deferred._write_immutable_bytes(path, b"complete bytes", conflict="conflict") == path

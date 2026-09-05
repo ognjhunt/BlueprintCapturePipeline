@@ -1,6 +1,6 @@
 """Seal configured owner criteria after native destination geometry is joined.
 
-This materializer does not confirm a proposal or select numerical thresholds.
+This internal compiler helper does not confirm a proposal or select numerical thresholds.
 The retained configured task must supply an explicit confirmed owner authority
 and every additional temporal limit before the compiler can seal its contract.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .adp_rigid_retreat_scoring import materialize_retreat_criterion
+from .adp_rigid_retreat_scoring import _derive_retreat_criterion
 from .decision_evidence_contracts import canonical_digest
 from .adp_task_scoring import (
     TaskNeutralScoringError,
@@ -19,7 +19,7 @@ from .adp_task_scoring import (
 )
 
 
-def materialize_configured_owner_success_contract(
+def _derive_configured_owner_success_contract(
     task_spec: Mapping[str, Any], *, site_id: str, task_id: str, team_namespace: str | None = None
 ) -> dict[str, Any] | None:
     configured = task_spec.get("configured_success_criteria") or {}
@@ -58,7 +58,7 @@ def materialize_configured_owner_success_contract(
         maximum_retries=configured["maximum_retries"],
         maximum_regrasps=configured["maximum_regrasps"],
     )
-    criteria["retreat"] = materialize_retreat_criterion(task_spec)
+    criteria["retreat"] = _derive_retreat_criterion(task_spec)
     if agent_proposal:
         proposal = authority.get("agent_proposal")
         proposal_digest = authority.get("proposal_digest")
