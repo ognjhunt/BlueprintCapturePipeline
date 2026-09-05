@@ -48,10 +48,11 @@ Environment=BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS=/var/lib/blueprint/pipeline-c
 # Sealed run evidence eligible for offload after the hot window; offload itself stays dry-run until
 # BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1 is set in the operator environment file.
 Environment=BLUEPRINT_CONTROL_PLANE_GC_EVIDENCE_ROOTS=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs:/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries:/var/lib/blueprint/pipeline-control-plane/episode-interpretation-backfills:/var/lib/blueprint/pipeline-control-plane/policy-canary-preprovider-audits
-# The artifact store is the system of record for sealed run evidence; the
-# host keeps a digest-bound pointer.  Two days covers every closeout that
-# still reads a sealed run directory (interpretation, website sync, billing).
-Environment=BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1
+# Offload itself stays an operator opt-in: BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1
+# in the environment file.  Once opted in, the artifact store is the system of
+# record for sealed run evidence and the host keeps a digest-bound pointer; two
+# days covers every closeout that still reads a sealed run directory
+# (interpretation, website sync, billing).
 Environment=BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS=172800
 # A run directory with no terminal receipt and no change for three days was
 # abandoned by a superseded or torn-down worker; it is archived, not kept as live.
