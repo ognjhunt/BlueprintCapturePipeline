@@ -113,7 +113,11 @@ def test_owner_contract_materializer_seals_exact_configured_retreat_and_temporal
         "retreat_clearance_m": .05, "drop_minimum_fall_m": .005,
         "maximum_task_contact_force_n": 10., "forbidden_contact_classes": ["robot_background"],
         "maximum_retries": 0, "maximum_regrasps": 0,
+        "robot_workspace_position_bounds_world_m": {"minimum": [0., 0., 0.], "maximum": [3., 3., 3.]},
+        "collision_failure_minimum_force_n": 1.0,
     }
+    spec["robot_workspace_position_bounds_world_m"] = spec["configured_success_criteria"]["robot_workspace_position_bounds_world_m"]
+    spec["collision_failure_minimum_force_n"] = 1.0
     spec["configured_owner_authority"] = {
         "confirmation_status": "confirmed", "accepted_by": "fixture_owner",
         "authority_reference": "fixture:owner-task-request",

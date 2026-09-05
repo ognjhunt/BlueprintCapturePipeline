@@ -911,6 +911,21 @@ def adapt_rigid_relocation_task_template(
                 raise TaskEvaluationRigidRelocationNativeAdapterError(
                     "rigid_relocation_native_adapter_instruction_grounding_missing")
             native_task_spec[label] = value
+    if "robot_workspace_position_bounds_world_m" in success:
+        bounds = success["robot_workspace_position_bounds_world_m"]
+        if not isinstance(bounds, Mapping):
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_robot_workspace_invalid")
+        lower = _vector(bounds.get("minimum"), field="robot_workspace.minimum")
+        upper = _vector(bounds.get("maximum"), field="robot_workspace.maximum")
+        if any(lo >= hi for lo, hi in zip(lower, upper, strict=True)):
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_robot_workspace_invalid")
+        native_task_spec["robot_workspace_position_bounds_world_m"] = {
+            "minimum": lower, "maximum": upper}
+    if "collision_failure_minimum_force_n" in success:
+        native_task_spec["collision_failure_minimum_force_n"] = _positive_number(
+            success["collision_failure_minimum_force_n"], field="collision_failure_minimum_force_n")
     if "retreat_clearance_m" in success:
         native_task_spec["retreat_clearance_m"] = _positive_number(
             success["retreat_clearance_m"], field="success.retreat_clearance_m"

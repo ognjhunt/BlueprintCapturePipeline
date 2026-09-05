@@ -207,12 +207,7 @@ class PolicyEpisodeError(ValueError):
 
 
 def _measured_source_hw(observed: set[tuple[int, int]]) -> tuple[int, int]:
-    """The one camera size every policy-input frame was observed to have.
-
-    The receipt seals which conversion was applied; a defaulted or ambiguous
-    source size would describe a conversion that did not happen, so anything
-    but exactly one measured size refuses.
-    """
+    """Return the unique measured input size; refuse absent or mixed sizes."""
 
     if len(observed) != 1:
         raise PolicyEpisodeError([BLOCKER_SOURCE_RESOLUTION_UNMEASURED])
@@ -555,6 +550,8 @@ def _prestart_episode_readiness(
     """
 
     environment.reset()
+    if callable(getattr(environment, "begin_episode", None)):
+        environment.begin_episode()
     joint_limits = environment.joint_limits()
     if (
         len(joint_limits) != ARM_JOINT_COUNT

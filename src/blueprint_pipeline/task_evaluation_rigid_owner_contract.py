@@ -32,11 +32,16 @@ def materialize_configured_owner_success_contract(
         raise TaskNeutralScoringError(["configured_owner_success_contract_authority_missing"])
     required = ("drop_minimum_fall_m", "maximum_task_contact_force_n",
                 "forbidden_contact_classes", "maximum_retries", "maximum_regrasps",
-                "retreat_clearance_m")
+                "retreat_clearance_m", "robot_workspace_position_bounds_world_m",
+                "collision_failure_minimum_force_n")
     missing = [f"configured_owner_success_contract_explicit_field_missing:{field}"
                for field in required if field not in configured]
     if missing:
         raise TaskNeutralScoringError(missing)
+    for field in ("retreat_clearance_m", "robot_workspace_position_bounds_world_m",
+                  "collision_failure_minimum_force_n", "minimum_lift_m"):
+        if task_spec.get(field) != configured[field]:
+            raise TaskNeutralScoringError([f"configured_owner_success_contract_native_field_mismatch:{field}"])
     criteria = _compatibility_rigid_success_criteria(task_spec)
     criteria["terminal_task_contact"]["mode"] = "cleared"
     criteria["motion"]["minimum_lift_m"] = configured["minimum_lift_m"]

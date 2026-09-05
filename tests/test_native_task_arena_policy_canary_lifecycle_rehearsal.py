@@ -398,12 +398,16 @@ def _destination_scene_plan() -> dict[str, Any]:
     }
     value["task_spec"].update(
         retreat_clearance_m=0.05,
+        robot_workspace_position_bounds_world_m={"minimum": [-5.]*3, "maximum": [5.]*3},
+        collision_failure_minimum_force_n=1.0,
         interaction_affordance={"insertion_withdrawal_unit_world": [0.0, 0.0, 1.0]},
         configured_success_criteria={
             "owner_success_contract_required": True, "minimum_lift_m": 0.0,
             "drop_minimum_fall_m": 0.02, "maximum_task_contact_force_n": 20.0,
             "forbidden_contact_classes": [], "maximum_retries": 0,
             "maximum_regrasps": 0, "retreat_clearance_m": 0.05,
+            "robot_workspace_position_bounds_world_m": {"minimum": [-5.]*3, "maximum": [5.]*3},
+            "collision_failure_minimum_force_n": 1.0,
         },
         configured_owner_authority={
             "confirmation_status": "confirmed", "accepted_by": "fixture_owner",
