@@ -15,6 +15,58 @@ from blueprint_pipeline.task_evaluation_supervisor.openai_cost_authority import 
 from tests.test_task_evaluation_scene_configuration_submission import SHA
 
 
+# Exact retained structured Sol v3 output; no source dataset bytes.
+SOL_V3_CONTACT_OMISSION = {'source_proposal_digest': 'sha256:dc660e9df64f40f01137da32b4d3f58309e3a68aea51c6d3d7fa6bf81ce8c837',
+ 'proposal': {'assumptions': ['Native validation checks all eight transformed object corners '
+                              'against the destination interior after release and settling.',
+                              'Any uncontrolled loss before commanded release fails the no-drop '
+                              'rule, independently of the 10 mm fall-detection threshold.',
+                              'Completion requires gripper separation meeting the retreat '
+                              'clearance and no residual grasp.',
+                              'Missing native evidence includes the destination world transform, '
+                              'verified object and tray collision geometry, robot base pose and '
+                              'limits, mass, friction, compliance, force-sensor calibration, '
+                              'contact-class semantics, settle criteria, and trajectory collision '
+                              'data.',
+                              'Because source geometry is not physical task truth and no candidate '
+                              'policy was queried, deterministic/native validation must reject '
+                              'this proposal if those data are unavailable or any bound is '
+                              'infeasible.'],
+              'confidence': 0.18,
+              'rationale': 'Conservative proposal preserving the specified fixed-arm robot, 15 Hz '
+                           'cadence, zero retries/regrasps, no-drop rule, and '
+                           'acquisition-through-retreat sequence. The 4 mm planar tolerance is '
+                           'below the smallest nominal lateral margin inferred from the supplied '
+                           'envelopes, but full eight-corner containment must be checked directly '
+                           'using native geometry after settling. Robot-background contact is '
+                           'forbidden; the other available classes cannot be categorically '
+                           'forbidden because they include grasp, support, placement, or static '
+                           'destination contacts. The workspace box is a provisional evidence '
+                           'envelope, not a reachability or collision-safety claim.',
+              'success': {'collision_failure_minimum_force_n': 1.0,
+                          'control_frequency_hz': 15,
+                          'drop_minimum_fall_m': 0.01,
+                          'forbidden_contact_classes': ['robot_background'],
+                          'maximum_episode_seconds': 60.0,
+                          'maximum_final_planar_target_error_m': 0.004,
+                          'maximum_regrasps': 0,
+                          'maximum_retries': 0,
+                          'maximum_task_contact_force_n': 15.0,
+                          'minimum_lift_m': 0.05,
+                          'minimum_planar_displacement_m': 0.1,
+                          'pregrasp_clearance_m': 0.08,
+                          'retreat_clearance_m': 0.1,
+                          'robot_workspace_position_bounds_world_m': {'maximum': [-1.841778487,
+                                                                                  0.932239608,
+                                                                                  0.75],
+                                                                      'minimum': [-2.216778713,
+                                                                                  -4.236320408,
+                                                                                  0.25]}},
+              'uncertainty': 'High: target location, dynamics, native geometry, reachability, '
+                             'collision behavior, and force observability are not established by '
+                             'the supplied evidence.'}}
+
+
 def _write(p, value, digest=None):
     if digest:
         value[digest] = canonical_digest(value, digest_field=digest)
@@ -142,7 +194,7 @@ def test_required_contact_payload_binds_filtered_semantics_and_configured_grasp_
 
 def test_actual_sol_v3_cannot_remove_three_configured_contact_requirements(inputs, tmp_path):
     bound = _required_contacts_request(inputs, tmp_path, list(module.CONTACT_CHANNELS))
-    actual = json.loads((Path(__file__).parent/'fixtures/task_parameter_sol_v3_contact_omission.json').read_text())
+    actual = SOL_V3_CONTACT_OMISSION
     assert actual['source_proposal_digest'] == 'sha256:dc660e9df64f40f01137da32b4d3f58309e3a68aea51c6d3d7fa6bf81ce8c837'
     events = []
     with pytest.raises(module.TaskParameterProposalError, match='required_contact_classes_omitted'):
