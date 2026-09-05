@@ -1690,6 +1690,7 @@ def advance_configured_controls_plan(
 def _scene_configuration_activation_rows(
     *,
     intent_root: Path,
+    configured_controls_intent_root: str | Path | None,
     profile_dir: str | Path | None,
     standing_authorization_dir: str | Path | None,
     preparation_queue_root: str | Path,
@@ -1728,6 +1729,7 @@ def _scene_configuration_activation_rows(
         intent_root=intent_root,
         profile_dir=profile_dir,
         standing_authorization_dir=standing_authorization_dir,
+        configured_controls_intent_root=configured_controls_intent_root,
         submitter=submitter,
     )
     return [{"lane": "task_evaluation_scene_configuration", **row} for row in rows]
@@ -1752,6 +1754,7 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
         rows.extend(
             _scene_configuration_activation_rows(
                 intent_root=Path(scene_configuration_intent_root).expanduser(),
+                configured_controls_intent_root=intent_root_value,
                 profile_dir=profile_dir,
                 standing_authorization_dir=standing_authorization_dir,
                 preparation_queue_root=kwargs["preparation_queue_root"],

@@ -34,6 +34,9 @@ from .task_evaluation_launch_activation_contract import (
     TaskEvaluationLaunchActivationContractError,
     validate_launch_activation_request,
 )
+from .task_evaluation_configured_controls_autostart import (
+    configured_controls_autostart_registry_name,
+)
 from .task_evaluation_launch_activation_queue import stage_launch_activation_request
 from .task_evaluation_scene_configuration_paid_authority import (
     MAX_PROVIDER_ZERO_AGE_SECONDS,
@@ -64,6 +67,13 @@ PROVIDER_ZERO_SCHEMA_VERSION = "adp_paid_provider_zero.v1"
 DEFAULT_INTENT_ROOT = (
     "/etc/blueprint/task-evaluation-scene-configuration-activation-intents"
 )
+DEFAULT_MATERIALIZATION_ROOT = (
+    "/var/lib/blueprint/task-evaluation-inputs/scene-configuration-activation-intents"
+)
+RELEASE_WINDOW_TEMPLATE_SCHEMA_VERSION = (
+    "task_evaluation_configured_controls_release_window_template.v1"
+)
+DEFAULT_RELEASE_WINDOW_VALID_SECONDS = 3_600
 DEFAULT_WEBAPP_ENDPOINT = (
     "https://tryblueprint.io/api/internal/task-evaluation-launch-submissions"
 )
@@ -404,6 +414,84 @@ def load_scene_configuration_activation_intent(
     )
 
 
+def provision_scene_configuration_activation_intent(
+    *,
+    expected_production_commit: str,
+    team_namespace: str,
+    scene_id: str,
+    task_id: str,
+    authorization_reference: str,
+    authorized_by: str,
+    profile_revision: str,
+    valid_for_seconds: int,
+    project_spend_reconciliation_path: str | Path,
+    rights_scope: str,
+    maximum_hard_cap_usd: float,
+    release_reference: str,
+    intent_root: str | Path,
+    materialization_root: str | Path,
+    release_window_valid_for_seconds: int = DEFAULT_RELEASE_WINDOW_VALID_SECONDS,
+) -> dict[str, Any]:
+    """Author the release-window template and register the sealed intent in one step.
+
+    The template carries no timestamp, so re-provisioning the same owner
+    decision at the same commit reproduces identical bytes and returns the same
+    sealed intent instead of conflicting.
+    """
+
+    if _COMMIT.fullmatch(str(expected_production_commit or "")) is None:
+        raise SceneConfigurationActivationAutomationError(
+            "scene_configuration_activation_intent_commit_invalid"
+        )
+    for value in (team_namespace, scene_id, task_id):
+        _identifier(value)
+    identity = scene_configuration_activation_registry_name(
+        team_namespace=team_namespace, scene_id=scene_id, task_id=task_id
+    ).removesuffix(".json")
+    inputs = Path(materialization_root).expanduser() / identity
+    template = {
+        "schema_version": RELEASE_WINDOW_TEMPLATE_SCHEMA_VERSION,
+        "status": "authorized_for_dynamic_release",
+        "team_namespace": team_namespace,
+        "expected_production_commit": expected_production_commit,
+        "allowed_mutations": [
+            "catalog_synchronization",
+            "profile_publication",
+            "standing_authorization",
+        ],
+        "provider_allowlist": ["vast"],
+        "maximum_hard_cap_usd": float(maximum_hard_cap_usd),
+        "valid_for_seconds": int(release_window_valid_for_seconds),
+        "released_by": str(authorized_by),
+        "release_reference": str(release_reference),
+        "provider_resource_allocation_allowed": False,
+        "paid_request_allowed": False,
+        "template_digest": "",
+    }
+    template["template_digest"] = canonical_digest(template, digest_field="template_digest")
+    template_path = inputs / "release_window_template.v1.json"
+    _write_immutable(template_path, template)
+    return materialize_scene_configuration_activation_intent(
+        expected_production_commit=expected_production_commit,
+        team_namespace=team_namespace,
+        scene_id=scene_id,
+        task_id=task_id,
+        authorization_template={
+            "reference": str(authorization_reference),
+            "authorized_by": str(authorized_by),
+            "profile_revision": str(profile_revision),
+            "valid_for_seconds": int(valid_for_seconds),
+        },
+        release_window_template_path=template_path,
+        project_spend_reconciliation_path=project_spend_reconciliation_path,
+        rights_scope=rights_scope,
+        output_path=Path(intent_root).expanduser()
+        / scene_configuration_activation_registry_name(
+            team_namespace=team_namespace, scene_id=scene_id, task_id=task_id
+        ),
+    )
+
+
 # ---------------------------------------------------------------- provider zero
 
 
@@ -553,12 +641,19 @@ def advance_scene_configuration_activation(
     activation_queue_root: str | Path,
     progression_root: str | Path,
     intent_root: str | Path,
+    configured_controls_intent_root: str | Path | None = None,
     provider_zero_collector: ProviderZeroCollector = default_provider_zero_collector,
     lineage_publisher_factory: PublisherFactory = lineage_publisher,
     release_window_publisher_factory: PublisherFactory = release_window_publisher,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Stage exactly one authority-gated activation for a prepared configuration."""
+    """Stage exactly one authority-gated activation for a prepared configuration.
+
+    When a configured-controls registry is given, the activation waits until the
+    same team/scene/task continuation intent is registered there: the activation
+    worker binds that intent into the profile, so activating first would leave
+    the configuration with no automatic controls continuation.
+    """
 
     result_path = Path(preparation_result_path).expanduser()
     queue_root = Path(preparation_queue_root).expanduser()
@@ -601,6 +696,21 @@ def advance_scene_configuration_activation(
         raise SceneConfigurationActivationAutomationError(
             "scene_configuration_activation_intent_commit_mismatch"
         )
+    if configured_controls_intent_root is not None:
+        controls_intent = Path(configured_controls_intent_root).expanduser() / (
+            configured_controls_autostart_registry_name(
+                team_namespace=team_namespace, scene_id=scene_id, task_id=task_id
+            )
+        )
+        if controls_intent.is_symlink() or not controls_intent.is_file():
+            return {
+                "status": "awaiting_configured_controls_continuation_intent",
+                "preparation_id": preparation_id,
+                "team_namespace": team_namespace,
+                "scene_id": scene_id,
+                "task_id": task_id,
+                "configured_controls_intent_path": str(controls_intent),
+            }
     zero = _validated_provider_zero(provider_zero_collector())
     zero_time = _parse_time(
         zero.get("observed_at_utc"),
@@ -1038,6 +1148,7 @@ def process_scene_configuration_activations(
     intent_root: str | Path,
     profile_dir: str | Path,
     standing_authorization_dir: str | Path,
+    configured_controls_intent_root: str | Path | None = None,
     provider_zero_collector: ProviderZeroCollector = default_provider_zero_collector,
     lineage_publisher_factory: PublisherFactory = lineage_publisher,
     release_window_publisher_factory: PublisherFactory = release_window_publisher,
@@ -1057,6 +1168,7 @@ def process_scene_configuration_activations(
                 activation_queue_root=activation_queue_root,
                 progression_root=progression_root,
                 intent_root=intent_root,
+                configured_controls_intent_root=configured_controls_intent_root,
                 provider_zero_collector=provider_zero_collector,
                 lineage_publisher_factory=lineage_publisher_factory,
                 release_window_publisher_factory=release_window_publisher_factory,
@@ -1129,10 +1241,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     provision.add_argument("--authorized-by", required=True)
     provision.add_argument("--profile-revision", required=True)
     provision.add_argument("--valid-for-seconds", type=int, required=True)
-    provision.add_argument("--release-window-template", required=True)
     provision.add_argument("--project-spend-reconciliation", required=True)
     provision.add_argument("--rights-scope", default="internal_noncommercial_research_only")
+    provision.add_argument("--maximum-hard-cap-usd", type=float, default=12.0)
+    provision.add_argument("--release-reference", required=True)
     provision.add_argument("--intent-root", default=DEFAULT_INTENT_ROOT)
+    provision.add_argument("--materialization-root", default=DEFAULT_MATERIALIZATION_ROOT)
     process = commands.add_parser(
         "process", help="Advance every prepared scene configuration one safe step."
     )
@@ -1162,6 +1276,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--standing-authorization-dir",
         default=_env_default("BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR"),
     )
+    process.add_argument(
+        "--configured-controls-intent-root",
+        default=_env_default("BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT"),
+    )
     process.add_argument("--repo-root", default=_env_default("BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO"))
     process.add_argument(
         "--webapp-secret-file",
@@ -1173,25 +1291,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.command == "provision-intent":
-        root = Path(args.intent_root).expanduser()
-        intent = materialize_scene_configuration_activation_intent(
+        intent = provision_scene_configuration_activation_intent(
             expected_production_commit=args.expected_production_commit,
             team_namespace=args.team_namespace,
             scene_id=args.scene_id,
             task_id=args.task_id,
-            authorization_template={
-                "reference": args.authorization_reference,
-                "authorized_by": args.authorized_by,
-                "profile_revision": args.profile_revision,
-                "valid_for_seconds": args.valid_for_seconds,
-            },
-            release_window_template_path=args.release_window_template,
+            authorization_reference=args.authorization_reference,
+            authorized_by=args.authorized_by,
+            profile_revision=args.profile_revision,
+            valid_for_seconds=args.valid_for_seconds,
             project_spend_reconciliation_path=args.project_spend_reconciliation,
             rights_scope=args.rights_scope,
-            output_path=root
-            / scene_configuration_activation_registry_name(
-                team_namespace=args.team_namespace, scene_id=args.scene_id, task_id=args.task_id
-            ),
+            maximum_hard_cap_usd=args.maximum_hard_cap_usd,
+            release_reference=args.release_reference,
+            intent_root=args.intent_root,
+            materialization_root=args.materialization_root,
         )
         print(json.dumps({"status": "registered", "intent_digest": intent["intent_digest"]}))
         return 0
@@ -1214,6 +1328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         intent_root=args.intent_root,
         profile_dir=args.profile_dir,
         standing_authorization_dir=args.standing_authorization_dir,
+        configured_controls_intent_root=args.configured_controls_intent_root,
         submitter=webapp_submitter(
             repo_root=args.repo_root,
             secret_file=args.webapp_secret_file,
@@ -1249,6 +1364,7 @@ __all__ = [
     "main",
     "materialize_scene_configuration_activation_intent",
     "process_scene_configuration_activations",
+    "provision_scene_configuration_activation_intent",
     "release_window_publisher",
     "scene_configuration_activation_registry_name",
     "validate_scene_configuration_activation_intent",
