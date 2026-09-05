@@ -268,6 +268,15 @@ def scene_configuration_bundle_contract(
                 blockers.append("scene_configuration_provider_input_path_invalid")
             else:
                 bound_rows.append((str(mask.get("path") or ""), mask))
+        evidence = render.get("sam31_evidence_records", {})
+        if not isinstance(evidence, Mapping):
+            blockers.append("scene_configuration_provider_sam31_evidence_invalid")
+        else:
+            for record in evidence.values():
+                if not isinstance(record, Mapping):
+                    blockers.append("scene_configuration_provider_sam31_evidence_invalid")
+                else:
+                    bound_rows.append((str(record.get("path") or ""), record))
         cutout = render.get("derived_gaussian_cutout")
         if not isinstance(cutout, Mapping):
             blockers.append("scene_configuration_provider_input_path_invalid")

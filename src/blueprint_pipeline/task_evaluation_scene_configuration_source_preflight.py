@@ -91,10 +91,11 @@ def _dimensions(minimum: Any, maximum: Any) -> list[float]:
     )
 
 
-def validate_scene_configuration_source_preflight(
+def _validate_scene_configuration_source_inputs(
     *,
     envelope: Mapping[str, Any],
     configurations: Mapping[str, Mapping[str, Any]],
+    require_render_inputs: bool,
 ) -> None:
     """Prove source, render, and exact collision-target identity before spend."""
 
@@ -172,15 +173,17 @@ def validate_scene_configuration_source_preflight(
         or len(appearance_artifacts) != 1
         or appearance_artifacts[0].get("sha256") != appearance_row.get("digest")
         or appearance_artifacts[0].get("size_bytes") != appearance_row.get("size_bytes")
-        or render.get("source_splat_digest") != appearance_row.get("digest")
+        or (require_render_inputs and
+            render.get("source_splat_digest") != appearance_row.get("digest"))
         or stage_one_source.get("publisher_instance_id")
         != source_object.get("publisher_instance_id")
         or stage_one_source.get("aabb_min_xyz_m")
         != source_object.get("source_aabb_min_xyz_m")
         or stage_one_source.get("aabb_max_xyz_m")
         != source_object.get("source_aabb_max_xyz_m")
-        or masks.get("source_object_identity", {}).get("publisher_instance_id")
-        != stage_one_source.get("publisher_instance_id")
+        or (require_render_inputs and
+            masks.get("source_object_identity", {}).get("publisher_instance_id")
+            != stage_one_source.get("publisher_instance_id"))
     ):
         raise TaskEvaluationSceneConfigurationSourcePreflightError(
             "scene_configuration_source_preflight_manifest_binding_invalid"
@@ -248,7 +251,26 @@ def validate_scene_configuration_source_preflight(
             )
 
 
+def validate_scene_configuration_source_preflight(
+    *, envelope: Mapping[str, Any],
+    configurations: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Provider admission: require source bindings AND produced render-input bindings."""
+    _validate_scene_configuration_source_inputs(
+        envelope=envelope, configurations=configurations, require_render_inputs=True)
+
+
+def validate_scene_configuration_source_bindings(
+    *, envelope: Mapping[str, Any],
+    configurations: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Pre-render submission check only; grants no render or allocation authority."""
+    _validate_scene_configuration_source_inputs(
+        envelope=envelope, configurations=configurations, require_render_inputs=False)
+
+
 __all__ = [
+    "validate_scene_configuration_source_bindings",
     "TaskEvaluationSceneConfigurationSourcePreflightError",
     "validate_scene_configuration_source_preflight",
 ]

@@ -19,7 +19,9 @@ from typing import Any
 from PIL import Image, ImageChops
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
-from .dual_task_rehearsal_contract import validate_task_freeze
+from .public_scene_removal_selection import (
+    validate_source_preparation_task_selection as validate_task_freeze,
+)
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
 from .openai_official_cost_gate import (
     RUN_COMPLETION_SCHEMA_VERSION,

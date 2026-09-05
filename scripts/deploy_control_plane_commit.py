@@ -98,6 +98,9 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-launch-dispatcher.path",
     "blueprint-task-evaluation-launch-preparation.service",
     "blueprint-task-evaluation-launch-preparation.path",
+    "blueprint-task-evaluation-sam31-preparation-execution.service",
+    "blueprint-task-evaluation-sam31-preparation-execution.path",
+    "blueprint-task-evaluation-sam31-preparation-execution.timer",
     "blueprint-task-evaluation-episode-compilation.service",
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-launch-activation.service",
@@ -131,6 +134,7 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
 #: itself.  It is separated from the no-spend watchers so deploy receipts do
 #: not blur that distinction.
 DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
+    "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-policy-canary-dispatcher.path",
 )
 #: This fixed timer advances only a sealed, qualifying configured-scene plan
@@ -142,6 +146,7 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
 #: moment a no-spend canary compiles, so it carries the same progression
 #: authority rather than the no-spend watcher category.
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
+    "blueprint-task-evaluation-sam31-preparation-execution.timer",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
     # The storage reaper is no-spend housekeeping: it only ever removes
@@ -157,6 +162,11 @@ DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS = (
     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches/processing",
     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/pending",
     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/processing",
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/awaiting_source_preparation",
+    "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/pending",
+    "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/processing",
+    "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/waiting_external",
+    "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/wake-pending",
     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/pending",
     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/processing",
     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations/pending",

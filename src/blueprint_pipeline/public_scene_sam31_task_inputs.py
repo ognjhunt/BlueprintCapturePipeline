@@ -19,7 +19,10 @@ from typing import Any
 from PIL import Image
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
-from .dual_task_rehearsal_contract import validate_task_freeze
+from .public_scene_removal_selection import (
+    ADAPTER as REMOVAL_SELECTION_ADAPTER, TASK_SCHEMA as REMOVAL_TASK_SCHEMA,
+    validate_source_preparation_task_selection as validate_task_freeze,
+)
 from .scene_placement.sam31_source_track_provider import RUN_REQUEST_SCHEMA_VERSION
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
 
@@ -150,6 +153,14 @@ def materialize_public_scene_sam31_task_inputs(
         or not prompts_value
     ):
         raise PublicSceneSam31InputError("sam31_task_input_contract_invalid")
+    if freeze.get("schema_version") == REMOVAL_TASK_SCHEMA:
+        admission = receipt.get("source_admission") or {}
+        if (admission.get("adapter") != REMOVAL_SELECTION_ADAPTER
+                or admission.get("task_freeze_digest") != freeze["task_freeze_digest"]
+                or admission.get("scene_freeze_digest") != freeze["scene_freeze_digest"]
+                or str(receipt.get("scene", {}).get("target_instance_id"))
+                != freeze["source_object"]["instance_id"]):
+            raise PublicSceneSam31InputError("sam31_task_input_source_selection_join_invalid")
     artifacts = receipt.get("derived_artifacts")
     if not isinstance(artifacts, Mapping):
         raise PublicSceneSam31InputError("sam31_task_input_artifacts_invalid")

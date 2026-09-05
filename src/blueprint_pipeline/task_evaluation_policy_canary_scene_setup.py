@@ -338,6 +338,98 @@ def _quick_cells(
     return cells
 
 
+def _require_strict_owner_success_contract(
+    *, task_spec: Mapping[str, Any], contract: Mapping[str, Any]
+) -> None:
+    """Reject compatibility or weaker scoring for an explicitly strict task.
+
+    This joins an already confirmed contract; it never confirms an agent's
+    proposed thresholds and never changes deterministic scoring.
+    """
+    configured = _mapping_or_empty(task_spec.get("configured_success_criteria"))
+    if configured.get("owner_success_contract_required") is not True:
+        return
+    provenance = _mapping_or_empty(contract.get("provenance"))
+    if (provenance.get("author_source") == "compatibility_default"
+            or provenance.get("confirmation_status") != "confirmed"):
+        raise TaskNeutralScoringError(["policy_canary_owner_success_contract_unconfirmed"])
+    criteria = _mapping_or_empty(contract.get("criteria"))
+    temporal = _mapping_or_empty(criteria.get("temporal_invariants"))
+    motion = _mapping_or_empty(criteria.get("motion"))
+    destination = _mapping_or_empty(criteria.get("destination_containment"))
+    support = _mapping_or_empty(criteria.get("support"))
+    orientation = _mapping_or_empty(criteria.get("orientation"))
+    settling = _mapping_or_empty(criteria.get("settling"))
+    gripper = _mapping_or_empty(criteria.get("gripper_state"))
+    minimum_lift = configured.get("minimum_lift_m")
+    force_limit = temporal.get("maximum_task_contact_force_n")
+    if (
+        _mapping_or_empty(temporal.get("no_drop")).get("mode") != "required"
+        or temporal.get("maximum_retries") != 0
+        or temporal.get("maximum_regrasps") != 0
+        or temporal.get("workspace_excursions") != "forbidden"
+        or temporal.get("containment_excursions") != "forbidden"
+        or not isinstance(force_limit, (int, float))
+        or isinstance(force_limit, bool) or not math.isfinite(force_limit) or force_limit <= 0
+        or not temporal.get("forbidden_contact_classes")
+        or destination.get("mode") != "required"
+        or support.get("height_mode") != "required"
+        or support.get("contact_mode") != "required"
+        or gripper.get("mode") != "released"
+        or _mapping_or_empty(criteria.get("terminal_task_contact")).get("mode") != "cleared"
+        or orientation.get("mode") != "required"
+        or settling.get("mode") != "required"
+        or not isinstance(minimum_lift, (int, float)) or isinstance(minimum_lift, bool)
+        or not math.isfinite(minimum_lift) or minimum_lift <= 0
+        or motion.get("minimum_lift_m") != minimum_lift
+        or task_spec.get("minimum_lift_m") != minimum_lift
+    ):
+        raise TaskNeutralScoringError(["policy_canary_owner_success_contract_criteria_mismatch"])
+    # Duplicated limits must describe the same native task, not a more permissive
+    # contract selected after observing the episode.
+    joins = (
+        (destination.get("position_bounds_world_m"), task_spec.get("destination_position_bounds_world_m")),
+        (support.get("height_interval_m"), task_spec.get("support_height_interval_m")),
+        (orientation.get("reference_xyzw"), task_spec.get("destination_orientation_xyzw")),
+        (orientation.get("tolerance_rad"), task_spec.get("destination_orientation_tolerance_rad")),
+        (settling.get("window_samples"), task_spec.get("settle_window_samples")),
+        (settling.get("position_tolerance_m"), task_spec.get("settle_position_tolerance_m")),
+        (settling.get("orientation_tolerance_rad"), task_spec.get("settle_orientation_tolerance_rad")),
+        (gripper.get("threshold_m"), task_spec.get("release_gripper_width_min_m")),
+    )
+    if any(left != right or right is None for left, right in joins):
+        raise TaskNeutralScoringError(["policy_canary_owner_success_contract_native_limits_mismatch"])
+    if configured.get("whole_subject_containment_required") is True:
+        # The production scorer uses all eight corners only on this destination-
+        # relative route. Requiring a center-only world box is not equivalent.
+        if task_spec.get("destination_relation") != "inside":
+            raise TaskNeutralScoringError(["policy_canary_owner_success_contract_full_containment_missing"])
+        for key in ("subject_collision_bounds_scoring_frame_m",
+                    "destination_interior_bounds_body_frame_m",
+                    "destination_position_bounds_destination_frame_m"):
+            bounds = _mapping_or_empty(task_spec.get(key))
+            lower, upper = bounds.get("minimum"), bounds.get("maximum")
+            if (not isinstance(lower, list) or not isinstance(upper, list)
+                    or len(lower) != 3 or len(upper) != 3
+                    or not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                               and math.isfinite(value) for value in lower + upper)
+                    or not all(lo < hi for lo, hi in zip(lower, upper, strict=True))):
+                raise TaskNeutralScoringError(
+                    ["policy_canary_owner_success_contract_full_containment_missing"]
+                )
+    if configured.get("object_must_rest_on_destination_support") is True:
+        affordance = _mapping_or_empty(task_spec.get("interaction_affordance"))
+        paths = affordance.get("intended_support_prim_paths")
+        if (not task_spec.get("destination_support_asset_id")
+                or not isinstance(paths, list) or len(paths) != 1
+                or not isinstance(paths[0], str) or not paths[0].startswith("/")):
+            raise TaskNeutralScoringError(["policy_canary_owner_success_contract_exact_support_missing"])
+    if configured.get("retreat_clearance_required") is True:
+        # The current rigid contract/scorer has no distance-qualified retreat
+        # criterion. An open gripper and cleared contact cannot prove clearance.
+        raise TaskNeutralScoringError(["policy_canary_owner_success_contract_retreat_scoring_unsupported"])
+
+
 def _candidate_spec(
     *,
     candidate: Mapping[str, Any],
@@ -528,7 +620,12 @@ def materialize_scene839873_policy_canary_setup(
         raw_success_contract = scene_plan.get("task_spec", {}).get(
             "task_success_contract"
         )
+    owner_contract_required = _mapping_or_empty(
+        task_spec.get("configured_success_criteria")
+    ).get("owner_success_contract_required") is True
     try:
+        if raw_success_contract is None and owner_contract_required:
+            raise TaskNeutralScoringError(["policy_canary_owner_success_contract_required"])
         if raw_success_contract is None:
             raw_success_contract = seal_rigid_task_success_contract(
                 task_spec=scene_plan.get("task_spec", {}),
@@ -540,9 +637,12 @@ def materialize_scene839873_policy_canary_setup(
             )
         task_success_contract = validate_rigid_task_success_contract(
             raw_success_contract,
-            require_confirmed=explicit_execution_contract,
+            require_confirmed=explicit_execution_contract or owner_contract_required,
             expected_site_id=str(scene_plan.get("scene_id") or ""),
             expected_task_id=str(scene_plan.get("task_id") or ""),
+        )
+        _require_strict_owner_success_contract(
+            task_spec=task_spec, contract=task_success_contract
         )
         if launch_request.get("task_success_contract") is not None and (
             launch_request.get("task_success_contract_digest")

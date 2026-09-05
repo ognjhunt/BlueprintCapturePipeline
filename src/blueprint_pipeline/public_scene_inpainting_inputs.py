@@ -25,7 +25,11 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
-from .dual_task_rehearsal_contract import validate_scene_freeze, validate_task_freeze
+from .public_scene_removal_selection import (
+    ADAPTER as REMOVAL_SELECTION_ADAPTER,
+    validate_source_preparation_scene_selection as validate_scene_freeze,
+    validate_source_preparation_task_selection as validate_task_freeze,
+)
 from .gaussian_splat_decode import (
     SplatData,
     convert_to_standard_ply,
@@ -33,6 +37,7 @@ from .gaussian_splat_decode import (
     read_standard_3dgs_ply,
     write_standard_3dgs_ply,
 )
+from .task_evaluation_splat_render_runtime import validate_splat_render_runtime
 from .sealed_camera_render import (
     SealedCameraRenderError,
     render_splat_at_exact_cameras,
@@ -42,6 +47,7 @@ REQUEST_SCHEMA = "adp009b_interiorgs_edit_input_request.v1"
 RECEIPT_SCHEMA = "adp009b_interiorgs_edit_input_receipt.v1"
 REQUEST_SCHEMA_V2 = "public_scene_interiorgs_edit_input_request.v2"
 RECEIPT_SCHEMA_V2 = "public_scene_interiorgs_edit_input_receipt.v2"
+SEALED_SOURCE_ADAPTERS = {"dual_task_freeze_and_standard_splat_v1", REMOVAL_SELECTION_ADAPTER}
 RENDER_HARNESS_REL = "tools/splat_render/render_splat.mjs"
 RENDER_ENTRY_REL = "tools/splat_render/src/render_entry.mjs"
 
@@ -122,7 +128,7 @@ def build_public_scene_inpainting_input_request(value: Mapping[str, Any]) -> dic
             if not str(scene.get(key) or "").strip():
                 errors.append(f"edit_input_scene_{key}_missing")
     else:
-        if scene.get("source_adapter") != "dual_task_freeze_and_standard_splat_v1":
+        if scene.get("source_adapter") not in SEALED_SOURCE_ADAPTERS:
             errors.append("edit_input_scene_source_adapter_invalid")
         for key in (
             "scene_freeze_path",
@@ -620,6 +626,7 @@ def _verified_dual_task_scene_source(
 def materialize_public_scene_inpainting_inputs(
     *, request_path: str | Path, repo_root: str | Path, data_root: str | Path,
     output_root: str | Path, receipt_output: str | Path | None = None,
+    production_runtime_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Materialize and receipt one real render-derived InteriorGS input packet."""
 
@@ -647,10 +654,20 @@ def materialize_public_scene_inpainting_inputs(
     scene = request["scene"]
     output.mkdir(parents=True, exist_ok=True)
     source_adapter = str(scene.get("source_adapter") or "legacy_component_v1")
+    runtime = (
+        validate_splat_render_runtime(runtime_root=production_runtime_root, repo_root=repo)
+        if production_runtime_root is not None else None
+    )
+    runtime_kwargs = ({
+        "node": str(runtime["node"]),
+        "renderer_runtime_root": str(runtime["renderer_root"]),
+        "browser_executable": str(runtime["browser_executable"]),
+        "renderer_runtime_identity": dict(runtime["identity"]),
+    } if runtime else {})
     source_identity: dict[str, Any]
     manifest: dict[str, Any] | None = None
     component_receipt: dict[str, Any] | None = None
-    if source_adapter == "dual_task_freeze_and_standard_splat_v1":
+    if source_adapter in SEALED_SOURCE_ADAPTERS:
         source_identity = _verified_dual_task_scene_source(
             scene=scene, repo=repo, data=data
         )
@@ -795,7 +812,7 @@ def materialize_public_scene_inpainting_inputs(
             "registered_frame_status": "legacy_component_admission",
         }
     splat = read_standard_3dgs_ply(standard_ply)
-    if source_adapter == "dual_task_freeze_and_standard_splat_v1" and (
+    if source_adapter in SEALED_SOURCE_ADAPTERS and (
         splat.count != source_identity["gaussian_count"]
     ):
         raise PublicSceneInpaintingInputError(
@@ -844,7 +861,7 @@ def materialize_public_scene_inpainting_inputs(
     camera_file.write_text(
         canonical_json(
             sealed_cameras
-            if source_adapter == "dual_task_freeze_and_standard_splat_v1"
+            if source_adapter in SEALED_SOURCE_ADAPTERS
             else cameras
         )
         + "\n",
@@ -860,7 +877,7 @@ def materialize_public_scene_inpainting_inputs(
         "timeout_seconds": int(rendering["timeout_seconds"]),
     }
     sealed_render_manifests: dict[str, Any] = {}
-    if source_adapter == "dual_task_freeze_and_standard_splat_v1":
+    if source_adapter in SEALED_SOURCE_ADAPTERS:
         render_inputs = (
             ("images", standard_ply, int(splat.count), "complete source appearance"),
             (
@@ -906,6 +923,7 @@ def materialize_public_scene_inpainting_inputs(
                         rendering.get("exposure_mode", "renderer_default_unmodified")
                     ),
                     repo_root=repo,
+                    **runtime_kwargs,
                     graphics_backend=str(rendering["graphics_backend"]),
                     background_rgb=int(rendering.get("background_rgb", 0)),
                     warmup_ms=int(rendering["warmup_ms"]),
@@ -1021,7 +1039,7 @@ def materialize_public_scene_inpainting_inputs(
              "visible_target_contribution_fraction": round(visible_fraction, 9),
              "scene_without_target_render": _record(background, output)}
         )
-    if source_adapter == "dual_task_freeze_and_standard_splat_v1":
+    if source_adapter in SEALED_SOURCE_ADAPTERS:
         renderer = {
             "name": "reference_spark_renderer_exact_camera",
             "authorization_class": "method_input",
@@ -1075,7 +1093,7 @@ def materialize_public_scene_inpainting_inputs(
     receipt = {
         "schema_version": (
             RECEIPT_SCHEMA_V2
-            if source_adapter == "dual_task_freeze_and_standard_splat_v1"
+            if source_adapter in SEALED_SOURCE_ADAPTERS
             else RECEIPT_SCHEMA
         ),
         "status": "render_derived_input_packet_materialized",
@@ -1113,13 +1131,13 @@ def materialize_public_scene_inpainting_inputs(
             "schema_version": "public_scene_inpainting_camera_pose_contract.v1",
             "camera_file_pose_field": (
                 "T_world_camera_provider_frame"
-                if source_adapter == "dual_task_freeze_and_standard_splat_v1"
+                if source_adapter in SEALED_SOURCE_ADAPTERS
                 else "T_world_camera_opencv"
             ),
             "semantic_pose_field": "T_world_camera_opencv",
             "camera_coordinate_convention": "opencv_x_right_y_down_z_forward",
             "provider_frame_aliases_opencv": (
-                source_adapter == "dual_task_freeze_and_standard_splat_v1"
+                source_adapter in SEALED_SOURCE_ADAPTERS
             ),
         },
         "mask_policy": {
@@ -1156,7 +1174,7 @@ def materialize_public_scene_inpainting_inputs(
         },
         "smallest_next_blocker": (
             "independent_gaussian_contribution_ownership_and_replacement_depth_coverage"
-            if source_adapter == "dual_task_freeze_and_standard_splat_v1"
+            if source_adapter in SEALED_SOURCE_ADAPTERS
             else "method_native_interiorgs_adapter_and_unchanged_author_runtime_required"
         ),
         "claim_ceiling": "synthetic_public_scene_inpainting_input_candidate",
@@ -1169,7 +1187,7 @@ def materialize_public_scene_inpainting_inputs(
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     output_receipt_name = (
         "public_scene_interiorgs_edit_input_receipt.v2.json"
-        if source_adapter == "dual_task_freeze_and_standard_splat_v1"
+        if source_adapter in SEALED_SOURCE_ADAPTERS
         else "adp009b_interiorgs_edit_input_receipt.v1.json"
     )
     (output / output_receipt_name).write_text(
