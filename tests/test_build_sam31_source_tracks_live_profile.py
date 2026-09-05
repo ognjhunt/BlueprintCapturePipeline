@@ -17,10 +17,6 @@ from blueprint_pipeline.sam31_gpu_admission import (
     SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
     SAM31_PREFERRED_GEOLOCATION_REGEX,
 )
-from blueprint_pipeline.sam31_gpu_admission import (
-    SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
-    SAM31_PREFERRED_GEOLOCATION_REGEX,
-)
 from blueprint_pipeline.sam31_paid_attempt_authority import (
     materialize_sam31_paid_attempt_authority,
 )
@@ -62,7 +58,6 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
         "operation": "source_track_canary",
         "source_profile": "monocular_video",
         "allowed_geolocation_country_codes": list(SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES),
-        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
         "source_commit_sha": COMMIT,
         "worker_image_digest": "registry.example/sam31@sha256:" + "b" * 64,
         "worker_stack_manifest_digest": evidence_digest,
@@ -231,7 +226,6 @@ def test_published_profile_reaches_real_dry_run_with_fresh_preflight(
                 "status": "available",
                 "selected_offer": {
                     "gpu_name": "L40S",
-                    "geolocation": "California, US",
                     "gpu_ram_mb": 48_000,
                     "on_demand_price_usd_per_hour": 0.5,
                     "geolocation": "California, US",
