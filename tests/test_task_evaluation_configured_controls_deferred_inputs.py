@@ -457,3 +457,90 @@ def test_deferred_publish_failure_leaves_no_partial_replay_file(tmp_path, monkey
     assert not list(tmp_path.glob(".deferred-*"))
     monkeypatch.setattr(deferred.os, "link", original)
     assert deferred._write_immutable_bytes(path, b"complete bytes", conflict="conflict") == path
+
+
+def _dual_store_clients(tmp_path, monkeypatch, payloads):
+    import io
+    import boto3
+    from blueprint_pipeline import task_evaluation_launch_preparation_worker as preparation
+
+    buckets = {"legacy": "blueprint", "artifact": "blueprint-task-evaluation-artifacts-prod"}
+    endpoints = {"legacy": "https://nyc3.digitaloceanspaces.com",
+                 "artifact": "https://s3.us-east-005.backblazeb2.com"}
+    for role, names in [("legacy", preparation._LEGACY_OBJECT_STORE_FILE_ENV),
+                        ("artifact", preparation._ARTIFACT_STORE_FILE_ENV)]:
+        values = {"access_key": role + "-fixture-access", "secret_key": role + "-fixture-secret",
+                  "bucket": buckets[role], "endpoint": endpoints[role], "region": "us-east-1"}
+        for key, name in names.items():
+            path = tmp_path / f"{role}-{key}"
+            path.write_text(values[key])
+            path.chmod(0o600)
+            monkeypatch.setenv(name, str(path))
+    monkeypatch.setenv(preparation._EXPECTED_ARTIFACT_BUCKET_ENV, buckets["artifact"])
+    calls = []
+    bodies = []
+
+    def client(service, **kwargs):
+        assert service == "s3"
+        class Store:
+            def get_object(self, *, Bucket, Key):
+                calls.append((kwargs["endpoint_url"], Bucket, Key))
+                body = io.BytesIO(payloads[Bucket])
+                bodies.append(body)
+                return {"Body": body}
+        return Store()
+
+    monkeypatch.setattr(boto3, "client", client)
+    return calls, bodies, buckets, endpoints
+
+
+def test_default_fetcher_reads_original_do_and_new_b2_inputs_in_one_process(tmp_path, monkeypatch):
+    payloads = {"blueprint": b"original task definition",
+                "blueprint-task-evaluation-artifacts-prod": b"new native qualification"}
+    calls, bodies, _buckets, endpoints = _dual_store_clients(tmp_path, monkeypatch, payloads)
+    for bucket, payload in payloads.items():
+        reference = {"uri": f"s3://{bucket}/configured/input.json",
+                     "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                     "size_bytes": len(payload)}
+        assert deferred._fetched(reference, fetcher=deferred.default_reference_fetcher) == payload
+    assert calls == [(endpoints["legacy"], "blueprint", "configured/input.json"),
+                     (endpoints["artifact"], "blueprint-task-evaluation-artifacts-prod", "configured/input.json")]
+    assert all(body.closed for body in bodies)
+
+
+@pytest.mark.parametrize("bucket", ["blueprint", "blueprint-task-evaluation-artifacts-prod"])
+@pytest.mark.parametrize("defect", ["digest", "size"])
+def test_bucket_routing_preserves_full_byte_digest_and_size_checks(tmp_path, monkeypatch, bucket, defect):
+    payload = b"bounded document"
+    calls, bodies, _buckets, _endpoints = _dual_store_clients(tmp_path, monkeypatch, {bucket: payload})
+    reference = {"uri": f"s3://{bucket}/configured/input.json",
+                 "digest": "sha256:" + hashlib.sha256(payload).hexdigest(), "size_bytes": len(payload)}
+    if defect == "digest":
+        reference["digest"] = "sha256:" + "0" * 64
+    else:
+        reference["size_bytes"] -= 1
+    with pytest.raises(deferred.ConfiguredControlsDeferredInputError, match="fetch_mismatch"):
+        deferred._fetched(reference, fetcher=deferred.default_reference_fetcher)
+    assert len(calls) == 1 and all(body.closed for body in bodies)
+
+
+def test_default_fetcher_refuses_unconfigured_bucket_before_request(tmp_path, monkeypatch):
+    calls, _bodies, _buckets, _endpoints = _dual_store_clients(tmp_path, monkeypatch, {})
+    with pytest.raises(deferred.ConfiguredControlsDeferredInputError, match="bucket_not_configured"):
+        deferred.default_reference_fetcher({"uri": "s3://unconfigured-bucket/document.json",
+            "digest": "sha256:" + "0" * 64, "size_bytes": 10})
+    assert calls == []
+
+
+def test_progression_unit_declares_b2_role_without_overriding_legacy_store():
+    unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service").read_text()
+    for line in [
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region",
+        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod",
+    ]:
+        assert f"Environment={line}" in unit
+    assert "Environment=BLUEPRINT_WAM_OBJECT_STORE" not in unit
