@@ -574,3 +574,172 @@ def test_process_scans_the_preparation_queue_and_reports_one_row_per_configurati
     assert [row["status"] for row in rows] == ["awaiting_scene_configuration_authority"]
     assert rows[0]["preparation_id"] == PREPARATION_ID
     assert rows[0]["activation_status"] == "scene_configuration_activation_queued"
+
+
+@pytest.mark.parametrize("failure_stage", ["lineage", "window", "queue", "state"])
+def test_activation_restarts_after_partial_side_effects_with_frozen_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_stage: str
+) -> None:
+    intent_root, _ = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+    lineage, window = _publisher("lineage"), _publisher("window")
+    collected = []
+    original_queue = automation.stage_launch_activation_request
+    original_write = automation._write_immutable
+    failed = False
+
+    def fail_once():
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise automation.SceneConfigurationActivationAutomationError("transient_failure")
+
+    def publish_lineage(**kwargs):
+        if failure_stage == "lineage":
+            fail_once()
+        return lineage(**kwargs)
+
+    def publish_window(**kwargs):
+        if failure_stage == "window":
+            fail_once()
+        return window(**kwargs)
+
+    def queue(**kwargs):
+        receipt = original_queue(**kwargs)
+        if failure_stage == "queue":
+            fail_once()
+        return receipt
+
+    def write(path, value):
+        if failure_stage == "state" and path.name == "activation_progression.json":
+            fail_once()
+        original_write(path, value)
+
+    def collect():
+        collected.append(True)
+        return _provider_zero(NOW - timedelta(seconds=20))
+
+    monkeypatch.setattr(automation, "stage_launch_activation_request", queue)
+    monkeypatch.setattr(automation, "_write_immutable", write)
+    arguments = dict(
+        preparation_result_path=result_path, preparation_queue_root=tmp_path / "preparations",
+        activation_queue_root=tmp_path / "activations", progression_root=tmp_path / "progression",
+        intent_root=intent_root, provider_zero_collector=collect,
+        lineage_publisher_factory=lambda: publish_lineage,
+        release_window_publisher_factory=lambda: publish_window,
+    )
+    with pytest.raises(automation.SceneConfigurationActivationAutomationError, match="transient_failure"):
+        automation.advance_scene_configuration_activation(**arguments, now=NOW)
+    attempt_path = next((tmp_path / "progression").rglob("activation_attempt.json"))
+    frozen = attempt_path.read_bytes()
+    result = automation.advance_scene_configuration_activation(**arguments, now=NOW + timedelta(seconds=30))
+    assert result["status"] == "scene_configuration_activation_queued"
+    assert attempt_path.read_bytes() == frozen
+    assert collected == [True]
+    assert len(list((tmp_path / "activations" / "pending").glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize("offset", [timedelta(seconds=1), timedelta(days=1)])
+def test_activation_rejects_future_provider_zero_before_publication(tmp_path: Path, offset) -> None:
+    intent_root, _ = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+    with pytest.raises(automation.SceneConfigurationActivationAutomationError, match="provider_zero_future"):
+        _advance(tmp_path, result_path, intent_root, zero=_provider_zero(NOW + offset))
+    assert not (tmp_path / "activations").exists()
+    assert not (tmp_path / "progression").exists()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("schema_version", "other.v1"),
+    ("request_digest", "sha256:" + "f" * 64),
+    ("provider_mutation_performed_inside_intake", True),
+])
+def test_preparation_envelope_resealed_tampering_is_rejected(tmp_path: Path, field, value) -> None:
+    intent_root, _ = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+    path = next((tmp_path / "preparations" / "materialized").glob("*.json"))
+    envelope = json.loads(path.read_text())
+    envelope[field] = value
+    _write(path, _sealed(envelope, "envelope_digest"))
+    with pytest.raises(automation.SceneConfigurationActivationAutomationError, match="preparation_envelope_invalid"):
+        _advance(tmp_path, result_path, intent_root)
+
+
+def test_webapp_retry_explicitly_allows_exact_request_replay(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    endpoint = automation.DEFAULT_WEBAPP_ENDPOINT
+    request = {"launch_id": "launch-123", "run_id": "run-123"}
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        request_path = Path(argv[argv.index("--request") + 1])
+        receipt_path = Path(argv[argv.index("--receipt-out") + 1])
+        _write(receipt_path, {
+            "schema_version": "task_evaluation_launch_web_submission_receipt.v1",
+            "status": "replayed", "endpoint": endpoint,
+            "launch_id": request["launch_id"], "run_id": request["run_id"],
+            "idempotency_key": request["launch_id"],
+            "submitted_body_digest": _sha256(request_path),
+            "provider_mutation_performed_by_this_tool": False,
+            "webapp_receipt": {
+                "schema_version": "task_evaluation_launch_web_receipt.v1",
+                "launch_id": request["launch_id"], "run_id": request["run_id"],
+                "submission_channel": "production_webapp_service_api",
+                "provider_mutation_performed_inside_web_request": False,
+            },
+        })
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(automation.subprocess, "run", run)
+    submit = automation.webapp_submitter(repo_root=tmp_path, secret_file=tmp_path / "secret",
+                                        endpoint=endpoint, state_root=tmp_path / "submissions")
+    assert submit(request)["status"] == "accepted"
+    assert "--allow-replay" in calls[0]
+    assert submit(request)["status"] == "accepted"
+    assert len(calls) == 1
+    receipt_path = next((tmp_path / "submissions").glob("*.webapp-submission.json"))
+    receipt = json.loads(receipt_path.read_text())
+    receipt["submitted_body_digest"] = "sha256:" + "f" * 64
+    _write(receipt_path, receipt)
+    with pytest.raises(automation.SceneConfigurationActivationAutomationError, match="webapp_receipt_invalid"):
+        submit(request)
+
+
+def test_stale_interrupted_attempt_cannot_refresh_its_authority(tmp_path: Path) -> None:
+    intent_root, _ = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+
+    def unavailable():
+        raise automation.SceneConfigurationActivationAutomationError("store_unavailable")
+
+    with pytest.raises(automation.SceneConfigurationActivationAutomationError, match="store_unavailable"):
+        automation.advance_scene_configuration_activation(
+            preparation_result_path=result_path, preparation_queue_root=tmp_path / "preparations",
+            activation_queue_root=tmp_path / "activations", progression_root=tmp_path / "progression",
+            intent_root=intent_root, provider_zero_collector=lambda: _provider_zero(NOW),
+            lineage_publisher_factory=unavailable, now=NOW + timedelta(seconds=1),
+        )
+    frozen = next((tmp_path / "progression").rglob("activation_attempt.json")).read_bytes()
+    with pytest.raises(automation.SceneConfigurationActivationAutomationError, match="provider_zero_stale"):
+        _advance(tmp_path, result_path, intent_root, now=NOW + timedelta(hours=1))
+    assert next((tmp_path / "progression").rglob("activation_attempt.json")).read_bytes() == frozen
+    assert not (tmp_path / "activations").exists()
+
+
+def test_immutable_publication_failure_leaves_no_partial_final_file(tmp_path: Path, monkeypatch) -> None:
+    target = tmp_path / "checkpoint.json"
+    original = automation.os.link
+
+    def fail_link(*args):
+        raise OSError("injected_disk_failure")
+
+    monkeypatch.setattr(automation.os, "link", fail_link)
+    with pytest.raises(OSError, match="injected_disk_failure"):
+        automation._write_immutable(target, {"data": "complete"})
+    assert not target.exists()
+    assert not list(tmp_path.glob(".activation-*"))
+    monkeypatch.setattr(automation.os, "link", original)
+    automation._write_immutable(target, {"data": "complete"})
+    assert json.loads(target.read_text()) == {"data": "complete"}

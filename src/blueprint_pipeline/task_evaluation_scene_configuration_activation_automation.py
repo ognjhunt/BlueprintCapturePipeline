@@ -24,6 +24,7 @@ import os
 import re
 import subprocess  # nosec B404 - fixed interpreter and repository script argv
 import sys
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,9 +36,6 @@ from .task_evaluation_launch_activation_contract import (
     validate_launch_activation_request,
 )
 from .task_evaluation_launch_activation_queue import stage_launch_activation_request
-from .task_evaluation_scene_configuration_paid_authority import (
-    MAX_PROVIDER_ZERO_AGE_SECONDS,
-)
 from .task_evaluation_shared_mutation_window import (
     TaskEvaluationSharedMutationWindowError,
     materialize_shared_mutation_window,
@@ -132,18 +130,35 @@ def _artifact(path: Path) -> dict[str, Any]:
     }
 
 
+def _write_bytes_immutable(path: Path, payload: bytes) -> None:
+    """Publish complete bytes atomically; interrupted writes never poison a restart."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".activation-", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.fchmod(stream.fileno(), 0o440)
+            try:
+                os.link(temporary, path)
+                directory = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            except FileExistsError:
+                if path.is_symlink() or path.read_bytes() != payload:
+                    raise SceneConfigurationActivationAutomationError(
+                        "scene_configuration_activation_immutable_conflict"
+                    ) from None
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> None:
     payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-    try:
-        with path.open("xb") as stream:
-            stream.write(payload)
-        path.chmod(0o440)
-    except FileExistsError:
-        if path.is_symlink() or path.read_bytes() != payload:
-            raise SceneConfigurationActivationAutomationError(
-                "scene_configuration_activation_immutable_conflict"
-            ) from None
+    _write_bytes_immutable(path, payload)
 
 
 def _copy_immutable(source: Path, destination: Path, *, expected: Mapping[str, Any]) -> None:
@@ -159,16 +174,7 @@ def _copy_immutable(source: Path, destination: Path, *, expected: Mapping[str, A
         raise SceneConfigurationActivationAutomationError(
             "scene_configuration_activation_intent_artifact_drifted"
         )
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-    try:
-        with destination.open("xb") as stream:
-            stream.write(payload)
-        destination.chmod(0o440)
-    except FileExistsError:
-        if destination.is_symlink() or destination.read_bytes() != payload:
-            raise SceneConfigurationActivationAutomationError(
-                "scene_configuration_activation_immutable_conflict"
-            ) from None
+    _write_bytes_immutable(destination, payload)
 
 
 def _sealed(value: Mapping[str, Any], *, field: str) -> dict[str, Any]:
@@ -415,7 +421,7 @@ def _validated_provider_zero(value: Mapping[str, Any]) -> dict[str, Any]:
         or zero.get("api_confirmed") is not True
         or not valid_vast_provider_zero_api_call(zero.get("api_command"))
         or zero.get("raw_secret_values_recorded") is not False
-        or not isinstance(zero.get("stderr_present"), bool)
+        or zero.get("stderr_present") is not False
         or not _is_sealed(zero, field="provider_zero_digest")
     ):
         raise SceneConfigurationActivationAutomationError(
@@ -513,6 +519,11 @@ def _preparation_context(
     request = envelope.get("request")
     if (
         not isinstance(request, Mapping)
+        or envelope.get("schema_version") != "task_evaluation_launch_preparation_intake_envelope.v1"
+        or request.get("schema_version") != "task_evaluation_launch_preparation_request.v1"
+        or envelope.get("request_digest") != canonical_digest(request)
+        or envelope.get("provider_mutation_performed_inside_intake") is not False
+        or envelope.get("catalog_mutation_performed_inside_intake") is not False
         or not _is_sealed(envelope, field="envelope_digest")
         or _DIGEST.fullmatch(str(envelope.get("request_digest") or "")) is None
         or request.get("preparation_id") != preparation_id
@@ -601,23 +612,56 @@ def advance_scene_configuration_activation(
         raise SceneConfigurationActivationAutomationError(
             "scene_configuration_activation_intent_commit_mismatch"
         )
-    zero = _validated_provider_zero(provider_zero_collector())
-    zero_time = _parse_time(
-        zero.get("observed_at_utc"),
-        blocker="scene_configuration_activation_provider_zero_invalid",
+    from .task_evaluation_scene_configuration_paid_authority import (
+        MAX_PROVIDER_ZERO_AGE_SECONDS,
     )
-    observed_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0)
-    # The paid authority refuses a zero observed after the authorization it
-    # precedes, and second-precision authorization stamps can read as older
-    # than a zero minted moments earlier: anchor strictly after the zero.
-    if observed_now <= zero_time:
-        observed_now = (zero_time + timedelta(seconds=1)).replace(microsecond=0)
-    if (observed_now - zero_time).total_seconds() > MAX_PROVIDER_ZERO_AGE_SECONDS:
+
+    attempt_path = state_root / "activation_attempt.json"
+    current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    bindings = {
+        "intent_digest": intent["intent_digest"],
+        "preparation_result_digest": result["result_digest"],
+        "preparation_request_digest": envelope["request_digest"],
+        "expected_production_commit": commit,
+    }
+    if attempt_path.exists():
+        attempt = _load(attempt_path, blocker="scene_configuration_activation_attempt_invalid")
+        if (
+            attempt.get("schema_version") != "task_evaluation_scene_configuration_activation_attempt.v1"
+            or not _is_sealed(attempt, field="attempt_digest")
+            or any(attempt.get(key) != value for key, value in bindings.items())
+            or not isinstance(attempt.get("provider_zero"), Mapping)
+        ):
+            raise SceneConfigurationActivationAutomationError(
+                "scene_configuration_activation_attempt_invalid"
+            )
+        zero = _validated_provider_zero(attempt["provider_zero"])
+        observed_now = _parse_time(
+            attempt.get("authorized_on"), blocker="scene_configuration_activation_attempt_invalid"
+        )
+    else:
+        zero = _validated_provider_zero(provider_zero_collector())
+        # Preserve subsecond precision instead of moving authority into the future.
+        observed_now = current_time if now is not None else datetime.now(timezone.utc)
+    zero_time = _parse_time(
+        zero.get("observed_at_utc"), blocker="scene_configuration_activation_provider_zero_invalid"
+    )
+    if zero_time > observed_now or observed_now > (current_time if now is not None else datetime.now(timezone.utc)):
+        raise SceneConfigurationActivationAutomationError(
+            "scene_configuration_activation_provider_zero_future"
+        )
+    if (current_time - zero_time).total_seconds() > MAX_PROVIDER_ZERO_AGE_SECONDS:
         raise SceneConfigurationActivationAutomationError(
             "scene_configuration_activation_provider_zero_stale"
         )
     activation_id = _activation_id(preparation_id)
-    state_root.mkdir(parents=True, exist_ok=True, mode=0o750)
+    attempt = _sealed({
+        "schema_version": "task_evaluation_scene_configuration_activation_attempt.v1",
+        **bindings,
+        "provider_zero": zero,
+        "authorized_on": _iso(observed_now),
+    }, field="attempt_digest")
+    _write_immutable(attempt_path, attempt)
     zero_path = state_root / "adp_paid_provider_zero.v1.json"
     _write_immutable(zero_path, zero)
     spend_row = intent["artifact_inventory"]["project_spend_reconciliation"]
@@ -800,6 +844,7 @@ def webapp_submitter(
                 [
                     sys.executable,
                     str(root / "scripts" / "submit_task_evaluation_launch_via_webapp.py"),
+                    "--allow-replay",
                     "--request",
                     str(request_path),
                     "--secret-file",
@@ -824,9 +869,19 @@ def webapp_submitter(
         )
         web = evidence.get("webapp_receipt")
         if (
-            evidence.get("status") not in {"submitted", "replayed"}
+            evidence.get("schema_version") != "task_evaluation_launch_web_submission_receipt.v1"
+            or evidence.get("status") not in {"submitted", "replayed"}
+            or evidence.get("submitted_body_digest") != _sha256(request_path)
+            or evidence.get("run_id") != request["run_id"]
+            or evidence.get("idempotency_key") != launch_id
+            or evidence.get("endpoint") != endpoint
+            or evidence.get("provider_mutation_performed_by_this_tool") is not False
             or evidence.get("launch_id") != launch_id
             or not isinstance(web, Mapping)
+            or web.get("schema_version") != "task_evaluation_launch_web_receipt.v1"
+            or web.get("launch_id") != launch_id
+            or web.get("run_id") != request["run_id"]
+            or web.get("submission_channel") != "production_webapp_service_api"
             or web.get("provider_mutation_performed_inside_web_request") is not False
         ):
             raise SceneConfigurationActivationAutomationError(
