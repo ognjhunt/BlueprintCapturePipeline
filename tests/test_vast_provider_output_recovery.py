@@ -87,3 +87,35 @@ def test_recovery_refuses_remote_size_mismatch(monkeypatch, tmp_path: Path) -> N
     assert result["blockers"] == [
         "provider_output_ssh_recovery_remote_size_mismatch"
     ]
+
+
+def test_unknown_result_size_is_bounded_and_reserved_for_sam(monkeypatch, tmp_path):
+    _install_identity(monkeypatch, tmp_path)
+    result = recovery.recover_provider_output_before_teardown(
+        connection={'ssh_host':'example.invalid','ssh_port':2222},
+        provider_bundle_kind='native_task_arena', output_path=tmp_path/'result.zip',
+        attempt_dir=tmp_path/'attempt', expected_size_bytes=None, maximum_size_bytes=64)
+    assert result['status'] == 'blocked'
+    assert result['blockers'] == ['provider_output_ssh_recovery_expected_size_invalid']
+
+
+def test_metadata_and_transfer_share_one_recovery_deadline(monkeypatch, tmp_path):
+    _install_identity(monkeypatch, tmp_path)
+    moments = iter([0., 4., 8.])
+    monkeypatch.setattr(recovery.time, 'monotonic', lambda: next(moments))
+    payload = b'{}'
+    timeouts = []
+    def ssh(_command, **kwargs):
+        timeouts.append(kwargs['timeout'])
+        if kwargs.get('text'):
+            return SimpleNamespace(returncode=0, stdout=f'2 {hashlib.sha256(payload).hexdigest()}\n')
+        kwargs['stdout'].write(payload)
+        return SimpleNamespace(returncode=0, stderr=b'')
+    monkeypatch.setattr(recovery.subprocess, 'run', ssh)
+    result = recovery.recover_provider_output_before_teardown(
+        connection={'ssh_host':'example.invalid','ssh_port':2222},
+        provider_bundle_kind='sam31_source_tracks', output_path=tmp_path/'result.json',
+        attempt_dir=tmp_path/'attempt', expected_size_bytes=None, maximum_size_bytes=64,
+        timeout_seconds=12)
+    assert result['status'] == 'completed'
+    assert timeouts == [8., 4.]

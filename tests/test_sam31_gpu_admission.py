@@ -281,6 +281,7 @@ def test_preflight_collects_provider_zero_without_mutation() -> None:
     )
     assert result["status"] == "verified"
     assert result["provider_mutations_performed"] == 0
+    assert result["capacity_request"]["require_direct_port"] is True
     assert result["capacity_request"]["allowed_geolocation_country_codes"] == ["US"]
     assert (
         result["capacity_request"]["preferred_geolocation_regex"]
