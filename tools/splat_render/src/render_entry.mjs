@@ -216,8 +216,8 @@ async function warmup(ms = 2500) {
 // The exact form reproduces an OpenCV-convention pinhole camera (x right, y down,
 // z forward; principal point in COLMAP pixel coordinates) via an off-axis
 // projection matrix, for sealed held-out view evaluation.
-async function renderView(spec, settleFrames = 10, settleMs = 110) {
-  const { camera, renderer, scene, canvas, bounds } = state;
+function setCamera(spec) {
+  const { camera, canvas, bounds } = state;
   if (spec.pose && spec.intrinsics) {
     const K = spec.intrinsics;
     if (canvas.width !== K.width || canvas.height !== K.height) {
@@ -252,6 +252,11 @@ async function renderView(spec, settleFrames = 10, settleMs = 110) {
     camera.updateProjectionMatrix();
   }
   camera.updateMatrixWorld(true);
+}
+
+async function renderView(spec, settleFrames = 10, settleMs = 110) {
+  const { camera, renderer, scene, canvas } = state;
+  setCamera(spec);
   for (let k = 0; k < settleFrames; k++) {
     renderer.render(scene, camera);
     await delay(settleMs);
@@ -259,5 +264,5 @@ async function renderView(spec, settleFrames = 10, settleMs = 110) {
   return canvas.toDataURL("image/png");
 }
 
-window.BlueprintSplat = { load, loadComposite, setOverlay, warmup, renderView };
+window.BlueprintSplat = { load, loadComposite, setOverlay, setCamera, warmup, renderView };
 window.__sparkReady = true;
