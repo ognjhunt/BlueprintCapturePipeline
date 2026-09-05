@@ -28,6 +28,7 @@ def validate_full_source_disclosure(
     standard_splat_path: Path, original_source_path: Path,
     expected_source_commit: str, publisher_scene_id: str,
     approved_roots: Sequence[Path],
+    purpose: str = "released_code_segment_contribution_sweep",
 ) -> dict[str, Any]:
     """Reopen exact conversion/source bytes, then require separate explicit authority.
 
@@ -35,6 +36,9 @@ def validate_full_source_disclosure(
     Neither changed encoding, frame permission nor general compute spend consent
     supplies authority for disclosing all of its original scene content.
     """
+    _require(purpose in {"released_code_segment_contribution_sweep", "exact_source_calibration_gpu_render",
+                        "configured_scene_partitioned_source_processing"},
+             "purpose_invalid")
     conversion = read(conversion_path, digest_field="receipt_digest")
     _require(conversion.get("schema_version") == "standard_splat_conversion_receipt.v1"
              and conversion.get("status") == "standard_splat_conversion_materialized"
@@ -73,7 +77,10 @@ def validate_full_source_disclosure(
         "retained_gaussian_count": actual_count, "source_gaussian_count": source["source_gaussian_count"],
         "publisher_terms_digest": rights.get("terms_digest"),
     }
-    reference = task_authority.get("full_source_provider_disclosure_authority")
+    scopes = task_authority.get("full_source_provider_disclosure_authorities")
+    reference = (scopes.get(purpose) if isinstance(scopes, Mapping) else None)
+    if reference is None:
+        reference = task_authority.get("full_source_provider_disclosure_authority")
     _require(isinstance(reference, Mapping), "explicit_full_source_authority_required")
     path = Path(str(reference.get("path") or ""))
     _require(path.is_absolute() and any(path.resolve().is_relative_to(root.resolve())
@@ -89,7 +96,7 @@ def validate_full_source_disclosure(
              and authority.get("agent_accepted_terms") is False
              and authority.get("source_commit") == expected_source_commit
              and authority.get("provider_id") == "vast"
-             and authority.get("purpose") == "released_code_segment_contribution_sweep"
+             and authority.get("purpose") == purpose
              and authority.get("source_binding") == binding,
              "explicit_full_source_authority_invalid")
     _require(all(authority.get(key) is True for key in (
@@ -115,7 +122,7 @@ def validate_full_source_disclosure(
             _require(sha(evidence) == rights["terms_digest"], "publisher_terms_mismatch")
     proof = {
         "schema_version": PROOF_SCHEMA, "status": "explicit_full_source_disclosure_verified",
-        "payload_kind": "full_source_scene_reencoded_standard_splat",
+        "payload_kind": "full_source_scene_reencoded_standard_splat", "purpose": purpose,
         "source_binding": binding, "conversion_receipt": _record(conversion_path),
         "conversion_receipt_digest": conversion["receipt_digest"],
         "conversion_rights": dict(rights), "publisher_rights_basis": dict(basis),
