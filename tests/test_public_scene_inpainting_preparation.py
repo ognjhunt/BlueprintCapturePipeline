@@ -50,11 +50,16 @@ def _returned(prepared, root, monkeypatch):
         path.write_text(json.dumps(manifest))
         groups[role] = {"root": directory, "manifest_path": path, "manifest": manifest}
     returned_path = root / "verified-test-return.json"
-    returned_path.write_text(json.dumps({"test_fixture_only": True}))
+    returned = {"test_fixture_only": True, "execution_closure": {
+        key: {"fixture_only": True} for key in (
+            "source_disclosure", "private_store", "provider_execution", "official_billing", "teardown", "provider_zero")},
+        "return_digest": "sha256:" + "b" * 64}
+    returned_path.write_text(json.dumps(returned))
     # The verifier itself is independently exercised by source-calibration
     # lifecycle tests; these tests protect the CPU continuation after it passes.
     monkeypatch.setitem(sys.modules, "blueprint_pipeline.source_calibration_render_return",
-        SimpleNamespace(verify_source_calibration_return=lambda prepared_inputs, returned_group_path: groups))
+        SimpleNamespace(verify_source_calibration_return=lambda prepared_inputs, returned_group_path: groups,
+                        require_source_calibration_closure=lambda prepared_inputs, returned_group_path: returned))
     return returned_path, groups
 
 
@@ -90,6 +95,12 @@ def test_verified_return_produces_original_16_camera_mask_receipts(tmp_path, mon
     assert finalized["derived_artifacts"]["masks"] == local["derived_artifacts"]["masks"]
     assert finalized["derived_artifacts"]["images"] == local["derived_artifacts"]["images"]
     assert finalized["source_calibration_render"]["preparation_digest"] == prepared["preparation_digest"]
+    provenance = finalized["source_calibration_render"]
+    assert provenance["full_source_scene_content_transferred"] is True
+    assert provenance["original_downloaded_file_uploaded"] is False and provenance["private_only"] is True
+    assert set(provenance["execution_closure"]) == {
+        "source_disclosure", "private_store", "provider_execution", "official_billing", "teardown", "provider_zero"}
+    assert "source_calibration_render" not in local
     assert len(list(paths["output"].glob("*/frames/*.png"))) == 48
 
 
@@ -127,3 +138,17 @@ def test_prepared_source_camera_count_and_render_binding_are_reopened(tmp_path, 
         Path(prepared["preparation_path"]).write_text(json.dumps(prepared))
     with pytest.raises(module.PublicSceneInpaintingInputError, match="edit_input_preparation"):
         validate_prepared_inputs(prepared["preparation_path"])
+
+
+def test_unclosed_gpu_return_is_rejected_before_frame_copy(tmp_path, monkeypatch):
+    paths, prepared = _prepare(tmp_path)
+    returned, _groups = _returned(prepared, paths["data"] / "gpu-return", monkeypatch)
+    def unclosed(*args):
+        raise ValueError("source_calibration_closure_missing")
+    monkeypatch.setattr(sys.modules["blueprint_pipeline.source_calibration_render_return"],
+                        "require_source_calibration_closure", unclosed)
+    with pytest.raises(ValueError, match="closure_missing"):
+        module.finalize_public_scene_inpainting_inputs(
+            preparation_path=prepared["preparation_path"], returned_group_path=returned)
+    assert not list(paths["output"].glob("*/frames/*.png"))
+    assert not (paths["output"] / "public_scene_interiorgs_edit_input_receipt.v2.json").exists()
