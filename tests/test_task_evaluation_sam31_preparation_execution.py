@@ -305,3 +305,22 @@ def test_real_source_selection_stage_crosses_outer_queue_with_canonical_frame_re
     assert Path(ref['path']).read_bytes() == original
     assert ref == _ref(frame)
     assert json.loads(frame.read_text())['receipt_digest'] == json.loads(original)['receipt_digest']
+
+
+def test_a_failed_stage_outcome_names_its_blockers_on_the_child_result(setup):
+    """Submission #8 (2026-09-05): the SAM tracking child recorded ``status: failed``
+    with ``blocker: null`` while the allocator's refusal sat only inside
+    ``executor_result``; the parent and the operator read the top-level blocker."""
+    _, args, process = setup
+    intake = execution.enqueue_sam31_phase(**args)
+    refused = {"status": "failed", "artifacts": {},
+               "blockers": ["gpu_canary_checkout_not_remote_main", "gpu_canary_checkout_promotion_provenance_invalid"]}
+
+    result = execution.process_sam31_phase_queue(**process, phase_executor=lambda context: refused)
+
+    assert result["results"][0]["status"] == "failed"
+    receipt = json.loads(Path(intake["result_path"]).read_text())
+    assert receipt["status"] == "failed"
+    assert receipt["blocker"] == "gpu_canary_checkout_not_remote_main;gpu_canary_checkout_promotion_provenance_invalid"
+    assert receipt["executor_result"]["blockers"] == refused["blockers"]
+
