@@ -93,7 +93,7 @@ def collect_sam31_vast_preflight(
         "min_reliability": 0.98,
         "require_avx": True,
         "require_known_supported_isaac_driver": False,
-        "require_direct_port": False,
+        "require_direct_port": True,
         "preferred_gpu_keywords": ["L40S", "L40", "A40", "RTX 6000Ada", "RTX A6000"],
         "allowed_geolocation_country_codes": list(
             SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES

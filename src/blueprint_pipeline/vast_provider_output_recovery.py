@@ -15,6 +15,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 from typing import Any, Mapping
 
 from .gpu_render_providers import (
@@ -28,6 +29,7 @@ DEFAULT_VAST_SSH_IDENTITY_FILE = "~/.ssh/id_ed25519"
 MAX_RECOVERY_SECONDS = 900.0
 
 _REMOTE_ARCHIVE_BY_BUNDLE_KIND = {
+    "sam31_source_tracks": "/work/sam31_source_track_result.json",
     "adp_retained_scene_render": "/workspace/adp_retained_scene_render_provider_runtime_output.zip",
     "adp_arena": "/workspace/adp_arena_provider_runtime_output.zip",
     "adp009d_policy_runtime_smoke": "/workspace/adp_arena_provider_runtime_output.zip",
@@ -98,12 +100,14 @@ def recover_provider_output_before_teardown(
     provider_bundle_kind: str,
     output_path: str | Path,
     attempt_dir: str | Path,
-    expected_size_bytes: int,
+    expected_size_bytes: int | None,
+    maximum_size_bytes: int | None = None,
     minimum_free_bytes: int = 0,
     timeout_seconds: float = MAX_RECOVERY_SECONDS,
 ) -> dict[str, Any]:
     """Stream one sealed remote archive to local disk before provider teardown."""
 
+    recovery_started = time.monotonic()
     remote_path = _REMOTE_ARCHIVE_BY_BUNDLE_KIND.get(provider_bundle_kind)
     if remote_path is None:
         return {
@@ -122,11 +126,10 @@ def recover_provider_output_before_teardown(
             "blockers": ["provider_output_ssh_recovery_endpoint_invalid"],
             "raw_secret_values_recorded": False,
         }
-    if (
-        isinstance(expected_size_bytes, bool)
-        or not isinstance(expected_size_bytes, int)
-        or expected_size_bytes <= 0
-    ):
+    if (expected_size_bytes is None and (provider_bundle_kind != 'sam31_source_tracks'
+            or type(maximum_size_bytes) is not int or maximum_size_bytes <= 0)
+            or expected_size_bytes is not None and (type(expected_size_bytes) is not int or expected_size_bytes <= 0)
+            or maximum_size_bytes is not None and (type(maximum_size_bytes) is not int or maximum_size_bytes <= 0)):
         return {
             "status": "blocked",
             "blockers": ["provider_output_ssh_recovery_expected_size_invalid"],
@@ -139,8 +142,12 @@ def recover_provider_output_before_teardown(
             "blockers": ["provider_output_ssh_recovery_identity_invalid"],
             "raw_secret_values_recorded": False,
         }
+    try:
+        timeout = min(MAX_RECOVERY_SECONDS, max(1.0, float(timeout_seconds)))
+    except (TypeError, ValueError):
+        timeout = MAX_RECOVERY_SECONDS
     enrollment = enroll_vast_ssh_host_key(
-        {"ssh_host": host, "ssh_port": port}, attempt_dir=attempt_dir
+        {"ssh_host": host, "ssh_port": port}, attempt_dir=attempt_dir, timeout_seconds=min(15., timeout)
     )
     known_hosts_value = str(enrollment.get("known_hosts_file") or "")
     pin = (
@@ -155,10 +162,10 @@ def recover_provider_output_before_teardown(
             "raw_secret_values_recorded": False,
         }
     known_hosts, known_hosts_sha256 = pin
-    try:
-        timeout = min(MAX_RECOVERY_SECONDS, max(1.0, float(timeout_seconds)))
-    except (TypeError, ValueError):
-        timeout = MAX_RECOVERY_SECONDS
+    remaining = timeout - (time.monotonic() - recovery_started)
+    if remaining <= 0:
+        return {"status": "blocked", "blockers": ["provider_output_ssh_recovery_deadline_exhausted"],
+                "raw_secret_values_recorded": False}
     metadata_remote = shlex.join(
         [
             "sh",
@@ -179,7 +186,7 @@ def recover_provider_output_before_teardown(
             ),
             check=False,
             capture_output=True,
-            timeout=min(120.0, timeout),
+            timeout=min(120.0, remaining),
             text=True,
         )
     except subprocess.TimeoutExpired:
@@ -200,7 +207,8 @@ def recover_provider_output_before_teardown(
         }
     remote_size = int(match.group(1))
     remote_sha256 = match.group(2)
-    if remote_size != expected_size_bytes:
+    if (remote_size <= 0 or expected_size_bytes is not None and remote_size != expected_size_bytes
+            or maximum_size_bytes is not None and remote_size > maximum_size_bytes):
         return {
             "status": "blocked",
             "blockers": ["provider_output_ssh_recovery_remote_size_mismatch"],
@@ -209,6 +217,10 @@ def recover_provider_output_before_teardown(
             "known_hosts_sha256": known_hosts_sha256,
             "raw_secret_values_recorded": False,
         }
+    remaining = timeout - (time.monotonic() - recovery_started)
+    if remaining <= 0:
+        return {"status": "blocked", "blockers": ["provider_output_ssh_recovery_deadline_exhausted"],
+                "raw_secret_values_recorded": False}
     destination = Path(output_path).expanduser()
     destination.parent.mkdir(parents=True, exist_ok=True)
     free_bytes = shutil.disk_usage(destination.parent).free
@@ -237,7 +249,7 @@ def recover_provider_output_before_teardown(
                 check=False,
                 stdout=output,
                 stderr=subprocess.PIPE,
-                timeout=timeout,
+                timeout=remaining,
             )
     except subprocess.TimeoutExpired:
         partial.unlink(missing_ok=True)
