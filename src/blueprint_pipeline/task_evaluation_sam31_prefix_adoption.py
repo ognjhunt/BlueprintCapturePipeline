@@ -177,11 +177,34 @@ def validate_completed_prefix_adoption(path, *, expected_source_commit, approved
             "phase_count": PREFIX_LENGTHS[value["through_phase"]]}
 
 
+def publish_adoption_release_binding(adoption_path, *, binding_root=None):
+    """Publish the existing retention schema after a validated adoption exists."""
+    from .task_evaluation_release_retention import (
+        DEFAULT_EVIDENCE_BINDING_ROOT, EVIDENCE_BINDING_SCHEMA_VERSION, _write_exclusive,
+    )
+    value = read(adoption_path, digest_field="adoption_digest")
+    require(value.get("schema_version") == SCHEMA and value.get("status") == "verified_completed_prefix",
+            "sam31_adoption_retention_binding_invalid")
+    root = Path(binding_root) if binding_root is not None else DEFAULT_EVIDENCE_BINDING_ROOT
+    require(root.is_absolute() and root.is_dir() and not any(p.is_symlink() for p in (root, *root.parents)),
+            "sam31_adoption_retention_root_invalid")
+    binding = {"schema_version": EVIDENCE_BINDING_SCHEMA_VERSION, "status": "required",
+               "source_commit": value["original_execution_commit"],
+               "reason": "Completed SAM prefix replay requires its original immutable renderer release",
+               "evidence": record(adoption_path), "retained_release": value["retained_release_pin"]}
+    target = root / ("sam31-prefix-" + value["adoption_digest"].removeprefix("sha256:") + ".json")
+    if target.exists():
+        require(read(target) == binding, "sam31_adoption_retention_binding_conflict")
+    else:
+        _write_exclusive(target, binding)
+    return record(target)
+
+
 def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_path, parent_request_digest,
     through_phase, current_host_inputs, current_provider_profile_path, current_repo_root,
     expected_source_commit, provider_zero_path, output_path, approved_roots,
     queue_root=DEFAULT_QUEUE, parent_queue_root=DEFAULT_PARENT_QUEUE, execution_root=DEFAULT_EXECUTION, now_epoch=None,
-    sam31_billing_source_path=None):
+    sam31_billing_source_path=None, release_binding_root=None):
     require(through_phase in PREFIX_LENGTHS, "sam31_adoption_prefix_invalid")
     at = time.time() if now_epoch is None else now_epoch
     _zero(provider_zero_path, at=at)
@@ -242,6 +265,7 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("x") as stream:
             stream.write(canonical_json(value) + "\n")
+        publish_adoption_release_binding(output, binding_root=release_binding_root)
     return value
 
 

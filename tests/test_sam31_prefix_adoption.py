@@ -216,3 +216,19 @@ def test_driver_adopts_old_five_stage_chain_and_only_enqueues_new_review(prefix,
     assert job["expected_source_commit"] == NEW and job["inputs"]["standard_splat_conversion_receipt"] == new_conversion
     assert result["completed_prefix_adoption"]["original_execution_commit"] == OLD
     assert list((tmp_path / "new-queue/results").glob("*.json")) == []
+
+
+def test_published_prefix_pin_is_recognized_by_canonical_retention(prefix, tmp_path):
+    from blueprint_pipeline.task_evaluation_release_retention import _evidence_binding_protections
+    value, _, _, _ = prefix
+    value["retained_release_pin"] = {"source_commit": OLD, "path": "/immutable/releases/" + OLD, "tree": "d" * 40}
+    ref = write(tmp_path / "adoption.json", value, "adoption_digest")
+    bindings = tmp_path / "release-retention-bindings"
+    bindings.mkdir()
+    pin = adoption.publish_adoption_release_binding(ref["path"], binding_root=bindings)
+    before = Path(pin["path"]).read_bytes()
+    assert adoption.publish_adoption_release_binding(ref["path"], binding_root=bindings) == pin
+    protected, _ = _evidence_binding_protections(bindings)
+    assert OLD in protected
+    assert Path(pin["path"]).read_bytes() == before
+    assert json.loads(before)["evidence"] == ref
