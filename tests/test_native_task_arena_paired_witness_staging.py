@@ -58,6 +58,9 @@ def context(tmp_path, monkeypatch):
                         'height': 360 if role != 'overview' else 720}} for role in ('external', 'wrist', 'overview')]}
     with zipfile.ZipFile(bundle, 'w') as archive:
         archive.writestr(paired.PLAN_MEMBER, json.dumps(plan))
+        for candidate, horizon in (('pi05_droid', 16), ('groot_n17_droid', 8)):
+            archive.writestr(f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate}.json",
+                             json.dumps({'max_policy_queries': (360 + horizon - 1)//horizon, 'open_loop_horizon': horizon}))
     binding = {'run_id': 'scene841757-paired-test', 'authority_digest': 'sha256:'+'a'*64,
         'runtime_inputs_digest': 'sha256:'+'b'*64, 'implementation_commit': 'c'*40,
         'provider_bundle_sha256': 'sha256:'+hashlib.sha256(bundle.read_bytes()).hexdigest()}
@@ -193,15 +196,22 @@ def test_paired_wrapper_binds_private_slot_and_budgets_roundtrip_bytes(context, 
     assert result['stale_offer_create_retry_limit'] == 0
 
 
-def test_capacity_uses_full_session_frames_and_lossless_master_dimensions(context):
+def test_capacity_matches_actual_query_frames_and_review_stride(context):
+    import numpy as np
+    from blueprint_pipeline.adp009d_policy_episode import _project_media_reserve_bytes
     _, _, binding = context
     basis = binding['capacity_basis']
-    assert basis['maximum_action_steps'] == 360
-    assert basis['settle_window_samples'] == 20
+    assert basis['review_frame_stride_steps'] == 8
     assert basis['policy_master_width'] == 640 and basis['policy_master_height'] == 360
-    assert basis['overview_width'] == 1280 and basis['overview_height'] == 720
-    raw_policy_rgb = 2 * 2 * 640 * 360 * 3 * (360 + 20 + 2)
-    assert binding['maximum_archive_bytes'] > raw_policy_rgb + 1_000_000_000
+    rgb = np.zeros((360, 640, 3), dtype=np.uint8)
+    overview = np.zeros((720, 1280, 3), dtype=np.uint8)
+    recorded = sum(_project_media_reserve_bytes(
+        camera_rgb={'external': rgb, 'wrist': rgb}, evaluation_images={'external': rgb, 'wrist': rgb, 'overview': overview},
+        max_policy_queries=basis['maximum_policy_queries'][candidate],
+        open_loop_horizon=basis['open_loop_horizon'][candidate], settle_window_samples=20)
+        for candidate in ('pi05_droid', 'groot_n17_droid'))
+    assert recorded < binding['maximum_archive_bytes'] < recorded * 1.1
+    assert 'provider_bundle_uncompressed_bytes' not in basis
     with pytest.raises(ValueError, match='capacity_binding_invalid'):
         paired.validate_binding({**binding, 'maximum_archive_bytes': 1_000_000_000})
 
@@ -214,6 +224,9 @@ def test_oversized_pair_rejected_before_authority_consumption_or_provider_call(c
     plan['cadence']['maximum_action_steps'] = 10000
     with zipfile.ZipFile(path, 'w') as archive:
         archive.writestr(paired.PLAN_MEMBER, json.dumps(plan))
+        for candidate in ('pi05_droid', 'groot_n17_droid'):
+            archive.writestr(f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate}.json",
+                             json.dumps({'max_policy_queries': 10000, 'open_loop_horizon': 1}))
     bundle = {'bundle_path': str(path), 'bundle_size_bytes': path.stat().st_size,
               'bundle_sha256': 'sha256:'+hashlib.sha256(path.read_bytes()).hexdigest(),
               'implementation_commit': 'c'*40, 'container_image': 'immutable-image'}
@@ -240,7 +253,29 @@ def test_capacity_rehashes_sealed_bundle_and_rejects_missing_overview(context, t
     with zipfile.ZipFile(path, 'w') as archive:
         archive.writestr(paired.PLAN_MEMBER, json.dumps({'cadence': {'maximum_action_steps': 360,
             'settle_window_samples': 20}, 'cameras': []}))
+        for candidate in ('pi05_droid', 'groot_n17_droid'):
+            archive.writestr(f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate}.json",
+                             json.dumps({'max_policy_queries': 20, 'open_loop_horizon': 16}))
     bundle.update(bundle_size_bytes=path.stat().st_size,
                   bundle_sha256='sha256:'+hashlib.sha256(path.read_bytes()).hexdigest())
     with pytest.raises(ValueError, match='capacity_camera_inventory_missing'):
         paired.build_paired_witness_binding(bundle, binding)
+
+
+def test_capacity_ignores_unused_action_ceiling_and_legacy_render_override(context):
+    _, path, binding = context
+    with zipfile.ZipFile(path) as archive:
+        members = {row.filename: archive.read(row.filename) for row in archive.infolist()}
+    plan = json.loads(members[paired.PLAN_MEMBER])
+    plan['cadence']['maximum_action_steps'] = 10000
+    members[paired.PLAN_MEMBER] = json.dumps(plan).encode()
+    with zipfile.ZipFile(path, 'w') as archive:
+        for name, value in members.items():
+            archive.writestr(name, value)
+    bundle = {'bundle_path': str(path), 'bundle_size_bytes': path.stat().st_size,
+              'bundle_sha256': 'sha256:'+hashlib.sha256(path.read_bytes()).hexdigest(),
+              'implementation_commit': binding['implementation_commit']}
+    changed = paired.build_paired_witness_binding(bundle, binding,
+        {'BLUEPRINT_ADP009D_CAMERA_RESOLUTION': '1920x1080'})
+    assert changed['maximum_archive_bytes'] == binding['maximum_archive_bytes']
+    assert changed['capacity_basis']['policy_master_width'] == 640
