@@ -217,7 +217,26 @@ def _publisher(prefix: str):
     return publish
 
 
-def _advance(tmp_path: Path, result_path: Path, intent_root: Path, *, zero=None, now=NOW):
+def _controls_intent_root(tmp_path: Path, *, registered: bool = True) -> Path:
+    """A controls-continuation registry as the provisioner leaves it (identity-named file)."""
+
+    from blueprint_pipeline.task_evaluation_configured_controls_autostart import (
+        configured_controls_autostart_registry_name,
+    )
+
+    root = tmp_path / "controls-intents"
+    root.mkdir(exist_ok=True)
+    if registered:
+        name = configured_controls_autostart_registry_name(
+            team_namespace=TEAM, scene_id=SCENE_ID, task_id=TASK_ID
+        )
+        _write(root / name, {"schema_version": "task_evaluation_configured_controls_autostart_intent.v2"})
+    return root
+
+
+def _advance(
+    tmp_path: Path, result_path: Path, intent_root: Path, *, zero=None, now=NOW, controls_registered=True
+):
     lineage_publisher = _publisher("scene-configuration-activation-lineage")
     window_publisher = _publisher("coordinator-release-windows")
     observed = automation.advance_scene_configuration_activation(
@@ -226,6 +245,7 @@ def _advance(tmp_path: Path, result_path: Path, intent_root: Path, *, zero=None,
         activation_queue_root=tmp_path / "activations",
         progression_root=tmp_path / "progression",
         intent_root=intent_root,
+        configured_controls_intent_root=_controls_intent_root(tmp_path, registered=controls_registered),
         provider_zero_collector=lambda: zero
         if zero is not None
         else _provider_zero(now - timedelta(seconds=20)),
@@ -362,6 +382,94 @@ def test_activation_waits_without_an_intent_and_refuses_a_foreign_commit(tmp_pat
         match="scene_configuration_activation_intent_commit_mismatch",
     ):
         _advance(tmp_path, result_path, intent_root)
+
+
+def test_activation_waits_until_the_controls_continuation_intent_is_registered(tmp_path: Path) -> None:
+    """The activation worker binds the controls intent into the profile; activating first would strand it."""
+
+    intent_root, _intent_value = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+    observed, _l, _w = _advance(tmp_path, result_path, intent_root, controls_registered=False)
+    assert observed["status"] == "awaiting_configured_controls_continuation_intent"
+    assert not (tmp_path / "activations" / "pending").exists()
+    ready, _l2, _w2 = _advance(tmp_path, result_path, intent_root, controls_registered=True)
+    assert ready["status"] == "scene_configuration_activation_queued"
+
+
+def test_provision_intent_authors_its_own_release_window_template(tmp_path: Path) -> None:
+    spend = _project_spend(tmp_path / "spend.json")
+    intent_root = tmp_path / "intents"
+    intent_root.mkdir()
+    intent = automation.provision_scene_configuration_activation_intent(
+        expected_production_commit=COMMIT,
+        team_namespace=TEAM,
+        scene_id=SCENE_ID,
+        task_id=TASK_ID,
+        authorization_reference="Blueprint owner direction 2026-09-04: scene 841757 book-to-tray end to end",
+        authorized_by="nijelhunt_1",
+        profile_revision="r1",
+        valid_for_seconds=21_600,
+        project_spend_reconciliation_path=spend,
+        rights_scope="internal_noncommercial_research_only",
+        maximum_hard_cap_usd=12.0,
+        release_reference="Scene 841757 scene-configuration automatic activation",
+        intent_root=intent_root,
+        materialization_root=tmp_path / "activation-intent-inputs",
+    )
+    template_path = Path(intent["artifact_inventory"]["release_window_template"]["path"])
+    template = json.loads(template_path.read_text())
+    # Bytes the owner provisions as root are handed to the service group read-only.
+    import grp
+    import os
+
+    own_group = grp.getgrgid(os.getgid()).gr_name
+    grouped = automation.provision_scene_configuration_activation_intent(
+        expected_production_commit=COMMIT,
+        team_namespace=TEAM,
+        scene_id=SCENE_ID,
+        task_id=TASK_ID,
+        authorization_reference="Blueprint owner direction 2026-09-04: scene 841757 book-to-tray end to end",
+        authorized_by="nijelhunt_1",
+        profile_revision="r1",
+        valid_for_seconds=21_600,
+        project_spend_reconciliation_path=spend,
+        rights_scope="internal_noncommercial_research_only",
+        maximum_hard_cap_usd=12.0,
+        release_reference="Scene 841757 scene-configuration automatic activation",
+        intent_root=intent_root,
+        materialization_root=tmp_path / "activation-intent-inputs",
+        service_group=own_group,
+    )
+    assert grouped == intent
+    assert template_path.stat().st_mode & 0o777 == 0o440
+    assert next(intent_root.glob("*.json")).stat().st_mode & 0o777 == 0o440
+    from blueprint_pipeline.task_evaluation_shared_mutation_window import (
+        validate_shared_mutation_window_template,
+    )
+
+    validate_shared_mutation_window_template(template, team_namespace=TEAM, expected_production_commit=COMMIT)
+    assert template["maximum_hard_cap_usd"] == 12.0
+    assert template["released_by"] == "nijelhunt_1"
+    registered = json.loads(next(intent_root.glob("*.json")).read_text())
+    assert registered == intent
+    # Re-provisioning is a no-op that returns the identical sealed intent.
+    again = automation.provision_scene_configuration_activation_intent(
+        expected_production_commit=COMMIT,
+        team_namespace=TEAM,
+        scene_id=SCENE_ID,
+        task_id=TASK_ID,
+        authorization_reference="Blueprint owner direction 2026-09-04: scene 841757 book-to-tray end to end",
+        authorized_by="nijelhunt_1",
+        profile_revision="r1",
+        valid_for_seconds=21_600,
+        project_spend_reconciliation_path=spend,
+        rights_scope="internal_noncommercial_research_only",
+        maximum_hard_cap_usd=12.0,
+        release_reference="Scene 841757 scene-configuration automatic activation",
+        intent_root=intent_root,
+        materialization_root=tmp_path / "activation-intent-inputs",
+    )
+    assert again == intent
 
 
 def test_activation_refuses_a_live_provider_and_stages_nothing(tmp_path: Path) -> None:
@@ -563,6 +671,7 @@ def test_process_scans_the_preparation_queue_and_reports_one_row_per_configurati
         activation_queue_root=tmp_path / "activations",
         progression_root=tmp_path / "progression",
         intent_root=intent_root,
+        configured_controls_intent_root=_controls_intent_root(tmp_path),
         profile_dir=tmp_path / "profiles",
         standing_authorization_dir=tmp_path / "standing",
         provider_zero_collector=lambda: _provider_zero(NOW - timedelta(seconds=20)),
