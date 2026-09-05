@@ -332,3 +332,15 @@ def test_admitted_profile_reaches_real_source_input_bundle_and_gpu_request(input
         assert json.loads(Path(provider['worker_stack_manifest']['path']).read_text())['source_commit_sha'] == 'e' * 40
         assert json.loads(Path(provider['runtime_image_build_receipt']['path']).read_text())['source_commit_sha'] == 'e' * 40
         assert json.loads(Path(provider['authorization_sources']['execution']['path']).read_text())['source_commit_sha'] == inputs['source_commit']
+
+
+def test_contribution_uses_same_frozen_avoidlist_as_calibrated_views(inputs, tmp_path):
+    avoidlist = tmp_path / "avoidlist.json"
+    avoidlist.write_text('{"machine_ids":[20166,32969]}')
+    original = avoidlist.read_bytes()
+    profile = module.materialize_sam31_preparation_profile(**inputs,
+        calibrated_views_execution_site="provider_gpu", calibrated_views_machine_avoidlist_path=avoidlist)
+    contribution = profile["paid_stages"]["contribution_sweep"]
+    assert contribution["machine_avoidlist_path"] == str(avoidlist)
+    assert contribution["machine_avoidlist"] == profile["calibrated_views"]["machine_avoidlist"]
+    assert avoidlist.read_bytes() == original

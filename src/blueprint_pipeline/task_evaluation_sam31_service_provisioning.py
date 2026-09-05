@@ -83,6 +83,11 @@ def _profile_git_trust(profile: dict[str, Any]) -> Iterator[None]:
                        kind="directory", code="flashsplat_root_invalid")
     paths = [Path(profile["repo_root"]), flash,
              *(flash / name for name in sorted(EXPECTED_SUBMODULES))]
+    adoption_ref = profile.get("completed_prefix_adoption")
+    if adoption_ref is not None:
+        from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
+        adoption = read(checked_file(adoption_ref["path"], adoption_ref), digest_field="adoption_digest")
+        paths.append(Path(adoption["retained_release_pin"]["path"]))
     for path in paths:
         _safe_path(path, kind="directory", code="git_checkout_invalid")
         _require(any(path.is_relative_to(root) for root in roots), "git_checkout_outside_roots")
@@ -131,6 +136,7 @@ def _validated_profile(path: Path, commit: str) -> dict[str, Any]:
             dependency_manifest_path=dependencies["dependency_manifest"]["path"],
             approved_roots=profile["approved_paid_input_roots"],
             ffmpeg_executable=profile["ffmpeg_executable"],
+            completed_prefix_adoption_path=(profile.get("completed_prefix_adoption") or {}).get("path"),
             calibrated_views_execution_site=profile.get("calibrated_views", {}).get("execution_site", "control_plane"),
             calibrated_views_machine_avoidlist_path=(profile.get("calibrated_views", {}).get("machine_avoidlist") or {}).get("path"),
         )

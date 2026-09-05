@@ -90,7 +90,23 @@ def advance_sam31_preparation(
     inputs.update(profile_refs)
     results = []
     child_queue = Path(os.environ.get(CHILD_QUEUE_ENV, str(DEFAULT_CHILD_QUEUE)))
-    for phase in PHASES:
+    adoption = None
+    phases = PHASES
+    if profile.get("completed_prefix_adoption") is not None:
+        from .task_evaluation_sam31_prefix_adoption import validate_completed_prefix_adoption
+        ref = _reference(profile["completed_prefix_adoption"], approved_roots)
+        adopted = validate_completed_prefix_adoption(ref["path"], expected_source_commit=commit,
+            approved_roots=approved_roots + (DEFAULT_CHILD_QUEUE, Path("/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations")),
+            current_plan=plan, current_provider_profile_path=profile_refs["sam31_provider_profile"]["path"])
+        for name, artifact in adopted["artifacts"].items():
+            verified = _reference(artifact, approved_roots)
+            require(name not in inputs or inputs[name] == verified, "sam31_adoption_input_conflict:" + name)
+            inputs[name] = verified
+        phases = PHASES[adopted["phase_count"]:]
+        adoption = {"receipt": ref, "original_execution_commit": adopted["record"]["original_execution_commit"],
+                    "through_phase": adopted["record"]["through_phase"],
+                    "original_phase_result_receipts": [row["result"] for row in adopted["record"]["phase_records"]]}
+    for phase in phases:
         intake = enqueue_phase(
             queue_root=child_queue, parent_preparation_id=request["preparation_id"],
             parent_request_digest=context["request_digest"], expected_source_commit=commit,
@@ -103,7 +119,7 @@ def advance_sam31_preparation(
             return {"status": "waiting_for_child", "phase": phase,
                     "child_id": intake["child_id"], "child_job_digest": intake["job_digest"],
                     "evidence_refs": [queued], "human_review_required": False,
-                    "candidate_policy_queried": False}
+                    "candidate_policy_queried": False, **({"completed_prefix_adoption": adoption} if adoption else {})}
         result = read(result_path, digest_field="result_digest")
         require(result.get("schema_version") == "task_evaluation_sam31_preparation_execution_result.v1"
                 and result.get("source_commit") == commit
@@ -138,6 +154,8 @@ def advance_sam31_preparation(
               "stage_result_receipts": results, "review_kind": "ai",
               "human_review_required": False, "candidate_policy_queried": False,
               "result_digest": ""}
+    if adoption is not None:
+        sealed["completed_prefix_adoption"] = adoption
     sealed["result_digest"] = canonical_digest(sealed, digest_field="result_digest")
     # The renderer consumer independently reopens and validates all five
     # artifacts and their renderer/track/contribution chains before handoff.
