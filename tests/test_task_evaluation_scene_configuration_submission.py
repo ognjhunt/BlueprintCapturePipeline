@@ -658,3 +658,22 @@ def test_submission_accepts_canonical_friction_ceiling_without_changing_it(tmp_p
                      if stage.get("schema_version") == "rigid_replacement_authoring_configuration.v1")
     assert authoring["required_output"]["static_friction_bounds"] == [0.2, 1.0]
     assert authoring["required_output"]["mass_kg_bounds"] == [0.3, 1.2]
+
+
+def test_submission_preserves_scoped_full_source_authority_references(tmp_path: Path) -> None:
+    fixture = production_fixture(tmp_path)
+    task = json.loads(fixture["task_request"].read_text())
+    authority_path = tmp_path / "fixture-authority-reference.json"
+    authority_path.write_text(json.dumps({"fixture_only": True}))
+    reference = {"path": str(authority_path), "sha256": "sha256:" + hashlib.sha256(authority_path.read_bytes()).hexdigest(),
+                 "size_bytes": authority_path.stat().st_size}
+    task["human_authority"]["full_source_provider_disclosure_authorities"] = {
+        "configured_scene_partitioned_source_processing": reference}
+    _write_json(fixture["task_request"], task)
+    result = _materialize(fixture)
+    stage = json.loads((Path(result["staging_root"]) / "configuration/stage_1.v1.json").read_text())
+    assert stage["human_authority"]["full_source_provider_disclosure_authorities"] == {
+        "configured_scene_partitioned_source_processing": reference}
+    # Carrying a reference is not source-upload authority; the later byte-bound
+    # purpose validator must open and admit its actual contents before staging.
+    assert stage["provider_disclosure"]["source_appearance_bytes"] is False
