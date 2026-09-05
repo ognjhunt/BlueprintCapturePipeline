@@ -243,7 +243,9 @@ def _placement_aware_camera_candidates(
             "overview",
             position=overview_position,
             target=focus,
-            intrinsics=intrinsics,
+            # The review-only overview may run at a higher resolution than the
+            # policy cameras; keep the template's own intrinsics for it.
+            intrinsics=(by_role.get("overview") or {}).get("intrinsics") or intrinsics,
         ),
     ]
     cameras[2]["policy_input"] = False
