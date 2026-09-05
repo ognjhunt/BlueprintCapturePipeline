@@ -36,7 +36,7 @@ from .adp_content_agents_vast import (
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .provider_archive import extract_provider_archive
 from .production_cad_skill_sources import SOURCE_SPECS
-from .task_evaluation_scene_configuration_disclosure import renders_on_provider
+from .task_evaluation_scene_configuration_disclosure import MATERIALIZED_STATUS
 from .task_evaluation_scene_configuration_stage_tool import (
     COMPONENT_RESULT_SCHEMA_VERSION,
 )
@@ -513,12 +513,16 @@ def _reference_frames(
     )
     expected_control_plane_digest = (
         render.get("control_plane_result_digest")
-        if renders_on_provider(render.get("disclosure_decision") or {})
-        else render.get("result_digest")
+        or render.get("result_digest")
     )
     if manifest.get("control_plane_render_result_digest") != expected_control_plane_digest:
         raise TaskEvaluationSceneConfigurationContentAgentsError(
             "scene_configuration_content_agents_reference_invalid:handoff_control_plane_digest"
+        )
+    if (render.get("status") == MATERIALIZED_STATUS
+            and manifest.get("source_render_result_digest") != render.get("result_digest")):
+        raise TaskEvaluationSceneConfigurationContentAgentsError(
+            "scene_configuration_content_agents_reference_invalid:handoff_render_result_digest"
         )
     return list(frames)
 
