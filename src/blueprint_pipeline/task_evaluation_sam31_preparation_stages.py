@@ -1,6 +1,7 @@
 """Closed, production-owned executors for the SAM preparation phase queue."""
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,19 @@ def _write(path: Path, value: Mapping[str, Any]) -> None:
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def _paid_stages():
+    """Load the provider-touching paid stages only when a paid phase executes.
+
+    The intake service reaches this module through the preparation queue; a
+    static import of the paid stages would drag the Vast hot lane into the
+    CPU-only intake process, so the module is resolved by name at call time.
+    """
+
+    return importlib.import_module(
+        "blueprint_pipeline.task_evaluation_sam31_preparation_paid_stages"
+    )
 
 
 def execute_stage(job: Mapping[str, Any]) -> dict[str, Any]:
@@ -50,8 +64,7 @@ def execute_stage(job: Mapping[str, Any]) -> dict[str, Any]:
         for row in outcome.get("artifacts", {}).values():
             checked_file(row["path"], row)
         if phase in PAID_PHASES and outcome.get("status") == "completed":
-            from .task_evaluation_sam31_preparation_paid_stages import validate_retained_paid_stage
-            validate_retained_paid_stage(outcome, stage_id=str(phase))
+            _paid_stages().validate_retained_paid_stage(outcome, stage_id=str(phase))
         return outcome
     context = {
         **job, "stage_id": phase, "server_profile": profile,
@@ -72,8 +85,7 @@ def execute_stage(job: Mapping[str, Any]) -> dict[str, Any]:
         from .task_evaluation_sam31_preparation_review_stages import execute_review_stage
         outcome = execute_review_stage(context)
     else:
-        from .task_evaluation_sam31_preparation_paid_stages import execute_paid_stage
-        outcome = execute_paid_stage(context)
+        outcome = _paid_stages().execute_paid_stage(context)
     require(isinstance(outcome, dict), "sam31_phase_result_invalid")
     if outcome.get("status") == "blocked":
         outcome = {**outcome, "status": "failed"}

@@ -17,6 +17,10 @@ from blueprint_pipeline.sam31_gpu_admission import (
     SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
     SAM31_PREFERRED_GEOLOCATION_REGEX,
 )
+from blueprint_pipeline.sam31_gpu_admission import (
+    SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
+    SAM31_PREFERRED_GEOLOCATION_REGEX,
+)
 from blueprint_pipeline.sam31_paid_attempt_authority import (
     materialize_sam31_paid_attempt_authority,
 )
@@ -97,6 +101,8 @@ def _fixture(tmp_path: Path) -> dict[str, Path]:
         "authority_id": "fresh-scene-sam31-1",
         "proof_effect": "none",
         "comparative_policy_ranking_verdict": "thesis_not_supported",
+        "allowed_geolocation_country_codes": list(SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
     }
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     request_path = tmp_path / "sam31-request.json"
@@ -228,6 +234,7 @@ def test_published_profile_reaches_real_dry_run_with_fresh_preflight(
                     "geolocation": "California, US",
                     "gpu_ram_mb": 48_000,
                     "on_demand_price_usd_per_hour": 0.5,
+                    "geolocation": "California, US",
                 },
             }
 
