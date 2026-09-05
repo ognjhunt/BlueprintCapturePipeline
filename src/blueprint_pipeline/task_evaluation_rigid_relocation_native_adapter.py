@@ -911,6 +911,14 @@ def adapt_rigid_relocation_task_template(
                 raise TaskEvaluationRigidRelocationNativeAdapterError(
                     "rigid_relocation_native_adapter_instruction_grounding_missing")
             native_task_spec[label] = value
+    if "retreat_clearance_m" in success:
+        native_task_spec["retreat_clearance_m"] = _positive_number(
+            success["retreat_clearance_m"], field="success.retreat_clearance_m"
+        )
+    if "owner_success_contract_authority" in template:
+        native_task_spec["configured_owner_authority"] = dict(
+            template["owner_success_contract_authority"]
+        )
     if strategy == "planar_push":
         native_task_spec["push_contact_max_displacement_m"] = (
             PUSH_CONTACT_MAX_DISPLACEMENT_M

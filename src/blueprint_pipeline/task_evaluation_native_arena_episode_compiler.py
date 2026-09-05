@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from .common import write_json
+from .task_evaluation_rigid_owner_contract import materialize_configured_owner_success_contract
 from .decision_evidence_contracts import canonical_digest
 from .gaussian_field_quality import (
     gaussian_quality_is_qualified,
@@ -1170,6 +1171,7 @@ def compile_native_arena_episode(
             ],
             visible_target_label=destination_asset["visible_label"],
             prompt=(
+                task_spec["prompt"] if task_spec.get("instruction_subject_label") else
                 f"Pick up the configured rigid object and place it "
                 f"{destination_asset['relation']} the "
                 f"{destination_asset['visible_label']}."
@@ -1184,6 +1186,13 @@ def compile_native_arena_episode(
                     native_probe["placement_support_scene_prim_paths"]
                 ),
             )
+    owner_contract = materialize_configured_owner_success_contract(
+        task_spec, site_id=request["scene"]["identity"]["id"],
+        task_id=request["task"]["identity"]["id"],
+    )
+    if owner_contract is not None:
+        task_spec["task_success_contract"] = owner_contract
+        task_spec["task_success_contract_digest"] = owner_contract["contract_digest"]
     native_candidate_universe = robot.get("native_construction_candidate_universe")
     if native_candidate_universe is not None:
         if not isinstance(native_candidate_universe, Mapping):

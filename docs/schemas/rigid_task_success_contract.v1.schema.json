@@ -96,6 +96,18 @@
             "orientation_tolerance_rad": {"type": "number", "minimum": 0}
           }
         },
+        "retreat": {
+          "type": "object",
+          "required": ["mode", "minimum_clearance_m", "withdrawal_unit_destination_frame"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {"const": "required"},
+            "minimum_clearance_m": {"type": "number", "exclusiveMinimum": 0},
+            "withdrawal_unit_destination_frame": {
+              "type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}
+            }
+          }
+        },
         "safety": {
           "type": "object",
           "required": ["mode"],
