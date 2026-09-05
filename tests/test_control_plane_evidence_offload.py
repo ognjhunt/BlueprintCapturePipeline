@@ -12,6 +12,7 @@ import pytest
 
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from blueprint_pipeline.control_plane_evidence_offload import (
+    ABANDONED_TERMINAL_RECEIPT,
     EXECUTE_ACK,
     POINTER_SUFFIX,
     ControlPlaneEvidenceOffloadError,
@@ -205,3 +206,71 @@ def test_offload_keeps_the_directory_when_publication_or_verification_fails(
     )
     assert changed["skipped"] == [{"name": "run-2", "reason": "candidate_changed"}]
     assert directory.is_dir()
+
+
+def test_unsealed_directory_idle_past_the_abandonment_window_is_sealed_as_abandoned(
+    tmp_path: Path,
+) -> None:
+    """Without a terminal receipt a run directory was retained forever as
+    "active".  Twenty-three such directories sat on the production host from
+    workers that were superseded or torn down.  Idle past the window they are
+    archived like any sealed run; nothing is deleted and restore is unchanged."""
+    root = tmp_path / "policy-canaries"
+    root.mkdir()
+    now = 3_000_000.0
+    abandoned = _run(root, "run-abandoned", receipt=None, age=5 * 86400, now=now)
+    _run(root, "run-active", receipt=None, age=3600, now=now)
+
+    without = build_evidence_offload_manifest(
+        evidence_roots=[root], hot_window_seconds=86400, now=lambda: now, classifier=_unclassified
+    )
+    assert without["candidates"] == [] and without["retained_counts"]["active_or_unsealed"] == 2
+    manifest = build_evidence_offload_manifest(
+        evidence_roots=[root],
+        hot_window_seconds=86400,
+        abandoned_after_seconds=3 * 86400,
+        now=lambda: now,
+        classifier=_unclassified,
+    )
+    assert [row["name"] for row in manifest["candidates"]] == ["run-abandoned"]
+    assert manifest["candidates"][0]["terminal_receipt"] == ABANDONED_TERMINAL_RECEIPT
+    assert manifest["retained_counts"]["active_or_unsealed"] == 1
+
+    client = _ContentAddressedClient()
+    publisher = functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET)
+    receipt = apply_evidence_offload(manifest, ack=EXECUTE_ACK, publisher=publisher, now=lambda: now)
+    assert receipt["offloaded_count"] == 1 and not abandoned.exists()
+    pointer = json.loads((root / f"run-abandoned{POINTER_SUFFIX}").read_text(encoding="utf-8"))
+    assert pointer["terminal_receipt"] == ABANDONED_TERMINAL_RECEIPT
+    assert (root / "run-active").exists()
+
+
+def test_an_abandoned_candidate_touched_after_the_dry_run_is_kept(tmp_path: Path) -> None:
+    root = tmp_path / "policy-canaries"
+    root.mkdir()
+    now = 3_000_000.0
+    directory = _run(root, "run-abandoned", receipt=None, age=5 * 86400, now=now)
+    manifest = build_evidence_offload_manifest(
+        evidence_roots=[root],
+        hot_window_seconds=86400,
+        abandoned_after_seconds=3 * 86400,
+        now=lambda: now,
+        classifier=_unclassified,
+    )
+    (directory / "status_events.jsonl").write_text('{"stage":"resumed"}\n', encoding="utf-8")
+    client = _ContentAddressedClient()
+    publisher = functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET)
+
+    receipt = apply_evidence_offload(manifest, ack=EXECUTE_ACK, publisher=publisher, now=lambda: now)
+
+    assert receipt["offloaded_count"] == 0
+    assert receipt["skipped"] == [{"name": "run-abandoned", "reason": "candidate_changed"}]
+    assert directory.exists() and client.upload_count == 0
+    with pytest.raises(ControlPlaneEvidenceOffloadError, match="input_invalid"):
+        build_evidence_offload_manifest(
+            evidence_roots=[root],
+            hot_window_seconds=86400,
+            abandoned_after_seconds=-1,
+            now=lambda: now,
+            classifier=_unclassified,
+        )
