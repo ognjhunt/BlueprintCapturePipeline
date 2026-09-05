@@ -58,6 +58,8 @@ QUALIFIED_AUTHORIZATION_CLASSES = frozenset(
 SUPPORTED_COLOR_SPACE = "srgb"
 SUPPORTED_ALPHA_MODE = "opaque_rgb"
 SUPPORTED_EXPOSURE_MODE = "renderer_default_unmodified"
+DEFAULT_CALIBRATED_NEAR_M = 0.01
+DEFAULT_CALIBRATED_FAR_M = 100_000.0
 DEFAULT_RENDER_INITIAL_PROGRESS_TIMEOUT_SECONDS = 300.0
 DEFAULT_RENDER_PROGRESS_TIMEOUT_SECONDS = 120.0
 _RENDER_PROGRESS_POLL_SECONDS = 1.0
@@ -335,6 +337,19 @@ def _renderer_source_identity(root: Path, *, node_version: str) -> dict[str, Any
     }
 
 
+def calibrated_clip_planes(intrinsics: Mapping[str, Any]) -> dict[str, float]:
+    """Fixed metric defaults, independent of the splat's global/outlier bounds."""
+    values = {}
+    for key, default in (("near", DEFAULT_CALIBRATED_NEAR_M), ("far", DEFAULT_CALIBRATED_FAR_M)):
+        raw = intrinsics.get(key)
+        if isinstance(raw, bool):
+            raise ValueError("calibrated_camera_clipping_invalid")
+        values[key] = float(default if raw is None else raw)
+    if not all(math.isfinite(value) for value in values.values()) or not 0 < values["near"] < values["far"]:
+        raise ValueError("calibrated_camera_clipping_invalid")
+    return values
+
+
 def _camera_specs_from_calibration_file(path: Path) -> list[dict[str, Any]]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -368,9 +383,7 @@ def _camera_specs_from_calibration_file(path: Path) -> list[dict[str, Any]]:
                 "width": int(intrinsics["width"]),
                 "height": int(intrinsics["height"]),
             }
-            for key in ("near", "far"):
-                if intrinsics.get(key) is not None:
-                    normalized_intrinsics[key] = float(intrinsics[key])
+            normalized_intrinsics.update(calibrated_clip_planes(intrinsics))
             pose_matrix = np.asarray(matrix, dtype=np.float64)
         except (KeyError, TypeError, ValueError) as exc:
             raise SealedCameraRenderError(["render_calibrated_camera_file_invalid"]) from exc
@@ -705,9 +718,7 @@ def render_splat_at_exact_cameras(
                 "width": width,
                 "height": height,
             }
-            for key in ("near", "far"):
-                if intrinsics.get(key) is not None:
-                    spec_intrinsics[key] = float(intrinsics[key])
+            spec_intrinsics.update(calibrated_clip_planes(intrinsics))
         except (KeyError, TypeError, ValueError):
             errors.append("render_camera_intrinsics_invalid")
             continue

@@ -559,3 +559,104 @@ def test_controller_configuration_is_rebound_to_the_scene_and_its_quick10_matrix
     assert document["quick_10"]["matrix_digest"] == canonical_digest({"cells": cells})
     assert document["configuration_digest"] == canonical_digest(document, digest_field="configuration_digest")
     assert "839873" not in json.dumps(document)
+
+
+def test_handoff_rejects_valid_stale_intent_before_publication(tmp_path: Path) -> None:
+    state = _prepared(tmp_path)
+    path = next((tmp_path / "activation-intents").glob("*.json"))
+    intent = json.loads(path.read_text())
+    intent["expected_production_commit"] = intent["configuration_source_commit"] = "b" * 40
+    window = Path(intent["artifact_inventory"]["release_window_template"]["path"])
+    template = json.loads(window.read_text())
+    template["expected_production_commit"] = "b" * 40
+    window.chmod(0o600)
+    _write(window, _sealed(template, "template_digest"))
+    intent["artifact_inventory"]["release_window_template"] = activation_automation._artifact(window)
+    path.chmod(0o600)
+    _write(path, _sealed(intent, "intent_digest"))
+    activation_automation.validate_scene_configuration_activation_intent(intent)
+    webapp, profiles = _WebApp(), []
+    class NoPublication:
+        def __call__(self, **kwargs):
+            pytest.fail("stale intent reached artifact publication")
+    with pytest.raises(handoff.PolicyCanaryHandoffError, match="activation_intent_commit_mismatch"):
+        _advance(tmp_path, state=state, webapp=webapp, publisher=NoPublication(), profile_calls=profiles)
+    assert not webapp.calls and not profiles
+    assert not (state / handoff.STATE_FILENAME).exists()
+
+
+def _fail_final_seal(monkeypatch):
+    original = handoff._seal_state
+    def fail(path, value):
+        if value["status"] == "canary_launch_submitted":
+            raise OSError("injected final seal failure")
+        return original(path, value)
+    monkeypatch.setattr(handoff, "_seal_state", fail)
+    return original
+
+
+def test_handoff_adopts_known_successful_ack_without_another_post(tmp_path: Path, monkeypatch) -> None:
+    state = _prepared(tmp_path)
+    webapp, publisher, profiles = _WebApp(), _Publisher(), []
+    original = _fail_final_seal(monkeypatch)
+    with pytest.raises(OSError, match="final seal"):
+        _advance(tmp_path, state=state, webapp=webapp, publisher=publisher, profile_calls=profiles)
+    before = (state / "policy-canary-webapp-receipt.json").read_bytes()
+    monkeypatch.setattr(handoff, "_seal_state", original)
+    webapp.status = 409  # No new request may be made after a known success.
+    result = _advance(tmp_path, state=state, webapp=webapp, publisher=publisher, profile_calls=profiles)
+    assert result["status"] == "canary_launch_submitted"
+    assert len(webapp.calls) == len(profiles) == 1
+    assert (state / "policy-canary-webapp-receipt.json").read_bytes() == before
+
+
+def test_handoff_retains_legitimate_replay_after_response_loss(tmp_path: Path) -> None:
+    class LostResponse(_WebApp):
+        def __call__(self, **kwargs):
+            status, payload = super().__call__(**kwargs)
+            if len(self.calls) == 1:
+                raise OSError("response lost after server accepted")
+            receipt = json.loads(payload)
+            receipt["already_exists"] = True
+            return status, json.dumps(receipt).encode()
+    state = _prepared(tmp_path)
+    webapp, publisher, profiles = LostResponse(), _Publisher(), []
+    with pytest.raises(OSError, match="response lost"):
+        _advance(tmp_path, state=state, webapp=webapp, publisher=publisher, profile_calls=profiles)
+    result = _advance(tmp_path, state=state, webapp=webapp, publisher=publisher, profile_calls=profiles)
+    assert result["status"] == "canary_launch_submitted"
+    assert len(webapp.calls) == 2 and len(profiles) == 1
+    assert webapp.calls[0]["selection"] == webapp.calls[1]["selection"]
+    assert json.loads((state / "policy-canary-webapp-receipt.json").read_text())["already_exists"] is True
+
+
+@pytest.mark.parametrize("defect", ["receipt_run", "binding_release", "binding_selection", "selection", "state_release"])
+def test_handoff_refuses_retained_identity_mismatch_without_reposting(tmp_path: Path, monkeypatch, defect) -> None:
+    state = _prepared(tmp_path)
+    webapp, publisher, profiles = _WebApp(), _Publisher(), []
+    original = _fail_final_seal(monkeypatch)
+    with pytest.raises(OSError):
+        _advance(tmp_path, state=state, webapp=webapp, publisher=publisher, profile_calls=profiles)
+    monkeypatch.setattr(handoff, "_seal_state", original)
+    names = {"receipt_run": "policy-canary-webapp-receipt.json",
+             "binding_release": "policy-canary-webapp-request-binding.json",
+             "binding_selection": "policy-canary-webapp-request-binding.json",
+             "selection": "policy-canary-selection.json", "state_release": handoff.STATE_FILENAME}
+    path = state / names[defect]
+    value = json.loads(path.read_text())
+    if defect == "receipt_run":
+        value["run"]["run_id"] = "unrelated-run"
+    elif defect == "binding_release":
+        value["source_commit"] = "b" * 40
+    elif defect == "binding_selection":
+        value["selection_digest"] = "sha256:" + "b" * 64
+    elif defect == "selection":
+        value["authorization"]["maximum_cost_usd"] = 100.
+    else:
+        value["expected_production_commit"] = "b" * 40
+        _sealed(value, "progression_digest")
+    path.chmod(0o600)
+    _write(path, value)
+    with pytest.raises(handoff.PolicyCanaryHandoffError):
+        _advance(tmp_path, state=state, webapp=webapp, publisher=publisher, profile_calls=profiles)
+    assert len(webapp.calls) == len(profiles) == 1
