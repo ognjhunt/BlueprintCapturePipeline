@@ -63,7 +63,7 @@ from .task_evaluation_launch_dispatcher import (
     validate_launch_request,
 )
 from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_row
-from .task_evaluation_release_identity import running_release_commit
+from . import task_evaluation_policy_canary_handoff as policy_canary_handoff
 
 
 PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v2"
@@ -1688,57 +1688,6 @@ def advance_configured_controls_plan(
     return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}
 
 
-def _scene_configuration_activation_rows(
-    *,
-    intent_root: Path,
-    configured_controls_intent_root: str | Path | None,
-    profile_dir: str | Path | None,
-    standing_authorization_dir: str | Path | None,
-    preparation_queue_root: str | Path,
-    activation_queue_root: str | Path,
-    progression_root: str | Path,
-    repo_root: str | Path | None,
-    webapp_secret_file: str | Path | None,
-    webapp_endpoint: str,
-) -> list[dict[str, Any]]:
-    """Drive the Website-started configuration activation from the same timer."""
-
-    if not profile_dir or not standing_authorization_dir:
-        return [
-            {
-                "lane": "task_evaluation_scene_configuration",
-                "status": "blocked",
-                "blockers": ["scene_configuration_activation_directories_missing"],
-            }
-        ]
-    submitter = (
-        scene_configuration_activation.webapp_submitter(
-            repo_root=repo_root,
-            secret_file=webapp_secret_file,
-            endpoint=webapp_endpoint,
-            state_root=Path(progression_root).expanduser()
-            / scene_configuration_activation.STATE_DIRECTORY
-            / "webapp-submissions",
-        )
-        if repo_root and webapp_secret_file
-        else None
-    )
-    # Historical results bound to other releases can never activate under this
-    # deployment; a branch checkout has no release identity and filters nothing.
-    rows = scene_configuration_activation.process_scene_configuration_activations(
-        preparation_queue_root=preparation_queue_root,
-        activation_queue_root=activation_queue_root,
-        progression_root=progression_root,
-        intent_root=intent_root,
-        profile_dir=profile_dir,
-        standing_authorization_dir=standing_authorization_dir,
-        configured_controls_intent_root=configured_controls_intent_root,
-        submitter=submitter,
-        running_commit=running_release_commit() or None,
-    )
-    return [{"lane": "task_evaluation_scene_configuration", **row} for row in rows]
-
-
 def process_plans(**kwargs: Any) -> dict[str, Any]:
     plan_root = Path(kwargs.pop("plan_root")).expanduser()
     intent_root_value = kwargs.pop("autostart_intent_root", None)
@@ -1747,6 +1696,8 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
     )
     profile_dir = kwargs.pop("profile_dir", None)
     standing_authorization_dir = kwargs.pop("standing_authorization_dir", None)
+    webapp_catalog = kwargs.pop("webapp_catalog", None) or None
+    notification_email = kwargs.pop("policy_canary_notification_email", None) or None
     intent_root = (
         Path(intent_root_value).expanduser()
         if intent_root_value is not None
@@ -1756,7 +1707,7 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     if scene_configuration_intent_root is not None:
         rows.extend(
-            _scene_configuration_activation_rows(
+            scene_configuration_activation.progression_rows(
                 intent_root=Path(scene_configuration_intent_root).expanduser(),
                 configured_controls_intent_root=intent_root_value,
                 profile_dir=profile_dir,
@@ -1941,14 +1892,44 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
     configured_controls_kwargs.pop("episode_compilation_queue_root", None)
     for path in sorted(plan_root.glob("*.json")) if plan_root.is_dir() else []:
         try:
-            rows.append(
-                advance_configured_controls_plan(
-                    plan_path=path,
-                    **configured_controls_kwargs,
-                )
-            )
+            row = advance_configured_controls_plan(plan_path=path, **configured_controls_kwargs)
         except (TaskEvaluationConfiguredControlsProgressionError, TaskEvaluationConfiguredControlsProgressionWorkerError) as exc:
             rows.append({"status": "blocked", "plan": path.name, "blockers": [str(exc)]})
+            continue
+        rows.append(row)
+        if row.get("status") != "controls_pair_launch_queued":
+            continue
+        # The launched controls pair is the last configured-controls phase; the same
+        # tick chains the completed pair into the Quick-10 policy canary.
+        try:
+            rows.append(
+                {
+                    "lane": "native_task_arena_policy_canary_handoff",
+                    **policy_canary_handoff.advance_policy_canary_handoff_for_plan(
+                        plan=_plan(path),
+                        progression_root=kwargs["progression_root"],
+                        launch_state_root=launch_state_root,
+                        episode_compilation_queue_root=kwargs["episode_compilation_queue_root"],
+                        activation_intent_root=scene_configuration_intent_root,
+                        repo_root=kwargs.get("repo_root"),
+                        webapp_secret_file=kwargs.get("webapp_secret_file"),
+                        webapp_endpoint=str(kwargs.get("webapp_endpoint") or scene_configuration_activation.DEFAULT_WEBAPP_ENDPOINT),
+                        webapp_catalog_out=webapp_catalog,
+                        notification_email=notification_email,
+                        publisher_factory=configured_controls_kwargs.get("publisher_factory") or configured_controls_release_window_publisher,
+                    ),
+                    "source_launch_id": row.get("source_launch_id"),
+                }
+            )
+        except (policy_canary_handoff.PolicyCanaryHandoffError, OSError, ValueError) as exc:
+            rows.append(
+                {
+                    "lane": "native_task_arena_policy_canary_handoff",
+                    "status": "blocked",
+                    "source_launch_id": row.get("source_launch_id"),
+                    "blockers": [str(exc)],
+                }
+            )
     return {
         "schema_version": WORKER_RESULT_SCHEMA_VERSION,
         "status": "blocked" if any(row["status"] == "blocked" for row in rows) else "completed",
@@ -1982,6 +1963,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--standing-authorization-dir",
         default=os.getenv("BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR") or None,
+    )
+    parser.add_argument(
+        "--webapp-catalog",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_CATALOG") or None,
+        help="WebApp launch-profile catalog rewritten when a policy-canary profile is published.",
+    )
+    parser.add_argument(
+        "--policy-canary-notification-email",
+        default=os.getenv("BLUEPRINT_POLICY_CANARY_NOTIFICATION_EMAIL") or None,
+        help="Allowlisted recipient for automatic Quick-10 canary notifications; omitted disables the hand-off.",
     )
     args = parser.parse_args(argv)
     report = process_plans(**vars(args))
