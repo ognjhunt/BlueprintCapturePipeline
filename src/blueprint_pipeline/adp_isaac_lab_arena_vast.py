@@ -429,6 +429,7 @@ def run_arena_native_control_vast(
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
     provider_runtime_environment: Mapping[str, str] | None = None,
+    paired_witness_binding: Mapping[str, Any] | None = None,
     allowed_geolocation_country_codes: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog."""
@@ -598,6 +599,7 @@ def run_arena_native_control_vast(
         key_prefix=os.getenv("BLUEPRINT_ADP_ARENA_OBJECT_STORE_PREFIX", object_store_key_prefix),
         expiration_seconds=max(hard_ttl_seconds + 1800, 18_000),
         generated_at=generated,
+        **({"paired_witness_binding": paired_witness_binding} if paired_witness_binding is not None else {}),
     )
     if staging.get("status") != "completed":
         result = {
@@ -611,6 +613,11 @@ def run_arena_native_control_vast(
         }
         _write_run_result(job, attempt_root, result)
         return result
+
+    paired_secret_paths = {}
+    if paired_witness_binding is not None:
+        from .native_task_arena_paired_witness_staging import paired_witness_secret_paths
+        paired_secret_paths = paired_witness_secret_paths(staging_dir, staging, paired_witness_binding)
 
     runtime_dependency_dir = attempt_root / "runtime_dependency_cache"
     runtime_source_value = bundle.get("runtime_source_packet")
@@ -764,6 +771,7 @@ def run_arena_native_control_vast(
                 retain_native_task_arena_warm_session=retain_warm_instance,
                 stale_offer_create_retry_limit=stale_offer_create_retry_limit,
                 provider_runtime_environment=provider_runtime_environment,
+                **({"runtime_secret_file_paths": paired_secret_paths} if paired_secret_paths else {}),
                 allowed_geolocation_country_codes=(
                     allowed_geolocation_country_codes
                 ),
