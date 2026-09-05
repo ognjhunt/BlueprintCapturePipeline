@@ -50,6 +50,14 @@ Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_ACTIVATION_INTENT_ROOT
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
 Environment=BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR=/var/lib/blueprint/pipeline-control-plane/standing-authorizations
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_CATALOG=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
+# Resolve new private scene outputs alongside original legacy-store task inputs.
+# Keep WAM bindings unchanged; the reader selects credentials by exact bucket.
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region
+Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 # Placement review deliberately reuses the already-provisioned scene visual-
 # review key. systemd applies EnvironmentFile values after Environment values

@@ -297,15 +297,22 @@ def default_reference_fetcher(reference: Mapping[str, Any]) -> bytes:
     parsed = urlsplit(bound["uri"])
     limit = min(MAX_DOCUMENT_BYTES, bound["size_bytes"]) + 1
     if parsed.scheme == "s3":
-        from .task_evaluation_configured_scene_object_store import _object_store_client
+        # Revisions retain original task references on the legacy store while
+        # new private qualification documents can live in the artifact store.
+        # Import lazily: preparation also imports controls-related contracts.
+        from .task_evaluation_launch_preparation_worker import (
+            TaskEvaluationLaunchPreparationWorkerError,
+            _s3_client,
+        )
 
-        client, bucket = _object_store_client()
-        if parsed.netloc != bucket:
-            raise ConfiguredControlsDeferredInputError(
-                "configured_controls_deferred_fetch_bucket_mismatch"
-            )
         try:
-            response = client.get_object(Bucket=bucket, Key=parsed.path.lstrip("/"))
+            client = _s3_client(parsed.netloc)
+        except TaskEvaluationLaunchPreparationWorkerError as exc:
+            raise ConfiguredControlsDeferredInputError(
+                f"configured_controls_deferred_fetch_configuration_invalid:{exc}"
+            ) from exc
+        try:
+            response = client.get_object(Bucket=parsed.netloc, Key=parsed.path.lstrip("/"))
             body = response["Body"]
             try:
                 payload = body.read(limit)
