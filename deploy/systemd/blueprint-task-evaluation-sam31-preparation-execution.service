@@ -29,6 +29,10 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane /var/lib/blueprint/task-evaluation-inputs /etc/blueprint/task-evaluation-launch-profiles
+# The deployer provisions these exact roots before even an idle worker starts.
+ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/sam31-preparations
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/watchdog-cgroup-cleanup
 TasksMax=512
 LimitNOFILE=4096
 MemoryMax=8G
