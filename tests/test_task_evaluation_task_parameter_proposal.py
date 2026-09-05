@@ -28,6 +28,7 @@ def inputs(tmp_path, monkeypatch):
     monkeypatch.setattr(module, '_git', lambda root, *args: '')
     f = _source_fixture(tmp_path)
     task = json.loads(f['task_request'].read_text())
+    task['success']['forbidden_contact_classes'] = ['robot_background']
     task['human_authority'].update(task_parameter_proposal_authorized=True,
                                   max_task_parameter_proposal_cost_usd=.25,
                                   task_parameter_confirmation_delegated_to_sdk=True)
@@ -36,7 +37,7 @@ def inputs(tmp_path, monkeypatch):
     module.materialize_task_parameter_request(task_request_path=f['task_request'],
         installation_receipt_path=f['installation_receipt'], publisher_intake_path=f['publisher_intake'],
         source_preparation_receipt_path=f['source_preparation'], destination_simready_path=f['destination_simready'],
-        expected_source_commit=SHA, available_contact_classes=['robot_background', 'subject_background'],
+        expected_source_commit=SHA, available_contact_classes=['robot_background', 'object_background'],
         output_path=request)
     now = datetime.now(timezone.utc)
     scope = _write(tmp_path/'scope.json', derive_operator_scope_attestation(provider_id='openai',
@@ -109,6 +110,80 @@ def _execute(inputs, tmp_path, events, **kwargs):
         return Gate(events)
     return module.execute_task_parameter_proposal(request_path=inputs[1], profile_path=inputs[2],
         output_root=tmp_path/'execution', invoker=Invoker(events, **kwargs), cost_gate_factory=factory)
+
+
+def _required_contacts_request(inputs, tmp_path, required, *, path_evidence=None):
+    fixture = inputs[0]
+    task = json.loads(fixture['task_request'].read_text())
+    task['success']['forbidden_contact_classes'] = required
+    if path_evidence is not None:
+        task['task_path_evidence'] = path_evidence
+    _write(fixture['task_request'], task)
+    request = tmp_path/'required-contacts-request.json'
+    module.materialize_task_parameter_request(task_request_path=fixture['task_request'],
+        installation_receipt_path=fixture['installation_receipt'], publisher_intake_path=fixture['publisher_intake'],
+        source_preparation_receipt_path=fixture['source_preparation'], destination_simready_path=fixture['destination_simready'],
+        expected_source_commit=SHA, available_contact_classes=list(module.CONTACT_CHANNELS), output_path=request)
+    return fixture, request, inputs[2]
+
+
+def test_required_contact_payload_binds_filtered_semantics_and_configured_grasp_path(inputs, tmp_path):
+    evidence = {'status': 'proposed_not_native_qualified',
+                'reset_grasp_frame_position_world_m': [-2., 0., .8],
+                'trajectory_waypoints_world_m': [[-2., 0., .4], [-2., .2, .5]]}
+    bound = _required_contacts_request(inputs, tmp_path, list(module.CONTACT_CHANNELS), path_evidence=evidence)
+    payload = json.loads(bound[1].read_text())['payload']
+    assert payload['required_forbidden_contact_classes'] == list(module.CONTACT_CHANNELS)
+    assert payload['configured_task_path_evidence'] == evidence
+    assert 'grasp midpoint' in payload['robot_workspace_measurement_semantics']
+    assert 'excluding admitted gripper' in payload['contact_class_semantics']['robot_object']['meaning']
+    assert 'excluding its exact qualified placement support' in payload['contact_class_semantics']['destination_background']['meaning']
+
+
+def test_actual_sol_v3_cannot_remove_three_configured_contact_requirements(inputs, tmp_path):
+    bound = _required_contacts_request(inputs, tmp_path, list(module.CONTACT_CHANNELS))
+    actual = json.loads((Path(__file__).parent/'fixtures/task_parameter_sol_v3_contact_omission.json').read_text())
+    assert actual['source_proposal_digest'] == 'sha256:dc660e9df64f40f01137da32b4d3f58309e3a68aea51c6d3d7fa6bf81ce8c837'
+    events = []
+    with pytest.raises(module.TaskParameterProposalError, match='required_contact_classes_omitted'):
+        _execute(bound, tmp_path, events, output=actual['proposal'])
+    assert events.count('model_call') == 1
+    assert events[-1][0] == 'official_completion'
+    assert json.loads((tmp_path/'execution/returned_proposal.json').read_text())['output'] == actual['proposal']
+    assert not (tmp_path/'execution/task_evaluation_task_parameter_proposal.v1.json').exists()
+
+
+def test_successor_revalidates_required_contacts_even_for_resigned_proposal(inputs, tmp_path):
+    bound = _required_contacts_request(inputs, tmp_path, list(module.CONTACT_CHANNELS))
+    valid = _proposal()
+    valid['success']['forbidden_contact_classes'] = list(module.CONTACT_CHANNELS)
+    _execute(bound, tmp_path, [], output=valid)
+    path = tmp_path/'execution/task_evaluation_task_parameter_proposal.v1.json'
+    result = json.loads(path.read_text())
+    result['success']['forbidden_contact_classes'] = ['robot_background']
+    result['proposal']['success']['forbidden_contact_classes'] = ['robot_background']
+    _write(path, result, 'proposal_digest')
+    with pytest.raises(module.TaskParameterProposalError, match='required_contact_classes_omitted'):
+        module.materialize_task_parameter_successor(proposal_path=path,
+            task_request_path=bound[0]['task_request'], output_path=tmp_path/'rejected-successor.json')
+    assert not (tmp_path/'rejected-successor.json').exists()
+
+
+@pytest.mark.parametrize('required', [None, [], ['not-a-sensor'], ['robot_background', 'robot_background']])
+def test_missing_or_unavailable_owner_contacts_fail_before_request_creation(inputs, tmp_path, required):
+    with pytest.raises(module.TaskParameterProposalError, match='required_contact_classes_missing_or_unavailable'):
+        _required_contacts_request(inputs, tmp_path, required)
+    assert not (tmp_path/'required-contacts-request.json').exists()
+
+
+def test_missing_sdk_environment_permission_fails_before_reservation_or_output(inputs, tmp_path, monkeypatch):
+    monkeypatch.delenv(module.LIVE_AGENTS_SDK_ENV, raising=False)
+    events = []
+    with pytest.raises(module.TaskParameterProposalError, match='live_sdk_environment_not_authorized'):
+        module.execute_task_parameter_proposal(request_path=inputs[1], profile_path=inputs[2],
+            output_root=tmp_path/'no-invocation', cost_gate_factory=lambda **kwargs: events.append(kwargs))
+    assert events == []
+    assert not (tmp_path/'no-invocation').exists()
 
 
 def test_source_bound_sdk_proposal_retains_cost_and_never_confirms(inputs, tmp_path):
@@ -259,7 +334,7 @@ def test_successor_cannot_confirm_without_retained_delegation(inputs, tmp_path):
     module.materialize_task_parameter_request(task_request_path=f['task_request'],
         installation_receipt_path=f['installation_receipt'], publisher_intake_path=f['publisher_intake'],
         source_preparation_receipt_path=f['source_preparation'], destination_simready_path=f['destination_simready'],
-        expected_source_commit=SHA, available_contact_classes=['robot_background', 'subject_background'],
+        expected_source_commit=SHA, available_contact_classes=['robot_background', 'object_background'],
         output_path=request)
     _execute((f, request, inputs[2]), tmp_path, [])
     with pytest.raises(module.TaskParameterProposalError, match='successor_delegation_missing'):
