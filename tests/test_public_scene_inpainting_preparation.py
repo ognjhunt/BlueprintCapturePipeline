@@ -24,7 +24,7 @@ def _prepare(tmp_path):
         row["camera_id"] = f"source-{index:02d}"
         row["position_offset_m"][0] += index * .001
         request["camera_policy"]["views"].append(row)
-    request["rendering"]["graphics_backend"] = "egl"
+    request["rendering"].update(graphics_backend="egl", width=1280, height=1280)
     request.pop("request_digest")
     path = paths["data"] / "frozen-16-camera-request.json"
     path.write_text(json.dumps(module.build_public_scene_inpainting_input_request(request)))
