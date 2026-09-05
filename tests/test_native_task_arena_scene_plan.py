@@ -603,6 +603,30 @@ def test_rigid_destination_support_binds_contact_to_passive_asset(
     ] == ["{ENV_REGEX_NS}/scene_collision/floor"]
     assert "destination_scene_forbidden_contact" not in by_id
 
+    # Initial subject support is independent of the tray's placement support.
+    cabinet = UsdGeom.Cube.Define(scene_stage, "/Scene/cabinet").GetPrim()
+    UsdPhysics.CollisionAPI.Apply(cabinet)
+    scene_stage.GetRootLayer().Save()
+    contract["task_spec"]["initial_source_support"] = {
+        "scene_prim_paths": ["/Scene/cabinet"],
+        "support_plane_digest": "sha256:" + "a" * 64,
+        "contact_permission": "initial_pickup_until_first_separation_or_lift",
+    }
+    topology = _articulation_plan(contract, task_object_asset_path=task_path,
+        scene_collision_asset_path=scene_path, task_support_asset_path=support_path)
+    by_id = {row["logical_sensor_id"]: row for row in topology["contact_sensors"]}
+    assert by_id["task_initial_support_contact"]["filter_prim_paths_expr"] == [
+        "{ENV_REGEX_NS}/scene_collision/cabinet"]
+    assert by_id["task_scene_collision"]["filter_prim_paths_expr"] == [
+        "{ENV_REGEX_NS}/scene_collision/floor"]
+    assert by_id["task_support_contact"]["filter_prim_paths_expr"] == ["{ENV_REGEX_NS}/task_support"]
+    assert by_id["destination_scene_support_contact"]["filter_prim_paths_expr"] == [
+        "{ENV_REGEX_NS}/scene_collision/floor"]
+    contract["task_spec"]["initial_source_support"]["scene_prim_paths"] = ["/Scene/unobserved"]
+    with pytest.raises(NativeTaskArenaScenePlanError, match="initial_support_invalid"):
+        _articulation_plan(contract, task_object_asset_path=task_path,
+            scene_collision_asset_path=scene_path, task_support_asset_path=support_path)
+
 def test_graph_articulation_plan_binds_complete_joint_and_body_topology(
     tmp_path: Path,
 ) -> None:

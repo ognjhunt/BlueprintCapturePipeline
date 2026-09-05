@@ -125,6 +125,60 @@ def test_rigid_scoring_environment_refuses_missing_native_safety_channel():
         environment.read_object_sample()
 
 
+def _initial_support_environment():
+    spec = _rigid_scoring_task_spec()
+    spec.update(start_pose_world=[1.1, 2.1, 0.8, 0., 0., 0., 1.],
+        minimum_lift_m=0.05, reset_translation_tolerance_m=0.002,
+        maximum_task_contact_force_n=10., initial_source_support={
+            "scene_prim_paths": ["/Scene/cabinet"],
+            "support_plane_digest": "sha256:" + "a" * 64,
+            "contact_permission": "initial_pickup_until_first_separation_or_lift"})
+    readback = _RigidNativeReadback(task_initial_support_contact_peak_force_n=0.,
+                                   task_support_contact_peak_force_n=0.)
+    return NativeRigidScoringEnvironment(environment=_RigidEpisodeEnvironment(),
+        task_readback=readback, task_spec=spec), readback
+
+
+def test_initial_source_support_allows_pickup_but_not_return_after_separation():
+    environment, readback = _initial_support_environment()
+    # An initialized zero-force reset sample does not consume pickup permission.
+    assert environment.read_object_sample()["initial_source_support_contact_permitted"]
+    readback.overrides["task_initial_support_contact_peak_force_n"] = 6.
+    initial = environment.read_object_sample()
+    assert initial["initial_source_support_contact_active"]
+    assert not initial["scene_collision_failure"]
+    assert not initial["support_contact_active"]  # Destination remains tray-only.
+    assert initial["task_initial_support_contact_peak_force_n"] == 6.
+    readback.overrides["task_initial_support_contact_peak_force_n"] = 0.
+    assert not environment.read_object_sample()["initial_source_support_contact_permitted"]
+    readback.overrides["task_initial_support_contact_peak_force_n"] = 6.
+    returned = environment.read_object_sample()
+    assert returned["initial_source_support_collision_failure"]
+    assert returned["scene_collision_failure"]
+    assert returned["task_scene_collision_peak_force_n"] == 6.
+    assert returned["task_non_support_scene_collision_peak_force_n"] == 0.
+    environment.reset()
+    assert not environment.read_object_sample()["scene_collision_failure"]
+
+
+@pytest.mark.parametrize("mutation", ["other_background", "excess_force", "lift", "missing", "nan"])
+def test_initial_support_never_hides_forbidden_or_unmeasured_contacts(mutation):
+    environment, readback = _initial_support_environment()
+    readback.overrides["task_initial_support_contact_peak_force_n"] = 6.
+    if mutation == "other_background":
+        readback.overrides["task_scene_collision_peak_force_n"] = 6.
+    elif mutation == "excess_force":
+        readback.overrides["task_initial_support_contact_peak_force_n"] = 11.
+    elif mutation == "lift":
+        readback.overrides["task_scoring_pose_world"] = [1.1, 2.1, .86, 0., 0., 0., 1.]
+    else:
+        readback.overrides["task_initial_support_contact_peak_force_n"] = None if mutation == "missing" else float("nan")
+        with pytest.raises(NativeTaskEpisodeEnvironmentError, match="initial_support_readback"):
+            environment.read_object_sample()
+        return
+    assert environment.read_object_sample()["scene_collision_failure"]
+
+
 class _Servo:
     def __init__(self):
         self.reset_count = 0
