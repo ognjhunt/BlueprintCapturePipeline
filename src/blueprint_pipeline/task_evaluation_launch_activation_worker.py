@@ -1357,9 +1357,14 @@ def _policy_campaign_activation_result(
                         cell["resolved_scenario"]
                     ),
                     "control_diagnostic": {
-                        "mode": "nonblocking_diagnostic_pending",
+                        "mode": (
+                            "required_before_policy" if preparation_request["policy_run_configuration"]
+                            ["task_success_contract"]["criteria"].get("controls", {}).get("mode") == "required_per_cell"
+                            else "nonblocking_diagnostic_pending"
+                        ),
                         "typed_gap": "controls_pending_at_submission",
-                        "policy_execution_blocked": False,
+                        "policy_execution_blocked": preparation_request["policy_run_configuration"]
+                        ["task_success_contract"]["criteria"].get("controls", {}).get("mode") == "required_per_cell",
                     },
                 }
                 for cell in cells

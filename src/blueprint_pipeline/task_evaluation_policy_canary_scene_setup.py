@@ -353,6 +353,11 @@ def _require_strict_owner_success_contract(
     if (provenance.get("author_source") == "compatibility_default"
             or provenance.get("confirmation_status") != "confirmed"):
         raise TaskNeutralScoringError(["policy_canary_owner_success_contract_unconfirmed"])
+    if configured.get("per_cell_controls_required") is True:
+        from .native_policy_canary_control_gate import controls_required
+
+        if not controls_required(contract):
+            raise TaskNeutralScoringError(["policy_canary_owner_success_contract_controls_required"])
     criteria = _mapping_or_empty(contract.get("criteria"))
     temporal = _mapping_or_empty(criteria.get("temporal_invariants"))
     motion = _mapping_or_empty(criteria.get("motion"))

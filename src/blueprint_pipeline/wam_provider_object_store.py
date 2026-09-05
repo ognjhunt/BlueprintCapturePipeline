@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .provider_signed_object_binding import signed_output_object_binding_sha256
 from .secret_artifact_policy import (
     redacted_secret_file_status,
     secret_path_disclosure_policy,
@@ -562,34 +563,6 @@ def _write_sensitive_file(path: Path, value: str, *, label: str) -> dict[str, An
     return _file_status(path, label=label, value_present=bool(value))
 
 
-def signed_output_object_binding_sha256(put_url: str, get_url: str) -> str:
-    """Hash the non-secret origin/path identity shared by one PUT/GET pair."""
-
-    identities: list[str] = []
-    for label, value in (("put", put_url), ("get", get_url)):
-        parsed = urlparse(str(value or ""))
-        if (
-            parsed.scheme.lower() != "https"
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.fragment
-        ):
-            raise ValueError(f"signed_output_{label}_url_invalid")
-        try:
-            port = parsed.port
-        except ValueError as exc:
-            raise ValueError(f"signed_output_{label}_url_invalid") from exc
-        identity = (
-            parsed.scheme.lower(),
-            parsed.hostname.lower(),
-            port or 443,
-            parsed.path,
-        )
-        identities.append(json.dumps(identity, separators=(",", ":")))
-    if identities[0] != identities[1]:
-        raise ValueError("signed_output_put_get_object_identity_mismatch")
-    return hashlib.sha256(identities[0].encode("utf-8")).hexdigest()
 
 
 def _safe_transfer_exception(exc: Exception) -> dict[str, Any]:
@@ -677,6 +650,13 @@ def cleanup_staged_wam_provider_objects(
     keys = [bundle_key, output_key]
     bundle_retained = manifest.get("bundle_object_retained_for_reuse") is True
     cleanup_keys = [output_key] if bundle_retained else keys
+    witness = _mapping(manifest.get("paired_witness"))
+    if witness.get("status") == "ready":
+        from .native_task_arena_paired_witness_staging import SUFFIX
+        if witness.get("witness_key") != output_key + SUFFIX:
+            blockers.append("paired_witness_cleanup_key_mismatch")
+        else:
+            cleanup_keys = [*cleanup_keys, witness["witness_key"]]
     if not all(keys) or len(set(keys)) != 2:
         blockers.append("exact_staged_object_keys_required")
     object_store = _mapping(manifest.get("object_store"))
@@ -827,6 +807,8 @@ def cleanup_staged_wam_provider_objects(
             "provider_bundle_url.txt",
             "provider_output_put_url.txt",
             "provider_output_get_url.txt",
+            "paired_witness_put_url.txt", "paired_witness_get_url.txt",
+            "paired_witness_authority.json",
         )
     ]
     for path in signed_url_files:
@@ -1009,6 +991,7 @@ def stage_wam_provider_bundle_object_store(
     expiration_seconds: int = 12 * 60 * 60,
     generated_at: str | None = None,
     retain_content_addressed_bundle: bool = False,
+    paired_witness_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     generated = generated_at or utc_now_iso()
     expiry_metadata = _presigned_url_expiry_metadata(generated, expiration_seconds)
@@ -1134,6 +1117,12 @@ def stage_wam_provider_bundle_object_store(
         "raw_secret_values_recorded": False,
     }
     output_url_object_binding_sha256 = ""
+    paired_witness = {"status": "not_required"}
+    if paired_witness_binding is not None:
+        from .native_task_arena_paired_witness_staging import validate_binding
+        validate_binding(paired_witness_binding)
+        if paired_witness_binding["provider_bundle_sha256"].removeprefix("sha256:") != bundle_sha256:
+            blockers.append("paired_witness_provider_bundle_digest_mismatch")
     binding_initialized = False
     provider_bundle_remote_reference: dict[str, Any] = {}
     durable_bundle_url = ""
@@ -1302,6 +1291,11 @@ def stage_wam_provider_bundle_object_store(
                     output_put_url,
                     output_get_url,
                 )
+            if not blockers and paired_witness_binding is not None:
+                from .native_task_arena_paired_witness_staging import stage_paired_witness_slot
+                paired_witness = stage_paired_witness_slot(client=client, bucket=bucket_value,
+                    output_key=output_key, binding=paired_witness_binding, job_dir=resolved_job_dir,
+                    generated_at=generated, expiration_seconds=int(expiration_seconds))
             upload_detail = {
                 "status": "completed" if not blockers else "blocked",
                 "bucket_configured": True,
@@ -1398,6 +1392,7 @@ def stage_wam_provider_bundle_object_store(
         "presigned_url_expiry": expiry_metadata,
         "upload_detail": upload_detail,
         "signed_output_round_trip": signed_output_round_trip,
+        "paired_witness": paired_witness,
         "fresh_output_key_absence": output_key_absence,
         "output_key_run_unique": bool(binding_initialized and output_key),
         "output_url_object_binding_sha256": (output_url_object_binding_sha256 or None),

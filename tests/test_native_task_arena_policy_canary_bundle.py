@@ -104,14 +104,16 @@ def test_provider_entrypoint_provisions_both_servers_once_and_runs_one_worker() 
 
     assert script.count("adp009d_policy_provisioning.pi05_droid.sh") == 1
     assert script.count("adp009d_policy_provisioning.groot_n17_droid.sh") == 1
-    assert script.count('"$RUNTIME_DIR/adp_arena_provider_runner.py"') == 1
+    assert script.count('"$RUNTIME_DIR/adp_arena_provider_runner.py"') == 2
     assert "for candidate in pi05_droid groot_n17_droid" in script
     assert "native_task_arena_policy_canary_session_result.v1.json" in script
     pi_copy = script.index("policy_execution_spec.pi05_droid.json")
     pi_provision = script.index("adp009d_policy_provisioning.pi05_droid.sh")
     groot_copy = script.index("policy_execution_spec.groot_n17_droid.json")
     groot_provision = script.index("adp009d_policy_provisioning.groot_n17_droid.sh")
-    worker = script.index('"$RUNTIME_DIR/adp_arena_provider_runner.py"')
+    worker = script.rindex('"$RUNTIME_DIR/adp_arena_provider_runner.py"')
+    assert script.index("BLUEPRINT_POLICY_CANARY_MATRIX_STAGE=controls") < pi_provision
+    assert script.index("export BLUEPRINT_POLICY_CANARY_MATRIX_STAGE=policies") < pi_provision
     assert pi_copy < pi_provision < groot_copy < groot_provision < worker
     assert script.index("trap teardown_servers EXIT INT TERM HUP") < script.index(
         "native_task_runtime_source_provision"

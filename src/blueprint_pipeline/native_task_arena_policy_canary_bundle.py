@@ -150,6 +150,27 @@ if [ $source_rc -ne 0 ]; then
   exit $source_rc
 fi
 
+# Strict controls execute before either checkpoint is loaded. The second stage
+# validates and reuses these exact cell receipts after ordinary provisioning.
+strict_controls=$(/isaac-sim/python.sh - <<'PYSTRICT'
+import json, os
+from pathlib import Path
+from blueprint_pipeline.native_policy_canary_control_gate import controls_required
+inputs = json.loads((Path(os.environ["RUNTIME_DIR"]) / "runtime_inputs/policy_canary_runtime_inputs.json").read_text())
+print("required" if controls_required(inputs["task_success_contract"]) else "legacy")
+PYSTRICT
+)
+strict_rc=$?
+if [ $strict_rc -ne 0 ]; then exit $strict_rc; fi
+if [ "$strict_controls" = required ]; then
+  BLUEPRINT_POLICY_CANARY_MATRIX_STAGE=controls /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
+  controls_rc=$?
+  if [ $controls_rc -ne 0 ]; then exit $controls_rc; fi
+  export BLUEPRINT_POLICY_CANARY_MATRIX_STAGE=policies
+elif [ "$strict_controls" != legacy ]; then
+  exit 86
+fi
+
 cp "$RUNTIME_DIR/runtime_inputs/policy_execution_spec.pi05_droid.json" \
   "$RUNTIME_DIR/{POLICY_EXECUTION_SPEC_STAGED_NAME}"
 bash "$RUNTIME_DIR/adp009d_policy_provisioning.pi05_droid.sh" \

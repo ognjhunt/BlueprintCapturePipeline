@@ -300,9 +300,9 @@ def build_policy_canary_result_projection(
         "task_success_contract_digest": task_success_contract_digest,
         "run_kind": RUN_KIND,
         "claim_ceiling": CLAIM_CEILING,
-        "scene_controls_status": "configured_controls_pending",
+        "scene_controls_status": delivery.get("scene_controls_status", "configured_controls_pending"),
         "result_status": result_status,
-        "warning": "Controls pending — results are unqualified.",
+        "warning": delivery.get("warning", "Controls pending — results are unqualified."),
         "matrix_digest": delivery.get("matrix_digest"),
         "counts": {
             "policy_count": 2,
@@ -312,7 +312,7 @@ def build_policy_canary_result_projection(
                 row["terminal_state"] == "completed" for row in projected_episodes
             ),
             "diagnostic_control_rollout_count": 20,
-            "completed_diagnostic_control_rollout_count": 0,
+            "completed_diagnostic_control_rollout_count": (delivery.get("controls_summary") or {}).get("completed_count", 0),
         },
         "episode_interpretation": deepcopy(
             dict(delivery.get("episode_interpretation") or {})
@@ -354,6 +354,19 @@ def build_policy_canary_result_projection(
         "blockers": sorted(set(blockers)),
         "projection_digest": "",
     }
+    if result.get("controls") is not None:
+        controls = delivery.get("controls")
+        originals = {(row.get("cell_id"), row.get("control_id"), row.get("seed")):
+                     (row.get("receipt") or {}).get("receipt_digest") for row in result["controls"]}
+        if (not isinstance(controls, list) or len(controls) != len(originals)
+                or any(originals.get((row.get("cell_id"), row.get("control_id"), row.get("seed")))
+                       != row.get("receipt_digest") for row in controls)):
+            raise error_factory("policy_canary_control_delivery_binding_mismatch")
+        for key in ("controls", "controls_summary", "controls_gate", "strict_paired_gate", "paired_delivery", "strict_gate_blockers"):
+            if key in delivery:
+                value[key] = deepcopy(delivery[key])
+        if "controls_csv" in delivery["report"]:
+            value["report"]["controls_csv"] = compact_artifact(delivery["report"]["controls_csv"])
     scene_revision_digest = setup.get("scene_revision_digest") or result.get(
         "scene_revision_digest"
     )

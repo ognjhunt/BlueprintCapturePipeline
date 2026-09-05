@@ -247,18 +247,9 @@ TASK_CONTROL_RECOVERY_EXTENDED_STANDOFF_SCALE = 2.0
 
 
 def recovery_ladder_for_plan(plan: Mapping[str, Any]) -> tuple[str, ...]:
-    """The rungs this run will try, in order.
+    """Use the declared implemented recovery rungs, or the default ladder.
 
-    The ordering is a *hypothesis ranking*, and the best-informed ranker is
-    whoever just read the previous run's sealed telemetry -- an operator or an
-    agent -- not a constant frozen at some earlier commit.  A plan may
-    therefore carry its own ``recovery_strategy_ladder`` and reorder or narrow
-    the rungs per launch, with no code change and no deploy.
-
-    What a plan may NOT do is invent a rung: every entry must name a strategy
-    this executor implements, so a sealed plan can never promise physics the
-    run cannot perform.  Anything unknown, empty, or malformed falls back to
-    the default ladder rather than silently disabling recovery.
+    A malformed or empty declaration must not silently disable recovery.
     """
 
     declared = plan.get("recovery_strategy_ladder")
@@ -1743,6 +1734,9 @@ def validate_task_control_plan(
         errors.append("task_control_plan_task_spec_mismatch")
     diagnostic_plan, boundary_errors = control_plan_boundary_errors(checked)
     errors.extend(boundary_errors)
+    attempt_limit = checked.get("maximum_pose_phase_attempts", TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS)
+    if type(attempt_limit) is not int or not 1 <= attempt_limit <= TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS:
+        errors.append("task_control_phase_attempt_limit_invalid")
     planner_receipt_digest = str(checked.get("planner_receipt_digest") or "")
     if not planner_receipt_digest.startswith("sha256:") or len(
         planner_receipt_digest
@@ -2197,6 +2191,7 @@ def _run_task_control_episode(
     current_strategy: str | None = None
     attempt_history: list[dict[str, Any]] = []
     recovery_ladder = recovery_ladder_for_plan(plan)
+    phase_attempt_limit = plan.get("maximum_pose_phase_attempts", TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS)
     while row_index < len(trajectory):
         row = trajectory[row_index]
         pose_mode = row.get("mode") == "ik_pose"
@@ -2634,7 +2629,7 @@ def _run_task_control_episode(
                 if (
                     selected_joints is not None
                     and not hold_arm_during_gripper_transition
-                    and attempt_number < TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS
+                    and attempt_number < phase_attempt_limit
                     and selected_tracking_error is not None
                     and selected_tracking_error > 1.0e-4
                 ):
@@ -2665,12 +2660,12 @@ def _run_task_control_episode(
                         ladder=recovery_ladder,
                         arrival_tolerance_m=float(row["arrival_tolerance_m"]),
                         remaining_attempts=(
-                            TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS - attempt_number
+                            phase_attempt_limit - attempt_number
                         ),
                     )
                 )
                 if (
-                    attempt_number < TASK_CONTROL_MAX_POSE_PHASE_ATTEMPTS
+                    attempt_number < phase_attempt_limit
                     and not hold_arm_during_gripper_transition
                     # A position bias cannot repair an orientation-only miss;
                     # retry only when the position gate itself failed.

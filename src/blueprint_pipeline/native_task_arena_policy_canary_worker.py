@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from blueprint_pipeline.native_policy_canary_control_gate import controls_required, execute_native_controls, validate_controls_receipt
+from blueprint_pipeline.native_policy_canary_matrix_gate import execute_strict_matrix, _episode_embodiment_parity_diagnostic
 import json
 import math
 import os
@@ -133,75 +135,6 @@ def _policy_camera_visibility_contract(
 def _sha256_prefixed(value: Any) -> str:
     text = str(value or "")
     return text if text.startswith("sha256:") else f"sha256:{text}"
-
-
-def _episode_embodiment_parity_diagnostic(
-    episode: Mapping[str, Any], *, observation_support_qualified: bool
-) -> dict[str, Any]:
-    """Measure harness parity without treating task success as the authority."""
-
-    trace = episode.get("state_trace")
-    rows = list(trace.get("task_state_samples") or []) if isinstance(trace, Mapping) else []
-    distances: list[float] = []
-    for row in rows:
-        if not isinstance(row, Mapping):
-            continue
-        grasp = row.get("grasp_frame_position_world_m") or row.get(
-            "gripper_body_midpoint_world_m"
-        )
-        task = row.get("task_object_pose_world") or row.get("can_pose_world")
-        if (
-            isinstance(grasp, list)
-            and isinstance(task, list)
-            and len(grasp) >= 3
-            and len(task) >= 3
-        ):
-            distances.append(math.dist(grasp[:3], task[:3]))
-    queries = [row for row in episode.get("queries") or [] if isinstance(row, Mapping)]
-    joint_limit_clean = bool(
-        queries and all(row.get("any_joint_limit_clamped") is False for row in queries)
-    )
-    motion = episode.get("motion_evidence")
-    actions_reached_robot = bool(
-        isinstance(motion, Mapping) and motion.get("actions_reached_robot") is True
-    )
-    arm_moved = bool(isinstance(motion, Mapping) and motion.get("arm_moved") is True)
-    initial = distances[0] if distances else None
-    minimum = min(distances) if distances else None
-    final = distances[-1] if distances else None
-    approach = initial - minimum if initial is not None and minimum is not None else None
-    blockers = []
-    if observation_support_qualified is not True:
-        blockers.append("droid_observation_outside_checkpoint_support")
-    if not actions_reached_robot:
-        blockers.append("droid_actions_did_not_reach_robot")
-    if not arm_moved:
-        blockers.append("droid_arm_did_not_move")
-    if not joint_limit_clean:
-        blockers.append("droid_action_joint_limit_or_query_evidence_invalid")
-    if approach is None:
-        blockers.append("droid_gripper_task_distance_unavailable")
-    elif approach < DROID_PARITY_MINIMUM_APPROACH_M:
-        blockers.append("droid_gripper_did_not_approach_task")
-    value: dict[str, Any] = {
-        "schema_version": "droid_policy_canary_embodiment_parity.v1",
-        "status": "passed" if not blockers else "blocked",
-        "observation_support_qualified": observation_support_qualified,
-        "actions_reached_robot": actions_reached_robot,
-        "arm_moved": arm_moved,
-        "joint_limit_clean": joint_limit_clean,
-        "initial_gripper_to_task_distance_m": initial,
-        "minimum_gripper_to_task_distance_m": minimum,
-        "final_gripper_to_task_distance_m": final,
-        "approach_distance_m": approach,
-        "minimum_required_approach_m": DROID_PARITY_MINIMUM_APPROACH_M,
-        "blockers": blockers,
-        "diagnostic_only": True,
-        "task_success_claimed": False,
-        "receipt_digest": "",
-    }
-    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
-    return value
 
 
 PACKET_REQUEST_FILENAME = "native_task_arena_packet_request.v1.json"
@@ -1477,13 +1410,14 @@ def _aggregate_isolated_cell_results(
 
 
 def _spawn_isolated_cell_process(
-    *, index: int, runtime_root: Path, output_root: Path, child_root: Path
+    *, index: int, runtime_root: Path, output_root: Path, child_root: Path, controls_only: bool = False
 ) -> int:
     """Run exactly one matrix cell in a fresh interpreter (and a fresh Isaac)."""
 
     child_log = child_root / "worker_console.log"
     environment = dict(os.environ)
     environment["BLUEPRINT_POLICY_CANARY_CELL_INDEX"] = str(index)
+    environment["BLUEPRINT_POLICY_CANARY_CONTROLS_ONLY"] = "1" if controls_only else "0"
     environment["BLUEPRINT_ADP_ARENA_PARENT_OUTPUT_DIR"] = str(output_root)
     environment["BLUEPRINT_ADP_ARENA_OUTPUT_DIR"] = str(child_root)
     with child_log.open("xb") as stream:
@@ -1533,6 +1467,13 @@ def _run_isolated_cell_processes(
         base_scene_plan=base_scene_plan,
         construction=construction,
     )
+    if controls_required(inputs["task_success_contract"]):
+        from blueprint_pipeline.native_policy_canary_witness_delivery import transfer_paired_witness
+        return execute_strict_matrix(
+            runtime=runtime, output_root=output_root, inputs=inputs, authority=authority,
+            spawn=spawn, aggregate=_aggregate_isolated_cell_results, seal=_seal_result,
+            construction_lineage_mode=construction_lineage_mode, transfer_pair=transfer_paired_witness,
+            stage=os.environ.get("BLUEPRINT_POLICY_CANARY_MATRIX_STAGE", "all"))
     child_results: list[Mapping[str, Any]] = []
     for index in range(len(inputs["cells"])):
         child_root = output_root / "cell_runs" / f"{index:02d}"
@@ -1586,6 +1527,7 @@ def _run_selected_cell(
     runtime_root: Path | None = None,
     output_root: Path | None = None,
     provider_output_root: Path | None = None,
+    controls_only: bool = False,
     cell_runtime: CellRuntime | None = None,
 ) -> int:
     runtime = (
@@ -1612,7 +1554,7 @@ def _run_selected_cell(
     authority = validate_session_authority(
         _read(runtime / "runtime_inputs" / "policy_canary_session_authority.json")
     )
-    _validate_provider_manifest(
+    provider_manifest = _validate_provider_manifest(
         _read(runtime / "adp_arena_provider_manifest.json"),
         runtime_inputs=inputs,
         authority=authority,
@@ -2123,6 +2065,43 @@ def _run_selected_cell(
             authority_path=authority_path,
         )
 
+    execution_binding = {"run_id": authority.get("run_id"), "authority_digest": authority["authority_digest"],
+                         "runtime_inputs_digest": inputs["runtime_inputs_digest"],
+                         "implementation_commit": provider_manifest.get("implementation_commit"),
+                         "execution_release": authority.get("execution_release")}
+
+    def prepolicy_control_gate(_session: Mapping[str, Any]) -> dict[str, Any]:
+        cell = inputs["cells"][selected_cell_index]
+        plan = _resolved_scene_plan(base_scene_plan, cell, task_success_contract=inputs["task_success_contract"])
+        controls_root = provider_output_root / "control_runs" / f"{selected_cell_index:02d}"
+        receipt = _read(controls_root / "policy_canary_cell_controls.v1.json")
+        validate_controls_receipt(receipt, scene_plan=plan,
+                                  gate=current_session.get("policy_observation_runtime_gate") or {}, root=controls_root,
+                                  execution_binding=execution_binding)
+        return {"status": "passed", "control_receipt_digest": receipt["receipt_digest"]}
+
+    if controls_only:
+        try:
+            if not controls_required(inputs["task_success_contract"]):
+                raise RuntimeError("strict_controls_mode_requires_explicit_contract")
+            session = open_session(inputs)
+            gate = prepolicy_observation_gate(session)
+            if current_env.get("built") is None:
+                raise RuntimeError("strict_controls_native_camera_gate_required")
+            plan = _resolved_scene_plan(base_scene_plan, inputs["cells"][selected_cell_index],
+                                        task_success_contract=inputs["task_success_contract"])
+            controls = execute_native_controls(cell_runtime=bound_runtime, built=current_env["built"],
+                                               scene_plan=plan, gate=gate, output_root=output_root,
+                                               execution_binding=execution_binding)
+            result = {"schema_version": "policy_canary_control_cell_result.v1", "controls": controls,
+                      "status": controls["status"], "episodes": [], "candidate_policy_queried": False}
+        except Exception as exc:
+            result = {"schema_version": "policy_canary_control_cell_result.v1", "status": "blocked",
+                      "blockers": [str(exc)], "episodes": [], "candidate_policy_queried": False}
+        _seal_result_before_simulation_close(result_path=result_path, result=result,
+                                            simulation_app=current_session.get("simulation_app"))
+        return 0 if result["status"] == "passed" else 1
+
     result = execute_paired_session(
         authority=authority,
         runtime_inputs=inputs,
@@ -2135,6 +2114,7 @@ def _run_selected_cell(
         provider_closeout_pending=True,
         selected_cell_index=selected_cell_index,
         prepolicy_observation_gate=prepolicy_observation_gate,
+        prepolicy_control_gate=prepolicy_control_gate,
     )
     result["appearance_render_backend"] = dict(appearance_render_backend)
     telemetry_index, telemetry_artifacts = _write_indexed_telemetry(
@@ -2169,7 +2149,7 @@ def main() -> int:
         selected_cell_index = int(raw_index)
     except ValueError as exc:
         raise RuntimeError("policy_canary_cell_index_invalid") from exc
-    return _run_selected_cell(selected_cell_index)
+    return _run_selected_cell(selected_cell_index, controls_only=os.environ.get("BLUEPRINT_POLICY_CANARY_CONTROLS_ONLY") == "1")
 
 
 if __name__ == "__main__":  # pragma: no cover
