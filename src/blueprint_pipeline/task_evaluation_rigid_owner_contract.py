@@ -105,13 +105,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     task_spec = json.loads(Path(args.task_spec).read_text(encoding="utf-8"))
-    contract = materialize_configured_owner_success_contract(
+    contract = _derive_configured_owner_success_contract(
         task_spec, site_id=args.site_id, task_id=args.task_id, team_namespace=args.team_namespace
     )
     result = {
         "owner_success_contract": contract,
         "retreat_criterion": (
-            materialize_retreat_criterion(task_spec)
+            _derive_retreat_criterion(task_spec)
             if contract is not None and task_spec.get("destination_pose_world") is not None
             else None
         ),
