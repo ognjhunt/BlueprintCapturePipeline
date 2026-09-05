@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import itertools
 import urllib.error
 from pathlib import Path
 
@@ -43,6 +45,14 @@ TOKEN = "hf_fixture_secret_value"
 INPUT_URL = "https://objects.example/input?signature=input-secret"
 PUT_URL = "https://objects.example/output?signature=put-secret"
 GET_URL = "https://objects.example/output?signature=get-secret"
+
+
+@pytest.fixture(autouse=True)
+def recovery_identity(tmp_path, monkeypatch):
+    identity = tmp_path / "fixture-ssh-identity"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(identity)],
+                   check=True, capture_output=True)
+    monkeypatch.setenv("BLUEPRINT_VAST_SSH_IDENTITY_FILE", str(identity))
 
 
 def _grant():
@@ -233,6 +243,9 @@ class _Provider:
         self.launched = True
         return {"status": "launched", "instance_id": "42"}
 
+    def inspect(self, instance_id):
+        return {"provider":"vast", "instance_id":instance_id, "api_confirmed":False}
+
     def terminate(self, instance_id):
         if self.terminate_status == "stopped":
             self.launched = False
@@ -269,7 +282,7 @@ def test_runtime_result_validation_preserves_claim_ceiling() -> None:
 
 def test_one_instance_canary_tears_down_and_persists_no_secrets(tmp_path: Path) -> None:
     provider = _Provider()
-    times = iter([1000.0, 1001.0, 1002.0])
+    times = itertools.count(1000.0)
     result = run_sam31_vast_source_track_canary(
         bound_request=_bound_request(),
         preflight=_preflight(),
