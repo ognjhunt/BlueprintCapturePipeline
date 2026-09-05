@@ -296,7 +296,9 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
     )
     if not url.startswith("https://"):
         raise ControlPlaneCapacityError("control_plane_capacity_webhook_not_https")
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310 - validated https
+    with urllib.request.urlopen(  # nosec B310 - operator webhook, https-only, checked above
+        request, timeout=timeout_seconds
+    ) as response:
         status = int(getattr(response, "status", 0) or 0)
         if status < 200 or status >= 300:
             raise ControlPlaneCapacityError(f"control_plane_capacity_webhook_http_{status}")
@@ -337,7 +339,9 @@ def _do_request(url: str, *, token: str, method: str, payload: Mapping[str, Any]
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method=method,
     )
-    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - fixed https origin
+    with urllib.request.urlopen(  # nosec B310 - fixed https://api.digitalocean.com origin
+        request, timeout=30
+    ) as response:
         return json.loads(response.read().decode("utf-8") or "{}")
 
 
