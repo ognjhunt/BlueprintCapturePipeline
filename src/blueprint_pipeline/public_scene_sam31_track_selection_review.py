@@ -544,6 +544,42 @@ def _contained_evidence_path(*, execution_root: Path, relative_path: object) -> 
     return path
 
 
+def _validate_completed_reservation_manifest(manifest: Mapping[str, Any], *, run_id: str) -> None:
+    """One completed reservation, nothing in flight, and the ledger's own reserved total.
+
+    The reservation ledger (``task_evaluation_supervisor.inference_reservations``,
+    hardened 2026-08-31) keeps a completed call's reconciled cost in
+    ``reserved_max_cost_usd`` until official billing posts.  This seal demanded
+    ``0.0`` and on 2026-09-05 refused attempt R16 after the reviewer had accepted;
+    nothing had exercised the two documents together since the hardening.  The
+    seal now asks the ledger's question: every reservation completed, the reserved
+    total equal to the reconciled cost, and both under the review cost cap.
+    """
+
+    rows = manifest.get("reservations")
+    row = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], Mapping) else None
+    reserved = manifest.get("reserved_max_cost_usd")
+    projected_total = manifest.get("projected_max_cost_usd_total")
+    reconciled = row.get("reconciled_actual_cost_usd") if row is not None else None
+    numbers = (reserved, projected_total, reconciled)
+    if (
+        manifest.get("schema_version") != INFERENCE_RESERVATION_MANIFEST_SCHEMA_VERSION
+        or manifest.get("inference_reservation_manifest_digest")
+        != canonical_digest(manifest, digest_field="inference_reservation_manifest_digest")
+        or manifest.get("run_id") != run_id
+        or manifest.get("reservation_count") != 1
+        or manifest.get("in_flight_unknown_count") != 0
+        or row is None
+        or len(rows) != 1
+        or row.get("status") != "completed"
+        or any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in numbers)
+        or not 0 < float(projected_total) <= AI_REVIEW_MAX_COST_USD
+        or not 0.0 <= float(reserved) <= float(projected_total) + 1.0e-9
+        or abs(float(reserved) - float(reconciled)) > 1.0e-9
+    ):
+        raise Sam31TrackSelectionReviewError("sam31_review_execution_receipt_invalid")
+
+
 def _validate_ai_execution_receipt(
     *,
     execution_path: Path,
@@ -726,31 +762,10 @@ def _validate_ai_execution_receipt(
     _manifest_path, reopened_manifest = _read(
         manifest_path, code="sam31_review_execution_receipt_invalid"
     )
-    rows = reopened_manifest.get("reservations")
-    if (
-        reopened_manifest != manifest
-        or manifest.get("schema_version") != INFERENCE_RESERVATION_MANIFEST_SCHEMA_VERSION
-        or manifest.get("inference_reservation_manifest_digest")
-        != canonical_digest(
-            manifest, digest_field="inference_reservation_manifest_digest"
-        )
-        or manifest.get("run_id") != execution["run_id"]
-        or manifest.get("reservation_count") != 1
-        or manifest.get("in_flight_unknown_count") != 0
-        or not isinstance(manifest.get("reserved_max_cost_usd"), (int, float))
-        or float(manifest["reserved_max_cost_usd"]) != 0.0
-        or not isinstance(
-            manifest.get("projected_max_cost_usd_total"), (int, float)
-        )
-        or not 0
-        < float(manifest["projected_max_cost_usd_total"])
-        <= AI_REVIEW_MAX_COST_USD
-        or not isinstance(rows, list)
-        or len(rows) != 1
-        or rows[0].get("status") != "completed"
-    ):
+    if reopened_manifest != manifest:
         raise Sam31TrackSelectionReviewError("sam31_review_execution_receipt_invalid")
-    row = rows[0]
+    _validate_completed_reservation_manifest(manifest, run_id=execution["run_id"])
+    row = manifest["reservations"][0]
     reservation_path = _contained_evidence_path(
         execution_root=execution_root,
         relative_path=row.get("reservation_path"),
