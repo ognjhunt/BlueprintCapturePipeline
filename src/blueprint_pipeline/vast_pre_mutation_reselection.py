@@ -9,12 +9,12 @@ had just been rented by someone else, or 404/409/410 -- the attempt ended with
 ``vast_api_http_error`` although nothing had been created or spent.  Submission
 #9 of scene 841757 lost a whole submission cycle to one stale RTX 4090 offer.
 
-A refused create is not a paid attempt: no provider mutation happened, no
-instance exists, no scientific attempt was consumed.  The adapter's re-selection
-path excludes the refused machine, searches again and tries the next offer,
-bounded by this constant and recorded per refusal in ``create_retry_attempts``;
-the paid authority is still consumed once and at most one instance ever exists.
-Every lane takes the bound from here so the doctrine has one home.
+Reselection requires an explicit provider refusal plus a verified inventory
+showing no instance for any label attempted in this run. An empty HTTP 400
+remains ambiguous even if its offer vanished or one inventory snapshot is
+empty. Discovered matching instances are handed to normal teardown, never
+followed by another create. Authority is consumed once; each refusal and the
+bounded reselection decision remain in create_retry_attempts.
 """
 
 from __future__ import annotations

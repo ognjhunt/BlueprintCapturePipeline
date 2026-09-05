@@ -2555,7 +2555,7 @@ def test_vast_adapter_retries_stale_offer_create_before_allocation(
     assert teardown["continuing_spend_from_this_run"] is False
 
 
-def test_vast_adapter_retries_empty_create_400_only_after_offer_absence_readback(
+def test_vast_adapter_empty_create_400_stays_ambiguous_after_offer_absence(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -2648,35 +2648,23 @@ def test_vast_adapter_retries_empty_create_400_only_after_offer_absence_readback
         session_max_live_minutes=None,
     )
 
-    assert result["status"] == "completed"
-    assert created_paths == ["/asks/401/", "/asks/402/"]
+    assert result["status"] == "failed"
+    assert created_paths == ["/asks/401/"]
     assert len(catalog_readback_payloads) == 1
     assert catalog_readback_payloads[0]["limit"] == 1
-    retry = _read_json(tmp_path / "vast_offer_selection_manifest.json")[
-        "create_retry_attempts"
-    ][0]
+    retry = result["create_failure_diagnosis"]
+    assert retry["definite_create_refusal"] is False
+    assert retry["status"] == "create_failure_not_proven_safe_to_retry"
     assert retry["selected_offer_absent_from_fresh_search"] is True
     assert retry["catalog_readback_http_status_code"] == 200
     assert retry["catalog_readback_offer_count"] == 0
 
 
-def test_vast_adapter_reselects_when_create_provably_allocated_nothing(
+def test_vast_adapter_empty_create_400_stays_ambiguous_after_empty_inventory(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """An empty 400 must not end a run that allocated nothing.
-
-    Scene 839873 died here: Vast answered the create with an empty 400, the
-    catalog still listed the offer, so the vanished-offer proof did not apply
-    and the run stopped with 100 qualifying offers left unused. Creation is
-    ``PUT /asks/{id}/``, so an offer must be named and selection and creation
-    are separate calls -- being unable to advance past one bad ask throws away
-    the whole search.
-
-    Asking the provider whether anything was created is the missing proof: a
-    successful listing with no instance carrying the attempted label means the
-    next offer can be tried with no double-allocation risk.
-    """
+    """An empty listing cannot prove that an ambiguous create will not appear later."""
 
     secret = _configure_live_gates(tmp_path, monkeypatch)
     monkeypatch.setenv(vpa.VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS_ENV, "1")
@@ -2770,13 +2758,12 @@ def test_vast_adapter_reselects_when_create_provably_allocated_nothing(
         session_max_live_minutes=None,
     )
 
-    assert result["status"] == "completed"
-    assert created_paths == ["/asks/501/", "/asks/502/"]
-    assert result["excluded_machine_ids"] == [9501]
-    retry = _read_json(tmp_path / "vast_offer_selection_manifest.json")[
-        "create_retry_attempts"
-    ][0]
-    assert retry["status"] == "create_no_mutation_reselect"
+    assert result["status"] == "failed"
+    assert created_paths == ["/asks/501/"]
+    assert result["excluded_machine_ids"] == []
+    retry = result["create_failure_diagnosis"]
+    assert retry["definite_create_refusal"] is False
+    assert retry["status"] == "create_failure_not_proven_safe_to_retry"
     assert retry["selected_offer_absent_from_fresh_search"] is False
     assert retry["create_produced_no_instance"] is True
     assert retry["create_inventory_http_status_code"] == 200
@@ -3106,7 +3093,7 @@ def test_vast_adapter_does_not_retry_unrelated_create_http_400() -> None:
             "",
             selected_offer_absent_from_fresh_search=True,
         )
-        is True
+        is False
     )
 
 
