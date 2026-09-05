@@ -33,6 +33,7 @@ from .task_evaluation_scene_configuration_sam31_plan import (
 )
 from .task_evaluation_scene_configuration_stage_configuration import (
     SAM31_MASK_SOURCE, SAM31_SELECTION_RULE,
+    _bounded_pair,
     validate_immutable_stage_configurations,
 )
 from .task_evaluation_scene_configuration_submission_inputs import (
@@ -61,6 +62,15 @@ def _validate_task(task: dict[str, Any]) -> None:
         slug(identity["id"])
         slug(identity["version"])
     require(task["destination"].get("relation") == "inside", "task_request_invalid")
+    physics = task["subject"].get("physics_bounds")
+    require(isinstance(physics, dict), "task_subject_physics_bounds_invalid")
+    for field in ("mass_kg_bounds", "static_friction_bounds", "dynamic_friction_bounds",
+                  "restitution_bounds"):
+        require(_bounded_pair(physics.get(field), positive_lower=field == "mass_kg_bounds"),
+                "task_subject_physics_bounds_invalid")
+    require(float(physics["dynamic_friction_bounds"][0]) <=
+            float(physics["static_friction_bounds"][1]),
+            "task_subject_friction_bounds_infeasible")
     for obj in ("subject", "support"):
         require(bool(str(task[obj].get("source_instance_id") or "").strip()), "task_object_missing")
     for obj, field in (("subject", "review_label"), ("subject", "authoring_target"),
