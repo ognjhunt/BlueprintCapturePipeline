@@ -740,6 +740,11 @@ def _source_checkout_blockers(
         blockers.append("gpu_canary_checkout_source_commit_unavailable")
     elif expected_source_commit.strip().lower() != checkout_commit:
         blockers.append("gpu_canary_expected_source_commit_not_current_checkout")
+    from .active_deployed_release_admission import inspect_active_deployed_release
+    deployed = inspect_active_deployed_release(ROOT, checkout_commit)
+    if deployed is not None:
+        blockers.extend(deployed["blockers"] + ([] if checkout_clean else ["gpu_canary_checkout_not_clean"]))
+        return blockers, checkout_commit
     if allow_pushed_branch_diagnostic:
         branch = _current_branch_name()
         remote_branch_commit = _current_remote_branch_commit(branch)
