@@ -18,7 +18,8 @@ from tests.test_vast_provider_adapter import _configure_live_gates, _created_ins
 @pytest.mark.parametrize('case', ['definite_refusal', 'refusal_limit', 'empty_unverified', 'empty_zero',
                                   'empty_created', 'definite_unverified', 'definite_created',
                                   'malformed_inventory', 'prior_label_created', 'ambiguous_success', 'timeout',
-                                  'unknown_status_created', 'stopped_created', 'malformed_map_inventory', 'malformed_inventory_created'])
+                                  'unknown_status_created', 'stopped_created', 'malformed_map_inventory', 'malformed_inventory_created',
+                                  'inventory_valueerror'])
 def test_sealed_lane_never_reselects_after_ambiguous_or_observed_creation(tmp_path: Path, monkeypatch, lane, case):
     secret = _configure_live_gates(tmp_path, monkeypatch)
     creates, labels, destroyed, consumptions = [], [], [], []
@@ -37,6 +38,8 @@ def test_sealed_lane_never_reselects_after_ambiguous_or_observed_creation(tmp_pa
                 return 200, {'instances': []}
             if case in ['empty_unverified', 'definite_unverified']:
                 raise urllib.error.HTTPError('https://vast.invalid/instances/', 503, 'unavailable', {}, BytesIO(b''))
+            if case == 'inventory_valueerror':
+                raise ValueError(secret)
             if case == 'malformed_inventory':
                 return 200, {}
             if case == 'malformed_map_inventory':
@@ -94,6 +97,7 @@ def test_sealed_lane_never_reselects_after_ambiguous_or_observed_creation(tmp_pa
     expected_creates = 3 if case == 'refusal_limit' else 2 if case in ['definite_refusal', 'prior_label_created'] else 1
     assert len(creates) == expected_creates
     assert consumptions == ['consumed']
+    assert secret not in json.dumps(result)
     assert maximum_live[0] <= 1 and not live
     assert result['status'] == ('completed' if case == 'definite_refusal' else 'failed')
     if case in ['empty_created', 'definite_created', 'prior_label_created', 'unknown_status_created', 'stopped_created', 'malformed_inventory_created']:

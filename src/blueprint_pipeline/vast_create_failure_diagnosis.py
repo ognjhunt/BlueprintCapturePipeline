@@ -106,7 +106,8 @@ def diagnose_empty_create_400(
         diagnosis["create_produced_no_instance"] = bool(labels and not matches)
 
     except Exception as exc:  # noqa: BLE001 - an unreadable listing proves nothing
-        diagnosis["create_inventory_error"] = (str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
+        safe_codes = {"vast_create_inventory_unrecognized", "vast_create_inventory_identity_incomplete"}
+        diagnosis["create_inventory_error"] = str(exc) if str(exc) in safe_codes else type(exc).__name__
 
     return diagnosis
 
