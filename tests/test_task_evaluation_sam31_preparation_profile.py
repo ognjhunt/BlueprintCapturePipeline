@@ -91,6 +91,26 @@ def inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
                 approved_roots=[tmp_path], ffmpeg_executable=ffmpeg)
 
 
+@pytest.mark.parametrize("tampered", [False, True])
+def test_completed_execution_is_exactly_bound_or_refused(inputs, tmp_path, tampered):
+    execution = _write(tmp_path / 'completed-review.json', {
+        'schema_version': module.AI_EXECUTION_SCHEMA_VERSION,
+        'status': 'ai_visual_review_execution_completed',
+        'reviewer': {'model': module.AI_REVIEW_MODEL},
+    }, 'execution_receipt_digest')
+    if tampered:
+        value = json.loads(execution.read_text())
+        value['reviewer']['model'] = 'different-model'
+        execution.write_text(json.dumps(value))
+        with pytest.raises(ValueError, match='completed_review_execution_invalid'):
+            module.materialize_sam31_preparation_profile(**inputs,
+                completed_review_execution_path=execution)
+    else:
+        result = module.materialize_sam31_preparation_profile(**inputs,
+            completed_review_execution_path=execution)
+        assert result['sam31_visual_review']['completed_execution'] == module._file_record(execution)
+
+
 def test_materializer_binds_evidence_without_reading_secrets(inputs, monkeypatch, tmp_path):
     secrets = {inputs['sam31_hf_token_file'], inputs['openai_admin_api_key_file']}
     original = Path.open
