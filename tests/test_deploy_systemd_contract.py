@@ -138,6 +138,21 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
             assert "ProtectSystem=strict" in text
             assert "ReadWritePaths=/var/lib/blueprint " not in text
             continue
+        if unit.name == "blueprint-control-plane-capacity.service":
+            # Root housekeeping like the reaper: growing the work volume needs the
+            # block device and the online-resize ioctl, nothing wider.  It writes
+            # one evidence root and reads the reservation ledger and secrets.
+            text = unit.read_text(encoding="utf-8")
+            assert "User=root" in text
+            assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_RESOURCE CAP_SYS_ADMIN" in text
+            assert "AmbientCapabilities=CAP_DAC_OVERRIDE CAP_SYS_RESOURCE CAP_SYS_ADMIN" in text
+            assert "DeviceAllow=block-* rw" in text and "DevicePolicy=closed" in text
+            assert "NoNewPrivileges=true" in text
+            assert "ProtectSystem=strict" in text
+            assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/capacity" in text
+            assert "ReadWritePaths=/var/lib/blueprint " not in text
+            assert "SystemCallFilter=@system-service" in text
+            continue
         text = unit.read_text(encoding="utf-8")
         for control in required_controls:
             assert control in text, (unit.name, control)
