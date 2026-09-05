@@ -194,6 +194,40 @@ def _cutout(candidate_path, candidate, source, task, camera_ids, mask_paths):
     return deleted, retained, shared["counts"], sweep, original
 
 
+def _source_render_conversion(prepared, conversion_path, expected_digest, expected_commit):
+    """Follow verified administrative rebindings without rewriting renderer provenance."""
+    current = _read(conversion_path, "receipt_digest")
+    if current["receipt_digest"] == expected_digest:
+        return conversion_path
+    adoption_ref = (prepared.get("completed_prefix_adoption") or {}).get("receipt")
+    for _ in range(16):
+        _require(isinstance(adoption_ref, Mapping), "renderer_source_join_invalid")
+        adoption = _read(_file(adoption_ref), "adoption_digest")
+        _require(adoption.get("status") == "verified_completed_prefix"
+                 and adoption.get("source_commit") == expected_commit
+                 and adoption.get("historical_receipts_modified") is False,
+                 "renderer_source_join_invalid")
+        rebinding = adoption["administrative_rebindings"]["standard_splat_conversion"]
+        successor = _read(_file(rebinding["successor"]), "receipt_digest")
+        _require(successor == current, "renderer_source_join_invalid")
+        original_path = _file(rebinding["original"])
+        original = _read(original_path, "receipt_digest")
+        _require(original.get("status") == "standard_splat_conversion_materialized"
+                 and all(original[section].get(key) == current[section].get(key)
+                         for section in ("source", "output") for key in ("sha256", "size_bytes"))
+                 and original["output"].get("gaussian_count_preserved") is True
+                 and original["output"].get("standard_3dgs_schema_validated") is True,
+                 "renderer_source_join_invalid")
+        if original["receipt_digest"] == expected_digest:
+            return original_path
+        profile = _read(_file(adoption["source_profile"]), "profile_digest")
+        _require(profile.get("source_commit") == adoption["original_execution_commit"],
+                 "renderer_source_join_invalid")
+        current, expected_commit = original, profile["source_commit"]
+        adoption_ref = profile.get("completed_prefix_adoption")
+    _require(False, "renderer_source_join_invalid")
+
+
 def _materialize_sam31_exact_mask_render_inputs(
     *, envelope, stage_one_configuration, output_root,
 ):
@@ -333,9 +367,12 @@ def _materialize_sam31_exact_mask_render_inputs(
              and upstream["scene"]["target_instance_id"] == source_object["publisher_instance_id"]
              and upstream["scene"]["publisher_scene_id"] == source_object["scene_id"],
              "renderer_qualification_missing")
-    _require(upstream["scene"].get("task_id") == task_id
-             and upstream.get("source_admission", {}).get("standard_splat_conversion_receipt_digest")
-             == conversion["receipt_digest"], "renderer_source_join_invalid")
+    _require(upstream["scene"].get("task_id") == task_id, "renderer_source_join_invalid")
+    render_conversion = _source_render_conversion(
+        envelope.get("sam31_preparation_result") or {}, paths["standard_splat_conversion"],
+        upstream.get("source_admission", {}).get("standard_splat_conversion_receipt_digest"),
+        envelope["request"].get("expected_production_commit"),
+    )
     rendered = upstream.get("derived_artifacts", {})
     _require(rendered.get("cameras", {}).get("sha256") == _sha(camera_file),
              "renderer_camera_join_invalid")
@@ -428,6 +465,7 @@ def _materialize_sam31_exact_mask_render_inputs(
         "sam31_evidence_records": {
             **{key: _copy(path, root / "provenance" / (key + ".json")) for key, path in paths.items()},
             "source_render_receipt": _copy(upstream_render, root / "provenance/source_render_receipt.json"),
+            "source_render_conversion": _copy(render_conversion, root / "provenance/source_render_conversion.json"),
         },
         "browser_preview_used_as_method_input": False, "sage_render_used_as_appearance": False,
         "provider_mutation_performed": False, "paid_execution_requested": False,
