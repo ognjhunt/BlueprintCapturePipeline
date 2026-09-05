@@ -17,6 +17,7 @@ requires both before any allocator call.
 from __future__ import annotations
 
 import argparse
+import grp
 import hashlib
 import json
 import math
@@ -431,12 +432,15 @@ def provision_scene_configuration_activation_intent(
     intent_root: str | Path,
     materialization_root: str | Path,
     release_window_valid_for_seconds: int = DEFAULT_RELEASE_WINDOW_VALID_SECONDS,
+    service_group: str | None = None,
 ) -> dict[str, Any]:
     """Author the release-window template and register the sealed intent in one step.
 
     The template carries no timestamp, so re-provisioning the same owner
     decision at the same commit reproduces identical bytes and returns the same
-    sealed intent instead of conflicting.
+    sealed intent instead of conflicting.  The registry is root-owned while the
+    progression timer reads as the service account, so when a service group is
+    named every written byte is handed to that group read-only.
     """
 
     if _COMMIT.fullmatch(str(expected_production_commit or "")) is None:
@@ -471,7 +475,21 @@ def provision_scene_configuration_activation_intent(
     template["template_digest"] = canonical_digest(template, digest_field="template_digest")
     template_path = inputs / "release_window_template.v1.json"
     _write_immutable(template_path, template)
-    return materialize_scene_configuration_activation_intent(
+    spend_source = Path(project_spend_reconciliation_path).expanduser()
+    spend_path = inputs / "project_spend_reconciliation.json"
+    if spend_path.exists() or spend_path.is_symlink():
+        if spend_path.is_symlink() or spend_path.read_bytes() != spend_source.read_bytes():
+            raise SceneConfigurationActivationAutomationError(
+                "scene_configuration_activation_immutable_conflict"
+            )
+    else:
+        with spend_path.open("xb") as stream:
+            stream.write(spend_source.read_bytes())
+        spend_path.chmod(0o440)
+    output_path = Path(intent_root).expanduser() / scene_configuration_activation_registry_name(
+        team_namespace=team_namespace, scene_id=scene_id, task_id=task_id
+    )
+    intent = materialize_scene_configuration_activation_intent(
         expected_production_commit=expected_production_commit,
         team_namespace=team_namespace,
         scene_id=scene_id,
@@ -483,13 +501,34 @@ def provision_scene_configuration_activation_intent(
             "valid_for_seconds": int(valid_for_seconds),
         },
         release_window_template_path=template_path,
-        project_spend_reconciliation_path=project_spend_reconciliation_path,
+        project_spend_reconciliation_path=spend_path,
         rights_scope=rights_scope,
-        output_path=Path(intent_root).expanduser()
-        / scene_configuration_activation_registry_name(
-            team_namespace=team_namespace, scene_id=scene_id, task_id=task_id
-        ),
+        output_path=output_path,
     )
+    _hand_to_service_group(
+        [inputs, template_path, spend_path, output_path], service_group=service_group
+    )
+    return intent
+
+
+def _hand_to_service_group(paths: Sequence[Path], *, service_group: str | None) -> None:
+    """Make root-authored intent bytes readable by the service account, read-only."""
+
+    if service_group is None:
+        return
+    try:
+        group_id = grp.getgrnam(service_group).gr_gid
+    except KeyError as exc:
+        raise SceneConfigurationActivationAutomationError(
+            f"scene_configuration_activation_service_group_missing:{service_group}"
+        ) from exc
+    for path in paths:
+        if path.is_symlink():
+            raise SceneConfigurationActivationAutomationError(
+                "scene_configuration_activation_immutable_conflict"
+            )
+        os.chown(path, os.geteuid(), group_id)
+        path.chmod(0o750 if path.is_dir() else 0o440)
 
 
 # ---------------------------------------------------------------- provider zero
@@ -1247,6 +1286,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     provision.add_argument("--release-reference", required=True)
     provision.add_argument("--intent-root", default=DEFAULT_INTENT_ROOT)
     provision.add_argument("--materialization-root", default=DEFAULT_MATERIALIZATION_ROOT)
+    provision.add_argument("--service-group", default="blueprint")
     process = commands.add_parser(
         "process", help="Advance every prepared scene configuration one safe step."
     )
@@ -1306,6 +1346,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             release_reference=args.release_reference,
             intent_root=args.intent_root,
             materialization_root=args.materialization_root,
+            service_group=args.service_group,
         )
         print(json.dumps({"status": "registered", "intent_digest": intent["intent_digest"]}))
         return 0

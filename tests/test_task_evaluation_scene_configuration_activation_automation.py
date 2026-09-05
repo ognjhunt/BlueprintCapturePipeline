@@ -418,6 +418,31 @@ def test_provision_intent_authors_its_own_release_window_template(tmp_path: Path
     )
     template_path = Path(intent["artifact_inventory"]["release_window_template"]["path"])
     template = json.loads(template_path.read_text())
+    # Bytes the owner provisions as root are handed to the service group read-only.
+    import grp
+    import os
+
+    own_group = grp.getgrgid(os.getgid()).gr_name
+    grouped = automation.provision_scene_configuration_activation_intent(
+        expected_production_commit=COMMIT,
+        team_namespace=TEAM,
+        scene_id=SCENE_ID,
+        task_id=TASK_ID,
+        authorization_reference="Blueprint owner direction 2026-09-04: scene 841757 book-to-tray end to end",
+        authorized_by="nijelhunt_1",
+        profile_revision="r1",
+        valid_for_seconds=21_600,
+        project_spend_reconciliation_path=spend,
+        rights_scope="internal_noncommercial_research_only",
+        maximum_hard_cap_usd=12.0,
+        release_reference="Scene 841757 scene-configuration automatic activation",
+        intent_root=intent_root,
+        materialization_root=tmp_path / "activation-intent-inputs",
+        service_group=own_group,
+    )
+    assert grouped == intent
+    assert template_path.stat().st_mode & 0o777 == 0o440
+    assert next(intent_root.glob("*.json")).stat().st_mode & 0o777 == 0o440
     from blueprint_pipeline.task_evaluation_shared_mutation_window import (
         validate_shared_mutation_window_template,
     )
