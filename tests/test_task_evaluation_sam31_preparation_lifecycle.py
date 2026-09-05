@@ -236,6 +236,19 @@ def test_real_cpu_sam_review_mask_freeze_cutout_lifecycle(
             "output_root": str(tmp_path / f"stage-{index}")})
         assert outcome["status"] == "completed", outcome
         job["inputs"].update(outcome["artifacts"])
+        if stage == "sam31_review":
+            profile["sam31_visual_review"]["completed_execution"] = outcome["artifacts"]["review_execution"]
+            profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+            def unexpected_call(**kwargs):
+                pytest.fail("retained accepted review must not call the provider again")
+            monkeypatch.setattr(reviews, "run_sam31_ai_visual_review", unexpected_call)
+            reused = reviews.execute_review_stage({**job, "stage_id": stage,
+                "output_root": str(tmp_path / "review-reused")})
+            assert reused["status"] == "completed", reused
+            assert reused["completed_review_execution_reused"] is True
+            assert reused["new_model_call_performed"] is False
+            assert reused["artifacts"]["review_execution"] == outcome["artifacts"]["review_execution"]
+            job["inputs"].update(reused["artifacts"])
     masks = json.loads(Path(job["inputs"]["calibrated_mask_set"]["path"]).read_text())
     assert masks["selection_authority"]["all_selected_tracks_ai_visual_review_accepted"] is True
     assert masks["selection_authority"]["all_selected_tracks_human_review_accepted"] is False
