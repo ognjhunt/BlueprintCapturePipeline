@@ -385,6 +385,37 @@ def _runtime_geometry(
     }
 
 
+def _revision_bound_task(
+    *,
+    revision: Mapping[str, Any],
+    materialized_references: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Bind the task exactly as an episode request would, from the revision alone."""
+
+    template, _binding = _source_document(
+        materialized_references,
+        contract_path=DEFINITION_CONTRACT_PATH,
+        expected_reference=revision["task_template"]["definition"],
+    )
+    strategy = template.get("strategy")
+    if (
+        strategy not in {"planar_push", "pick_and_place"}
+        or template.get("task_identity") != revision["task_template"]["identity"]
+        or template.get("object_identity") != revision["replacement"]["identity"]
+    ):
+        raise TaskEvaluationRigidRelocationNativeAdapterError(
+            "rigid_relocation_native_adapter_request_binding_mismatch"
+        )
+    return {
+        "identity": dict(revision["task_template"]["identity"]),
+        "subject": {"identity": dict(revision["replacement"]["identity"])},
+        "strategy": str(strategy),
+        "binding_mode": "reuse_configured_template",
+        "kind": "rigid_relocation",
+        "configured_scene_revision_digest": revision["revision_digest"],
+    }
+
+
 def adapt_rigid_relocation_task_template(
     *,
     request: Mapping[str, Any] | None = None,
@@ -495,8 +526,12 @@ def adapt_rigid_relocation_task_template(
         authority_digest = authority["receipt_digest"]
     else:
         try:
-            validated_request = validate_launch_preparation_request(request or {})
             revision = validate_configured_scene_revision(configured_revision or {})
+            validated_request = (
+                validate_launch_preparation_request(request)
+                if request is not None
+                else None
+            )
         except (
             TaskEvaluationLaunchPreparationContractError,
             TaskEvaluationConfiguredSceneRevisionError,
@@ -504,20 +539,29 @@ def adapt_rigid_relocation_task_template(
             raise TaskEvaluationRigidRelocationNativeAdapterError(
                 "rigid_relocation_native_adapter_authority_invalid"
             ) from exc
-        task = validated_request["task"]
-        if (
-            validated_request["run_mode"]
-            not in {"episode_evaluation", "destination_qualification"}
-            or task["binding_mode"] != "reuse_configured_template"
-            or task["kind"] != "rigid_relocation"
-            or task["strategy"] not in {"planar_push", "pick_and_place"}
-            or task["identity"] != revision["task_template"]["identity"]
-            or task["subject"]["identity"] != revision["replacement"]["identity"]
-            or task["configured_scene_revision_digest"] != revision["revision_digest"]
-        ):
-            raise TaskEvaluationRigidRelocationNativeAdapterError(
-                "rigid_relocation_native_adapter_request_binding_mismatch"
+        if validated_request is None:
+            # Before any episode request exists (the configured-controls
+            # continuation derives its first trajectory plan right after
+            # publication), the revision binds its own task: the template names
+            # the strategy, and the identities are the revision's own.
+            task = _revision_bound_task(
+                revision=revision, materialized_references=materialized_references
             )
+        else:
+            task = validated_request["task"]
+            if (
+                validated_request["run_mode"]
+                not in {"episode_evaluation", "destination_qualification"}
+                or task["binding_mode"] != "reuse_configured_template"
+                or task["kind"] != "rigid_relocation"
+                or task["strategy"] not in {"planar_push", "pick_and_place"}
+                or task["identity"] != revision["task_template"]["identity"]
+                or task["subject"]["identity"] != revision["replacement"]["identity"]
+                or task["configured_scene_revision_digest"] != revision["revision_digest"]
+            ):
+                raise TaskEvaluationRigidRelocationNativeAdapterError(
+                    "rigid_relocation_native_adapter_request_binding_mismatch"
+                )
         for contract_path, revision_field in (
             (DEFINITION_CONTRACT_PATH, "definition"),
             (SUCCESS_CONTRACT_PATH, "success_criteria"),
