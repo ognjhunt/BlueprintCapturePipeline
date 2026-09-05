@@ -825,46 +825,6 @@ def provision_configured_controls_continuation(
 # ------------------------------------------------------------------ registry
 
 
-def _retire_superseded_registration(
-    registry_path: Path, *, expected_production_commit: str
-) -> Path | None:
-    """Move a live registration bound to another release out of the workers' view.
-
-    Every deploy changes the commit and the same continuation is re-provisioned
-    at the new release.  Workers resolve only ``<identity>.json``; the previous
-    release's entry keeps its bytes under a name no worker reads.  Two
-    registrations of the same release still conflict unless byte-identical.
-    """
-
-    if not registry_path.exists() and not registry_path.is_symlink():
-        return None
-    if registry_path.is_symlink():
-        raise ConfiguredControlsProvisioningError(
-            "configured_controls_provisioning_registry_conflict"
-        )
-    try:
-        existing = json.loads(registry_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ConfiguredControlsProvisioningError(
-            "configured_controls_provisioning_registry_conflict"
-        ) from exc
-    previous = str(existing.get("expected_production_commit") or "") if isinstance(existing, Mapping) else ""
-    if previous == expected_production_commit or re.fullmatch(r"[0-9a-f]{40}", previous) is None:
-        return None
-    retired = registry_path.with_name(
-        f"{registry_path.name.removesuffix('.json')}.superseded-{previous}.json"
-    )
-    if retired.exists() or retired.is_symlink():
-        if retired.is_symlink() or retired.read_bytes() != registry_path.read_bytes():
-            raise ConfiguredControlsProvisioningError(
-                "configured_controls_provisioning_registry_conflict"
-            )
-        registry_path.unlink()
-        return retired
-    os.replace(registry_path, retired)
-    return retired
-
-
 def install_intent_into_registry(
     *,
     intent_path: str | Path,
@@ -898,31 +858,15 @@ def install_intent_into_registry(
         task_id=intent["task_id"],
     )
     payload = source.read_bytes()
-    retired = _retire_superseded_registration(
-        destination, expected_production_commit=expected_production_commit
-    )
-    if destination.exists() or destination.is_symlink():
-        if destination.is_symlink() or destination.read_bytes() != payload:
-            raise ConfiguredControlsProvisioningError(
-                "configured_controls_provisioning_registry_conflict"
-            )
-    else:
-        with destination.open("xb") as stream:
-            stream.write(payload)
-    group_id = None
-    if service_group is not None:
-        try:
-            group_id = grp.getgrnam(service_group).gr_gid
-        except KeyError as exc:
-            raise ConfiguredControlsProvisioningError(
-                f"configured_controls_provisioning_service_group_missing:{service_group}"
-            ) from exc
-        os.chown(destination, os.geteuid() if os.geteuid() != 0 else 0, group_id)
-        if retired is not None:
-            os.chown(retired, os.geteuid() if os.geteuid() != 0 else 0, group_id)
-    destination.chmod(0o440)
-    if retired is not None:
-        retired.chmod(0o440)
+    from .task_evaluation_intent_registry import IntentRegistryError, install_release_intent
+    try:
+        install_release_intent(destination=destination, payload=payload,
+            expected_commit=expected_production_commit, service_group=service_group,
+            validate=validate_configured_controls_autostart_intent)
+    except (IntentRegistryError, OSError, KeyError) as exc:
+        raise ConfiguredControlsProvisioningError(
+            "configured_controls_provisioning_registry_conflict:" + str(exc)) from exc
+    group_id = grp.getgrnam(service_group).gr_gid if service_group is not None else None
     metadata = destination.stat()
     if (
         stat.S_IMODE(metadata.st_mode) != 0o440

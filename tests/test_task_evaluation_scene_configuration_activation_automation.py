@@ -504,7 +504,7 @@ def _provision(tmp_path: Path, *, commit: str = COMMIT, reference: str | None = 
     )
 
 
-def test_reprovisioning_at_a_new_release_supersedes_the_stale_registration(tmp_path: Path) -> None:
+def test_reprovisioning_at_a_new_release_supersedes_the_stale_registration(tmp_path: Path, monkeypatch) -> None:
     """Every deploy changes the commit; the same owner decision must re-register without a conflict.
 
     The registry keeps one live entry per identity (what the workers read) and
@@ -512,6 +512,8 @@ def test_reprovisioning_at_a_new_release_supersedes_the_stale_registration(tmp_p
     """
 
     (tmp_path / "intents").mkdir()
+    from blueprint_pipeline import task_evaluation_intent_registry as registry
+    monkeypatch.setattr(registry, "_supersession_authority", lambda commit: None)
     first = _provision(tmp_path)
     second = _provision(tmp_path, commit=COMMIT_NEXT)
     assert second["expected_production_commit"] == COMMIT_NEXT
@@ -525,7 +527,7 @@ def test_reprovisioning_at_a_new_release_supersedes_the_stale_registration(tmp_p
     retired = tmp_path / "intents" / f"{identity}.superseded-{COMMIT}.json"
     assert json.loads(retired.read_text()) == first
     assert retired.stat().st_mode & 0o777 == 0o440
-    assert sorted(path.name for path in (tmp_path / "intents").iterdir()) == sorted(
+    assert sorted(path.name for path in (tmp_path / "intents").glob("*.json")) == sorted(
         [f"{identity}.json", retired.name]
     )
     # Both releases keep their own immutable inputs.
@@ -543,6 +545,21 @@ def test_reprovisioning_the_same_release_with_a_different_decision_is_refused(tm
         match="scene_configuration_activation_immutable_conflict",
     ):
         _provision(tmp_path, reference="a different owner decision at the same release")
+
+
+def test_invalid_successor_preserves_current_activation_registration(tmp_path: Path) -> None:
+    (tmp_path / "intents").mkdir()
+    first = _provision(tmp_path)
+    name = automation.scene_configuration_activation_registry_name(
+        team_namespace=TEAM, scene_id=SCENE_ID, task_id=TASK_ID)
+    path = tmp_path / "intents" / name
+    before = path.read_bytes()
+    with pytest.raises(automation.SceneConfigurationActivationAutomationError,
+                       match="authorization_invalid"):
+        _provision(tmp_path, commit=COMMIT_NEXT, reference="x" * 1001)
+    assert path.read_bytes() == before
+    assert json.loads(before) == first
+    assert not list((tmp_path / "intents").glob("*.superseded-*.json"))
 
 
 def test_activation_refuses_a_live_provider_and_stages_nothing(tmp_path: Path) -> None:

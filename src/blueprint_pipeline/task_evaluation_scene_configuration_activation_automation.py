@@ -497,9 +497,6 @@ def provision_scene_configuration_activation_intent(
     output_path = Path(intent_root).expanduser() / scene_configuration_activation_registry_name(
         team_namespace=team_namespace, scene_id=scene_id, task_id=task_id
     )
-    retired = _retire_superseded_registration(
-        output_path, expected_production_commit=expected_production_commit
-    )
     intent = materialize_scene_configuration_activation_intent(
         expected_production_commit=expected_production_commit,
         team_namespace=team_namespace,
@@ -514,46 +511,22 @@ def provision_scene_configuration_activation_intent(
         release_window_template_path=template_path,
         project_spend_reconciliation_path=spend_path,
         rights_scope=rights_scope,
-        output_path=output_path,
+        output_path=inputs / "activation_intent.v1.json",
     )
+    candidate_path = inputs / "activation_intent.v1.json"
     _hand_to_service_group(
-        [inputs.parent, inputs, template_path, spend_path, output_path, *([retired] if retired else [])],
+        [inputs.parent, inputs, template_path, spend_path, candidate_path],
         service_group=service_group,
     )
+    from .task_evaluation_intent_registry import IntentRegistryError, install_release_intent
+    try:
+        install_release_intent(destination=output_path, payload=candidate_path.read_bytes(),
+            expected_commit=expected_production_commit, service_group=service_group,
+            validate=validate_scene_configuration_activation_intent)
+    except (IntentRegistryError, OSError, KeyError) as exc:
+        raise SceneConfigurationActivationAutomationError(
+            "scene_configuration_activation_immutable_conflict:" + str(exc)) from exc
     return intent
-
-
-def _retire_superseded_registration(
-    registry_path: Path, *, expected_production_commit: str
-) -> Path | None:
-    """Move a live registration bound to another release out of the workers' view.
-
-    Workers resolve only ``<identity>.json``; the retired entry keeps its bytes
-    under a name no worker reads, so the owner decision at the previous release
-    stays on record while the current release becomes the live one.  Two
-    registrations of the same release still conflict unless byte-identical.
-    """
-
-    if not registry_path.exists() and not registry_path.is_symlink():
-        return None
-    existing = _load(
-        registry_path, blocker="scene_configuration_activation_intent_registry_invalid"
-    )
-    previous = str(existing.get("expected_production_commit") or "")
-    if previous == expected_production_commit or _COMMIT.fullmatch(previous) is None:
-        return None
-    retired = registry_path.with_name(
-        f"{registry_path.name.removesuffix('.json')}.superseded-{previous}.json"
-    )
-    if retired.exists() or retired.is_symlink():
-        if retired.is_symlink() or retired.read_bytes() != registry_path.read_bytes():
-            raise SceneConfigurationActivationAutomationError(
-                "scene_configuration_activation_immutable_conflict"
-            )
-        registry_path.unlink()
-        return retired
-    os.replace(registry_path, retired)
-    return retired
 
 
 def _hand_to_service_group(paths: Sequence[Path], *, service_group: str | None) -> None:
