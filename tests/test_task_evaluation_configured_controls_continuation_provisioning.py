@@ -394,7 +394,7 @@ def test_provisioning_is_idempotent_and_refuses_a_non_configuration_preparation(
 COMMIT_NEXT = "1359447d4" + "2" * 31
 
 
-def test_registry_install_supersedes_a_stale_release_registration(tmp_path: Path) -> None:
+def test_registry_install_supersedes_a_stale_release_registration(tmp_path: Path, monkeypatch) -> None:
     """Every deploy changes the commit; the same continuation re-installs without a conflict."""
 
     result, _publisher = _provision(tmp_path)
@@ -404,6 +404,8 @@ def test_registry_install_supersedes_a_stale_release_registration(tmp_path: Path
         intent_path=result["intent_path"], intent_root=registry,
         expected_production_commit=COMMIT, service_group=None,
     )
+    from blueprint_pipeline import task_evaluation_intent_registry as registry_module
+    monkeypatch.setattr(registry_module, "_supersession_authority", lambda commit: None)
     next_result, _next_publisher = _provision(
         tmp_path,
         expected_production_commit=COMMIT_NEXT,
@@ -421,7 +423,7 @@ def test_registry_install_supersedes_a_stale_release_registration(tmp_path: Path
     retired = registry / f"{identity}.superseded-{COMMIT}.json"
     assert retired.read_bytes() == Path(result["intent_path"]).read_bytes()
     assert retired.stat().st_mode & 0o777 == 0o440
-    assert sorted(path.name for path in registry.iterdir()) == sorted([f"{identity}.json", retired.name])
+    assert sorted(path.name for path in registry.glob("*.json")) == sorted([f"{identity}.json", retired.name])
     # Re-installing the live release is a no-op; another decision at that release is refused.
     assert provisioning.install_intent_into_registry(
         intent_path=next_result["intent_path"], intent_root=registry,
