@@ -1,0 +1,301 @@
+"""Replay a SAM child's saved job against the code in this tree, paying for nothing.
+
+The slow loop of 2026-09-05 was: deploy a fix, resubmit, wait fifteen minutes for
+the chain to reach the stage that failed, learn one more fact, repeat.  Three
+deploys were spent on one review bug (frame set, authority linkage, wrapper
+paths) that the retained inputs of the failed child could have exposed in one
+local run.  This command is that run, as a first-class step: it locates the
+child's saved job in the phase queue, validates it exactly as the worker does,
+executes the stage handler from *this* tree against the retained inputs in a
+fresh scratch root, and reports the outcome with the predicate that refused
+(``fail_closed_blocker_explainer``).  The queue is never written.
+
+Rules the command enforces:
+
+- Paid phases and the hardware calibration render are not replayed unless
+  ``--allow-paid`` is passed; a replay is for the CPU and review boundaries.
+- ``--isolate`` re-executes under ``systemd-run`` as the service user with
+  ``PrivateNetwork=yes``, so a review replay stops at the model call and a
+  paid lane cannot reach a provider even by mistake.
+- The server profile the job was executed with is discovered by the digest
+  the plan pins, so a replay never needs the current release's profile.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+from . import task_evaluation_sam31_preparation_execution as execution
+from . import task_evaluation_sam31_preparation_stages as stages
+from .fail_closed_blocker_explainer import explain_blocker, fired_predicates
+from .task_evaluation_scene_configuration_sam31_plan import PROFILE_ENV
+
+SCHEMA = "task_evaluation_stage_replay_report.v1"
+JOB_STATES = ("failed", "completed", "waiting_external", "processing", "pending")
+DEFAULT_QUEUE_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions")
+DEFAULT_PARENT_QUEUE_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations")
+DEFAULT_INPUT_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs")
+DEFAULT_REPLAY_ROOT = DEFAULT_INPUT_ROOT / "stage-replays"
+DEFAULT_APPROVED_ROOTS = (Path("/var/lib/blueprint"), Path("/opt/blueprint"), Path("/etc/blueprint"))
+DEFAULT_ENVIRONMENT_FILES = ("/etc/blueprint/pipeline-control-plane.env",)
+_BOUNDARY_MARKERS = ("connection", "timeout", "unreachable", "name resolution", "gaierror", "urlerror", "apiconnection")
+
+
+@dataclass(frozen=True)
+class LocatedChild:
+    job_path: Path
+    result_path: Path
+    state: str
+
+
+def locate_child(queue_root: str | Path, child_id: str) -> LocatedChild:
+    """Find the saved job of ``child_id`` in whichever queue state holds it."""
+
+    root = Path(queue_root)
+    for state in JOB_STATES:
+        candidate = root / state / f"{child_id}.json"
+        if candidate.is_file():
+            return LocatedChild(job_path=candidate, result_path=root / "results" / f"{child_id}.json", state=state)
+    raise FileNotFoundError(f"{child_id} is not in any state of {root}")
+
+
+def _read(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _sha(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def discover_server_profile(plan_path: Path, input_root: Path) -> Path | None:
+    """The profile the job ran under: the one whose digest the plan pins."""
+
+    try:
+        pinned = str(_read(plan_path).get("server_profile_sha256") or "")
+    except (OSError, ValueError):
+        return None
+    if not pinned:
+        return None
+    current = os.environ.get(PROFILE_ENV)
+    candidates = [Path(current)] if current else []
+    candidates.extend(sorted(Path(input_root).glob("*/sam31-hardware-profile*/sam31_preparation_profile.v1.json")))
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and _sha(candidate) == pinned:
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _blocker(exc: BaseException) -> str:
+    if isinstance(exc, (execution.Sam31PhaseExecutionError, ValueError)):
+        return str(exc)
+    return f"{type(exc).__name__}: {exc}"[:300]
+
+
+def _boundary_hint(exc: BaseException) -> str | None:
+    text = f"{type(exc).__name__} {exc}".lower()
+    if any(marker in text for marker in _BOUNDARY_MARKERS):
+        return "external_boundary_unreachable_by_design"
+    return None
+
+
+def _explained(report: dict[str, Any], status: str, exc: BaseException) -> dict[str, Any]:
+    report.update(
+        status=status,
+        blocker=_blocker(exc),
+        exception_type=type(exc).__name__,
+        fired_predicates=fired_predicates(exc),
+        explanation=explain_blocker(exc),
+        boundary_hint=_boundary_hint(exc),
+    )
+    return report
+
+
+def _write_report(run_root: Path, report: Mapping[str, Any]) -> str:
+    path = run_root / "stage_replay_report.v1.json"
+    path.write_text(json.dumps(report, indent=1, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    return str(path)
+
+
+def replay_child(
+    *,
+    queue_root: str | Path,
+    child_id: str,
+    parent_queue_root: str | Path,
+    input_root: str | Path,
+    replay_root: str | Path,
+    approved_roots: Sequence[str | Path] = DEFAULT_APPROVED_ROOTS,
+    allow_paid: bool = False,
+) -> dict[str, Any]:
+    """Run the saved job of ``child_id`` through this tree's stage handler in a scratch root."""
+
+    located = locate_child(queue_root, child_id)
+    job = _read(located.job_path)
+    saved = _read(located.result_path) if located.result_path.is_file() else None
+    Path(replay_root).mkdir(parents=True, exist_ok=True)
+    run_root = Path(
+        tempfile.mkdtemp(prefix=f"{child_id[:20]}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-", dir=str(replay_root))
+    )
+    phase = str(job.get("phase") or "")
+    report: dict[str, Any] = {
+        "schema_version": SCHEMA,
+        "child_id": child_id,
+        "phase": phase,
+        "queue_state": located.state,
+        "job_path": str(located.job_path),
+        "saved_result": None
+        if saved is None
+        else {"status": saved.get("status"), "blocker": saved.get("blocker"), "source_commit": saved.get("source_commit")},
+        "replay_root": str(run_root),
+        "code_root": str(Path(stages.__file__).resolve().parents[2]),
+        "server_profile": os.environ.get(PROFILE_ENV),
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "fired_predicates": [],
+        "paid_execution_requested": False,
+        "provider_mutation_performed": False,
+    }
+    paid = phase in stages.PAID_PHASES or phase == "calibrated_views"
+    if paid and not allow_paid:
+        report.update(status="paid_stage_not_replayed", blocker="replay_refuses_paid_phase_without_allow_paid")
+        report["report_path"] = _write_report(run_root, report)
+        return report
+    try:
+        request, plan = execution._validated_job(
+            job,
+            parent_queue=Path(parent_queue_root),
+            input_root=Path(input_root),
+            source_commit=str(job.get("expected_source_commit") or ""),
+            approved_roots=tuple(Path(root) for root in approved_roots),
+        )
+    except Exception as exc:  # noqa: BLE001 - the refusal is the finding
+        _explained(report, "job_refused", exc)
+        report["report_path"] = _write_report(run_root, report)
+        return report
+    context = {
+        **job,
+        "request": request,
+        "plan": plan,
+        "queue_root": str(queue_root),
+        "output_root": str(run_root),
+        "preparation_input_root": str(input_root),
+        "resume_only": False,
+        "previous_progress": None,
+    }
+    try:
+        outcome = stages.execute_stage(context)
+    except Exception as exc:  # noqa: BLE001 - the refusal is the finding
+        _explained(report, "refused", exc)
+    else:
+        status = str(outcome.get("status") or "")
+        report["outcome"] = outcome
+        if status == "completed":
+            report["status"] = "completed"
+        elif status == "waiting_for_external_result":
+            report["status"] = "waiting"
+        else:
+            report["status"] = "refused"
+            blockers = outcome.get("blockers") or []
+            report["blocker"] = ";".join(str(item) for item in blockers)[:700] or "stage_failed"
+    report["report_path"] = _write_report(run_root, report)
+    return report
+
+
+def isolation_command(
+    argv: Sequence[str],
+    *,
+    user: str = "blueprint",
+    environment_files: Sequence[str] = (),
+    environment: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Wrap ``argv`` so it runs as the service user with no network at all."""
+
+    command = [
+        "systemd-run", "--wait", "--pipe", "--collect", "--quiet", "--service-type=exec",
+        f"--unit=stage-replay-{os.getpid()}", "-p", "PrivateNetwork=yes", "-p", f"User={user}",
+        "-p", "TimeoutStartSec=1800",
+    ]
+    for path in environment_files:
+        command.extend(["-p", f"EnvironmentFile={path}"])
+    for key, value in sorted((environment or {}).items()):
+        command.append(f"--setenv={key}={value}")
+    command.append("--")
+    command.extend(argv)
+    return command
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Replay a SAM child's saved job against this tree's code without paying.")
+    parser.add_argument("--child", required=True, help="child id (sam31-<digest>)")
+    parser.add_argument("--queue-root", default=str(DEFAULT_QUEUE_ROOT))
+    parser.add_argument("--parent-queue-root", default=str(DEFAULT_PARENT_QUEUE_ROOT))
+    parser.add_argument("--input-root", default=str(DEFAULT_INPUT_ROOT))
+    parser.add_argument("--replay-root", default=str(DEFAULT_REPLAY_ROOT))
+    parser.add_argument("--approved-root", action="append", default=[], help="repeatable; defaults to the production roots")
+    parser.add_argument("--server-profile", default=None, help="profile the job ran under; discovered from the plan digest when omitted")
+    parser.add_argument("--allow-paid", action="store_true", help="replay a paid phase (needs the provider environment; never default)")
+    parser.add_argument("--isolate", action="store_true", help="re-run under systemd-run as --user with PrivateNetwork=yes")
+    parser.add_argument("--user", default="blueprint")
+    parser.add_argument("--environment-file", action="append", default=list(DEFAULT_ENVIRONMENT_FILES))
+    parser.add_argument("--json-out", default=None)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    if args.isolate:
+        inner = [sys.executable, "-m", "blueprint_pipeline.task_evaluation_stage_replay", "--child", args.child,
+                 "--queue-root", args.queue_root, "--parent-queue-root", args.parent_queue_root,
+                 "--input-root", args.input_root, "--replay-root", args.replay_root]
+        for root in args.approved_root:
+            inner.extend(["--approved-root", root])
+        if args.server_profile:
+            inner.extend(["--server-profile", args.server_profile])
+        if args.allow_paid:
+            inner.append("--allow-paid")
+        if args.json_out:
+            inner.extend(["--json-out", args.json_out])
+        environment = {"PYTHONPATH": os.environ.get("PYTHONPATH", "")} if os.environ.get("PYTHONPATH") else {}
+        completed = subprocess.run(
+            isolation_command(inner, user=args.user, environment_files=args.environment_file, environment=environment),
+            check=False,
+        )
+        return completed.returncode
+    if args.server_profile:
+        os.environ[PROFILE_ENV] = args.server_profile
+    else:
+        try:
+            located = locate_child(args.queue_root, args.child)
+            plan_path = Path(str(_read(located.job_path).get("plan_ref", {}).get("path") or ""))
+        except (OSError, ValueError, AttributeError):
+            plan_path = Path("")
+        discovered = discover_server_profile(plan_path, Path(args.input_root)) if plan_path.is_file() else None
+        if discovered is not None:
+            os.environ[PROFILE_ENV] = str(discovered)
+    report = replay_child(
+        queue_root=args.queue_root, child_id=args.child, parent_queue_root=args.parent_queue_root,
+        input_root=args.input_root, replay_root=args.replay_root,
+        approved_roots=tuple(args.approved_root) or DEFAULT_APPROVED_ROOTS, allow_paid=args.allow_paid,
+    )
+    text = json.dumps(report, indent=1, sort_keys=True, default=str)
+    if args.json_out:
+        Path(args.json_out).write_text(text + "\n", encoding="utf-8")
+    print(text)
+    return {"completed": 0, "waiting": 3}.get(str(report.get("status")), 2)
+
+
+__all__ = ["LocatedChild", "discover_server_profile", "isolation_command", "locate_child", "main", "replay_child"]
+
+if __name__ == "__main__":
+    raise SystemExit(main())
