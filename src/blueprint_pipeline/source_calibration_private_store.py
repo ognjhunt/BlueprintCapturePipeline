@@ -32,9 +32,10 @@ def _require(value: bool, code: str) -> None:
 
 
 def _transport(method: str, url: str, headers: Mapping[str,str], body: Mapping | None) -> dict:
+    _require(url.startswith('https://'),'provider_url_not_https')
     request=urllib.request.Request(url,method=method,headers=dict(headers),
         data=json.dumps(body).encode() if body is not None else None)
-    with urllib.request.urlopen(request,timeout=30) as response:
+    with urllib.request.urlopen(request,timeout=30) as response:  # nosec B310 - https endpoint from the private store binding, checked above
         _require(response.status==200,'provider_read_failed')
         value=json.load(response)
     _require(isinstance(value,dict),'provider_response_invalid')
