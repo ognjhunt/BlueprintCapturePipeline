@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from blueprint_pipeline import public_scene_host_input_intake as intake
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.dual_task_rehearsal_contract import validate_task_freeze, validate_scene_freeze
 from blueprint_pipeline.public_scene_removal_selection import (
@@ -34,13 +37,30 @@ def _source_fixture(root: Path) -> dict:
         "agent_accepted_terms": False,
         "authorized_source_sha256": [row["sha256"] for row in install["files"]],
     })
-    for row in install["files"]:
-        row["rights_receipt_ids"] = ["fixture-source-rights"]
-    install["files"].insert(0, {
-        "kind": "rights_receipt", "receipt_id": "fixture-source-rights",
-        "relative_path": rights.name, "sha256": _sha(rights), "size_bytes": rights.stat().st_size,
+    request = root / "raw-input-request.json"
+    _write(request, {
+        "schema_version": intake.RAW_SCENE_REQUEST_SCHEMA,
+        "scene_id": install["scene_id"], "packet_id": "real-installer-selection",
+        "source_commit_sha": SHA,
+        "rights_receipts": [{"receipt_id": "fixture-source-rights",
+                             "path": str(rights), "sha256": _sha(rights)}],
+        "files": [{"role": row["role"], "sha256": row["sha256"],
+                   "path": str(install_path.parent / row["relative_path"]),
+                   "rights_receipt_ids": ["fixture-source-rights"]}
+                  for row in install["files"]],
     })
-    _write(install_path, install, "receipt_digest")
+    archive = io.BytesIO()
+    # Only the checkout identity is hermetic; inventory/bytes/rights installation
+    # runs through the real production producer, without synthetic `kind` rows.
+    with patch.object(intake, "_verified_checkout_head", return_value=SHA):
+        intake.build_packet_archive(request, archive)
+        archive.seek(0)
+        install = intake.install_packet_archive(
+            archive, destination_root=root / "installed", allowed_roots=(root,),
+            service_account=None,
+        )
+    install_path = Path(install["destination_root"]) / "public_scene_host_input_installation_receipt.v1.json"
+    fixture["installation_receipt"] = install_path
     prepared_path = fixture["source_preparation"]
     prepared = json.loads(prepared_path.read_text())
     frame_path = prepared_path.parent / "shared_frame_candidate.json"
@@ -84,7 +104,10 @@ def _selections(root: Path) -> tuple[dict, dict, dict]:
 
 
 def test_source_removal_selection_never_fabricates_robot_qualification(tmp_path: Path) -> None:
-    _, result, values = _selections(tmp_path)
+    fixture, result, values = _selections(tmp_path)
+    installed = json.loads(fixture["installation_receipt"].read_text())
+    assert all("kind" not in row for row in installed["files"])
+    assert sum("receipt_id" in row for row in installed["files"]) == 1
     task = validate_removal_task_selection(values["task"])
     validate_removal_scene_selection(values["scene"])
     assert task["source_object"]["instance_id"] == "115"
@@ -105,7 +128,9 @@ def test_source_removal_selection_rechecks_exact_raw_bytes(tmp_path: Path) -> No
     fixture, _, values = _selections(tmp_path)
     installation = json.loads(fixture["installation_receipt"].read_text())
     row = next(row for row in installation["files"] if row.get("role") == "semantic_metadata")
-    (fixture["installation_receipt"].parent / row["relative_path"]).write_bytes(b"changed")
+    source = fixture["installation_receipt"].parent / row["relative_path"]
+    source.chmod(0o600)
+    source.write_bytes(b"changed")
     with pytest.raises(ValueError, match="input_bytes_mismatch"):
         validate_removal_task_selection(values["task"])
 
@@ -189,3 +214,30 @@ def test_sam_inputs_accept_real_removal_selection_without_robot_receipts(
     )
     assert packet["task_id"] == values["task"]["task_id"]
     assert packet["paid_execution_started"] is False
+
+
+@pytest.mark.parametrize("mutation, blocker", [
+    ("authority_has_source_role", "rights_invalid"),
+    ("source_has_receipt_id", "rights_invalid"),
+    ("source_rights_join_changed", "rights_source_join_invalid"),
+    ("authority_bytes_changed", "input_bytes_mismatch"),
+])
+def test_installed_rights_still_fail_closed(tmp_path: Path, mutation: str, blocker: str) -> None:
+    from blueprint_pipeline.public_scene_removal_selection import _rights
+
+    fixture = _source_fixture(tmp_path)
+    installed = json.loads(fixture["installation_receipt"].read_text())
+    authority = next(row for row in installed["files"] if "receipt_id" in row)
+    source = next(row for row in installed["files"] if row.get("role") == "appearance_3dgs")
+    if mutation == "authority_has_source_role":
+        authority["role"] = "appearance_3dgs"
+    elif mutation == "source_has_receipt_id":
+        source["receipt_id"] = "fake-authority"
+    elif mutation == "source_rights_join_changed":
+        source["rights_receipt_ids"] = ["missing-authority"]
+    else:
+        path = fixture["installation_receipt"].parent / authority["relative_path"]
+        path.chmod(0o600)
+        path.write_text("{}")
+    with pytest.raises(ValueError, match=blocker):
+        _rights(installed)
