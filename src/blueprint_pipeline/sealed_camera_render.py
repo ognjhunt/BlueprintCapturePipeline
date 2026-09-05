@@ -172,6 +172,7 @@ def _wait_for_renderer_with_progress_watchdog(
     render_timeout_seconds: float,
     initial_progress_timeout_seconds: float,
     progress_timeout_seconds: float,
+    diagnostics_path: Path | None = None,
 ) -> tuple[str, str]:
     """Wait for a renderer while failing closed on no output-frame progress.
 
@@ -186,12 +187,48 @@ def _wait_for_renderer_with_progress_watchdog(
     last_progress_at = started_at
     completed_count = 0
     expected_count = len(expected_frame_paths)
+    def fail(blocker: str, elapsed: float) -> None:
+        stdout, stderr = _stop_renderer_process(process)
+        progress = ""
+        if expected_frame_paths:
+            path = expected_frame_paths[0].parent / "renderer_progress.jsonl"
+            if path.is_file() and not path.is_symlink():
+                with path.open("rb") as stream:
+                    stream.seek(max(0, path.stat().st_size - _RENDER_HARNESS_DIAGNOSTIC_TAIL_BYTES))
+                    progress = _render_harness_stream_tail(stream.read().decode("utf-8", errors="replace"))
+        diagnostic = {
+            "schema_version": "render_harness_timeout_diagnostics.v1", "status": "failed",
+            "blocker": blocker, "elapsed_seconds": elapsed,
+            "completed_frame_count": _nonempty_expected_frame_count(expected_frame_paths),
+            "expected_frame_count": len(expected_frame_paths),
+            "render_timeout_seconds": render_timeout_seconds,
+            "initial_progress_timeout_seconds": initial_progress_timeout_seconds,
+            "progress_timeout_seconds": progress_timeout_seconds,
+            "stdout_tail": _render_harness_stream_tail(stdout),
+            "stderr_tail": _render_harness_stream_tail(stderr),
+            "renderer_progress_tail": progress, "returncode": process.returncode,
+            "render_qualification_claimed": False, "diagnostic_digest": "",
+        }
+        diagnostic["diagnostic_digest"] = canonical_digest(diagnostic, digest_field="diagnostic_digest")
+        if diagnostics_path is not None:
+            try:
+                with diagnostics_path.open("x", encoding="utf-8") as stream:
+                    stream.write(canonical_json(diagnostic) + "\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except OSError as exc:
+                print("render_timeout_diagnostics_write_failed:" + type(exc).__name__, file=sys.stderr)
+        _emit_render_harness_diagnostics(returncode=process.returncode, stdout=stdout,
+                                        stderr=stderr, harness_output={"status": blocker})
+        if progress:
+            print("--- renderer progress ---\n" + progress, file=sys.stderr, flush=True)
+        raise SealedCameraRenderError([blocker])
+
     while True:
         now = time.monotonic()
         remaining = render_timeout_seconds - (now - started_at)
         if remaining <= 0.0:
-            _stop_renderer_process(process)
-            raise SealedCameraRenderError(["render_harness_timeout"])
+            fail("render_harness_timeout", now - started_at)
         try:
             stdout, stderr = process.communicate(
                 timeout=min(_RENDER_PROGRESS_POLL_SECONDS, remaining)
@@ -215,8 +252,7 @@ def _wait_for_renderer_with_progress_watchdog(
             )
             blocker = "render_harness_frame_progress_timeout"
         if stalled:
-            _stop_renderer_process(process)
-            raise SealedCameraRenderError([blocker])
+            fail(blocker, now - started_at)
 
 
 def _sha256_file(path: Path) -> str:
@@ -759,6 +795,7 @@ def render_splat_at_exact_cameras(
             render_timeout_seconds=float(render_timeout),
             initial_progress_timeout_seconds=float(initial_progress_timeout_seconds),
             progress_timeout_seconds=float(progress_timeout_seconds),
+            diagnostics_path=output / "render_harness_timeout_diagnostics.v1.json",
         )
     harness_output: dict[str, Any] = {}
     stdout = stdout.strip()
