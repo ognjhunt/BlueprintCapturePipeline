@@ -35,13 +35,15 @@ def valid_source_bundle_inputs(tmp_path, monkeypatch):
     monkeypatch.setattr(cpu,'_write_v2_fixture',with_code)
     paths,prepared=cpu._prepare(tmp_path)
     source=Path(prepared['layers']['images']['path'])
+    original_source=paths['data']/'original_source.ply'
+    original_source.write_bytes(source.read_bytes().replace(b'ply\n', b'ply\ncomment original fixture encoding\n', 1))
     terms=paths['data']/'source-terms.txt'
     terms.write_text('Hermetic fixture permits private full-source compute; not real publisher evidence.')
     request=conversion.build_standard_splat_conversion_request({
         'schema_version':'standard_splat_conversion_request.v1','program_id':'arm-decision-proof-v1',
         'frozen_before_conversion':True,'learned_policy_outcomes_observed':False,
-        'source':{'relative_path':str(source.relative_to(paths['data'])),'sha256':sha(source),
-                  'size_bytes':source.stat().st_size,'dataset':'synthetic-fixture','revision':'a'*40,'license':'fixture-only'},
+        'source':{'relative_path':str(original_source.relative_to(paths['data'])),'sha256':sha(original_source),
+                  'size_bytes':original_source.stat().st_size,'dataset':'synthetic-fixture','revision':'a'*40,'license':'fixture-only'},
         'rights':{'conversion_execution_location':'local_only','raw_private_upload_authorized':False,
                   'training_authorized':False,'terms_digest':sha(terms)},'output_filename':'source_standard.ply'})
     request_path=paths['data']/'exact-local-conversion-request.json'
@@ -51,7 +53,7 @@ def valid_source_bundle_inputs(tmp_path, monkeypatch):
     monkeypatch.setattr(conversion,'find_splat_transform_cli',lambda _:paths['repo']/'tools/splat_render/src/render_entry.mjs')
     monkeypatch.setattr(conversion,'read_compressed_ply_chunk_bounds',lambda _:SimpleNamespace(vertex_count=prepared['layers']['images']['retained_gaussian_count']))
     def convert(original,destination,**kwargs):
-        shutil.copy2(original,destination)
+        shutil.copy2(source,destination)
         return {'status':'completed','decoder':'hermetic-local-identity-converter'}
     monkeypatch.setattr(conversion,'convert_to_standard_ply',convert)
     converted=paths['data']/'converted'
@@ -65,7 +67,7 @@ def valid_source_bundle_inputs(tmp_path, monkeypatch):
     def rec(p):return {'path':str(p),'sha256':sha(p),'size_bytes':p.stat().st_size}
     job={'expected_source_commit':prepared['repository']['commit'],
          'plan':{'host_inputs':{'task_request':rec(task)}},'inputs':{'interiorgs_terms':rec(terms)}}
-    authorize_full_source(job,source=source,original=source,receipt=receipt)
+    authorize_full_source(job,source=source,original=original_source,receipt=receipt)
     data=json.loads(task.read_text())
     data['publisher_scene_id']=prepared['context']['source_identity']['scene_id']
     authority_path=Path(data['human_authority']['full_source_provider_disclosure_authority']['path'])
@@ -83,7 +85,7 @@ def valid_source_bundle_inputs(tmp_path, monkeypatch):
         (directory/'package.json').write_text(json.dumps({'name':name,'version':'fixture'}))
     return {'prepared_inputs_path':prepared['preparation_path'],'repo_root':paths['repo'],
         'renderer_vendor_root':vendor,'task_request_path':task,'conversion_receipt_path':receipt,
-        'original_source_path':source,'job_dir':paths['data']/'bundle',
+        'original_source_path':original_source,'job_dir':paths['data']/'bundle',
         'expected_source_commit':prepared['repository']['commit'],'approved_roots':(tmp_path,)},prepared
 
 

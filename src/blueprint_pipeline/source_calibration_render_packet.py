@@ -47,6 +47,8 @@ def _source_context(context: dict, commit: str, roots: Sequence[Path]) -> tuple[
         original_source_path=paths["original_source"], expected_source_commit=commit,
         publisher_scene_id=str(task.get("publisher_scene_id") or ""), approved_roots=roots, purpose=PURPOSE,
     )
+    require(all(layer['sha256'] != sha(paths['original_source']) for layer in prepared['layers'].values()),
+            'original_downloaded_bytes_must_remain_local')
     require(str(task.get("publisher_scene_id")) == str(prepared["context"]["source_identity"]["scene_id"]),
             "publisher_scene_mismatch")
     return prepared, proof

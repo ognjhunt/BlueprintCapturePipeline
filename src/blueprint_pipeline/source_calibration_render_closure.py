@@ -50,7 +50,8 @@ def _validate_closure(prepared: Mapping, value: Mapping) -> None:
             and authority.get('provider_training_authorized') is False
             and binding.get('standard_splat_sha256') == layer['sha256']
             and binding.get('standard_splat_size_bytes') == layer['size_bytes']
-            and binding.get('retained_gaussian_count') == layer['retained_gaussian_count'],
+            and binding.get('retained_gaussian_count') == layer['retained_gaussian_count']
+            and all(row['sha256'] != binding.get('original_source_sha256') for row in prepared['layers'].values()),
             'closed_disclosure_invalid')
     for ref in proof.get('publisher_rights_basis', {}).values():
         if isinstance(ref, Mapping) and 'path' in ref:
