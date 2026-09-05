@@ -489,6 +489,41 @@ def _gaussian_paid_authority(
     return value
 
 
+def _contribution_machine_avoidlist(
+    *, config: Mapping[str, Any], roots: tuple[Path, ...], output: Path,
+    resume_only: bool,
+) -> Path | None:
+    """Keep the frozen profile snapshot separate from provider-written failures."""
+    from .provider_machine_avoidlist import (
+        load_machine_avoidlist, machine_avoidlist_ids, stage_machine_avoidlist_for_attempt,
+    )
+
+    source_value = config.get("machine_avoidlist_path")
+    binding = config.get("machine_avoidlist")
+    if source_value is None and binding is None:
+        return None  # Compatibility for earlier profiles with no explicit snapshot.
+    _require(isinstance(source_value, str) and bool(source_value)
+             and isinstance(binding, Mapping) and binding.get("path") == source_value,
+             "machine_avoidlist_binding_invalid")
+    source = _resident(source_value, roots, "machine_avoidlist_invalid")
+    checked_file(source, dict(binding))
+    source_ids = machine_avoidlist_ids(load_machine_avoidlist(source))
+    destination = _resident(output / "provider_machine_avoidlist.json", (output,),
+                            "machine_avoidlist_attempt_path_invalid")
+    _require(source != destination, "machine_avoidlist_source_aliases_attempt")
+    if destination.exists() and (resume_only or (output / "allocator" / "result.json").is_file()):
+        # A closed/continuing attempt may have added failures. It cannot allocate
+        # again; retain those additions while requiring every original exclusion.
+        _require(source_ids.issubset(machine_avoidlist_ids(load_machine_avoidlist(destination))),
+                 "machine_avoidlist_attempt_dropped_exclusions")
+        return destination
+    staged = stage_machine_avoidlist_for_attempt(source_path=source, destination_path=destination)
+    _require(staged == destination, "machine_avoidlist_attempt_copy_missing")
+    checked_file(destination, dict(binding))
+    destination.chmod(0o600)
+    return destination
+
+
 def _contribution_stage(
     job: Mapping[str, Any],
     *,
@@ -511,6 +546,13 @@ def _contribution_stage(
     hourly = _positive_number(config.get("max_hourly_rate_usd"), maximum=0.6,
                               code="gaussian_hourly_rate_invalid")
     authority = _task_authority(job, roots)
+    calibrated_avoidlist = (job["server_profile"].get("calibrated_views") or {}).get("machine_avoidlist")
+    if calibrated_avoidlist is not None:
+        _require(config.get("machine_avoidlist") == calibrated_avoidlist,
+                 "contribution_avoidlist_differs_from_calibration")
+    attempt_avoidlist = _contribution_machine_avoidlist(
+        config=config, roots=roots, output=output, resume_only=bool(job.get("resume_only")),
+    )
     freeze_path = _input(job, "segment_sweep_freeze", roots)
     source = _input(job, "standard_splat", roots)
     cameras = _input(job, "camera_contract", roots)
@@ -608,11 +650,8 @@ def _contribution_stage(
         "--adp-max-spend-usd", str(GAUSSIAN_MAX_SPEND_USD),
         "--adp-hard-ttl-seconds", str(GAUSSIAN_TTL_SECONDS),
     ]
-    avoidlist = config.get("machine_avoidlist_path")
-    if avoidlist:
-        avoidlist_path = _resident(str(avoidlist), roots, "machine_avoidlist_invalid")
-        _require(avoidlist_path.is_file(), "machine_avoidlist_invalid")
-        argv.extend(("--adp-machine-avoidlist", str(avoidlist_path)))
+    if attempt_avoidlist is not None:
+        argv.extend(("--adp-machine-avoidlist", str(attempt_avoidlist)))
     argv.append("--execute")
     result, return_code = _invoke_allocator(
         argv=argv,
