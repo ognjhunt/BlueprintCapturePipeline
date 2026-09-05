@@ -390,6 +390,16 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "[Timer]\nOnUnitInactiveSec=6h\n",
         encoding="utf-8",
     )
+    capacity_service = unit_dir / "blueprint-control-plane-capacity.service"
+    capacity_service.write_text(
+        "[Service]\nExecStart=/usr/bin/blueprint-measure-capacity\n",
+        encoding="utf-8",
+    )
+    capacity_timer = unit_dir / "blueprint-control-plane-capacity.timer"
+    capacity_timer.write_text(
+        "[Timer]\nOnUnitActiveSec=10min\n",
+        encoding="utf-8",
+    )
     intake_service = unit_dir / "blueprint-pipeline-intake.service"
     intake_service.write_text(
         "[Service]\nExecStart=/usr/bin/blueprint-live-pipeline-intake\n",
@@ -437,6 +447,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         progression_path,
         storage_gc_service,
         storage_gc_timer,
+        capacity_service,
+        capacity_timer,
         control_plane_service,
         intake_service,
     ):
@@ -485,6 +497,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-control-plane-storage-gc.service",
         "blueprint-control-plane-storage-gc.timer",
+        "blueprint-control-plane-capacity.service",
+        "blueprint-control-plane-capacity.timer",
         "blueprint-pipeline-control-plane.service",
         "blueprint-pipeline-intake.service",
     )
@@ -499,6 +513,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-control-plane-storage-gc.timer",
+        "blueprint-control-plane-capacity.timer",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS == (
         "blueprint-task-evaluation-sam31-preparation-execution.path",

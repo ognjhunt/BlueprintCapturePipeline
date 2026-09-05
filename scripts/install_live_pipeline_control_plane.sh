@@ -350,6 +350,12 @@ install -m 0644 \
 install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-storage-gc.timer" \
   "${SYSTEMD_DIR}/blueprint-control-plane-storage-gc.timer"
+install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-capacity.service" \
+  "${SYSTEMD_DIR}/blueprint-control-plane-capacity.service"
+install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-capacity.timer" \
+  "${SYSTEMD_DIR}/blueprint-control-plane-capacity.timer"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-supervisor.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-supervisor.service"
@@ -534,6 +540,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-configured-controls-progression.timer
   systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path
   systemctl enable --now blueprint-control-plane-storage-gc.timer
+  systemctl enable --now blueprint-control-plane-capacity.timer
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.path
   systemctl enable --now blueprint-scene-object-discovery.path

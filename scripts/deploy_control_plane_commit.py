@@ -114,6 +114,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-configured-controls-progression.path",
     "blueprint-control-plane-storage-gc.service",
     "blueprint-control-plane-storage-gc.timer",
+    "blueprint-control-plane-capacity.service",
+    "blueprint-control-plane-capacity.timer",
     "blueprint-pipeline-control-plane.service",
     "blueprint-pipeline-intake.service",
 )
@@ -152,6 +154,7 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # The storage reaper is no-spend housekeeping: it only ever removes
     # unpinned cache bytes and offloads sealed evidence behind pointers.
     "blueprint-control-plane-storage-gc.timer",
+    "blueprint-control-plane-capacity.timer",
 )
 #: JSON under these roots names the commits that a launch may still need; a
 #: commit named anywhere here is never retired by the deploy that supersedes it.

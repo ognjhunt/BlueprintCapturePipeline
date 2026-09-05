@@ -1,0 +1,12 @@
+[Unit]
+Description=Measure control-plane capacity every ten minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+RandomizedDelaySec=1min
+Persistent=true
+Unit=blueprint-control-plane-capacity.service
+
+[Install]
+WantedBy=timers.target
