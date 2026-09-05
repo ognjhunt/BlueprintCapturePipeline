@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from blueprint_pipeline import task_evaluation_launch_preparation_worker as preparation_worker
-from blueprint_pipeline.task_evaluation_release_identity import running_release_commit
+from blueprint_pipeline.task_evaluation_release_identity import (
+    bound_to_other_release,
+    running_release_commit,
+)
 
 COMMIT = "9ae62694166fc4c7e54d318d5e2922108ec389d2"
 
@@ -53,3 +57,30 @@ def test_missing_repository_has_no_release_identity(tmp_path: Path) -> None:
 
 def test_preparation_worker_keeps_its_exported_name_for_the_same_helper() -> None:
     assert preparation_worker.running_worker_source_commit is running_release_commit
+
+
+def _document(tmp_path: Path, value) -> Path:
+    path = tmp_path / "plan.json"
+    path.write_text(value if isinstance(value, str) else json.dumps(value), encoding="utf-8")
+    return path
+
+
+def test_document_bound_to_another_release_reports_that_release(tmp_path: Path) -> None:
+    other = "1" * 40
+    path = _document(tmp_path, {"expected_production_commit": other})
+    assert bound_to_other_release(path, COMMIT) == other
+
+
+def test_document_bound_to_the_running_release_is_not_foreign(tmp_path: Path) -> None:
+    path = _document(tmp_path, {"expected_production_commit": COMMIT})
+    assert bound_to_other_release(path, COMMIT) is None
+
+
+def test_unbound_unreadable_or_malformed_documents_are_left_to_the_full_validator(tmp_path: Path) -> None:
+    assert bound_to_other_release(_document(tmp_path, {"status": "no commit"}), COMMIT) is None
+    assert bound_to_other_release(_document(tmp_path, {"expected_production_commit": "not-a-sha"}), COMMIT) is None
+    assert bound_to_other_release(_document(tmp_path, "{not json"), COMMIT) is None
+    assert bound_to_other_release(tmp_path / "missing.json", COMMIT) is None
+    # Without a release identity (branch checkout) nothing is treated as foreign.
+    assert bound_to_other_release(_document(tmp_path, {"expected_production_commit": "1" * 40}), None) is None
+    assert bound_to_other_release(_document(tmp_path, {"expected_production_commit": "1" * 40}), "") is None

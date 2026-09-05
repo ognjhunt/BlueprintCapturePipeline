@@ -8,10 +8,11 @@ reports the empty string, so callers can fall back to unfiltered behaviour.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
-__all__ = ["running_release_commit"]
+__all__ = ["bound_to_other_release", "running_release_commit"]
 
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
@@ -42,3 +43,26 @@ def running_release_commit(module_path: str | Path | None = None) -> str:
             return ""
         return head if _COMMIT.fullmatch(head) else ""
     return ""
+
+
+def bound_to_other_release(path: str | Path, running_commit: str | None) -> str | None:
+    """Return the release a sealed document is bound to when it is not the running one.
+
+    Queue rows, plans and intents carry ``expected_production_commit``; the
+    workers only honour same-commit documents, so one bound to another release
+    can never be acted on by this deployment and is reported instead of being
+    validated against a contract it predates.  Anything unreadable, unbound or
+    malformed returns ``None`` and is left to the full fail-closed validator;
+    without a release identity (a branch checkout) nothing is foreign.
+    """
+
+    if not running_commit or _COMMIT.fullmatch(str(running_commit)) is None:
+        return None
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    bound = str(value.get("expected_production_commit") or "") if isinstance(value, dict) else ""
+    if _COMMIT.fullmatch(bound) is None or bound == running_commit:
+        return None
+    return bound

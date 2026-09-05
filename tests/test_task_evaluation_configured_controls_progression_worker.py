@@ -554,6 +554,77 @@ def test_process_plans_advances_every_canary_launch_when_the_checkout_is_not_a_r
     assert [row["status"] for row in report["rows"]] == ["awaiting_policy_canary_preparation"]
 
 
+def test_process_plans_skips_plans_bound_to_a_superseded_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plan sealed for an earlier release fails today's inventory validation forever.
+
+    Its launch could never be admitted by this deployment, so it is reported as
+    superseded instead of blocking every tick.
+    """
+
+    launch_root, _ = _source(tmp_path)
+    plan_path = _plan(tmp_path)  # sealed for expected_production_commit "a" * 40
+    monkeypatch.setattr(worker, "running_release_commit", lambda: "b" * 40)
+    monkeypatch.setattr(
+        worker,
+        "advance_configured_controls_plan",
+        lambda **kwargs: pytest.fail("a superseded plan must not be advanced"),
+    )
+    report = worker.process_plans(
+        plan_root=plan_path.parent,
+        autostart_intent_root=tmp_path / "intents",
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progression",
+        preparation_queue_root=tmp_path / "preparations",
+        episode_compilation_queue_root=tmp_path / "compilations",
+        activation_queue_root=tmp_path / "activations",
+        repo_root=tmp_path / "repo",
+        webapp_secret_file=tmp_path / "secret",
+        webapp_endpoint="https://tryblueprint.io/api/internal/task-evaluation-launch-submissions",
+    )
+    plan_rows = [row for row in report["rows"] if "plan" in row]
+    assert plan_rows == [
+        {
+            "status": "plan_bound_to_superseded_release",
+            "plan": plan_path.name,
+            "source_commit": "a" * 40,
+            "running_commit": "b" * 40,
+        }
+    ]
+    assert not any(row.get("status") == "blocked" and "plan" in row for row in report["rows"])
+
+
+def test_process_plans_still_advances_plans_at_the_running_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launch_root, _ = _source(tmp_path)
+    plan_path = _plan(tmp_path)
+    monkeypatch.setattr(worker, "running_release_commit", lambda: "a" * 40)
+    monkeypatch.setattr(
+        worker,
+        "advance_configured_controls_plan",
+        lambda **kwargs: {"status": "awaiting_controls_activation", "source_launch_id": "scene-839873-qualifying"},
+    )
+    report = worker.process_plans(
+        plan_root=plan_path.parent,
+        autostart_intent_root=tmp_path / "intents",
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progression",
+        preparation_queue_root=tmp_path / "preparations",
+        episode_compilation_queue_root=tmp_path / "compilations",
+        activation_queue_root=tmp_path / "activations",
+        repo_root=tmp_path / "repo",
+        webapp_secret_file=tmp_path / "secret",
+        webapp_endpoint="https://tryblueprint.io/api/internal/task-evaluation-launch-submissions",
+    )
+    assert [row["status"] for row in report["rows"] if row.get("source_launch_id") == "scene-839873-qualifying"] == [
+        "awaiting_controls_activation"
+    ]
+
+
 def test_process_plans_advances_scene_configuration_activations_from_the_intent_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -684,6 +755,7 @@ def test_process_plans_hands_off_the_policy_canary_after_the_controls_pair_launc
 
     from blueprint_pipeline import task_evaluation_policy_canary_handoff as handoff
 
+    monkeypatch.setattr(worker, "running_release_commit", lambda: "a" * 40)
     launch_root, _ = _source(tmp_path)
     plan_path = _plan(tmp_path)
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -752,6 +824,7 @@ def test_process_plans_does_not_hand_off_before_the_controls_pair_is_launched(
 ) -> None:
     from blueprint_pipeline import task_evaluation_policy_canary_handoff as handoff
 
+    monkeypatch.setattr(worker, "running_release_commit", lambda: "a" * 40)
     launch_root, _ = _source(tmp_path)
     plan_path = _plan(tmp_path)
     monkeypatch.setattr(
