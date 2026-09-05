@@ -20,7 +20,7 @@ from .task_evaluation_launch_preparation_queue import (
 )
 from .task_evaluation_release_reference_lock import release_reference_lock
 from .task_evaluation_sam31_preparation_queue import (
-    WAITING_STATE, load_progress, stage_resume_signal, verify_evidence_reference,
+    SAM31_EXECUTION_ROOT, WAITING_STATE, load_progress, stage_resume_signal, verify_evidence_reference,
 )
 from .task_evaluation_scene_construction_recipe import validate_scene_construction_recipe
 from .task_evaluation_sam31_phase_queue import (
@@ -35,7 +35,7 @@ PROGRESS_SCHEMA = "task_evaluation_sam31_preparation_execution_progress.v1"
 DEFAULT_QUEUE = Path("/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions")
 DEFAULT_PARENT_QUEUE = Path("/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations")
 DEFAULT_INPUT_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs/prepared-references")
-DEFAULT_EXECUTION_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs/sam31-preparations")
+DEFAULT_EXECUTION_ROOT = SAM31_EXECUTION_ROOT
 DEFAULT_APPROVED_ROOTS = (Path("/var/lib/blueprint/task-evaluation-inputs"),
                           Path("/var/lib/blueprint/pipeline-control-plane"))
 
