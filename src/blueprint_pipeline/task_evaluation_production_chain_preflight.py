@@ -365,6 +365,16 @@ def _in_read_write_paths(path_text: str, read_write: Sequence[str]) -> bool:
 def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     release = Path(args.release)
     src = release / "src"
+    # Run as a script, Python puts this file's own directory (the package
+    # directory) first on sys.path.  A bare-name import anywhere in the closure
+    # then resolves a package module as a top-level one and its relative imports
+    # fail with "no known parent package", which is a probe artefact, not a
+    # unit defect.  Import the way the units do: from the release's src root.
+    package_dir = Path(__file__).resolve().parent
+    sys.path[:] = [
+        entry for entry in sys.path
+        if entry and Path(entry).resolve() != package_dir
+    ]
     sys.path.insert(0, str(src))
     read_write = shlex.split(args.read_write_paths or "")
     read_only = shlex.split(args.read_only_paths or "")

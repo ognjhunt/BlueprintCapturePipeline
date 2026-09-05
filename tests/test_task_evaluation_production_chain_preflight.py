@@ -208,6 +208,28 @@ def test_handoff_checks_name_each_missing_piece_of_the_canary_chain(tmp_path: Pa
     assert preflight.handoff_checks(units, (os.getuid(), os.getgid())) == []
 
 
+def test_probe_imports_from_the_release_src_root_not_the_package_directory(tmp_path: Path, monkeypatch) -> None:
+    """Run as a script, the probe's own directory led sys.path; a bare-name import in
+    the closure then resolved a package module as top-level and its relative imports
+    failed.  Six production units reported a false entry_module_import_failed."""
+    import sys as _sys
+
+    _package(tmp_path)
+    package_dir = str(Path(preflight.__file__).resolve().parent)
+    monkeypatch.setattr(_sys, "path", [package_dir, *_sys.path])
+    args = preflight.argparse.Namespace(
+        unit="blueprint-x.service",
+        module="blueprint_pipeline.worker",
+        release=str(tmp_path / "release"),
+        active_sha="a" * 40,
+        read_write_paths="",
+        read_only_paths="",
+    )
+    preflight.run_probe(args)
+    assert package_dir not in _sys.path
+    assert _sys.path[0] == str(tmp_path / "release" / "src")
+
+
 def test_probe_reports_roots_the_closure_names_with_their_writability(tmp_path: Path, monkeypatch) -> None:
     _package(tmp_path)
     monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str(tmp_path / "spend"))
