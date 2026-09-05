@@ -15,14 +15,12 @@ import itertools
 import json
 import math
 import re
-import shlex
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .public_scene_removal_selection import (
@@ -148,7 +146,7 @@ def build_public_scene_inpainting_input_request(value: Mapping[str, Any]) -> dic
     else:
         if rendering.get("renderer") != "reference_spark_renderer_exact_camera":
             errors.append("edit_input_renderer_invalid")
-        if rendering.get("graphics_backend") not in {"swiftshader", "metal"}:
+        if rendering.get("graphics_backend") not in {"swiftshader", "metal", "egl"}:
             errors.append("edit_input_graphics_backend_invalid")
         for key in ("width", "height"):
             item = rendering.get(key)
@@ -625,7 +623,7 @@ def _verified_dual_task_scene_source(
     }
 
 
-def materialize_public_scene_inpainting_inputs(
+def _prepare_public_scene_inpainting_context(
     *, request_path: str | Path, repo_root: str | Path, data_root: str | Path,
     output_root: str | Path, receipt_output: str | Path | None = None,
     production_runtime_root: str | Path | None = None,
@@ -869,6 +867,33 @@ def materialize_public_scene_inpainting_inputs(
         + "\n",
         encoding="utf-8",
     )
+    return {
+        "paths": {"repo": str(repo), "data": str(data), "output": str(output),
+            "request_file": str(request_file),
+            "retained_receipt": str(retained_receipt) if retained_receipt else None,
+            "standard_ply": str(standard_ply), "target_ply": str(target_ply),
+            "background_ply": str(background_ply), "camera_file": str(camera_file)},
+        "repository": repository, "request": request, "source_adapter": source_adapter,
+        "source_identity": {key: value for key, value in source_identity.items()
+                            if key not in {"standard_ply", "corners", "source_artifacts"}},
+        "observed_sources": observed_sources, "manifest": manifest,
+        "component_receipt": component_receipt, "conversion": conversion,
+        "decode_command": decode_command, "runtime_kwargs": runtime_kwargs,
+        "corners": corners.tolist(), "target_center": target_center.tolist(),
+        "target_count": target_count, "scene_gaussian_count": int(splat.count),
+        "cameras": cameras, "sealed_cameras": sealed_cameras,
+    }
+
+
+def _render_prepared_context(context: Mapping[str, Any]) -> dict[str, Any]:
+    paths = context["paths"]
+    repo, output = Path(paths["repo"]), Path(paths["output"])
+    standard_ply, target_ply = Path(paths["standard_ply"]), Path(paths["target_ply"])
+    background_ply, camera_file = Path(paths["background_ply"]), Path(paths["camera_file"])
+    request, cameras = context["request"], context["cameras"]
+    sealed_cameras, runtime_kwargs = context["sealed_cameras"], context["runtime_kwargs"]
+    source_adapter, source_identity = context["source_adapter"], context["source_identity"]
+    target_count = context["target_count"]
     rendering = request["rendering"]
     common = {
         "cameras": cameras, "repo_root": repo,
@@ -881,7 +906,7 @@ def materialize_public_scene_inpainting_inputs(
     sealed_render_manifests: dict[str, Any] = {}
     if source_adapter in SEALED_SOURCE_ADAPTERS:
         render_inputs = (
-            ("images", standard_ply, int(splat.count), "complete source appearance"),
+            ("images", standard_ply, context["scene_gaussian_count"], "complete source appearance"),
             (
                 "target_support",
                 target_ply,
@@ -891,7 +916,7 @@ def materialize_public_scene_inpainting_inputs(
             (
                 "scene_without_target",
                 background_ply,
-                int(retained.sum()),
+                context["scene_gaussian_count"] - target_count,
                 "source appearance without candidate target OBB Gaussians",
             ),
         )
@@ -974,231 +999,35 @@ def materialize_public_scene_inpainting_inputs(
             splat=background_ply, output=output / "scene_without_target", **common
         )
         render_frame_subdir = ""
-    width, height = int(rendering["width"]), int(rendering["height"])
-    dilation = int(request["mask_policy"]["dilation_pixels"])
-    mask_rows = []
-    image_rows = []
-    for camera in cameras:
-        camera_id = camera["camera_id"]
-        rgb = output / "images" / render_frame_subdir / f"{camera_id}.png"
-        support = output / "target_support" / render_frame_subdir / f"{camera_id}.png"
-        background = (
-            output / "scene_without_target" / render_frame_subdir / f"{camera_id}.png"
-        )
-        if not rgb.is_file() or not support.is_file() or not background.is_file():
-            raise PublicSceneInpaintingInputError([f"edit_input_render_missing:{camera_id}"])
-        rgb_pixels = np.asarray(Image.open(rgb).convert("RGB"))
-        support_pixels = np.asarray(Image.open(support).convert("RGB"))
-        background_pixels = np.asarray(Image.open(background).convert("RGB"))
-        if (
-            rgb_pixels.shape[:2] != (height, width)
-            or support_pixels.shape[:2] != (height, width)
-            or background_pixels.shape[:2] != (height, width)
-        ):
-            raise PublicSceneInpaintingInputError([f"edit_input_render_size_mismatch:{camera_id}"])
-        if float(rgb_pixels.std()) < 1.0:
-            raise PublicSceneInpaintingInputError([f"edit_input_rgb_blank:{camera_id}"])
-        support_mask = Image.fromarray(
-            (np.max(support_pixels, axis=2) >= int(request["mask_policy"]["support_threshold_8bit"]))
-            .astype(np.uint8) * 255, mode="L",
-        )
-        if dilation:
-            support_mask = support_mask.filter(ImageFilter.MaxFilter(2 * dilation + 1))
-        obb_mask = Image.new("L", (width, height), 0)
-        ImageDraw.Draw(obb_mask).polygon(_project_obb(corners, camera), fill=255)
-        final = Image.fromarray(
-            np.maximum(np.asarray(obb_mask), np.asarray(support_mask)).astype(np.uint8), mode="L"
-        )
-        mask_path = output / "masks" / f"{camera_id}.png"
-        mask_path.parent.mkdir(parents=True, exist_ok=True)
-        final.save(mask_path, format="PNG", optimize=False)
-        final_pixels = np.asarray(final) > 0
-        support_binary = np.asarray(support_mask) > 0
-        coverage = float(final_pixels.mean())
-        maximum_fraction = float(request["mask_policy"].get("maximum_image_fraction", 0.2))
-        if not 0.00001 < coverage < maximum_fraction or int(support_binary.sum()) == 0:
-            raise PublicSceneInpaintingInputError([f"edit_input_mask_invalid:{camera_id}"])
-        support_inside = float((support_binary & final_pixels).sum() / support_binary.sum())
-        if support_inside < float(request["mask_policy"]["minimum_support_inside_final_fraction"]):
-            raise PublicSceneInpaintingInputError([f"edit_input_mask_support_mismatch:{camera_id}"])
-        contribution = np.max(
-            np.abs(rgb_pixels.astype(np.int16) - background_pixels.astype(np.int16)), axis=2
-        ) >= int(request["mask_policy"].get("visual_contribution_threshold_8bit", 8))
-        visible_pixels = int((contribution & final_pixels).sum())
-        visible_fraction = float(visible_pixels / final_pixels.sum())
-        if visible_fraction < float(
-            request["mask_policy"].get("minimum_visible_target_fraction", 0.01)
-        ):
-            raise PublicSceneInpaintingInputError(
-                [f"edit_input_target_occluded_or_unrenderable:{camera_id}"]
-            )
-        image_rows.append({"camera_id": camera_id, **_record(rgb, output)})
-        mask_rows.append(
-            {"camera_id": camera_id, **_record(mask_path, output),
-             "masked_pixel_count": int(final_pixels.sum()), "image_fraction": round(coverage, 9),
-             "gaussian_support_inside_fraction": round(support_inside, 9),
-             "visible_target_contribution_pixel_count": visible_pixels,
-             "visible_target_contribution_fraction": round(visible_fraction, 9),
-             "scene_without_target_render": _record(background, output)}
-        )
-    if source_adapter in SEALED_SOURCE_ADAPTERS:
-        renderer = {
-            "name": "reference_spark_renderer_exact_camera",
-            "authorization_class": "method_input",
-            "purpose_bound": True,
-            "render_manifest_digests": {
-                label: row["sealed_camera_render_manifest_digest"]
-                for label, row in sealed_render_manifests.items()
-            },
-            "render_settings": sealed_render_manifests["images"]["render_settings"],
-            "renderer_identity": sealed_render_manifests["images"][
-                "renderer_identity"
-            ],
-        }
-        standard_splat_record = next(
-            row for row in observed_sources if row["role"] == "standard_splat"
-        )
-        source_admission = {
-            "adapter": source_adapter,
-            "scene_freeze_digest": source_identity["scene_freeze_digest"],
-            "task_freeze_digest": source_identity["task_freeze_digest"],
-            "standard_splat_conversion_receipt_digest": source_identity[
-                "conversion_receipt_digest"
-            ],
-            "registered_frame_receipt_digest": source_identity[
-                "registered_frame_receipt_digest"
-            ],
-            "registered_frame_status": source_identity["registered_frame_status"],
-        }
-    else:
-        renderer = {
-            "name": "reference_spark_renderer_exact_camera",
-            "authorization_class": "legacy_unqualified",
-            "harness_sha256": _sha256(repo / RENDER_HARNESS_REL),
-            "entry_sha256": _sha256(repo / RENDER_ENTRY_REL),
-            "node_version": subprocess.run(
-                ["node", "--version"], check=True, capture_output=True, text=True
-            ).stdout.strip(),
-            "graphics_backend": rendering["graphics_backend"],
-            "width": width,
-            "height": height,
-            "warmup_ms": rendering["warmup_ms"],
-            "settle_frames": rendering["settle_frames"],
-            "settle_ms": rendering["settle_ms"],
-        }
-        standard_splat_record = _record(standard_ply, output)
-        source_admission = {
-            "adapter": source_adapter,
-            "scene_component_manifest_digest": manifest["manifest_digest"],
-            "scene_component_receipt_digest": component_receipt["receipt_digest"],
-        }
-    receipt = {
-        "schema_version": (
-            RECEIPT_SCHEMA_V2
-            if source_adapter in SEALED_SOURCE_ADAPTERS
-            else RECEIPT_SCHEMA
-        ),
-        "status": "render_derived_input_packet_materialized",
-        "program_id": "arm-decision-proof-v1",
-        "adp_item": request["adp_item"],
-        "repository": repository,
-        "request_digest": request["request_digest"],
-        "source_admission": source_admission,
-        "scene": {
-            "publisher_scene_id": source_identity["scene_id"],
-            "task_id": source_identity["task_id"],
-            "target_instance_id": source_identity["target_instance_id"],
-            "target_semantic_label": source_identity["target_semantic_label"],
-            "mask_set_id": source_identity["mask_set_id"],
-            "removal_id": source_identity["removal_id"],
-            "target_obb_corners_m": corners.tolist(), "target_gaussian_count": target_count,
-            "scene_gaussian_count": int(splat.count),
-        },
-        "source_artifacts": observed_sources,
-        "derived_artifacts": {
-            "standard_splat": standard_splat_record,
-            "target_gaussian_support": _record(target_ply, output),
-            "scene_without_target_obb_gaussians": _record(background_ply, output),
-            "cameras": _record(camera_file, output), "images": image_rows, "masks": mask_rows,
-        },
-        "camera_policy": {
-            "generator": "translated_target_coverage_v1", "orbit_only": False,
-            "camera_count": len(cameras),
-            "radii_m": [
-                round(float(np.linalg.norm(np.asarray(row["T_world_camera_opencv"])[:3, 3] - target_center)), 6)
-                for row in cameras
-            ],
-        },
-        "camera_pose_contract": {
-            "schema_version": "public_scene_inpainting_camera_pose_contract.v1",
-            "camera_file_pose_field": (
-                "T_world_camera_provider_frame"
-                if source_adapter in SEALED_SOURCE_ADAPTERS
-                else "T_world_camera_opencv"
-            ),
-            "semantic_pose_field": "T_world_camera_opencv",
-            "camera_coordinate_convention": "opencv_x_right_y_down_z_forward",
-            "provider_frame_aliases_opencv": (
-                source_adapter in SEALED_SOURCE_ADAPTERS
-            ),
-        },
-        "mask_policy": {
-            "authority": request["mask_policy"]["authority"],
-            "dilation_pixels": dilation,
-            "maximum_image_fraction": float(
-                request["mask_policy"].get("maximum_image_fraction", 0.2)
-            ),
-            "visual_contribution_threshold_8bit": int(
-                request["mask_policy"].get("visual_contribution_threshold_8bit", 8)
-            ),
-            "minimum_visible_target_fraction": float(
-                request["mask_policy"].get("minimum_visible_target_fraction", 0.01)
-            ),
-        },
-        "renderer": renderer,
-        "executed_commands": {
-            "decode": conversion.get("command") or decode_command, "rgb_render": rgb_run["command"],
-            "target_support_render": support_run["command"],
-            "scene_without_target_render": background_run["command"],
-        },
-        "method_execution": {
-            "inpaint360gs_executed": False, "infusion_executed": False,
-            "aurafusion360_executed": False,
-        },
-        "proof_boundaries": {
-            "uses_original_capture_frames": False, "uses_rendered_scene_consistent_rgb": True,
-            "hidden_background_truth_available": False,
-            "source_target_obb_visual_contribution_measured": True,
-            "source_object_removed_from_appearance": False, "source_collider_removed": False,
-            "simready_replacement_inserted": False, "inpainting_result": False,
-            "mask_is_calibrated_candidate_not_owned_gaussian_classification": True,
-            "gaussian_ownership_qualified": False,
-        },
-        "smallest_next_blocker": (
-            "independent_gaussian_contribution_ownership_and_replacement_depth_coverage"
-            if source_adapter in SEALED_SOURCE_ADAPTERS
-            else "method_native_interiorgs_adapter_and_unchanged_author_runtime_required"
-        ),
-        "claim_ceiling": "synthetic_public_scene_inpainting_input_candidate",
-        "replay_command": shlex.join([
-            "python", "-m", "blueprint_pipeline.public_scene_inpainting_inputs",
-            "--request", str(request_file), "--repo-root", str(repo),
-            "--data-root", str(data), "--output-root", str(output),
-        ]),
-    }
-    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
-    output_receipt_name = (
-        "public_scene_interiorgs_edit_input_receipt.v2.json"
-        if source_adapter in SEALED_SOURCE_ADAPTERS
-        else "adp009b_interiorgs_edit_input_receipt.v1.json"
-    )
-    (output / output_receipt_name).write_text(
-        canonical_json(receipt) + "\n", encoding="utf-8"
-    )
-    if retained_receipt is not None:
-        retained_receipt.parent.mkdir(parents=True, exist_ok=True)
-        retained_receipt.write_text(canonical_json(receipt) + "\n", encoding="utf-8")
-    return receipt
+    from .public_scene_inpainting_finalize import finish_prepared_inputs
+    return finish_prepared_inputs(context, sealed_render_manifests=sealed_render_manifests,
+        rgb_run=rgb_run, support_run=support_run, background_run=background_run,
+        render_frame_subdir=render_frame_subdir)
+
+
+def materialize_public_scene_inpainting_inputs(
+    *, request_path: str | Path, repo_root: str | Path, data_root: str | Path,
+    output_root: str | Path, receipt_output: str | Path | None = None,
+    production_runtime_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Preserve the existing local preparation, rendering, masks and receipt path."""
+    context = _prepare_public_scene_inpainting_context(request_path=request_path,
+        repo_root=repo_root, data_root=data_root, output_root=output_root,
+        receipt_output=receipt_output, production_runtime_root=production_runtime_root)
+    return _render_prepared_context(context)
+
+
+def prepare_public_scene_inpainting_inputs(**kwargs) -> dict[str, Any]:
+    """Prepare the exact three layers and calibrated cameras without rendering."""
+    from .public_scene_inpainting_preparation import prepare_public_scene_inpainting_inputs as prepare
+    return prepare(**kwargs)
+
+
+def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
+        returned_group_path: str | Path) -> dict[str, Any]:
+    """Consume verified GPU returns and execute the original mask/receipt logic."""
+    from .public_scene_inpainting_preparation import finalize_public_scene_inpainting_inputs as finalize
+    return finalize(preparation_path=preparation_path, returned_group_path=returned_group_path)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1221,6 +1050,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "PublicSceneInpaintingInputError", "RECEIPT_SCHEMA", "REQUEST_SCHEMA",
     "build_public_scene_inpainting_input_request", "materialize_public_scene_inpainting_inputs",
+    "prepare_public_scene_inpainting_inputs", "finalize_public_scene_inpainting_inputs",
 ]
 
 

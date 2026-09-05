@@ -389,6 +389,24 @@ def _build(tmp_path: Path, name: str) -> dict:
     )
 
 
+def test_sam_partition_authority_is_required_before_bundle_directory(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    path = _envelope(source, "a" * 40)
+    envelope = json.loads(path.read_text())
+    row = envelope["stage_configuration_references"][0]
+    config_path = Path(row["materialized_path"])
+    configuration = json.loads(config_path.read_text())
+    configuration["required_views"] = {"mask_source": "sam31_reviewed_calibrated_object_masks"}
+    config_path.write_text(json.dumps(configuration))
+    row.update(digest=_sha256(config_path), size_bytes=config_path.stat().st_size)
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    path.write_text(json.dumps(envelope))
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="partition_disclosure_proof_missing_or_invalid"):
+        _build(tmp_path, "must-not-stage")
+    assert not (tmp_path / "must-not-stage").exists()
+
+
 def _bind_real_stage_three_configuration(
     envelope_path: Path, *, include_authority_denial: bool
 ) -> bytes:

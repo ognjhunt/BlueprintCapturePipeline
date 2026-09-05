@@ -17,6 +17,7 @@ from .public_scene_removal_selection import (
 )
 from .public_scene_inpainting_inputs import (
     build_public_scene_inpainting_input_request, materialize_public_scene_inpainting_inputs,
+    prepare_public_scene_inpainting_inputs,
 )
 from .public_scene_sam31_task_inputs import materialize_public_scene_sam31_task_inputs
 from .standard_splat_conversion import (
@@ -65,7 +66,7 @@ def _write(path: Path, value: Mapping[str, Any]) -> None:
         stream.write(canonical_json(dict(value)) + "\n")
 
 
-def execute_cpu_stage(job: Mapping[str, Any]) -> dict[str, Any]:
+def execute_cpu_stage(job: Mapping[str, Any], *, prepare_hardware_render: bool = False) -> dict[str, Any]:
     """Execute exactly one server-owned, no-spend source-preparation stage."""
     stage_id = job.get("stage_id")
     _require(stage_id in STAGES, "stage_invalid")
@@ -185,6 +186,13 @@ def execute_cpu_stage(job: Mapping[str, Any]) -> dict[str, Any]:
         request_path = output / "public_scene_interiorgs_edit_input_request.v2.json"
         _write(request_path, render_request)
         produced = output / "views"
+        if prepare_hardware_render:
+            prepared = prepare_public_scene_inpainting_inputs(request_path=request_path, repo_root=repo,
+                data_root=root, output_root=produced, production_runtime_root=runtime)
+            return {"status": "prepared_for_hardware_render", "stage_id": stage_id,
+                    "prepared_inputs": _record(Path(prepared["preparation_path"])),
+                    "calibrated_view_request": _record(request_path), "source_commit": commit,
+                    "provider_mutation_performed": False, "candidate_policy_queried": False}
         receipt = materialize_public_scene_inpainting_inputs(
             request_path=request_path, repo_root=repo, data_root=root, output_root=produced,
             production_runtime_root=runtime,

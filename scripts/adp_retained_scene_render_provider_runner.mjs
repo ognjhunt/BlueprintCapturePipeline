@@ -4,7 +4,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 function argument(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -14,6 +14,9 @@ function argument(name) {
 const runtime = path.resolve(argument("runtime") || "");
 const output = path.resolve(argument("output") || "");
 const rehearsal = process.argv.includes("--rehearsal");
+let sourceCalibrationRequest = null;
+const SOURCE_RESULT_SCHEMA = "adp009d_source_calibration_gpu_render_result.v1";
+const SOURCE_ROLES = ["images", "target_support", "scene_without_target"];
 
 function sha256(file) {
   return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}`;
@@ -36,7 +39,7 @@ function canonicalDigest(value, digestField) {
 function write(value) {
   fs.mkdirSync(output, { recursive: true });
   fs.writeFileSync(
-    path.join(output, "adp009d_retained_scene_gpu_render_result.v1.json"),
+    path.join(output, sourceCalibrationRequest ? `${SOURCE_RESULT_SCHEMA}.json` : "adp009d_retained_scene_gpu_render_result.v1.json"),
     `${JSON.stringify(value, null, 2)}\n`,
   );
 }
@@ -51,6 +54,9 @@ function fail(code, rendererDiagnostic = null) {
     provider_mutations_performed: 0,
     blockers: [code],
   };
+  if (sourceCalibrationRequest) Object.assign(result, {schema_version: SOURCE_RESULT_SCHEMA,
+    preparation_digest: sourceCalibrationRequest.preparation_digest, blueprint_commit: sourceCalibrationRequest.blueprint_commit,
+    render_scope: "source_calibration", candidate_policy_queried: false});
   if (rendererDiagnostic) result.renderer_diagnostic = rendererDiagnostic;
   write(result);
   process.exitCode = 2;
@@ -111,6 +117,12 @@ function cameraSpecs(cameraRows) {
       }
       normalized[key] = key === "width" || key === "height" ? Math.trunc(value) : value;
     }
+    for (const [key, fallback] of [["near", 0.01], ["far", 100000]]) {
+      normalized[key] = intrinsics[key] == null ? fallback : Number(intrinsics[key]);
+    }
+    if (!Number.isFinite(normalized.near) || !Number.isFinite(normalized.far) || normalized.near <= 0 || normalized.far <= normalized.near) {
+      throw new Error("retained_scene_render_runtime_camera_clipping_invalid");
+    }
     return { id, spec: { pose: { T_world_camera_opencv: pose }, intrinsics: normalized } };
   });
   return specs;
@@ -127,7 +139,35 @@ function gpuIdentity() {
   return { nvidia_smi_detected: true, gpu_rows: rows };
 }
 
-function renderOne({ request, lane, variant, gpu }) {
+async function runSourceHarness(command, frames, cameras) {
+  const child = spawn(process.execPath, command, {stdio: ["ignore", "pipe", "pipe"]});
+  let stdout = "", stderr = "", progressCount = 0, lastProgress = Date.now(), stopped = null;
+  const started = Date.now();
+  child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+  child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+  let hardKill;
+  const timer = setInterval(() => {
+    const count = cameras.filter(({id}) => {
+      const file = path.join(frames, `${id}.png`);
+      return fs.existsSync(file) && fs.statSync(file).size > 0;
+    }).length;
+    if (count > progressCount) {progressCount = count; lastProgress = Date.now();}
+    const deadline = progressCount ? 120000 : 300000;
+    if (!stopped && (Date.now() - lastProgress >= deadline || Date.now() - started >= 1800000)) {
+      stopped = progressCount ? "render_harness_frame_progress_timeout" : "render_harness_initial_progress_timeout";
+      child.kill("SIGTERM");
+      hardKill = setTimeout(() => child.kill("SIGKILL"), 10000);
+    }
+  }, 1000);
+  return await new Promise((resolve) => {
+    child.on("error", (error) => {clearInterval(timer);clearTimeout(hardKill);resolve({error,stdout,stderr,status:null});});
+    child.on("close", (status,signal) => {clearInterval(timer);clearTimeout(hardKill);
+      resolve({status,signal,stdout,stderr,error:stopped ? new Error(stopped) : null});});
+  });
+}
+
+async function renderOne({ request, lane, variant, gpu }) {
+  const sourceCalibration = request.render_scope === "source_calibration";
   const layer = variant.layer;
   const deletedSourceLayer = ["shared_deleted_source_layer", "task_deleted_source_layer"].includes(layer);
   const splatRecords = {
@@ -136,7 +176,7 @@ function renderOne({ request, lane, variant, gpu }) {
     task_deleted_source_layer: lane.task_deleted_source_layer,
     task_retained_scene: lane.task_retained_scene,
   };
-  const splatRecord = splatRecords[layer];
+  const splatRecord = sourceCalibration ? request.layers[layer] : splatRecords[layer];
   if (!splatRecord) throw new Error("retained_scene_render_runtime_layer_invalid");
   const splat = checkedFile(runtime, splatRecord);
   const cameraPath = checkedFile(runtime, lane.camera_contract);
@@ -159,14 +199,15 @@ function renderOne({ request, lane, variant, gpu }) {
     "--cameras", cameraSpecsPath,
     "--width", String(dimensions.width),
     "--height", String(dimensions.height),
-    "--warmup-ms", "2500",
-    "--settle-frames", "6",
-    "--settle-ms", "100",
+    "--warmup-ms", String(sourceCalibration ? request.render_options.warmup_ms : 2500),
+    "--settle-frames", String(sourceCalibration ? request.render_options.settle_frames : 6),
+    "--settle-ms", String(sourceCalibration ? request.render_options.settle_ms : 100),
     "--load-timeout-ms", "600000",
     "--graphics-backend", "egl",
     "--bg", background,
   ];
-  const rendered = spawnSync(process.execPath, command, { encoding: "utf8", timeout: 900_000 });
+  const rendered = sourceCalibration ? await runSourceHarness(command, frames, cameras)
+    : spawnSync(process.execPath, command, { encoding: "utf8", timeout: 900_000 });
   if (rendered.error || rendered.status !== 0) {
     const error = new Error("retained_scene_render_runtime_renderer_failed");
     error.rendererDiagnostic = {
@@ -255,6 +296,13 @@ function renderOne({ request, lane, variant, gpu }) {
     proof_effect: "reference_render_for_exact_mask_contained_inpainting_input_only",
     claim_ceiling: "appearance_reconstruction_candidate",
   };
+  if (sourceCalibration) {
+    delete manifest.candidate_set_digest;
+    Object.assign(manifest, {digest_canonicalization: "rfc8785", source_calibration_preparation_digest: request.preparation_digest,
+      source_layer_role: layer, camera_set_label: splatRecord.camera_set_label, purpose: splatRecord.purpose,
+      provider_splat_import_receipt_digest: splatRecord.provider_splat_import_receipt_digest,
+      alignment_digest: splatRecord.alignment_digest, candidate_policy_queried: false, paid_inference_performed: false});
+  }
   manifest.sealed_camera_render_manifest_digest = canonicalDigest(
     manifest,
     "sealed_camera_render_manifest_digest",
@@ -264,11 +312,50 @@ function renderOne({ request, lane, variant, gpu }) {
   return { task_id: lane.task_id, layer, background_rgb: variant.background_rgb, manifest_path: manifestPath, manifest_digest: manifest.sealed_camera_render_manifest_digest };
 }
 
-function main() {
+async function renderSourceCalibration(request) {
+  sourceCalibrationRequest = request;
+  if (request.schema_version !== "adp009d_source_calibration_gpu_renderer_runtime_request.v1" ||
+      request.runtime_request_digest !== canonicalDigest(request,"runtime_request_digest") ||
+      JSON.stringify(Object.keys(request.layers || {}).sort()) !== JSON.stringify([...SOURCE_ROLES].sort()) ||
+      request.camera_count !== 16 || request.expected_png_count !== 48 ||
+      request.candidate_policy_queried !== false || request.paid_inference_performed !== false) {
+    throw new Error("source_calibration_runtime_request_invalid");
+  }
+  for (const role of SOURCE_ROLES) {
+    const file = checkedFile(runtime, request.layers[role]);
+    if (standardPlyCount(file) !== request.layers[role].gaussian_count) throw new Error("source_calibration_runtime_count_invalid");
+  }
+  const cameras = cameraSpecs(JSON.parse(fs.readFileSync(checkedFile(runtime,request.camera_contract),"utf8")));
+  if (cameras.length !== 16 || cameras.some(row=>row.spec.intrinsics.width!==1280 || row.spec.intrinsics.height!==1280)) {
+    throw new Error("source_calibration_runtime_camera_invalid");
+  }
+  if (rehearsal) {
+    const result={schema_version:"provider_bundle_rehearsal.v1",status:"passed",released_renderer_executed:false,
+      gpu_runtime_started:false,paid_inference_performed:false,provider_mutations_performed:0,
+      verified_task_lanes:1,verified_layers:3,expected_png_count:48,blockers:[]};
+    fs.mkdirSync(output,{recursive:true});fs.writeFileSync(path.join(output,"provider_bundle_rehearsal.json"),JSON.stringify(result));
+    return;
+  }
+  const gpu=gpuIdentity(); const groups=[];
+  for (const role of SOURCE_ROLES) {
+    const row=await renderOne({request,lane:{task_id:"source-calibration",camera_contract:request.camera_contract,
+      dimensions:request.dimensions},variant:{layer:role,background_rgb:"#000000"},gpu});
+    groups.push({role,manifest:{relative_path:path.relative(output,row.manifest_path),
+      sha256:sha256(row.manifest_path),size_bytes:fs.statSync(row.manifest_path).size}});
+  }
+  const result={schema_version:SOURCE_RESULT_SCHEMA,status:"completed",render_scope:"source_calibration",digest_canonicalization:"rfc8785",
+    preparation_digest:request.preparation_digest,blueprint_commit:request.blueprint_commit,
+    request_digest:request.runtime_request_digest,released_renderer_executed:true,gpu_runtime_started:true,
+    paid_inference_performed:false,candidate_policy_queried:false,provider_mutations_performed:0,render_groups:groups,blockers:[]};
+  result.result_digest=canonicalDigest(result,"result_digest");write(result);
+}
+
+async function main() {
   if (!runtime || !output || !fs.existsSync(runtime)) return fail("retained_scene_render_runtime_path_invalid");
   let request;
   try {
     request = JSON.parse(fs.readFileSync(path.join(runtime, "render_request.json"), "utf8"));
+    if (request.render_scope === "source_calibration") return await renderSourceCalibration(request);
     const deleted = checkedFile(runtime, request.shared_deleted_source_layer);
     const retained = checkedFile(runtime, request.shared_retained_scene);
     checkedFile(runtime, request.candidate_set);
@@ -311,7 +398,7 @@ function main() {
     const variants = [];
     for (const lane of request.lanes || []) {
       for (const variant of lane.render_variants || []) {
-        variants.push(renderOne({ request, lane, variant, gpu }));
+        variants.push(await renderOne({ request, lane, variant, gpu }));
       }
     }
     const result = {

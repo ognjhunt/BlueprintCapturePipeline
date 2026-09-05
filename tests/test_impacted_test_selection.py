@@ -32,14 +32,22 @@ def test_full_lane_workflow_change_executes_the_changed_full_suite() -> None:
     assert "cross_cutting_file:.github/workflows/full-test-lane.yml" in plan["reasons"]
 
 
-def test_source_change_maps_direct_and_importing_tests() -> None:
-    plan = MODULE.build_plan(
-        ROOT,
-        ["src/blueprint_pipeline/paid_resource_admission.py"],
-    )
-
+def test_source_change_maps_direct_and_importing_tests(tmp_path: Path) -> None:
+    source = tmp_path / "src/blueprint_pipeline"
+    source.mkdir(parents=True)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (source / "widget.py").write_text("value = 1\n")
+    (tests / "test_widget.py").write_text("from blueprint_pipeline import widget\n")
+    (tests / "test_widget_consumer.py").write_text("import blueprint_pipeline.widget\n")
+    plan = MODULE.build_plan(tmp_path, ["src/blueprint_pipeline/widget.py"])
     assert plan["requires_full_suite"] is False
-    assert "tests/test_paid_resource_admission.py" in plan["selected_tests"]
+    assert {"tests/test_widget.py", "tests/test_widget_consumer.py"} <= set(plan["selected_tests"])
+    for index in range(MODULE.MAX_IMPACTED_TEST_FILES):
+        (tests / f"test_consumer_{index}.py").write_text("import blueprint_pipeline.widget\n")
+    wide = MODULE.build_plan(tmp_path, ["src/blueprint_pipeline/widget.py"])
+    assert wide["requires_full_suite"] is True
+    assert any(reason.startswith("impacted_test_count_exceeds_budget:") for reason in wide["reasons"])
 
 
 def test_unmapped_executable_and_dependency_changes_request_full_suite() -> None:

@@ -60,28 +60,33 @@ def test_real_cpu_sam_review_mask_freeze_cutout_lifecycle(
     calls = []
 
     def convert(**kwargs):
+        from types import SimpleNamespace
+        from blueprint_pipeline import standard_splat_conversion as conversion
+        from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
         request = json.loads(Path(kwargs["request_path"]).read_text())
         assert request["rights"]["raw_private_upload_authorized"] is False
         assert request["rights"]["conversion_execution_location"] == "local_only"
         assert kwargs["production_runtime_root"] == Path(job["runtime_root"])
-        output = Path(kwargs["output_root"])
-        output.mkdir()
-        ply = output / request["output_filename"]
-        from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
-        xyz = np.array([[-2.05, -3.50, .285], [-1.95, -3.50, .285],
-                        [-1.95, -3.40, .285], [-2.05, -3.40, .285],
-                        [-2., -3., .25], [-2., -4., .25]], dtype=np.float32)
-        write_standard_3dgs_ply(SplatData(count=6, xyz=xyz, opacity=np.ones(6, dtype=np.float32),
-            f_dc=np.zeros((6,3), dtype=np.float32), scales=np.full((6,3), -6., dtype=np.float32),
-            quats=np.tile(np.array([[1.,0.,0.,0.]], dtype=np.float32), (6,1)), properties=()), ply)
-        receipt = {"schema_version": "standard_splat_conversion_receipt.v1",
-                   "status": "standard_splat_conversion_materialized", "raw_source_uploaded": False,
-                   "source": _record(Path(job["inputs"]["source_appearance"]["path"])),
-                   "output": {"relative_path": ply.name, "sha256": module.sha(ply),
-                              "size_bytes": ply.stat().st_size,
-                              "standard_3dgs_schema_validated": True, "gaussian_count_preserved": True}}
-        receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
-        (output / "standard_splat_conversion_receipt.v1.json").write_text(canonical_json(receipt))
+        runtime = Path(job["runtime_root"])
+        cli = runtime / "fixture-decoder/bin/cli.mjs"
+        cli.parent.mkdir(parents=True)
+        cli.write_text("// Hermetic decoder transport only; never used in production")
+        (cli.parents[1] / "package.json").write_text('{"version":"fixture-only"}')
+        monkeypatch.setattr(conversion, "_repository_identity", lambda _: {"commit": SHA})
+        monkeypatch.setattr(conversion, "validate_splat_render_runtime", lambda **_: {
+            "renderer_root": str(runtime), "node": "node", "identity": {"fixture_only": True}})
+        monkeypatch.setattr(conversion, "find_splat_transform_cli", lambda _: cli)
+        monkeypatch.setattr(conversion, "read_compressed_ply_chunk_bounds", lambda _: SimpleNamespace(vertex_count=6))
+        def decoder(_source, destination, **_kwargs):
+            xyz = np.array([[-2.05, -3.50, .285], [-1.95, -3.50, .285],
+                            [-1.95, -3.40, .285], [-2.05, -3.40, .285],
+                            [-2., -3., .25], [-2., -4., .25]], dtype=np.float32)
+            write_standard_3dgs_ply(SplatData(count=6, xyz=xyz, opacity=np.ones(6, dtype=np.float32),
+                f_dc=np.zeros((6,3), dtype=np.float32), scales=np.full((6,3), -6., dtype=np.float32),
+                quats=np.tile(np.array([[1.,0.,0.,0.]], dtype=np.float32), (6,1)), properties=()), destination)
+            return {"status": "completed", "decoder": "hermetic-six-Gaussian-fixture"}
+        monkeypatch.setattr(conversion, "convert_to_standard_ply", decoder)
+        receipt = conversion.materialize_standard_splat_conversion(**kwargs)
         calls.append("conversion")
         return receipt
 
@@ -325,6 +330,25 @@ def test_real_cpu_sam_review_mask_freeze_cutout_lifecycle(
         "materialized_references": [{"contract_path": contract, "materialized_path": str(path),
             "digest": module.sha(path), "size_bytes": path.stat().st_size}
             for contract, path in (("scene.appearance.representation", raw), ("scene.rights.admission", rights))]}
+    # Exercise the real disclosure consumer with a separately retained,
+    # explicitly synthetic permission; frame permission alone stays insufficient.
+    from tests.test_sam31_contribution_disclosure import authorize_full_source
+    from blueprint_pipeline.task_evaluation_configuration_partition_disclosure import PURPOSE
+    shadow_task = _write(tmp_path / "hermetic-partition-task.json", task_value)
+    authorize_full_source({"expected_source_commit": SHA,
+        "plan": {"host_inputs": {"task_request": _record(shadow_task)}},
+        "inputs": {"interiorgs_terms": job["plan"]["host_inputs"]["interiorgs_terms"]}},
+        source=Path(job["inputs"]["standard_splat"]["path"]), original=raw,
+        receipt=Path(job["inputs"]["standard_splat_conversion_receipt"]["path"]))
+    owner = json.loads(shadow_task.read_text())["human_authority"]
+    permit_path = Path(owner["full_source_provider_disclosure_authority"]["path"])
+    permit = json.loads(permit_path.read_text())
+    permit["purpose"] = PURPOSE
+    _write(permit_path, permit, "authorization_digest")
+    config["human_authority"] = {**task_value["human_authority"],
+        "full_source_provider_disclosure_authorities": {PURPOSE: _record(permit_path)}}
+    envelope["request"]["expected_production_commit"] = SHA
+    monkeypatch.setattr("blueprint_pipeline.task_evaluation_configuration_partition_disclosure.HOST_ROOTS", (tmp_path,))
     result = _consume(envelope, config, tmp_path / "final-render-inputs")
     assert result["derived_frame_count"] == 16
     assert result["derived_gaussian_cutout"]["removed_count"] == 4

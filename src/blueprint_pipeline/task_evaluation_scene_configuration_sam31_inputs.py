@@ -371,6 +371,12 @@ def _materialize_sam31_exact_mask_render_inputs(
         stage_one_configuration=config, rights_admission=rights)
     _require(disclosure["render_execution_site"] == "control_plane"
              and disclosure["source_appearance_bytes_to_provider"] is False, "raw_upload_forbidden")
+    from .task_evaluation_configuration_partition_disclosure import prepare_partition_disclosure
+    partition_disclosure = prepare_partition_disclosure(task_authority=config["human_authority"],
+        conversion_path=paths["standard_splat_conversion"], standard_splat_path=standard,
+        original_source_path=Path(source_row["materialized_path"]), deleted_path=deleted, retained_path=retained,
+        expected_source_commit=envelope["request"].get("expected_production_commit", ""),
+        publisher_scene_id=source_object["scene_id"])
     root = Path(output_root)
     _require(root.is_absolute() and not any(p.is_symlink() for p in (root, *root.parents))
              and not root.exists(), "output_exists")
@@ -392,7 +398,10 @@ def _materialize_sam31_exact_mask_render_inputs(
         "source_splat_digest": source_row["digest"],
         "source_splat_bytes_retained_on_control_plane": True,
         "raw_interiorgs_bytes_in_provider_packet": False,
-        "provider_disclosure_scope": "derived_rendered_views_only",
+        "provider_disclosure_scope": "private_full_source_content_partitioned_for_configuration",
+        "full_source_scene_content_in_provider_packet": True,
+        "original_downloaded_file_in_provider_packet": False,
+        "full_source_scene_content_disclosure": partition_disclosure,
         "disclosure_decision": disclosure, "render_execution_site": "control_plane",
         "source_appearance": {"path": source_row["materialized_path"], "digest": source_row["digest"],
                               "size_bytes": source_row["size_bytes"]},
