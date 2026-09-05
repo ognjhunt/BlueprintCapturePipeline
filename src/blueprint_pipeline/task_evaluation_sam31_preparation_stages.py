@@ -43,10 +43,15 @@ def execute_stage(job: Mapping[str, Any]) -> dict[str, Any]:
     if receipt_path.exists():
         receipt = read(receipt_path, digest_field="receipt_digest")
         require(receipt.get("schema_version") == SCHEMA and
-                receipt.get("job_digest") == job["job_digest"], "sam31_phase_receipt_conflict")
+                receipt.get("job_digest") == job["job_digest"] and
+                receipt.get("source_commit") == job["expected_source_commit"] and
+                receipt.get("phase") == phase, "sam31_phase_receipt_conflict")
         outcome = receipt["outcome"]
         for row in outcome.get("artifacts", {}).values():
             checked_file(row["path"], row)
+        if phase in PAID_PHASES and outcome.get("status") == "completed":
+            from .task_evaluation_sam31_preparation_paid_stages import validate_retained_paid_stage
+            validate_retained_paid_stage(outcome, stage_id=str(phase))
         return outcome
     context = {
         **job, "stage_id": phase, "server_profile": profile,
