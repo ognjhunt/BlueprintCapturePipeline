@@ -87,7 +87,12 @@ def test_severity_follows_storage_class_and_the_unit_declared_intent() -> None:
     read_only = {"status": "read_only"}
     assert preflight._severity_for_directory(read_only, storage_class="work", in_rw=False) == "blocker"
     assert preflight._severity_for_directory(read_only, storage_class="work", in_rw=False, declared_ro=True) == "info"
+    # ReadOnlyPaths inside a ReadWritePaths tree is still the operator's intent.
+    assert preflight._severity_for_directory(read_only, storage_class="cache", in_rw=True, declared_ro=True) == "info"
     assert preflight._severity_for_directory(read_only, storage_class="container", in_rw=False) == "info"
+    # Root-owned container and release trees are never written; naming them is not a blocker.
+    assert preflight._severity_for_directory({"status": "permission_denied"}, storage_class="container", in_rw=True) == "info"
+    assert preflight._severity_for_directory({"status": "permission_denied"}, storage_class="release", in_rw=True) == "info"
     assert preflight._severity_for_directory(read_only, storage_class=None, in_rw=True) == "blocker"
     assert preflight._severity_for_directory(read_only, storage_class=None, in_rw=False) == "warning"
     missing = {"status": "missing_not_creatable:read_only"}
