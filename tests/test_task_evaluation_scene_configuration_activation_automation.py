@@ -235,7 +235,14 @@ def _controls_intent_root(tmp_path: Path, *, registered: bool = True) -> Path:
 
 
 def _advance(
-    tmp_path: Path, result_path: Path, intent_root: Path, *, zero=None, now=NOW, controls_registered=True
+    tmp_path: Path,
+    result_path: Path,
+    intent_root: Path,
+    *,
+    zero=None,
+    now=NOW,
+    controls_registered=True,
+    running_commit=None,
 ):
     lineage_publisher = _publisher("scene-configuration-activation-lineage")
     window_publisher = _publisher("coordinator-release-windows")
@@ -252,6 +259,7 @@ def _advance(
         lineage_publisher_factory=lambda: lineage_publisher,
         release_window_publisher_factory=lambda: window_publisher,
         now=now,
+        running_commit=running_commit,
     )
     return observed, lineage_publisher, window_publisher
 
@@ -657,6 +665,80 @@ def test_launch_refuses_a_standing_authorization_that_disagrees_with_the_profile
             submitter=lambda request: pytest.fail("must not submit"),
             now=NOW + timedelta(minutes=3),
         )
+
+
+SUPERSEDED_RUNNING_COMMIT = "f" * 40
+
+
+def test_activation_skips_a_preparation_bound_to_a_superseded_release_without_its_envelope(
+    tmp_path: Path,
+) -> None:
+    """A result bound to a commit that is no longer deployed can never activate here.
+
+    The production results directory keeps every historical preparation; those
+    rows are not actionable under the running release, so they must not read
+    as blocked alarms and must not even need their intake envelope.
+    """
+
+    intent_root, _intent_value = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+    for envelope in (tmp_path / "preparations" / "materialized").iterdir():
+        envelope.unlink()
+    observed, lineage_publisher, window_publisher = _advance(
+        tmp_path, result_path, intent_root, running_commit=SUPERSEDED_RUNNING_COMMIT
+    )
+    assert observed == {
+        "status": "preparation_bound_to_superseded_release",
+        "preparation_id": PREPARATION_ID,
+        "preparation_status": "queued_for_production_scene_configuration",
+        "source_commit": COMMIT,
+        "running_commit": SUPERSEDED_RUNNING_COMMIT,
+    }
+    assert lineage_publisher.published == {} and window_publisher.published == {}
+    assert not (tmp_path / "progression").exists()
+
+
+def test_activation_at_the_running_release_still_refuses_a_missing_envelope(tmp_path: Path) -> None:
+    intent_root, _intent_value = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+    for envelope in (tmp_path / "preparations" / "materialized").iterdir():
+        envelope.unlink()
+    with pytest.raises(
+        automation.SceneConfigurationActivationAutomationError,
+        match="scene_configuration_activation_preparation_envelope_invalid",
+    ):
+        _advance(tmp_path, result_path, intent_root, running_commit=COMMIT)
+
+
+def test_activation_refuses_a_malformed_running_commit(tmp_path: Path) -> None:
+    intent_root, _intent_value = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+    with pytest.raises(
+        automation.SceneConfigurationActivationAutomationError,
+        match="scene_configuration_activation_running_commit_invalid",
+    ):
+        _advance(tmp_path, result_path, intent_root, running_commit="not-a-commit")
+
+
+def test_process_reports_superseded_releases_without_blocking(tmp_path: Path) -> None:
+    intent_root, _intent_value = _intent(tmp_path)
+    _preparation(tmp_path)
+    rows = automation.process_scene_configuration_activations(
+        preparation_queue_root=tmp_path / "preparations",
+        activation_queue_root=tmp_path / "activations",
+        progression_root=tmp_path / "progression",
+        intent_root=intent_root,
+        configured_controls_intent_root=_controls_intent_root(tmp_path),
+        profile_dir=tmp_path / "profiles",
+        standing_authorization_dir=tmp_path / "standing",
+        provider_zero_collector=lambda: pytest.fail("superseded rows never collect a zero"),
+        submitter=lambda request: pytest.fail("superseded rows never launch"),
+        now=NOW,
+        running_commit=SUPERSEDED_RUNNING_COMMIT,
+    )
+    assert [row["status"] for row in rows] == ["preparation_bound_to_superseded_release"]
+    assert rows[0]["preparation_id"] == PREPARATION_ID
+    assert "blockers" not in rows[0]
 
 
 def test_process_scans_the_preparation_queue_and_reports_one_row_per_configuration(

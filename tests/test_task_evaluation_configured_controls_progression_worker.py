@@ -484,6 +484,7 @@ def test_process_plans_advances_scene_configuration_activations_from_the_intent_
         ]
 
     monkeypatch.setattr(automation, "process_scene_configuration_activations", process)
+    monkeypatch.setattr(worker, "running_release_commit", lambda: "a" * 40)
     forwarded: dict[str, object] = {}
 
     def advance(**kwargs: object) -> dict[str, object]:
@@ -522,6 +523,8 @@ def test_process_plans_advances_scene_configuration_activations_from_the_intent_
     assert observed["standing_authorization_dir"] == tmp_path / "standing"
     assert observed["configured_controls_intent_root"] == tmp_path / "intents"
     assert callable(observed["submitter"])
+    # Historical results bound to other releases are filtered by the running release.
+    assert observed["running_commit"] == "a" * 40
     # The configured-controls transition keeps its exact signature.
     for name in (
         "scene_configuration_activation_intent_root",
@@ -530,6 +533,47 @@ def test_process_plans_advances_scene_configuration_activations_from_the_intent_
         "episode_compilation_queue_root",
     ):
         assert name not in forwarded
+
+
+def test_process_plans_passes_no_running_commit_when_the_checkout_is_not_detached(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A branch checkout has no exact release identity; the scan then filters nothing."""
+
+    from blueprint_pipeline import (
+        task_evaluation_scene_configuration_activation_automation as automation,
+    )
+
+    launch_root = tmp_path / "launch-runs"
+    launch_root.mkdir()
+    observed: dict[str, object] = {}
+
+    def process(**kwargs: object) -> list[dict[str, object]]:
+        observed.update(kwargs)
+        return []
+
+    monkeypatch.setattr(automation, "process_scene_configuration_activations", process)
+    monkeypatch.setattr(worker, "running_release_commit", lambda: "")
+    plan_root = tmp_path / "plans"
+    plan_root.mkdir()
+    report = worker.process_plans(
+        plan_root=plan_root,
+        autostart_intent_root=tmp_path / "intents",
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progression",
+        preparation_queue_root=tmp_path / "preparations",
+        episode_compilation_queue_root=tmp_path / "compilations",
+        activation_queue_root=tmp_path / "activations",
+        repo_root=tmp_path / "repo",
+        webapp_secret_file=tmp_path / "secret",
+        webapp_endpoint="https://tryblueprint.io/api/internal/task-evaluation-launch-submissions",
+        scene_configuration_activation_intent_root=tmp_path / "scene-configuration-intents",
+        profile_dir=tmp_path / "profiles",
+        standing_authorization_dir=tmp_path / "standing",
+    )
+    assert report["status"] == "completed"
+    assert observed["running_commit"] is None
 
 
 def test_process_plans_leaves_scene_configuration_activation_alone_without_an_intent_root(

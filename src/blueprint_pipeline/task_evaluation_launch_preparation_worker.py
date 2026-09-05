@@ -25,6 +25,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_release_identity import running_release_commit
 from .task_evaluation_sam31_preparation_queue import (
     Sam31PreparationQueueError,
     Sam31PreparationWait,
@@ -118,32 +119,8 @@ class TaskEvaluationLaunchPreparationWorkerError(RuntimeError):
     """A claimed no-spend preparation could not be completed safely."""
 
 
-def running_worker_source_commit(module_path: str | Path | None = None) -> str:
-    """Read the exact detached/worktree commit that owns the running worker."""
-
-    start = Path(module_path or __file__).resolve()
-    for candidate in (start, *start.parents):
-        marker = candidate / ".git"
-        if not marker.exists():
-            continue
-        head_path = marker / "HEAD"
-        if marker.is_file():
-            try:
-                pointer = marker.read_text(encoding="utf-8").strip()
-            except OSError:
-                return ""
-            if not pointer.startswith("gitdir:"):
-                return ""
-            git_root = Path(pointer.split(":", 1)[1].strip())
-            if not git_root.is_absolute():
-                git_root = (candidate / git_root).resolve()
-            head_path = git_root / "HEAD"
-        try:
-            head = head_path.read_text(encoding="utf-8").strip().lower()
-        except OSError:
-            return ""
-        return head if re.fullmatch(r"[0-9a-f]{40}", head) else ""
-    return ""
+# The exact release identity lives in one shared module; the historical name stays exported.
+running_worker_source_commit = running_release_commit
 
 
 def _sha256_and_size(path: Path) -> tuple[str, int]:
