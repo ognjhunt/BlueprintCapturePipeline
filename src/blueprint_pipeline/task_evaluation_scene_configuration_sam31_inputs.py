@@ -131,10 +131,18 @@ def _cutout(candidate_path, candidate, source, task, camera_ids, mask_paths):
     mask_rows = {item["camera_id"]: item for item in sweep["masks"]}
     _require(set(mask_rows) == set(camera_ids), "mask_camera_join_invalid")
     for camera_id in camera_ids:
-        # Sweep keeps historical mask references anchored at the original freeze.
-        record = mask_rows[camera_id]["historical_outer_mask"]
-        mask = _file(record, original_path.parent)
+        # The safety envelope can include registered geometric core outside SAM.
+        # Reopen it separately; only the reviewed semantic mask is exact SAM input.
+        mask_row = mask_rows[camera_id]
+        safety = _file(mask_row["historical_outer_mask"], original_path.parent)
+        mask = _file(mask_row.get("reviewed_semantic_mask", mask_row["historical_outer_mask"]), original_path.parent)
         _require(_sha(mask) == _sha(mask_paths[camera_id]), "excision_mask_join_invalid")
+        with Image.open(mask) as image:
+            semantic_pixels = np.asarray(image.convert("L")) > 0
+        with Image.open(safety) as image:
+            safety_pixels = np.asarray(image.convert("L")) > 0
+        _require(semantic_pixels.shape == safety_pixels.shape
+                 and np.all(~semantic_pixels | safety_pixels), "excision_safety_envelope_invalid")
         for zone in CONTRIBUTION_CLASS_ORDER:
             _file(mask_rows[camera_id]["zones"][zone], sweep_path.parent)
     manifest_path = _file(row["contribution_manifest"])
@@ -305,7 +313,16 @@ def _materialize_sam31_exact_mask_render_inputs(
              and standard.stat().st_size == conversion["output"]["size_bytes"], "conversion_output_changed")
     deleted, retained, counts, sweep, original = _cutout(
         paths["segment_cutout_set"], candidate, standard, task, camera_ids, mask_paths)
-    upstream_render = _file(original["render_input_packet"]["receipt"])
+    # Selection inputs bind the actual calibrated receipt through the exact
+    # reviewed task packet. SAM freezes deliberately do not reuse its AABB masks.
+    packet = _read(Path(inputs[task_id]["task_input_packet_path"]), "receipt_digest")
+    upstream_render = _file(packet["calibrated_view_receipt"])
+    legacy_render_binding = original.get("render_input_packet")
+    if legacy_render_binding is not None:
+        _require(_file(legacy_render_binding["receipt"]) == upstream_render,
+                 "renderer_receipt_join_invalid")
+    _require(_sha(_file(original["camera_contract"])) == _sha(camera_file),
+             "excision_camera_join_invalid")
     upstream = _read(upstream_render, "receipt_digest")
     renderer = upstream.get("renderer", {})
     _require(upstream.get("schema_version") == "public_scene_interiorgs_edit_input_receipt.v2"
