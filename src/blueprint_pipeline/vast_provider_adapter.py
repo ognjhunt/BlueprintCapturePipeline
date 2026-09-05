@@ -2685,6 +2685,20 @@ def _blueprint_bundle_preflight(
         "provider_runtime/input/shared_retained_scene.ply",
         "provider_runtime/renderer/render_splat.mjs",
     }
+    # The SAM source-calibration variant of that bundle
+    # (adp009d_source_calibration_gpu_render_bundle.v1) runs the same renderer
+    # against the raw scene's layers and carries its own authority member.  Its
+    # input entries follow the manifest's layers so the contract tracks the
+    # packet rather than one scene's layer names; without layers it fails closed.
+    adp_source_calibration_render_common_entries = {
+        "provider_runtime/run_adp_retained_scene_render_provider_runtime.sh",
+        "provider_runtime/adp_retained_scene_render_provider_runner.mjs",
+        "provider_runtime/adp_retained_scene_gpu_render_manifest.json",
+        "provider_runtime/render_request.json",
+        "provider_runtime/source_calibration_execution_authority.json",
+        "provider_runtime/input/cameras.v1.json",
+        "provider_runtime/renderer/render_splat.mjs",
+    }
     scene_configuration_required_entries = {
         "provider_runtime/run_task_evaluation_scene_configuration_provider.sh",
         "provider_runtime/task_evaluation_scene_configuration_provider_runner.py",
@@ -2832,6 +2846,7 @@ def _blueprint_bundle_preflight(
     zip_parse_error = None
     zip_testzip_result: str | None = None
     json_member_parse_errors: list[str] = []
+    retained_render_manifest: dict[str, Any] = {}
     entrypoint_text = ""
     runner_text = ""
     eval_manifest: dict[str, Any] = {}
@@ -2916,6 +2931,24 @@ def _blueprint_bundle_preflight(
                         )
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
+                    if (
+                        provider_bundle_kind == "adp_retained_scene_render"
+                        and "provider_runtime/adp_retained_scene_gpu_render_manifest.json"
+                        in zip_entries
+                    ):
+                        try:
+                            render_manifest_payload = json.loads(
+                                archive.read(
+                                    "provider_runtime/adp_retained_scene_gpu_render_manifest.json"
+                                ).decode("utf-8", errors="replace")
+                            )
+                        except Exception:  # noqa: BLE001 - recorded by the JSON member pass above
+                            render_manifest_payload = None
+                        retained_render_manifest = (
+                            dict(render_manifest_payload)
+                            if isinstance(render_manifest_payload, Mapping)
+                            else {}
+                        )
                     if provider_bundle_kind == "native_task_arena_policy_canary_session":
                         readiness_member = (
                             "provider_runtime/adp_arena_provider_manifest.json"
@@ -3298,6 +3331,23 @@ def _blueprint_bundle_preflight(
                 blockers.append(
                     f"provider_runtime_bundle_zip_inspection_failed:{type(exc).__name__}"
                 )
+            if (
+                provider_bundle_kind == "adp_retained_scene_render"
+                and retained_render_manifest.get("schema_version")
+                == "adp009d_source_calibration_gpu_render_bundle.v1"
+                and retained_render_manifest.get("render_scope") == "source_calibration"
+            ):
+                layers = retained_render_manifest.get("layers")
+                roles = (
+                    sorted(str(role) for role in layers)
+                    if isinstance(layers, Mapping) and layers
+                    else []
+                )
+                required_entries = adp_source_calibration_render_common_entries | {
+                    f"provider_runtime/input/{role}.ply" for role in roles
+                }
+                if not roles:
+                    blockers.append("source_calibration_render_manifest_layers_missing")
             missing_entries = sorted(required_entries - set(zip_entries))
             if provider_bundle_kind == "adp_content_agents":
                 # This used to require exactly one reference image. The bundle
@@ -3722,6 +3772,7 @@ def _blueprint_bundle_preflight(
         and zip_testzip_result is None,
         "zip_testzip_result": zip_testzip_result,
         "json_member_parse_errors": json_member_parse_errors,
+        "render_scope": retained_render_manifest.get("render_scope"),
         "missing_zip_entries": missing_entries,
         "zip_parse_error": zip_parse_error,
         "provider_eval_manifest_parse_error": eval_manifest_parse_error,

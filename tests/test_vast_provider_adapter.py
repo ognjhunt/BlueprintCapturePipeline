@@ -9501,3 +9501,108 @@ def test_environment_machine_avoidlist_path_survives_across_run_roots(
     )
     assert manifest["machine_avoidlist_path"] == str(stable)
     assert sorted(manifest["excluded_machine_ids"]) == [138964, 140607]
+
+
+def _retained_render_bundle(tmp_path, *, manifest: dict, members: list[str]):
+    import zipfile as _zipfile
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    bundle = tmp_path / "bundle.zip"
+    with _zipfile.ZipFile(bundle, "w") as archive:
+        for member in members:
+            archive.writestr(member, b"x")
+        archive.writestr(
+            "provider_runtime/adp_retained_scene_gpu_render_manifest.json", json.dumps(manifest)
+        )
+        archive.writestr("provider_runtime/render_request.json", json.dumps({"render_scope": manifest.get("render_scope")}))
+    return bundle
+
+
+_RETAINED_RENDER_COMMON = [
+    "provider_runtime/run_adp_retained_scene_render_provider_runtime.sh",
+    "provider_runtime/adp_retained_scene_render_provider_runner.mjs",
+    "provider_runtime/renderer/render_splat.mjs",
+]
+
+
+def _retained_render_preflight(tmp_path, bundle):
+    from blueprint_pipeline.vast_provider_adapter import _blueprint_bundle_preflight
+
+    return _blueprint_bundle_preflight(
+        job_dir=tmp_path / "preflight",
+        generated_at="2026-09-05T14:00:00Z",
+        enable_blueprint_bundle=True,
+        enable_isaac_smoke=False,
+        provider_bundle_kind="adp_retained_scene_render",
+        bundle_path=bundle,
+        provider_bundle_url="https://example.test/bundle",
+        provider_output_put_url="https://example.test/output",
+    )
+
+
+def test_source_calibration_render_bundle_is_required_by_its_own_manifest_layers(tmp_path):
+    """The SAM calibration variant shares the retained-scene runner but carries its
+    own authority member and the raw scene's layers.  Requiring the retained
+    variant's entries refused a correct bundle before any provider was rented."""
+    manifest = {
+        "schema_version": "adp009d_source_calibration_gpu_render_bundle.v1",
+        "render_scope": "source_calibration",
+        "layers": {"images": {}, "scene_without_target": {}, "target_support": {}},
+    }
+    complete = _retained_render_bundle(
+        tmp_path / "complete",
+        manifest=manifest,
+        members=_RETAINED_RENDER_COMMON
+        + [
+            "provider_runtime/source_calibration_execution_authority.json",
+            "provider_runtime/input/cameras.v1.json",
+            "provider_runtime/input/images.ply",
+            "provider_runtime/input/scene_without_target.ply",
+            "provider_runtime/input/target_support.ply",
+        ],
+    )
+    preflight = _retained_render_preflight(tmp_path / "complete", complete)
+    assert preflight["missing_zip_entries"] == []
+    assert preflight["zip_required_entries_present"] is True
+    assert preflight["render_scope"] == "source_calibration"
+    assert "provider_runtime_bundle_required_entries_missing" not in preflight["blockers"]
+
+    partial = _retained_render_bundle(
+        tmp_path / "partial",
+        manifest=manifest,
+        members=_RETAINED_RENDER_COMMON
+        + [
+            "provider_runtime/source_calibration_execution_authority.json",
+            "provider_runtime/input/cameras.v1.json",
+            "provider_runtime/input/images.ply",
+        ],
+    )
+    preflight = _retained_render_preflight(tmp_path / "partial", partial)
+    assert preflight["missing_zip_entries"] == [
+        "provider_runtime/input/scene_without_target.ply",
+        "provider_runtime/input/target_support.ply",
+    ]
+    assert "provider_runtime_bundle_required_entries_missing" in preflight["blockers"]
+
+    layerless = _retained_render_bundle(
+        tmp_path / "layerless",
+        manifest={**manifest, "layers": {}},
+        members=_RETAINED_RENDER_COMMON
+        + ["provider_runtime/source_calibration_execution_authority.json", "provider_runtime/input/cameras.v1.json"],
+    )
+    preflight = _retained_render_preflight(tmp_path / "layerless", layerless)
+    assert "source_calibration_render_manifest_layers_missing" in preflight["blockers"]
+
+
+def test_retained_scene_render_bundle_still_requires_the_retained_layers(tmp_path):
+    bundle = _retained_render_bundle(
+        tmp_path / "retained",
+        manifest={"schema_version": "adp009d_retained_scene_gpu_render_bundle.v1", "render_scope": "retained_scene"},
+        members=_RETAINED_RENDER_COMMON + ["provider_runtime/execution_authority.json"],
+    )
+    preflight = _retained_render_preflight(tmp_path / "retained", bundle)
+    assert preflight["missing_zip_entries"] == [
+        "provider_runtime/input/shared_deleted_source_layer.ply",
+        "provider_runtime/input/shared_retained_scene.ply",
+    ]
+    assert "provider_runtime_bundle_required_entries_missing" in preflight["blockers"]
