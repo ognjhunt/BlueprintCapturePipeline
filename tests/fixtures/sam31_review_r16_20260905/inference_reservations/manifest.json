@@ -1,0 +1,23 @@
+{
+  "schema_version": "task_evaluation_inference_reservation_manifest.v1",
+  "run_id": "sam31-ai-visual-review-539e020ca1537b33",
+  "reservations": [
+    {
+      "reservation_id": "sha256:14083d499913aab871732e62e8d2628a2cd2df55d06c3d0144fabf0889698637",
+      "reservation_digest": "sha256:48502217d6865f40612f94ed170695ee87ac209b3d8bb5a3263f3944cd32407f",
+      "reservation_path": "inference_reservations/reserved/14083d499913aab871732e62e8d2628a2cd2df55d06c3d0144fabf0889698637.json",
+      "projected_max_cost_usd": 0.536,
+      "reconciled_actual_cost_usd": 0.077398,
+      "released_reservation_usd": 0.45860200000000007,
+      "status": "completed",
+      "completion_digest": "sha256:14abb9c1ea09e55bbbe46740eada0f71385b79d77c7810031b5bfa2cb85cdc8f",
+      "completion_path": "inference_reservations/completed/14083d499913aab871732e62e8d2628a2cd2df55d06c3d0144fabf0889698637.json"
+    }
+  ],
+  "reservation_count": 1,
+  "in_flight_unknown_count": 0,
+  "reserved_max_cost_usd": 0.077398,
+  "projected_max_cost_usd_total": 0.536,
+  "proof_effect": "none",
+  "inference_reservation_manifest_digest": "sha256:63d91551d7356beec00c22dd26054d27ff3c709ee6d27cb552755885c3d099f2"
+}

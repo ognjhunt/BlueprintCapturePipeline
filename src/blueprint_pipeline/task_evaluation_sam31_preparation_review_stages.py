@@ -5,6 +5,7 @@ rejection or failure; no caller assertion can accept masks or Gaussian cutouts.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from .gaussian_splat_decode import read_standard_3dgs_ply
 from .public_scene_removal_selection import validate_removal_task_selection, validate_removal_scene_selection
 from .public_scene_sam31_ai_visual_reviewer import run_sam31_ai_visual_review
 from .public_scene_sam31_track_selection_review import (
-    load_validated_sam31_track_selection_inputs,
+    Sam31TrackSelectionReviewError, load_validated_sam31_track_selection_inputs,
     materialize_sam31_track_selection_inputs, materialize_sam31_track_selection_review_candidate,
     validate_sam31_ai_visual_review_rights, validate_sam31_track_selection_review,
 )
@@ -59,12 +60,35 @@ def _inventory(output: Path) -> dict[str, Any]:
             for path in sorted(output.rglob("*")) if path.is_file() and not path.is_symlink()}
 
 
+_LANE_CODE = re.compile(r"[a-z][a-z0-9_]{2,120}(?::[a-z0-9_./-]{1,80})?")
+
+
 def _failure_blocker(exc: Exception) -> str:
+    """Name the failure by its fail-closed code, never by free text.
+
+    Three review failures on 2026-09-05 reached the operator as a bare exception
+    type ("...:Sam31TrackSelectionReviewError") and each cost a manual dig
+    through retained artifacts before the fix could start. The lane's typed
+    errors carry codes, not messages (``sam31_review_execution_receipt_invalid``),
+    so a message shaped like a code is kept; anything else stays the type name,
+    which is what keeps secrets out of results. The predicates that decided the
+    refusal are appended as source text (``:predicates=...``).
+    """
+
+    from .fail_closed_blocker_explainer import annotate_blocker
     from .public_scene_sam31_frame_inventory import FRAME_REGISTRY_ERROR, FRAME_BINDING_ERROR
+    from .openai_official_cost_gate import OpenAIOfficialCostGateError
+    from .public_scene_inpainting_inputs import PublicSceneInpaintingInputError
+    from .public_scene_sam31_ai_visual_reviewer import Sam31AIVisualReviewError
+    from .task_evaluation_sam31_preparation_review_authority import Sam31ReviewAuthorityError
+
+    message = str(exc)
     safe_codes = {FRAME_REGISTRY_ERROR, FRAME_BINDING_ERROR, "sam31_review_camera_frame_set_invalid",
                   "sam31_review_source_image_invalid", "sam31_review_prepared_inputs_invalid"}
-    detail = str(exc) if str(exc) in safe_codes else type(exc).__name__
-    return "sam31_preparation_review_stage_failed:" + detail
+    lane_typed = isinstance(exc, (Sam31TrackSelectionReviewError, Sam31ReviewAuthorityError, PublicSceneInpaintingInputError,
+                                  Sam31AIVisualReviewError, OpenAIOfficialCostGateError, Sam31PreparationReviewStageError))
+    detail = message if message in safe_codes or (lane_typed and _LANE_CODE.fullmatch(message)) else type(exc).__name__
+    return annotate_blocker("sam31_preparation_review_stage_failed:" + detail, exc)
 
 
 def execute_review_stage(job: Mapping[str, Any]) -> dict[str, Any]:

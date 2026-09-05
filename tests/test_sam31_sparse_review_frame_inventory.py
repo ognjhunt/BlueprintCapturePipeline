@@ -137,3 +137,10 @@ def test_review_failure_retains_only_known_safe_codes():
         ':sam31_review_retained_frame_registry_unproven')
     assert _failure_blocker(review.Sam31TrackSelectionReviewError('secret-key-do-not-record')).endswith(
         ':Sam31TrackSelectionReviewError')
+    # R16 (2026-09-05): the seal's code reached the operator as a bare type name. Lane-typed
+    # errors carry codes, which are safe by construction; free text still becomes the type.
+    assert _failure_blocker(review.Sam31TrackSelectionReviewError('sam31_review_execution_receipt_invalid')).endswith(
+        ':sam31_review_execution_receipt_invalid')
+    assert _failure_blocker(review.Sam31TrackSelectionReviewError('Bearer abc.def')).endswith(
+        ':Sam31TrackSelectionReviewError')
+    assert _failure_blocker(RuntimeError('sam31_review_execution_receipt_invalid')).endswith(':RuntimeError')
