@@ -299,3 +299,33 @@ def test_history_records_one_bounded_line_per_run(tmp_path: Path) -> None:
     assert row["blocker_count"] == 3
     assert row["blocker_codes"] == ["disk_admission_projection", "sam31_provider_profile_bound_to_other_release"]
     assert json.loads(lines[1])["blocker_count"] == 0
+
+
+def test_installation_receipt_from_another_release_is_provenance_not_a_blocker(tmp_path: Path) -> None:
+    """Installed sources are bound by content identity (#1653); before that change the
+    per-release re-installation was the first production blocker of the day."""
+    import hashlib
+
+    receipt = tmp_path / "public_scene_host_input_installation_receipt.v1.json"
+    receipt.write_text(json.dumps({"source_commit_sha": "b" * 40}), encoding="utf-8")
+    intake = tmp_path / "publisher_intake.v1.json"
+    intake.write_bytes(b'{"scene_id": "841757"}')
+    digest = "sha256:" + hashlib.sha256(intake.read_bytes()).hexdigest()
+    binding = json.dumps([{"installation_receipt_path": str(receipt), "publisher_intake_path": str(intake), "publisher_intake_sha256": digest}])
+    units = {
+        "blueprint-task-evaluation-launch-preparation.service": {
+            "effective_environment": {"BLUEPRINT_TASK_EVALUATION_INSTALLED_SOURCE_BINDINGS_JSON": binding, "BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_FILE": ""},
+            "environment_files": [],
+        },
+        "blueprint-task-evaluation-sam31-preparation-execution.service": {"effective_environment": {}, "environment_files": []},
+    }
+
+    findings = preflight.binding_checks(units, "a" * 40, (os.getuid(), os.getgid()))
+
+    codes = {f["code"]: f["severity"] for f in findings}
+    assert codes["installation_receipt_installed_by_other_release"] == "info"
+    assert "installation_receipt_bound_to_other_release" not in codes
+    assert codes["sam31_profile_unbound"] == "blocker"
+    receipt.write_text(json.dumps({"source_commit_sha": "nope"}), encoding="utf-8")
+    codes = {f["code"]: f["severity"] for f in preflight.binding_checks(units, "a" * 40, (os.getuid(), os.getgid()))}
+    assert codes["installation_receipt_commit_invalid"] == "blocker"

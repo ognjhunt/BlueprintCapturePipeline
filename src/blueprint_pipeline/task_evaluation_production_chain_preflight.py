@@ -427,7 +427,9 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             findings.append(_finding("blocker", "path_bound_to_other_release", path=path_text, source=source, bound_sha=sha.group(1)))
         sha8 = SHA8_IN_INPUT.search(path_text)
         if active_sha and sha8 and sha8.group(1) != active_sha[:8] and "/task-evaluation-inputs/" in path_text:
-            findings.append(_finding("warning", "input_bound_to_other_release_prefix", path=path_text, source=source, bound_sha8=sha8.group(1)))
+            # Per-release input directories are reused across releases by content
+            # identity; the prefix is where the bytes were installed, not a binding.
+            findings.append(_finding("info", "input_installed_under_other_release_prefix", path=path_text, source=source, installed_sha8=sha8.group(1)))
 
     for path_text, modules in literal_roots(sources).items():
         examine(path_text, source="code_literal", modules=modules)
@@ -735,8 +737,13 @@ def binding_checks(units: Mapping[str, dict[str, Any]], active_sha: str, ids: tu
             if not readable_by(receipt_path, uid, gid):
                 findings.append(_finding("blocker", "installation_receipt_unreadable_by_service", path=str(receipt_path)))
             bound = str(receipt.get("source_commit_sha") or "")
-            if bound != active_sha:
-                findings.append(_finding("blocker", "installation_receipt_bound_to_other_release", path=str(receipt_path), bound_sha=bound, active_sha=active_sha))
+            if not re.fullmatch(r"[0-9a-f]{40}", bound):
+                findings.append(_finding("blocker", "installation_receipt_commit_invalid", path=str(receipt_path), bound_sha=bound))
+            elif bound != active_sha:
+                # Installed sources are bound by content identity (#1653): every member is
+                # digest-checked against the publisher inventory and read back, so the
+                # installing release is provenance, not a precondition.
+                findings.append(_finding("info", "installation_receipt_installed_by_other_release", path=str(receipt_path), installed_by=bound[:12], active_sha=active_sha[:12]))
             intake_path = Path(str(row.get("publisher_intake_path") or ""))
             if not intake_path.is_file() or not readable_by(intake_path, uid, gid):
                 findings.append(_finding("blocker", "publisher_intake_unreadable_by_service", path=str(intake_path)))
