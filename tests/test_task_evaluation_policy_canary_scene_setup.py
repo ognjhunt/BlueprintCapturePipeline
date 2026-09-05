@@ -818,3 +818,181 @@ def test_controller_and_rights_source_artifacts_are_exact_and_self_digesting() -
         path = root / module["path"]
         observed = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
         assert observed == module["sha256"]
+
+def _strict_owner_setup_inputs(tmp_path: Path) -> tuple[dict, dict]:
+    kwargs = _kwargs(tmp_path)
+    scene_path = Path(kwargs["scene_plan_path"])
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    spec = scene["task_spec"]
+    spec.update(
+        manipulation_strategy="pick_and_place",
+        minimum_lift_m=0.05,
+        configured_success_criteria={
+            "owner_success_contract_required": True,
+            "minimum_lift_m": 0.05,
+            "drop_events_allowed": False,
+            "maximum_retries": 0,
+            "maximum_regrasps": 0,
+            "whole_subject_containment_required": True,
+            "object_must_rest_on_destination_support": True,
+        },
+        destination_relation="inside",
+        destination_support_asset_id="configured-document-tray",
+        destination_pose_world=[1.15, 2.0, 0.8, 0.0, 0.0, 0.0, 1.0],
+        subject_collision_bounds_scoring_frame_m={
+            "minimum": [-0.01, -0.01, -0.005], "maximum": [0.01, 0.01, 0.005],
+        },
+        destination_interior_bounds_body_frame_m={
+            "minimum": [-0.1, -0.1, 0.0], "maximum": [0.1, 0.1, 0.05],
+        },
+        destination_position_bounds_destination_frame_m={
+            "minimum": [-0.09, -0.09, 0.005], "maximum": [0.09, 0.09, 0.045],
+        },
+        interaction_affordance={"intended_support_prim_paths": ["/Asset"]},
+    )
+    scene["plan_digest"] = canonical_digest(scene, digest_field="plan_digest")
+    write_json(scene_path, scene)
+    packet_path = Path(kwargs["packet_receipt_path"])
+    packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    packet["arena_scene_plan_digest"] = scene["plan_digest"]
+    write_json(packet_path, packet)
+    draft = canary_setup_module.seal_rigid_task_success_contract(
+        task_spec=spec, site_id=scene["scene_id"], task_id=scene["task_id"],
+        author_source="task_owner", author_id="fixture-task-owner",
+        confirmation_status="confirmed", confirmed_by_team_id="fixture-owner-team",
+    )
+    criteria = draft["criteria"]
+    criteria["terminal_task_contact"]["mode"] = "cleared"
+    criteria["temporal_invariants"].update(
+        no_drop={"mode": "required", "minimum_fall_m": 0.02},
+        maximum_task_contact_force_n=20.0,
+        forbidden_contact_classes=["robot_scene_contact_force_exceeded",
+                                   "forbidden_robot_object_contact_force_exceeded",
+                                   "task_scene_contact_force_exceeded"],
+        workspace_excursions="forbidden",
+        containment_excursions="forbidden",
+        maximum_retries=0,
+        maximum_regrasps=0,
+    )
+    contract = canary_setup_module.seal_rigid_task_success_contract(
+        task_spec=spec, site_id=scene["scene_id"], task_id=scene["task_id"],
+        author_source="task_owner", author_id="fixture-task-owner",
+        confirmation_status="confirmed", confirmed_by_team_id="fixture-owner-team",
+        criteria=criteria,
+    )
+    return kwargs, contract
+
+
+def test_strict_owner_contract_cannot_fall_back_before_policy_setup(tmp_path: Path) -> None:
+    kwargs, _ = _strict_owner_setup_inputs(tmp_path)
+    with pytest.raises(canary_setup_module.PolicyCanarySetupError,
+                       match="policy_canary_owner_success_contract_required"):
+        materialize_scene839873_policy_canary_setup(**kwargs)
+    assert not Path(kwargs["output_dir"]).exists()
+
+
+def test_strict_owner_contract_confirmed_matching_criteria_reach_both_policies(tmp_path: Path) -> None:
+    kwargs, contract = _strict_owner_setup_inputs(tmp_path)
+    setup = materialize_scene839873_policy_canary_setup(**kwargs, task_success_contract=contract)
+    assert setup["task_success_contract"] == contract
+    for role in ("pi05_execution_spec", "groot_execution_spec"):
+        spec = json.loads(Path(setup["records"][role]["path"]).read_text())
+        assert spec["task_success_contract"] == contract
+        assert spec["task_success_contract_digest"] == contract["contract_digest"]
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_strict_owner_contract_rejects_unconfirmed_and_compatibility(
+    tmp_path: Path, confirmed: bool,
+) -> None:
+    kwargs, contract = _strict_owner_setup_inputs(tmp_path)
+    scene = json.loads(Path(kwargs["scene_plan_path"]).read_text())
+    replacement = canary_setup_module.seal_rigid_task_success_contract(
+        task_spec=scene["task_spec"], site_id=scene["scene_id"], task_id=scene["task_id"],
+        author_source="compatibility_default" if confirmed else "agent_proposal",
+        author_id="fixture-proposal", confirmation_status="confirmed" if confirmed else "proposal_only",
+        criteria=contract["criteria"],
+    )
+    with pytest.raises(canary_setup_module.PolicyCanarySetupError,
+                       match="owner_success_contract_unconfirmed|rigid_task_success_contract_unconfirmed"):
+        materialize_scene839873_policy_canary_setup(
+            **kwargs, task_success_contract=replacement,
+            require_confirmed_task_success_contract=False,
+        )
+    assert not Path(kwargs["output_dir"]).exists()
+
+
+@pytest.mark.parametrize(("section", "field", "value"), [
+    ("temporal_invariants", "no_drop", {"mode": "ignored", "minimum_fall_m": 0.02}),
+    ("temporal_invariants", "maximum_retries", 1),
+    ("temporal_invariants", "maximum_regrasps", 1),
+    ("temporal_invariants", "workspace_excursions", "ignored"),
+    ("temporal_invariants", "containment_excursions", "ignored"),
+    ("temporal_invariants", "maximum_task_contact_force_n", None),
+    ("temporal_invariants", "forbidden_contact_classes", []),
+    ("motion", "minimum_lift_m", 0.01),
+    ("destination_containment", "mode", "ignored"),
+    ("support", "contact_mode", "ignored"),
+    ("terminal_task_contact", "mode", "ignored"),
+    ("gripper_state", "mode", "closed_at_most"),
+    ("orientation", "mode", "ignored"),
+    ("settling", "mode", "ignored"),
+])
+def test_strict_owner_contract_rejects_weakened_confirmed_criteria(
+    tmp_path: Path, section: str, field: str, value: object,
+) -> None:
+    kwargs, contract = _strict_owner_setup_inputs(tmp_path)
+    scene = json.loads(Path(kwargs["scene_plan_path"]).read_text())
+    contract["criteria"][section][field] = value
+    weakened = canary_setup_module.seal_rigid_task_success_contract(
+        task_spec=scene["task_spec"], site_id=scene["scene_id"], task_id=scene["task_id"],
+        author_source="task_owner", author_id="fixture-task-owner",
+        confirmation_status="confirmed", confirmed_by_team_id="fixture-owner-team",
+        criteria=contract["criteria"],
+    )
+    with pytest.raises(canary_setup_module.PolicyCanarySetupError,
+                       match="policy_canary_owner_success_contract_criteria_mismatch"):
+        materialize_scene839873_policy_canary_setup(**kwargs, task_success_contract=weakened)
+    assert not Path(kwargs["output_dir"]).exists()
+
+
+@pytest.mark.parametrize(("field", "value", "blocker"), [
+    ("destination_relation", None, "full_containment_missing"),
+    ("subject_collision_bounds_scoring_frame_m", {}, "full_containment_missing"),
+    ("destination_support_asset_id", None, "exact_support_missing"),
+    ("interaction_affordance", {"intended_support_prim_paths": ["/A", "/B"]}, "exact_support_missing"),
+    ("settle_window_samples", 2, "native_limits_mismatch"),
+])
+def test_strict_owner_contract_rejects_missing_native_semantics(
+    tmp_path: Path, field: str, value: object, blocker: str,
+) -> None:
+    kwargs, contract = _strict_owner_setup_inputs(tmp_path)
+    scene = json.loads(Path(kwargs["scene_plan_path"]).read_text())
+    scene["task_spec"][field] = value
+    scene["plan_digest"] = canonical_digest(scene, digest_field="plan_digest")
+    write_json(Path(kwargs["scene_plan_path"]), scene)
+    packet_path = Path(kwargs["packet_receipt_path"])
+    packet = json.loads(packet_path.read_text())
+    packet["arena_scene_plan_digest"] = scene["plan_digest"]
+    write_json(packet_path, packet)
+    with pytest.raises(canary_setup_module.PolicyCanarySetupError,
+                       match="policy_canary_owner_success_contract_" + blocker):
+        materialize_scene839873_policy_canary_setup(**kwargs, task_success_contract=contract)
+
+
+def test_strict_owner_contract_does_not_equate_contact_clearance_with_retreat_distance(
+    tmp_path: Path,
+) -> None:
+    kwargs, contract = _strict_owner_setup_inputs(tmp_path)
+    scene = json.loads(Path(kwargs["scene_plan_path"]).read_text())
+    scene["task_spec"]["configured_success_criteria"]["retreat_clearance_required"] = True
+    scene["plan_digest"] = canonical_digest(scene, digest_field="plan_digest")
+    write_json(Path(kwargs["scene_plan_path"]), scene)
+    packet_path = Path(kwargs["packet_receipt_path"])
+    packet = json.loads(packet_path.read_text())
+    packet["arena_scene_plan_digest"] = scene["plan_digest"]
+    write_json(packet_path, packet)
+    with pytest.raises(canary_setup_module.PolicyCanarySetupError,
+                       match="policy_canary_owner_success_contract_retreat_scoring_unsupported"):
+        materialize_scene839873_policy_canary_setup(**kwargs, task_success_contract=contract)
+    assert not Path(kwargs["output_dir"]).exists()

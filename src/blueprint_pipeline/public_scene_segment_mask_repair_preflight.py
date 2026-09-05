@@ -20,7 +20,10 @@ from typing import Any
 from PIL import Image
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
-from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS, validate_task_freeze
+from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
+from .public_scene_removal_selection import (
+    validate_source_preparation_task_selection as validate_task_freeze,
+)
 from .gaussian_splat_decode import read_standard_3dgs_ply
 
 

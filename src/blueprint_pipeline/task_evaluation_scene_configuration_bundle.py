@@ -318,6 +318,20 @@ def _portable_render_inputs(
         portable_mask = portable["derived_frames"][index]["source_object_mask"]
         portable_mask.pop("materialized_path", None)
         portable_mask["path"] = mask_target.relative_to(runtime).as_posix()
+    evidence_records = render.get("sam31_evidence_records", {})
+    if not isinstance(evidence_records, Mapping):
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_sam31_evidence_invalid"
+        )
+    for key, row in evidence_records.items():
+        if not isinstance(key, str) or re.fullmatch(r"[a-z_]+", key) is None:
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_sam31_evidence_invalid"
+            )
+        source = _bound_file(row, code="scene_configuration_sam31_evidence_invalid")
+        target = runtime / "input/render/provenance" / f"{key}.json"
+        _copy_file(source, target)
+        portable["sam31_evidence_records"][key]["path"] = target.relative_to(runtime).as_posix()
     cutout = render.get("derived_gaussian_cutout")
     if not isinstance(cutout, Mapping):
         raise TaskEvaluationSceneConfigurationBundleError(

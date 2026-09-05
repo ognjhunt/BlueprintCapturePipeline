@@ -24,7 +24,7 @@ from .task_evaluation_release_reference_lock import release_reference_lock
 ENVELOPE_SCHEMA_VERSION = "task_evaluation_launch_preparation_envelope.v1"
 IDENTITY_SCHEMA_VERSION = "task_evaluation_launch_preparation_identity.v1"
 INTAKE_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_preparation_intake_receipt.v1"
-QUEUE_STATES = ("pending", "processing", "materialized", "completed", "blocked")
+QUEUE_STATES = ("pending", "processing", "awaiting_source_preparation", "materialized", "completed", "blocked")
 
 
 class TaskEvaluationLaunchPreparationQueueError(ValueError):
@@ -311,6 +311,21 @@ def launch_preparation_status(
         "request_digest": envelope["request_digest"],
         "provider_mutation_performed_by_status_read": False,
     }
+    if state == "awaiting_source_preparation":
+        from .task_evaluation_sam31_preparation_queue import load_progress
+
+        progress = load_progress(root, path.name, envelope["request_digest"])
+        if progress is None:
+            raise TaskEvaluationLaunchPreparationQueueError("launch_preparation_source_progress_missing")
+        status.update({
+            "worker_status": progress["status"],
+            "source_commit": progress["source_commit"],
+            "source_preparation_progress_digest": progress["progress_digest"],
+            "automatic_progression_required": True,
+            "human_review_required": progress["status"] == "awaiting_human_review",
+            "provider_mutation_performed_by_worker": False,
+            "paid_execution_requested": False,
+        })
     result_path = root / "results" / path.name
     conflict_paths = sorted(
         (root / "results" / "conflicts").glob(f"{path.stem}-*.json")

@@ -22,7 +22,9 @@ import numpy as np
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .dual_task_rehearsal_contract import (
     DualTaskRehearsalContractError,
-    validate_task_freeze_set,
+)
+from .public_scene_removal_selection import (
+    validate_source_preparation_task_selection_set as validate_task_freeze_set,
 )
 from .gaussian_splat_decode import (
     read_standard_3dgs_ply,

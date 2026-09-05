@@ -25,7 +25,9 @@ import numpy as np
 from PIL import Image
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
-from .dual_task_rehearsal_contract import validate_task_freeze_set
+from .public_scene_removal_selection import (
+    validate_source_preparation_task_selection_set as validate_task_freeze_set,
+)
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
 from .scene_placement.semantic_source_track_import import (
     MASK_ENCODING,

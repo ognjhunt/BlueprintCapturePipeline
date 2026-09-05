@@ -215,3 +215,63 @@ def test_complete_inventory_reaches_visual_review_without_claim_upgrade(tmp_path
     assert result["first_blocker"] is None
     assert result["production_contract"]["simulator_outputs_are_physical_evidence"] is False
     assert result["production_contract"]["automatic_paid_retry_authorized"] is False
+
+
+def test_fresh_scene_human_review_mode_accepts_only_human_receipt(tmp_path: Path) -> None:
+    task_paths = _tasks(tmp_path)
+    artifacts: dict[str, object] = {}
+    for contract in STAGE_CONTRACTS:
+        if contract["stage_id"] == "sam31_track_selection_review":
+            break
+        artifacts[contract["stage_id"]] = {
+            task_id: str(_artifact(tmp_path, contract, task_id))
+            for task_id in ("task_a", "task_b")
+        }
+    review_path = tmp_path / "review.json"
+    artifacts["sam31_track_selection_review"] = str(review_path)
+    ai = {
+        "schema_version": "public_scene_sam31_track_selection_ai_visual_review.v1",
+        "status": "selected_tracks_ai_visual_review_accepted",
+    }
+    ai["receipt_digest"] = canonical_digest(ai, digest_field="receipt_digest")
+    write_json(review_path, ai)
+    rejected = materialize_fresh_scene_preparation_status(
+        task_freeze_paths=task_paths, artifacts=artifacts,
+        output_path=tmp_path / "ai-rejected.json", track_selection_reviewer_kind="human",
+    )
+    assert rejected["first_blocker"] == "fresh_scene_stage_artifact_invalid:sam31_track_selection_review"
+    assert rejected["track_selection_reviewer_kind"] == "human"
+    human = {
+        "schema_version": "public_scene_sam31_track_selection_review.v1",
+        "status": "selected_tracks_human_review_accepted",
+    }
+    human["receipt_digest"] = canonical_digest(human, digest_field="receipt_digest")
+    write_json(review_path, human)
+    accepted = materialize_fresh_scene_preparation_status(
+        task_freeze_paths=task_paths, artifacts=artifacts,
+        output_path=tmp_path / "human-accepted.json", track_selection_reviewer_kind="human",
+    )
+    assert accepted["next_required_stage"] == "calibrated_object_masks"
+    review = next(row for row in accepted["stages"] if row["stage_id"] == "sam31_track_selection_review")
+    assert review["producer"] == "sam31_human_track_selection_review"
+    assert review["status"] == "completed"
+    rejected_as_ai = materialize_fresh_scene_preparation_status(
+        task_freeze_paths=task_paths, artifacts=artifacts,
+        output_path=tmp_path / "human-not-ai.json", track_selection_reviewer_kind="ai",
+    )
+    assert rejected_as_ai["next_required_stage"] == "sam31_track_selection_review"
+
+
+def test_fresh_scene_cli_can_require_human_review(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline import fresh_scene_paired_target_preparation as module
+
+    inventory = tmp_path / "inventory.json"
+    write_json(inventory, {})
+    calls = []
+    monkeypatch.setattr(module, "materialize_fresh_scene_preparation_status",
+                        lambda **kwargs: calls.append(kwargs) or {})
+    assert module.main(["--task-freeze", str(tmp_path / "task.json"),
+                        "--artifact-inventory", str(inventory),
+                        "--track-selection-reviewer-kind", "human",
+                        "--output", str(tmp_path / "status.json")]) == 0
+    assert calls[0]["track_selection_reviewer_kind"] == "human"

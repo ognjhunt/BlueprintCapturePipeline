@@ -163,11 +163,63 @@ def static_qualification_checks_valid(value: Any) -> bool:
     )
 
 
+SAM31_SELECTION_RULE = (
+    "union_across_repetitions_of_any_view_target_core_plus_uncertain_"
+    "contribution_at_frozen_threshold.v1"
+)
+SAM31_MASK_SOURCE = "sam31_reviewed_calibrated_object_masks"
+SAM31_EVIDENCE_FIELDS = (
+    "selection_inputs", "track_selection_review", "calibrated_mask_set",
+    "segment_cutout_set", "standard_splat_conversion",
+)
+
+
+def stage_one_gaussian_inputs_refusal(configuration: Mapping[str, Any]) -> str | None:
+    """Select exactly one explicit removal method; never substitute AABB for SAM."""
+    cutout = configuration.get("gaussian_cutout")
+    views = configuration.get("required_views")
+    if not isinstance(cutout, Mapping) or not isinstance(views, Mapping):
+        return "gaussian_cutout"
+    if cutout.get("retained_rows_must_remain_byte_exact") is not True:
+        return "gaussian_cutout"
+    rule = cutout.get("selection_rule")
+    if rule == "gaussian_center_inside_registered_source_object_aabb":
+        if views.get("mask_source") != "registered_source_object_bounds_projection":
+            return "required_views.minimum"
+        padding = cutout.get("aabb_padding_m")
+        if (type(padding) not in (int, float) or not math.isfinite(padding)
+                or not 0 <= padding <= 0.10):
+            return "gaussian_cutout"
+    elif rule == SAM31_SELECTION_RULE:
+        evidence = configuration.get("sam31_exact_mask_evidence")
+        plan = configuration.get("sam31_preparation_plan")
+        digests_valid = (
+            isinstance(evidence, Mapping) and plan is None
+            and set(evidence) == {key + "_digest" for key in SAM31_EVIDENCE_FIELDS}
+            and all(isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value)
+                    for value in evidence.values())
+        )
+        plan_valid = (
+            evidence is None and isinstance(plan, Mapping)
+            and set(plan) == {"uri", "digest", "size_bytes"}
+            and isinstance(plan.get("uri"), str) and bool(plan["uri"])
+            and isinstance(plan.get("digest"), str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", plan["digest"])
+            and type(plan.get("size_bytes")) is int and plan["size_bytes"] > 0
+        )
+        if ("aabb_padding_m" in cutout or views.get("mask_source") != SAM31_MASK_SOURCE
+                or configuration.get("sam31_review_kind") not in {"ai", "human"}
+                or not (digests_valid or plan_valid)):
+            return "sam31_exact_mask_evidence"
+    else:
+        return "gaussian_cutout"
+    return None
+
+
 def _stage_one_refusal(
     configuration: Mapping[str, Any], envelope: Mapping[str, Any]
 ) -> str | None:
     source_object = configuration.get("source_object")
-    gaussian_cutout = configuration.get("gaussian_cutout")
     required_views = configuration.get("required_views")
     disclosure = configuration.get("provider_disclosure")
     output_requirements = configuration.get("output_requirements")
@@ -201,17 +253,9 @@ def _stage_one_refusal(
         return "source_object.aabb"
     if configuration.get("production_render_required") is not True:
         return "production_render_required"
-    if (
-        not isinstance(gaussian_cutout, Mapping)
-        or gaussian_cutout.get("selection_rule")
-        != "gaussian_center_inside_registered_source_object_aabb"
-        or isinstance(gaussian_cutout.get("aabb_padding_m"), bool)
-        or not isinstance(gaussian_cutout.get("aabb_padding_m"), (int, float))
-        or not math.isfinite(float(gaussian_cutout["aabb_padding_m"]))
-        or not 0.0 <= float(gaussian_cutout["aabb_padding_m"]) <= 0.10
-        or gaussian_cutout.get("retained_rows_must_remain_byte_exact") is not True
-    ):
-        return "gaussian_cutout"
+    gaussian_refusal = stage_one_gaussian_inputs_refusal(configuration)
+    if gaussian_refusal:
+        return gaussian_refusal
     disclosure_intent = None
     if isinstance(disclosure, Mapping):
         for key in ("source_appearance_bytes", "raw_interiorgs_bytes"):
@@ -237,10 +281,10 @@ def _stage_one_refusal(
     if (
         not isinstance(minimum, int)
         or isinstance(minimum, bool)
-        or not 1 <= minimum <= 8
+        or not 1 <= minimum <= (
+            16 if (configuration.get("gaussian_cutout") or {}).get("selection_rule")
+            == SAM31_SELECTION_RULE else 8)
         or required_views.get("lossless_inputs") is not True
-        or required_views.get("mask_source")
-        != "registered_source_object_bounds_projection"
     ):
         return "required_views.minimum"
     if (

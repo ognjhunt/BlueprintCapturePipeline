@@ -899,6 +899,18 @@ def adapt_rigid_relocation_task_template(
             "source_documents_digest"
         ],
     }
+    if "instruction" in template:
+        instruction = template["instruction"]
+        if not isinstance(instruction, str) or not instruction.strip():
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_instruction_invalid")
+        native_task_spec["prompt"] = instruction
+        for label in ("instruction_subject_label", "visible_target_label"):
+            value = template.get(label)
+            if not isinstance(value, str) or not value.strip():
+                raise TaskEvaluationRigidRelocationNativeAdapterError(
+                    "rigid_relocation_native_adapter_instruction_grounding_missing")
+            native_task_spec[label] = value
     if strategy == "planar_push":
         native_task_spec["push_contact_max_displacement_m"] = (
             PUSH_CONTACT_MAX_DISPLACEMENT_M
