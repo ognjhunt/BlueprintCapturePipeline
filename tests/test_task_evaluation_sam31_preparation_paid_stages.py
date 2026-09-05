@@ -271,6 +271,14 @@ def test_contribution_sweep_requires_explicit_full_source_authority_and_returns_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault,
 ) -> None:
     job, output = _job(tmp_path, "contribution_sweep")
+    frozen_avoidlist = _write(tmp_path / "data" / "frozen-avoidlist.json", {
+        "schema_version": "vast_machine_avoidlist.v1", "machine_ids": [20166, 144209], "entries": [],
+    })
+    frozen_bytes = frozen_avoidlist.read_bytes()
+    frozen_avoidlist.chmod(0o440)
+    job["server_profile"]["paid_stages"]["contribution_sweep"].update(
+        machine_avoidlist_path=str(frozen_avoidlist), machine_avoidlist=_record(frozen_avoidlist),
+    )
     freeze = _write(tmp_path / "data" / "freeze.json", {
         "scene": {"publisher_scene_id": "841757", "target_instance_id": "115"},
         "segment_contribution_sweep": {
@@ -340,6 +348,15 @@ def test_contribution_sweep_requires_explicit_full_source_authority_and_returns_
 
     def runner(argv, **_):
         seen.append(argv)
+        mutable = Path(argv[argv.index("--adp-machine-avoidlist") + 1])
+        assert mutable == output / "artifacts" / "provider_machine_avoidlist.json"
+        assert mutable.read_bytes() == frozen_bytes
+        assert mutable.stat().st_ino != frozen_avoidlist.stat().st_ino
+        assert mutable.stat().st_mode & 0o777 == 0o600
+        _write(mutable, {"schema_version": "vast_machine_avoidlist.v1",
+                         "machine_ids": [20166, 144209, 999999], "entries": []})
+        assert frozen_avoidlist.read_bytes() == frozen_bytes
+        assert frozen_avoidlist.stat().st_mode & 0o777 == 0o440
         result_path = Path(argv[argv.index("--adapter-output") + 1])
         from blueprint_pipeline.task_evaluation_artifact_manifest import seal_lane_terminal_artifacts
         job_root = Path(argv[argv.index("--adp-job-dir") + 1])
@@ -474,3 +491,65 @@ def test_closed_stage_dispatcher_reaches_paid_handler_and_seals_outcome(
     assert receipt["receipt_digest"] == canonical_digest(
         receipt, digest_field="receipt_digest"
     )
+
+
+@pytest.mark.parametrize("defect", ["missing_record", "path_mismatch", "digest_drift"])
+def test_contribution_refuses_unbound_or_changed_avoidlist_before_bundle_or_allocator(tmp_path, monkeypatch, defect):
+    job, _output = _job(tmp_path, "contribution_sweep")
+    source = _write(tmp_path / "data" / "avoidlist.json", {
+        "schema_version": "vast_machine_avoidlist.v1", "machine_ids": [20166],
+    })
+    config = job["server_profile"]["paid_stages"]["contribution_sweep"]
+    config.update(machine_avoidlist_path=str(source), machine_avoidlist=_record(source))
+    if defect == "missing_record":
+        config.pop("machine_avoidlist")
+    elif defect == "path_mismatch":
+        config["machine_avoidlist"]["path"] = str(source.parent / "other.json")
+    else:
+        source.write_bytes(source.read_bytes() + b" ")
+    monkeypatch.setattr("blueprint_pipeline.adp_gaussian_excision_vast.build_gaussian_excision_vast_bundle",
+                        lambda **kwargs: pytest.fail("must fail before building source bundle"))
+    with pytest.raises(ValueError, match="avoidlist_binding_invalid|input_bytes_mismatch"):
+        paid.execute_paid_stage(job, allocator_runner=lambda *_args, **_kwargs: pytest.fail("must not allocate"))
+
+
+def test_contribution_resume_keeps_added_failures_without_changing_frozen_input(tmp_path):
+    source = _write(tmp_path / "frozen.json", {
+        "schema_version": "vast_machine_avoidlist.v1", "machine_ids": [20166],
+    })
+    source.chmod(0o440)
+    config = {"machine_avoidlist_path": str(source), "machine_avoidlist": _record(source)}
+    output = tmp_path / "attempt"
+    output.mkdir()
+    target = paid._contribution_machine_avoidlist(config=config, roots=(tmp_path,), output=output, resume_only=False)
+    _write(target, {"schema_version": "vast_machine_avoidlist.v1", "machine_ids": [20166, 999999]})
+    modified = target.read_bytes()
+    assert paid._contribution_machine_avoidlist(config=config, roots=(tmp_path,), output=output,
+                                               resume_only=True) == target
+    assert target.read_bytes() == modified
+    assert _record(source) == config["machine_avoidlist"]
+    assert source.stat().st_mode & 0o777 == 0o440
+    _write(target, {"schema_version": "vast_machine_avoidlist.v1", "machine_ids": [999999]})
+    with pytest.raises(ValueError, match="attempt_dropped_exclusions"):
+        paid._contribution_machine_avoidlist(config=config, roots=(tmp_path,), output=output, resume_only=True)
+
+
+def test_contribution_rejects_source_aliasing_mutable_attempt_file(tmp_path):
+    source = _write(tmp_path / "provider_machine_avoidlist.json", {
+        "schema_version": "vast_machine_avoidlist.v1", "machine_ids": [20166],
+    })
+    with pytest.raises(ValueError, match="source_aliases_attempt"):
+        paid._contribution_machine_avoidlist(
+            config={"machine_avoidlist_path": str(source), "machine_avoidlist": _record(source)},
+            roots=(tmp_path,), output=tmp_path, resume_only=False,
+        )
+
+
+def test_current_profile_cannot_drop_calibration_avoidlist_before_contribution(tmp_path):
+    job, _output = _job(tmp_path, "contribution_sweep")
+    source = _write(tmp_path / "data" / "avoidlist.json", {
+        "schema_version": "vast_machine_avoidlist.v1", "machine_ids": [20166],
+    })
+    job["server_profile"]["calibrated_views"] = {"machine_avoidlist": _record(source)}
+    with pytest.raises(ValueError, match="contribution_avoidlist_differs_from_calibration"):
+        paid.execute_paid_stage(job, allocator_runner=lambda *_args, **_kwargs: pytest.fail("must not allocate"))
