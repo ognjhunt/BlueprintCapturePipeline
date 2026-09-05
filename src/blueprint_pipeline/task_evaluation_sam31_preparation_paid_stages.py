@@ -414,8 +414,13 @@ def _teardown_valid(path: Path) -> bool:
         return False
 
 def _gaussian_execution_authority(
-    *, freeze: Mapping[str, Any], authority: Mapping[str, Any], path: Path
+    *, freeze: Mapping[str, Any], authority: Mapping[str, Any], path: Path,
+    source_disclosure: Mapping[str, Any],
 ) -> dict[str, Any]:
+    _require(source_disclosure.get("status") == "explicit_full_source_disclosure_verified"
+             and source_disclosure.get("proof_digest") == canonical_digest(
+                 dict(source_disclosure), digest_field="proof_digest"),
+             "gaussian_full_source_disclosure_unverified")
     scene = freeze.get("scene") or {}
     value = {
         "schema_version": "public_scene_gaussian_excision_execution_authority.v1",
@@ -428,6 +433,7 @@ def _gaussian_execution_authority(
         "target_instance_id": str(scene.get("target_instance_id") or ""),
         "freeze_digest": freeze.get("freeze_digest"),
         "private_scene_derived_standard_splat_upload_authorized": True,
+        "full_source_scene_content_disclosure": dict(source_disclosure),
         "paid_compute_authorized": True,
         "provider_zero_required_before_and_after": True,
         "teardown_required": True,
@@ -512,6 +518,19 @@ def _contribution_stage(
     _require((freeze.get("segment_contribution_sweep") or {}).get("kind")
              == "repair_supported_full_view_segment_contribution_sweep.v1",
              "gaussian_freeze_invalid")
+    _require((freeze.get("source_standard_splat") or {}).get("sha256") == sha(source),
+             "gaussian_freeze_source_mismatch")
+    # This phase uploads the complete format-converted source, before cutout.
+    # Reopen its actual conversion rights/counts; frame permission cannot admit it.
+    from .sam31_contribution_disclosure import validate_full_source_disclosure
+    disclosure = validate_full_source_disclosure(
+        task_authority=authority,
+        conversion_path=_input(job, "standard_splat_conversion_receipt", roots),
+        standard_splat_path=source, original_source_path=_input(job, "source_appearance", roots),
+        expected_source_commit=str(job["expected_source_commit"]),
+        publisher_scene_id=str((freeze.get("scene") or {}).get("publisher_scene_id") or ""),
+        approved_roots=roots,
+    )
     flashsplat = _resident(str(config.get("flashsplat_root") or ""), roots,
                            "flashsplat_root_invalid")
     wheelhouse = _resident(str(config.get("dependency_wheelhouse_path") or ""), roots,
@@ -524,7 +543,11 @@ def _contribution_stage(
     prepared.mkdir(parents=True, exist_ok=True)
     execution_authority = prepared / "gaussian-execution-authority.json"
     if not execution_authority.exists():
-        _gaussian_execution_authority(freeze=freeze, authority=authority, path=execution_authority)
+        _gaussian_execution_authority(freeze=freeze, authority=authority, path=execution_authority,
+                                      source_disclosure=disclosure)
+    sealed_authority = read(execution_authority, digest_field="authorization_digest")
+    _require(sealed_authority.get("full_source_scene_content_disclosure") == disclosure,
+             "gaussian_retained_disclosure_authority_mismatch")
     bundle_root = prepared / "bundle"
     bundle_receipt_path = bundle_root / "adp_gaussian_excision_bundle_receipt.json"
     if not bundle_receipt_path.exists():
@@ -543,7 +566,9 @@ def _contribution_stage(
     _require(bundle_receipt.get("status") == "ready"
              and bundle_receipt.get("schema_version") == "adp009b_gaussian_excision_vast_bundle.v1"
              and bundle_receipt.get("blueprint_commit") == job["expected_source_commit"]
-             and bundle_receipt.get("freeze_digest") == freeze["freeze_digest"],
+             and bundle_receipt.get("freeze_digest") == freeze["freeze_digest"]
+             and bundle_receipt.get("standard_splat_sha256") == sha(source)
+             and bundle_receipt.get("execution_authority_digest") == sealed_authority["authorization_digest"],
              "gaussian_bundle_not_ready")
     bundle_path = _resident(str(bundle_receipt.get("bundle_path") or ""), (output,),
                             "gaussian_bundle_path_invalid")
@@ -689,7 +714,7 @@ def _contribution_stage(
         "blockers": [] if complete else list(result.get("blockers") or ["gaussian_contribution_not_terminal"]),
         "provider_compute_allocated": bool(result.get("provider_mutations_performed")),
         "candidate_policy_queried": False,
-        "raw_source_uploaded": False,
+        "source_content_disclosure": disclosure,
     }
 
 
