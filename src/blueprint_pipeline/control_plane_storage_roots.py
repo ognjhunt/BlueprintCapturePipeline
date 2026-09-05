@@ -26,6 +26,9 @@ This module is the single table of production roots and their storage class:
     A parent directory that only holds classified children.
 ``staging``
     The isolated staging intake tree.
+``scratch``
+    Reproducible diagnostics and engineering scratch.  Nothing references a
+    scratch tree from a queue or a receipt, so it is reaped by idle age alone.
 
 The storage reclaim tools validate their configured roots against this table,
 so a unit environment that points a reaper at an evidence root is refused.
@@ -47,6 +50,7 @@ STORAGE_CLASSES = frozenset(
         "ledger",
         "container",
         "staging",
+        "scratch",
     }
 )
 
@@ -120,6 +124,19 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/opt/blueprint/task-evaluation-control-plane", "release", "root", "active release link"),
     StorageRoot("/opt/blueprint/BlueprintCapturePipeline", "release", "root", "mutable source checkout and venv"),
     StorageRoot("/opt/blueprint/BlueprintCapturePipeline-staging", "staging", "root", "staging checkout"),
+    StorageRoot(f"{_CONTROL_PLANE}/release-retention", "evidence_hot", "root", "release retirement plans and receipts"),
+    StorageRoot(f"{_CONTROL_PLANE}/capacity", "evidence_hot", "root", "capacity controller reports"),
+    StorageRoot(f"{_CONTROL_PLANE}/launch-materialization", "evidence_hot", "blueprint", "spend reconciliations and materialized launch inputs"),
+    StorageRoot(f"{_CONTROL_PLANE}/episode-interpretation-backfills", "evidence_cold", "root", "episode interpretation backfill runs"),
+    StorageRoot(f"{_CONTROL_PLANE}/policy-canary-preprovider-audits", "evidence_cold", "root", "policy canary pre-provider audits"),
+    StorageRoot(f"{_CONTROL_PLANE}/scene-configuration-diagnostics", "cache", "blueprint", "sealed diagnostic bundles with their own retention tool"),
+    StorageRoot(f"{_CONTROL_PLANE}/submission-publication-locks", "ledger", "blueprint", "submission publication locks"),
+    StorageRoot("/var/lib/blueprint/spend-authority", "ledger", "blueprint", "single-use spend authority consumption ledger"),
+    StorageRoot(f"{_CONTROL_PLANE}/engineering", "scratch", "blueprint", "agent engineering scratch"),
+    StorageRoot(f"{_CONTROL_PLANE}/render-probes", "scratch", "root", "render diagnostics"),
+    StorageRoot(f"{_CONTROL_PLANE}/diagnostic-checkouts", "scratch", "blueprint", "diagnostic source checkouts"),
+    StorageRoot(f"{_CONTROL_PLANE}/release-builds", "scratch", "root", "release build staging"),
+    StorageRoot(f"{_INPUTS}/render-probes", "scratch", "root", "render diagnostic inputs"),
 )
 
 

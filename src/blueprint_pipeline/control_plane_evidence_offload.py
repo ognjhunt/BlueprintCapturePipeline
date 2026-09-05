@@ -40,6 +40,13 @@ EXECUTE_ACK = "offload-sealed-evidence"
 POINTER_SUFFIX = ".offloaded.v1.json"
 TERMINAL_RECEIPT_NAMES = ("dispatch_receipt.json", "launch_receipt.json")
 DEFAULT_HOT_WINDOW_SECONDS = 14 * 24 * 60 * 60
+# A run directory that never received a terminal receipt and has not changed
+# for this long was abandoned: its worker was superseded, blocked, or torn
+# down.  Left alone it is retained forever as "active".  When an abandonment
+# window is configured such a directory is sealed under this marker and
+# offloaded like any other; the archive keeps every byte and ``restore`` brings
+# it back unchanged.
+ABANDONED_TERMINAL_RECEIPT = "abandoned_idle"
 
 
 class ControlPlaneEvidenceOffloadError(RuntimeError):
@@ -80,20 +87,28 @@ def _terminal_receipt(directory: Path) -> str | None:
     return None
 
 
+def _valid_window(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 def build_evidence_offload_manifest(
     *,
     evidence_roots: Sequence[str | Path],
     hot_window_seconds: int = DEFAULT_HOT_WINDOW_SECONDS,
+    abandoned_after_seconds: int | None = None,
     now: Callable[[], float] = time.time,
     classifier: Callable[..., Any] = require_storage_class,
 ) -> dict[str, Any]:
-    """List sealed run directories past their hot window, without mutating anything."""
+    """List sealed run directories past their hot window, without mutating anything.
+
+    With ``abandoned_after_seconds`` set, an unsealed directory idle for at
+    least that long is treated as sealed under ``ABANDONED_TERMINAL_RECEIPT``.
+    """
 
     if (
         not evidence_roots
-        or not isinstance(hot_window_seconds, int)
-        or isinstance(hot_window_seconds, bool)
-        or hot_window_seconds < 0
+        or not _valid_window(hot_window_seconds)
+        or (abandoned_after_seconds is not None and not _valid_window(abandoned_after_seconds))
     ):
         raise ControlPlaneEvidenceOffloadError("control_plane_evidence_offload_input_invalid")
     observed_at = float(now())
@@ -118,11 +133,17 @@ def build_evidence_offload_manifest(
                 retained["already_offloaded"] += 1
                 continue
             receipt = _terminal_receipt(child)
-            if receipt is None:
+            if receipt is None and abandoned_after_seconds is None:
                 retained["active_or_unsealed"] += 1
                 continue
             latest, size, count = _tree_snapshot(child)
-            if observed_at - latest < hot_window_seconds:
+            idle_seconds = observed_at - latest
+            if receipt is None:
+                if idle_seconds < abandoned_after_seconds:
+                    retained["active_or_unsealed"] += 1
+                    continue
+                receipt = ABANDONED_TERMINAL_RECEIPT
+            if idle_seconds < hot_window_seconds:
                 retained["hot"] += 1
                 continue
             candidates.append(
@@ -139,6 +160,7 @@ def build_evidence_offload_manifest(
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "status": "dry_run",
         "hot_window_seconds": hot_window_seconds,
+        "abandoned_after_seconds": abandoned_after_seconds,
         "roots": roots,
         "candidate_count": len(candidates),
         "candidate_bytes": sum(row["size_bytes"] for row in candidates),
@@ -179,6 +201,26 @@ def _pack(directory: Path, archive_path: Path) -> list[dict[str, Any]]:
     return members
 
 
+def _candidate_still_sealed(
+    directory: Path, row: Mapping[str, Any], abandoned_after: Any, now: Callable[[], float]
+) -> bool:
+    """A candidate is unchanged when its seal is the one the manifest recorded.
+
+    An abandoned candidate is re-proven at apply time: still no terminal
+    receipt, and still idle for the whole abandonment window.  A directory a
+    worker touched since the dry run is not abandoned and is kept.
+    """
+
+    expected = row.get("terminal_receipt")
+    observed = _terminal_receipt(directory)
+    if expected != ABANDONED_TERMINAL_RECEIPT:
+        return observed == expected
+    if observed is not None or not _valid_window(abandoned_after):
+        return False
+    latest, _size, _count = _tree_snapshot(directory)
+    return float(now()) - latest >= abandoned_after
+
+
 def apply_evidence_offload(
     manifest: Mapping[str, Any],
     *,
@@ -199,6 +241,7 @@ def apply_evidence_offload(
         )
     offloaded: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    abandoned_after = manifest.get("abandoned_after_seconds")
     for row in manifest.get("candidates") or []:
         root = Path(str(row.get("root") or ""))
         name = str(row.get("name") or "")
@@ -211,7 +254,7 @@ def apply_evidence_offload(
             or directory.is_symlink()
             or not directory.is_dir()
             or pointer.exists()
-            or _terminal_receipt(directory) != row.get("terminal_receipt")
+            or not _candidate_still_sealed(directory, row, abandoned_after, now)
         ):
             skipped.append({"name": name, "reason": "candidate_changed"})
             continue

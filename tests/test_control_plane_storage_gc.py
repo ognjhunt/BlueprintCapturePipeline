@@ -362,3 +362,151 @@ def test_run_cli_reads_roots_from_the_unit_environment(tmp_path, monkeypatch, ca
     monkeypatch.delenv("BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT")
     with pytest.raises(ControlPlaneStorageGCError, match="pins_root_missing"):
         gc_main(["run"])
+
+
+RUNNING_COMMIT = "a" * 40
+STALE_COMMIT = "b" * 40
+
+
+def _queue_row(root: Path, state: str, name: str, *, commit: str | None) -> Path:
+    directory = root / state
+    directory.mkdir(parents=True, exist_ok=True)
+    payload: dict = {"schema_version": "row.v1", "derived_directory": f"derived-{name}"}
+    if commit is not None:
+        payload["expected_production_commit"] = commit
+    path = directory / f"{name}.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_pending_rows_bound_to_another_release_are_stranded_with_receipts(tmp_path) -> None:
+    """Every worker honours only same-release rows, so a pending row bound to a
+    superseded release never progresses, yet it pinned that release's trees
+    and caches as a live reference: 34 such rows protected 33 dead releases."""
+    queue = tmp_path / "queue"
+    stale = _queue_row(queue, "pending", "stale", commit=STALE_COMMIT)
+    same = _queue_row(queue, "pending", "same", commit=RUNNING_COMMIT)
+    unbound = _queue_row(queue, "pending", "unbound", commit=None)
+    busy = _queue_row(queue, "processing", "busy", commit=STALE_COMMIT)
+
+    manifest = gc_module.build_stranded_queue_manifest(
+        queue_roots=[queue], running_commit=RUNNING_COMMIT, now=lambda: 1_000.0, classifier=_noclass
+    )
+
+    assert [row["name"] for row in manifest["candidates"]] == ["stale.json"]
+    assert manifest["retained_counts"] == {"same_release": 1, "unbound": 1, "unsafe": 0}
+    with pytest.raises(ControlPlaneStorageGCError, match="stranded_apply_not_authorized"):
+        gc_module.apply_stranded_queue_manifest(manifest, ack="wrong")
+    receipt = gc_module.apply_stranded_queue_manifest(
+        manifest, ack=gc_module.STRANDED_ACK, now=lambda: 1_001.0
+    )
+    assert receipt["stranded_count"] == 1 and receipt["skipped"] == []
+    assert receipt["evidence_deleted"] is False
+    assert not stale.exists() and same.exists() and unbound.exists() and busy.exists()
+    moved = queue / "stranded" / "stale.json"
+    assert json.loads(moved.read_text(encoding="utf-8"))["expected_production_commit"] == STALE_COMMIT
+    row_receipt = json.loads((queue / "stranded" / "stale.json.stranded.v1.json").read_text(encoding="utf-8"))
+    assert row_receipt["bound_commit"] == STALE_COMMIT
+    assert row_receipt["running_commit"] == RUNNING_COMMIT
+    assert row_receipt["previous_state"] == "pending"
+    # A stranded row no longer counts as a live queue reference.
+    text = gc_module._queue_reference_text([queue])
+    assert "derived-stale" not in text and "derived-same" in text
+
+
+def test_stranding_skips_a_row_rewritten_after_the_dry_run(tmp_path) -> None:
+    queue = tmp_path / "queue"
+    stale = _queue_row(queue, "pending", "stale", commit=STALE_COMMIT)
+    manifest = gc_module.build_stranded_queue_manifest(
+        queue_roots=[queue], running_commit=RUNNING_COMMIT, now=lambda: 1_000.0, classifier=_noclass
+    )
+    stale.write_text(json.dumps({"expected_production_commit": STALE_COMMIT, "retry": 2}), encoding="utf-8")
+
+    receipt = gc_module.apply_stranded_queue_manifest(manifest, ack=gc_module.STRANDED_ACK)
+
+    assert receipt["stranded_count"] == 0
+    assert receipt["skipped"] == [{"name": "stale.json", "reason": "candidate_changed"}]
+    assert stale.exists()
+    with pytest.raises(ControlPlaneStorageGCError, match="running_commit_invalid"):
+        gc_module.build_stranded_queue_manifest(queue_roots=[queue], running_commit="", classifier=_noclass)
+
+
+def _scratch(root: Path, name: str, *, age: float, now: float, directory: bool = True) -> Path:
+    path = root / name
+    if directory:
+        (path / "sub").mkdir(parents=True)
+        (path / "sub" / "probe.bin").write_bytes(b"x" * 64)
+    else:
+        root.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"y" * 32)
+    stamp = now - age
+    for item in [path, *(path.rglob("*") if directory else [])]:
+        os.utime(item, (stamp, stamp))
+    return path
+
+
+def test_scratch_is_reaped_by_idle_age_alone_and_touched_trees_survive(tmp_path) -> None:
+    root = tmp_path / "engineering"
+    now = 5_000_000.0
+    idle = _scratch(root, "old-probe", age=4 * 86400, now=now)
+    recent = _scratch(root, "fresh-probe", age=3600, now=now)
+    idle_file = _scratch(root, "old.log", age=4 * 86400, now=now, directory=False)
+
+    manifest = gc_module.build_scratch_manifest(
+        scratch_roots=[root], minimum_age_seconds=3 * 86400, now=lambda: now, classifier=_noclass
+    )
+
+    assert sorted(row["name"] for row in manifest["candidates"]) == ["old-probe", "old.log"]
+    assert manifest["retained_counts"] == {"recent": 1, "unsafe": 0}
+    (idle / "sub" / "probe.bin").write_bytes(b"still in use")
+    with pytest.raises(ControlPlaneStorageGCError, match="scratch_apply_not_authorized"):
+        gc_module.apply_scratch_manifest(manifest, ack="wrong")
+    receipt = gc_module.apply_scratch_manifest(manifest, ack=gc_module.SCRATCH_ACK, now=lambda: now)
+    assert [row["name"] for row in receipt["removed"]] == ["old.log"]
+    assert receipt["skipped"] == [{"name": "old-probe", "reason": "candidate_changed"}]
+    assert idle.exists() and recent.exists() and not idle_file.exists()
+    with pytest.raises(ControlPlaneStorageGCError, match="scratch_window_invalid"):
+        gc_module.build_scratch_manifest(scratch_roots=[root], minimum_age_seconds=-1, classifier=_noclass)
+
+
+def test_run_cli_wires_windows_scratch_and_running_commit_from_the_unit_environment(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    import time as _time
+
+    queue = tmp_path / "queue"
+    _queue_row(queue, "pending", "stale", commit=STALE_COMMIT)
+    scratch = tmp_path / "engineering"
+    _scratch(scratch, "old-probe", age=10 * 86400, now=_time.time())
+    evidence = tmp_path / "launch-runs"
+    evidence.mkdir()
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_CONTENT_STORE_ROOTS", "")
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS", "")
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS", str(queue))
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_EVIDENCE_ROOTS", str(evidence))
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_ROOTS", str(scratch))
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS", str(7 * 86400))
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS", "172800")
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_EVIDENCE_ABANDONED_AFTER_SECONDS", "259200")
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_RUNNING_COMMIT", RUNNING_COMMIT)
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT", str(tmp_path / "pins"))
+    monkeypatch.setattr(gc_module, "require_storage_class", _noclass)
+
+    assert gc_main(["run"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["status"] == "dry_run"
+    assert report["stranded_queue_rows"]["candidate_count"] == 1
+    assert report["stranded_queue_rows"]["running_commit"] == RUNNING_COMMIT
+    assert report["evidence_offload"]["hot_window_seconds"] == 172800
+    assert report["evidence_offload"]["abandoned_after_seconds"] == 259200
+    assert report["scratch_directories"]["candidate_count"] == 1
+    assert report["scratch_directories"]["minimum_age_seconds"] == 7 * 86400
+
+    monkeypatch.delenv("BLUEPRINT_CONTROL_PLANE_GC_RUNNING_COMMIT")
+    monkeypatch.setattr(gc_module, "running_release_commit", lambda: "")
+    assert gc_main(["run"]) == 0
+    assert json.loads(capsys.readouterr().out)["stranded_queue_rows"] == {
+        "status": "skipped",
+        "reason": "running_commit_unknown",
+    }

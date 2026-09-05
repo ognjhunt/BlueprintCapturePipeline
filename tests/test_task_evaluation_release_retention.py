@@ -1267,3 +1267,111 @@ def test_expired_or_consumed_authorization_does_not_pin_runtime_forever(
     )
 
     assert [row["source_commit"] for row in plan["eligible_commits"]] == [stale]
+
+
+def _two_commit_source(tmp_path: Path) -> tuple[Path, str, str]:
+    source = tmp_path / "source"
+    source.mkdir()
+    _git(source, "init")
+    _git(source, "config", "user.email", "retention@example.invalid")
+    _git(source, "config", "user.name", "Retention Test")
+    (source / "value.txt").write_text("active\n", encoding="utf-8")
+    _git(source, "add", "value.txt")
+    _git(source, "commit", "-m", "active")
+    active = _git(source, "rev-parse", "HEAD")
+    (source / "value.txt").write_text("stale\n", encoding="utf-8")
+    _git(source, "commit", "-am", "stale")
+    return source, active, _git(source, "rev-parse", "HEAD")
+
+
+def test_orphaned_release_tree_without_git_metadata_is_removed_as_an_orphan(
+    tmp_path: Path,
+) -> None:
+    """A release tree outlives the deploy-source clone that created it.
+
+    On the production host five superseded releases pointed at gitdirs or
+    object stores that no longer existed, so git could not prove them clean
+    and one such tree blocked the whole apply, forever.  Their bytes are the
+    commit on the protected branch; the receipt records that this proof, not
+    git's, was used.
+    """
+
+    source, active, stale = _two_commit_source(tmp_path)
+    release_root = tmp_path / "releases"
+    release_root.mkdir()
+    _git(source, "worktree", "add", "--detach", str(release_root / active), active)
+    orphan = release_root / stale
+    orphan.mkdir()
+    (orphan / "value.txt").write_text("stale\n", encoding="utf-8")
+    (orphan / ".git").write_text(
+        f"gitdir: {tmp_path / 'gone-clone' / '.git' / 'worktrees' / stale}\n",
+        encoding="utf-8",
+    )
+    runtime_root = tmp_path / "runtimes"
+    for commit in (active, stale):
+        for component in ("splat-render", "scene-configuration"):
+            path = runtime_root / component / commit
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "payload").write_text(commit, encoding="ascii")
+            _runtime_publication_receipt(path, commit=commit, component=component)
+    active_link = tmp_path / "active"
+    active_link.symlink_to(release_root / active)
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text("[]\n", encoding="utf-8")
+    for name in ("standing", "pending", "processing"):
+        (tmp_path / name).mkdir()
+    plan = build_release_retention_plan(
+        release_root=release_root,
+        runtime_root=runtime_root,
+        active_link=active_link,
+        current_deploy_commit=active,
+        profile_dir=profile_dir,
+        public_catalog=catalog,
+        standing_authorization_dir=tmp_path / "standing",
+        live_reference_roots=(tmp_path / "pending", tmp_path / "processing"),
+        evidence_binding_root=tmp_path / "evidence",
+        minimum_age_seconds=0,
+        now=NOW,
+    )
+    plan_path = tmp_path / "reviewed-plan.json"
+    plan_path.write_text(
+        json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
+
+    receipt = apply_release_retention_plan(
+        dry_run_plan_path=plan_path,
+        acknowledgement=APPLY_ACKNOWLEDGEMENT,
+        receipt_out=tmp_path / "apply-receipt.json",
+    )
+
+    assert receipt["status"] == "applied"
+    assert not orphan.exists()
+    assert (release_root / active).exists()
+    release_rows = [row for row in receipt["removed"] if row["kind"] == "control_plane_release"]
+    assert [row["removal_method"] for row in release_rows] == ["orphan_tree"]
+
+
+def test_missing_object_store_alternate_marks_a_release_tree_as_orphaned(tmp_path: Path) -> None:
+    from blueprint_pipeline.task_evaluation_release_retention import _git_metadata_unreachable
+
+    commit = "c" * 40
+    release = tmp_path / commit
+    release.mkdir()
+    gitdir = tmp_path / "clone" / ".git" / "worktrees" / commit
+    gitdir.mkdir(parents=True)
+    (gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+    info = tmp_path / "clone" / ".git" / "objects" / "info"
+    info.mkdir(parents=True)
+    (release / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+    (info / "alternates").write_text(
+        f"{tmp_path / 'missing-clone' / '.git' / 'objects'}\n", encoding="utf-8"
+    )
+    assert _git_metadata_unreachable(release) is True
+    (info / "alternates").write_text(f"{tmp_path / 'clone' / '.git' / 'objects'}\n", encoding="utf-8")
+    assert _git_metadata_unreachable(release) is False
+    (release / ".git").write_text("gitdir: /nonexistent/worktrees/x\n", encoding="utf-8")
+    assert _git_metadata_unreachable(release) is True
+    (release / ".git").write_text("not a pointer\n", encoding="utf-8")
+    assert _git_metadata_unreachable(release) is False
