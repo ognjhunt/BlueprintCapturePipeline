@@ -205,6 +205,9 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
     expected_source_commit, provider_zero_path, output_path, approved_roots,
     queue_root=DEFAULT_QUEUE, parent_queue_root=DEFAULT_PARENT_QUEUE, execution_root=DEFAULT_EXECUTION, now_epoch=None,
     sam31_billing_source_path=None, release_binding_root=None):
+    source_plan_path, source_profile_path, current_provider_profile_path, current_repo_root, provider_zero_path = (
+        Path(path) for path in (source_plan_path, source_profile_path, current_provider_profile_path,
+                               current_repo_root, provider_zero_path))
     require(through_phase in PREFIX_LENGTHS, "sam31_adoption_prefix_invalid")
     at = time.time() if now_epoch is None else now_epoch
     _zero(provider_zero_path, at=at)
@@ -274,15 +277,16 @@ def main(argv=None):
     for name in ("source-plan", "source-profile", "parent-request-digest", "current-task-request", "current-installation-receipt",
                  "current-publisher-intake", "current-source-preparation-receipt", "current-interiorgs-terms",
                  "current-sam31-provider-profile", "current-repo-root", "source-commit", "provider-zero"):
-        parser.add_argument("--" + name, required=True)
-    parser.add_argument("--output")
+        parser.add_argument("--" + name, required=True,
+                            type=str if name in {"parent-request-digest", "source-commit"} else Path)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument("--through-phase", choices=tuple(PREFIX_LENGTHS), required=True)
-    parser.add_argument("--approved-root", action="append", required=True)
-    parser.add_argument("--sam31-billing-source")
-    parser.add_argument("--queue-root", default=str(DEFAULT_QUEUE))
-    parser.add_argument("--parent-queue-root", default=str(DEFAULT_PARENT_QUEUE))
-    parser.add_argument("--execution-root", default=str(DEFAULT_EXECUTION))
+    parser.add_argument("--approved-root", action="append", type=Path, required=True)
+    parser.add_argument("--sam31-billing-source", type=Path)
+    parser.add_argument("--queue-root", type=Path, default=DEFAULT_QUEUE)
+    parser.add_argument("--parent-queue-root", type=Path, default=DEFAULT_PARENT_QUEUE)
+    parser.add_argument("--execution-root", type=Path, default=DEFAULT_EXECUTION)
     args = parser.parse_args(argv)
     require(args.check_only != bool(args.output), "sam31_adoption_choose_output_or_check_only")
     host = {name: record(getattr(args, "current_" + name)) for name in
@@ -293,7 +297,7 @@ def main(argv=None):
         expected_source_commit=args.source_commit, provider_zero_path=args.provider_zero, output_path=args.output,
         approved_roots=args.approved_root, queue_root=args.queue_root, parent_queue_root=args.parent_queue_root,
         execution_root=args.execution_root, sam31_billing_source_path=args.sam31_billing_source)
-    print(canonical_json({"status": result["status"], "adoption_digest": result["adoption_digest"], "output": args.output,
+    print(canonical_json({"status": result["status"], "adoption_digest": result["adoption_digest"], "output": str(args.output) if args.output is not None else None,
                           "paid_execution_performed": False}))
     return 0
 
