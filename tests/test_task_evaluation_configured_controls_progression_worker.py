@@ -484,7 +484,7 @@ def test_process_plans_advances_scene_configuration_activations_from_the_intent_
         ]
 
     monkeypatch.setattr(automation, "process_scene_configuration_activations", process)
-    monkeypatch.setattr(worker, "running_release_commit", lambda: "a" * 40)
+    monkeypatch.setattr(automation, "running_release_commit", lambda: "a" * 40)
     forwarded: dict[str, object] = {}
 
     def advance(**kwargs: object) -> dict[str, object]:
@@ -554,7 +554,7 @@ def test_process_plans_passes_no_running_commit_when_the_checkout_is_not_detache
         return []
 
     monkeypatch.setattr(automation, "process_scene_configuration_activations", process)
-    monkeypatch.setattr(worker, "running_release_commit", lambda: "")
+    monkeypatch.setattr(automation, "running_release_commit", lambda: "")
     plan_root = tmp_path / "plans"
     plan_root.mkdir()
     report = worker.process_plans(
@@ -574,6 +574,113 @@ def test_process_plans_passes_no_running_commit_when_the_checkout_is_not_detache
     )
     assert report["status"] == "completed"
     assert observed["running_commit"] is None
+
+
+def test_process_plans_hands_off_the_policy_canary_after_the_controls_pair_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the controls pair is launched, the same timer chains into the Quick-10 canary."""
+
+    from blueprint_pipeline import task_evaluation_policy_canary_handoff as handoff
+
+    launch_root, _ = _source(tmp_path)
+    plan_path = _plan(tmp_path)
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    forwarded: dict[str, object] = {}
+
+    def advance(**kwargs: object) -> dict[str, object]:
+        forwarded.update(kwargs)
+        return {"status": "controls_pair_launch_queued", "source_launch_id": plan["source_launch_id"]}
+
+    handed: dict[str, object] = {}
+
+    def hand_off(**kwargs: object) -> dict[str, object]:
+        handed.update(kwargs)
+        return {"status": "canary_launch_submitted", "run_id": "scene-839873-qualifying-policy-canary-abc"}
+
+    monkeypatch.setattr(worker, "advance_configured_controls_plan", advance)
+    monkeypatch.setattr(handoff, "advance_policy_canary_handoff_for_plan", hand_off)
+    intent_root = tmp_path / "scene-configuration-intents"
+    intent_root.mkdir()
+    report = worker.process_plans(
+        plan_root=plan_path.parent,
+        autostart_intent_root=tmp_path / "intents",
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progression",
+        preparation_queue_root=tmp_path / "preparations",
+        episode_compilation_queue_root=tmp_path / "compilations",
+        activation_queue_root=tmp_path / "activations",
+        repo_root=tmp_path / "repo",
+        webapp_secret_file=tmp_path / "secret",
+        webapp_endpoint="https://tryblueprint.io/api/internal/task-evaluation-launch-submissions",
+        scene_configuration_activation_intent_root=intent_root,
+        profile_dir=tmp_path / "profiles",
+        standing_authorization_dir=tmp_path / "standing",
+        webapp_catalog=tmp_path / "catalog.json",
+        policy_canary_notification_email="ohstnhunt@gmail.com",
+    )
+    assert report["status"] == "completed", report["rows"]
+    canary_rows = [row for row in report["rows"] if row.get("lane") == "native_task_arena_policy_canary_handoff"]
+    assert canary_rows == [
+        {
+            "lane": "native_task_arena_policy_canary_handoff",
+            "status": "canary_launch_submitted",
+            "run_id": "scene-839873-qualifying-policy-canary-abc",
+            "source_launch_id": plan["source_launch_id"],
+        }
+    ]
+    assert handed["plan"] == plan
+    assert handed["progression_root"] == tmp_path / "progression"
+    assert handed["launch_state_root"] == launch_root
+    assert handed["episode_compilation_queue_root"] == tmp_path / "compilations"
+    assert handed["activation_intent_root"] == intent_root
+    assert handed["repo_root"] == tmp_path / "repo"
+    assert handed["webapp_secret_file"] == tmp_path / "secret"
+    assert handed["webapp_endpoint"] == "https://tryblueprint.io/api/internal/task-evaluation-launch-submissions"
+    assert handed["webapp_catalog_out"] == tmp_path / "catalog.json"
+    assert handed["notification_email"] == "ohstnhunt@gmail.com"
+    assert callable(handed["publisher_factory"])
+    # The configured-controls transition never sees the hand-off plumbing.
+    for name in ("webapp_catalog", "policy_canary_notification_email", "scene_configuration_activation_intent_root"):
+        assert name not in forwarded
+
+
+def test_process_plans_does_not_hand_off_before_the_controls_pair_is_launched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import task_evaluation_policy_canary_handoff as handoff
+
+    launch_root, _ = _source(tmp_path)
+    plan_path = _plan(tmp_path)
+    monkeypatch.setattr(
+        worker,
+        "advance_configured_controls_plan",
+        lambda **kwargs: {"status": "awaiting_controls_activation", "source_launch_id": "scene-839873-qualifying"},
+    )
+    monkeypatch.setattr(
+        handoff,
+        "advance_policy_canary_handoff_for_plan",
+        lambda **kwargs: pytest.fail("the hand-off must wait for the controls pair launch"),
+    )
+    report = worker.process_plans(
+        plan_root=plan_path.parent,
+        autostart_intent_root=tmp_path / "intents",
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progression",
+        preparation_queue_root=tmp_path / "preparations",
+        episode_compilation_queue_root=tmp_path / "compilations",
+        activation_queue_root=tmp_path / "activations",
+        repo_root=tmp_path / "repo",
+        webapp_secret_file=tmp_path / "secret",
+        webapp_endpoint="https://tryblueprint.io/api/internal/task-evaluation-launch-submissions",
+        webapp_catalog=tmp_path / "catalog.json",
+        policy_canary_notification_email="ohstnhunt@gmail.com",
+    )
+    assert [row["status"] for row in report["rows"] if "plan" in row or "source_launch_id" in row] == [
+        "awaiting_controls_activation"
+    ]
 
 
 def test_process_plans_leaves_scene_configuration_activation_alone_without_an_intent_root(
