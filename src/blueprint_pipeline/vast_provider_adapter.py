@@ -2062,10 +2062,8 @@ def _is_stale_offer_create_http_error(
     if code in {404, 409, 410}:
         return True
     normalized = error_text.lower()
-    return code == 400 and (
-        "no_such_ask" in normalized
-        or (not normalized.strip() and selected_offer_absent_from_fresh_search)
-    )
+    # Offer disappearance is not proof that an ambiguous create did not allocate.
+    return code == 400 and "no_such_ask" in normalized
 
 
 def _offer_selection_manifest(
@@ -8525,6 +8523,7 @@ def run_vast_provider_adapter(
             previous_signal_handlers.pop(signum, None)
     try:
         create_retry_attempts: list[dict[str, Any]] = []
+        create_attempt_labels: set[str] = set()
         offer_search_retry_attempts: list[dict[str, Any]] = []
         pre_provider_mutation_result: dict[str, Any] | None = None
         max_stale_offer_retries = (
@@ -8765,6 +8764,7 @@ def run_vast_provider_adapter(
                             else "pre_provider_mutation_authorization_not_consumed"
                         )
                 base_result["provider_create_attempted"] = True
+                create_attempt_labels.add(_string(create_payload.get("label")))
                 create_status, create_response = _api_json(
                     method="PUT",
                     path=f"/asks/{selected_offer['ask_contract_id']}/",
@@ -8778,7 +8778,7 @@ def run_vast_provider_adapter(
                 # Preserve the response for the outer fail-closed HTTP error
                 # receipt when this is not the documented stale-offer race.
                 exc.fp = io.BytesIO(error_text.encode("utf-8"))
-                if int(exc.code or 0) == 400 and not error_text.strip():
+                if _is_stale_offer_create_http_error(exc, error_text) or (int(exc.code or 0) == 400 and not error_text.strip()):
                     empty_400_diagnosis = diagnose_empty_create_400(
                         api_json=_api_json,
                         api_key=api_key,
@@ -8786,7 +8786,8 @@ def run_vast_provider_adapter(
                         offer_id=int(selected_offer["ask_contract_id"]),
                         attempted_label=_string(create_payload.get("label")),
                         offers_from_response=_offers_from_response,
-                        active_instance_rows=_active_instance_rows_from_payload,
+                        instance_rows=_instance_list_rows,
+                        attempted_labels=tuple(create_attempt_labels),
                         instance_label=lambda row: _string(row.get("label")),
                     )
                 else:
@@ -8813,17 +8814,11 @@ def run_vast_provider_adapter(
                     "error_preview": _redact_text(error_text[:500], secret_values),
                     "raw_secret_values_recorded": False,
                 }
+                create_failure_diagnosis["definite_create_refusal"] = _is_stale_offer_create_http_error(exc, error_text)
                 base_result["create_failure_diagnosis"] = create_failure_diagnosis
-                retryable = (
-                    _is_stale_offer_create_http_error(
-                        exc,
-                        error_text,
-                        selected_offer_absent_from_fresh_search=(
-                            selected_offer_absent_from_fresh_search
-                        ),
-                    )
-                    or create_produced_no_instance
-                )
+                instance_ids.extend(i for i in empty_400_diagnosis.get("matching_attempt_instance_ids", []) if i not in instance_ids)
+                retryable = bool(create_failure_diagnosis["definite_create_refusal"] and create_produced_no_instance
+                                 and empty_400_diagnosis.get("create_inventory_verified") is True and not instance_ids)
                 if not retryable or stale_offer_create_retry_count >= max_stale_offer_retries:
                     # Record why this run stopped here. Without it the receipt
                     # says only "empty 400" and cannot distinguish a vanished
