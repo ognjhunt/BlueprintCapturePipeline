@@ -175,3 +175,24 @@ def test_separate_exact_full_source_authority_preserves_local_conversion_rights(
     assert proof['payload_kind'] == 'full_source_scene_reencoded_standard_splat'
     assert proof['conversion_rights']['raw_private_upload_authorized'] is False
     assert proof['frame_permission_used_as_full_source_authority'] is False
+
+
+@pytest.mark.parametrize('purpose', ['exact_source_calibration_gpu_render',
+                                    'configured_scene_partitioned_source_processing'])
+def test_full_source_scopes_require_their_own_exact_authority(tmp_path, monkeypatch, purpose):
+    job, _output, source, original, receipt = converted_job(tmp_path, monkeypatch)
+    authorize_full_source(job, source=source, original=original, receipt=receipt)
+    task = json.loads(Path(job['plan']['host_inputs']['task_request']['path']).read_text())
+    owner = task['human_authority']
+    kwargs = dict(task_authority=owner, conversion_path=receipt, standard_splat_path=source,
+                  original_source_path=original, expected_source_commit=job['expected_source_commit'],
+                  publisher_scene_id='841757', approved_roots=(tmp_path,), purpose=purpose)
+    with pytest.raises(ValueError, match='explicit_full_source_authority_invalid'):
+        guard.validate_full_source_disclosure(**kwargs)
+    authority = json.loads(Path(owner['full_source_provider_disclosure_authority']['path']).read_text())
+    authority['purpose'] = purpose
+    scoped = _write(source.parent/'scope-authority.json', authority, digest_field='authorization_digest')
+    owner['full_source_provider_disclosure_authorities'] = {purpose: _record(scoped)}
+    proof = guard.validate_full_source_disclosure(**kwargs)
+    assert proof['purpose'] == purpose
+    assert proof['conversion_rights']['raw_private_upload_authorized'] is False
