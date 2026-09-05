@@ -332,11 +332,22 @@ def materialize_sam31_provider_profile(
         paths["runtime_image_build"], code="sam31_runtime_image_build_receipt_invalid"
     )
     normalized_runtime_digest = runtime_image_identity.rpartition("@")[2]
+    # The worker stack manifest and the runtime image build receipt describe the
+    # runtime: image digest, checkpoint digest, code revision, license terms,
+    # all pinned below and self-digested.  The commit that materialized those
+    # two records is provenance and need only be a real commit; requiring it to
+    # equal this profile's commit meant the image had to be rebuilt on every
+    # control-plane deploy.  The human execution authorization, by contrast,
+    # stays bound to one exact code/image pair (see _authorization_sources), so
+    # a profile is re-materialized per release from the same runtime records
+    # plus a fresh authorization.  On 2026-09-05 a scene carried another
+    # scene's whole packet from three weeks earlier and was refused only after
+    # a paid calibration render.
     if (
         _COMMIT.fullmatch(source_commit_sha) is None
         or _IMAGE.fullmatch(runtime_image_identity) is None
         or stack.get("schema_version") != WORKER_STACK_SCHEMA_VERSION
-        or stack.get("source_commit_sha") != source_commit_sha
+        or _COMMIT.fullmatch(str(stack.get("source_commit_sha") or "")) is None
         or stack.get("runtime_image_identity") != runtime_image_identity
         or stack.get("official_code_revision") != OFFICIAL_CODE_REVISION
         or stack.get("checkpoint_repository_revision") != CHECKPOINT_REPOSITORY_REVISION
@@ -348,7 +359,7 @@ def materialize_sam31_provider_profile(
         or image_build.get("schema_version")
         != RUNTIME_IMAGE_BUILD_RECEIPT_SCHEMA_VERSION
         or image_build.get("status") != "published"
-        or image_build.get("source_commit_sha") != source_commit_sha
+        or _COMMIT.fullmatch(str(image_build.get("source_commit_sha") or "")) is None
         or image_build.get("runtime_image_identity") != runtime_image_identity
         or image_build.get("runtime_digest") != stack.get("runtime_digest")
         or image_build.get("official_code_revision") != OFFICIAL_CODE_REVISION
@@ -559,7 +570,7 @@ def materialize_sam31_gpu_canary_request(
     )
     if (
         stack.get("schema_version") != WORKER_STACK_SCHEMA_VERSION
-        or stack.get("source_commit_sha") != source_commit_sha
+        or _COMMIT.fullmatch(str(stack.get("source_commit_sha") or "")) is None
         or stack.get("runtime_image_identity") != profile.get("runtime_image_identity")
         or stack.get("runtime_digest") != profile.get("runtime_digest")
         or stack.get("runtime_digest")
@@ -573,7 +584,7 @@ def materialize_sam31_gpu_canary_request(
         or image_build.get("schema_version")
         != RUNTIME_IMAGE_BUILD_RECEIPT_SCHEMA_VERSION
         or image_build.get("status") != "published"
-        or image_build.get("source_commit_sha") != source_commit_sha
+        or _COMMIT.fullmatch(str(image_build.get("source_commit_sha") or "")) is None
         or image_build.get("runtime_image_identity") != profile.get("runtime_image_identity")
         or image_build.get("runtime_digest") != profile.get("runtime_digest")
         or image_build.get("official_code_revision") != OFFICIAL_CODE_REVISION
