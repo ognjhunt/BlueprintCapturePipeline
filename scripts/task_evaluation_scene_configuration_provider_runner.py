@@ -76,6 +76,9 @@ def _hydrate_envelope(runtime: Path, portable: dict) -> dict:
         )
         row["materialized_path"] = str(path)
     render = envelope.get("render_inputs_result") or {}
+    if render.get("result_digest") != canonical_digest(render, digest_field="result_digest"):
+        raise ValueError("scene_configuration_provider_render_inputs_digest_invalid")
+    portable_render_digest = render["result_digest"]
     for key in ("camera_calibration", "render_manifest"):
         row = render.get(key)
         if (
@@ -137,6 +140,8 @@ def _hydrate_envelope(runtime: Path, portable: dict) -> dict:
             size_bytes=row.get("size_bytes"),
         )
         row["materialized_path"] = str(path)
+    render["portable_render_result_digest"] = portable_render_digest
+    render["result_digest"] = canonical_digest(render, digest_field="result_digest")
     envelope["portable_envelope_digest"] = portable["envelope_digest"]
     envelope["envelope_digest"] = canonical_digest(
         envelope, digest_field="envelope_digest"

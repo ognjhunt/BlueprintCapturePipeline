@@ -575,6 +575,40 @@ def test_provider_render_handoff_reopens_frame_bytes_before_content_spend(
         )
 
 
+def test_portable_sam_frames_keep_origin_and_runtime_digests_through_content_handoff(tmp_path):
+    from scripts.task_evaluation_scene_configuration_provider_runner import _hydrate_envelope
+    from blueprint_pipeline.task_evaluation_scene_configuration_bundle import _portable_render_inputs
+    from blueprint_pipeline.task_evaluation_scene_configuration_stage_configuration import SAM31_MASK_SOURCE, SAM31_SELECTION_RULE
+    from tests.test_task_evaluation_scene_configuration_bundle import _envelope
+    source = tmp_path / "source"
+    source.mkdir()
+    original = json.loads(_envelope(source, "a" * 40).read_text())["render_inputs_result"]
+    original["source_object_masks"]["source"] = SAM31_MASK_SOURCE
+    original["derived_gaussian_cutout"]["selection_rule"] = SAM31_SELECTION_RULE
+    original["result_digest"] = canonical_digest(original, digest_field="result_digest")
+    runtime = tmp_path / "provider_runtime"
+    portable_render = _portable_render_inputs(runtime=runtime, render=original)
+    portable_digest = portable_render["result_digest"]
+    portable = {"render_inputs_result": portable_render, "materialized_references": [],
+                "stage_configuration_references": [], "envelope_digest": ""}
+    portable["envelope_digest"] = canonical_digest(portable, digest_field="envelope_digest")
+    hydrated = _hydrate_envelope(runtime, portable)
+    render = hydrated["render_inputs_result"]
+    assert render["result_digest"] == canonical_digest(render, digest_field="result_digest")
+    assert render["control_plane_result_digest"] == original["result_digest"]
+    assert render["portable_render_result_digest"] == portable_digest
+    assert len({render["result_digest"], portable_digest, original["result_digest"]}) == 3
+    output = tmp_path / "stage-one"
+    output.mkdir()
+    handoff = materialize_provider_render_handoff(render_inputs=render, output_root=output)
+    assert _reference_frames({"construction_envelope": hydrated}, [{"output_artifacts": [handoff]}])
+    for key in ("control_plane_result_digest", "result_digest"):
+        changed = json.loads(json.dumps(hydrated))
+        changed["render_inputs_result"][key] = "sha256:" + "0" * 64
+        with pytest.raises(TaskEvaluationSceneConfigurationContentAgentsError, match="handoff_.*digest"):
+            _reference_frames({"construction_envelope": changed}, [{"output_artifacts": [handoff]}])
+
+
 def test_metric_envelope_refuses_wrong_size_candidate() -> None:
     envelope = _metric_envelope_spec(
         {
