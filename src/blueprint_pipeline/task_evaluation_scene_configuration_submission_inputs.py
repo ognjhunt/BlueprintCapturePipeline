@@ -204,7 +204,8 @@ def source_inputs(*, installation_path: Path, publisher_path: Path,
 
 
 def release_inputs(*, deploy_path: Path, provenance_path: Path,
-                   publication_root: Path, commit: str) -> tuple[dict, dict, dict]:
+                   publication_root: Path, commit: str,
+                   release_admission_mode: str = "promoted") -> tuple[dict, dict, dict]:
     deploy = read(deploy_path)
     provenance = read(provenance_path)
     binding = deploy.get("release_provenance", {})
@@ -215,25 +216,44 @@ def release_inputs(*, deploy_path: Path, provenance_path: Path,
             and deploy.get("intake_runtime", {}).get("commit_proven") is True
             and deploy["intake_runtime"].get("source_commit") == commit,
             "release_deployment_unproven")
-    require(binding.get("sha256") == sha(provenance_path)
-            and binding.get("provenance_status") == "verified"
-            and binding.get("canonical_full_lane_verified") is True
-            and binding.get("promotion_eligible") is True
-            and provenance.get("status") == "verified"
-            and provenance.get("schema_version") == "blueprint.deploy_release_provenance.v1"
-            and provenance.get("workflow_name") == "Full Test Lane"
-            and provenance.get("workflow_path") == ".github/workflows/full-test-lane.yml"
-            and provenance.get("job_name") == "Full pytest lane on CPU runner"
-            and provenance.get("claim_boundary", {}).get("canonical_full_lane_verified") is True
-            and provenance.get("run_id") == binding.get("run_id")
-            and isinstance(provenance.get("run_id"), int)
-            and not isinstance(provenance["run_id"], bool) and provenance["run_id"] > 0,
-            "release_provenance_unproven")
-    collection = provenance.get("collection", {})
-    test_count = collection.get("test_count")
-    require(isinstance(test_count, int) and not isinstance(test_count, bool)
-            and test_count > 0 and collection.get("skipped_count") == 0,
-            "release_provenance_unproven")
+    require(release_admission_mode in {"promoted", "development_iteration"},
+            "release_admission_mode_invalid")
+    if release_admission_mode == "development_iteration":
+        claim = provenance.get("claim_boundary")
+        require(binding.get("sha256") == sha(provenance_path)
+                and binding.get("provenance_status") == "iteration"
+                and binding.get("promotion_eligible") is False
+                and binding.get("canonical_full_lane_verified") is False
+                and binding.get("run_id") is None and binding.get("run_url") is None
+                and set(provenance) == {"schema_version", "status", "git_sha", "promotion_eligible", "claim_boundary"}
+                and provenance.get("schema_version") == "blueprint.deploy_release_provenance.v1"
+                and provenance.get("status") == "iteration"
+                and provenance.get("promotion_eligible") is False
+                and isinstance(claim, dict)
+                and set(claim) == {"canonical_full_lane_verified", "promotion_eligible", "evidence_grade"}
+                and claim["canonical_full_lane_verified"] is False and claim["promotion_eligible"] is False
+                and claim["evidence_grade"] == "development_only",
+                "release_iteration_provenance_unproven")
+    else:
+        require(binding.get("sha256") == sha(provenance_path)
+                and binding.get("provenance_status") == "verified"
+                and binding.get("canonical_full_lane_verified") is True
+                and binding.get("promotion_eligible") is True
+                and provenance.get("status") == "verified"
+                and provenance.get("schema_version") == "blueprint.deploy_release_provenance.v1"
+                and provenance.get("workflow_name") == "Full Test Lane"
+                and provenance.get("workflow_path") == ".github/workflows/full-test-lane.yml"
+                and provenance.get("job_name") == "Full pytest lane on CPU runner"
+                and provenance.get("claim_boundary", {}).get("canonical_full_lane_verified") is True
+                and provenance.get("run_id") == binding.get("run_id")
+                and isinstance(provenance.get("run_id"), int)
+                and not isinstance(provenance["run_id"], bool) and provenance["run_id"] > 0,
+                "release_provenance_unproven")
+        collection = provenance.get("collection", {})
+        test_count = collection.get("test_count")
+        require(isinstance(test_count, int) and not isinstance(test_count, bool)
+                and test_count > 0 and collection.get("skipped_count") == 0,
+                "release_provenance_unproven")
     publications = []
     for kind, schema, digest_key in (
         ("scene-configuration", "task_evaluation_scene_configuration_toolchain_publication.v1",

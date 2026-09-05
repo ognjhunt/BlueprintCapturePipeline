@@ -162,6 +162,7 @@ def materialize_scene_configuration_submission(
     staging_root: str | Path, expected_production_commit: str,
     namespace_timestamp: str,
     sam31_server_profile_path: str | Path | None = None,
+    release_admission_mode: str = "promoted",
 ) -> dict[str, Any]:
     """Validate evidence joins, retain exact inputs, then emit the production request."""
     commit = expected_production_commit
@@ -175,7 +176,8 @@ def materialize_scene_configuration_submission(
     run_id = f"{prefix}-{commit[:8]}-{namespace_timestamp.lower()}-scene-configuration"
     deploy, toolchain, renderer = release_inputs(
         deploy_path=Path(deploy_receipt_path), provenance_path=Path(release_provenance_path),
-        publication_root=Path(runtime_publication_root), commit=commit)
+        publication_root=Path(runtime_publication_root), commit=commit,
+        release_admission_mode=release_admission_mode)
     inputs = source_inputs(
         installation_path=Path(installation_receipt_path), publisher_path=Path(publisher_intake_path),
         preparation_path=Path(source_preparation_receipt_path), task=task, commit=commit)
@@ -352,7 +354,8 @@ def materialize_scene_configuration_submission(
         team_namespace=team, scene_identity=task["scene_identity"], source_commit=commit,
         deploy_receipt=deploy, deploy_receipt_sha256=sha(Path(deploy_receipt_path)),
         release_environment_sha256=sha(Path(release_environment_path)),
-        scene_configuration_publication=toolchain, splat_render_publication=renderer)
+        scene_configuration_publication=toolchain, splat_render_publication=renderer,
+        release_admission_mode=release_admission_mode)
     release_ref = stage.json("release/exact_production_release_binding.v1.json", release)
     camera_ref = stage.json("configuration/camera_calibration_plan.v1.json",
         records.camera_calibration_plan(scene_id=scene_id, strategy=task["strategy"]))
@@ -442,6 +445,7 @@ def materialize_scene_configuration_submission(
     inventory = {"schema_version": "task_evaluation_scene_configuration_submission_manifest.v1",
                  "status": "validated_pending_production_publication_and_submission",
                  "source_commit": commit, "input_namespace": namespace,
+                 "release_admission_mode": release_admission_mode, "claim_ceiling": "development_only",
                  "request_digest": launch_preparation_request_digest(request),
                  "files": list(stage.files.values()),
                  "raw_source_upload_allowed": False,
@@ -467,6 +471,8 @@ def main() -> None:
     for name in ("interiorgs-terms", "interiorgs-readme", "sage-readme"):
         parser.add_argument("--" + name, required=True, type=Path)
     parser.add_argument("--sam31-server-profile-path", type=Path)
+    parser.add_argument("--release-admission-mode", choices=("promoted", "development_iteration"),
+                        default="promoted")
     args = vars(parser.parse_args())
     evidence = {name: args.pop(name) for name in ("interiorgs_terms", "interiorgs_readme", "sage_readme")}
     for name in ("task_request", "installation_receipt", "publisher_intake",
