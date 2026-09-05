@@ -51,7 +51,7 @@ def test_real_driver_configures_camera_before_warmup_and_retains_error_when_clos
     fake.write_text('''
 let configured = false;
 const page = {
-  on() {}, async goto() {}, async waitForFunction() {},
+  on() {}, async goto() {}, async waitForFunction() {}, async exposeFunction() {},
   async evaluate(fn, args) {
     const source = String(fn);
     if (source.includes("BlueprintSplat.load")) return {radius: 1, center: [0,0,0], size: [1,1,1]};

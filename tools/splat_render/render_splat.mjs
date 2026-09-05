@@ -228,6 +228,7 @@ async function main() {
   const browser = await chromium.launch(launchOptions);
   checkpoint("browser_launched");
   const page = await browser.newPage({ viewport: { width, height } });
+  await page.exposeFunction("blueprintRenderCheckpoint", (event, detail) => checkpoint(event, detail));
   const pageErrors = [];
   page.on("pageerror", (e) => {
     const message = String(e.message || e);
