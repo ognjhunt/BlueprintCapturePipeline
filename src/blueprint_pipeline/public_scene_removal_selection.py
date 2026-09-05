@@ -264,3 +264,32 @@ def materialize_public_scene_removal_selections(
             "registered_frame": context["registered_frame"],
             "scene_freeze_digest": scene["scene_freeze_digest"],
             "task_freeze_digest": selection["task_freeze_digest"], **BOUNDARIES}
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Derive removal-only source selections from installed publisher bytes."""
+
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task-request", required=True)
+    parser.add_argument("--installation-receipt", required=True)
+    parser.add_argument("--publisher-intake", required=True)
+    parser.add_argument("--source-preparation-receipt", required=True)
+    parser.add_argument("--expected-production-commit", required=True)
+    parser.add_argument("--output-root", required=True)
+    args = parser.parse_args(argv)
+    result = materialize_public_scene_removal_selections(
+        task_request_path=args.task_request,
+        installation_receipt_path=args.installation_receipt,
+        publisher_intake_path=args.publisher_intake,
+        source_preparation_receipt_path=args.source_preparation_receipt,
+        expected_production_commit=args.expected_production_commit,
+        output_root=args.output_root,
+    )
+    print(canonical_json(result))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
