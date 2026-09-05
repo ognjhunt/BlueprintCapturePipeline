@@ -197,7 +197,9 @@ def test_completed_claim_requires_named_verified_artifacts(setup):
         **process, phase_executor=lambda context: {"status": "completed", "artifacts": {}},
     )
     assert result["results"][0]["status"] == "failed"
-    assert json.loads(Path(intake["result_path"]).read_text())["blocker"] == "sam31_phase_completed_artifacts_missing"
+    assert json.loads(Path(intake["result_path"]).read_text())["blocker"].startswith(
+        "sam31_phase_completed_artifacts_missing"
+    )
 
 def test_external_progress_artifacts_are_reverified_before_rechecking_handler(setup):
     _, args, process = setup

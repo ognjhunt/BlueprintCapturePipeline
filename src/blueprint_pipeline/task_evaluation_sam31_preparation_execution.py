@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from .fail_closed_blocker_explainer import annotate_blocker
 from .decision_evidence_contracts import canonical_digest
 from .public_scene_host_input_intake import _verified_checkout_head
 from .task_evaluation_launch_preparation_contract import (
@@ -267,8 +268,9 @@ def process_sam31_phase_queue(
                           "job_digest": job.get("job_digest"), "parent_request_digest": job.get("parent_request_digest"),
                           "plan_digest": job.get("plan_digest"), "phase": job.get("phase"),
                           "source_commit": observed_commit, "status": "failed", "artifacts": {},
-                          "blocker": str(exc) if isinstance(exc, (Sam31PhaseExecutionError, ValueError))
-                                     else f"sam31_phase_execution_failed:{type(exc).__name__}"}
+                          "blocker": annotate_blocker(
+                              str(exc) if isinstance(exc, (Sam31PhaseExecutionError, ValueError))
+                              else f"sam31_phase_execution_failed:{type(exc).__name__}", exc)}
                 result["result_digest"] = canonical_digest(result, digest_field="result_digest")
                 if result_path.exists():
                     _write(root / "results" / f"{claimed.stem}.conflict-{result['result_digest'][7:]}.json", result)
