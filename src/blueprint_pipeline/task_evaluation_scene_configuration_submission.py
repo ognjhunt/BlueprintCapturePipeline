@@ -162,6 +162,7 @@ def materialize_scene_configuration_submission(
     staging_root: str | Path, expected_production_commit: str,
     namespace_timestamp: str,
     sam31_server_profile_path: str | Path | None = None,
+    sam31_completed_prefix_adoption_path: str | Path | None = None,
     release_admission_mode: str = "promoted",
 ) -> dict[str, Any]:
     """Validate evidence joins, retain exact inputs, then emit the production request."""
@@ -246,6 +247,12 @@ def materialize_scene_configuration_submission(
     if task["appearance_removal_method"] == "sam31":
         configured_profile = sam31_server_profile_path or os.environ.get(PROFILE_ENV)
         require(bool(configured_profile), "sam31_server_profile_missing")
+        if sam31_completed_prefix_adoption_path is not None:
+            profile = read(configured_profile, digest_field="profile_digest")
+            adoption = Path(sam31_completed_prefix_adoption_path)
+            require(profile.get("completed_prefix_adoption") == {
+                "path": str(adoption), "sha256": sha(adoption), "size_bytes": adoption.stat().st_size},
+                "sam31_completed_prefix_adoption_profile_mismatch")
         sam_plan = build_sam31_preparation_plan(
             source_commit=commit, task=task,
             host_inputs={
@@ -477,6 +484,7 @@ def main() -> None:
     for name in ("interiorgs-terms", "interiorgs-readme", "sage-readme"):
         parser.add_argument("--" + name, required=True, type=Path)
     parser.add_argument("--sam31-server-profile-path", type=Path)
+    parser.add_argument("--sam31-completed-prefix-adoption-path", type=Path)
     parser.add_argument("--release-admission-mode", choices=("promoted", "development_iteration"),
                         default="promoted")
     args = vars(parser.parse_args())

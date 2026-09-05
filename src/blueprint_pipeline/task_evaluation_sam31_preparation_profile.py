@@ -249,6 +249,7 @@ def materialize_sam31_preparation_profile(
     ffmpeg_executable: str | Path = "/usr/bin/ffmpeg",
     calibrated_views_execution_site: str = "control_plane",
     calibrated_views_machine_avoidlist_path: str | Path | None = None,
+    completed_prefix_adoption_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Derive the exact operator profile without allocating or authorizing work."""
 
@@ -441,6 +442,16 @@ def materialize_sam31_preparation_profile(
         "raw_secret_values_recorded": False,
         "profile_digest": "",
     }
+    if avoidlist is not None:
+        profile["paid_stages"]["contribution_sweep"].update(
+            machine_avoidlist_path=str(avoidlist), machine_avoidlist=_file_record(avoidlist))
+    if completed_prefix_adoption_path is not None:
+        from .task_evaluation_sam31_prefix_adoption import validate_completed_prefix_adoption
+        adoption = _safe_path(completed_prefix_adoption_path, kind="file", code="completed_prefix_adoption_invalid")
+        _beneath_any(adoption, roots, code="completed_prefix_adoption_outside_roots")
+        validate_completed_prefix_adoption(adoption, expected_source_commit=source_commit,
+            approved_roots=roots, current_provider_profile_path=provider_profile_path)
+        profile["completed_prefix_adoption"] = _file_record(adoption)
     profile["profile_digest"] = canonical_digest(
         profile, digest_field="profile_digest"
     )
@@ -476,6 +487,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ffmpeg-executable", default="/usr/bin/ffmpeg")
     parser.add_argument("--calibrated-views-execution-site", choices=("control_plane", "provider_gpu"), default="control_plane")
     parser.add_argument("--calibrated-views-machine-avoidlist")
+    parser.add_argument("--completed-prefix-adoption")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
@@ -500,6 +512,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ffmpeg_executable=args.ffmpeg_executable,
             calibrated_views_execution_site=args.calibrated_views_execution_site,
             calibrated_views_machine_avoidlist_path=args.calibrated_views_machine_avoidlist,
+            completed_prefix_adoption_path=args.completed_prefix_adoption,
         )
         output = Path(args.output).expanduser().resolve()
         _write_exclusive(output, profile)
