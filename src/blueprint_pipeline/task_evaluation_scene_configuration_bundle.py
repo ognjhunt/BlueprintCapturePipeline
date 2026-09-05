@@ -634,6 +634,16 @@ def build_scene_configuration_provider_bundle(
         raise TaskEvaluationSceneConfigurationBundleError(
             "scene_configuration_bundle_provider_python_runtime_invalid"
         ) from exc
+    first_configuration = configuration_values[str(envelope["recipe"]["stage_sequence"][0]["stage_id"])]
+    if first_configuration.get("required_views", {}).get("mask_source") in {
+        "sam31_reviewed_calibrated_object_masks", "sam31_human_reviewed_calibrated_object_masks",
+    }:
+        from .task_evaluation_configuration_partition_disclosure import require_partition_disclosure
+        try:
+            require_partition_disclosure(render=render_inputs, configuration=first_configuration,
+                                         expected_source_commit=construction_source_commit)
+        except (ValueError, OSError, KeyError) as exc:
+            raise TaskEvaluationSceneConfigurationBundleError(str(exc)) from exc
     output = Path(output_root).resolve()
     if output.exists() and any(output.iterdir()):
         raise TaskEvaluationSceneConfigurationBundleError(

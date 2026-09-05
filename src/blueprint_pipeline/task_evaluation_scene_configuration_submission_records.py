@@ -372,6 +372,9 @@ def stage_one_configuration(
             "provider_retention_terms_accepted": human_authority["provider_retention_terms_accepted"],
             "provider_training_terms_accepted": human_authority["provider_training_terms_accepted"],
             "provider_training_authorized": human_authority["provider_training_authorized"],
+            **{key: human_authority[key] for key in (
+                "full_source_provider_disclosure_authority", "full_source_provider_disclosure_authorities")
+               if key in human_authority},
         },
         "claim_boundary": (
             "The edit is generated appearance support. It never becomes observed "

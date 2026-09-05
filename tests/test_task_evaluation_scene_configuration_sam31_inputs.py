@@ -36,7 +36,12 @@ def _seal(path, value, field="receipt_digest"):
     return path
 
 
-def _sam_case(tmp_path, *, review_kind="human", monkeypatch=None, removal_only=False):
+@pytest.fixture(autouse=True)
+def _partition_evidence_root(tmp_path, monkeypatch):
+    monkeypatch.setattr("blueprint_pipeline.task_evaluation_configuration_partition_disclosure.HOST_ROOTS", (tmp_path,))
+
+
+def _sam_case(tmp_path, *, review_kind="human", monkeypatch=None, removal_only=False, authorize_partition=True):
     fixture = _fixture(tmp_path / "sam-source", camera_count=16 if review_kind == "ai" else 2)
     fixture["tasks"] = fixture["tasks"][1:]
     fixture["task_inputs"] = {"task_b": fixture["task_inputs"]["task_b"]}
@@ -62,12 +67,18 @@ def _sam_case(tmp_path, *, review_kind="human", monkeypatch=None, removal_only=F
             row for row in installation["files"] if row.get("role") == "appearance_3dgs"
         )
         raw = Path(installation["destination_root"]) / appearance["relative_path"]
+    terms = tmp_path / "fixture-terms.txt"
+    terms.write_text("Hermetic fixture-only private source processing permission; not publisher evidence.")
     conversion_path = _seal(tmp_path / "conversion.json", {
         "schema_version": "standard_splat_conversion_receipt.v1",
         "status": "standard_splat_conversion_materialized",
-        "source": _absolute_record(raw),
+        "repository": {"commit": "a" * 40}, "claim_ceiling": "local_format_conversion_only",
+        "source": {**_absolute_record(raw), "source_gaussian_count": 10, "source_bytes_unchanged": True,
+                   "dataset": "fixture/source", "revision": "a" * 40},
         "output": {**_absolute_record(source), "standard_3dgs_schema_validated": True,
-                   "gaussian_count_preserved": True},
+                   "gaussian_count_preserved": True, "gaussian_count": 10},
+        "rights": {"conversion_execution_location": "local_only", "raw_private_upload_authorized": False,
+                   "training_authorized": False, "terms_digest": _absolute_record(terms)["sha256"]},
         "raw_source_uploaded": False, "gaussian_ownership_claimed": False,
     })
     conversion = json.loads(conversion_path.read_text())
@@ -212,6 +223,29 @@ def _sam_case(tmp_path, *, review_kind="human", monkeypatch=None, removal_only=F
                  "authority_reference": "synthetic-only", "private_derived_frame_disclosure_authorized": True,
                  "provider_retention_terms_accepted": True, "provider_training_terms_accepted": True,
                  "provider_training_authorized": False}
+    if authorize_partition:
+        from blueprint_pipeline.task_evaluation_configuration_partition_disclosure import PURPOSE
+        raw_record, standard_record = conversion["source"], conversion["output"]
+        permit = _seal(tmp_path / "partition-authority.json", {
+            "schema_version": "public_scene_full_source_provider_disclosure_authority.v1",
+            "status": "authorized", "authority_kind": "explicit_human_full_source_provider_processing",
+            "authorized_by": authority["accepted_by"], "authorized_on": "2026-09-05",
+            "authority_reference": "Synthetic fixture only", "agent_accepted_terms": False,
+            "source_commit": "a" * 40, "provider_id": "vast", "purpose": PURPOSE,
+            "source_binding": {"publisher_scene_id": scene_id, "dataset": raw_record["dataset"],
+                "publisher_revision": raw_record["revision"], "original_source_sha256": raw_record["sha256"],
+                "original_source_size_bytes": raw_record["size_bytes"], "standard_splat_sha256": standard_record["sha256"],
+                "standard_splat_size_bytes": standard_record["size_bytes"], "retained_gaussian_count": 10,
+                "source_gaussian_count": 10, "publisher_terms_digest": conversion["rights"]["terms_digest"]},
+            **{key: True for key in ("full_source_scene_content_upload_authorized", "private_provider_processing_authorized",
+                "publisher_rights_permit_private_full_source_processing", "provider_retention_terms_accepted",
+                "provider_training_terms_accepted", "format_conversion_does_not_reduce_disclosure_scope")},
+            "public_redistribution_authorized": False, "provider_training_authorized": False,
+            "publisher_rights_basis": {"kind": "publisher_license_private_processing",
+                "scope_explanation": "Fixture only", "publisher_terms_evidence": _absolute_record(terms),
+                "private_processing_permission_evidence": _absolute_record(terms)},
+        }, "authorization_digest")
+        authority["full_source_provider_disclosure_authorities"] = {PURPOSE: _absolute_record(permit)}
     config = {
         "schema_version": "observed_appearance_object_removal_configuration.v1",
         "production_render_required": True,
@@ -233,7 +267,7 @@ def _sam_case(tmp_path, *, review_kind="human", monkeypatch=None, removal_only=F
     _write_json(rights_path, {"private_provider_processing_allowed": True,
                              "provider_training_allowed": False, "public_redistribution_allowed": False})
     envelope = {
-        "request": {"run_id": "sam31-fixture-construction"},
+        "request": {"run_id": "sam31-fixture-construction", "expected_production_commit": "a" * 40},
         "sam31_exact_mask_inputs": {key: _absolute_record(path) for key, path in evidence_paths.items()},
         "materialized_references": [
             {"contract_path": contract, "materialized_path": str(path),
@@ -263,6 +297,13 @@ def test_accepted_sam_masks_and_measured_global_cutout_are_consumed_exactly(tmp_
     assert result["derived_gaussian_cutout"]["removed_count"] == 2
     assert result["derived_gaussian_cutout"]["retained_count"] == 8
     assert result["raw_interiorgs_bytes_in_provider_packet"] is False
+    assert result["full_source_scene_content_in_provider_packet"] is True
+    assert result["original_downloaded_file_in_provider_packet"] is False
+    assert result["provider_disclosure_scope"] == "private_full_source_content_partitioned_for_configuration"
+    from blueprint_pipeline.task_evaluation_configuration_partition_disclosure import require_partition_disclosure
+    proof = require_partition_disclosure(render=result, configuration=config, expected_source_commit="a" * 40)
+    assert proof["purpose"] == "configured_scene_partitioned_source_processing"
+    assert sum(row["gaussian_count"] for row in proof["partitions"].values()) == 10
     assert result["provider_mutation_performed"] is False
     assert raw.read_bytes() == raw_before
     runtime = tmp_path / "runtime"
@@ -281,6 +322,50 @@ def test_accepted_sam_masks_and_measured_global_cutout_are_consumed_exactly(tmp_
         assert Path(row["source_object_mask"]["path"]).read_bytes() == (
             mask_root / originals[row["camera_id"]]["mask"]["relative_path"]
         ).read_bytes()
+
+
+def test_frame_permission_cannot_stage_full_source_partition(tmp_path):
+    envelope, config, _, _, _ = _sam_case(tmp_path, authorize_partition=False)
+    output = tmp_path / "must-not-stage"
+    with pytest.raises(TaskEvaluationSceneConfigurationRenderInputsError, match="explicit_full_source_authority_required"):
+        _consume(envelope, config, output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("fault", ["wrong_purpose", "wrong_provider", "wrong_commit", "changed_terms"])
+def test_partition_processing_reopens_exact_scope_before_staging(tmp_path, fault):
+    from blueprint_pipeline.task_evaluation_configuration_partition_disclosure import PURPOSE
+    envelope, config, _, _, _ = _sam_case(tmp_path)
+    mapping = config["human_authority"]["full_source_provider_disclosure_authorities"]
+    path = Path(mapping[PURPOSE]["path"])
+    authority = json.loads(path.read_text())
+    if fault == "wrong_purpose":
+        authority["purpose"] = "exact_source_calibration_gpu_render"
+    elif fault == "wrong_provider":
+        authority["provider_id"] = "another-provider"
+    elif fault == "wrong_commit":
+        authority["source_commit"] = "b" * 40
+    else:
+        Path(authority["publisher_rights_basis"]["publisher_terms_evidence"]["path"]).write_text("changed")
+    _seal(path, authority, "authorization_digest")
+    mapping[PURPOSE] = _absolute_record(path)
+    output = tmp_path / "must-not-stage"
+    with pytest.raises(TaskEvaluationSceneConfigurationRenderInputsError):
+        _consume(envelope, config, output)
+    assert not output.exists()
+
+
+def test_resealed_render_cannot_hide_partition_payload_drift(tmp_path):
+    from blueprint_pipeline.task_evaluation_configuration_partition_disclosure import require_partition_disclosure
+    envelope, config, _, _, _ = _sam_case(tmp_path)
+    result = _consume(envelope, config, tmp_path / "result")
+    row = result["derived_gaussian_cutout"]["retained_scene_without_source_object"]
+    path = Path(row["path"])
+    path.write_bytes(path.read_bytes() + b"changed")
+    row.update(digest=_absolute_record(path)["sha256"], size_bytes=path.stat().st_size)
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    with pytest.raises(ValueError, match="partition_bytes_changed"):
+        require_partition_disclosure(render=result, configuration=config, expected_source_commit="a" * 40)
 
 
 @pytest.mark.parametrize("mutation,error", [
