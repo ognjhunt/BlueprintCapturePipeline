@@ -153,3 +153,48 @@ def test_isolation_command_runs_as_the_service_user_without_network() -> None:
     assert "--setenv=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_FILE=/etc/p.json" in argv
     assert argv[-4:] == ["-m", "blueprint_pipeline.task_evaluation_stage_replay", "--child", CHILD]
     assert os.environ.get("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH") is None
+
+
+def test_the_input_root_comes_from_the_job_not_from_a_guess(tmp_path: Path) -> None:
+    """The first host run defaulted to task-evaluation-inputs; the worker's store is
+    one level down, under prepared-references, so every blob looked missing."""
+
+    inputs = tmp_path / "prepared-references"
+    (inputs / "content-addressed" / "sha256").mkdir(parents=True)
+    plan = inputs / "prep-1" / ("d" * 64)
+    plan.parent.mkdir()
+    plan.write_text("{}", encoding="utf-8")
+    job = {"plan_ref": {"path": str(plan)}}
+
+    assert replay.discover_input_root(job) == inputs
+    assert replay.discover_input_root({"plan_ref": {"path": str(tmp_path / "elsewhere" / "plan")}}) is None
+    assert replay.DEFAULT_INPUT_ROOT.name == "prepared-references"
+
+
+def test_replay_falls_back_to_the_job_input_root_when_the_given_one_has_no_store(tmp_path: Path, monkeypatch) -> None:
+    root, _, job = _queue(tmp_path, state="completed")
+    inputs = tmp_path / "prepared-references"
+    (inputs / "content-addressed" / "sha256").mkdir(parents=True)
+    plan = inputs / "prep-1" / ("d" * 64)
+    plan.parent.mkdir()
+    plan.write_text("{}", encoding="utf-8")
+    job["plan_ref"]["path"] = str(plan)
+    job["job_digest"] = canonical_digest(job, digest_field="job_digest")
+    (root / "completed" / f"{CHILD}.json").write_text(json.dumps(job), encoding="utf-8")
+    seen: dict = {}
+
+    def validated(job, **kwargs):
+        seen["input_root"] = kwargs["input_root"]
+        return {"expected_production_commit": COMMIT}, {"source_commit": COMMIT}
+
+    monkeypatch.setattr(execution, "_validated_job", validated)
+    monkeypatch.setattr(stages, "execute_stage", lambda job: {"status": "completed", "artifacts": {}})
+
+    report = replay.replay_child(
+        queue_root=root, child_id=CHILD, parent_queue_root=tmp_path / "parent", input_root=tmp_path / "wrong",
+        replay_root=tmp_path / "replays", approved_roots=(tmp_path,),
+    )
+
+    assert report["status"] == "completed"
+    assert seen["input_root"] == inputs
+
