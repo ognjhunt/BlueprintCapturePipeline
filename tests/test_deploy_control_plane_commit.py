@@ -2108,6 +2108,41 @@ def test_release_retirement_is_skipped_without_protection_sources_and_applied_wi
     )
 
 
+def test_deploy_retirement_honors_required_historical_evidence_binding(tmp_path: Path) -> None:
+    """A terminal prefix still needs its old renderer after its queues empty."""
+    import time
+
+    releases, runtimes = tmp_path / "releases", tmp_path / "runtimes"
+    current, retained = "a" * 40, "b" * 40
+    for commit in (current, retained):
+        directory = releases / commit
+        directory.mkdir(parents=True)
+        (directory / "renderer").write_bytes(b"retained renderer")
+        old = time.time() - (3_600 if commit == current else 10 * 86_400)
+        os.utime(directory / "renderer", (old, old))
+        os.utime(directory, (old, old))
+    active = tmp_path / "active"
+    active.symlink_to(releases / current, target_is_directory=True)
+    references = [tmp_path / path.lstrip("/") for path in deploy.DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS]
+    for root in references:
+        root.mkdir(parents=True, exist_ok=True)
+    bindings = tmp_path / "var/lib/blueprint/pipeline-control-plane/task-evaluation-release-retention-bindings"
+    bindings.mkdir(parents=True, exist_ok=True)
+    (bindings / "sam-prefix.json").write_text(json.dumps({
+        "schema_version": "task_evaluation_release_retention_binding.v1",
+        "status": "required", "source_commit": retained,
+        "reason": "Completed prefix replay reopens the original renderer release.",
+    }))
+
+    result = deploy._retire_superseded_release_trees(
+        release_root=releases, runtime_root=runtimes, active_link=active,
+        current_commit=current, reference_roots=[str(path) for path in references], keep_last=1,
+    )
+    assert result["status"] == "applied"
+    assert result["retired_commits"] == []
+    assert (releases / retained / "renderer").read_bytes() == b"retained renderer"
+
+
 def _stage_real_units(tmp_path: Path) -> Path:
     """A fake release carrying the repository's real unit files."""
 
