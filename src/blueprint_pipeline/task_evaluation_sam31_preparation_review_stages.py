@@ -19,6 +19,7 @@ from .public_scene_sam31_ai_visual_reviewer import run_sam31_ai_visual_review
 from .public_scene_sam31_track_selection_review import (
     load_validated_sam31_track_selection_inputs,
     materialize_sam31_track_selection_inputs, materialize_sam31_track_selection_review_candidate,
+    seal_sam31_track_selection_ai_review,
     validate_sam31_ai_visual_review_rights, validate_sam31_track_selection_review,
 )
 from .public_scene_calibrated_object_masks import materialize_calibrated_object_mask_set
@@ -112,6 +113,29 @@ def execute_review_stage(job: Mapping[str, Any]) -> dict[str, Any]:
             prepared = prepared_root / "public_scene_sam31_track_selection_inputs.v1.json"
             freezes, task_inputs, selected_ids = load_validated_sam31_track_selection_inputs(prepared)
             _require(freezes == [str(selection_path)], "prepared_selection_mismatch")
+            review_profile = profile.get("sam31_visual_review")
+            _require(isinstance(review_profile, Mapping), "visual_review_profile_missing")
+            if review_profile.get("completed_execution") is not None:
+                execution_path = _profile_file(review_profile, "completed_execution")
+                execution = read(execution_path, digest_field="execution_receipt_digest")
+                candidate_ref = execution.get("candidate") or {}
+                candidate = checked_file(str(candidate_ref.get("path") or ""), candidate_ref)
+                review_path = output / "review-from-completed-execution.json"
+                reviewed = seal_sam31_track_selection_ai_review(
+                    candidate_path=candidate, review_execution_receipt_path=execution_path,
+                    output_path=review_path,
+                )
+                _require(reviewed.get("decision") == "accepted", "independent_sdk_rejected_selection")
+                validate_sam31_track_selection_review(
+                    receipt_path=review_path, task_freeze_paths=freezes,
+                    task_inputs=task_inputs, selected_track_ids_by_task=selected_ids,
+                )
+                artifacts.update(selection_inputs=_record(prepared), track_selection_candidate=_record(candidate),
+                                 track_selection_review=_record(review_path), review_execution=_record(execution_path))
+                return {"status": "completed", "stage_id": stage_id, "artifacts": artifacts,
+                        "retained_artifacts": _inventory(output), "candidate_policy_queried": False,
+                        "provider_compute_allocated": False, "evaluation_authorized": False,
+                        "completed_review_execution_reused": True, "new_model_call_performed": False}
             candidate_root = output / "candidate"
             materialize_sam31_track_selection_review_candidate(
                 task_freeze_paths=freezes, task_inputs=task_inputs,
@@ -120,8 +144,6 @@ def execute_review_stage(job: Mapping[str, Any]) -> dict[str, Any]:
             )
             candidate = candidate_root / "public_scene_sam31_track_selection_review_candidate.v1.json"
             artifacts.update(selection_inputs=_record(prepared), track_selection_candidate=_record(candidate))
-            review_profile = profile.get("sam31_visual_review")
-            _require(isinstance(review_profile, Mapping), "visual_review_profile_missing")
             authority = _profile_file(review_profile, "rights_attestation")
             task_request = _input(plan["host_inputs"], "task_request", root)
             rights = resolve_sam31_review_rights(
