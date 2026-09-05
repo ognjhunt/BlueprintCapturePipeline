@@ -3,11 +3,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+from blueprint_pipeline.adp_task_scoring import TaskNeutralScoringError
+
 import blueprint_pipeline.task_evaluation_scene_configuration_submission_records as records
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_policy_canary_control_gate import controls_required
 from blueprint_pipeline.native_task_arena_policy_canary_session import execute_paired_session, validate_runtime_input_manifest
-from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import _quick_cells
+from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import _quick_cells, _require_strict_owner_success_contract
 from blueprint_pipeline.task_evaluation_rigid_destination_geometry import bind_destination_trajectory
 from blueprint_pipeline.task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
 from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import adapt_rigid_relocation_task_template
@@ -51,10 +54,18 @@ def test_minimal_request_reaches_worker_without_losing_required_controls_or_agen
         'support_height_interval_m': native['support_height_interval_m'],
         'visible_label': 'blue document tray', 'relation': 'inside'})
     native.update(destination_relation='inside', destination_pose_world=[*target, 0., 0., 0., 1.],
+                  destination_support_asset_id='document_tray',
+                  destination_position_bounds_destination_frame_m={'minimum': [-.01]*3, 'maximum': [.01]*3},
+                  destination_interior_bounds_body_frame_m={'minimum': [-.12]*3, 'maximum': [.12]*3},
                   subject_collision_bounds_scoring_frame_m={'minimum': [-.1, -.1, -.01], 'maximum': [.1, .1, .01]})
     contract = _derive_configured_owner_success_contract(native, site_id=launch['scene']['identity']['id'],
         task_id=launch['task']['identity']['id'], team_namespace=launch['team_namespace'])
     assert controls_required(contract)
+    _require_strict_owner_success_contract(task_spec=native, contract=contract)
+    weaker = deepcopy(contract)
+    weaker['criteria'].pop('controls')
+    with pytest.raises(TaskNeutralScoringError, match='controls_required'):
+        _require_strict_owner_success_contract(task_spec=native, contract=weaker)
     assert contract['provenance']['author_source'] == 'agent_proposal'
     assert contract['provenance']['confirmed_by_team_id'] == launch['team_namespace']
     assert contract['provenance']['proposal_digest'].startswith('sha256:')
