@@ -637,3 +637,82 @@ def test_profile_refuses_unpinned_runtime_image(tmp_path: Path) -> None:
             async_loading_frames=False,
             output_path=tmp_path / "profile.json",
         )
+
+
+def test_profile_re_materialized_per_release_reuses_the_runtime_records(tmp_path: Path) -> None:
+    """The worker stack manifest and image build receipt describe the runtime and
+    may come from the release that built the image; the human execution
+    authorization and the profile are bound to the release that runs.  Requiring
+    the runtime records to carry the running commit meant rebuilding the image on
+    every deploy, which is why scene 841757 ran with scene 840920's stale packet."""
+    later_commit = "c" * 40
+    sources = _profile_sources(tmp_path)
+    execution = materialize_sam31_execution_authorization(
+        source_commit_sha=later_commit,
+        runtime_image_identity=IMAGE,
+        authorized_by="owner",
+        authorized_on="2026-09-05",
+        authority_reference="explicit direction for this release",
+        output_path=tmp_path / "execution-later.json",
+    )
+    assert execution["source_commit_sha"] == later_commit
+    profile = materialize_sam31_provider_profile(
+        worker_stack_manifest_path=sources["stack"],
+        runtime_image_build_receipt_path=sources["image_build"],
+        license_use_authorization_path=sources["license"],
+        privacy_use_authorization_path=sources["privacy"],
+        trade_controls_review_path=sources["trade"],
+        execution_authorization_path=tmp_path / "execution-later.json",
+        source_commit_sha=later_commit,
+        runtime_image_identity=IMAGE,
+        method_version="sam3.1-96914d24",
+        output_probability_threshold=0.5,
+        max_num_objects=5,
+        multiplex_count=16,
+        use_fa3=False,
+        compile_model=False,
+        warm_up=False,
+        async_loading_frames=False,
+        output_path=tmp_path / "provider-profile-later.json",
+    )
+    assert profile["source_commit_sha"] == later_commit
+    (tmp_path / "later").mkdir()
+    run_request = _run_request(tmp_path / "later", profile)
+    bundle = tmp_path / "later" / "sam31-input.zip"
+    receipt = tmp_path / "later" / "sam31-input-receipt.json"
+    build_sam31_source_track_input_bundle(request_path=run_request, bundle_path=bundle, receipt_path=receipt)
+    request = materialize_sam31_gpu_canary_request(
+        provider_profile_path=tmp_path / "provider-profile-later.json",
+        source_track_run_request_path=run_request,
+        input_bundle_path=bundle,
+        input_bundle_receipt_path=receipt,
+        source_profile="monocular_video",
+        source_commit_sha=later_commit,
+        expected_camera_count=2,
+        expected_frame_count=2,
+        max_spend_usd=1.0,
+        hard_ttl_seconds=600,
+        retry_cap=0,
+        authority_id="scene-841757-sam31",
+        output_path=tmp_path / "later" / "gpu-canary-request.json",
+    )
+    assert request["source_commit_sha"] == later_commit
+    # A profile from another release is still refused: its execution authority is not this release's.
+    (tmp_path / "stale").mkdir()
+    stale_fixture = _launch_fixture(tmp_path / "stale")
+    with pytest.raises(Sam31ProviderLaunchPacketError, match="configuration_invalid"):
+        materialize_sam31_gpu_canary_request(
+            provider_profile_path=stale_fixture["profile_path"],
+            source_track_run_request_path=stale_fixture["run_request"],
+            input_bundle_path=stale_fixture["bundle"],
+            input_bundle_receipt_path=stale_fixture["receipt"],
+            source_profile="monocular_video",
+            source_commit_sha=later_commit,
+            expected_camera_count=2,
+            expected_frame_count=2,
+            max_spend_usd=1.0,
+            hard_ttl_seconds=600,
+            retry_cap=0,
+            authority_id="scene-841757-sam31",
+            output_path=tmp_path / "stale" / "gpu-canary-request.json",
+        )
