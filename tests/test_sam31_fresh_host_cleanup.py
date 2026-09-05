@@ -97,3 +97,33 @@ def test_parent_preparation_sandbox_can_publish_sam_child_jobs(tmp_path):
         plan_ref=ref, phase='source_selections', inputs={})
     assert result['status'] == 'queued' and Path(result['job_path']).is_file()
     assert not Path(result['result_path']).exists()  # Publication never executes the child.
+
+
+def test_sam_paid_phase_can_consume_existing_ledger_without_resetting_it(tmp_path, monkeypatch):
+    from blueprint_pipeline.adp_retained_scene_render_vast import consume_retained_scene_render_paid_attempt_authority_once
+    from blueprint_pipeline.spend_authority_consumption_root import SPEND_AUTHORITY_ROOT_ENV
+    release = _stage_real_units(tmp_path)
+    text = (release/'deploy/systemd'/SERVICE).read_text()
+    ledger_root = Path('/var/lib/blueprint/spend-authority')
+    writable = {path for path, optional, directive in deploy._unit_sandbox_entries(text)
+                if directive == 'ReadWritePaths' and not optional}
+    assert str(ledger_root) in writable
+    host = tmp_path/'host'
+    (host/'etc/blueprint/task-evaluation-launch-profiles').mkdir(parents=True)
+    ledger = host/str(ledger_root).lstrip('/')
+    consumed = ledger/'consumed'
+    consumed.mkdir(parents=True)
+    consumed.chmod(0o700)
+    previous = consumed/'retained-existing-consumption.json'
+    previous.write_bytes(b'previous immutable consumption evidence')
+    previous.chmod(0o600)
+    deploy._install_unit_sandbox_paths(release_path=release, units=(SERVICE,),
+        root_prefix=host, owner_ids=(os.getuid(), os.getgid()))
+    monkeypatch.setenv(SPEND_AUTHORITY_ROOT_ENV, str(ledger))
+    authority = {'authorization_digest':'sha256:'+'a'*64, 'bundle_sha256':'sha256:'+'b'*64}
+    first = consume_retained_scene_render_paid_attempt_authority_once(authority, blueprint_commit='c'*40)
+    assert first['status'] == 'consumed'
+    second = consume_retained_scene_render_paid_attempt_authority_once(authority, blueprint_commit='c'*40)
+    assert second == {'status':'blocked', 'blockers':['attempt_authority_already_consumed']}
+    assert previous.read_bytes() == b'previous immutable consumption evidence'
+    assert stat.S_IMODE(consumed.stat().st_mode) == 0o700
