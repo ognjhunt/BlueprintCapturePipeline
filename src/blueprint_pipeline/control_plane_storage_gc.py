@@ -46,6 +46,7 @@ from .control_plane_evidence_offload import (
 from .control_plane_storage_pins import PINS_ROOT_ENV, live_pinned_paths
 from .control_plane_storage_roots import require_storage_class
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_release_identity import running_release_commit
 
 
 SCHEMA_VERSION = "control_plane_storage_gc.v1"
@@ -68,6 +69,29 @@ DERIVED_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS"
 QUEUE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS"
 EVIDENCE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_EVIDENCE_ROOTS"
 EVIDENCE_OFFLOAD_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD"
+EVIDENCE_HOT_WINDOW_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS"
+EVIDENCE_ABANDONED_AFTER_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_ABANDONED_AFTER_SECONDS"
+SCRATCH_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_ROOTS"
+SCRATCH_MINIMUM_AGE_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS"
+RUNNING_COMMIT_ENV = "BLUEPRINT_CONTROL_PLANE_GC_RUNNING_COMMIT"
+# Stranded rows: a pending queue row bound to a release other than the running
+# one.  Every worker honours only same-release rows, so such a row can never
+# progress, yet as long as it sits in ``pending`` it is a live reference that
+# keeps that release's trees and every derived directory it names on disk.
+STRANDED_SCHEMA_VERSION = "control_plane_stranded_queue_manifest.v1"
+STRANDED_RECEIPT_SCHEMA_VERSION = "control_plane_stranded_queue_receipt.v1"
+STRANDED_ROW_RECEIPT_SCHEMA_VERSION = "control_plane_stranded_queue_row.v1"
+STRANDED_ACK = "strand-superseded-release-rows"
+STRANDED_STATE = "stranded"
+STRANDED_RECEIPT_SUFFIX = ".stranded.v1.json"
+# Scratch: diagnostics and engineering trees nothing references.  Reaped by
+# idle age alone; three days keeps any investigation's window open.
+SCRATCH_SCHEMA_VERSION = "control_plane_scratch_manifest.v1"
+SCRATCH_RECEIPT_SCHEMA_VERSION = "control_plane_scratch_receipt.v1"
+SCRATCH_ACK = "reap-idle-scratch"
+DEFAULT_SCRATCH_MINIMUM_AGE_SECONDS = 72 * 60 * 60
+_COMMIT = re.compile(r"[0-9a-f]{40}\Z")
+_ROW_COMMIT_KEYS = ("expected_production_commit", "source_commit")
 _DIGEST_NAME = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_QUEUE_MESSAGE_BYTES = 16 * 1024 * 1024
 
@@ -412,6 +436,327 @@ def _existing(paths: Sequence[str | Path]) -> tuple[list[Path], list[str]]:
     return present, absent
 
 
+def _row_bound_commit(document: Mapping[str, Any]) -> str:
+    """The release a queue row is bound to, or "" when the row does not say."""
+
+    for key in _ROW_COMMIT_KEYS:
+        value = document.get(key)
+        if isinstance(value, str) and _COMMIT.fullmatch(value):
+            return value
+    release = document.get("release")
+    if isinstance(release, Mapping):
+        value = release.get("commit")
+        if isinstance(value, str) and _COMMIT.fullmatch(value):
+            return value
+    return ""
+
+
+def build_stranded_queue_manifest(
+    *,
+    queue_roots: Sequence[str | Path],
+    running_commit: str,
+    now: Callable[[], float] = time.time,
+    classifier: Callable[..., Any] = require_storage_class,
+) -> dict[str, Any]:
+    """List pending rows bound to a release other than the running one; mutate nothing.
+
+    Rows in ``processing`` belong to a worker and are never touched.  Rows that
+    do not name a release are left alone: the worker that owns them decides.
+    """
+
+    if not isinstance(running_commit, str) or not _COMMIT.fullmatch(running_commit):
+        raise ControlPlaneStorageGCError("control_plane_storage_gc_running_commit_invalid")
+    observed_at = float(now())
+    candidates: list[dict[str, Any]] = []
+    retained = {"same_release": 0, "unbound": 0, "unsafe": 0}
+    roots: list[str] = []
+    for raw_root in queue_roots:
+        root = Path(raw_root).expanduser()
+        classifier(str(root), expected="work", code="control_plane_storage_gc_stranded_root_class")
+        roots.append(str(root))
+        pending = root / "pending"
+        if pending.is_symlink() or not pending.is_dir():
+            continue
+        for path in sorted(pending.glob("*.json")):
+            try:
+                if path.is_symlink() or not path.is_file():
+                    retained["unsafe"] += 1
+                    continue
+                metadata = path.stat()
+                if metadata.st_size > _MAX_QUEUE_MESSAGE_BYTES:
+                    retained["unsafe"] += 1
+                    continue
+                raw = path.read_bytes()
+                document = json.loads(raw.decode("utf-8"))
+            except (OSError, ValueError):
+                retained["unsafe"] += 1
+                continue
+            if not isinstance(document, Mapping):
+                retained["unsafe"] += 1
+                continue
+            bound = _row_bound_commit(document)
+            if not bound:
+                retained["unbound"] += 1
+                continue
+            if bound == running_commit:
+                retained["same_release"] += 1
+                continue
+            candidates.append(
+                {
+                    "queue_root": str(root),
+                    "name": path.name,
+                    "bound_commit": bound,
+                    "size_bytes": metadata.st_size,
+                    "inode": metadata.st_ino,
+                    "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                }
+            )
+    manifest: dict[str, Any] = {
+        "schema_version": STRANDED_SCHEMA_VERSION,
+        "status": "dry_run",
+        "running_commit": running_commit,
+        "observed_at_epoch": observed_at,
+        "roots": roots,
+        "candidate_count": len(candidates),
+        "candidate_bytes": sum(row["size_bytes"] for row in candidates),
+        "candidates": candidates,
+        "retained_counts": retained,
+        "manifest_digest": "",
+    }
+    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
+    return manifest
+
+
+def apply_stranded_queue_manifest(
+    manifest: Mapping[str, Any], *, ack: str, now: Callable[[], float] = time.time
+) -> dict[str, Any]:
+    """Move every unchanged candidate to ``stranded/`` beside a digest-bound row receipt.
+
+    Nothing is deleted.  Restoring a row is moving it back to ``pending`` under
+    a release bound to its commit; the receipt records what moved and why.
+    """
+
+    if (
+        ack != STRANDED_ACK
+        or manifest.get("schema_version") != STRANDED_SCHEMA_VERSION
+        or manifest.get("manifest_digest")
+        != canonical_digest(dict(manifest), digest_field="manifest_digest")
+    ):
+        raise ControlPlaneStorageGCError("control_plane_storage_gc_stranded_apply_not_authorized")
+    moved: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for row in manifest.get("candidates") or []:
+        root = Path(str(row.get("queue_root") or ""))
+        name = str(row.get("name") or "")
+        source = root / "pending" / name
+        if not name or "/" in name or name.startswith(".") or source.is_symlink() or not source.is_file():
+            skipped.append({"name": name, "reason": "candidate_changed"})
+            continue
+        try:
+            metadata = source.stat()
+            raw = source.read_bytes()
+        except OSError:
+            skipped.append({"name": name, "reason": "candidate_changed"})
+            continue
+        if (
+            metadata.st_ino != row.get("inode")
+            or metadata.st_size != row.get("size_bytes")
+            or "sha256:" + hashlib.sha256(raw).hexdigest() != row.get("sha256")
+        ):
+            skipped.append({"name": name, "reason": "candidate_changed"})
+            continue
+        destination_root = root / STRANDED_STATE
+        destination = destination_root / name
+        receipt_path = destination_root / f"{name}{STRANDED_RECEIPT_SUFFIX}"
+        try:
+            destination_root.mkdir(mode=0o750, exist_ok=True)
+            if destination.exists() or receipt_path.exists():
+                skipped.append({"name": name, "reason": "destination_exists"})
+                continue
+            receipt: dict[str, Any] = {
+                "schema_version": STRANDED_ROW_RECEIPT_SCHEMA_VERSION,
+                "name": name,
+                "queue_root": str(root),
+                "bound_commit": row["bound_commit"],
+                "running_commit": manifest["running_commit"],
+                "previous_state": "pending",
+                "sha256": row["sha256"],
+                "size_bytes": metadata.st_size,
+                "stranded_at_epoch": float(now()),
+                "evidence_deleted": False,
+                "receipt_digest": "",
+            }
+            receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+            with receipt_path.open("x", encoding="utf-8") as stream:
+                json.dump(receipt, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+            os.replace(source, destination)
+        except OSError as exc:
+            skipped.append({"name": name, "reason": f"strand_failed:{type(exc).__name__}"})
+            continue
+        moved.append(
+            {
+                "name": name,
+                "queue_root": str(root),
+                "bound_commit": row["bound_commit"],
+                "size_bytes": metadata.st_size,
+            }
+        )
+    result: dict[str, Any] = {
+        "schema_version": STRANDED_RECEIPT_SCHEMA_VERSION,
+        "status": "applied",
+        "source_manifest_digest": manifest["manifest_digest"],
+        "stranded_count": len(moved),
+        "stranded_bytes": sum(row["size_bytes"] for row in moved),
+        "stranded": moved,
+        "skipped": skipped,
+        "evidence_deleted": False,
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    return result
+
+
+def _make_writable_and_retry(function: Any, target: str, _error: Any) -> None:
+    os.chmod(target, 0o700 if os.path.isdir(target) else 0o600)
+    function(target)
+
+
+def build_scratch_manifest(
+    *,
+    scratch_roots: Sequence[str | Path],
+    minimum_age_seconds: int = DEFAULT_SCRATCH_MINIMUM_AGE_SECONDS,
+    now: Callable[[], float] = time.time,
+    classifier: Callable[..., Any] = require_storage_class,
+) -> dict[str, Any]:
+    """List idle children of scratch roots, without mutating anything.
+
+    Scratch holds diagnostics and engineering trees that no queue, pin, or
+    receipt references, so a child idle longer than the window is reaped by
+    age alone.  Anything touched since is kept.
+    """
+
+    if (
+        not isinstance(minimum_age_seconds, int)
+        or isinstance(minimum_age_seconds, bool)
+        or minimum_age_seconds < 0
+    ):
+        raise ControlPlaneStorageGCError("control_plane_storage_gc_scratch_window_invalid")
+    observed_at = float(now())
+    candidates: list[dict[str, Any]] = []
+    retained = {"recent": 0, "unsafe": 0}
+    roots: list[str] = []
+    for raw_root in scratch_roots:
+        root = Path(raw_root).expanduser()
+        classifier(str(root), expected="scratch", code="control_plane_storage_gc_scratch_root_class")
+        if root.is_symlink() or not root.is_dir():
+            continue
+        roots.append(str(root))
+        for child in sorted(root.iterdir()):
+            if child.name.startswith("."):
+                continue
+            if child.is_symlink():
+                retained["unsafe"] += 1
+                continue
+            try:
+                if child.is_dir():
+                    latest, size = _tree_snapshot(child)
+                    kind = "directory"
+                else:
+                    metadata = child.lstat()
+                    latest, size, kind = metadata.st_mtime, metadata.st_size, "file"
+            except OSError:
+                retained["unsafe"] += 1
+                continue
+            idle_seconds = observed_at - latest
+            if idle_seconds < minimum_age_seconds:
+                retained["recent"] += 1
+                continue
+            candidates.append(
+                {
+                    "root": str(root),
+                    "name": child.name,
+                    "kind": kind,
+                    "size_bytes": size,
+                    "idle_seconds": int(idle_seconds),
+                }
+            )
+    manifest: dict[str, Any] = {
+        "schema_version": SCRATCH_SCHEMA_VERSION,
+        "status": "dry_run",
+        "minimum_age_seconds": minimum_age_seconds,
+        "observed_at_epoch": observed_at,
+        "roots": roots,
+        "candidate_count": len(candidates),
+        "candidate_bytes": sum(row["size_bytes"] for row in candidates),
+        "candidates": candidates,
+        "retained_counts": retained,
+        "manifest_digest": "",
+    }
+    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
+    return manifest
+
+
+def apply_scratch_manifest(
+    manifest: Mapping[str, Any], *, ack: str, now: Callable[[], float] = time.time
+) -> dict[str, Any]:
+    """Remove every scratch candidate that is still idle; keep anything touched since."""
+
+    if (
+        ack != SCRATCH_ACK
+        or manifest.get("schema_version") != SCRATCH_SCHEMA_VERSION
+        or manifest.get("manifest_digest")
+        != canonical_digest(dict(manifest), digest_field="manifest_digest")
+    ):
+        raise ControlPlaneStorageGCError("control_plane_storage_gc_scratch_apply_not_authorized")
+    minimum_age = int(manifest.get("minimum_age_seconds") or 0)
+    removed: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for row in manifest.get("candidates") or []:
+        root = Path(str(row.get("root") or ""))
+        name = str(row.get("name") or "")
+        path = root / name
+        kind = row.get("kind")
+        if (
+            not name
+            or "/" in name
+            or name.startswith(".")
+            or path.is_symlink()
+            or (kind == "directory") != path.is_dir()
+            or (kind == "file") != path.is_file()
+        ):
+            skipped.append({"name": name, "reason": "candidate_changed"})
+            continue
+        try:
+            latest = _tree_snapshot(path)[0] if kind == "directory" else path.lstat().st_mtime
+            if float(now()) - latest < minimum_age:
+                skipped.append({"name": name, "reason": "candidate_changed"})
+                continue
+            if kind == "directory":
+                shutil.rmtree(path, onerror=_make_writable_and_retry)
+            else:
+                path.unlink()
+            if os.path.lexists(path):
+                raise OSError("scratch_remove_incomplete")
+        except OSError as exc:
+            skipped.append({"name": name, "reason": f"remove_failed:{type(exc).__name__}"})
+            continue
+        removed.append({"name": name, "root": str(root), "kind": kind, "size_bytes": row.get("size_bytes")})
+    result: dict[str, Any] = {
+        "schema_version": SCRATCH_RECEIPT_SCHEMA_VERSION,
+        "status": "applied",
+        "source_manifest_digest": manifest["manifest_digest"],
+        "removed_count": len(removed),
+        "removed_bytes": sum(int(row.get("size_bytes") or 0) for row in removed),
+        "removed": removed,
+        "skipped": skipped,
+        "evidence_removed": False,
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    return result
+
+
 def run_storage_gc(
     *,
     content_store_roots: Sequence[str | Path],
@@ -425,11 +770,19 @@ def run_storage_gc(
     content_minimum_age_seconds: int = DEFAULT_MINIMUM_AGE_SECONDS,
     derived_minimum_age_seconds: int = DEFAULT_DERIVED_MINIMUM_AGE_SECONDS,
     hot_window_seconds: int = DEFAULT_HOT_WINDOW_SECONDS,
+    abandoned_after_seconds: int | None = None,
+    running_commit: str = "",
+    scratch_roots: Sequence[str | Path] = (),
+    scratch_minimum_age_seconds: int = DEFAULT_SCRATCH_MINIMUM_AGE_SECONDS,
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
     classifier: Callable[..., Any] = require_storage_class,
 ) -> dict[str, Any]:
-    """One timer tick: derived directories, then blobs, then (optionally) offload."""
+    """One timer tick: stranded rows, derived directories, blobs, offload, scratch.
+
+    Stranded rows go first so the derived-directory step in the same tick no
+    longer sees them as live queue references.
+    """
 
     if apply and ack != RUN_ACK:
         raise ControlPlaneStorageGCError("control_plane_storage_gc_apply_not_authorized")
@@ -442,6 +795,25 @@ def run_storage_gc(
         "apply": apply,
         "skipped_roots": [],
     }
+    queue_present, _absent_queue_roots = _existing(queue_roots)
+    if queue_present:
+        if running_commit:
+            stranded = build_stranded_queue_manifest(
+                queue_roots=queue_present,
+                running_commit=running_commit,
+                now=clock,
+                classifier=classifier,
+            )
+            report["stranded_queue_rows"] = (
+                apply_stranded_queue_manifest(stranded, ack=STRANDED_ACK, now=clock)
+                if apply
+                else stranded
+            )
+        else:
+            report["stranded_queue_rows"] = {
+                "status": "skipped",
+                "reason": "running_commit_unknown",
+            }
     derived_present, absent = _existing(derived_roots)
     report["skipped_roots"].extend(absent)
     if derived_present:
@@ -480,6 +852,7 @@ def run_storage_gc(
         offload = build_evidence_offload_manifest(
             evidence_roots=evidence_present,
             hot_window_seconds=hot_window_seconds,
+            abandoned_after_seconds=abandoned_after_seconds,
             now=clock,
             classifier=classifier,
         )
@@ -491,12 +864,36 @@ def run_storage_gc(
         else:
             report["evidence_offload"] = offload
         report["evidence_offload_enabled"] = bool(offload_enabled)
+    scratch_present, absent = _existing(scratch_roots)
+    report["skipped_roots"].extend(absent)
+    if scratch_present:
+        scratch = build_scratch_manifest(
+            scratch_roots=scratch_present,
+            minimum_age_seconds=scratch_minimum_age_seconds,
+            now=clock,
+            classifier=classifier,
+        )
+        report["scratch_directories"] = (
+            apply_scratch_manifest(scratch, ack=SCRATCH_ACK, now=clock) if apply else scratch
+        )
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     return report
 
 
 def _split_env(name: str) -> list[str]:
     return [item for item in str(os.getenv(name) or "").split(":") if item]
+
+
+def _env_int(name: str, default: int | None) -> int | None:
+    raw = str(os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ControlPlaneStorageGCError(
+            f"control_plane_storage_gc_environment_int_invalid:{name}"
+        ) from exc
 
 
 def _write_report(path: Path, report: Mapping[str, Any]) -> None:
@@ -515,6 +912,26 @@ def _run_main(argv: list[str]) -> int:
     parser.add_argument("--queue-root", action="append", default=None)
     parser.add_argument("--evidence-root", action="append", default=None)
     parser.add_argument("--pins-root", default=os.getenv(PINS_ROOT_ENV) or None)
+    parser.add_argument("--scratch-root", action="append", default=None)
+    parser.add_argument(
+        "--scratch-minimum-age-seconds",
+        type=int,
+        default=_env_int(SCRATCH_MINIMUM_AGE_ENV, DEFAULT_SCRATCH_MINIMUM_AGE_SECONDS),
+    )
+    parser.add_argument(
+        "--hot-window-seconds",
+        type=int,
+        default=_env_int(EVIDENCE_HOT_WINDOW_ENV, DEFAULT_HOT_WINDOW_SECONDS),
+    )
+    parser.add_argument(
+        "--abandoned-after-seconds",
+        type=int,
+        default=_env_int(EVIDENCE_ABANDONED_AFTER_ENV, None),
+    )
+    parser.add_argument(
+        "--running-commit",
+        default=str(os.getenv(RUNNING_COMMIT_ENV) or "").strip() or running_release_commit(),
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--ack", default="")
     parser.add_argument("--report-out", default=None)
@@ -532,6 +949,11 @@ def _run_main(argv: list[str]) -> int:
         in {"1", "true", "yes"},
         apply=args.apply,
         ack=args.ack,
+        hot_window_seconds=args.hot_window_seconds,
+        abandoned_after_seconds=args.abandoned_after_seconds,
+        running_commit=args.running_commit or "",
+        scratch_roots=args.scratch_root or _split_env(SCRATCH_ROOTS_ENV),
+        scratch_minimum_age_seconds=args.scratch_minimum_age_seconds,
         classifier=require_storage_class,
     )
     if args.report_out:

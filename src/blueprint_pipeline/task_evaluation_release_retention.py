@@ -1275,7 +1275,74 @@ def _assert_snapshot_current(artifact: Mapping[str, Any]) -> Path:
     return path
 
 
-def _remove_git_worktree(path: Path, *, commit: str) -> None:
+def _git_metadata_unreachable(path: Path) -> bool:
+    """True when the worktree's git metadata is gone, so git can neither prove nor remove it.
+
+    Deploy creates a release tree as a detached worktree of a deploy-source
+    clone.  When that clone is later removed, the tree's ``.git`` file points at
+    a gitdir that no longer exists, or the gitdir survives while its object
+    store alternates name a clone that does not.  Either way the tree is an
+    orphan: its bytes are reproducible from the commit on the protected branch,
+    and git itself can no longer read it.  Anything else that makes git fail is
+    still ambiguous and still blocks.
+    """
+
+    marker = path / ".git"
+    try:
+        text = marker.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    gitdir_text = text.partition("gitdir:")[2].strip()
+    if not gitdir_text:
+        return False
+    gitdir = Path(gitdir_text)
+    if not gitdir.is_dir():
+        return True
+    try:
+        common = (gitdir / "commondir").read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    common_dir = Path(common) if Path(common).is_absolute() else gitdir / common
+    try:
+        alternates = (common_dir / "objects" / "info" / "alternates").read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        return False
+    return any(
+        line.strip() and not Path(line.strip()).exists()
+        for line in alternates.splitlines()
+    )
+
+
+def _remove_orphan_release_tree(path: Path, *, commit: str) -> None:
+    if path.is_symlink() or not path.is_dir() or path.name != commit:
+        raise ReleaseRetentionError(
+            f"release_retention_release_target_invalid:{commit}"
+        )
+
+    def make_writable_and_retry(function: Any, target: str, _error: Any) -> None:
+        os.chmod(target, 0o700 if os.path.isdir(target) else 0o600)
+        function(target)
+
+    try:
+        shutil.rmtree(path, onerror=make_writable_and_retry)
+    except OSError as exc:
+        raise ReleaseRetentionError(
+            f"release_retention_release_remove_failed:{commit}"
+        ) from exc
+    if os.path.lexists(path):
+        raise ReleaseRetentionError(
+            f"release_retention_release_remove_failed:{commit}"
+        )
+
+
+def _remove_git_worktree(path: Path, *, commit: str) -> str:
+    """Remove a release worktree through git, or as an orphan when git lost it.
+
+    Returns the removal method so the receipt records which proof applied.
+    """
+
     git_marker = path / ".git"
     if git_marker.is_symlink() or not git_marker.is_file():
         raise ReleaseRetentionError(
@@ -1307,6 +1374,9 @@ def _remove_git_worktree(path: Path, *, commit: str) -> None:
                 f"release_retention_git_unavailable:{commit}"
             ) from exc
         if completed.returncode != 0:
+            if _git_metadata_unreachable(path):
+                _remove_orphan_release_tree(path, commit=commit)
+                return "orphan_tree"
             raise ReleaseRetentionError(
                 f"release_retention_release_git_probe_failed:{commit}"
             )
@@ -1335,6 +1405,7 @@ def _remove_git_worktree(path: Path, *, commit: str) -> None:
         raise ReleaseRetentionError(
             f"release_retention_release_remove_failed:{commit}"
         )
+    return "git_worktree"
 
 
 def _remove_runtime_tree(path: Path, *, commit: str, kind: str) -> None:
@@ -1453,8 +1524,9 @@ def _apply_release_retention_plan_locked(
         for artifact in artifacts:
             path = _assert_snapshot_current(artifact)
             kind = str(artifact["kind"])
+            removal_method = None
             if kind == "control_plane_release":
-                _remove_git_worktree(path, commit=commit)
+                removal_method = _remove_git_worktree(path, commit=commit)
             elif kind in {
                 "runtime_splat_render",
                 "runtime_scene_configuration",
@@ -1469,14 +1541,15 @@ def _apply_release_retention_plan_locked(
                 raise ReleaseRetentionError(
                     f"release_retention_artifact_kind_invalid:{kind}"
                 )
-            removed.append(
-                {
-                    "source_commit": commit,
-                    "kind": kind,
-                    "path": str(path),
-                    "removed_bytes": artifact["size_bytes"],
-                }
-            )
+            removed_row = {
+                "source_commit": commit,
+                "kind": kind,
+                "path": str(path),
+                "removed_bytes": artifact["size_bytes"],
+            }
+            if removal_method is not None:
+                removed_row["removal_method"] = removal_method
+            removed.append(removed_row)
 
     result: dict[str, Any] = {
         "schema_version": APPLY_SCHEMA_VERSION,
