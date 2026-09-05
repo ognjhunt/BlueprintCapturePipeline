@@ -862,18 +862,21 @@ def exact_production_release_binding(
     release_environment_sha256: str,
     scene_configuration_publication: Mapping[str, Any],
     splat_render_publication: Mapping[str, Any],
+    release_admission_mode: str = "promoted",
 ) -> dict[str, Any]:
     provenance = deploy_receipt["release_provenance"]
     return {
         "schema_version": "task_evaluation_exact_production_release_binding.v1",
         "status": "production_commit_proven",
+        "release_admission_mode": release_admission_mode,
+        "claim_ceiling": "development_only",
         "program_id": "arm-decision-proof-v1",
         "product": "Task Evaluation Run",
         "team_namespace": team_namespace,
         "scene_identity": dict(scene_identity),
         "source_commit": source_commit,
         "promotion": {
-            "workflow": "Full Test Lane",
+            "workflow": "Full Test Lane" if provenance["provenance_status"] == "verified" else None,
             "provenance_status": provenance["provenance_status"],
             "promotion_eligible": bool(provenance["promotion_eligible"]),
             "canonical_full_lane_verified": bool(provenance["canonical_full_lane_verified"]),
