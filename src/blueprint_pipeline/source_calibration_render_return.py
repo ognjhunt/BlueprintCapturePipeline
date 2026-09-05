@@ -184,3 +184,34 @@ def require_source_calibration_closure(prepared: Mapping[str, Any], returned_gro
 def materialize_source_calibration_closed_return(**kwargs) -> dict:
     from .source_calibration_render_closure import materialize_source_calibration_closed_return as materialize
     return materialize(**kwargs)
+
+
+def main(argv=None) -> int:
+    """Retain verified returned artifacts without launching provider work."""
+    import argparse
+    from .public_scene_inpainting_preparation import validate_prepared_inputs
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('operation', choices=('render-return', 'closed-return'))
+    parser.add_argument('--prepared-inputs', required=True)
+    parser.add_argument('--provider-result')
+    parser.add_argument('--render-return')
+    parser.add_argument('--execution-closure')
+    parser.add_argument('--output', required=True)
+    args = parser.parse_args(argv)
+    prepared = validate_prepared_inputs(args.prepared_inputs)
+    if args.operation == 'render-return':
+        require(bool(args.provider_result) and not args.render_return and not args.execution_closure,
+                'render_return_cli_inputs_invalid')
+        materialize_source_calibration_return(prepared_inputs=prepared,
+            result_path=Path(args.provider_result), output_path=Path(args.output))
+    else:
+        require(bool(args.render_return) and bool(args.execution_closure) and not args.provider_result,
+                'closed_return_cli_inputs_invalid')
+        materialize_source_calibration_closed_return(prepared_inputs=prepared,
+            returned_group_path=args.render_return, execution_closure=read(args.execution_closure),
+            output_path=args.output)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

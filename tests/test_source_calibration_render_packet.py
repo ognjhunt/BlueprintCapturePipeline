@@ -154,3 +154,19 @@ def test_source_bundle_reaches_actual_canonical_allocator_admission(tmp_path, mo
     assert len(observed) == 1
     assert admission['private_scene_derived_input_only'] is False
     assert admission['full_source_scene_content_upload_authorized'] is True
+
+
+def test_return_and_close_cli_materialize_real_retained_evidence(tmp_path, monkeypatch):
+    from blueprint_pipeline.source_calibration_render_return import main, require_source_calibration_closure
+    from tests.test_retained_source_calibration_lifecycle import _closed_source_fixture
+    prepared, rendered_path, closure, root = _closed_source_fixture(tmp_path, monkeypatch)
+    rendered = json.loads(rendered_path.read_text())
+    cli_return = root/'cli-render-return.json'
+    assert main(['render-return', '--prepared-inputs', prepared['preparation_path'],
+        '--provider-result', rendered['provider_result']['path'], '--output', str(cli_return)]) == 0
+    closure_path = root/'closure-inputs.json'
+    closure_path.write_text(canonical_json(closure))
+    closed = root/'cli-closed-return.json'
+    assert main(['closed-return', '--prepared-inputs', prepared['preparation_path'],
+        '--render-return', str(cli_return), '--execution-closure', str(closure_path), '--output', str(closed)]) == 0
+    assert require_source_calibration_closure(prepared, closed)['execution_closure'] == closure
