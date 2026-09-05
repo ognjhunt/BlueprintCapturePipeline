@@ -220,6 +220,9 @@ def materialize_scene_configuration_submission(
             "accepted_by": task["human_authority"]["accepted_by"],
             "authority_reference": task["human_authority"]["authority_reference"],
         }
+    if "success_contract_authority" in task:
+        require(isinstance(task["success_contract_authority"], dict), "task_success_authority_invalid")
+        template["owner_success_contract_authority"] = dict(task["success_contract_authority"])
     template["instruction"] = instruction
     template["instruction_subject_label"] = task["subject"]["review_label"].replace("_", " ")
     template["visible_target_label"] = task["destination"]["visible_label"]
