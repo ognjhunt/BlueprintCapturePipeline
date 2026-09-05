@@ -81,6 +81,40 @@ def validate_retreat_binding(task_spec: Mapping[str, Any], contract: Mapping[str
     return errors
 
 
+def _oriented_bounds_projection(bounds: Mapping[str, Any], orientation: Sequence[float],
+                                direction: Sequence[float]) -> float:
+    return max(sum(value * axis for value, axis in zip(_rotate(corner, orientation), direction, strict=True))
+               for corner in product(*zip(bounds["minimum"], bounds["maximum"], strict=True)))
+
+
+def planned_retreat_position(*, task_spec: Mapping[str, Any], subject_position: Sequence[float],
+                            subject_orientation: Sequence[float], grasp_position: Sequence[float],
+                            withdrawal_direction: Sequence[float], minimum_displacement_m: float,
+                            arrival_tolerance_m: float) -> list[float]:
+    """Plan clearance beyond collision bounds; never supply a scoring verdict.
+
+    Legacy tasks without an authored retreat criterion keep their prior motion.
+    Strict tasks reserve arrival tolerance beyond the requested surface clearance.
+    """
+    displacement = minimum_displacement_m
+    if "retreat_clearance_m" in task_spec:
+        clearance = task_spec["retreat_clearance_m"]
+        bounds = task_spec.get("subject_collision_bounds_scoring_frame_m")
+        lower = _vector(bounds.get("minimum"), 3) if isinstance(bounds, Mapping) else None
+        upper = _vector(bounds.get("maximum"), 3) if isinstance(bounds, Mapping) else None
+        direction = _vector(withdrawal_direction, 3)
+        if (isinstance(clearance, bool) or not isinstance(clearance, (int, float))
+                or not math.isfinite(clearance) or clearance <= 0
+                or lower is None or upper is None or any(a >= b for a, b in zip(lower, upper, strict=True))
+                or direction is None or not math.isclose(sum(x*x for x in direction), 1., abs_tol=1e-6)
+                or not task_spec.get("interaction_affordance", {}).get("insertion_withdrawal_unit_world")):
+            raise ValueError("native_rigid_construction_retreat_geometry_or_clearance_invalid")
+        surface = _oriented_bounds_projection(bounds, subject_orientation, direction)
+        grasp_offset = sum((g-s)*u for g, s, u in zip(grasp_position, subject_position, direction, strict=True))
+        displacement = max(displacement, surface - grasp_offset + clearance + arrival_tolerance_m)
+    return [g + u*displacement for g, u in zip(grasp_position, withdrawal_direction, strict=True)]
+
+
 def score_retreat(*, criterion: Mapping[str, Any], task_spec: Mapping[str, Any],
                   samples: Sequence[Mapping[str, Any]], window_samples: int,
                   release_width_m: float) -> dict[str, Any]:
@@ -99,10 +133,8 @@ def score_retreat(*, criterion: Mapping[str, Any], task_spec: Mapping[str, Any],
             gaps.append(row["step_index"])
             continue
         direction = _rotate(criterion["withdrawal_unit_destination_frame"], destination[3:])
-        corners = [_rotate(corner, subject[3:]) for corner in product(
-            *zip(bounds["minimum"], bounds["maximum"], strict=True))]
-        clearance = sum((grasp[i]-subject[i])*direction[i] for i in range(3)) - max(
-            sum(corner[i]*direction[i] for i in range(3)) for corner in corners)
+        clearance = sum((grasp[i]-subject[i])*direction[i] for i in range(3)) - _oriented_bounds_projection(
+            bounds, subject[3:], direction)
         clearances.append(clearance)
         released = released and row["task_contact_active"] is False and width >= release_width_m
     complete = len(samples) >= window_samples and not gaps

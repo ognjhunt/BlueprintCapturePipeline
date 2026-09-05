@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .adp_rigid_retreat_scoring import planned_retreat_position
 from .native_franka_action_math import is_unauthored_identity_quaternion_xyzw
 from .native_franka_pose_servo import DEFAULT_VELOCITY_FEEDFORWARD_SCALE
 from .articulation_graph_contract import (
@@ -1751,6 +1752,13 @@ def materialize_rigid_construction_phase_plan(
         }
     else:
         push_threshold_extra = {}
+        try:
+            destination_retreat = planned_retreat_position(
+                task_spec=task_spec, subject_position=destination, subject_orientation=destination_orientation,
+                grasp_position=contact_destination, withdrawal_direction=destination_withdrawal_world,
+                minimum_displacement_m=pregrasp_clearance, arrival_tolerance_m=arrival_tolerance)
+        except ValueError as exc:
+            raise NativeTaskConstructionPlanError([str(exc)]) from exc
         phases = [
             _phase(
                 "pregrasp",
@@ -1840,11 +1848,7 @@ def materialize_rigid_construction_phase_plan(
                 ),
                 _phase(
                     "settle_observe",
-                    [
-                        contact_destination[index]
-                        + destination_withdrawal_world[index] * pregrasp_clearance
-                        for index in range(3)
-                    ],
+                    destination_retreat,
                     gripper_state="open",
                     gate_ids=("support_stability", "destination_containment"),
                     orientation_world_xyzw=destination_gripper_orientation,
@@ -1853,11 +1857,7 @@ def materialize_rigid_construction_phase_plan(
                 ),
                 _phase(
                     "retreat",
-                    [
-                        contact_destination[index]
-                        + destination_withdrawal_world[index] * pregrasp_clearance
-                        for index in range(3)
-                    ],
+                    destination_retreat,
                     gripper_state="open",
                     gate_ids=("retreat",),
                     orientation_world_xyzw=destination_gripper_orientation,
