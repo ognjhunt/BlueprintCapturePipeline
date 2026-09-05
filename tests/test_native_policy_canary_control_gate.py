@@ -92,14 +92,43 @@ def test_paired_infrastructure_failure_seals_both_episodes_and_never_starts_othe
 
 
 @pytest.mark.parametrize("force_miss", [False, True])
-def test_cell_control_gate_reuses_real_control_runner_and_native_phase_targets(tmp_path, monkeypatch, force_miss):
+@pytest.mark.parametrize("strict_retreat", [False, True])
+def test_cell_control_gate_reuses_real_control_runner_and_native_phase_targets(tmp_path, monkeypatch, force_miss, strict_retreat):
     from blueprint_pipeline import adp009d_control_episode as runner
     from blueprint_pipeline import native_task_arena_controls_worker as worker
     from tests.test_native_task_control_plan import _rigid_scene, _rigid_construction, _RigidControlEnvironment
 
     scene = _rigid_scene(scene_id="fixture", asset_id="subject")
+    if strict_retreat:
+        from blueprint_pipeline.adp_task_scoring import _compatibility_rigid_success_criteria, seal_rigid_task_success_contract
+        from blueprint_pipeline.adp_rigid_retreat_scoring import _derive_retreat_criterion
+        spec = scene['task_spec']
+        destination = [(a+b)/2 for a, b in zip(spec['destination_position_bounds_world_m']['minimum'],
+                                              spec['destination_position_bounds_world_m']['maximum'])]
+        spec.update(destination_relation='inside', destination_pose_world=[*destination, 0., 0., 0., 1.],
+                    destination_position_bounds_destination_frame_m={'minimum': [-.02]*3, 'maximum': [.02]*3},
+                    subject_collision_bounds_scoring_frame_m={'minimum': [-.147652001, -.198848014, -.0105687],
+                                                             'maximum': [.147652001, .198848014, .0105687]},
+                    destination_interior_bounds_body_frame_m={'minimum': [-.2, -.25, -.03], 'maximum': [.2, .25, .03]},
+                    destination_reset_translation_tolerance_m=.002, destination_reset_rotation_tolerance_rad=.01,
+                    retreat_clearance_m=.10)
+        affordance = spec['interaction_affordance']
+        affordance.update(pregrasp_clearance_m=.08, contact_point_scoring_frame_m=[0., -.198848014, 0.],
+                          insertion_withdrawal_unit_world=[0., 0., 1.])
+        affordance['affordance_digest'] = canonical_digest(affordance, digest_field='affordance_digest')
+        criteria = _compatibility_rigid_success_criteria(spec)
+        criteria['terminal_task_contact']['mode'] = 'cleared'
+        criteria['retreat'] = _derive_retreat_criterion(spec)
+        criteria['controls'] = {'mode': 'required_per_cell', 'control_ids': list(CONTROL_IDS)}
+        spec['task_success_contract'] = seal_rigid_task_success_contract(
+            task_spec=spec, site_id='fixture', task_id='fixture', author_source='task_owner',
+            author_id='fixture-owner', confirmation_status='confirmed', confirmed_by_team_id='fixture-owner', criteria=criteria)
+        scene['plan_digest'] = canonical_digest(scene, digest_field='plan_digest')
     construction = _rigid_construction(scene)
     environment = _RigidControlEnvironment(scene=scene, construction=construction)
+    if strict_retreat:
+        raw_readback = environment.read_object_sample
+        environment.read_object_sample = lambda: {**raw_readback(), 'destination_pose_world': spec['destination_pose_world']}
     if force_miss:
         read_sample = environment.read_object_sample
         def shifted_readback():
@@ -135,10 +164,35 @@ def test_cell_control_gate_reuses_real_control_runner_and_native_phase_targets(t
         assert positive["environment_steps"] <= scene["task_spec"]["maximum_action_steps"]
         return
     assert receipt["status"] == "passed", receipt["blockers"]
-    assert seen == [row["position_world_m"] for row in construction["construction_phase_plan"]["phases"]]
+    assert seen == [row["position_world_m"] for row in construction["construction_phase_plan"]["phases"]
+                    if row['phase_id'] != 'recovery']
     assert [row["control_id"] for row in receipt["controls"]] == list(CONTROL_IDS)
     assert all(row["control_passed"] for row in receipt["controls"])
     assert all(row["state_trace"] and row["action_trace"] and row["score"] for row in receipt["controls"])
+    retained = json.loads((tmp_path/'strict_controls/native_phase_plan.json').read_text())
+    assert retained['phases'][-1]['phase_id'] == 'recovery'
+    scored_plan = json.loads((tmp_path/'strict_controls/adp_task_control_plan.v1.json').read_text())
+    assert scored_plan['scripted_positive_actions'][-1]['phase_id'] == 'retreat'
+    assert 'recovery' not in {row['phase_id'] for row in scored_plan['scripted_positive_actions']}
+    if strict_retreat:
+        positive = next(row for row in receipt['controls'] if row['control_id'] == CONTROL_IDS[1])
+        assert positive['score']['criteria_satisfied']['retreat'] is True
+        assert positive['score']['measurements']['retreat']['minimum_observed_clearance_m'] >= .10
+        # Reintroduce the exact retained construction recovery. The actual
+        # episode runner and scorer must reject this former terminal behavior.
+        from copy import deepcopy
+        old_plan = deepcopy(scored_plan)
+        recovery = deepcopy(old_plan['scripted_positive_actions'][0])
+        recovery['phase_id'] = 'recovery'
+        old_plan['scripted_positive_actions'].append(recovery)
+        for row in old_plan['scripted_positive_actions']:
+            row['maximum_steps'] = 20
+        old_plan['maximum_scripted_and_settle_steps'] = 20*len(old_plan['scripted_positive_actions']) + spec['settle_window_samples']
+        old_plan['plan_digest'] = canonical_digest(old_plan, digest_field='plan_digest')
+        failed = runner.run_task_neutral_control(environment=environment, task_spec=spec, control_plan=old_plan,
+            control_id=CONTROL_IDS[1], gripper_open_command=0., gripper_closed_command=1., output_dir=tmp_path/'old-terminal')
+        assert failed['control_passed'] is False
+        assert failed['score']['failed_criteria'] == ['retreat']
 
 
 def test_explicit_control_contract_cannot_load_policies_with_only_camera_gate(tmp_path):
