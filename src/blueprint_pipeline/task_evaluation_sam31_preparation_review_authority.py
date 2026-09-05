@@ -147,7 +147,8 @@ def validate_sam31_review_authority(authority_path: str | Path, *,
 
 
 def resolve_sam31_review_rights(*, authority_path: str | Path, task_request_path: str | Path,
-                                candidate_path: str | Path, output_path: str | Path) -> Path:
+                                candidate_path: str | Path, output_path: str | Path,
+                                completed_prefix_adoption_path: str | Path | None = None) -> Path:
     """Bind new overlays to the existing exact task permission before disclosure."""
     source, raw = _read(authority_path)
     if raw.get("schema_version") == review.AI_RIGHTS_SCHEMA_VERSION:
@@ -158,14 +159,28 @@ def resolve_sam31_review_rights(*, authority_path: str | Path, task_request_path
     candidate_file, candidate = review.load_validated_sam31_track_selection_review_candidate(candidate_path)
     bindings = candidate.get("selection_bindings", [])
     _require(len(bindings) == 1, "candidate_task_mismatch")
-    _, freeze = _reopen(bindings[0].get("task_freeze"))
+    freeze_path, freeze = _reopen(bindings[0].get("task_freeze"))
     from .public_scene_removal_selection import validate_removal_task_selection
     validate_removal_task_selection(freeze)
     _, scene = _reopen(freeze.get("scene_selection"))
     _require(freeze.get("scene_freeze_digest") == scene.get("scene_freeze_digest")
-             and scene.get("scene_freeze_digest") == canonical_digest(scene, digest_field="scene_freeze_digest")
-             and (scene.get("source_evidence") or {}).get("task_request") == authority["task_request"],
+             and scene.get("scene_freeze_digest") == canonical_digest(scene, digest_field="scene_freeze_digest"),
              "candidate_task_mismatch")
+    source_task = (scene.get("source_evidence") or {}).get("task_request")
+    adoption_record = None
+    if source_task != authority["task_request"]:
+        _require(completed_prefix_adoption_path is not None, "candidate_task_mismatch")
+        from .task_evaluation_sam31_prefix_adoption import validate_completed_prefix_adoption
+        adopted = validate_completed_prefix_adoption(
+            _path(completed_prefix_adoption_path), expected_source_commit=authority["source_commit"],
+            approved_roots=(Path("/var/lib/blueprint"), Path("/opt/blueprint"), Path("/etc/blueprint")),
+        )
+        _, original_plan = _reopen(adopted["record"]["source_plan"])
+        _require(adopted["record"]["current_host_inputs"]["task_request"] == authority["task_request"]
+                 and adopted["artifacts"]["task_selection"] == _record(freeze_path)
+                 and original_plan["host_inputs"]["task_request"] == source_task,
+                 "candidate_task_mismatch")
+        adoption_record = _record(_path(completed_prefix_adoption_path))
     _path(output_path, output=True)
     _path(Path(output_path).with_suffix(".derivation.json"), output=True)
     result = review.materialize_sam31_ai_visual_review_rights(
@@ -183,6 +198,8 @@ def resolve_sam31_review_rights(*, authority_path: str | Path, task_request_path
         "new_terms_acceptance": False, "historical_candidate_authority_reused": False,
         "receipt_digest": "",
     }
+    if adoption_record is not None:
+        derivation["completed_prefix_adoption"] = adoption_record
     derivation["receipt_digest"] = canonical_digest(derivation, digest_field="receipt_digest")
     _write(Path(output_path).with_suffix(".derivation.json"), derivation)
     return Path(output_path)

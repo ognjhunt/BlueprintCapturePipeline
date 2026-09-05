@@ -127,6 +127,10 @@ def execute_review_stage(job: Mapping[str, Any]) -> dict[str, Any]:
             rights = resolve_sam31_review_rights(
                 authority_path=authority, task_request_path=task_request,
                 candidate_path=candidate, output_path=output / "review-rights.json",
+                completed_prefix_adoption_path=(
+                    _profile_file(profile, "completed_prefix_adoption")
+                    if profile.get("completed_prefix_adoption") is not None else None
+                ),
             )
             artifacts["review_rights"] = _record(rights)
             derivation = rights.with_suffix(".derivation.json")
