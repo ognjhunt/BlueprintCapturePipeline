@@ -149,7 +149,7 @@ def _validate_dependency_wheelhouse(
         ) from exc
 
 
-def _validate_provider_profile(path: Path) -> dict[str, Any]:
+def _validate_provider_profile(path: Path, *, source_commit: str) -> dict[str, Any]:
     value = _read_json(path, code="sam31_provider_profile_invalid")
     blockers: list[str] = []
     _validate_profile(
@@ -160,6 +160,12 @@ def _validate_provider_profile(path: Path) -> dict[str, Any]:
         blockers,
     )
     _require(not blockers, "sam31_provider_profile_invalid")
+    from .sam31_provider_launch_packet import validate_sam31_provider_profile_sources
+
+    try:
+        validate_sam31_provider_profile_sources(value, source_commit_sha=source_commit)
+    except ValueError as exc:
+        raise Sam31PreparationProfileError("sam31_preparation_profile_" + str(exc)) from exc
     return value
 
 
@@ -323,7 +329,7 @@ def materialize_sam31_preparation_profile(
 
     _require(_git(repo, "rev-parse", "HEAD") == source_commit, "source_commit_mismatch")
     _require(not _git(repo, "status", "--short"), "source_checkout_dirty")
-    provider_profile = _validate_provider_profile(provider_profile_path)
+    provider_profile = _validate_provider_profile(provider_profile_path, source_commit=source_commit)
     rights = _validate_review_rights(rights_path)
     if "authority_digest" in rights:
         _require(rights.get("source_commit") == source_commit, "review_authority_commit_mismatch")

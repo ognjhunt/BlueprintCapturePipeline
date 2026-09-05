@@ -448,6 +448,96 @@ def materialize_sam31_provider_profile(
     return profile
 
 
+def validate_sam31_provider_profile_sources(
+    profile: Mapping[str, Any], *, source_commit_sha: str,
+) -> dict[str, Any]:
+    """Reopen the exact worker/image/authority chain without writing or allocating."""
+
+    if profile.get("source_commit_sha") != source_commit_sha or _COMMIT.fullmatch(source_commit_sha) is None:
+        raise Sam31ProviderLaunchPacketError("sam31_provider_source_commit_mismatch")
+    if profile.get("provider_mutations_performed") != 0 or profile.get("paid_execution_started") is not False:
+        raise Sam31ProviderLaunchPacketError("sam31_provider_profile_execution_state_invalid")
+    stack_record = profile.get("worker_stack_manifest")
+    image_build_record = profile.get("runtime_image_build_receipt")
+    authorization_records = profile.get("authorization_sources")
+    if (
+        not isinstance(stack_record, Mapping)
+        or not isinstance(image_build_record, Mapping)
+        or not isinstance(authorization_records, Mapping)
+    ):
+        raise Sam31ProviderLaunchPacketError("sam31_profile_source_bindings_missing")
+    stack_path = _reopen_record(
+        stack_record, code="sam31_worker_stack_manifest_bytes_changed"
+    )
+    image_build_path = _reopen_record(
+        image_build_record, code="sam31_runtime_image_build_receipt_bytes_changed"
+    )
+    authorization_paths = {
+        role: _reopen_record(
+            authorization_records.get(role),
+            code=f"sam31_{role}_authorization_bytes_changed",
+        )
+        for role in ("license_use", "privacy_use", "trade_controls", "execution")
+    }
+    stack = _read(stack_path, code="sam31_worker_stack_manifest_invalid")
+    image_build = _read(
+        image_build_path, code="sam31_runtime_image_build_receipt_invalid"
+    )
+    if (
+        stack.get("schema_version") != WORKER_STACK_SCHEMA_VERSION
+        or _COMMIT.fullmatch(str(stack.get("source_commit_sha") or "")) is None
+        or stack.get("runtime_image_identity") != profile.get("runtime_image_identity")
+        or stack.get("runtime_digest") != profile.get("runtime_digest")
+        or stack.get("runtime_digest")
+        != str(profile.get("runtime_image_identity") or "").rpartition("@")[2]
+        or stack.get("official_code_revision") != OFFICIAL_CODE_REVISION
+        or stack.get("checkpoint_repository_revision") != CHECKPOINT_REPOSITORY_REVISION
+        or stack.get("checkpoint_digest") != CHECKPOINT_DIGEST
+        or stack.get("license_terms_digest") != LICENSE_TERMS_DIGEST
+        or not _self_digested(stack, field="manifest_digest")
+        or stack.get("manifest_digest") != stack_record.get("manifest_digest")
+        or image_build.get("schema_version")
+        != RUNTIME_IMAGE_BUILD_RECEIPT_SCHEMA_VERSION
+        or image_build.get("status") != "published"
+        or _COMMIT.fullmatch(str(image_build.get("source_commit_sha") or "")) is None
+        or image_build.get("runtime_image_identity") != profile.get("runtime_image_identity")
+        or image_build.get("runtime_digest") != profile.get("runtime_digest")
+        or image_build.get("official_code_revision") != OFFICIAL_CODE_REVISION
+        or image_build.get("registry_api_digest_verified") is not True
+        or _DIGEST.fullmatch(str(image_build.get("dockerfile_sha256") or "")) is None
+        or _DIGEST.fullmatch(str(image_build.get("source_tree_digest") or "")) is None
+        or _DIGEST.fullmatch(str(image_build.get("build_provenance_digest") or "")) is None
+        or not _self_digested(image_build)
+        or image_build.get("receipt_digest") != image_build_record.get("receipt_digest")
+    ):
+        raise Sam31ProviderLaunchPacketError("sam31_worker_stack_manifest_invalid")
+    _, reopened_authorization_records = _authorization_sources(
+        license_path=authorization_paths["license_use"],
+        privacy_path=authorization_paths["privacy_use"],
+        trade_path=authorization_paths["trade_controls"],
+        execution_path=authorization_paths["execution"],
+        source_commit_sha=source_commit_sha,
+        runtime_image_identity=str(profile.get("runtime_image_identity") or ""),
+    )
+    if (
+        reopened_authorization_records != dict(authorization_records)
+        or profile.get("license_use_authorization_digest")
+        != reopened_authorization_records["license_use"]["sha256"]
+        or profile.get("privacy_use_authorization_digest")
+        != reopened_authorization_records["privacy_use"]["sha256"]
+        or profile.get("trade_controls_review_digest")
+        != reopened_authorization_records["trade_controls"]["sha256"]
+        or profile.get("execution_authorization_digest")
+        != reopened_authorization_records["execution"]["sha256"]
+    ):
+        raise Sam31ProviderLaunchPacketError("sam31_authorization_source_binding_invalid")
+    return {
+        "worker_stack_manifest": dict(stack_record),
+        "runtime_image_build_receipt": dict(image_build_record),
+        "authorization_sources": dict(authorization_records),
+    }
+
+
 def materialize_sam31_gpu_canary_request(
     *,
     provider_profile_path: str | Path,
@@ -542,88 +632,14 @@ def materialize_sam31_gpu_canary_request(
         or portable_request.get("provider_profile") != profile
     ):
         raise Sam31ProviderLaunchPacketError("sam31_input_bundle_binding_invalid")
-    stack_record = profile.get("worker_stack_manifest")
-    image_build_record = profile.get("runtime_image_build_receipt")
-    authorization_records = profile.get("authorization_sources")
-    if (
-        not isinstance(stack_record, Mapping)
-        or not isinstance(image_build_record, Mapping)
-        or not isinstance(authorization_records, Mapping)
-    ):
-        raise Sam31ProviderLaunchPacketError("sam31_profile_source_bindings_missing")
-    stack_path = _reopen_record(
-        stack_record, code="sam31_worker_stack_manifest_bytes_changed"
-    )
-    image_build_path = _reopen_record(
-        image_build_record, code="sam31_runtime_image_build_receipt_bytes_changed"
-    )
-    authorization_paths = {
-        role: _reopen_record(
-            authorization_records[role],
-            code=f"sam31_{role}_authorization_bytes_changed",
-        )
-        for role in ("license_use", "privacy_use", "trade_controls", "execution")
-    }
-    stack = _read(stack_path, code="sam31_worker_stack_manifest_invalid")
-    image_build = _read(
-        image_build_path, code="sam31_runtime_image_build_receipt_invalid"
-    )
-    if (
-        stack.get("schema_version") != WORKER_STACK_SCHEMA_VERSION
-        or _COMMIT.fullmatch(str(stack.get("source_commit_sha") or "")) is None
-        or stack.get("runtime_image_identity") != profile.get("runtime_image_identity")
-        or stack.get("runtime_digest") != profile.get("runtime_digest")
-        or stack.get("runtime_digest")
-        != str(profile.get("runtime_image_identity") or "").rpartition("@")[2]
-        or stack.get("official_code_revision") != OFFICIAL_CODE_REVISION
-        or stack.get("checkpoint_repository_revision") != CHECKPOINT_REPOSITORY_REVISION
-        or stack.get("checkpoint_digest") != CHECKPOINT_DIGEST
-        or stack.get("license_terms_digest") != LICENSE_TERMS_DIGEST
-        or not _self_digested(stack, field="manifest_digest")
-        or stack.get("manifest_digest") != stack_record.get("manifest_digest")
-        or image_build.get("schema_version")
-        != RUNTIME_IMAGE_BUILD_RECEIPT_SCHEMA_VERSION
-        or image_build.get("status") != "published"
-        or _COMMIT.fullmatch(str(image_build.get("source_commit_sha") or "")) is None
-        or image_build.get("runtime_image_identity") != profile.get("runtime_image_identity")
-        or image_build.get("runtime_digest") != profile.get("runtime_digest")
-        or image_build.get("official_code_revision") != OFFICIAL_CODE_REVISION
-        or image_build.get("registry_api_digest_verified") is not True
-        or _DIGEST.fullmatch(str(image_build.get("dockerfile_sha256") or "")) is None
-        or _DIGEST.fullmatch(str(image_build.get("source_tree_digest") or "")) is None
-        or _DIGEST.fullmatch(str(image_build.get("build_provenance_digest") or "")) is None
-        or not _self_digested(image_build)
-        or image_build.get("receipt_digest") != image_build_record.get("receipt_digest")
-    ):
-        raise Sam31ProviderLaunchPacketError("sam31_worker_stack_manifest_invalid")
-    _, reopened_authorization_records = _authorization_sources(
-        license_path=authorization_paths["license_use"],
-        privacy_path=authorization_paths["privacy_use"],
-        trade_path=authorization_paths["trade_controls"],
-        execution_path=authorization_paths["execution"],
-        source_commit_sha=source_commit_sha,
-        runtime_image_identity=str(profile.get("runtime_image_identity") or ""),
-    )
-    if (
-        reopened_authorization_records != dict(authorization_records)
-        or profile.get("license_use_authorization_digest")
-        != reopened_authorization_records["license_use"]["sha256"]
-        or profile.get("privacy_use_authorization_digest")
-        != reopened_authorization_records["privacy_use"]["sha256"]
-        or profile.get("trade_controls_review_digest")
-        != reopened_authorization_records["trade_controls"]["sha256"]
-        or profile.get("execution_authorization_digest")
-        != reopened_authorization_records["execution"]["sha256"]
-    ):
-        raise Sam31ProviderLaunchPacketError("sam31_authorization_source_binding_invalid")
+    source_bindings = validate_sam31_provider_profile_sources(profile, source_commit_sha=source_commit_sha)
+    stack_record = source_bindings["worker_stack_manifest"]
     source_records = {
         "provider_profile": _record(profile_path),
         "source_track_run_request": _record(run_request_path),
         "input_bundle": _record(bundle_path),
         "input_bundle_receipt": _record(receipt_path),
-        "worker_stack_manifest": dict(stack_record),
-        "runtime_image_build_receipt": dict(image_build_record),
-        "authorization_sources": dict(authorization_records),
+        **source_bindings,
     }
     request: dict[str, Any] = {
         "schema_version": REQUEST_SCHEMA_VERSION,
