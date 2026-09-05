@@ -243,6 +243,86 @@ def test_resolution_writes_the_plan_and_thumbnail_once_from_the_completed_run(
     assert again == resolved
 
 
+def _runtime_binding(mount_source: object) -> dict:
+    return {
+        "runtime": {
+            "identity": {"id": "native-arena", "version": "isaac-2026-1"},
+            "oci_image": "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:" + "b" * 64,
+            "entrypoint": ["/opt/blueprint/run-task-evaluation"],
+            "health_protocol": {"uri": "s3://blueprint/h.json", "digest": "sha256:" + "1" * 64, "size_bytes": 518},
+            "requirements": {"cpu_cores": 8, "memory_gib": 64, "gpu_count": 1, "disk_gib": 100},
+            "network": {"default": "deny", "allowlist": []},
+            "secret_refs": [],
+            "mounts": [
+                {"source": mount_source, "container_path": "/inputs", "mode": "read_only"},
+                {"container_path": "/outputs", "mode": "output"},
+            ],
+            "output_limit_bytes": 20_000_000_000,
+        },
+        "execution_adapter": {
+            "kind": "native_task_arena",
+            "version": "v1",
+            "runtime_source_bundle": {"uri": "s3://blueprint/r.zip", "digest": "sha256:" + "2" * 64, "size_bytes": 4096},
+        },
+        "spend": {
+            "maximum_hourly_rate_usd": 0.8,
+            "hard_cap_usd": 2.0,
+            "hard_ttl_seconds": 9000,
+            "retry_cap": 0,
+            "selected_provider": "vast",
+            "provider_allowlist": ["vast"],
+        },
+    }
+
+
+def test_resolution_binds_the_runtime_mount_to_the_published_scene_bundle(tmp_path: Path) -> None:
+    """The construction runtime mounts the exact published bundle, unknown before the run."""
+
+    _launch, revision, _references, _docs = _case(tmp_path)
+    intent = _deferred_intent(tmp_path)
+    template_path = Path(intent["paths"]["runtime_binding_path"])
+    template_path.write_text(
+        json.dumps(_runtime_binding({"deferred": deferred.SCENE_BUNDLE_MODE}), sort_keys=True) + "\n"
+    )
+    resolved = deferred.resolve_runtime_binding(
+        runtime_binding_path=template_path,
+        revision=revision,
+        output_root=tmp_path / "progression" / "cpu-robot-binding",
+    )
+    assert resolved != template_path
+    binding = json.loads(resolved.read_text())
+    assert binding["runtime"]["mounts"][0]["source"] == revision["configured_scene_bundle"]
+    expected = _runtime_binding(revision["configured_scene_bundle"])
+    assert binding == expected
+    assert resolved.stat().st_mode & 0o777 == 0o440
+    assert deferred.resolve_runtime_binding(
+        runtime_binding_path=template_path,
+        revision=revision,
+        output_root=tmp_path / "progression" / "cpu-robot-binding",
+    ) == resolved
+
+    concrete = tmp_path / "concrete_binding.json"
+    concrete.write_text(json.dumps(_runtime_binding(revision["configured_scene_bundle"])) + "\n")
+    assert deferred.resolve_runtime_binding(
+        runtime_binding_path=concrete, revision=revision, output_root=tmp_path / "x"
+    ) == concrete
+
+
+def test_runtime_binding_refuses_a_deferred_mount_that_is_not_the_scene_input(tmp_path: Path) -> None:
+    _launch, revision, _references, _docs = _case(tmp_path)
+    template = _runtime_binding({"uri": "s3://blueprint/other.zip", "digest": "sha256:" + "3" * 64, "size_bytes": 5})
+    template["runtime"]["mounts"].append(
+        {"source": {"deferred": deferred.SCENE_BUNDLE_MODE}, "container_path": "/extra", "mode": "read_only"}
+    )
+    path = tmp_path / "binding.json"
+    path.write_text(json.dumps(template) + "\n")
+    with pytest.raises(
+        deferred.ConfiguredControlsDeferredInputError,
+        match="configured_controls_deferred_runtime_binding_invalid",
+    ):
+        deferred.resolve_runtime_binding(runtime_binding_path=path, revision=revision, output_root=tmp_path / "y")
+
+
 def test_resolution_refuses_fetched_bytes_that_do_not_match_the_reference(tmp_path: Path) -> None:
     _launch, revision, references, _docs = _case(tmp_path)
     revision["presentation"]["task_thumbnail"] = {

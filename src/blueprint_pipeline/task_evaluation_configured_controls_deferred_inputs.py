@@ -51,6 +51,7 @@ from .task_evaluation_robot_placement_trajectory import (
 
 TRAJECTORY_MODE = "derive_from_configured_revision"
 OVERVIEW_MODE = "configured_task_thumbnail"
+SCENE_BUNDLE_MODE = "configured_scene_bundle"
 DEFERRED_KEY = "deferred"
 DEFERRABLE_MODES = {
     "native_trajectory_plan_path": TRAJECTORY_MODE,
@@ -59,6 +60,7 @@ DEFERRABLE_MODES = {
 DEFERRED_DIRECTORY = "deferred-inputs"
 TRAJECTORY_FILE_NAME = "native_trajectory_plan.v1.json"
 THUMBNAIL_FILE_NAME = "configured_task_thumbnail.png"
+RUNTIME_BINDING_FILE_NAME = "runtime_binding.v1.json"
 RIGID_PLAN_SCHEMA_VERSION = "native_rigid_construction_phase_plan.v1"
 MAX_DOCUMENT_BYTES = 64 * 1024 * 1024
 REVISION_DOCUMENTS: dict[str, tuple[str, str]] = {
@@ -322,6 +324,71 @@ def _document_name(contract_path: str) -> str:
     return contract_path.removeprefix("scene.configured_revision.").replace(".", "-") + ".json"
 
 
+# ------------------------------------------------------------------ runtime binding
+
+
+def resolve_runtime_binding(
+    *, runtime_binding_path: str | Path, revision: Mapping[str, Any], output_root: str | Path
+) -> Path:
+    """Bind the construction runtime's scene mount to the exact published bundle.
+
+    The episode request mounts the configured scene bundle the run published,
+    a reference that does not exist when the intent is registered.  A binding
+    may leave that one mount source deferred; every other field is copied
+    unchanged.  A binding with no deferred source is returned as-is.
+    """
+
+    source_path = Path(runtime_binding_path).expanduser()
+    if source_path.is_symlink() or not source_path.is_file():
+        raise ConfiguredControlsDeferredInputError(
+            "configured_controls_deferred_runtime_binding_invalid"
+        )
+    try:
+        binding = json.loads(source_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ConfiguredControlsDeferredInputError(
+            "configured_controls_deferred_runtime_binding_invalid"
+        ) from exc
+    runtime = binding.get("runtime") if isinstance(binding, Mapping) else None
+    mounts = runtime.get("mounts") if isinstance(runtime, Mapping) else None
+    if not isinstance(mounts, list) or not mounts:
+        # No deferred marker can exist without mounts; a concrete binding keeps
+        # its exact bytes and is validated by the request contract at staging.
+        return source_path
+    deferred_positions = [
+        index
+        for index, mount in enumerate(mounts)
+        if isinstance(mount, Mapping)
+        and isinstance(mount.get("source"), Mapping)
+        and DEFERRED_KEY in mount["source"]
+    ]
+    if not deferred_positions:
+        return source_path
+    first = mounts[0] if isinstance(mounts[0], Mapping) else {}
+    if (
+        deferred_positions != [0]
+        or first.get("source") != {DEFERRED_KEY: SCENE_BUNDLE_MODE}
+        or first.get("mode") != "read_only"
+        or first.get("container_path") != "/inputs"
+    ):
+        raise ConfiguredControlsDeferredInputError(
+            "configured_controls_deferred_runtime_binding_invalid"
+        )
+    bundle = _reference(
+        revision.get("configured_scene_bundle"),
+        blocker="configured_controls_deferred_scene_bundle_reference_invalid",
+    )
+    resolved = json.loads(json.dumps(binding))
+    resolved["runtime"]["mounts"][0]["source"] = bundle
+    destination = Path(output_root).expanduser() / DEFERRED_DIRECTORY / RUNTIME_BINDING_FILE_NAME
+    _write_immutable_bytes(
+        destination,
+        (json.dumps(resolved, sort_keys=True, separators=(",", ":")) + "\n").encode(),
+        conflict="configured_controls_deferred_runtime_binding_conflict",
+    )
+    return destination
+
+
 # ------------------------------------------------------------------ resolution
 
 
@@ -336,6 +403,14 @@ def resolve_deferred_inputs(
 
     paths = dict(intent.get("paths") or {})
     declared = deferred_declarations(paths)
+    if isinstance(paths.get("runtime_binding_path"), str):
+        paths["runtime_binding_path"] = str(
+            resolve_runtime_binding(
+                runtime_binding_path=paths["runtime_binding_path"],
+                revision=revision,
+                output_root=output_root,
+            )
+        )
     if not declared:
         return paths
     root = Path(output_root).expanduser() / DEFERRED_DIRECTORY
@@ -395,10 +470,12 @@ __all__ = [
     "ConfiguredControlsDeferredInputError",
     "DEFERRABLE_MODES",
     "OVERVIEW_MODE",
+    "SCENE_BUNDLE_MODE",
     "TRAJECTORY_MODE",
     "concrete_paths",
     "default_reference_fetcher",
     "deferred_declarations",
     "derive_native_trajectory_plan",
     "resolve_deferred_inputs",
+    "resolve_runtime_binding",
 ]
