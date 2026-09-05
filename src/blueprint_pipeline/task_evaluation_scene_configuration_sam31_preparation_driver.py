@@ -78,7 +78,7 @@ def advance_sam31_preparation(
     enqueue_phase: Any | None = None,
 ) -> dict[str, Any]:
     if enqueue_phase is None:
-        from .task_evaluation_sam31_preparation_execution import enqueue_sam31_phase
+        from .task_evaluation_sam31_phase_queue import enqueue_sam31_phase
         enqueue_phase = enqueue_sam31_phase
     request = context["request"]
     commit = context["expected_source_commit"]
