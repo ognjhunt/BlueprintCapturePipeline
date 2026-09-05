@@ -40,6 +40,7 @@ from .gaussian_splat_decode import (
 from .task_evaluation_splat_render_runtime import validate_splat_render_runtime
 from .sealed_camera_render import (
     SealedCameraRenderError,
+    calibrated_clip_planes,
     render_splat_at_exact_cameras,
 )
 
@@ -316,6 +317,7 @@ def _camera_rows(request: Mapping[str, Any], target_center: np.ndarray) -> list[
                 "T_world_camera_opencv": _look_at_opencv(position, target).tolist(),
                 "intrinsics": {
                     "model": "PINHOLE",
+                    **calibrated_clip_planes({}),
                     "fx": focal,
                     "fy": focal,
                     "cx": width / 2.0,

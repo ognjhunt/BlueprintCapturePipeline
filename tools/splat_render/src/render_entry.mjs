@@ -4,6 +4,9 @@
 import * as THREE from "three";
 import { SplatMesh, SparkRenderer } from "@sparkjsdev/spark";
 
+const CALIBRATED_NEAR_M = 0.01;
+const CALIBRATED_FAR_M = 100000;
+
 const state = {
   renderer: null,
   scene: null,
@@ -33,7 +36,7 @@ function setupRenderer(width, height, clearColor) {
   renderer.setClearColor(clearColor == null ? 0x0b0b10 : clearColor, 1);
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(50, width / height, 0.01, 100000);
+  const camera = new THREE.PerspectiveCamera(50, width / height, CALIBRATED_NEAR_M, CALIBRATED_FAR_M);
   const spark = new SparkRenderer({ renderer });
   scene.add(spark);
   return { canvas, renderer, scene, camera };
@@ -223,8 +226,13 @@ function setCamera(spec) {
     if (canvas.width !== K.width || canvas.height !== K.height) {
       throw new Error(`canvas_size_${canvas.width}x${canvas.height}_mismatch_intrinsics_${K.width}x${K.height}`);
     }
-    const near = K.near != null ? K.near : Math.max(1e-4, bounds.radius / 5000);
-    const far = K.far != null ? K.far : bounds.radius * 50 + 1000;
+    const near = Number(K.near == null ? CALIBRATED_NEAR_M : K.near);
+    const far = Number(K.far == null ? CALIBRATED_FAR_M : K.far);
+    if (!Number.isFinite(near) || !Number.isFinite(far) || near <= 0 || far <= near) {
+      throw new Error("calibrated_camera_clipping_invalid");
+    }
+    camera.near = near;
+    camera.far = far;
     const m = spec.pose.T_world_camera_opencv;
     // OpenCV camera-to-world -> three.js (OpenGL) camera-to-world: flip the
     // Y and Z basis columns.
@@ -254,14 +262,25 @@ function setCamera(spec) {
   camera.updateMatrixWorld(true);
 }
 
+async function reportRenderProgress(event, detail = {}) {
+  if (typeof window.blueprintRenderCheckpoint === "function") {
+    await window.blueprintRenderCheckpoint(event, detail);
+  }
+}
+
 async function renderView(spec, settleFrames = 10, settleMs = 110) {
   const { camera, renderer, scene, canvas } = state;
   setCamera(spec);
   for (let k = 0; k < settleFrames; k++) {
+    await reportRenderProgress("settle_frame_started", { frame: k });
     renderer.render(scene, camera);
+    await reportRenderProgress("settle_frame_submitted", { frame: k });
     await delay(settleMs);
   }
-  return canvas.toDataURL("image/png");
+  await reportRenderProgress("image_readback_started");
+  const image = canvas.toDataURL("image/png");
+  await reportRenderProgress("image_readback_completed");
+  return image;
 }
 
 window.BlueprintSplat = { load, loadComposite, setOverlay, setCamera, warmup, renderView };
