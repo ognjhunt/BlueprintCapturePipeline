@@ -114,11 +114,14 @@ def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
         returned_group_path: str | Path) -> dict[str, Any]:
     from .public_scene_inpainting_inputs import PublicSceneInpaintingInputError, _sha256
     from .public_scene_inpainting_finalize import finish_prepared_inputs
-    from .source_calibration_render_return import verify_source_calibration_return
+    from .source_calibration_render_return import (
+        verify_source_calibration_return, require_source_calibration_closure,
+    )
 
     prepared = validate_prepared_inputs(preparation_path)
     returned_path = Path(returned_group_path).expanduser()
     groups = verify_source_calibration_return(prepared, returned_path)
+    returned = require_source_calibration_closure(prepared, returned_path)
     if set(groups) != set(ROLES):
         raise PublicSceneInpaintingInputError(["edit_input_returned_render_groups_incomplete"])
     context = prepared["context"]
@@ -158,4 +161,7 @@ def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
         rgb_run=commands["images"], support_run=commands["target_support"],
         background_run=commands["scene_without_target"], render_frame_subdir="frames",
         render_execution_evidence={"preparation_digest": prepared["preparation_digest"],
-                                   "returned_group": _artifact(returned_path)})
+            "returned_group": _artifact(returned_path), "return_digest": returned["return_digest"],
+            "full_source_scene_content_transferred": True,
+            "original_downloaded_file_uploaded": False, "private_only": True,
+            "execution_closure": returned["execution_closure"]})
