@@ -287,3 +287,15 @@ def test_sam31_provider_profile_from_another_release_is_a_blocker_before_submiss
     hardware.write_text(json.dumps({"artifact_references": {}}), encoding="utf-8")
     [missing] = preflight._sam31_provider_profile_findings(hardware, "sam.service", "a" * 40)
     assert missing["code"] == "sam31_provider_profile_reference_missing"
+
+
+def test_history_records_one_bounded_line_per_run(tmp_path: Path) -> None:
+    report = {"generated_at": "2026-09-05T17:00:00Z", "active_sha": "a" * 40, "warning_count": 3}
+    blockers = [{"code": "disk_admission_projection"}, {"code": "sam31_provider_profile_bound_to_other_release"}, {"code": "disk_admission_projection"}]
+    row = preflight.append_history(tmp_path / "preflight" / "history.jsonl", report, blockers=blockers)
+    preflight.append_history(tmp_path / "preflight" / "history.jsonl", report, blockers=[])
+    lines = (tmp_path / "preflight" / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert row["blocker_count"] == 3
+    assert row["blocker_codes"] == ["disk_admission_projection", "sam31_provider_profile_bound_to_other_release"]
+    assert json.loads(lines[1])["blocker_count"] == 0

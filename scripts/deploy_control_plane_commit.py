@@ -116,6 +116,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-control-plane-storage-gc.timer",
     "blueprint-control-plane-capacity.service",
     "blueprint-control-plane-capacity.timer",
+    "blueprint-control-plane-preflight.service",
+    "blueprint-control-plane-preflight.timer",
     "blueprint-pipeline-control-plane.service",
     "blueprint-pipeline-intake.service",
 )
@@ -155,6 +157,7 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # unpinned cache bytes and offloads sealed evidence behind pointers.
     "blueprint-control-plane-storage-gc.timer",
     "blueprint-control-plane-capacity.timer",
+    "blueprint-control-plane-preflight.timer",
 )
 #: JSON under these roots names the commits that a launch may still need; a
 #: commit named anywhere here is never retired by the deploy that supersedes it.

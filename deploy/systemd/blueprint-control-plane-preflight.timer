@@ -1,0 +1,12 @@
+[Unit]
+Description=Look ahead at the production task-evaluation chain every fifteen minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+RandomizedDelaySec=2min
+Persistent=true
+Unit=blueprint-control-plane-preflight.service
+
+[Install]
+WantedBy=timers.target
