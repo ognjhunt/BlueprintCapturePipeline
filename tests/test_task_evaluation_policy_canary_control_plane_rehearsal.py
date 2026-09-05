@@ -521,6 +521,9 @@ def _production_shaped_episode_compiler(
 def test_policy_canary_control_plane_reaches_the_paid_boundary_end_to_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Every service in this hermetic rehearsal executes the fixture release.
+    # Detached CI checkout identity must not supersede its synthetic launches.
+    monkeypatch.setattr(progression_worker, "running_release_commit", lambda: COMMIT)
     store = _ObjectStore()
     profile, request, execution_template, predecessor = _website_launch(tmp_path, store)
     launch_state = tmp_path / "launch-state"
