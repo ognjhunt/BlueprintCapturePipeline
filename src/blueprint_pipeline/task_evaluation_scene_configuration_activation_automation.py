@@ -624,9 +624,7 @@ def _activation_id(preparation_id: str) -> str:
     return _identifier(f"{stem}-activation-auto")
 
 
-def _preparation_context(
-    *, preparation_result_path: Path, preparation_queue_root: Path
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+def _preparation_result(preparation_result_path: Path) -> dict[str, Any]:
     result = _load(
         preparation_result_path,
         blocker="scene_configuration_activation_preparation_result_invalid",
@@ -638,7 +636,14 @@ def _preparation_context(
         raise SceneConfigurationActivationAutomationError(
             "scene_configuration_activation_preparation_result_invalid"
         )
-    preparation_id = _identifier(result.get("preparation_id"))
+    _identifier(result.get("preparation_id"))
+    return result
+
+
+def _preparation_envelope(
+    *, result: Mapping[str, Any], preparation_result_path: Path, preparation_queue_root: Path
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    preparation_id = str(result["preparation_id"])
     envelope = _load(
         preparation_queue_root / "materialized" / preparation_result_path.name,
         blocker="scene_configuration_activation_preparation_envelope_invalid",
@@ -665,7 +670,19 @@ def _preparation_context(
         raise SceneConfigurationActivationAutomationError(
             "scene_configuration_activation_preparation_envelope_invalid"
         )
-    return result, envelope, dict(request)
+    return envelope, dict(request)
+
+
+def _preparation_context(
+    *, preparation_result_path: Path, preparation_queue_root: Path
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    result = _preparation_result(preparation_result_path)
+    envelope, request = _preparation_envelope(
+        result=result,
+        preparation_result_path=preparation_result_path,
+        preparation_queue_root=preparation_queue_root,
+    )
+    return result, envelope, request
 
 
 def _existing_state(path: Path, *, statuses: set[str], **expected: Any) -> dict[str, Any] | None:
@@ -696,6 +713,7 @@ def advance_scene_configuration_activation(
     lineage_publisher_factory: PublisherFactory = lineage_publisher,
     release_window_publisher_factory: PublisherFactory = release_window_publisher,
     now: datetime | None = None,
+    running_commit: str | None = None,
 ) -> dict[str, Any]:
     """Stage exactly one authority-gated activation for a prepared configuration.
 
@@ -703,13 +721,20 @@ def advance_scene_configuration_activation(
     same team/scene/task continuation intent is registered there: the activation
     worker binds that intent into the profile, so activating first would leave
     the configuration with no automatic controls continuation.
+
+    When the running release commit is known, a result bound to any other commit
+    is reported as superseded without reading its intake envelope: the intake and
+    activation workers only honour same-commit requests, so such a row can never
+    activate under this deployment and must not read as a standing alarm.
     """
 
+    if running_commit is not None and _COMMIT.fullmatch(str(running_commit)) is None:
+        raise SceneConfigurationActivationAutomationError(
+            "scene_configuration_activation_running_commit_invalid"
+        )
     result_path = Path(preparation_result_path).expanduser()
     queue_root = Path(preparation_queue_root).expanduser()
-    result, envelope, request = _preparation_context(
-        preparation_result_path=result_path, preparation_queue_root=queue_root
-    )
+    result = _preparation_result(result_path)
     preparation_id = str(result["preparation_id"])
     if result.get("run_mode") != "scene_configuration" or result.get("status") != AWAITING_ACTIVATION_STATUS:
         return {
@@ -717,6 +742,17 @@ def advance_scene_configuration_activation(
             "preparation_id": preparation_id,
             "preparation_status": result.get("status"),
         }
+    if running_commit is not None and result.get("source_commit") != running_commit:
+        return {
+            "status": "preparation_bound_to_superseded_release",
+            "preparation_id": preparation_id,
+            "preparation_status": result.get("status"),
+            "source_commit": result.get("source_commit"),
+            "running_commit": running_commit,
+        }
+    envelope, request = _preparation_envelope(
+        result=result, preparation_result_path=result_path, preparation_queue_root=queue_root
+    )
     state_root = Path(progression_root).expanduser() / STATE_DIRECTORY / preparation_id
     state_path = state_root / "activation_progression.json"
     existing = _existing_state(
@@ -1248,6 +1284,7 @@ def process_scene_configuration_activations(
     release_window_publisher_factory: PublisherFactory = release_window_publisher,
     submitter: Submitter | None = None,
     now: datetime | None = None,
+    running_commit: str | None = None,
 ) -> list[dict[str, Any]]:
     """Advance every prepared configuration one safe step; one row per preparation."""
 
@@ -1267,6 +1304,7 @@ def process_scene_configuration_activations(
                 lineage_publisher_factory=lineage_publisher_factory,
                 release_window_publisher_factory=release_window_publisher_factory,
                 now=now,
+                running_commit=running_commit,
             )
             preparation_id = str(activation.get("preparation_id") or preparation_id)
             if activation.get("status") != "scene_configuration_activation_queued":
