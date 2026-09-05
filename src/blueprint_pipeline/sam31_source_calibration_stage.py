@@ -72,6 +72,7 @@ def validate_retained_source_calibration_stage(outcome: Mapping[str, Any]) -> No
 def execute_source_calibration_stage(job: Mapping[str, Any], *, allocator_runner: Callable[...,int]=_run) -> dict[str, Any]:
     from .task_evaluation_sam31_preparation_cpu_stages import execute_cpu_stage
     from .public_scene_inpainting_inputs import finalize_public_scene_inpainting_inputs
+    from .public_scene_inpainting_preparation import adopt_finalized_public_scene_inpainting_inputs
     from scripts.issue_retained_scene_render_paid_attempt_authority import issue_paid_attempt_authority
     profile=job['server_profile']
     settings=profile.get('calibrated_views',{})
@@ -152,13 +153,12 @@ def execute_source_calibration_stage(job: Mapping[str, Any], *, allocator_runner
             execution_closure=closure,output_path=closed_return)
     require_source_calibration_closure(prepared,closed_return)
     return_path=closed_return
-    final_record=root/'cpu_finalization_outcome.json'
-    if not final_record.exists():
-        receipt=finalize_public_scene_inpainting_inputs(preparation_path=prepared_path,returned_group_path=return_path)
-        _write(final_record,receipt)
-    receipt=read(final_record)
     output=prepared_path.parent
     receipt_path=output/'public_scene_interiorgs_edit_input_receipt.v2.json'
+    # The finalizer's terminal receipt is the checkpoint. A second checkpoint
+    # could fail after that receipt was safely written and strand reentry.
+    finalize = adopt_finalized_public_scene_inpainting_inputs if receipt_path.exists() else finalize_public_scene_inpainting_inputs
+    receipt=finalize(preparation_path=prepared_path,returned_group_path=return_path)
     artifacts={'calibrated_view_request':prepared_outcome['calibrated_view_request'],
         'calibrated_view_receipt':record(receipt_path),
         'camera_contract':record(output/receipt['derived_artifacts']['cameras']['relative_path']),

@@ -14,7 +14,7 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 
 def finish_prepared_inputs(context: Mapping[str, Any], *, sealed_render_manifests,
         rgb_run, support_run, background_run, render_frame_subdir,
-        render_execution_evidence=None) -> dict[str, Any]:
+        render_execution_evidence=None, validate_only=False) -> dict[str, Any]:
     from .public_scene_inpainting_inputs import (
         PublicSceneInpaintingInputError, SEALED_SOURCE_ADAPTERS, RECEIPT_SCHEMA_V2,
         RECEIPT_SCHEMA, RENDER_HARNESS_REL, RENDER_ENTRY_REL, _record, _project_obb, _sha256,
@@ -69,8 +69,15 @@ def finish_prepared_inputs(context: Mapping[str, Any], *, sealed_render_manifest
             np.maximum(np.asarray(obb_mask), np.asarray(support_mask)).astype(np.uint8), mode="L"
         )
         mask_path = output / "masks" / f"{camera_id}.png"
-        mask_path.parent.mkdir(parents=True, exist_ok=True)
-        final.save(mask_path, format="PNG", optimize=False)
+        if validate_only:
+            if mask_path.is_symlink() or not mask_path.is_file():
+                raise PublicSceneInpaintingInputError(["edit_input_retained_mask_missing"])
+            with Image.open(mask_path) as saved_mask:
+                if not np.array_equal(np.asarray(saved_mask.convert("L")), np.asarray(final)):
+                    raise PublicSceneInpaintingInputError(["edit_input_retained_mask_changed"])
+        else:
+            mask_path.parent.mkdir(parents=True, exist_ok=True)
+            final.save(mask_path, format="PNG", optimize=False)
         final_pixels = np.asarray(final) > 0
         support_binary = np.asarray(support_mask) > 0
         coverage = float(final_pixels.mean())
@@ -248,6 +255,8 @@ def finish_prepared_inputs(context: Mapping[str, Any], *, sealed_render_manifest
     if render_execution_evidence is not None:
         receipt["source_calibration_render"] = dict(render_execution_evidence)
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    if validate_only:
+        return receipt
     output_receipt_name = (
         "public_scene_interiorgs_edit_input_receipt.v2.json"
         if source_adapter in SEALED_SOURCE_ADAPTERS

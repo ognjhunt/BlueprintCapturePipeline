@@ -111,7 +111,7 @@ def validate_prepared_inputs(preparation_path: str | Path) -> dict[str, Any]:
 
 
 def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
-        returned_group_path: str | Path) -> dict[str, Any]:
+        returned_group_path: str | Path, _adopt_existing: bool = False) -> dict[str, Any]:
     from .public_scene_inpainting_inputs import PublicSceneInpaintingInputError, _sha256
     from .public_scene_inpainting_finalize import finish_prepared_inputs
     from .source_calibration_render_return import (
@@ -128,8 +128,15 @@ def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
     output = Path(context["paths"]["output"])
     receipt_name = "public_scene_interiorgs_edit_input_receipt.v2.json"
     retained = context["paths"]["retained_receipt"]
-    if (output / receipt_name).exists() or (retained and Path(retained).exists()):
+    if not _adopt_existing and ((output / receipt_name).exists() or (retained and Path(retained).exists())):
         raise PublicSceneInpaintingInputError(["edit_input_receipt_output_exists"])
+    existing = None
+    if _adopt_existing:
+        from .public_scene_inpainting_inputs import _read_object
+        existing = _read_object(output / receipt_name, code="edit_input_retained_receipt_missing")
+        if (existing.get("receipt_digest") != canonical_digest(existing, digest_field="receipt_digest")
+                or (retained and _read_object(Path(retained), code="edit_input_retained_receipt_missing") != existing)):
+            raise PublicSceneInpaintingInputError(["edit_input_retained_receipt_invalid"])
     manifests = {}
     for role in ROLES:
         group = groups[role]
@@ -157,11 +164,21 @@ def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
                 raise PublicSceneInpaintingInputError(["edit_input_returned_artifact_copy_mismatch"])
     commands = {role: {"command": ["sealed-camera-render", manifests[role]["sealed_camera_render_manifest_digest"]]}
                 for role in ROLES}
-    return finish_prepared_inputs(context, sealed_render_manifests=manifests,
+    receipt = finish_prepared_inputs(context, sealed_render_manifests=manifests,
         rgb_run=commands["images"], support_run=commands["target_support"],
         background_run=commands["scene_without_target"], render_frame_subdir="frames",
         render_execution_evidence={"preparation_digest": prepared["preparation_digest"],
             "returned_group": _artifact(returned_path), "return_digest": returned["return_digest"],
             "full_source_scene_content_transferred": True,
             "original_downloaded_file_uploaded": False, "private_only": True,
-            "execution_closure": returned["execution_closure"]})
+            "execution_closure": returned["execution_closure"]}, validate_only=_adopt_existing)
+    if _adopt_existing and receipt != existing:
+        raise PublicSceneInpaintingInputError(["edit_input_retained_receipt_binding_mismatch"])
+    return receipt
+
+
+def adopt_finalized_public_scene_inpainting_inputs(*, preparation_path: str | Path,
+        returned_group_path: str | Path) -> dict[str, Any]:
+    """Verify an existing terminal receipt against source bytes, closed renders and original mask logic."""
+    return finalize_public_scene_inpainting_inputs(preparation_path=preparation_path,
+        returned_group_path=returned_group_path, _adopt_existing=True)
