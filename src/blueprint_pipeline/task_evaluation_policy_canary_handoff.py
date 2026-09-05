@@ -38,10 +38,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .task_evaluation_policy_canary_handoff_state import (
+    PolicyCanaryHandoffError as PolicyCanaryHandoffError,
+    write_immutable as _write_immutable,
+    seal_state as _seal_state,
+    serialized_handoff,
+    submit_or_adopt,
+    verify_completed_ack,
+)
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .task_evaluation_launch_dispatcher import LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
 from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_row
 from .task_evaluation_policy_canary_model_rights import materialize_policy_canary_model_rights
+from .task_evaluation_policy_canary_setup import policy_canary_setup_digest
 from .task_evaluation_policy_canary_scene_setup import (
     _quick_cells,
     materialize_policy_canary_presubmission_setup,
@@ -108,8 +117,7 @@ Poster = Callable[..., tuple[int, bytes]]
 ProfilePublisher = Callable[..., Mapping[str, Any]]
 
 
-class PolicyCanaryHandoffError(ValueError):
-    """The hand-off refused; nothing paid happened and nothing partial was sealed."""
+
 
 
 # ---------------------------------------------------------------- helpers
@@ -137,19 +145,6 @@ def _sha256(path: Path) -> str:
 
 def _payload(value: Mapping[str, Any]) -> bytes:
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
-
-
-def _write_immutable(path: Path, value: Mapping[str, Any]) -> Path:
-    payload = _payload(value)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-    try:
-        with path.open("xb") as stream:
-            stream.write(payload)
-        path.chmod(0o440)
-    except FileExistsError:
-        if path.is_symlink() or path.read_bytes() != payload:
-            raise PolicyCanaryHandoffError("policy_canary_handoff_immutable_conflict") from None
-    return path
 
 
 def _write_or_reuse(path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
@@ -635,20 +630,6 @@ def _selection(
     }
 
 
-def _seal_state(path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
-    record = {
-        "schema_version": PROGRESSION_SCHEMA_VERSION,
-        **value,
-        "provider_mutation_performed": False,
-        "progression_digest": "",
-    }
-    record["progression_digest"] = canonical_digest(record, digest_field="progression_digest")
-    if path.exists():
-        path.unlink()
-    _write_immutable(path, record)
-    return record
-
-
 def _row(record: Mapping[str, Any]) -> dict[str, Any]:
     return {
         key: record[key]
@@ -657,6 +638,7 @@ def _row(record: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+@serialized_handoff
 def advance_policy_canary_handoff(
     *,
     state_root: str | Path,
@@ -690,9 +672,8 @@ def advance_policy_canary_handoff(
         raise PolicyCanaryHandoffError("policy_canary_handoff_notification_email_invalid")
     state_path = state / STATE_FILENAME
     existing = _sealed_progression(state_path, statuses=set(_STAGES))
-    if existing is not None and existing.get("status") == "canary_launch_submitted":
-        return _row(existing)
-    if existing is not None and existing.get("source_launch_id") != source_launch_id:
+    if existing is not None and (existing.get("source_launch_id") != source_launch_id
+            or existing.get("expected_production_commit") != expected_production_commit):
         raise PolicyCanaryHandoffError("policy_canary_handoff_progression_invalid")
 
     controls_launch = _sealed_progression(
@@ -728,6 +709,12 @@ def advance_policy_canary_handoff(
             "scene_id": scene_id,
             "task_id": task_id,
         }
+    if (intent["expected_production_commit"] != expected_production_commit
+            or intent["configuration_source_commit"] != expected_production_commit):
+        raise PolicyCanaryHandoffError("policy_canary_handoff_activation_intent_commit_mismatch")
+    if existing is not None and existing.get("status") == "canary_launch_submitted":
+        verify_completed_ack(state, existing)
+        return _row(existing)
     publisher = publisher_factory()
     predecessor = _predecessor_lineage(
         launch_state_root=launches,
@@ -870,7 +857,7 @@ def advance_policy_canary_handoff(
     setup_path = Path(str(existing["setup_path"]))
     wrapper_path = Path(str(existing["profile_materialization_input_path"]))
     setup = _load(setup_path, blocker="policy_canary_handoff_setup_invalid")
-    if setup.get("setup_digest") != existing.get("setup_digest"):
+    if setup.get("setup_digest") != existing.get("setup_digest") or setup.get("setup_digest") != policy_canary_setup_digest(setup):
         raise PolicyCanaryHandoffError("policy_canary_handoff_setup_invalid")
 
     profile_path = state / "policy-canary-profile.json"
@@ -908,33 +895,19 @@ def advance_policy_canary_handoff(
         raise PolicyCanaryHandoffError("policy_canary_handoff_run_id_invalid")
     selection = _selection(setup=setup, run_id=run_id, notification_email=notification_email)
     body = json.dumps(selection, sort_keys=True, separators=(",", ":")).encode()
-    _write_or_reuse(state / "policy-canary-selection.json", selection)
+    _write_immutable(state / "policy-canary-selection.json", selection)
     endpoint = webapp_endpoint.rstrip("/") + "/policy-canary-runs/" + urllib.parse.quote(source_launch_id, safe="")
-    status, payload = poster(endpoint=endpoint, headers=signed_headers(secret=webapp_secret, body=body, run_id=run_id, now=now), body=body)
-    try:
-        receipt = json.loads(payload.decode("utf-8")) if payload else {}
-    except (UnicodeError, json.JSONDecodeError):
-        receipt = {}
-    forward = receipt.get("forward") if isinstance(receipt, Mapping) else None
-    run = receipt.get("run") if isinstance(receipt, Mapping) else None
-    if (
-        status != 202
-        or not isinstance(receipt, Mapping)
-        or receipt.get("schema_version") != "task_evaluation_policy_canary_web_receipt.v1"
-        or not isinstance(forward, Mapping)
-        or forward.get("status") != "forwarded"
-        or not isinstance(run, Mapping)
-        or run.get("run_id") != run_id
-    ):
-        raise PolicyCanaryHandoffError(f"policy_canary_handoff_webapp_rejected:{status}")
-    _write_immutable(state / "policy-canary-webapp-receipt.json", dict(receipt))
+    receipt, receipt_digest = submit_or_adopt(root=state, endpoint=endpoint, selection=selection,
+        source_commit=expected_production_commit,
+        headers=lambda: signed_headers(secret=webapp_secret, body=body, run_id=run_id, now=now),
+        poster=poster)
     existing = _seal_state(
         state_path,
         {
             **{key: existing[key] for key in existing if key not in ("schema_version", "status", "provider_mutation_performed", "progression_digest")},
             "status": "canary_launch_submitted",
             "run_id": run_id,
-            "webapp_receipt_digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "webapp_receipt_digest": receipt_digest,
             "already_exists": bool(receipt.get("already_exists")),
         },
     )
