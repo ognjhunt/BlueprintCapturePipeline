@@ -104,7 +104,7 @@ def issue_paid_attempt_authority(
         "authorized_by": authorized_by.strip(),
         "authorized_on": authorized_on
         or datetime.now(timezone.utc).date().isoformat(),
-        "purpose": "exact_retained_scene_gpu_render",
+        "purpose": "exact_source_calibration_gpu_render" if receipt.get("render_scope") == "source_calibration" else "exact_retained_scene_gpu_render",
         "provider": "vast",
         "paid_compute_authorized": True,
         "parent_execution_authority_digest": authority_record.get("authority_digest"),

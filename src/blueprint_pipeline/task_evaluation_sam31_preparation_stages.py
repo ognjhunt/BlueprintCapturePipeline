@@ -63,6 +63,9 @@ def execute_stage(job: Mapping[str, Any]) -> dict[str, Any]:
         outcome = receipt["outcome"]
         for row in outcome.get("artifacts", {}).values():
             checked_file(row["path"], row)
+        if phase == "calibrated_views" and profile.get("calibrated_views", {}).get("hardware_required") is True:
+            from .sam31_source_calibration_stage import validate_retained_source_calibration_stage
+            validate_retained_source_calibration_stage(outcome)
         if phase in PAID_PHASES and outcome.get("status") == "completed":
             _paid_stages().validate_retained_paid_stage(outcome, stage_id=str(phase))
         return outcome
@@ -74,7 +77,10 @@ def execute_stage(job: Mapping[str, Any]) -> dict[str, Any]:
         "runtime_root": profile.get("runtime_root"),
         "ffmpeg_executable": profile.get("ffmpeg_executable", "/usr/bin/ffmpeg"),
     }
-    if phase in CPU_PHASES:
+    if phase == "calibrated_views" and profile.get("calibrated_views", {}).get("hardware_required") is True:
+        from .sam31_source_calibration_stage import execute_source_calibration_stage
+        outcome = execute_source_calibration_stage(context)
+    elif phase in CPU_PHASES:
         from .task_evaluation_sam31_preparation_cpu_stages import execute_cpu_stage
         outcome = execute_cpu_stage(context)
     elif phase in REVIEW_PHASES:

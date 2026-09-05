@@ -28,6 +28,7 @@ DEFAULT_VAST_SSH_IDENTITY_FILE = "~/.ssh/id_ed25519"
 MAX_RECOVERY_SECONDS = 900.0
 
 _REMOTE_ARCHIVE_BY_BUNDLE_KIND = {
+    "adp_retained_scene_render": "/workspace/adp_retained_scene_render_provider_runtime_output.zip",
     "adp_arena": "/workspace/adp_arena_provider_runtime_output.zip",
     "adp009d_policy_runtime_smoke": "/workspace/adp_arena_provider_runtime_output.zip",
     "adp009d_isaac": "/workspace/adp_arena_provider_runtime_output.zip",

@@ -2688,8 +2688,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "program_id": "arm-decision-proof-v1",
                     "probe_kind": ADP_RETAINED_SCENE_RENDER_PROBE_KIND,
                     "control_plane_identity": control_identity,
-                    "authority": "user_authorized_retained_scene_gpu_render",
-                    "private_scene_derived_input_only": True,
+                    "authority": ("user_authorized_source_calibration_gpu_render"
+                        if prepared_bundle and prepared_bundle.get("render_scope") == "source_calibration"
+                        else "user_authorized_retained_scene_gpu_render"),
+                    "private_scene_derived_input_only": not (prepared_bundle and prepared_bundle.get("render_scope") == "source_calibration"),
+                    "full_source_scene_content_upload_authorized": bool(prepared_bundle and prepared_bundle.get("render_scope") == "source_calibration"),
                     "raw_interiorgs_downloaded_bytes_uploaded": False,
                     "provider_training_authorized": False,
                     "publication_authorized": False,

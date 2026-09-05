@@ -241,9 +241,11 @@ def materialize_sam31_preparation_profile(
     dependency_manifest_path: str | Path,
     approved_roots: Sequence[str | Path],
     ffmpeg_executable: str | Path = "/usr/bin/ffmpeg",
+    calibrated_views_execution_site: str = "control_plane",
 ) -> dict[str, Any]:
     """Derive the exact operator profile without allocating or authorizing work."""
 
+    _require(calibrated_views_execution_site in {"control_plane", "provider_gpu"}, "calibrated_views_execution_site_invalid")
     _require(_COMMIT.fullmatch(str(source_commit)) is not None, "source_commit_invalid")
     _require(bool(str(openai_project_id).strip()), "openai_project_id_invalid")
     _require(bool(str(openai_api_key_id).strip()), "openai_api_key_id_invalid")
@@ -345,6 +347,11 @@ def materialize_sam31_preparation_profile(
         "review_model": AI_REVIEW_MODEL,
         "review_maximum_cost_usd": AI_REVIEW_MAX_COST_USD,
         "candidate_policy_queried": False,
+        "calibrated_views": {"execution_site": calibrated_views_execution_site,
+                             "hardware_required": calibrated_views_execution_site == "provider_gpu",
+                             "max_spend_usd": 1.0, "hard_ttl_seconds": 1800,
+                             "max_hourly_rate_usd": 0.5, "retry_cap": 0,
+                             "maximum_resource_count": 1, "allowed_geolocation_country_codes": ["US"]},
         "artifact_references": {
             "sam31_provider_profile": _file_record(provider_profile_path),
         },
@@ -454,6 +461,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--dependency-manifest", required=True)
     parser.add_argument("--approved-root", action="append", required=True)
     parser.add_argument("--ffmpeg-executable", default="/usr/bin/ffmpeg")
+    parser.add_argument("--calibrated-views-execution-site", choices=("control_plane", "provider_gpu"), default="control_plane")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
@@ -476,6 +484,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dependency_manifest_path=args.dependency_manifest,
             approved_roots=args.approved_root,
             ffmpeg_executable=args.ffmpeg_executable,
+            calibrated_views_execution_site=args.calibrated_views_execution_site,
         )
         output = Path(args.output).expanduser().resolve()
         _write_exclusive(output, profile)

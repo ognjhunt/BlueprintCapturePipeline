@@ -4,6 +4,8 @@ Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
 
 [Service]
 Type=oneshot
+KillMode=process
+Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process
 User=blueprint
 Group=blueprint
 UMask=0077
@@ -38,3 +40,6 @@ EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env
 WorkingDirectory=/
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && source_commit="$$(git rev-parse --verify HEAD^{commit})" && test -z "$$(git status --porcelain --untracked-files=no)" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_sam31_preparation_execution --source-commit "$${source_commit}" --max-messages 1'
+
+# Preserve only the independently bounded watchdog if the worker exits early.
+ExecStopPost=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_dispatcher_cgroup_cleanup --state-root /var/lib/blueprint/task-evaluation-inputs/sam31-preparations --receipt-dir /var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/watchdog-cgroup-cleanup'

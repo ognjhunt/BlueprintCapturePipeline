@@ -131,6 +131,7 @@ def _validated_profile(path: Path, commit: str) -> dict[str, Any]:
             dependency_manifest_path=dependencies["dependency_manifest"]["path"],
             approved_roots=profile["approved_paid_input_roots"],
             ffmpeg_executable=profile["ffmpeg_executable"],
+            calibrated_views_execution_site=profile.get("calibrated_views", {}).get("execution_site", "control_plane"),
         )
         _require(reopened == profile, "profile_evidence_changed")
     return profile
