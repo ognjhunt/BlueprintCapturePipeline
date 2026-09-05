@@ -362,8 +362,13 @@ def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
     with pytest.raises(NativeTaskArenaReadbackError, match="contact_sensor_missing:destination_scene_forbidden_contact"):
         NativeRigidTaskArenaReadback(built).read_task_sample()
     built.contact_sensor_names["destination_scene_forbidden_contact"] = ("robot_scene_contact",)
+    built.plan["articulation"]["initial_support_contact_body_paths"] = ["/Scene/source_cabinet"]
+    with pytest.raises(NativeTaskArenaReadbackError, match="contact_sensor_missing:task_initial_support_contact"):
+        NativeRigidTaskArenaReadback(built).read_task_sample()
+    built.contact_sensor_names["task_initial_support_contact"] = ("task_scene_contact",)
 
     sample = NativeRigidTaskArenaReadback(built).read_task_sample()
+    assert sample["task_initial_support_contact_peak_force_n"] == sample["task_support_contact_peak_force_n"]
 
     assert sample["asset_root_pose_world"] == pytest.approx(
         [1.9742142, 1.4792181, 0.0, 0.0, 0.0, 0.0, 1.0]

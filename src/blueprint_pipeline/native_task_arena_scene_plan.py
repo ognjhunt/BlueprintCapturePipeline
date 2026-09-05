@@ -908,6 +908,27 @@ def _articulation_plan(
             if destination_support_id
             else sorted(set(scene_contact_body_paths) - set(support_body_paths))
         )
+        initial_support_body_paths = []
+        initial_support = task_spec.get("initial_source_support")
+        if initial_support is not None:
+            scene_stage = Usd.Stage.Open(str(scene_collision_asset_path))
+            scene_default = scene_stage.GetDefaultPrim() if scene_stage is not None else None
+            if (not destination_support_id or not isinstance(initial_support, Mapping)
+                    or initial_support.get("contact_permission") != "initial_pickup_until_first_separation_or_lift"
+                    or not isinstance(initial_support.get("scene_prim_paths"), list)
+                    or not initial_support["scene_prim_paths"]
+                    or scene_default is None or not scene_default.IsValid()):
+                raise NativeTaskArenaScenePlanError(["native_task_arena_initial_support_invalid"])
+            initial_support_body_paths = [
+                _source_to_spawned_prim(str(path), role="scene_collision",
+                    source_root_prim_path=str(scene_default.GetPath()))
+                for path in initial_support["scene_prim_paths"]
+            ]
+            if (len(set(initial_support_body_paths)) != len(initial_support_body_paths)
+                    or any(path not in scene_contact_body_paths for path in initial_support_body_paths)):
+                raise NativeTaskArenaScenePlanError(["native_task_arena_initial_support_invalid"])
+            non_support_scene_body_paths = sorted(
+                set(non_support_scene_body_paths) - set(initial_support_body_paths))
         robot_scene_filter_paths = sorted(
             set(scene_contact_body_paths) | set(support_body_paths)
         )
@@ -985,6 +1006,13 @@ def _articulation_plan(
                 }
             )
         for index, task_body_path in enumerate(all_task_body_paths):
+            if initial_support_body_paths:
+                contact_sensors.append({
+                    "sensor_instance_id": f"task_initial_support_contact__rigid_{index:02d}",
+                    "logical_sensor_id": "task_initial_support_contact",
+                    "prim_path": task_body_path,
+                    "filter_prim_paths_expr": initial_support_body_paths,
+                })
             contact_sensors.extend(
                 [
                     {
@@ -1060,6 +1088,7 @@ def _articulation_plan(
             "robot_contact_topology": robot_contact_topology,
             "scene_contact_body_paths": scene_contact_body_paths,
             "support_contact_body_paths": support_body_paths,
+            "initial_support_contact_body_paths": initial_support_body_paths,
             **({
                 "destination_placement_support_body_paths": placement_support_paths,
                 "destination_placement_forbidden_body_paths": placement_forbidden_paths,

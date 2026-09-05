@@ -38,6 +38,7 @@ LOGICAL_CONTACT_SENSOR_IDS = frozenset(
         "task_scene_collision",
         # the task object against the surface it is supported by
         "task_support_contact",
+        "task_initial_support_contact",
         # any robot link touching the static scene
         "robot_scene_contact",
         # non-fingertip robot links -- knuckles, outer fingers, wrist --
@@ -462,6 +463,7 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
 #: its presence must not be mistaken for an unknown channel.
 OPTIONAL_CONTACT_CHANNELS = frozenset(
     {
+        "task_initial_support_contact",
         "task_scene_collision",
         "robot_task_forbidden_collision",
         "destination_scene_support_contact",

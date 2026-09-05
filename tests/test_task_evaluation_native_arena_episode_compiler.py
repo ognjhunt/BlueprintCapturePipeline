@@ -1166,6 +1166,10 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
         )
         assert support["asset_id"] == "document_tray"
         assert observed["packet_request"]["task_spec"]["destination_placement_support_prim_paths"] == ["/Root/Support"]
+        initial_support = observed["packet_request"]["task_spec"]["initial_source_support"]
+        assert initial_support["scene_prim_paths"] == ["/Root/Support"]
+        assert initial_support["support_plane_digest"] == configured["registration"]["support_plane"]["digest"]
+        assert initial_support["contact_permission"] == "initial_pickup_until_first_separation_or_lift"
         assert support["source_asset_id"] == "document-tray"
         assert observed["packet_request"]["task_spec"][
             "destination_relation"

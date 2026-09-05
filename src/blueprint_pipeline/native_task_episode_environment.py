@@ -111,16 +111,41 @@ class NativeRigidScoringEnvironment:
         self._collision_threshold = collision_threshold
         self._workspace_lower = lower
         self._workspace_upper = upper
+        self._initial_support = task_spec.get("initial_source_support")
+        self._initial_support_seen = False
+        self._initial_support_closed = False
+        if self._initial_support is not None:
+            try:
+                self._initial_position = [float(v) for v in task_spec["start_pose_world"][:3]]
+                self._initial_tolerance = float(task_spec["reset_translation_tolerance_m"])
+                self._initial_lift = max(float(task_spec["minimum_lift_m"]), self._initial_tolerance)
+                self._initial_max_force = float(task_spec.get(
+                    "maximum_task_contact_force_n", collision_threshold))
+                valid = (isinstance(self._initial_support, Mapping)
+                    and self._initial_support.get("contact_permission") == "initial_pickup_until_first_separation_or_lift"
+                    and bool(self._initial_support.get("scene_prim_paths"))
+                    and len(self._initial_position) == 3
+                    and all(math.isfinite(v) for v in self._initial_position)
+                    and all(math.isfinite(v) and v > 0 for v in (
+                        self._initial_tolerance, self._initial_lift, self._initial_max_force)))
+            except (KeyError, TypeError, ValueError):
+                valid = False
+            if not valid:
+                raise NativeTaskEpisodeEnvironmentError(["native_task_initial_support_contract_invalid"])
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._environment, name)
 
     def begin_episode(self) -> None:
         self._telemetry.begin_episode()
+        self._initial_support_seen = False
+        self._initial_support_closed = False
 
     def reset(self) -> Any:
         result = self._environment.reset()
         self._telemetry.reset_executed()
+        self._initial_support_seen = False
+        self._initial_support_closed = False
         return result
 
     def read_object_sample(self) -> dict[str, Any]:
@@ -169,6 +194,35 @@ class NativeRigidScoringEnvironment:
         # retain robot/task link or contact-pair identities without this
         # overlay inventing them for older samples that never measured them.
         sample.update(native)
+        initial_support_failure = False
+        if self._initial_support is not None:
+            try:
+                initial_force = float(native["task_initial_support_contact_peak_force_n"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise NativeTaskEpisodeEnvironmentError(["native_task_initial_support_readback_missing"]) from exc
+            if not math.isfinite(initial_force) or initial_force < 0:
+                raise NativeTaskEpisodeEnvironmentError(["native_task_initial_support_readback_invalid"])
+            initial_contact = initial_force >= self._contact_threshold
+            # Permission cannot reopen after pickup, including a drop back onto
+            # the original support. Before the first contact, only the reset
+            # neighborhood can enter this bounded pickup interval.
+            if ((self._initial_support_seen and not initial_contact)
+                    or pose[2] - self._initial_position[2] >= self._initial_lift
+                    or (not self._initial_support_seen and
+                        math.dist(pose[:3], self._initial_position) > self._initial_tolerance)):
+                self._initial_support_closed = True
+            self._initial_support_seen |= initial_contact
+            initial_support_failure = (
+                initial_force > self._initial_max_force
+                or (self._initial_support_closed and initial_force >= self._collision_threshold))
+            sample.update(
+                initial_source_support_contact_active=initial_contact,
+                initial_source_support_contact_permitted=not self._initial_support_closed,
+                initial_source_support_collision_failure=initial_support_failure,
+                task_non_support_scene_collision_peak_force_n=scene_force,
+                task_scene_collision_peak_force_n=max(scene_force,
+                    initial_force if self._initial_support_closed or initial_support_failure else 0.),
+            )
         # Preserve both readbacks, but score the calibrated physical grasp frame.
         # The generic native sampler may report raw body origins 46 mm away.
         if "grasp_frame_position_world_m" in native:
@@ -195,7 +249,7 @@ class NativeRigidScoringEnvironment:
                 ),
                 "collision_failure_minimum_force_n": self._collision_threshold,
                 "locked_joint_containment_violation": locked_joint_violation,
-                "scene_collision_failure": scene_force
+                "scene_collision_failure": initial_support_failure or scene_force
                 >= self._collision_threshold,
                 "containment_violation": any(
                     value < low or value > high

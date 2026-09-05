@@ -1000,6 +1000,7 @@ class NativeRigidTaskArenaReadback:
         for logical_sensor_id in (
             "task_robot_contact",
             "task_support_contact",
+            "task_initial_support_contact",
             "task_scene_collision",
             "robot_task_forbidden_collision",
             "robot_scene_contact",
@@ -1007,6 +1008,10 @@ class NativeRigidTaskArenaReadback:
             "destination_scene_forbidden_contact",
         ):
             scene_names = self._built.contact_sensor_names.get(logical_sensor_id)
+            if (logical_sensor_id == "task_initial_support_contact" and not scene_names
+                    and not self._built.plan["articulation"].get("initial_support_contact_body_paths")):
+                contact_peaks[logical_sensor_id] = 0.0
+                continue
             if logical_sensor_id.startswith("destination_scene_") and not scene_names:
                 empty_forbidden_partition = (
                     logical_sensor_id == "destination_scene_forbidden_contact"
@@ -1155,6 +1160,7 @@ class NativeRigidTaskArenaReadback:
             "task_scene_collision_peak_force_n": contact_peaks[
                 "task_scene_collision"
             ],
+            "task_initial_support_contact_peak_force_n": contact_peaks["task_initial_support_contact"],
             "robot_scene_contact_peak_force_n": contact_peaks["robot_scene_contact"],
             "robot_task_forbidden_collision_peak_force_n": contact_peaks[
                 "robot_task_forbidden_collision"

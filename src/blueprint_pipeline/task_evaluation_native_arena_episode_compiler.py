@@ -1132,6 +1132,15 @@ def compile_native_arena_episode(
     )
     if destination_asset is not None:
         from .task_evaluation_rigid_destination_geometry import bind_destination_trajectory
+        source_support = task_adapter["source_documents"]["documents"]["support_plane"]
+        task_spec["initial_source_support"] = {
+            "scene_prim_paths": [source_support["sage_prim_path"]],
+            "support_plane_digest": _sha256_and_size(_reference_path(
+                materialized_references,
+                "scene.configured_revision.registration.support_plane",
+            ))[0],
+            "contact_permission": "initial_pickup_until_first_separation_or_lift",
+        }
         task_spec = bind_destination_trajectory(task_spec, destination_asset)
         task_spec.update(
             destination_relation=destination_asset["relation"],
