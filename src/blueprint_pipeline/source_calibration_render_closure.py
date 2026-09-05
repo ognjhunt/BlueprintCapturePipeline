@@ -70,7 +70,8 @@ def _validate_closure(prepared: Mapping, value: Mapping) -> None:
                     and row.get('bucketType') == 'allPrivate' for row in buckets), 'closed_private_store_invalid')
     execution = read(paths['provider_execution'], digest_field='receipt_digest')
     ids = execution.get('vast_instance_ids', [])
-    require(execution.get('status') == 'completed' and execution.get('render_scope') == 'source_calibration'
+    require(execution.get('schema_version') == 'adp009d_retained_scene_gpu_render_vast_run.v1'
+            and execution.get('status') == 'completed' and execution.get('render_scope') == 'source_calibration'
             and len(ids) == 1 and type(ids[0]) is int and ids[0] > 0
             and execution.get('continuing_spend_from_this_run') is False
             and execution.get('all_staged_objects_absent') is True
@@ -78,7 +79,8 @@ def _validate_closure(prepared: Mapping, value: Mapping) -> None:
             and record(Path(execution['execution_result_path'])) == value['provider_result'],
             'closed_provider_execution_invalid')
     teardown = read(paths['teardown'])
-    require(str(paths['teardown']) == execution.get('teardown_manifest_path')
+    require(teardown.get('schema_version') == 'vast_teardown_manifest.v1'
+            and str(paths['teardown']) == execution.get('teardown_manifest_path')
             and teardown.get('continuing_spend_from_this_run') is False
             and teardown.get('runner_gpu_teardown_completed') is True
             and teardown.get('vast_instance_ids') == ids, 'closed_teardown_invalid')

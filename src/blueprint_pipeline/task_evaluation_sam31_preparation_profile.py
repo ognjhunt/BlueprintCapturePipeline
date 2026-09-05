@@ -242,6 +242,7 @@ def materialize_sam31_preparation_profile(
     approved_roots: Sequence[str | Path],
     ffmpeg_executable: str | Path = "/usr/bin/ffmpeg",
     calibrated_views_execution_site: str = "control_plane",
+    calibrated_views_machine_avoidlist_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Derive the exact operator profile without allocating or authorizing work."""
 
@@ -254,6 +255,11 @@ def materialize_sam31_preparation_profile(
         for path in approved_roots
     )
     _require(bool(roots) and len(set(roots)) == len(roots), "approved_roots_invalid")
+    avoidlist = None
+    if calibrated_views_execution_site == "provider_gpu":
+        _require(calibrated_views_machine_avoidlist_path is not None, "calibrated_views_machine_avoidlist_required")
+        avoidlist = _safe_path(calibrated_views_machine_avoidlist_path, kind="file", code="calibrated_views_machine_avoidlist_invalid")
+        _beneath_any(avoidlist, roots, code="calibrated_views_machine_avoidlist_outside_approved_roots")
 
     repo = _safe_path(repo_root, kind="directory", code="repo_root_invalid")
     data = _safe_path(server_data_root, kind="directory", code="server_data_root_invalid")
@@ -351,7 +357,8 @@ def materialize_sam31_preparation_profile(
                              "hardware_required": calibrated_views_execution_site == "provider_gpu",
                              "max_spend_usd": 1.0, "hard_ttl_seconds": 1800,
                              "max_hourly_rate_usd": 0.5, "retry_cap": 0,
-                             "maximum_resource_count": 1, "allowed_geolocation_country_codes": ["US"]},
+                             "maximum_resource_count": 1, "allowed_geolocation_country_codes": ["US"],
+                             "machine_avoidlist": _file_record(avoidlist) if avoidlist else None},
         "artifact_references": {
             "sam31_provider_profile": _file_record(provider_profile_path),
         },
@@ -462,6 +469,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--approved-root", action="append", required=True)
     parser.add_argument("--ffmpeg-executable", default="/usr/bin/ffmpeg")
     parser.add_argument("--calibrated-views-execution-site", choices=("control_plane", "provider_gpu"), default="control_plane")
+    parser.add_argument("--calibrated-views-machine-avoidlist")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
@@ -485,6 +493,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             approved_roots=args.approved_root,
             ffmpeg_executable=args.ffmpeg_executable,
             calibrated_views_execution_site=args.calibrated_views_execution_site,
+            calibrated_views_machine_avoidlist_path=args.calibrated_views_machine_avoidlist,
         )
         output = Path(args.output).expanduser().resolve()
         _write_exclusive(output, profile)

@@ -79,6 +79,8 @@ def execute_source_calibration_stage(job: Mapping[str, Any], *, allocator_runner
             and settings.get('max_spend_usd')==1.0 and settings.get('hard_ttl_seconds')==1800
             and settings.get('retry_cap')==0 and settings.get('maximum_resource_count')==1
             and settings.get('allowed_geolocation_country_codes')==['US'],'hardware_profile_invalid')
+    require(isinstance(settings.get('machine_avoidlist'), Mapping),'hardware_machine_avoidlist_required')
+    avoidlist=checked_file(settings['machine_avoidlist']['path'],settings['machine_avoidlist'])
     root=Path(job['output_root'])
     root.mkdir(parents=True,exist_ok=True)
     preparation_record=root/'cpu_preparation_outcome.json'
@@ -117,8 +119,7 @@ def execute_source_calibration_stage(job: Mapping[str, Any], *, allocator_runner
             '--adp-retained-scene-render-job-dir',str(root/'provider'),
             '--adp-retained-scene-render-max-hourly-rate-usd',str(rate),
             '--adp-retained-scene-render-hard-ttl-seconds','1800']
-        if settings.get('machine_avoidlist_path'):
-            argv.extend(['--adp-machine-avoidlist',settings['machine_avoidlist_path']])
+        argv.extend(['--adp-machine-avoidlist',str(avoidlist)])
         _write(started,{'source_commit':job['expected_source_commit'],'bundle_receipt':record(bundle_receipt)})
         allocator_runner(argv,cwd=Path(job['repo_root']))
     require(result_path.is_file(),'allocator_result_missing')

@@ -15,7 +15,12 @@ from tests.test_task_evaluation_sam31_preparation_profile import inputs  # noqa:
 def test_profile_freezes_hardware_route_and_local_default(inputs):  # noqa: F811
     from blueprint_pipeline.task_evaluation_sam31_preparation_profile import materialize_sam31_preparation_profile
     local = materialize_sam31_preparation_profile(**inputs)
-    gpu = materialize_sam31_preparation_profile(**inputs, calibrated_views_execution_site='provider_gpu')
+    avoidlist = inputs['server_data_root']/'avoidlist.json'
+    avoidlist.write_text('{"machine_ids":[]}')
+    with pytest.raises(ValueError, match='machine_avoidlist_required'):
+        materialize_sam31_preparation_profile(**inputs, calibrated_views_execution_site='provider_gpu')
+    gpu = materialize_sam31_preparation_profile(**inputs, calibrated_views_execution_site='provider_gpu',
+                                               calibrated_views_machine_avoidlist_path=avoidlist)
     assert local['calibrated_views']['execution_site'] == 'control_plane'
     assert gpu['calibrated_views']['hardware_required'] is True
     assert gpu['calibrated_views']['hard_ttl_seconds'] == 1800
@@ -64,7 +69,7 @@ def test_hardware_child_waits_for_posted_billing_without_duplicate_allocator(tmp
            'server_profile': {'approved_paid_input_roots': [str(tmp_path)], 'calibrated_views': {
                'execution_site': 'provider_gpu', 'hardware_required': True, 'max_spend_usd': 1.0,
                'hard_ttl_seconds': 1800, 'max_hourly_rate_usd': .5, 'retry_cap': 0,
-               'maximum_resource_count': 1, 'allowed_geolocation_country_codes': ['US']}}}
+               'maximum_resource_count': 1, 'allowed_geolocation_country_codes': ['US'], 'machine_avoidlist': record(source)}}}
     first = stage.execute_source_calibration_stage(job, allocator_runner=allocate)
     second = stage.execute_source_calibration_stage({**job, 'resume_only': True}, allocator_runner=allocate)
     assert first == second and first['status'] == 'waiting_for_external_result'
