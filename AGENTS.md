@@ -207,6 +207,20 @@ dependent step as blocked instead of guessing.
   A manual action taken to save a live run remains a stopgap; encode and focus-
   test the equivalent in the same session (precedents: PR #180 builder swap,
   PR #181 compute-cap ceiling).
+- **The only loop for a failed production stage** (2026-09-05: hours between
+  attempts were spent re-running finished GPU stages and deploying to discover
+  the next fact). (1) Replay the failed child's saved job against the candidate
+  code first: `python -m blueprint_pipeline.task_evaluation_stage_replay
+  --child <sam31-id> --isolate` on the host runs the stage handler from the
+  candidate tree on the retained inputs in a scratch root, as the service user,
+  with no network, no GPU and no model call, and names the refusing predicate;
+  iterate until the boundary passes. (2) A resubmission adopts every completed
+  stage (completed-prefix adoption) and never re-runs finished GPU work for
+  identical inputs. (3) Batch independent fixes and deploy once; keep unrelated
+  improvements out of the restart path. (4) Read the chain preflight
+  (`preflight/latest.json`: `blocker_count`, `host_findings`, per-unit
+  `findings`) before submitting. A defect first found by a paid run that a
+  replay would have shown is a process defect to record with the fix.
 - Compatibility work must preserve prior proof boundaries. In particular,
   generated-video or simulator execution never becomes physical truth, and a
   candidate policy or provider never grades itself.

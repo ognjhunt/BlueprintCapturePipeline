@@ -138,6 +138,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/diagnostic-checkouts", "scratch", "blueprint", "diagnostic source checkouts"),
     StorageRoot(f"{_CONTROL_PLANE}/release-builds", "scratch", "root", "release build staging"),
     StorageRoot(f"{_INPUTS}/render-probes", "scratch", "root", "render diagnostic inputs"),
+    StorageRoot(f"{_INPUTS}/stage-replays", "scratch", "blueprint", "stage replay outputs (task_evaluation_stage_replay)"),
 )
 
 
