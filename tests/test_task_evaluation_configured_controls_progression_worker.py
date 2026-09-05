@@ -454,6 +454,110 @@ def test_process_plans_does_not_forward_canary_only_compilation_root_to_controls
     assert "episode_compilation_queue_root" not in observed
 
 
+def test_process_plans_advances_scene_configuration_activations_from_the_intent_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The timer that advances controls also drives the configuration activation."""
+
+    from blueprint_pipeline import (
+        task_evaluation_scene_configuration_activation_automation as automation,
+    )
+
+    launch_root = tmp_path / "launch-runs"
+    launch_root.mkdir()
+    intent_root = tmp_path / "scene-configuration-intents"
+    intent_root.mkdir()
+    observed: dict[str, object] = {}
+
+    def process(**kwargs: object) -> list[dict[str, object]]:
+        observed.update(kwargs)
+        return [
+            {
+                "preparation_id": "adp-841757-preparation",
+                "status": "awaiting_scene_configuration_authority",
+                "activation_status": "scene_configuration_activation_queued",
+                "activation_id": "adp-841757-activation-auto",
+                "launch_id": None,
+                "provider_mutation_performed": False,
+            }
+        ]
+
+    monkeypatch.setattr(automation, "process_scene_configuration_activations", process)
+    forwarded: dict[str, object] = {}
+
+    def advance(**kwargs: object) -> dict[str, object]:
+        forwarded.update(kwargs)
+        return {"status": "controls_activation_queued"}
+
+    monkeypatch.setattr(worker, "advance_configured_controls_plan", advance)
+    plan_root = tmp_path / "plans"
+    _write(plan_root / "configured-controls.json", {"schema_version": "test.plan.v1"})
+    report = worker.process_plans(
+        plan_root=plan_root,
+        autostart_intent_root=tmp_path / "intents",
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progression",
+        preparation_queue_root=tmp_path / "preparations",
+        episode_compilation_queue_root=tmp_path / "compilations",
+        activation_queue_root=tmp_path / "activations",
+        repo_root=tmp_path / "repo",
+        webapp_secret_file=tmp_path / "secret",
+        webapp_endpoint="https://tryblueprint.io/api/internal/task-evaluation-launch-submissions",
+        scene_configuration_activation_intent_root=intent_root,
+        profile_dir=tmp_path / "profiles",
+        standing_authorization_dir=tmp_path / "standing",
+    )
+
+    assert report["status"] == "completed"
+    scene_rows = [
+        row for row in report["rows"] if row.get("lane") == "task_evaluation_scene_configuration"
+    ]
+    assert [row["status"] for row in scene_rows] == ["awaiting_scene_configuration_authority"]
+    assert observed["intent_root"] == intent_root
+    assert observed["preparation_queue_root"] == tmp_path / "preparations"
+    assert observed["activation_queue_root"] == tmp_path / "activations"
+    assert observed["progression_root"] == tmp_path / "progression"
+    assert observed["profile_dir"] == tmp_path / "profiles"
+    assert observed["standing_authorization_dir"] == tmp_path / "standing"
+    assert callable(observed["submitter"])
+    # The configured-controls transition keeps its exact signature.
+    for name in (
+        "scene_configuration_activation_intent_root",
+        "profile_dir",
+        "standing_authorization_dir",
+        "episode_compilation_queue_root",
+    ):
+        assert name not in forwarded
+
+
+def test_process_plans_leaves_scene_configuration_activation_alone_without_an_intent_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import (
+        task_evaluation_scene_configuration_activation_automation as automation,
+    )
+
+    monkeypatch.setattr(
+        automation,
+        "process_scene_configuration_activations",
+        lambda **_kwargs: pytest.fail("must not run without an intent root"),
+    )
+    launch_root = tmp_path / "launch-runs"
+    launch_root.mkdir()
+    report = worker.process_plans(
+        plan_root=tmp_path / "plans",
+        autostart_intent_root=tmp_path / "intents",
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progression",
+        preparation_queue_root=tmp_path / "preparations",
+        activation_queue_root=tmp_path / "activations",
+    )
+    assert report["status"] == "completed"
+    assert report["rows"] == []
+
+
 def _seal_plan(plan: dict[str, object]) -> None:
     paths: dict[str, Path] = {}
 
