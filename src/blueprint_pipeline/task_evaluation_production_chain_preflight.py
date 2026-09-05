@@ -884,7 +884,9 @@ def unit_health_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str, An
 def intake_check(units: Mapping[str, dict[str, Any]], ids: tuple[int, int]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     try:
-        with urllib.request.urlopen(INTAKE_CATALOG_URL, timeout=10) as response:  # noqa: S310 - loopback only
+        with urllib.request.urlopen(  # nosec B310 - fixed loopback http literal
+            INTAKE_CATALOG_URL, timeout=10
+        ) as response:
             status = response.status
     except Exception as exc:  # noqa: BLE001
         findings.append(_finding("blocker", "intake_catalog_route_unreachable", url=INTAKE_CATALOG_URL, error=str(exc)[:200]))
