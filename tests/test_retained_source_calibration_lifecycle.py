@@ -134,7 +134,11 @@ def test_source_variant_lifecycle_preserves_allocation_and_terminal_boundaries(t
         assert kwargs['max_hourly_rate'] == .8
         assert kwargs['max_live_minutes'] == kwargs['session_max_live_minutes'] == 30
         assert kwargs['startup_timeout_seconds'] == 1800
-        assert kwargs['machine_avoidlist_path'] == avoidlist
+        mutable_avoidlist = kwargs['machine_avoidlist_path']
+        assert mutable_avoidlist != avoidlist
+        assert mutable_avoidlist.read_bytes() == avoidlist.read_bytes()
+        mutable_avoidlist.write_text('{"machine_ids":[20166]}')
+        assert avoidlist.read_text() == '{}'
         assert kwargs['allowed_active_instance_ids'] == ()
         assert os.environ['BLUEPRINT_VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS'] == pre_mutation_offer_reselection_attempts()
         assert kwargs['forward_hf_token'] is False

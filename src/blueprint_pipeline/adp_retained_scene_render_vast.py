@@ -44,6 +44,7 @@ from .spend_authority_consumption_root import (
     SpendAuthorityRootError,
     prepare_consumption_root,
 )
+from .provider_machine_avoidlist import stage_machine_avoidlist_for_attempt
 from .vast_pre_mutation_reselection import RESELECTION_ENV as _VAST_STALE_OFFER_RETRY_ENV, pre_mutation_offer_reselection_attempts
 
 PROVIDER_BUNDLE_KIND = "adp_retained_scene_render"
@@ -564,6 +565,8 @@ def run_retained_scene_render_vast(
         hard_ttl_seconds=hard_ttl_seconds,
         allowed_active_instance_ids=allowed_active_instance_ids,
     )
+    attempt_avoidlist = stage_machine_avoidlist_for_attempt(
+        source_path=machine_avoidlist_path, destination_path=job / "provider_machine_avoidlist.json")
     bundle_path = Path(str(bundle["bundle_path"])).resolve()
     staging_options: dict[str, Any] = {}
     private_store = None
@@ -671,7 +674,7 @@ def run_retained_scene_render_vast(
                 preferred_gpu_keywords=("RTX 4090", "L40S", "RTX A6000"),
                 prefer_isaac_rt=False,
                 allowed_active_instance_ids=allowed_active_instance_ids,
-                machine_avoidlist_path=machine_avoidlist_path,
+                machine_avoidlist_path=attempt_avoidlist,
                 **({"allowed_geolocation_country_codes": ("US",),
                     "preferred_geolocation_regex": bundle["preferred_geolocation_regex"]}
                    if source_calibration else {}),
