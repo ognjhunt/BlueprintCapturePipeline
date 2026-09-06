@@ -152,6 +152,7 @@ def provision_sam31_service_environment(
     environment_root: str | Path = "/etc/blueprint",
     systemd_unit_root: str | Path = "/etc/systemd/system",
     reload_systemd: bool = False,
+    profile_registry_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Reopen the profile, install both bindings, optionally reload unit definitions."""
     _require(type(allow_live_agents_sdk) is bool and type(reload_systemd) is bool,
@@ -166,10 +167,24 @@ def provision_sam31_service_environment(
         "openai_api_key_file": str(key), "openai_api_key_id": openai_api_key_id,
         "allow_live_agents_sdk": allow_live_agents_sdk,
     }
+    registry_line = ""
+    if profile_registry_root is not None:
+        from .task_evaluation_sam31_profile_registry import REGISTRY_ENV, register_sam31_profile
+
+        registry = _path(profile_registry_root)
+        registry.mkdir(parents=True, exist_ok=True, mode=0o750)
+        owner = profile_source.stat()
+        # The validated profile's service owner can publish subsequent profiles
+        # without changing root-owned systemd configuration for every scene.
+        os.chown(registry, owner.st_uid, owner.st_gid)
+        binding["profile_registry"] = register_sam31_profile(
+            profile_path=profile_source, registry_root=registry)
+        binding["profile_registry_root"] = str(registry)
+        registry_line = f"{REGISTRY_ENV}={registry}\n"
     binding_digest = canonical_digest(binding)
     retained = env_root / "sam31-service-bindings" / binding_digest.removeprefix("sha256:")
     intake_env, sam_env = retained / "intake.env", retained / "execution.env"
-    profile_line = f"{PROFILE_ENV}={profile_source}\n"
+    profile_line = f"{PROFILE_ENV}={profile_source}\n" + registry_line
     contents = {
         intake_env: profile_line,
         sam_env: (profile_line + f"BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS={int(allow_live_agents_sdk)}\n"
@@ -221,6 +236,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--environment-root", default="/etc/blueprint")
     parser.add_argument("--systemd-unit-root", default="/etc/systemd/system")
     parser.add_argument("--reload-systemd", action="store_true")
+    parser.add_argument("--profile-registry-root")
     parser.add_argument("--receipt-out", required=True)
     args = parser.parse_args(argv)
     receipt_path = _path(args.receipt_out)
@@ -230,6 +246,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         openai_api_key_file=args.openai_api_key_file, openai_api_key_id=args.openai_api_key_id,
         allow_live_agents_sdk=args.allow_live_agents_sdk, environment_root=args.environment_root,
         systemd_unit_root=args.systemd_unit_root, reload_systemd=args.reload_systemd,
+        profile_registry_root=args.profile_registry_root,
     )
     _atomic_write(receipt_path, canonical_json(result) + "\n", immutable=True)
     print(json.dumps(result, sort_keys=True))

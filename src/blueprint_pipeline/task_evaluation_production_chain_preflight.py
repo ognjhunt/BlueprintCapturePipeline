@@ -823,6 +823,17 @@ def binding_checks(units: Mapping[str, dict[str, Any]], active_sha: str, ids: tu
             findings.append(_finding("info", "installed_source_binding", receipt=str(receipt_path), bound_sha=bound[:12]))
     for unit_name in ("blueprint-task-evaluation-launch-preparation.service", "blueprint-task-evaluation-sam31-preparation-execution.service"):
         unit = units.get(unit_name, {})
+        registry = unit.get("effective_environment", {}).get("BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR")
+        if registry:
+            path = Path(str(registry))
+            if not path.is_absolute() or path.is_symlink() or not path.is_dir() or not readable_by(path, uid, gid):
+                findings.append(_finding("blocker", "sam31_profile_registry_unreadable_by_service", unit=unit_name))
+            else:
+                findings.append(_finding("info", "sam31_profile_registry_content_bound", unit=unit_name, path=str(path)))
+            for env_file, _ignore in unit.get("environment_files", []):
+                if not Path(env_file).is_file():
+                    findings.append(_finding("blocker", "environment_file_missing", unit=unit_name, path=env_file))
+            continue
         profile = str(unit.get("effective_environment", {}).get("BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_FILE") or "")
         if not profile:
             findings.append(_finding("blocker", "sam31_profile_unbound", unit=unit_name))

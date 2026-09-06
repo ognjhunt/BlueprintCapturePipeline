@@ -55,6 +55,15 @@ def test_default_disables_live_sdk_and_successor_preserves_previous_env(configur
     assert first['environment_files'] != second['environment_files']
 
 
+def test_registry_is_bound_once_for_both_workers(configuration, tmp_path):
+    from blueprint_pipeline.task_evaluation_sam31_profile_registry import REGISTRY_ENV
+    receipt = module.provision_sam31_service_environment(
+        **configuration, profile_registry_root=tmp_path / 'registry')
+    assert Path(receipt['profile_registry']['path']).is_file()
+    for row in receipt['environment_files']:
+        assert f"{REGISTRY_ENV}={tmp_path / 'registry'}\n" in Path(row['path']).read_text()
+
+
 @pytest.mark.parametrize('mutation, blocker', [
     ('key_id', 'inference_key_id_mismatch'),
     ('commit', 'profile_identity_invalid'),
