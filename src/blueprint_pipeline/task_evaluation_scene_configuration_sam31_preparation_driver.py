@@ -12,12 +12,14 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_configuration_sam31_plan import (
-    HOST_ROOTS, PHASES, PROFILE_ENV, PROFILE_SCHEMA, file_record,
+    HOST_ROOTS, PHASES, PROFILE_SCHEMA, file_record,
     validate_sam31_preparation_plan,
 )
 from .task_evaluation_scene_configuration_submission_inputs import (
-    checked_file, read, require, sha,
+    checked_file, read, require,
 )
+from .task_evaluation_sam31_profile_registry import resolve_sam31_profile
+from .task_evaluation_scene_configuration_sam31_plan import PROFILE_ENV as PROFILE_ENV
 
 CHILD_QUEUE_ENV = "BLUEPRINT_TASK_EVALUATION_SAM31_EXECUTION_QUEUE_ROOT"
 DEFAULT_CHILD_QUEUE = Path("/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions")
@@ -58,11 +60,7 @@ def _context_plan(context: dict[str, Any], *, roots: tuple[Path, ...]) -> tuple[
 
 
 def _server_profile(plan: dict[str, Any], roots: tuple[Path, ...]) -> dict[str, Any]:
-    path_text = os.environ.get(PROFILE_ENV, "")
-    require(bool(path_text), "sam31_server_profile_missing")
-    path = Path(path_text)
-    require(path.is_absolute() and sha(path) == plan["server_profile_sha256"],
-            "sam31_server_profile_changed")
+    path = resolve_sam31_profile(plan)
     profile = read(path, digest_field="profile_digest")
     require(profile.get("schema_version") == PROFILE_SCHEMA
             and profile.get("source_commit") == plan["source_commit"], "sam31_server_profile_invalid")

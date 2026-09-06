@@ -107,6 +107,13 @@ def discover_server_profile(plan_path: Path, input_root: Path) -> Path | None:
         return None
     if not pinned:
         return None
+    from .task_evaluation_sam31_profile_registry import resolve_sam31_profile
+    from .task_evaluation_scene_configuration_submission_inputs import SceneConfigurationSubmissionError
+
+    try:
+        return resolve_sam31_profile({"server_profile_sha256": pinned})
+    except (OSError, ValueError, SceneConfigurationSubmissionError):
+        pass
     current = os.environ.get(PROFILE_ENV)
     candidates = [Path(current)] if current else []
     for root in (Path(input_root), Path(input_root).parent):
