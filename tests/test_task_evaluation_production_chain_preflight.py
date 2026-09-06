@@ -425,3 +425,48 @@ def test_probe_replays_the_paid_admission_identity_gate_from_the_release(tmp_pat
     assert report["paid_admission_identity"]["observed_commit"] == "a" * 40
     assert not any(row["code"] == "paid_admission_identity_probe_failed" for row in report["findings"])
 
+
+def test_preflight_refuses_a_paid_unit_without_the_credit_guard_and_reads_the_credit_once(tmp_path: Path) -> None:
+    """A paid unit that leaves BLUEPRINT_VAST_CREDIT_GUARD_ENABLED off would let an attempt start on credit
+    Vast tears down mid-run; the preflight also reads the credit once ($0) so a thin account is named before
+    a submission rather than at the guard."""
+
+    from blueprint_pipeline import provider_credit_admission as credit
+
+    key_file = tmp_path / "vast_api_key"
+    key_file.write_text("k\n")
+    dispatcher = "blueprint-task-evaluation-launch-dispatcher.service"
+    canary = "blueprint-task-evaluation-policy-canary-dispatcher.service"
+    units = {
+        dispatcher: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file), credit.ENABLED_ENV: "true"}},
+        canary: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file)}},
+    }
+    seen: list = []
+
+    def observer(*, api_key, credit_usd=4.67):
+        seen.append(api_key)
+        return credit.observe_vast_credit(api_key=api_key, request=lambda **_kw: (200, {"credit": credit_usd}))
+
+    findings = preflight.provider_credit_check(units, observer=observer)
+
+    assert seen == ["k"]
+    assert findings[0] == preflight._finding(
+        "blocker", "provider_credit_guard_disabled", unit=canary, env=credit.ENABLED_ENV, value=None
+    )
+    assert findings[1]["severity"] == "warning" and findings[1]["code"] == "provider_credit_low"
+    assert findings[1]["credit_usd"] == 4.67 and findings[1]["warning_usd"] == 5.0
+
+    units[canary]["effective_environment"][credit.ENABLED_ENV] = "true"
+    [fine] = preflight.provider_credit_check(units, observer=lambda *, api_key: observer(api_key=api_key, credit_usd=20.6))
+    assert fine["severity"] == "info" and fine["code"] == "provider_credit_available" and fine["credit_usd"] == 20.6
+    [exhausted] = preflight.provider_credit_check(units, observer=lambda *, api_key: observer(api_key=api_key, credit_usd=0.2))
+    assert exhausted["severity"] == "blocker" and exhausted["code"] == "provider_credit_exhausted"
+    [unknown] = preflight.provider_credit_check(
+        units, observer=lambda *, api_key: credit.observe_vast_credit(api_key=api_key, request=lambda **_kw: (503, {}))
+    )
+    assert unknown["severity"] == "warning" and unknown["code"] == "provider_credit_unverifiable"
+    assert unknown["blockers"] == ["provider_credit_unverifiable"] and unknown["http_status"] == 503
+    assert preflight.provider_credit_check({"other.service": {"effective_environment": {}}}, observer=observer) == [
+        preflight._finding("warning", "provider_credit_key_file_unset")
+    ]
+

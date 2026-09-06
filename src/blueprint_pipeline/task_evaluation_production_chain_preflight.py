@@ -49,7 +49,7 @@ import sys
 import textwrap
 import time
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -972,6 +972,72 @@ def credential_file_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str
     return findings
 
 
+PAID_ALLOCATION_UNITS: tuple[str, ...] = (
+    "blueprint-task-evaluation-launch-dispatcher.service",
+    "blueprint-task-evaluation-policy-canary-dispatcher.service",
+    "blueprint-task-evaluation-sam31-preparation-execution.service",
+)
+
+
+def _env_usd(name: str, default: float, *environments: Mapping[str, Any]) -> float:
+    for environment in (*environments, os.environ):
+        raw = str(environment.get(name) or "").strip()
+        if raw:
+            try:
+                value = float(raw)
+            except ValueError:
+                return default
+            return value if value >= 0 else default
+    return default
+
+
+def provider_credit_check(
+    units: Mapping[str, dict[str, Any]], *, observer: Callable[..., Mapping[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Refuse a paid unit that leaves the per-attempt credit guard off; read the credit once ($0).
+
+    Vast stops every instance when the account balance crosses its threshold, so an attempt
+    that starts on thin credit is torn down mid-episode and loses its evidence.  The guard in
+    ``provider_credit_admission`` is opt-in by environment; production must turn it on in every
+    unit that reaches the adapter.  The read here is the same GET the guard performs, done before
+    a submission so a thin account is named here rather than at the first paid attempt.
+    """
+
+    from .provider_credit_admission import ENABLED_ENV, RESERVE_ENV, WARNING_ENV, observe_vast_credit
+
+    findings: list[dict[str, Any]] = []
+    environments = [dict(unit.get("effective_environment", {})) for _, unit in sorted(units.items())]
+    for unit_name in PAID_ALLOCATION_UNITS:
+        unit = units.get(unit_name)
+        if unit is None:
+            continue
+        enabled = str(unit.get("effective_environment", {}).get(ENABLED_ENV) or "").strip().lower()
+        if enabled not in {"true", "1"}:
+            findings.append(
+                _finding("blocker", "provider_credit_guard_disabled", unit=unit_name, env=ENABLED_ENV, value=enabled or None)
+            )
+    key_file = next((str(e.get("VAST_API_KEY_FILE") or "").strip() for e in environments if e.get("VAST_API_KEY_FILE")), "")
+    if not key_file:
+        return [*findings, _finding("warning", "provider_credit_key_file_unset")]
+    try:
+        api_key = Path(key_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        return [*findings, _finding("warning", "provider_credit_key_file_unreadable", path=key_file)]
+    observation = (observer or observe_vast_credit)(api_key=api_key)
+    credit = observation.get("credit_usd")
+    if observation.get("status") != "observed" or not isinstance(credit, (int, float)) or isinstance(credit, bool):
+        return [*findings, _finding(
+            "warning", "provider_credit_unverifiable",
+            http_status=observation.get("http_status"), blockers=list(observation.get("blockers") or []),
+        )]
+    reserve = _env_usd(RESERVE_ENV, 1.0, *environments)
+    warning = _env_usd(WARNING_ENV, 5.0, *environments)
+    if float(credit) < reserve:
+        return [*findings, _finding("blocker", "provider_credit_exhausted", credit_usd=float(credit), reserve_usd=reserve)]
+    severity, code = ("warning", "provider_credit_low") if float(credit) < warning else ("info", "provider_credit_available")
+    return [*findings, _finding(severity, code, credit_usd=float(credit), warning_usd=warning)]
+
+
 def disk_admission_check(units: Mapping[str, dict[str, Any]]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     try:
@@ -1138,6 +1204,7 @@ def run_chain(args: argparse.Namespace) -> int:
     report["host_findings"].extend(binding_checks(units, active_sha, ids))
     report["host_findings"].extend(handoff_checks(units, ids))
     report["host_findings"].extend(credential_file_checks(units))
+    report["host_findings"].extend(provider_credit_check(units))
     report["host_findings"].extend(disk_admission_check(units))
     report["host_findings"].extend(unit_health_checks(units))
     report["host_findings"].extend(intake_check(units, ids))
