@@ -471,7 +471,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
 
     seen: dict[str, dict[str, Any]] = report["paths"]
 
-    def examine(path_text: str, *, source: str, modules: Sequence[str] = ()) -> None:
+    def examine(path_text: str, *, source: str, modules: Sequence[str] = (), git_safe_directory: bool = False) -> None:
         path_text = path_text.rstrip("/") or "/"
         row = seen.get(path_text)
         if row is None:
@@ -485,7 +485,13 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         row["sources"].append({"source": source, "modules": list(modules)} if modules else {"source": source})
         sha = SHA_IN_PATH.search(path_text)
         if active_sha and sha and sha.group(1) != active_sha and "task-evaluation-control-plane-releases" in path_text:
-            findings.append(_finding("blocker", "path_bound_to_other_release", path=path_text, source=source, bound_sha=sha.group(1)))
+            if git_safe_directory:
+                # A git ``safe.directory`` waiver names another release only to
+                # trust that checkout for git, not because this unit's runtime is
+                # bound to it.  Keep the finding visible, but as information.
+                findings.append(_finding("info", "git_safe_directory_names_other_release", path=path_text, source=source, bound_sha=sha.group(1)))
+            else:
+                findings.append(_finding("blocker", "path_bound_to_other_release", path=path_text, source=source, bound_sha=sha.group(1)))
         sha8 = SHA8_IN_INPUT.search(path_text)
         if active_sha and sha8 and sha8.group(1) != active_sha[:8] and "/task-evaluation-inputs/" in path_text:
             # Per-release input directories are reused across releases by content
@@ -495,12 +501,14 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     for path_text, modules in literal_roots(sources).items():
         examine(path_text, source="code_literal", modules=modules)
 
+    git_safe_directory_names = _git_safe_directory_value_env_names(os.environ)
     for name, value in sorted(os.environ.items()):
+        git_safe_directory = name in git_safe_directory_names
         if value.startswith("/"):
-            examine(value, source=f"env:{name}")
+            examine(value, source=f"env:{name}", git_safe_directory=git_safe_directory)
         elif value[:1] in "[{":
             for nested in _json_paths(value):
-                examine(nested, source=f"env_json:{name}")
+                examine(nested, source=f"env_json:{name}", git_safe_directory=git_safe_directory)
 
     resolvers = (
         (f"{PACKAGE}.spend_authority_consumption_root", "consumption_root", ()),
@@ -607,6 +615,26 @@ def _first(props: Mapping[str, list[str]], key: str) -> str:
     return values[0]
 
 
+def _git_safe_directory_value_env_names(environ: Mapping[str, str]) -> set[str]:
+    """Environment names that carry a git ``safe.directory`` value.
+
+    A unit hands git its recent release checkouts through the
+    ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_<i>``/``GIT_CONFIG_VALUE_<i>`` protocol
+    so git waives its ownership refusal in those trees.  A ``safe.directory``
+    value that names another release only trusts that checkout for git; it does
+    not bind the unit's runtime to that release the way a code literal or a root
+    resolver would.  A path finding whose source is one of these should stay
+    visible but be informational, not a binding blocker.
+    """
+
+    names: set[str] = set()
+    for key, value in environ.items():
+        match = re.fullmatch(r"GIT_CONFIG_KEY_(\d+)", key)
+        if match and value.strip() == "safe.directory":
+            names.add(f"GIT_CONFIG_VALUE_{match.group(1)}")
+    return names
+
+
 def entry_module(props: Mapping[str, list[str]]) -> str | None:
     for text in props.get("ExecStart", []):
         match = re.search(r"-m (blueprint_pipeline\.[a-z0-9_]+)|(scripts/[a-z0-9_]+\.py)", text)
@@ -693,11 +721,19 @@ def systemd_run_command(
     for key, value in unit_environment(props).items():
         command.append(f"--setenv={key}={value}")
     command.append(f"--setenv=BLUEPRINT_PRODUCTION_CHAIN_PREFLIGHT_UNIT={unit}")
+    # systemd path directives may begin with ``-`` (an optional path that is
+    # silently skipped when absent).  Passed as a separate ``--read-only-paths``
+    # ``-/x`` pair, argparse reads the leading-dash value as another option and
+    # fails the probe with ``expected one argument`` (this blocked the live
+    # intake and gpu-spend-guard units, whose ReadOnlyPaths is optional).  The
+    # ``--opt=value`` form keeps each value one argv element, so empty,
+    # space-joined multi-path and space-containing values all survive intact.
     command.extend(
         [
             "--", python, str(script), "probe", "--unit", unit, "--module", module, "--release", str(release),
-            "--active-sha", active_sha, "--read-write-paths", _first(props, "ReadWritePaths"),
-            "--read-only-paths", _first(props, "ReadOnlyPaths"),
+            "--active-sha", active_sha,
+            f"--read-write-paths={_first(props, 'ReadWritePaths')}",
+            f"--read-only-paths={_first(props, 'ReadOnlyPaths')}",
         ]
     )
     return command
@@ -1269,7 +1305,7 @@ def run_chain(args: argparse.Namespace) -> int:
     return 2 if blockers else 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="role", required=True)
     run = sub.add_parser("run", help="root: probe every chain unit under its own sandbox and run the host checks")
@@ -1288,7 +1324,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     probe.add_argument("--read-write-paths", default="")
     probe.add_argument("--read-only-paths", default="")
     probe.set_defaults(func=lambda ns: print(json.dumps(run_probe(ns), sort_keys=True, default=str)) or 0)
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     return int(args.func(args) or 0)
 
 
