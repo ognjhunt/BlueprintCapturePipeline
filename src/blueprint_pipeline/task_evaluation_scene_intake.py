@@ -184,7 +184,9 @@ def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
 def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id: str,
                           source_commit: str, runtime_digest: str, input_digest: str,
                           provider: str, maximum_spend_usd: float,
-                          now: float | None = None) -> dict[str, Any]:
+                          now: float | None = None,
+                          recovery_from_attempt_id: str | None = None,
+                          recovery_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
     """Debit maximum exposure before dispatch; retries never reset the owner's cap."""
     _require(_identifier(intent_id) and _identifier(attempt_id), "attempt_id_invalid")
     _require(_COMMIT.fullmatch(source_commit) is not None and _DIGEST.fullmatch(runtime_digest) is not None
@@ -209,9 +211,35 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
                 "input_digest": input_digest, "provider": provider,
                 "maximum_spend_usd": maximum_spend_usd, "status": "reserved"}
         path = attempts / (attempt_id + ".json")
+        _require((recovery_from_attempt_id is None) == (recovery_evidence is None),
+                 "recovery_lineage_required")
+        if recovery_from_attempt_id is not None:
+            _require(_identifier(recovery_from_attempt_id) and recovery_from_attempt_id != attempt_id,
+                     "recovery_new_attempt_required")
+            prior = _read(attempts / (recovery_from_attempt_id + ".json"), "attempt_digest")
+            _require(prior["intent_digest"] == intent["intent_digest"] and prior["provider"] == provider,
+                     "recovery_prior_attempt_mismatch")
+            # An idempotent read must not require fresh inventory after the
+            # reservation has already been durably debited.
+            if path.exists():
+                existing = _read(path, "attempt_digest")
+                _require(all(existing.get(k) == v for k, v in body.items())
+                         and existing.get("recovery", {}).get("prior_attempt_id") == recovery_from_attempt_id
+                         and existing["recovery"].get("evidence") == recovery_evidence,
+                         "attempt_immutable_conflict")
+                return existing
+            rows = [_read(p, "attempt_digest") for p in attempts.glob("*.json")]
+            _require(sum("recovery" in row for row in rows) < execution["max_retries"],
+                     "retry_cap_exhausted")
+            _require(not any(row.get("recovery", {}).get("prior_attempt_id") == recovery_from_attempt_id
+                             for row in rows), "recovery_successor_already_reserved")
+            from .task_evaluation_scene_recovery import validate_recovery_evidence
+            body["recovery"] = validate_recovery_evidence(recovery_evidence,
+                prior_attempt=prior, provider=provider, now=moment)
         if path.exists():
             existing = _read(path, "attempt_digest")
-            _require(all(existing.get(k) == v for k, v in body.items()), "attempt_immutable_conflict")
+            _require(all(existing.get(k) == v for k, v in body.items())
+                     and ("recovery" in existing) == ("recovery" in body), "attempt_immutable_conflict")
             return existing
         rows = [_read(p, "attempt_digest") for p in attempts.glob("*.json")]
         _require(len(rows) < execution["max_paid_attempts"], "attempt_cap_exhausted")

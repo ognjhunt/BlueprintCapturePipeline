@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
-from .task_evaluation_scene_configuration_sam31_plan import PROFILE_ENV, PROFILE_SCHEMA
-from .task_evaluation_scene_configuration_submission_inputs import checked_file, read, require, sha
+from .task_evaluation_scene_configuration_sam31_plan import PROFILE_SCHEMA
+from .task_evaluation_scene_configuration_submission_inputs import checked_file, read, require
+from .task_evaluation_sam31_profile_registry import resolve_sam31_profile
+from .task_evaluation_scene_configuration_sam31_plan import PROFILE_ENV as PROFILE_ENV
 
 SCHEMA = "task_evaluation_sam31_phase_execution_receipt.v1"
 CPU_PHASES = {"source_selections", "standard_splat_conversion", "calibrated_views", "sam31_inputs"}
@@ -43,9 +45,7 @@ def execute_stage(job: Mapping[str, Any]) -> dict[str, Any]:
     phase = job.get("phase")
     require(phase in CPU_PHASES | REVIEW_PHASES | PAID_PHASES, "sam31_phase_not_supported")
     plan = job["plan"]
-    profile_path = Path(os.environ.get(PROFILE_ENV, ""))
-    require(profile_path.is_absolute() and sha(profile_path) == plan["server_profile_sha256"],
-            "sam31_server_profile_missing_or_changed")
+    profile_path = resolve_sam31_profile(plan)
     profile = read(profile_path, digest_field="profile_digest")
     require(profile.get("schema_version") == PROFILE_SCHEMA and
             profile.get("source_commit") == job["expected_source_commit"] == plan["source_commit"],

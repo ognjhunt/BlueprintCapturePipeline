@@ -332,6 +332,41 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
     return value
 
 
+def select_completed_prefix_adoption(**kwargs):
+    """Select the longest scientifically compatible retained prefix by default.
+
+    Rejected candidates remain explicit evidence. Validation is exactly the
+    same as explicit adoption, including original model, renderer and billing.
+    Nothing is published until a candidate has passed every existing gate.
+    """
+    require("through_phase" not in kwargs, "sam31_adoption_selector_phase_not_accepted")
+    output = kwargs.pop("output_path", None)
+    failures = []
+    for phase in reversed(tuple(PREFIX_LENGTHS)):
+        try:
+            candidate = materialize_completed_prefix_adoption(
+                **kwargs, through_phase=phase, output_path=None)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            failures.append({"through_phase": phase, "blocker": str(exc)[:700],
+                             "error_type": type(exc).__name__})
+            continue
+        if output is not None:
+            # Revalidate immediately before immutable publication.
+            candidate = materialize_completed_prefix_adoption(
+                **kwargs, through_phase=phase, output_path=output)
+        result = {"schema_version": "task_evaluation_sam31_prefix_selection.v1",
+                  "status": "reusable_prefix_selected", "through_phase": phase,
+                  "adoption": candidate, "rejected_candidates": failures,
+                  "paid_execution_performed": False}
+        break
+    else:
+        result = {"schema_version": "task_evaluation_sam31_prefix_selection.v1",
+                  "status": "no_reusable_prefix", "rejected_candidates": failures,
+                  "paid_execution_performed": False}
+    result["selection_digest"] = canonical_digest(result, digest_field="selection_digest")
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("source-plan", "source-profile", "parent-request-digest", "current-task-request", "current-installation-receipt",
