@@ -52,6 +52,7 @@ from .task_evaluation_policy_canary_result import (
 JOIN_SCHEMA = "task_evaluation_scene_terminal_owner_result.v1"
 TERMINAL_JOIN_FILENAME = "terminal_owner_result_join.json"
 PROVIDER_ZERO_SCHEMA = "task_evaluation_post_teardown_provider_zero.v1"
+PUBLICATION_SCHEMA = "task_evaluation_scene_terminal_result_publication.v1"
 DIAGNOSTIC_CLAIM_CEILING = "diagnostic_policy_execution"
 POLICY_CANARY_RUN_KIND = "internal_policy_canary"
 _RESULT_URI_PREFIXES = ("https://", "b2://", "gs://", "r2://")
@@ -141,9 +142,14 @@ def _owner_binding(directory: Path, *, intent: dict, config: dict, release: dict
             return None
     except scene_policy.ScenePolicyBindingError:
         return None
-    # Reserved owner attempt: binds the exact inputs and the release commit. A
-    # deploy that moved the release, or a receipt for other inputs, will not match
-    # and is therefore never adopted here.
+    # Reserved owner attempt: binds the exact inputs and JOINS the execution
+    # identity. The reserved attempt, the launch profile and the launch request
+    # must all name the SAME source_commit -- the commit the run actually executed
+    # at (A7): a profile/request from another commit is never joined to this
+    # attempt. This is the run's OWN immutable execution identity and is
+    # deliberately NOT gated on the CURRENT release.source_commit, so a
+    # legitimately-authorized historical attempt can still be closed out read-only
+    # after a later deploy (A8: never substitute current code for the run's).
     intent_root = config.get("intent_root")
     if not intent_root:
         return None
@@ -154,7 +160,7 @@ def _owner_binding(directory: Path, *, intent: dict, config: dict, release: dict
         return None
     if (attempt.get("intent_digest") != intent["intent_digest"]
             or attempt.get("attempt_id") != binding["attempt_id"]
-            or attempt.get("source_commit") != release.get("source_commit")
+            or attempt.get("source_commit") != launch_request.get("source_commit")
             or attempt.get("runtime_digest") != binding["runtime_digest"]
             or attempt.get("input_digest") != binding["input_digest"]):
         return None
@@ -162,20 +168,24 @@ def _owner_binding(directory: Path, *, intent: dict, config: dict, release: dict
 
 
 def _authenticated_readback(directory: Path, projection: dict) -> dict | None:
+    """Validate the DURABLE authenticated Website readback.
+
+    Completion is gated on the durable Website persistence (``status`` succeeded,
+    all digests bound to this projection) -- NOT on the push-notification delivery
+    (A8). A failed/queued notification after a successful durable readback must not
+    strand a legitimately-completed run; notification delivery is reported
+    separately in the terminal state, never used as a completion gate here.
+    """
     value = _read_json(directory / "policy_canary_webapp_sync.json")
     if value is None:
         return None
-    notification = value.get("notification_delivery")
-    notification = notification if isinstance(notification, dict) else {}
     if (value.get("schema_version") != "task_evaluation_policy_canary_webapp_sync_result.v1"
             or value.get("status") != "succeeded"
             or value.get("run_id") != projection["run_id"]
             or value.get("request_digest") != projection["request_digest"]
             or value.get("configuration_digest") != projection["configuration_digest"]
             or value.get("result_status") != projection["result_status"]
-            or value.get("policy_canary_projection_digest") != projection["projection_digest"]
-            or notification.get("run_result_digest") != projection["projection_digest"]
-            or notification.get("status") not in {"accepted", "delivered"}):
+            or value.get("policy_canary_projection_digest") != projection["projection_digest"]):
         return None
     return value
 
@@ -202,14 +212,26 @@ def _confirmed_closure(directory: Path, projection: dict, *, launch_request: dic
 
 
 def _result_reference(directory: Path, projection: dict) -> dict | None:
+    """Validate the durable, sealed result publication for THIS run (A7).
+
+    Requires the publication schema, the projection's own run identity and
+    digest, an explicit non-allocation flag, and a producer seal over the whole
+    record -- so a wrong schema, an unrelated run, an omitted allocation flag, an
+    unsealed record or any tampered byte leaves the result publication pending
+    rather than silently completing.
+    """
     value = _read_json(directory / "terminal_result_publication.json")
     if value is None:
         return None
     uri = value.get("uri")
-    if (value.get("digest") != projection["projection_digest"]
+    if (value.get("schema_version") != PUBLICATION_SCHEMA
+            or value.get("run_id") != projection["run_id"]
+            or value.get("digest") != projection["projection_digest"]
             or not isinstance(uri, str) or not uri.startswith(_RESULT_URI_PREFIXES) or "?" in uri
             or type(value.get("size_bytes")) is not int or value.get("size_bytes") <= 0
-            or value.get("provider_allocated") is True):
+            or value.get("provider_allocated") is not False
+            or not _is_digest(value.get("publication_digest"))
+            or value.get("publication_digest") != canonical_digest(value, digest_field="publication_digest")):
         return None
     return {"uri": uri, "digest": value["digest"], "size_bytes": value["size_bytes"]}
 
@@ -292,6 +314,8 @@ def reconcile_terminal_owner_result(*, intent: dict, config: dict, release: dict
         return _explicit(pending, state=state)
 
     state["terminal_website_readback"] = _record(directory / "policy_canary_webapp_sync.json")
+    # A8: notification delivery is reported separately, never a completion gate.
+    state["terminal_notification_delivery"] = readback.get("notification_delivery")
     state["terminal_resource_closure"] = _record(directory / "provider_zero_closure.json")
 
     join = {

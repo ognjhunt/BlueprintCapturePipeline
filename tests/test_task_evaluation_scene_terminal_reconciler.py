@@ -218,12 +218,14 @@ def _closure(profile_digest: str, *, status: str = "provider_zero_confirmed") ->
 
 
 def _publication(projection: dict) -> dict:
-    return {
+    value = {
         "schema_version": "task_evaluation_scene_terminal_result_publication.v1",
         "run_id": projection["run_id"], "uri": "https://runs.blueprint.example/task-evaluation-runs/" + RUN_ID,
         "digest": projection["projection_digest"], "size_bytes": 4096,
-        "provider_allocated": False,
+        "provider_allocated": False, "publication_digest": "",
     }
+    value["publication_digest"] = canonical_digest(value, digest_field="publication_digest")
+    return value
 
 
 def _env(tmp_path: Path, *, commit: str = COMMIT, source_cost: float = 2.0, policy_cost: float = 1.0):
@@ -259,10 +261,10 @@ def _env(tmp_path: Path, *, commit: str = COMMIT, source_cost: float = 2.0, poli
                 binding=binding, now=now, output=tmp_path / "out")
 
 
-def _profile(binding: dict) -> dict:
+def _profile(binding: dict, *, commit: str = COMMIT) -> dict:
     profile = {
         "schema_version": "task_evaluation_launch_profile.v1", "profile_id": "policy-canary-profile",
-        "source_commit": COMMIT,
+        "source_commit": commit,
         "internal_policy_canary_execution_plan": {"scene_policy_binding": binding},
         "profile_digest": "",
     }
@@ -283,7 +285,7 @@ def _receipts(env, *, projection=None, include_readback=True, include_closure=Tr
     """Write the full owner-scoped terminal receipt set the reconciler joins."""
     projection = projection if projection is not None else _completed_projection()
     root = Path(env["config"]["terminal_result_root"]) / env["intent_id"]
-    profile = _profile(profile_binding if profile_binding is not None else env["binding"])
+    profile = _profile(profile_binding if profile_binding is not None else env["binding"], commit=commit)
     _write(root / "launch_profile.json", profile)
     _write(root / "launch_request.json", _launch_request(profile["profile_digest"], commit=commit))
     _write(root / "policy_canary_result_projection.json", projection)
@@ -368,12 +370,29 @@ def test_receipt_for_a_different_input_digest_is_not_adopted(tmp_path):
     assert result is None
 
 
-def test_receipt_from_a_changed_release_is_not_adopted(tmp_path):
-    env = _env(tmp_path)  # attempts reserved at COMMIT
+def test_historical_attempt_reconciles_after_a_later_deploy(tmp_path):
+    # A8: a legitimately-authorized historical attempt (execution identity all at
+    # COMMIT: attempt, launch profile and launch request) must still close out
+    # read-only after a later deploy moved the CURRENT release to a new commit.
+    # Terminal reconciliation resolves the run's OWN immutable execution identity;
+    # it is never gated on the current release commit.
+    env = _env(tmp_path)  # attempts + receipts all at COMMIT
     _receipts(env, commit=COMMIT)
-    changed = dict(env["release"], source_commit=OTHER_COMMIT)
+    deployed = dict(env["release"], source_commit=OTHER_COMMIT)  # a later deploy moved the release
     result = reconciler.reconcile_terminal_owner_result(
-        intent=env["intent"], config=env["config"], release=changed, now=env["now"], output=env["output"])
+        intent=env["intent"], config=env["config"], release=deployed, now=env["now"], output=env["output"])
+    assert result is not None and result["terminal"] is True and result["status"] == "completed"
+
+
+def test_profile_from_a_different_commit_than_the_attempt_is_not_adopted(tmp_path):
+    # A7: the launch profile + request name a DIFFERENT commit than the reserved
+    # attempt. Even though profile<->request are internally consistent, the two
+    # pairs must be JOINED to the attempt's execution commit; a profile from
+    # another commit is never joined to this owner attempt (a wrong completion).
+    env = _env(tmp_path)  # attempt reserved at COMMIT
+    _receipts(env, commit=OTHER_COMMIT)  # launch profile + request re-sealed at OTHER_COMMIT
+    result = reconciler.reconcile_terminal_owner_result(
+        intent=env["intent"], config=env["config"], release=env["release"], now=env["now"], output=env["output"])
     assert result is None
 
 
@@ -429,6 +448,58 @@ def test_readback_digest_mismatch_never_completes(tmp_path):
     result = reconciler.reconcile_terminal_owner_result(
         intent=env["intent"], config=env["config"], release=env["release"], now=env["now"], output=env["output"])
     assert result["status"] != "completed"
+
+
+# --------------------------------------------------------------------- publication integrity / notification
+
+def _seal_pub(value: dict) -> dict:
+    value = {k: v for k, v in value.items() if k != "publication_digest"}
+    value["publication_digest"] = canonical_digest(value, digest_field="publication_digest")
+    return value
+
+
+def test_publication_wrong_schema_run_id_or_unsealed_stays_publication_pending(tmp_path):
+    # A7: a completed-unqualified result completes only with a durable, sealed
+    # publication for THIS run. A wrong schema, an unrelated run_id, an omitted
+    # provider_allocated flag, an unsealed record, or a tampered byte each leaves
+    # the result publication pending, never silently completed.
+    cases = {
+        "wrong_schema": lambda p: _seal_pub({**p, "schema_version": "something_else.v1"}),
+        "wrong_run_id": lambda p: _seal_pub({**p, "run_id": "run-not-this-one"}),
+        "provider_allocated_missing": lambda p: _seal_pub({k: v for k, v in p.items() if k != "provider_allocated"}),
+        "unsealed": lambda p: {k: v for k, v in p.items() if k != "publication_digest"},
+        "tampered_after_seal": lambda p: {**p, "size_bytes": 999999},
+    }
+    for name, mutate in cases.items():
+        sub = tmp_path / name
+        sub.mkdir()
+        env = _env(sub)
+        projection = _completed_projection()
+        _receipts(env, projection=projection)
+        root = Path(env["config"]["terminal_result_root"]) / env["intent_id"]
+        _write(root / "terminal_result_publication.json", mutate(_publication(projection)))
+        result = reconciler.reconcile_terminal_owner_result(
+            intent=env["intent"], config=env["config"], release=env["release"], now=env["now"], output=env["output"])
+        assert result["status"] != "completed", name
+        assert "terminal_result_publication_pending" in result["blockers"], name
+
+
+def test_failed_notification_after_durable_readback_still_completes(tmp_path):
+    # A8: the durable Website readback (status succeeded, digests bound) gates
+    # terminal completion. A FAILED push notification after a successful durable
+    # readback must NOT strand the run; notification delivery is reported
+    # separately in the terminal state, never a completion gate.
+    env = _env(tmp_path)
+    projection = _completed_projection()
+    _receipts(env, projection=projection)
+    root = Path(env["config"]["terminal_result_root"]) / env["intent_id"]
+    readback = _readback(projection)
+    readback["notification_delivery"]["status"] = "failed"
+    _write(root / "policy_canary_webapp_sync.json", readback)
+    result = reconciler.reconcile_terminal_owner_result(
+        intent=env["intent"], config=env["config"], release=env["release"], now=env["now"], output=env["output"])
+    assert result["terminal"] is True and result["status"] == "completed"
+    assert result["state"]["terminal_notification_delivery"]["status"] == "failed"
 
 
 # --------------------------------------------------------------------- idempotency
@@ -530,3 +601,42 @@ def test_advance_intent_completion_is_idempotent_across_restart(tmp_path):
                                     resolver=None, publisher=None, submitter=None, status_reader=None,
                                     activation_provisioner=None, now=env["now"] + 30)
     assert second == first
+
+
+def test_advance_intent_closes_out_completed_run_after_authority_expiry(tmp_path):
+    # A8: a run authorized when it executed must still close out read-only after
+    # its authority window lapses. The terminal reconciliation hook runs BEFORE
+    # the expiry gate, so an expired-but-completed run reconciles to completed
+    # rather than being stranded as blocked-authority.
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    from blueprint_pipeline import task_evaluation_scene_progression_state as state
+    env = _env(tmp_path)
+    _receipts(env)
+    state.advance(env["directory"], env["intent"], None, status="awaiting_execution",
+                  phase="scene_configuration", state={"activation": {"provider_allocation_performed": False},
+                                                      "attempt_id": "source-1"}, now=env["now"])
+    config = dict(env["config"], factory_output_root=str(tmp_path / "factory-output"))
+    expired = env["intent"]["request"]["execution"]["expires_at_epoch"] + 1  # authority window lapsed
+    progress = engine._advance_intent(env["directory"], env["intent"], config, env["release"],
+                                      resolver=None, publisher=None, submitter=None, status_reader=None,
+                                      activation_provisioner=None, now=expired)
+    assert progress["status"] == "completed", progress
+
+
+def test_advance_intent_expiry_without_terminal_receipts_still_blocks(tmp_path):
+    # The hook-move must not swallow the authority gate: an expired intent with no
+    # owner-bound terminal result (reconciler returns None) still falls through to
+    # blocked-authority.
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    from blueprint_pipeline import task_evaluation_scene_progression_state as state
+    env = _env(tmp_path)  # no _receipts(): nothing to reconcile
+    state.advance(env["directory"], env["intent"], None, status="awaiting_execution",
+                  phase="scene_configuration", state={"activation": {"provider_allocation_performed": False},
+                                                      "attempt_id": "source-1"}, now=env["now"])
+    config = dict(env["config"], factory_output_root=str(tmp_path / "factory-output"))
+    expired = env["intent"]["request"]["execution"]["expires_at_epoch"] + 1
+    progress = engine._advance_intent(env["directory"], env["intent"], config, env["release"],
+                                      resolver=None, publisher=None, submitter=None, status_reader=None,
+                                      activation_provisioner=None, now=expired)
+    assert progress["status"] == "blocked"
+    assert "scene_intake_authority_expired" in progress["blockers"]

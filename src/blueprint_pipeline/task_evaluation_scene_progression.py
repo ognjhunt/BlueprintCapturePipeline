@@ -330,17 +330,16 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
         return progress
     if progress and progress["status"] == "completed":
         return progress
-    if (directory / "revoked.json").exists() or now >= intent["request"]["execution"]["expires_at_epoch"]:
-        return emit("blocked", "authority", ["scene_intake_authority_revoked" if (directory / "revoked.json").exists()
-                                              else "scene_intake_authority_expired"])
-    if intent["intent_id"] in config.get("paused_intent_ids", []):
-        return emit("awaiting_execution", "paused", ["scene_intent_paused"])
     # Spec E: once activation has been issued, join any retained downstream
     # terminal receipts (policy result, authenticated Website readback,
-    # provider-zero closure) back into the persistent owner status before
-    # re-running the preparation chain. This never launches, retries, or reruns
-    # completed GPU work; it only reconciles evidence into a truthful terminal
-    # status and otherwise leaves the intent untouched.
+    # provider-zero closure) back into the persistent owner status. This is a
+    # READ-ONLY closeout of already-authorized execution and runs BEFORE the
+    # expiry/revocation/pause gates below (A8): those gate NEW execution, not the
+    # read-only join of a run that was authorized when it executed -- otherwise a
+    # completed run whose authority window later lapsed could never close out. It
+    # never launches, retries, or reruns completed GPU work; when there is no
+    # owner-bound terminal result yet it returns None and control falls through to
+    # the authority gates unchanged.
     if config.get("terminal_result_root") and state.get("activation"):
         from .task_evaluation_scene_terminal_reconciler import reconcile_terminal_owner_result
         terminal = reconcile_terminal_owner_result(intent=intent, config=config, release=release, now=now,
@@ -349,6 +348,11 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
             state.update(terminal.get("state", {}))
             return emit(terminal["status"], terminal["phase"], terminal.get("blockers", ()),
                         terminal.get("result_reference"))
+    if (directory / "revoked.json").exists() or now >= intent["request"]["execution"]["expires_at_epoch"]:
+        return emit("blocked", "authority", ["scene_intake_authority_revoked" if (directory / "revoked.json").exists()
+                                              else "scene_intake_authority_expired"])
+    if intent["intent_id"] in config.get("paused_intent_ids", []):
+        return emit("awaiting_execution", "paused", ["scene_intent_paused"])
     if config.get("supported_source_kinds") is not None and intent["request"]["source"]["kind"] not in config["supported_source_kinds"]:
         return emit("needs_input", "source", ["source_kind_not_supported_by_progression"])
     resolution = _source(intent, config, release, resolver)
