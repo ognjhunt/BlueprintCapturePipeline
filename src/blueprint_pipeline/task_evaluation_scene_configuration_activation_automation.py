@@ -778,14 +778,6 @@ def advance_scene_configuration_activation(
     )
     if existing is not None:
         return existing
-    from .task_evaluation_progression_replay import replay_progression_admission
-    lookahead = replay_progression_admission(result_path=result_path, queue_root=queue_root,
-                                            replay_root=state_root / "lookahead")
-    if lookahead["status"] != "accepted":
-        return {"status": "scene_configuration_lookahead_blocked",
-                "preparation_id": preparation_id, "blockers": lookahead["blockers"],
-                "lookahead_report": _artifact(Path(lookahead["report_path"])),
-                "provider_mutation_performed": False}
     scene_id = str(request["scene"]["identity"].get("id") or "")
     task_id = str(request["task"]["identity"].get("id") or "")
     team_namespace = str(request["team_namespace"])
@@ -862,6 +854,14 @@ def advance_scene_configuration_activation(
         raise SceneConfigurationActivationAutomationError(
             "scene_configuration_activation_provider_zero_stale"
         )
+    from .task_evaluation_progression_replay import replay_progression_admission
+    lookahead = replay_progression_admission(result_path=result_path, queue_root=queue_root,
+                                            replay_root=state_root / "lookahead")
+    if lookahead["status"] != "accepted":
+        return {"status": "scene_configuration_lookahead_blocked",
+                "preparation_id": preparation_id, "blockers": lookahead["blockers"],
+                "lookahead_report": _artifact(Path(lookahead["report_path"])),
+                "provider_mutation_performed": False}
     activation_id = _activation_id(preparation_id)
     attempt = _sealed({
         "schema_version": "task_evaluation_scene_configuration_activation_attempt.v1",
