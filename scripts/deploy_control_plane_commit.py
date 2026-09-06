@@ -112,6 +112,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-configured-controls-progression.service",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
+    "blueprint-task-evaluation-scene-progression.service",
+    "blueprint-task-evaluation-scene-progression.timer",
     "blueprint-control-plane-storage-gc.service",
     "blueprint-control-plane-storage-gc.timer",
     "blueprint-control-plane-capacity.service",
@@ -150,6 +152,7 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
 #: moment a no-spend canary compiles, so it carries the same progression
 #: authority rather than the no-spend watcher category.
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
+    "blueprint-task-evaluation-scene-progression.timer",
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",

@@ -339,6 +339,12 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.service"
 run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-scene-progression.service" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-scene-progression.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-scene-progression.timer" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-scene-progression.timer"
+run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.timer" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.timer"
 run install -m 0644 \
@@ -544,6 +550,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-gpu-spend-guard.timer
   systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
   systemctl enable --now blueprint-task-evaluation-configured-controls-progression.timer
+  systemctl enable --now blueprint-task-evaluation-scene-progression.timer
   systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path
   systemctl enable --now blueprint-control-plane-storage-gc.timer
   systemctl enable --now blueprint-control-plane-capacity.timer

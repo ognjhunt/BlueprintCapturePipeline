@@ -26,6 +26,20 @@ def _read(name: str) -> str:
     return (SYSTEMD_DIR / name).read_text(encoding="utf-8")
 
 
+def test_scene_progression_uses_pinned_checkout_and_config_gated_periodic_worker():
+    unit = _read("blueprint-task-evaluation-scene-progression.service")
+    assert "User=blueprint" in unit
+    assert "ProtectSystem=strict" in unit and "NoNewPrivileges=true" in unit
+    assert "ConditionPathExists=/etc/blueprint/task-evaluation-scene-progression.json" in unit
+    assert "exec env PYTHONPATH=src" in unit
+    assert "-m blueprint_pipeline.task_evaluation_scene_progression" in unit
+    assert "paid_resource_allocator" not in unit
+    assert "OnUnitInactiveSec=1min" in _read("blueprint-task-evaluation-scene-progression.timer")
+    installer = INSTALL_SCRIPT.read_text()
+    for suffix in ("service", "timer"):
+        assert "blueprint-task-evaluation-scene-progression." + suffix in installer
+
+
 def _terraform_resource_body(text: str, resource_type: str, name: str) -> str:
     needle = f'resource "{resource_type}" "{name}" {{'
     start = text.index(needle)
@@ -796,4 +810,3 @@ def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read
     assert flag in capacity
     assert "Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key" in capacity
     assert "ReadOnlyPaths=/etc/blueprint/provider-secrets" in capacity
-

@@ -187,6 +187,9 @@ def test_real_producers_materialize_then_revalidate_same_attempt_without_raw_rei
     assert all(source[key].read_bytes() == value for key, value in before.items())
     task = json.loads(Path(receipt["task_request"]["path"]).read_text())
     assert task["human_authority"]["accepted_by"] == "u1"
+    assert task["team_namespace"] == "scene-" + canonical_digest({
+        "intent_digest": receipt["intent_digest"], "attempt_digest": receipt["attempt_digest"],
+    })[7:55]
     request = json.loads(Path(receipt["submission_request"]["path"]).read_text())
     assert request["scene_intent_digest"] == receipt["intent_digest"]
     assert len(receipt["frozen_policy_candidates"]) == 2

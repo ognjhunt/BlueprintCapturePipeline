@@ -318,6 +318,12 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
             if key in request["task"]:
                 task[key] = request["task"][key]
         task["expected_production_commit"] = commit
+        # Each owner attempt gets a distinct internal namespace. Reusing the
+        # seed's namespace would collide in the controls/activation registry
+        # across tenants and releases and require operator-only supersession.
+        task["team_namespace"] = "scene-" + canonical_digest({
+            "intent_digest": intent["intent_digest"], "attempt_digest": attempt["attempt_digest"],
+        })[7:55]
         task["run_prefix"] = "scene-" + intent["intent_id"].removeprefix("scene-")[:20] + "-" + attempt_id
         task["scene_intent_authority"] = {"intent": intent_ref, "intent_digest": intent["intent_digest"],
                                           "attempt": record(attempt_path)}
