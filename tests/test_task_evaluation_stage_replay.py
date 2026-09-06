@@ -324,3 +324,58 @@ def test_envelope_uri_prefixes_come_from_the_request_itself() -> None:
     ]
     assert replay.envelope_uri_prefixes({"request": {}}) == []
 
+
+def _queued_preparation(tmp_path: Path) -> tuple[Path, Path]:
+    """A parent staged by the real producer, materialized, with a queued result — as the host holds it."""
+
+    request, _payloads = production_request_with_fetchable_bytes()
+    queue = tmp_path / "preparations"
+    receipt = stage_launch_preparation_request(value=request, queue_root=queue, submitted_by="blueprint-webapp-intake")
+    pending = Path(str(receipt["queue_path"]))
+    (queue / "materialized").mkdir(exist_ok=True)
+    pending.rename(queue / "materialized" / pending.name)
+    result = {
+        "schema_version": "task_evaluation_launch_preparation_result.v1",
+        "status": "queued_for_production_scene_configuration",
+        "preparation_id": request["preparation_id"], "run_id": request["run_id"], "run_mode": request["run_mode"],
+        "team_namespace": request["team_namespace"], "source_commit": request["expected_production_commit"],
+        "provider_mutation_performed": False, "paid_execution_requested": False, "references": [], "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    (queue / "results").mkdir(exist_ok=True)
+    result_path = queue / "results" / pending.name
+    result_path.write_text(json.dumps(result, sort_keys=True) + "\n")
+    return queue, result_path
+
+
+def test_next_consumer_replay_admits_a_queued_parent_and_names_a_consumer_that_would_refuse(tmp_path: Path) -> None:
+    """The look-ahead runs the NEXT workers' own validators on the replayed result and envelope."""
+
+    queue, result_path = _queued_preparation(tmp_path)
+
+    rows = {row["consumer"]: row for row in replay.replay_next_consumers(result_path=result_path, queue_root=queue)}
+
+    assert rows["task_evaluation_scene_configuration_activation_automation"] == {
+        "consumer": "task_evaluation_scene_configuration_activation_automation", "status": "accepted",
+    }
+    controls = rows["task_evaluation_configured_controls_continuation_provisioning"]
+    assert controls["status"] == "refused"  # a bare test request carries none of the controls templates
+    assert controls["blocker"].startswith("configured_controls_provisioning_")
+
+    # 2026-09-06: the deployed activation automation compared the envelope schema against a name no
+    # producer writes; the replay names that predicate before any paid stage has run.
+    envelope_path = queue / "materialized" / result_path.name
+    envelope = json.loads(envelope_path.read_text())
+    envelope["schema_version"] = "task_evaluation_launch_preparation_intake_envelope.v1"
+    envelope["envelope_digest"] = ""
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    envelope_path.chmod(0o644)  # the producer writes its records read-only
+    envelope_path.write_text(json.dumps(envelope, sort_keys=True) + "\n")
+
+    [activation] = [row for row in replay.replay_next_consumers(result_path=result_path, queue_root=queue)
+                    if row["consumer"] == "task_evaluation_scene_configuration_activation_automation"]
+
+    assert activation["status"] == "refused"
+    assert activation["blocker"] == "scene_configuration_activation_preparation_envelope_invalid"
+    assert activation["fired_predicates"] == ["envelope.get('schema_version') != PREPARATION_ENVELOPE_SCHEMA_VERSION"]
+
