@@ -256,3 +256,34 @@ def test_published_prefix_pin_is_recognized_by_canonical_retention(prefix, tmp_p
     assert OLD in protected
     assert Path(pin["path"]).read_bytes() == before
     assert json.loads(before)["evidence"] == ref
+
+
+def test_producer_code_drift_is_tolerated_but_a_missing_file_still_refuses(tmp_path):
+    """Piece 1 — content identity, not commit identity.
+
+    A completed paid prefix must survive a deploy that changes producer-code bytes, as long
+    as the retained OUTPUTS still pass the current validators (enforced elsewhere in
+    validate_render/validate_completed_prefix_adoption). require_producer_files_present now
+    only requires each producer file to EXIST under both trees, pinning the retained sha; it
+    no longer refuses on a byte diff. A genuinely missing producer file still fails closed.
+    """
+    old_root, new_root = tmp_path / "old", tmp_path / "new"
+    rel = "src/blueprint_pipeline/sam31_source_calibration_stage.py"
+    for root, body in ((old_root, "# produced the retained prefix\n"), (new_root, "# owner-authority propagation diff\n")):
+        (root / "src/blueprint_pipeline").mkdir(parents=True)
+        (root / rel).write_text(body)
+
+    # Drift (different bytes) is tolerated; the pinned sha is the retained (old-root) one.
+    files = evidence.require_producer_files_present((rel,), old_root, new_root)
+    assert files == [{"relative_path": rel, "sha256": evidence.sha(old_root / rel),
+                      "size_bytes": (old_root / rel).stat().st_size}]
+    assert evidence.sha(old_root / rel) != evidence.sha(new_root / rel)  # bytes really differ
+
+    # A missing producer file (either tree) still fails closed.
+    (new_root / rel).unlink()
+    with pytest.raises(ValueError, match="sam31_adoption_producer_code_missing:" + rel):
+        evidence.require_producer_files_present((rel,), old_root, new_root)
+    (new_root / rel).write_text("restored\n")
+    (old_root / rel).unlink()
+    with pytest.raises(ValueError, match="sam31_adoption_producer_code_missing:" + rel):
+        evidence.require_producer_files_present((rel,), old_root, new_root)

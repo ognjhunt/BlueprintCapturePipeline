@@ -104,6 +104,27 @@ def validate_current_rights(task, context, host, commit, roots):
             "standard": {"path": str(standard), "sha256": sha(standard), "size_bytes": standard.stat().st_size}}
 
 
+def require_producer_files_present(code, old_root, current_root):
+    """Producer files must still exist under both trees; return their retained (prefix-time) shas.
+
+    Content identity, not commit identity (piece 1).  A completed paid prefix is trusted
+    because its retained OUTPUTS are independently re-validated with the current code (the
+    calibration outcome via validate_retained_source_calibration_stage, the finalized render
+    recomputed to equal the retained receipt, scene/task/camera/rights re-derived, tracking
+    identity re-joined).  A producer-code diff that leaves those outputs valid must NOT
+    invalidate the prefix on every deploy, so we no longer require byte-identical producer
+    files -- only that each still exists.  The retained sha is pinned for provenance.
+    """
+
+    old_root, current_root = Path(old_root), Path(current_root)
+    files = []
+    for relative in code:
+        before, after = old_root / relative, current_root / relative
+        require(before.is_file() and after.is_file(), "sam31_adoption_producer_code_missing:" + relative)
+        files.append({"relative_path": relative, "sha256": sha(before), "size_bytes": before.stat().st_size})
+    return files
+
+
 def validate_render(outcome, artifacts, old_plan, current_repo, through_phase):
     from .public_scene_inpainting_preparation import validate_prepared_inputs, adopt_finalized_public_scene_inpainting_inputs
     from .public_scene_removal_selection import validate_removal_scene_selection, validate_removal_task_selection
@@ -125,12 +146,7 @@ def validate_render(outcome, artifacts, old_plan, current_repo, through_phase):
             "sam31_adoption_camera_changed")
     old_repo = Path(prepared["context"]["paths"]["repo"])
     code = SOURCE_CODE + (SAM_CODE if through_phase == "sam31_tracking" else ())
-    files = []
-    for relative in code:
-        before, after = old_repo / relative, current_repo / relative
-        require(before.is_file() and after.is_file() and sha(before) == sha(after),
-                "sam31_adoption_producer_code_changed:" + relative)
-        files.append({"relative_path": relative, "sha256": sha(before), "size_bytes": before.stat().st_size})
+    files = require_producer_files_present(code, old_repo, current_repo)
     return {"path": str(old_repo), "source_commit": prepared["repository"]["commit"],
             "tree": prepared["repository"]["tree"], "unchanged_producer_files": files}
 
