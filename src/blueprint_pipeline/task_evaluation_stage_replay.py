@@ -442,8 +442,48 @@ def replay_parent(
         reached_render_inputs_boundary=boundary,
         sam31_ready=boundary,
     )
+    result_path = scratch_queue / "results" / located.envelope_path.name
+    admission = replay_next_consumers(result_path=result_path, queue_root=scratch_queue) if result_path.is_file() else []
+    report.update(
+        next_consumer_admission=admission,
+        next_consumers_admitted=bool(admission) and all(row["status"] == "accepted" for row in admission),
+    )
     report["report_path"] = _write_report(run_root, report)
     return report
+
+
+def replay_next_consumers(*, result_path: Path, queue_root: Path) -> list[dict[str, Any]]:
+    """Replay the admission predicates of the workers that read a preparation result next.
+
+    A parent that reaches ``queued_for_production_scene_configuration`` is next read by the
+    activation automation and by the controls-intent provisioner; each re-validates the result
+    and its intake envelope with predicates of its own.  On 2026-09-06 the activation automation
+    refused the real 841757 envelope over a schema name no producer writes, after the whole paid
+    SAM chain had completed.  Replaying the consumers' own validators here names that in a
+    second, for nothing.
+    """
+
+    from . import fail_closed_blocker_explainer as explainer
+    from . import task_evaluation_configured_controls_continuation_provisioning as controls
+    from . import task_evaluation_scene_configuration_activation_automation as activation
+
+    commit = str(_read(result_path).get("source_commit") or "")
+    consumers = (
+        ("task_evaluation_scene_configuration_activation_automation", activation._preparation_context,
+         {"preparation_result_path": result_path, "preparation_queue_root": queue_root}),
+        ("task_evaluation_configured_controls_continuation_provisioning", controls._preparation_context,
+         {"preparation_result_path": result_path, "preparation_queue_root": queue_root,
+          "expected_production_commit": commit}),
+    )
+    rows: list[dict[str, Any]] = []
+    for name, validator, kwargs in consumers:
+        outcome = explainer.explain_call(validator, **kwargs)
+        row: dict[str, Any] = {"consumer": name, "status": outcome["status"]}
+        if outcome["status"] == "refused":
+            row["blocker"] = outcome["blocker"]
+            row["fired_predicates"] = [p for e in outcome["explanations"] for p in e["fired"]]
+        rows.append(row)
+    return rows
 
 
 def isolation_command(
@@ -556,7 +596,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.json_out:
             Path(args.json_out).write_text(text + "\n", encoding="utf-8")
         print(text)
-        return 0 if report.get("reached_render_inputs_boundary") else (3 if str(report.get("status")).startswith("waiting") else 2)
+        admitted = report.get("reached_render_inputs_boundary") or report.get("next_consumers_admitted")
+        return 0 if admitted else (3 if str(report.get("status")).startswith("waiting") else 2)
     if args.server_profile:
         os.environ[PROFILE_ENV] = args.server_profile
     else:
@@ -580,7 +621,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     return {"completed": 0, "waiting": 3}.get(str(report.get("status")), 2)
 
 
-__all__ = ["LocatedChild", "LocatedParent", "ReplayBoundary", "discover_input_root", "discover_server_profile", "envelope_uri_prefixes", "locate_parent", "replay_parent", "isolation_command", "locate_child", "main", "replay_child"]
+__all__ = ["LocatedChild", "LocatedParent", "ReplayBoundary", "discover_input_root", "discover_server_profile", "envelope_uri_prefixes", "locate_parent", "replay_next_consumers", "replay_parent", "isolation_command", "locate_child", "main", "replay_child"]
 
 if __name__ == "__main__":
     raise SystemExit(main())

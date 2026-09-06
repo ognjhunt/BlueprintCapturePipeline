@@ -27,6 +27,7 @@ from blueprint_pipeline import (
     task_evaluation_configured_controls_deferred_inputs as deferred,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.task_evaluation_launch_preparation_queue import ENVELOPE_SCHEMA_VERSION
 from blueprint_pipeline.task_evaluation_configured_controls_autostart_support import (
     _placement_aware_camera_candidates,
 )
@@ -111,7 +112,7 @@ def _preparation(
     request_digest = canonical_digest(request)
     queue = tmp_path / "preparations"
     envelope = {
-        "schema_version": "task_evaluation_launch_preparation_intake_envelope.v1",
+        "schema_version": ENVELOPE_SCHEMA_VERSION,
         "request_digest": request_digest,
         "request": request,
         "envelope_digest": "",

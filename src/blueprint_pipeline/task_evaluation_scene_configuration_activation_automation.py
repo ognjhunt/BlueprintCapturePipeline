@@ -40,6 +40,9 @@ from .task_evaluation_configured_controls_autostart import (
     configured_controls_autostart_registry_name,
 )
 from .task_evaluation_launch_activation_queue import stage_launch_activation_request
+from .task_evaluation_launch_preparation_queue import (
+    ENVELOPE_SCHEMA_VERSION as PREPARATION_ENVELOPE_SCHEMA_VERSION,
+)
 from .task_evaluation_release_identity import running_release_commit
 from .task_evaluation_shared_mutation_window import (
     TaskEvaluationSharedMutationWindowError,
@@ -663,7 +666,7 @@ def _preparation_envelope(
     request = envelope.get("request")
     if (
         not isinstance(request, Mapping)
-        or envelope.get("schema_version") != "task_evaluation_launch_preparation_intake_envelope.v1"
+        or envelope.get("schema_version") != PREPARATION_ENVELOPE_SCHEMA_VERSION
         or request.get("schema_version") != "task_evaluation_launch_preparation_request.v1"
         or envelope.get("request_digest") != canonical_digest(request)
         or envelope.get("provider_mutation_performed_inside_intake") is not False

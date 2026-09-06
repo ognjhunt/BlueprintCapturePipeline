@@ -23,6 +23,10 @@ from blueprint_pipeline import (
     task_evaluation_scene_configuration_activation_automation as automation,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.task_evaluation_launch_preparation_queue import (
+    ENVELOPE_SCHEMA_VERSION,
+    stage_launch_preparation_request,
+)
 from blueprint_pipeline.task_evaluation_launch_activation_contract import (
     validate_launch_activation_request,
 )
@@ -166,7 +170,7 @@ def _preparation(tmp_path: Path, *, status: str = "queued_for_production_scene_c
     request_digest = canonical_digest(request)
     envelope = _sealed(
         {
-            "schema_version": "task_evaluation_launch_preparation_intake_envelope.v1",
+            "schema_version": ENVELOPE_SCHEMA_VERSION,
             "request_digest": request_digest,
             "request": request,
             "submitted_by": "blueprint-production-runner",
@@ -1016,3 +1020,46 @@ def test_immutable_publication_failure_leaves_no_partial_final_file(tmp_path: Pa
     monkeypatch.setattr(automation.os, "link", original)
     automation._write_immutable(target, {"data": "complete"})
     assert json.loads(target.read_text()) == {"data": "complete"}
+
+
+def test_activation_accepts_the_envelope_the_preparation_queue_actually_writes(tmp_path: Path) -> None:
+    """The envelope is staged by the real producer, not hand-written.
+
+    On 2026-09-06 the 841757 run stalled after its whole SAM chain had completed: the
+    activation automation demanded an envelope schema name no producer writes, while its
+    own tests had hand-written that name.  A consumer's contract test must go through the
+    producer, so a disagreement between the two modules fails here instead of on the host.
+    """
+    from tests.test_task_evaluation_launch_preparation_worker import production_request_with_fetchable_bytes
+
+    request, _payloads = production_request_with_fetchable_bytes()
+    queue = tmp_path / "preparations"
+    receipt = stage_launch_preparation_request(value=request, queue_root=queue, submitted_by="blueprint-webapp-intake")
+    pending = Path(str(receipt["queue_path"]))
+    materialized = queue / "materialized" / pending.name
+    materialized.parent.mkdir(parents=True, exist_ok=True)
+    pending.rename(materialized)  # the worker moves the envelope unchanged as it materializes
+    result = _sealed(
+        {
+            "schema_version": "task_evaluation_launch_preparation_result.v1",
+            "status": "queued_for_production_scene_configuration",
+            "preparation_id": request["preparation_id"],
+            "run_id": request["run_id"],
+            "run_mode": request["run_mode"],
+            "team_namespace": request["team_namespace"],
+            "source_commit": request["expected_production_commit"],
+            "provider_mutation_performed": False,
+            "paid_execution_requested": False,
+            "references": [],
+        },
+        "result_digest",
+    )
+    result_path = _write(queue / "results" / pending.name, result)
+
+    _result, envelope, accepted_request = automation._preparation_context(
+        preparation_result_path=result_path, preparation_queue_root=queue
+    )
+
+    assert envelope["schema_version"] == ENVELOPE_SCHEMA_VERSION
+    assert accepted_request["preparation_id"] == request["preparation_id"]
+
