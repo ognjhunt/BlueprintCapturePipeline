@@ -305,6 +305,9 @@ def test_parent_replay_reaches_the_render_boundary_after_a_ready_advancement(tmp
     assert report["sam31_ready"] is True
     assert report["reached_render_inputs_boundary"] is True
     assert report["status"] == "blocked" and "ReplayBoundary" in ";".join(report["row"]["blockers"])
+    # A boundary row is not read by the next consumers, so their admission is not replayed for it.
+    assert report["next_consumer_admission"] == [] and report["next_consumers_admitted"] is False
+
 
 
 def test_envelope_uri_prefixes_come_from_the_request_itself() -> None:

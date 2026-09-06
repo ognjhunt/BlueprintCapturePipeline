@@ -455,7 +455,13 @@ def replay_parent(
         sam31_ready=boundary,
     )
     result_path = scratch_queue / "results" / located.envelope_path.name
-    admission = replay_next_consumers(result_path=result_path, queue_root=scratch_queue) if result_path.is_file() else []
+    # Only a queued parent is read by the next consumers; a blocked or boundary row would just
+    # report the missing materialized envelope.
+    queued = str(row.get("status")) == "queued_for_production_scene_configuration"
+    admission = (
+        replay_next_consumers(result_path=result_path, queue_root=scratch_queue)
+        if queued and result_path.is_file() else []
+    )
     report.update(
         next_consumer_admission=admission,
         next_consumers_admitted=bool(admission) and all(row["status"] == "accepted" for row in admission),
