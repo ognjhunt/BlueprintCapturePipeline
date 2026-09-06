@@ -94,6 +94,16 @@ OWNER_AUTHORITY_UNITS: tuple[str, ...] = (
     "blueprint-task-evaluation-configured-controls-progression.service",
 )
 CONTROLS_PROGRESSION_UNIT = "blueprint-task-evaluation-configured-controls-progression.service"
+# R8: the launch reconciler tick files owner terminal receipts (launch bridge +
+# canary terminal set) for the scene-progression reconciler. Without these roots
+# the duty is explicitly ``not_configured`` and a completed owner run never
+# closes out, so an owner-mode chain names the gap here.
+TERMINAL_INDEX_UNIT = "blueprint-task-evaluation-launch-reconciler.service"
+TERMINAL_INDEX_ENV: tuple[str, ...] = (
+    "BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT",
+    "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESULT_ROOT",
+    "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT",
+)
 
 # Directives replayed onto the transient probe unit when the deployed unit (or
 # one of its drop-ins) sets them.  Values come from the merged ``systemctl show``
@@ -1227,7 +1237,22 @@ def owner_scope_checks(units: Mapping[str, dict[str, Any]], ids: tuple[int, int]
                 consequence="dispatcher defaults to all_authorized and can select legacy or unowned rows"))
         findings.extend(_owner_store_findings(unit_name, unit, ids))
     findings.extend(_controls_autoprovision_findings(units, ids))
+    findings.extend(_terminal_index_findings(units))
     return findings
+
+
+def _terminal_index_findings(units: Mapping[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    unit = units.get(TERMINAL_INDEX_UNIT)
+    if unit is None:
+        return []
+    env = unit.get("effective_environment", {})
+    return [
+        _finding(
+            "blocker", "terminal_index_root_unset", unit=TERMINAL_INDEX_UNIT, variable=name,
+            consequence="owner terminal receipts are never filed; a completed owner run never closes out")
+        for name in TERMINAL_INDEX_ENV
+        if not str(env.get(name) or "").strip()
+    ]
 
 
 PAID_ALLOCATION_UNITS: tuple[str, ...] = (

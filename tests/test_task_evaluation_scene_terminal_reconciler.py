@@ -202,26 +202,70 @@ def _readback(projection: dict, *, status: str = "succeeded") -> dict:
     }
 
 
-def _closure(profile_digest: str, *, status: str = "provider_zero_confirmed") -> dict:
+def _closure(*, status: str = "provider_zero_confirmed") -> dict:
+    """The REAL terminal resource-closure evidence of a policy-canary run: the
+    dispatcher's sealed Vast post-teardown provider-zero receipt
+    (``post_teardown_global_provider_zero.json``). The launch reconciler never
+    produces a ``task_evaluation_post_teardown_provider_zero.v1`` closure for a
+    canary launch (its launch receipt is ``execute_requested: False``), so that
+    schema is not this run's closure and is not accepted here."""
+    confirmed = status == "provider_zero_confirmed"
     value = {
-        "schema_version": "task_evaluation_post_teardown_provider_zero.v1",
-        "status": status, "launch_id": "launch-1", "run_id": RUN_ID,
-        "request_digest": REQUEST_DIGEST, "receipt_digest": "sha256:" + "7" * 64,
-        "launch_profile_digest": profile_digest,
-        "provider_zero_verified": status == "provider_zero_confirmed",
-        "continuing_spend_from_this_run": False, "allocator_invoked": False,
-        "provider_mutation_performed": False, "automatic_retry_performed": False, "blockers": [],
-        "provider_zero_receipt_digest": "",
+        "schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
+        "status": status, "provider": "vast", "inventory_scope": "global_billable_resources",
+        "api_confirmed": confirmed, "live_instance_count": 0 if confirmed else 1,
+        "provider_zero_verified": confirmed,
+        "global_gpu_guard_snapshot": {"path": "/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/latest.json",
+                                      "size_bytes": 8470, "sha256": "sha256:" + "b" * 64},
+        "blockers": [] if confirmed else ["vast_live_instances_remaining"],
+        "raw_provider_response_recorded": False, "receipt_digest": "",
     }
-    value["provider_zero_receipt_digest"] = canonical_digest(value, digest_field="provider_zero_receipt_digest")
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    return value
+
+
+def _file_record(path: Path) -> dict:
+    import hashlib
+    return {"path": str(path), "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size_bytes": path.stat().st_size}
+
+
+def _binder(projection: dict, readback: dict | None, *, projection_path: Path, sync_path: Path | None,
+            closure_path: Path | None) -> dict:
+    """The dispatcher's sealed ``dispatch_receipt.json`` (task_evaluation_policy_canary_dispatch.v1):
+    the one producer record binding the projection, the persisted Website sync and
+    the provider-zero closure to THIS run by file digest."""
+    value = {
+        "schema_version": "task_evaluation_policy_canary_dispatch.v1", "status": projection["result_status"],
+        "run_id": projection["run_id"], "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution", "authority_digest": "sha256:" + "1" * 64,
+        "bundle_sha256": "sha256:" + "2" * 64,
+        "terminal_result": {"path": "/run/policy_canary_terminal_result.json", "sha256": "sha256:" + "3" * 64,
+                            "size_bytes": 10},
+        "result_delivery_digest": projection["result_delivery_digest"],
+        "policy_canary_projection_digest": projection["projection_digest"],
+        "policy_canary_result_projection": _file_record(projection_path),
+        **({"policy_canary_webapp_sync": _file_record(sync_path)} if sync_path is not None else {}),
+        "notification_delivery": (readback or {}).get("notification_delivery"),
+        "official_billing": {"path": "/run/official_billing_reconciliation.json", "sha256": "sha256:" + "6" * 64,
+                             "size_bytes": 10, "official_billing_sealed": True},
+        "teardown": {"path": "/run/teardown.json", "sha256": "sha256:" + "7" * 64, "size_bytes": 10,
+                     "teardown_completed": True},
+        **({"provider_zero": {**_file_record(closure_path), "provider_zero_verified": True}}
+           if closure_path is not None else {}),
+        "allocator_invoked": False, "automatic_retry_performed": False, "scene_promotion_performed": False,
+        "official_ranking_performed": False, "retry_cap": 0, "receipt_digest": "",
+    }
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
     return value
 
 
 def _publication(projection: dict) -> dict:
     value = {
         "schema_version": "task_evaluation_scene_terminal_result_publication.v1",
-        "run_id": projection["run_id"], "uri": "https://runs.blueprint.example/task-evaluation-runs/" + RUN_ID,
-        "digest": projection["projection_digest"], "size_bytes": 4096,
+        "run_id": projection["run_id"],
+        "uri": "s3://blueprint-task-evaluation-artifacts/control-plane-evidence/sha256/" + "a" * 64 + "/run.tar",
+        "digest": projection["projection_digest"], "archive_digest": "sha256:" + "a" * 64, "size_bytes": 4096,
         "provider_allocated": False, "publication_digest": "",
     }
     value["publication_digest"] = canonical_digest(value, digest_field="publication_digest")
@@ -279,8 +323,8 @@ def _launch_request(profile_digest: str, *, commit: str = COMMIT) -> dict:
     }
 
 
-def _receipts(env, *, projection=None, include_readback=True, include_closure=True,
-              include_publication=True, closure_status="provider_zero_confirmed",
+def _receipts(env, *, projection=None, readback=None, include_readback=True, include_closure=True,
+              include_publication=True, include_binder=True, closure_status="provider_zero_confirmed",
               profile_binding=None, commit=COMMIT):
     """Write the full owner-scoped terminal receipt set the reconciler joins."""
     projection = projection if projection is not None else _completed_projection()
@@ -288,11 +332,18 @@ def _receipts(env, *, projection=None, include_readback=True, include_closure=Tr
     profile = _profile(profile_binding if profile_binding is not None else env["binding"], commit=commit)
     _write(root / "launch_profile.json", profile)
     _write(root / "launch_request.json", _launch_request(profile["profile_digest"], commit=commit))
-    _write(root / "policy_canary_result_projection.json", projection)
-    if include_readback:
-        _write(root / "policy_canary_webapp_sync.json", _readback(projection))
-    if include_closure:
-        _write(root / "provider_zero_closure.json", _closure(profile["profile_digest"], status=closure_status))
+    projection_path = _write(root / "policy_canary_result_projection.json", projection)
+    if include_readback and readback is None:
+        readback = _readback(projection)
+    elif not include_readback:
+        readback = None
+    sync_path = _write(root / "policy_canary_webapp_sync.json", readback) if include_readback else None
+    closure_path = (_write(root / "provider_zero_closure.json", _closure(status=closure_status))
+                    if include_closure else None)
+    if include_binder:
+        _write(root / "policy_canary_dispatch_receipt.json",
+               _binder(projection, readback, projection_path=projection_path, sync_path=sync_path,
+                       closure_path=closure_path))
     if include_publication:
         _write(root / "terminal_result_publication.json", _publication(projection))
     return projection
@@ -308,7 +359,7 @@ def test_terminal_completed_result_updates_owner_status_to_completed(tmp_path):
     assert result is not None and result["terminal"] is True
     assert result["status"] == "completed", result
     assert result["result_reference"]["digest"] == projection["projection_digest"]
-    assert result["result_reference"]["uri"].startswith("https://")
+    assert result["result_reference"]["uri"].startswith("s3://")
     assert result["result_reference"]["size_bytes"] > 0
     # The claim ceiling stays a development-only diagnostic; no ranking upgrade.
     join = json.loads(Path(result["state"]["terminal_join"]["path"]).read_text())
@@ -491,11 +542,11 @@ def test_failed_notification_after_durable_readback_still_completes(tmp_path):
     # separately in the terminal state, never a completion gate.
     env = _env(tmp_path)
     projection = _completed_projection()
-    _receipts(env, projection=projection)
-    root = Path(env["config"]["terminal_result_root"]) / env["intent_id"]
     readback = _readback(projection)
     readback["notification_delivery"]["status"] = "failed"
-    _write(root / "policy_canary_webapp_sync.json", readback)
+    # The dispatcher's sync result carried the failed notification; its sealed
+    # receipt records exactly that readback (binder-bound), as in production.
+    _receipts(env, projection=projection, readback=readback)
     result = reconciler.reconcile_terminal_owner_result(
         intent=env["intent"], config=env["config"], release=env["release"], now=env["now"], output=env["output"])
     assert result["terminal"] is True and result["status"] == "completed"

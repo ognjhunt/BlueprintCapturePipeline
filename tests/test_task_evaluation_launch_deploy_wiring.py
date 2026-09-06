@@ -200,6 +200,22 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "task_evaluation_launch_reconciler" in reconciler
     assert "blueprint-gpu-spend-guard.service" in reconciler
     assert "--guard-report" in reconciler
+    # R8: the reconciler tick files owner terminal receipts; the unit must forward
+    # the canary dispatch root, the terminal result root and the owner intent
+    # store, and each must be the path the producing/consuming unit uses.
+    for flag, variable, path in (
+        ("--policy-canary-dispatch-root", "BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT",
+         "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries"),
+        ("--terminal-result-root", "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESULT_ROOT",
+         "/var/lib/blueprint/task-evaluation-inputs/task-evaluation-terminal-results"),
+        ("--scene-intent-root", "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT",
+         "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents"),
+    ):
+        assert f'{flag} "$${{{variable}}}"' in reconciler
+        assert f"Environment={variable}={path}" in reconciler
+    canary = _text("deploy/systemd/blueprint-task-evaluation-policy-canary-dispatcher.service")
+    assert ("Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT="
+            "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries") in canary
 
     assert "task_evaluation_launch_supervisor" in supervisor
 

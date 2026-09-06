@@ -77,6 +77,10 @@ from .task_evaluation_result_delivery import (
     materialize_policy_canary_result_delivery,
     materialize_policy_canary_website_delivery,
 )
+from .task_evaluation_scene_terminal_result_index import (
+    PERSISTED_PROJECTION_RELATIVE_PATH,
+    PERSISTED_WEBAPP_SYNC_RELATIVE_PATH,
+)
 from .task_evaluation_run_webapp_sync import (
     sync_policy_canary_preprovider_blocked_to_webapp,
     sync_task_evaluation_policy_canary_to_webapp,
@@ -289,6 +293,29 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
             raise TaskEvaluationPolicyCanaryDispatchError(
                 f"policy_canary_dispatch_immutable_conflict:{path.name}"
             )
+
+
+def _persist_until_sealed(root: Path, path: Path, value: Mapping[str, Any]) -> None:
+    """Persist a terminal record that stays provisional until the dispatch receipt.
+
+    Website sync results carry attempt counts and Website-side timestamps, so a
+    resume after a crash between persisting the sync and writing
+    ``dispatch_receipt.json`` must be able to replace the earlier attempt's
+    record instead of wedging on an immutable conflict. Once the receipt exists
+    (it records the file's digest) the record is immutable.
+    """
+
+    if (root / "dispatch_receipt.json").is_file():
+        _write_exclusive(path, value)
+        return
+    payload = (json.dumps(dict(value), sort_keys=True, separators=(",", ":")) + "\n").encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with temporary.open("wb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
 
 
 def _event(root: Path, *, stage: str, status: str, **details: Any) -> dict[str, Any]:
@@ -1187,6 +1214,13 @@ def _finish_policy_canary_delivery(
         }
         write_json(root / "dispatch_pending.json", pending)
         return pending
+    # R8: the projection and the authenticated Website sync used to exist only in
+    # memory. The owner terminal index/reconciler join them, so persist both
+    # beside the delivery and bind their bytes into the sealed receipt below.
+    projection_path = root / PERSISTED_PROJECTION_RELATIVE_PATH
+    sync_path = root / PERSISTED_WEBAPP_SYNC_RELATIVE_PATH
+    _write_exclusive(projection_path, projection)
+    _persist_until_sealed(root, sync_path, sync)
     receipt = {
         "schema_version": SCHEMA_VERSION,
         "status": joined["status"],
@@ -1198,6 +1232,8 @@ def _finish_policy_canary_delivery(
         "terminal_result": _record(joined_path),
         "result_delivery_digest": website_delivery["delivery_digest"],
         "policy_canary_projection_digest": projection["projection_digest"],
+        "policy_canary_result_projection": _record(projection_path),
+        "policy_canary_webapp_sync": _record(sync_path),
         "notification_delivery": sync["notification_delivery"],
         "official_billing": closure["billing"],
         "teardown": closure["teardown"],

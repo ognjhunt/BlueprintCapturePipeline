@@ -247,6 +247,20 @@ def _candidate_still_sealed(
     return float(now()) - latest >= abandoned_after
 
 
+def _adopt_root_owner(path: Path, root: Path) -> None:
+    """Give the pointer the evidence root's owner and group.
+
+    The GC unit runs as root, and a root-owned ``0440`` pointer is unreadable by
+    the ``blueprint`` service user -- yet the pointer is the only durable
+    reference to the archived run (the owner terminal reconciler derives the
+    result publication from it). A no-op when the writer already is that owner;
+    a failure propagates so the candidate is skipped and its evidence retained.
+    """
+
+    owner = root.stat()
+    os.chown(path, owner.st_uid, owner.st_gid)
+
+
 def apply_evidence_offload(
     manifest: Mapping[str, Any],
     *,
@@ -325,6 +339,7 @@ def apply_evidence_offload(
             temporary = root / f".{name}.pointer-{os.getpid()}.tmp"
             temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             temporary.chmod(0o440)
+            _adopt_root_owner(temporary, root)
             os.replace(temporary, pointer)
             shutil.rmtree(directory)
         except Exception as exc:  # noqa: BLE001 - every candidate is independent
