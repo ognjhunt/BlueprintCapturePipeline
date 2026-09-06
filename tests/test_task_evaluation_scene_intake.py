@@ -19,8 +19,8 @@ def request():
                  "support": {"id": "table"}, "destination": {"id": "tray"}, "success": {"inside": True}},
         "execution": {"max_total_spend_usd": 4, "max_paid_attempts": 2, "max_retries": 0,
             "expires_at_epoch": 1000, "allowed_providers": ["vast"], "claim_scope": "development_only",
-            "policy_candidates": [{"id": "pi05", "artifact_digest": "sha256:" + "b" * 64},
-                                  {"id": "groot", "artifact_digest": "sha256:" + "c" * 64}]},
+            "policy_candidates": [{"id": "pi05_droid", "artifact_digest": "sha256:" + "b" * 64},
+                                  {"id": "groot_n17_droid", "artifact_digest": "sha256:" + "c" * 64}]},
         "consent": {"accepted_by": "u1", "accepted_at_epoch": 99, "rights_reference": "rights-v1",
             "provider_terms_reference": "terms-v1", "private_processing_authorized": True,
             "provider_training_authorized": False, "task_confirmed": True, "spend_authorized": True}}
@@ -60,6 +60,25 @@ def test_consent_actor_cannot_be_substituted(tmp_path):
     value["consent"]["accepted_by"] = "admin"
     with pytest.raises(SceneIntakeError, match="consent_actor"):
         stage(tmp_path, value)
+
+
+def test_unsupported_policy_candidate_pair_is_rejected_at_intake(tmp_path):
+    # A10: intake must reject any pair other than the supported inventory up
+    # front, instead of accepting it and failing late at the policy-canary handoff
+    # after construction spend. A well-formed but unsupported pair is refused.
+    value = request()
+    value["execution"]["policy_candidates"] = [
+        {"id": "some_other_policy", "artifact_digest": "sha256:" + "b" * 64},
+        {"id": "groot_n17_droid", "artifact_digest": "sha256:" + "c" * 64}]
+    with pytest.raises(SceneIntakeError, match="policy_candidates_unsupported"):
+        stage(tmp_path, value)
+    # Order matters too: the handoff requires the exact ordered pair.
+    reversed_pair = request()
+    reversed_pair["execution"]["policy_candidates"] = [
+        {"id": "groot_n17_droid", "artifact_digest": "sha256:" + "c" * 64},
+        {"id": "pi05_droid", "artifact_digest": "sha256:" + "b" * 64}]
+    with pytest.raises(SceneIntakeError, match="policy_candidates_unsupported"):
+        stage(tmp_path, reversed_pair)
 
 
 def test_idempotency_key_cannot_replace_task(tmp_path):

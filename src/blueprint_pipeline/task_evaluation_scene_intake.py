@@ -32,6 +32,11 @@ CLIENTS_ENV = "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
+#: The two frozen policy candidates this ADP-009D run actually supports end to
+#: end (scene setup CANDIDATE_IDS, policy-canary handoff, dispatch). Intake
+#: rejects any other pair up front instead of accepting it and failing late,
+#: after construction spend, at the handoff (A10). Do not broaden this here.
+SUPPORTED_POLICY_CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
 
 
 class SceneIntakeError(ValueError):
@@ -110,6 +115,8 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
                  and _identifier(policy["id"]) and isinstance(policy["artifact_digest"], str)
                  and _DIGEST.fullmatch(policy["artifact_digest"]) is not None, "policy_identity_invalid")
     _require(policies[0]["id"] != policies[1]["id"], "two_distinct_policies_required")
+    _require([policy["id"] for policy in policies] == list(SUPPORTED_POLICY_CANDIDATE_IDS),
+             "policy_candidates_unsupported")
     _require(execution["claim_scope"] == "development_only", "claim_scope_invalid")
     consent = value.get("consent")
     _require(isinstance(consent, Mapping) and set(consent) == {
