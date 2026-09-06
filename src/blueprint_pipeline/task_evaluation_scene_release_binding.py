@@ -36,7 +36,13 @@ def resolve_release_binding(config, *, running_commit):
         return value
     candidates = []
     for candidate in safe_path(config["deployment_receipt_root"]).glob("*.json"):
-        deploy = read(candidate)
+        try:
+            deploy = read(candidate)
+        except (OSError, ValueError):
+            # This directory also retains unrelated historical/private
+            # provenance. It is discovery, not authority: only a readable,
+            # verified receipt for running_commit can be selected below.
+            continue
         if deploy.get("source_commit") == running_commit and deploy.get("status") == "deployed":
             candidates.append((candidate, deploy))
     require(bool(candidates), "current_deployment_receipt_missing")
