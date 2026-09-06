@@ -296,3 +296,23 @@ def test_late_interpretation_selection_cannot_bypass_owner_request(tmp_path, mon
     assert receipt["status"] == "blocked"
     assert "scene_policy_interpretation_not_requested" in receipt["blockers"]
     assert not (tmp_path / "queue").exists()
+
+
+def test_materialized_canary_profile_still_reopens_provider_authorization(tmp_path, monkeypatch):
+    """The $0 base scene-configuration template is validated structurally during
+    materialization (its ``initial-configuration`` attempt is not a paid admission),
+    but the paid canary profile that is actually published/dispatched still reopens
+    the owner record. Tampering the materialized profile's provider away from the
+    reserved ``vast`` must be refused, so the fix does not weaken provider authority.
+    """
+    from blueprint_pipeline.task_evaluation_launch_dispatcher import validate_launch_profile
+    state, _, _ = _owner_scene(tmp_path, monkeypatch)
+    _, profile, _ = _run(tmp_path, state)
+    # The real (paid) canary profile passes the full owner-record reopen for the
+    # right reason: its allocator authorizes exactly the reserved provider.
+    assert "scene_execution_owner_provider_mismatch" not in validate_launch_profile(profile)
+    tampered = json.loads(json.dumps(profile))
+    argv = tampered["allocator"]["argv"]
+    argv[argv.index("vast")] = "unauthorized-provider"
+    tampered["profile_digest"] = canonical_digest(tampered, digest_field="profile_digest")
+    assert "scene_execution_owner_provider_mismatch" in validate_launch_profile(tampered)
