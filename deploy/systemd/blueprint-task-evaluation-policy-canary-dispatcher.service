@@ -44,6 +44,11 @@ Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_QUEUE_ROOT=/var/lib
 Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_EXECUTION_SETUP_ROOT=/var/lib/blueprint/task-evaluation-inputs/policy-canary-execution-setups
 Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_EXECUTION_SETUP_TEMPLATE=/var/lib/blueprint/task-evaluation-inputs/policy-canary-execution-setup-template.json
 Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries
+# Persistent-owner selection scope (Spec C): claim only policy-canary envelopes
+# carrying the authenticated owner binding. Selection only; the dispatcher still
+# reopens the full owner reservation, frozen profile, standing grant, release,
+# spend, expiry, revocation and provider-zero gates, and touches no hold.
+Environment=BLUEPRINT_TASK_EVALUATION_DISPATCH_OWNER_SCOPE=persistent_owner_only
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 Environment=BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-pins
 Environment=BLUEPRINT_PROVIDER_BILLING_AUDIT_ROOT=/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit
@@ -63,5 +68,9 @@ Environment=PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sy
 Environment=PIPELINE_TASK_EVALUATION_RUN_WEBAPP_URL=https://tryblueprint.io/api/internal/pipeline/capture-task-evaluation-runs
 Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PROGRESS_WEBAPP_URL=https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-progress
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+# Shared owner-store identity (scene-intake root + trusted clients) so
+# scene_policy_binding.scene_store() resolves the persistent owner of a selected
+# envelope (Spec C). Materialized by the scene-preparation installer; optional.
+EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
 WorkingDirectory=/
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && ARGS=(-m blueprint_pipeline.task_evaluation_policy_canary_dispatcher --dispatch-queue-root "$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_QUEUE_ROOT}" --execution-setup-root "$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_EXECUTION_SETUP_ROOT}" --execution-setup-template "$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_EXECUTION_SETUP_TEMPLATE}" --dispatch-root "$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT}" --billing-audit-root "$${BLUEPRINT_PROVIDER_BILLING_AUDIT_ROOT}" --implementation-commit "$$(git rev-parse HEAD)" --execute) && if [ -n "$${BLUEPRINT_TASK_EVALUATION_CANARY_HOTFIX_OVERLAY:-}" ]; then ARGS+=(--hotfix-overlay "$${BLUEPRINT_TASK_EVALUATION_CANARY_HOTFIX_OVERLAY}"); fi && if [ -n "$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_MACHINE_AVOIDLIST:-}" ]; then ARGS+=(--machine-avoidlist "$${BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_MACHINE_AVOIDLIST}"); fi && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" "$${ARGS[@]}"'
