@@ -74,6 +74,8 @@ _PIPELINE_STATUS_KEYS = {
     "configured_scene_bundle_digest",
     "episode_compilation_id",
     "episode_compilation_queue_envelope_digest",
+    "source_preparation_progress_digest",
+    "human_review_required",
 }
 
 
