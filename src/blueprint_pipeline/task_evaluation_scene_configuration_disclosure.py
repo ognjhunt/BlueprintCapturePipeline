@@ -169,7 +169,8 @@ _stage_requests_upload = stage_requests_upload
 
 MATERIALIZED_STATUS = "derived_method_inputs_materialized"
 PENDING_PROVIDER_RENDER_STATUS = "derived_method_inputs_pending_provider_render"
-RENDER_INPUT_STATUSES = frozenset({MATERIALIZED_STATUS, PENDING_PROVIDER_RENDER_STATUS})
+MESH_INPUT_STATUS = "explicit_visual_geometry_prepared"
+RENDER_INPUT_STATUSES = frozenset({MATERIALIZED_STATUS, PENDING_PROVIDER_RENDER_STATUS, MESH_INPUT_STATUS})
 
 
 def render_inputs_disclosure_is_coherent(render_inputs: Mapping[str, Any]) -> bool:
@@ -186,6 +187,17 @@ def render_inputs_disclosure_is_coherent(render_inputs: Mapping[str, Any]) -> bo
         return False
     status = render_inputs.get("status")
     crossed = render_inputs.get("raw_interiorgs_bytes_in_provider_packet")
+    if status == MESH_INPUT_STATUS:
+        geometry = render_inputs.get("derived_visual_geometry")
+        return (crossed is False and render_inputs.get("input_kind") == "provided_mesh"
+                and render_inputs.get("derived_frames") == []
+                and render_inputs.get("derived_frame_count") == 0
+                and render_inputs.get("renderer_qualified") is False
+                and render_inputs.get("physical_truth_claimed") is False
+                and render_inputs.get("provider_render_required") is False
+                and isinstance(geometry, Mapping)
+                and isinstance(geometry.get("size_bytes"), int) and geometry["size_bytes"] > 0
+                and str(geometry.get("digest", "")).startswith("sha256:"))
     if status == MATERIALIZED_STATUS:
         return crossed is False
     if status != PENDING_PROVIDER_RENDER_STATUS:

@@ -112,9 +112,11 @@ def _axis_name(index: int) -> str:
 def stage_sequence() -> list[dict[str, Any]]:
     """The admitted six-stage adapter chain, ordered by capability."""
 
-    by_capability = {
-        identity.capability: identity for identity in ADMITTED_STAGE_ADAPTER_IDENTITIES
-    }
+    # The public-scene recipe keeps its original adapters. Additional admitted
+    # source-format adapters are selected explicitly by their own compiler.
+    by_capability = {}
+    for identity in ADMITTED_STAGE_ADAPTER_IDENTITIES:
+        by_capability.setdefault(identity.capability, identity)
     rows = []
     for index, capability in enumerate(CAPABILITY_ORDER):
         identity = by_capability[capability]

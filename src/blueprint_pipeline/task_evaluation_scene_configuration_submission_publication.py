@@ -83,12 +83,17 @@ def _validated_inventory(root: Path, expected_commit: str) -> tuple[dict, list[d
     prefix = f"s3://blueprint/task-evaluation/production-inputs/{namespace}/"
     rows = manifest.get("files")
     _require(isinstance(rows, list) and 1 <= len(rows) <= 1024, "inventory_invalid")
-    publisher = _json(_path(root, "provenance/publisher_intake.v1.json"))
-    _require(publisher.get("source_uploaded_by_blueprint") is False
-             and publisher.get("public_redistribution_allowed") is False, "publisher_rights_invalid")
-    artifacts = publisher.get("artifacts")
-    _require(isinstance(artifacts, list) and bool(artifacts), "publisher_inventory_invalid")
-    raw = {(row["publisher_url"], row["sha256"], row["size_bytes"]) for row in artifacts}
+    owned = manifest.get("source") == "owner_provided_completed_asset"
+    if owned:
+        from .task_evaluation_completed_scene_publication import verified_owner_source_inventory
+        raw = verified_owner_source_inventory(root, manifest)
+    else:
+        publisher = _json(_path(root, "provenance/publisher_intake.v1.json"))
+        _require(publisher.get("source_uploaded_by_blueprint") is False
+                 and publisher.get("public_redistribution_allowed") is False, "publisher_rights_invalid")
+        artifacts = publisher.get("artifacts")
+        _require(isinstance(artifacts, list) and bool(artifacts), "publisher_inventory_invalid")
+        raw = {(row["publisher_url"], row["sha256"], row["size_bytes"]) for row in artifacts}
     raw_digests = {row[1] for row in raw}
     paths, uris, retained = set(), set(), set()
     for row in rows:
@@ -108,7 +113,7 @@ def _validated_inventory(root: Path, expected_commit: str) -> tuple[dict, list[d
         if row["publication_allowed"] is False:
             identity = (uri, digest, size)
             _require(relative.startswith("source/") and identity in raw
-                     and urlsplit(uri).scheme == "https", "raw_reference_invalid")
+                     and (owned or urlsplit(uri).scheme == "https"), "raw_reference_invalid")
             retained.add(identity)
         else:
             _require(row["publication_allowed"] is True and not relative.startswith("source/")
@@ -187,6 +192,12 @@ def _publish_locked(
     _require(pwd.getpwnam(service_account).pw_uid == os.geteuid(), "service_identity_mismatch")
     _require(_verified_checkout_head() == expected_source_commit, "execution_commit_mismatch")
     manifest, rows = _validated_inventory(root, expected_source_commit)
+    if manifest.get("source") == "owner_provided_completed_asset":
+        from .task_evaluation_owner_source_store import install_source
+        for row in rows:
+            if row["publication_allowed"] is False:
+                install_source(source=_path(root, row["relative_path"]), uri=row["uri"],
+                               digest=row["digest"], size_bytes=row["size_bytes"])
     manifest_hash, manifest_size = _sha(manifest_path)
     prior = _json(receipt_path) if receipt_path.exists() else None
     if prior is not None:

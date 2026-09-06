@@ -16,6 +16,7 @@ from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
 )
 from .task_evaluation_scene_configuration_disclosure import (
+    MESH_INPUT_STATUS,
     PENDING_PROVIDER_RENDER_STATUS,
     render_inputs_disclosure_is_coherent,
     renders_on_provider,
@@ -212,7 +213,10 @@ def scene_configuration_bundle_contract(
         or disclosure.get("raw_interiorgs_bytes_in_provider_bundle")
         is not expected_provider_renderer
         or disclosure.get("derived_rendered_views_in_provider_bundle")
-        is expected_provider_renderer
+        is not (not expected_provider_renderer and render.get("status") != MESH_INPUT_STATUS)
+        or (render.get("status") == MESH_INPUT_STATUS
+            and (disclosure.get("derived_visual_geometry_in_provider_bundle") is not True
+                 or stages[0].get("adapter", {}).get("id") != "provided_mesh_appearance_excision"))
         or (
             diagnostic_only
             and not fresh_diagnostic_bootstrap
@@ -278,7 +282,13 @@ def scene_configuration_bundle_contract(
                 else:
                     bound_rows.append((str(record.get("path") or ""), record))
         cutout = render.get("derived_gaussian_cutout")
-        if not isinstance(cutout, Mapping):
+        if render.get("status") == MESH_INPUT_STATUS:
+            geometry = render.get("derived_visual_geometry")
+            if not isinstance(geometry, Mapping):
+                blockers.append("scene_configuration_provider_input_path_invalid")
+            else:
+                bound_rows.append((str(geometry.get("path") or ""), geometry))
+        elif not isinstance(cutout, Mapping):
             blockers.append("scene_configuration_provider_input_path_invalid")
         else:
             retained = cutout.get("retained_scene_without_source_object")

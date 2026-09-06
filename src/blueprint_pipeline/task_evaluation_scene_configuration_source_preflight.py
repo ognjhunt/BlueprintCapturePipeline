@@ -99,6 +99,14 @@ def _validate_scene_configuration_source_inputs(
 ) -> None:
     """Prove source, render, and exact collision-target identity before spend."""
 
+    if any(value.get("source_origin") == "owner_provided_completed_asset" for value in configurations.values()):
+        from .task_evaluation_completed_scene_inputs import validate_completed_scene_inputs
+        try:
+            validate_completed_scene_inputs(envelope=envelope, configurations=configurations,
+                                            require_render_inputs=require_render_inputs)
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            raise TaskEvaluationSceneConfigurationSourcePreflightError(str(exc)) from exc
+        return
     stages = (envelope.get("recipe") or {}).get("stage_sequence") or []
     stage_by_capability = {
         str(stage.get("capability") or ""): str(stage.get("stage_id") or "")

@@ -2088,6 +2088,7 @@ def deploy_control_plane_commit(
         DEFAULT_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT
     ),
     configured_controls_autostart_intent_sources: Sequence[str] = (),
+    scene_preparation_bootstrap_file: str | Path = "/etc/blueprint/task-evaluation-scene-preparation-bootstrap.json",
     arm_path_units: bool = False,
     disk_reservation_root: str | Path | None = None,
     release_retirement_reference_roots: Sequence[str] = (
@@ -2298,6 +2299,13 @@ def deploy_control_plane_commit(
             Path(scene_configuration_environment_file).expanduser(),
             environment=scene_configuration_runtime["environment"],
         )
+        bootstrap = Path(scene_preparation_bootstrap_file).expanduser()
+        if bootstrap.exists():
+            from blueprint_pipeline.task_evaluation_scene_preparation_installation import install_scene_preparation
+            scene_preparation_installation = install_scene_preparation(bootstrap_path=bootstrap)
+        else:
+            scene_preparation_installation = {"status": "not_configured", "bootstrap_path": str(bootstrap),
+                                              "provider_mutation_performed": False}
         _mark_stage("runtime_trees_provisioned")
         _move_source_checkout(source, source_commit)
         release = stage_task_evaluation_control_plane_release(
@@ -2469,6 +2477,7 @@ def deploy_control_plane_commit(
         "scene_configuration_runtime": scene_configuration_runtime,
         "cad_skill_sources": cad_skill_sources,
         "scene_configuration_environment": scene_configuration_environment,
+        "scene_preparation_installation": scene_preparation_installation,
         # Every slot actually held, not the one base path the caller named.
         # The lock is an N-slot semaphore, so recording the input would
         # under-report what this deploy was exclusive with -- and a receipt
@@ -2563,6 +2572,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--scene-configuration-runtime-root",
         default=DEFAULT_SCENE_CONFIGURATION_RUNTIME_ROOT,
     )
+    parser.add_argument("--scene-preparation-bootstrap-file",
+                        default="/etc/blueprint/task-evaluation-scene-preparation-bootstrap.json")
     parser.add_argument(
         "--splat-render-prerequisite-root",
         default=DEFAULT_SPLAT_RENDER_PREREQUISITE_ROOT,
@@ -2618,6 +2629,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.scene_configuration_environment_file
             ),
             scene_configuration_runtime_root=args.scene_configuration_runtime_root,
+            scene_preparation_bootstrap_file=args.scene_preparation_bootstrap_file,
             splat_render_prerequisite_root=args.splat_render_prerequisite_root,
             artifixer_source_root=args.artifixer_source_root,
             content_agents_source_root=args.content_agents_source_root,

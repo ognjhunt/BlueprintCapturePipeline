@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import shutil
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -454,6 +455,10 @@ def materialize_scene_configuration_render_inputs(
 ) -> dict[str, Any]:
     """Render exact derived method inputs without exposing the raw source."""
 
+    if stage_one_configuration.get("schema_version") == "task_evaluation_provided_mesh_appearance_excision.v1":
+        from .task_evaluation_completed_scene_inputs import materialize_completed_mesh_inputs
+        return materialize_completed_mesh_inputs(envelope=envelope, stage_one_configuration=stage_one_configuration,
+                                                 output_root=output_root)
     source_object = stage_one_configuration.get("source_object")
     gaussian_cutout = stage_one_configuration.get("gaussian_cutout")
     required_views = stage_one_configuration.get("required_views")
@@ -526,11 +531,13 @@ def materialize_scene_configuration_render_inputs(
         rights_admission=rights_admission,
     )
     provider_render = renders_on_provider(disclosure_decision)
+    owner_source = manifest.get("schema_version") == "task_evaluation_completed_scene_source_manifest.v1"
     source_matches = [
         row
         for row in manifest.get("artifacts") or []
         if isinstance(row, Mapping)
-        and row.get("role") == "interiorgs_source_splat"
+        and row.get("role") == (manifest.get("runtime_appearance_role", "owner_appearance_source")
+                                if owner_source else "interiorgs_source_splat")
         and row.get("sha256") == appearance_row["digest"]
         and row.get("size_bytes") == appearance_row["size_bytes"]
     ]
@@ -539,9 +546,9 @@ def materialize_scene_configuration_render_inputs(
         or source_matches[0].get("provider_upload_allowed") is not False
         or plan.get("schema_version") != "task_evaluation_renderer_qualification_plan.v1"
         or plan.get("status") != "execute_during_scene_configuration_run"
-        or plan.get("appearance_source") != "InteriorGS"
+        or plan.get("appearance_source") != ("owner_provided_completed_asset" if owner_source else "InteriorGS")
         or plan.get("browser_preview_qualifies") is not False
-        or plan.get("debug_sage_render_qualifies_as_appearance") is not False
+        or (not owner_source and plan.get("debug_sage_render_qualifies_as_appearance") is not False)
     ):
         raise TaskEvaluationSceneConfigurationRenderInputsError(
             "scene_configuration_render_source_or_plan_invalid"
@@ -560,14 +567,15 @@ def materialize_scene_configuration_render_inputs(
         )
     root.mkdir(parents=True, exist_ok=True)
     decoded_path = root / "source_standard_decoded_for_local_cutout.ply"
-    decoded = dict(
-        splat_decoder(
-            appearance_path,
-            decoded_path,
-            repo_root=runtime["renderer_root"],
-            node=str(runtime["node"]),
-        )
-    )
+    if owner_source:
+        # Completed-splat intake admits standard 3DGS only. Preserve its fields
+        # byte-for-byte instead of invoking a redundant format conversion.
+        read_standard_3dgs_ply(appearance_path)
+        shutil.copyfile(appearance_path, decoded_path)
+        decoded = {"status": "completed", "conversion_performed": False}
+    else:
+        decoded = dict(splat_decoder(appearance_path, decoded_path,
+            repo_root=runtime["renderer_root"], node=str(runtime["node"])))
     if decoded.get("status") != "completed" or not decoded_path.is_file():
         raise TaskEvaluationSceneConfigurationRenderInputsError(
             "scene_configuration_render_splat_decode_failed"

@@ -65,6 +65,12 @@ ADMITTED_STAGE_ADAPTER_IDENTITIES = (
         "v1",
         "no_spend",
     ),
+    SceneConfigurationAdapterIdentity(
+        "observed_appearance_object_removal", "provided_mesh_appearance_excision", "v1", "no_spend",
+    ),
+    SceneConfigurationAdapterIdentity(
+        "rigid_replacement_authoring", "provided_mesh_rigid_authoring", "v1", "no_spend",
+    ),
 )
 
 

@@ -345,6 +345,10 @@ def _s3_client(bucket: str) -> Any:
 def default_reference_fetcher(uri: str, destination: Path, maximum_bytes: int) -> None:
     """Fetch one admitted object with ambient service-account credentials."""
 
+    from .task_evaluation_owner_source_store import PREFIX as OWNER_SOURCE_PREFIX, fetch_source
+    if uri.startswith(OWNER_SOURCE_PREFIX):
+        fetch_source(uri, destination, maximum_bytes)
+        return
     parsed = urlparse(uri)
     if parsed.scheme == "https":
         request = urllib.request.Request(uri, method="GET")
