@@ -987,6 +987,25 @@ def _materialize_runtime_source_external_layers(
     return rows
 
 
+_CODE = r"[a-z][a-z0-9_]{2,120}(?::[a-z0-9_./-]{1,80})?"
+_LANE_CODE = re.compile(rf"{_CODE}(?:;{_CODE}){{0,7}}")  # one lane code, or a ;-joined bounded set
+
+
+def worker_failure_blocker(exc: BaseException) -> str:
+    """``launch_preparation_worker_failed:<Type>[:<lane code>]`` plus the fired predicates.
+
+    A lane raises its own blocker code as the message; dropping it left the 2026-09-06
+    parent replays saying only which exception class refused.  Free text is never carried:
+    a message is kept only when it is code-shaped and bounded.
+    """
+
+    code = f"launch_preparation_worker_failed:{type(exc).__name__}"
+    message = str(exc)
+    if _LANE_CODE.fullmatch(message):
+        code = f"{code}:{message}"
+    return annotate_blocker(code, exc)
+
+
 def process_launch_preparation_queue(
     *,
     queue_root: str | Path,
@@ -1523,9 +1542,7 @@ def process_launch_preparation_queue(
                             TaskEvaluationEpisodeCompilationQueueError,
                         ),
                     )
-                    else annotate_blocker(
-                        f"launch_preparation_worker_failed:{type(exc).__name__}", exc
-                    )
+                    else worker_failure_blocker(exc)
                 ],
                 "provider_mutation_performed": False,
                 "catalog_mutation_performed": False,
@@ -1688,9 +1705,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "blockers": [
                         str(exc)
                         if isinstance(exc, TaskEvaluationLaunchPreparationWorkerError)
-                        else annotate_blocker(
-                            f"launch_preparation_worker_failed:{type(exc).__name__}", exc
-                        )
+                        else worker_failure_blocker(exc)
                     ],
                     "provider_mutation_performed": False,
                     "catalog_mutation_performed": False,

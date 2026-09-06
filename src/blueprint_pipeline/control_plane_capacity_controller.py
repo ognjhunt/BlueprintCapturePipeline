@@ -446,8 +446,15 @@ def run_controller(
             observation = credit_collector()
         except Exception:  # never include credential-bearing provider exceptions
             observation = {}
+        # Judge freshness against a clock no earlier than the observation itself. ``observed``
+        # is captured at pass start, before the disk measurement and the credit GET, so the
+        # observation's own epoch is later; comparing to ``observed`` gave a negative age and
+        # flagged every just-taken observation stale.  The upper bound still catches a genuinely
+        # old observation (epoch far in the past -> age > maximum_age).
+        credit_epoch = observation.get("observed_at_epoch")
+        credit_now = max(observed, float(credit_epoch)) if isinstance(credit_epoch, (int, float)) and not isinstance(credit_epoch, bool) else observed
         funding = credit_admission(observation, required_usd=credit_warning_usd,
-                                   reserve_usd=credit_reserve_usd, now=observed)
+                                   reserve_usd=credit_reserve_usd, now=credit_now)
         report["provider_funding"] = funding
         if funding["blockers"]:
             report["level"] = "critical"
