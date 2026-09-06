@@ -13,6 +13,7 @@ import time
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_scene_configuration_submission_inputs import read, require, sha
 from .task_evaluation_scene_configuration_sam31_plan import PHASES, PROFILE_SCHEMA, validate_sam31_preparation_plan
+from . import task_evaluation_sam31_prefix_evidence as evidence
 from .task_evaluation_sam31_prefix_evidence import (
     camera_science, source_science, task_science, validate_current_rights,
     validate_render, validate_tracking,
@@ -186,17 +187,17 @@ def validate_completed_prefix_adoption(path, *, expected_source_commit, approved
     if value["through_phase"] == "segment_cutout":
         from .task_evaluation_sam31_retained_evidence import validate_retained_paid_stage
         validate_retained_paid_stage(outcomes["contribution_sweep"], stage_id="contribution_sweep")
-        for relative in (
+        # Content identity, not commit identity (piece 1): the segment_cutout retained outputs
+        # are re-validated by their content digests + the tracking/rights joins above; a
+        # producer-code diff that leaves them valid must not invalidate the prefix on a deploy.
+        evidence.require_producer_files_present((
             "scripts/adp_gaussian_excision_provider_runner.py",
             "src/blueprint_pipeline/public_scene_gaussian_excision_audit.py",
             "src/blueprint_pipeline/public_scene_calibrated_object_masks.py",
             "src/blueprint_pipeline/public_scene_segment_contribution_cutout.py",
             "src/blueprint_pipeline/task_evaluation_sam31_preparation_review_stages.py",
             "src/blueprint_pipeline/task_evaluation_sam31_preparation_profile.py",
-        ):
-            before = Path(old_profile["repo_root"]) / relative
-            require(before.is_file() and sha(before) == sha(current_repo / relative),
-                    "sam31_adoption_producer_code_changed:" + relative)
+        ), old_profile["repo_root"], current_repo)
     # A canonical parent envelope must still join the old immutable plan and child chain.
     from .task_evaluation_launch_preparation_contract import validate_launch_preparation_request, launch_preparation_request_digest
     envelope = read(_ref(value["original_parent_envelope"], roots), digest_field="envelope_digest")
