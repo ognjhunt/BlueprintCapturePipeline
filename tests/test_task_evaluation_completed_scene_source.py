@@ -11,14 +11,16 @@ from tests.test_provided_scene_splat import splat_bytes
 MESH = b'''#usda 1.0
 (metersPerUnit = 1; upAxis = "Z")
 def Mesh "Book" {
- point3f[] points = [(0,0,1),(1,0,1),(0,1,1.1)]
- int[] faceVertexCounts = [3]
- int[] faceVertexIndices = [0,1,2]
+ point3f[] points = [(0,0,0.75),(0.15,0,0.75),(0.15,0.2,0.75),(0,0.2,0.75),
+                       (0,0,0.77),(0.15,0,0.77),(0.15,0.2,0.77),(0,0.2,0.77)]
+ int[] faceVertexCounts = [4,4,4,4,4,4]
+ int[] faceVertexIndices = [0,3,2,1,4,5,6,7,0,1,5,4,1,2,6,5,2,3,7,6,3,0,4,7]
 }
 def Mesh "Table" {
- point3f[] points = [(-1,-1,0),(2,-1,0),(-1,2,0)]
- int[] faceVertexCounts = [3]
- int[] faceVertexIndices = [0,1,2]
+ point3f[] points = [(-1,-1,0.7),(2,-1,0.7),(2,2,0.7),(-1,2,0.7),
+                       (-1,-1,0.75),(2,-1,0.75),(2,2,0.75),(-1,2,0.75)]
+ int[] faceVertexCounts = [4,4,4,4,4,4]
+ int[] faceVertexIndices = [0,3,2,1,4,5,6,7,0,1,5,4,1,2,6,5,2,3,7,6,3,0,4,7]
 }
 '''
 

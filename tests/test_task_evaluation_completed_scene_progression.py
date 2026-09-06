@@ -36,8 +36,15 @@ def _write(path, value, field=None):
     return path
 
 
-def _owner(store, now):
-    _, appearance = upload(store, splat_bytes(), "appearance1", "provided_scene_splat", "room.ply")
+def _owner(store, now, *, source_kind="gaussian_splat"):
+    import struct
+    data = bytearray(splat_bytes())
+    offset = data.index(b"end_header\n") + len(b"end_header\n")
+    for i in range(64):
+        xyz = ((0.02 + (i % 4) * 0.03, 0.02 + (i // 4) * 0.04, 0.76)
+               if i < 16 else (-0.8 + (i % 8) * 0.3, -0.8 + (i // 8) * 0.3, 0.749))
+        struct.pack_into("<3f", data, offset + i * 14 * 4, *xyz)
+    _, appearance = upload(store, bytes(data), "appearance1", "provided_scene_splat", "room.ply")
     submitted, collision = upload(store, MESH, "collision1", "provided_scene_mesh", "room.usda")
     owner = owner_request()
     owner["owner"] = {"user_id": submitted["customer_id"], "organization_id": submitted["organization_id"]}
@@ -47,10 +54,13 @@ def _owner(store, now):
         "content_digest": appearance["capture_digest"],
         "collision_mesh": {"binding_id": "collision1", "content_digest": collision["capture_digest"],
             "rights_reference": collision["envelope_digest"], "frame_relation": "owner_declared_common_frame"}}
-    owner["task"] = {"task_id": "book-onto-table", "strategy": "pick_and_place",
+    if source_kind == "mesh":
+        owner["consent"]["rights_reference"] = collision["envelope_digest"]
+        owner["source"] = {"kind": "mesh", "binding_id": "collision1", "content_digest": collision["capture_digest"]}
+    owner["task"] = {"task_id": "book-into-tray", "strategy": "pick_and_place",
         "subject": {"description": "Book"}, "support": {"description": "Table"},
-        "destination": {"relation": "on", "visible_label": "table",
-            "position_world_m": [0.5, 0.5, 1.2], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]},
+        "destination": {"relation": "inside", "visible_label": "document tray",
+            "position_world_m": [0.5, 0.5, 0.75], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]},
         "success": {"control_frequency_hz": 15, "maximum_episode_seconds": 24.0, "minimum_lift_m": 0.05,
             "pregrasp_clearance_m": 0.1, "minimum_planar_displacement_m": 0.1,
             "maximum_final_planar_target_error_m": 0.05, "maximum_retries": 0, "maximum_regrasps": 0}}
@@ -59,19 +69,33 @@ def _owner(store, now):
     return owner
 
 
-def _config(tmp_path, monkeypatch, *, submission_enabled=False, extra=None):
+def _config(tmp_path, monkeypatch, *, submission_enabled=False, extra=None, source_kind="gaussian_splat", real_destination=False):
     now = time.time()
     fixture = production_fixture(tmp_path)
+    if real_destination:
+        from tests.test_task_evaluation_passive_destination_simready import test_exact_step_visual_gets_five_colliders_and_static_qualification
+        destination_root = tmp_path / "destination-fixture"
+        destination_root.mkdir()
+        test_exact_step_visual_gets_five_colliders_and_static_qualification(destination_root)
+        fixture["destination_simready"] = destination_root / "output/passive_destination_simready_result.v1.json"
     monkeypatch.setattr(public_scene_host_input_intake, "_verified_checkout_head", lambda: SHA)
     store = tmp_path / "store"
     intake_root = tmp_path / "intents"
-    owner = _owner(store, now)
+    owner = _owner(store, now, source_kind=source_kind)
     receipt = stage_scene_intent(value=owner, queue_root=intake_root, authenticated_client="blueprint-webapp",
                                  trusted_clients={"blueprint-webapp"}, now=now)
     monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT", str(intake_root.resolve()))
     monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS", "blueprint-webapp")
+    monkeypatch.setenv("PIPELINE_CAPTURE_INTAKE_STORE_ROOT", str(store.resolve()))
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_OWNER_SOURCE_STORE_ROOT", str(tmp_path / "owner-sources"))
     machinery = {"schema_version": "task_evaluation_completed_scene_machinery.v1",
-                 "maximum_preparation_spend_usd": 4.5, "provider": "vast"}
+                 "maximum_preparation_spend_usd": 4.5, "provider": "vast",
+                 "destination_catalog": [{"binding_id": "document-tray-v2",
+                    "owner_description_aliases": ["document tray"],
+                    "simready_result": record(fixture["destination_simready"])}],
+                 "simulation_physics_bounds": {"mass_kg_bounds": [0.1, 0.8],
+                    "static_friction_bounds": [0.4, 0.8], "dynamic_friction_bounds": [0.3, 0.6],
+                    "restitution_bounds": [0.0, 0.1]}}
     machinery_path = _write(tmp_path / "completed-machinery.json", machinery, "machinery_digest")
     (tmp_path / "repo").mkdir(exist_ok=True)
     release = {"schema_version": RELEASE_SCHEMA, "source_commit": SHA, "runtime_digest": "sha256:" + "f" * 64,
@@ -176,6 +200,49 @@ def test_completed_asset_produces_a_preparation_queue_row(tmp_path, monkeypatch)
     assert link["scene_configuration_attempt"]["path"]
 
 
+def test_real_publisher_retains_owner_sources_and_worker_reads_them_without_network(tmp_path, monkeypatch):
+    import os
+    import pwd
+    from blueprint_pipeline import task_evaluation_scene_configuration_submission_publication as publication
+    from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
+    from blueprint_pipeline.task_evaluation_owner_source_store import PREFIX
+    from tests.test_task_evaluation_scene_configuration_submission_publication import Store
+
+    config_path, intent_id, intake_root, now = _config(tmp_path, monkeypatch)
+    engine.process_scene_intents(config_path=config_path, now=now)
+    progress = state.load_progression(intake_root / intent_id,
+        json.loads((intake_root / intent_id / "intent.json").read_text()))
+    factory = json.loads(Path(progress["state"]["factory"]["path"]).read_text())
+    manifest_path = Path(factory["submission_manifest"]["path"])
+    monkeypatch.setattr(publication, "_verified_checkout_head", lambda: SHA)
+    store = Store()
+    result = publication.publish_scene_configuration_submission(manifest_path=manifest_path,
+        receipt_path=tmp_path / "published.json", expected_source_commit=SHA,
+        service_account=pwd.getpwuid(os.geteuid()).pw_name, client=store, lock_root=tmp_path / "locks")
+    assert result["status"] == "published_and_read_back"
+    assert len(result["host_only_source_objects"]) == 2
+    assert not any("/source/" in key or "host-only-owner-sources" in key for key in store.puts)
+    monkeypatch.setattr(worker, "_s3_client", lambda _: (_ for _ in ()).throw(AssertionError("source network access")))
+    for index, row in enumerate(result["host_only_source_objects"]):
+        assert row["uri"].startswith(PREFIX)
+        output = tmp_path / f"read-{index}"
+        worker.default_reference_fetcher(row["uri"], output, row["size_bytes"])
+        assert record(output)["sha256"] == row["digest"]
+
+
+def test_owner_revocation_prevents_real_publication(tmp_path, monkeypatch):
+    import pytest
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_publication import _validated_inventory
+
+    config_path, intent_id, intake_root, now = _config(tmp_path, monkeypatch)
+    engine.process_scene_intents(config_path=config_path, now=now)
+    progress = json.loads((intake_root / intent_id / "progression.json").read_text())
+    factory = json.loads(Path(progress["state"]["factory"]["path"]).read_text())
+    (intake_root / intent_id / "revoked.json").write_text("{}")
+    with pytest.raises(ValueError, match="scene_owner_authority_revoked"):
+        _validated_inventory(Path(factory["submission_manifest"]["path"]).parent, SHA)
+
+
 def test_owner_task_id_bridges_controls_autoprovision(tmp_path, monkeypatch):
     """The owner's declared task_id must survive unchanged into the preparation
     request's task identity and the preparation link, because controls
@@ -208,7 +275,7 @@ def test_owner_task_id_bridges_controls_autoprovision(tmp_path, monkeypatch):
     directory = intake_root / intent_id
     intent = json.loads((directory / "intent.json").read_text())
     owner_task_id = intent["request"]["task"]["task_id"]
-    assert owner_task_id == "book-onto-table"
+    assert owner_task_id == "book-into-tray"
 
     link = json.loads((directory / "preparation-link.json").read_text())
     assert link["task_id"] == owner_task_id, link

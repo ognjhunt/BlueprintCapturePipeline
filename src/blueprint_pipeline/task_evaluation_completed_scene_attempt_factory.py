@@ -19,7 +19,7 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from . import task_evaluation_scene_intake as intake
 from .task_evaluation_public_scene_attempt_factory import RELEASE_SCHEMA, record
-from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
+from .task_evaluation_scene_configuration_submission_inputs import checked_file, read, sha
 from .task_evaluation_scene_progression_state import require, safe_path
 
 FACTORY_SCHEMA = "task_evaluation_completed_scene_attempt_factory.v1"
@@ -101,6 +101,8 @@ def _task_and_blockers(*, intent: dict, binding: dict, commit: str) -> tuple[dic
             "attempt_binding": binding["binding_digest"]})[7:55],
         "run_prefix": "scene-" + intent["intent_id"].removeprefix("scene-")[:20] + "-completed",
         "scene_identity": {"id": "completed-scene-" + scene_key, "version": version},
+
+
         # The owner's declared task_id is carried unchanged as the task identity.
         # Controls autoprovision binds the owner authorization to the configured
         # scene by requiring the preparation link's task_id to equal BOTH the
@@ -155,7 +157,8 @@ def materialize_completed_scene_attempt(*, intent_path, source_binding_path, mac
             and binding.get("task_digest") == intent["task_content_digest"]
             and binding.get("status") == "source_task_objects_bound", "completed_factory_binding_mismatch")
     commit = release["source_commit"]
-    attempt_path = Path(intent_path).parent / "attempts" / (attempt_id + ".json")
+    from .task_evaluation_scene_preparation_attempts import preparation_attempt_path
+    attempt_path = preparation_attempt_path(Path(intent_path).parent, attempt_id)
     attempt = intake._read(attempt_path, "attempt_digest")
     require(attempt.get("intent_digest") == intent["intent_digest"]
             and attempt.get("source_commit") == commit
@@ -165,6 +168,50 @@ def materialize_completed_scene_attempt(*, intent_path, source_binding_path, mac
     if blockers:
         return {"schema_version": FACTORY_SCHEMA, "status": "needs_input", "blockers": blockers,
                 "provider_mutation_performed": False}
+
+    task["scene_intent_authority"] = record(intent_path)
+    task["source_binding"] = record(source_binding_path)
+    from . import task_evaluation_completed_scene_geometry as geometry
+    source_ref = binding["references"]["collision"]
+    cache = safe_path(output_root).parents[1] / "normalized-sources"
+    normalized_root = cache / (
+        source_ref["sha256"][7:] + "-" + sha(Path(geometry.__file__))[7:19] + "-normalized")
+    normalized = geometry.normalize_completed_mesh(
+        source=checked_file(source_ref["path"], source_ref),
+        original_filename=binding["source_filenames"]["collision"],
+        coordinate_frame=binding["coordinate_frame"], output_root=normalized_root)
+    task["geometry_normalization"] = record(normalized_root / "mesh_normalization.v1.json")
+    if binding["source_kind"] == "gaussian_splat":
+        from . import task_evaluation_completed_scene_splat as splat_normalization
+        primary = binding["references"]["primary"]
+        splat_root = cache / (primary["sha256"][7:] + "-" + sha(Path(splat_normalization.__file__))[7:19] + "-splat")
+        converted = splat_normalization.normalize_completed_splat(
+            source=checked_file(primary["path"], primary), coordinate_frame=binding["coordinate_frame"],
+            output_root=splat_root)
+        if converted is not None:
+            task["splat_normalization"] = record(splat_root / "splat_normalization.v1.json")
+    for role in ("subject", "support"):
+        task[role]["runtime_prim_path"] = normalized["object_mapping"][task[role]["source_object_id"]]
+
+    catalog = machinery.get("destination_catalog")
+    require(isinstance(catalog, list) and 1 <= len(catalog) <= 64,
+            "completed_factory_destination_catalog_missing")
+    destination = request["task"]["destination"]
+    requested_asset = destination.get("asset_binding_id")
+    description = str(destination.get("description") or destination.get("visible_label") or "").strip().casefold()
+    candidates = [row for row in catalog if (
+        row.get("binding_id") == requested_asset if requested_asset else
+        description in [str(label).strip().casefold() for label in row.get("owner_description_aliases", [])])]
+    if len(candidates) != 1:
+        return {"schema_version": FACTORY_SCHEMA, "status": "needs_input",
+                "blockers": ["task_destination_asset_selection_required"], "provider_mutation_performed": False}
+    asset = candidates[0]
+    task["destination"]["simready_result"] = record(checked_file(
+        asset["simready_result"]["path"], asset["simready_result"]))
+    task["destination"]["catalog_binding_id"] = asset["binding_id"]
+    physics = machinery.get("simulation_physics_bounds")
+    require(isinstance(physics, dict), "completed_factory_simulation_physics_bounds_missing")
+    task["subject"]["physics_bounds"] = physics
 
     output = safe_path(Path(output_root))
     require(output.is_absolute() and not any(p.is_symlink() for p in (output, *output.parents))
@@ -184,8 +231,7 @@ def materialize_completed_scene_attempt(*, intent_path, source_binding_path, mac
     require(read(task_path) == task, "completed_factory_task_conflict")
     submission_root = output / "submission"
     manifest_path = submission_root / "bundle_manifest.v1.json"
-    if not submission_root.exists():
-        materialize_completed_scene_submission(binding=binding, task=task, task_request_path=task_path,
+    materialize_completed_scene_submission(binding=binding, task=task, task_request_path=task_path,
             deploy_receipt_path=release["deploy_receipt"]["path"],
             release_provenance_path=release["release_provenance"]["path"],
             release_environment_path=release["release_environment"]["path"],

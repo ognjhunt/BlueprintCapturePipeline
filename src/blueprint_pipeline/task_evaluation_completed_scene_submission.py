@@ -30,21 +30,18 @@ from .task_evaluation_launch_preparation_contract import (
 from .task_evaluation_scene_configuration_submission_inputs import (
     Staging,
     checked_file,
+    read,
     release_inputs,
     require,
     sha,
     slug,
 )
 
-RECIPE_SCHEMA = "task_evaluation_completed_scene_construction_recipe.v1"
-COMPLETED_CONSTRUCTION_CAPABILITIES = (
-    "owner_appearance_import",
-    "owner_collision_import",
-    "metric_frame_registration",
-    "subject_rigid_authoring",
-    "subject_native_import_qualification",
-    "scene_assembly",
+from .task_evaluation_scene_construction_recipe import (
+    SCHEMA_VERSION as RECIPE_SCHEMA, CAPABILITY_ORDER as COMPLETED_CONSTRUCTION_CAPABILITIES,
 )
+from .task_evaluation_completed_scene_transaction import completed_submission_transaction
+
 _APPEARANCE_KIND = {"gaussian_splat": "gaussian_splat", "mesh": "other_observed"}
 
 
@@ -114,33 +111,7 @@ def _source_object(scene_id: str, obj: dict, review_label: str) -> dict[str, Any
         "physical_object_identity_proven": False, "source_object_is_physics_authority": False}
 
 
-def _recipe(*, run_id: str, task: dict, source_manifest_digest: str, rights_admission_digest: str,
-            collision_digest: str, appearance_digest: str) -> dict[str, Any]:
-    frame = task["coordinate_frame"]
-    value: dict[str, Any] = {"schema_version": RECIPE_SCHEMA, "recipe_id": run_id + "-recipe",
-        "team_namespace": slug(task["team_namespace"]), "scene_identity": dict(task["scene_identity"]),
-        "task_identity": dict(task["task_identity"]), "subject_identity": dict(task["subject"]["identity"]),
-        "output_identity": dict(task["output_identity"]), "source_manifest_digest": source_manifest_digest,
-        "rights_admission_digest": rights_admission_digest,
-        "appearance": {"kind": task["appearance_kind"], "representation_digest": appearance_digest,
-                       "renderer_qualified": False, "physical_metrology_claimed": False},
-        "geometry": {"kind": "owner_provided_collision_mesh", "collision_digest": collision_digest,
-                     "collision_qualified": False, "physics_qualified": False},
-        "coordinate_frame": {"declared_meters_per_unit": frame["declared_meters_per_unit"],
-                             "declared_up_axis": frame["declared_up_axis"], "physical_scale_measured": False},
-        "stage_sequence": [{"stage_id": f"stage-{i + 1}", "capability": capability,
-                            "depends_on": [] if i == 0 else [f"stage-{i}"]}
-                           for i, capability in enumerate(COMPLETED_CONSTRUCTION_CAPABILITIES)],
-        "provider_disclosure": {"raw_source_bytes_to_external_provider": False,
-            "derived_runtime_processing_allowed": True, "provider_training_allowed": False,
-            "public_redistribution_allowed": False},
-        "claim_boundary": {"scene_inputs_are_owner_provided": True, "physical_world_truth_claimed": False,
-            "native_grasp_qualified": False, "simulator_episode_executed": False},
-        "recipe_digest": ""}
-    value["recipe_digest"] = canonical_digest(value, digest_field="recipe_digest")
-    return value
-
-
+@completed_submission_transaction
 def materialize_completed_scene_submission(
     *, binding: dict[str, Any], task: dict[str, Any], task_request_path: str | Path,
     deploy_receipt_path: str | Path, release_provenance_path: str | Path,
@@ -172,7 +143,20 @@ def materialize_completed_scene_submission(
     lower = [float(v) for v in subject["aabb_min_xyz_m"]]
     upper = [float(v) for v in subject["aabb_max_xyz_m"]]
     start = _center(lower, upper)
-    target = [float(v) for v in task["destination"]["position_world_m"]]
+    from .task_evaluation_scene_configuration_submission import _destination
+    destination_result_path = checked_file(task["destination"]["simready_result"]["path"],
+                                           task["destination"]["simready_result"])
+    destination_result, destination_static, destination_paths = _destination(destination_result_path, lower, upper)
+    destination_identity = destination_result["destination_identity"]
+    # The owner supplies the destination pose. Derive the object target from
+    # its admitted interior, preserving the owner's orientation and placement.
+    from scipy.spatial.transform import Rotation
+    orientation = task["destination"]["orientation_xyzw"]
+    interior = destination_result["interior_bounds_body_frame_m"]
+    local_target = [(interior["minimum"][i] + interior["maximum"][i]) / 2 for i in range(3)]
+    local_target[2] = interior["minimum"][2] + (upper[2] - lower[2]) / 2
+    target = (Rotation.from_quat(orientation).apply(local_target)
+              + task["destination"]["position_world_m"]).tolist()
     template, success, execution = records.pick_and_place_task_records(
         task_identity=task["task_identity"], object_identity=subject["identity"],
         start_center=start, target_center=target, source_min=lower, source_max=upper,
@@ -188,9 +172,38 @@ def materialize_completed_scene_submission(
     template["owner_success_contract_authority"] = {"confirmation_status": "confirmed",
         "accepted_by": human_authority["accepted_by"], "authority_reference": human_authority["authority_reference"]}
 
+    from .task_evaluation_owner_source_store import source_uri
+    from .task_evaluation_completed_scene_publication import SCHEMA as INTAKE_SCHEMA, RELATIVE_PATH
     stage = Staging(Path(staging_root), namespace)
-    appearance_ref = stage.copy(appearance_src, f"source/appearance/{appearance_src.name}")
-    collision_ref = stage.copy(collision_src, f"source/collision/{collision_src.name}")
+    filenames = binding["source_filenames"]
+    primary_uri = source_uri(references["primary"]["sha256"], filenames["primary"])
+    collision_uri = source_uri(references["collision"]["sha256"], filenames["collision"])
+    appearance_ref = stage.copy(appearance_src, "source/appearance/" + primary_uri.rsplit("/", 1)[-1],
+        publisher_uri=primary_uri)
+    collision_ref = appearance_ref if binding["source_kind"] == "mesh" else stage.copy(
+        collision_src, "source/collision/" + collision_uri.rsplit("/", 1)[-1], publisher_uri=collision_uri)
+    raw_appearance_ref = appearance_ref
+    host_sources = [appearance_ref] if collision_ref == appearance_ref else [appearance_ref, collision_ref]
+    splat_normalization = None
+    if task.get("splat_normalization") is not None:
+        ref = task["splat_normalization"]
+        path = checked_file(ref["path"], ref)
+        splat_normalization = read(path, digest_field="normalization_digest")
+        converted = checked_file(path.parent / splat_normalization["output"]["relative_path"], splat_normalization["output"])
+        appearance_ref = stage.copy(converted, "source/normalized_appearance/normalized.ply",
+            publisher_uri=source_uri(splat_normalization["output"]["sha256"], "normalized.ply"))
+        host_sources.append(appearance_ref)
+    stage.json(RELATIVE_PATH, {"schema_version": INTAKE_SCHEMA,
+        "scene_intent_authority": task["scene_intent_authority"],
+        "source_binding": task["source_binding"], "intent_digest": scene_intent_digest,
+        "artifacts": host_sources})
+    raw_collision_ref = collision_ref
+    normalization_path = checked_file(task["geometry_normalization"]["path"], task["geometry_normalization"])
+    normalization = read(normalization_path, digest_field="normalization_digest")
+    normalized_path = checked_file(normalization_path.parent / normalization["output"]["relative_path"],
+                                   normalization["output"])
+    collision_ref = stage.copy(normalized_path, "geometry/normalized_scene.usda")
+    validation_ref = stage.copy(normalization_path, "geometry/mesh_normalization.v1.json")
     stage.copy(Path(task_request_path), "provenance/completed_task_request.v1.json")
     manifest = {"schema_version": "task_evaluation_completed_scene_source_manifest.v1",
         "status": "candidate_source_bytes_retained", "scene_id": scene_id,
@@ -200,14 +213,27 @@ def materialize_completed_scene_submission(
             "physical_metrology_claimed": False},
         "artifacts": [
             {"role": "owner_appearance_source", "kind": task["appearance_kind"],
-             "sha256": appearance_ref["digest"], "size_bytes": appearance_ref["size_bytes"]},
+             "sha256": raw_appearance_ref["digest"], "size_bytes": raw_appearance_ref["size_bytes"]},
             {"role": "owner_collision_source", "kind": "collision_mesh",
+             "sha256": raw_collision_ref["digest"], "size_bytes": raw_collision_ref["size_bytes"]},
+            {"role": "normalized_owner_collision", "kind": "collision_mesh",
              "sha256": collision_ref["digest"], "size_bytes": collision_ref["size_bytes"]}],
         "source_task_object": {"source_object_id": subject["source_object_id"],
+            "runtime_prim_path": subject["runtime_prim_path"],
             "source_aabb_min_xyz_m": lower, "source_aabb_max_xyz_m": upper},
         "source_support_object": {"source_object_id": support["source_object_id"],
+            "runtime_prim_path": support["runtime_prim_path"],
             "aabb_min_xyz_m": [float(v) for v in support["aabb_min_xyz_m"]],
             "aabb_max_xyz_m": [float(v) for v in support["aabb_max_xyz_m"]]}}
+    manifest["artifacts"][0].update(provider_upload_allowed=False,
+        splat_count=binding["inspection"].get("appearance", {}).get("retained_gaussian_count"))
+    manifest["runtime_appearance_role"] = "owner_appearance_source"
+    if splat_normalization is not None:
+        manifest["runtime_appearance_role"] = "normalized_owner_appearance"
+        manifest["appearance_normalization"] = splat_normalization
+        manifest["artifacts"].append({"role": "normalized_owner_appearance",
+            "sha256": appearance_ref["digest"], "size_bytes": appearance_ref["size_bytes"],
+            "splat_count": splat_normalization["retained_gaussian_count"], "provider_upload_allowed": False})
     manifest_ref = stage.json("scene/source_scene_manifest.v1.json", manifest)
 
     rights = _rights_admission(scene_id, owner, human_authority, binding["source_content_digest"],
@@ -219,14 +245,8 @@ def materialize_completed_scene_submission(
                      task.get("collision_rights_reference")))
     source_object_ref = stage.json("configuration/source_object_selection.v1.json",
                                    _source_object(scene_id, subject, label))
-    validation_ref = stage.json("configuration/geometry_validation_plan.v1.json",
-        _plan("task_evaluation_completed_scene_geometry_validation_plan.v1", scene_id=scene_id,
-              collision_source_digest=collision_ref["digest"], collision_geometry_qualified=False,
-              subject_prim_path=subject["source_object_id"], support_prim_path=support["source_object_id"],
-              declared_meters_per_unit=frame["declared_meters_per_unit"],
-              declared_up_axis=frame["declared_up_axis"], physical_registration_proven=False))
     renderer_ref = stage.json("configuration/renderer_qualification_plan.v1.json",
-        _plan("task_evaluation_completed_scene_renderer_qualification_plan.v1",
+        _plan("task_evaluation_renderer_qualification_plan.v1",
               appearance_source="owner_provided_completed_asset", appearance_kind=task["appearance_kind"],
               browser_preview_qualifies=False, appearance_qualified=False,
               required_bindings=["renderer_name", "renderer_version", "environment_digest", "camera_pose",
@@ -262,14 +282,11 @@ def materialize_completed_scene_submission(
     camera_ref = stage.json("configuration/camera_calibration_plan.v1.json",
         records.camera_calibration_plan(scene_id=scene_id, strategy="pick_and_place"))
 
-    static_ref = stage.json("configuration/destination_static_qualification_plan.v1.json",
-        _plan("task_evaluation_completed_scene_destination_static_qualification_plan.v1", scene_id=scene_id,
-              destination_identity=dict(task["destination"]["identity"]),
-              relation=task["destination"]["relation"],
-              placement_support_prim_paths=[support["source_object_id"]],
-              statically_qualified=False, native_import_qualified=False, placement_qualified=False))
+    destination_refs = {key: stage.copy(path, f"destination/{key}{path.suffix}")
+                        for key, path in destination_paths.items()}
+    destination_result_ref = stage.copy(destination_result_path, "destination/simready_result.v1.json")
     native_probe = {"schema_version": "task_evaluation_rigid_destination_native_probe_configuration.v1",
-        "placement_support_scene_prim_paths": [support["source_object_id"]],
+        "placement_support_scene_prim_paths": [support["runtime_prim_path"]],
         "qualification_limits": {"maximum_penetration_m": 0.005, "minimum_support_contact_force_n": 0.05,
             "maximum_forbidden_contact_force_n": 5.0, "settle_translation_tolerance_m": 0.01,
             "settle_rotation_tolerance_rad": 0.08, "reset_translation_tolerance_m": 0.005,
@@ -280,9 +297,14 @@ def materialize_completed_scene_submission(
     definition_ref = stage.json("configuration/task_template.v1.json", template)
     success_ref = stage.json("configuration/task_success_criteria.v1.json", success)
     execution_ref = stage.json("configuration/task_execution_spec.v1.json", execution)
-    recipe = _recipe(run_id=run_id, task=task, source_manifest_digest=manifest_ref["digest"],
-                     rights_admission_digest=rights_ref["digest"], collision_digest=collision_ref["digest"],
-                     appearance_digest=appearance_ref["digest"])
+    from .task_evaluation_completed_scene_recipe import construction_recipe, stage_configurations
+    configurations = stage_configurations(task=task, collision_digest=collision_ref["digest"])
+    config_refs = [stage.json(f"configuration/stage_{i + 1}.v1.json", value)
+                   for i, value in enumerate(configurations)]
+    recipe = construction_recipe(run_id=run_id, task=task, source_manifest_digest=manifest_ref["digest"],
+        rights_admission_digest=rights_ref["digest"], configurations=config_refs,
+        supplemental_destination={"identity": destination_identity, "relation": task["destination"]["relation"],
+            **destination_refs, "simready_result": destination_result_ref})
     recipe_ref = stage.json("configuration/scene_construction_recipe.v1.json", recipe)
     release = records.exact_production_release_binding(
         team_namespace=team, scene_identity=task["scene_identity"], source_commit=commit,
@@ -319,10 +341,10 @@ def materialize_completed_scene_submission(
                         "rights_admission": rights_ref, "provider_disclosure_allowed": True},
             "definition": definition_ref, "success_criteria": success_ref, "execution": execution_ref,
             "destination": {"schema_version": "task_evaluation_rigid_destination_asset.v1",
-                "identity": task["destination"]["identity"], "relation": task["destination"]["relation"],
-                "visible_label": task["destination"]["visible_label"], "asset": collision_ref,
-                "rights_admission": rights_ref, "static_qualification": static_ref,
-                "pose_world": {"position_world_m": target,
+                "identity": destination_identity, "relation": task["destination"]["relation"],
+                "visible_label": task["destination"]["visible_label"],
+                **{key: destination_refs[key] for key in ("asset", "rights_admission", "static_qualification")},
+                "pose_world": {"position_world_m": task["destination"]["position_world_m"],
                                "orientation_xyzw": [float(v) for v in task["destination"]["orientation_xyzw"]]},
                 "native_probe": native_probe, "provider_disclosure_allowed": True}},
         "sensors": {"configuration": camera_ref},
@@ -341,6 +363,10 @@ def materialize_completed_scene_submission(
         "publication": {"input_namespace": namespace, "service_account_readback_required": True},
         "spend": records.spend_block()}
     validate_launch_preparation_request(request)
+    from .task_evaluation_scene_configuration_stage_configuration import validate_immutable_stage_configurations
+    validate_immutable_stage_configurations(envelope={"request": request, "recipe": recipe,
+        "materialized_references": stage.reference_rows(request)},
+        configurations={f"stage-{i + 1}": value for i, value in enumerate(configurations)})
     for row in stage.reference_rows(request):
         checked_file(Path(row["materialized_path"]), {"sha256": row["digest"], "size_bytes": row["size_bytes"]})
     stage.json("scene_configuration_preparation_request.v1.json", request)

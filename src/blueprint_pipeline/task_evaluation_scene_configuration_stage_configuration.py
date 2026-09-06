@@ -219,6 +219,9 @@ def stage_one_gaussian_inputs_refusal(configuration: Mapping[str, Any]) -> str |
 def _stage_one_refusal(
     configuration: Mapping[str, Any], envelope: Mapping[str, Any]
 ) -> str | None:
+    if configuration.get("schema_version") == "task_evaluation_provided_mesh_appearance_excision.v1":
+        from .task_evaluation_completed_scene_adapters import mesh_appearance_configuration_refusal
+        return mesh_appearance_configuration_refusal(configuration, envelope)
     source_object = configuration.get("source_object")
     required_views = configuration.get("required_views")
     disclosure = configuration.get("provider_disclosure")

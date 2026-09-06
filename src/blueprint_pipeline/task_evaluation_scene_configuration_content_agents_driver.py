@@ -203,6 +203,15 @@ def _normalize_candidate(source: Path, destination: Path) -> dict[str, Any]:
     asset = stage.GetPrimAtPath("/Asset")
     geometry = stage.GetPrimAtPath("/Asset/Geometry")
     visual = stage.GetPrimAtPath("/Asset/Geometry/Visual")
+    for prim in Usd.PrimRange(visual):
+        for prop in (*prim.GetRelationships(), *prim.GetAttributes()):
+            relation = isinstance(prop, Usd.Relationship)
+            targets = prop.GetTargets() if relation else prop.GetConnections()
+            if targets:
+                remapped = [target.ReplacePrefix(Sdf.Path("/Root/SourceObjectCandidate"), visual.GetPath())
+                            if target.HasPrefix(Sdf.Path("/Root/SourceObjectCandidate")) else target
+                            for target in targets]
+                prop.SetTargets(remapped) if relation else prop.SetConnections(remapped)
     meshes = [prim for prim in Usd.PrimRange(visual) if prim.IsA(UsdGeom.Mesh)]
     if (
         not asset.IsValid()

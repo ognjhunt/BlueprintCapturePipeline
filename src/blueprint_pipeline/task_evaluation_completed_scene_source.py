@@ -99,6 +99,8 @@ def bind_completed_scene_source(*, intent, config):
         "binding_id": source["binding_id"], "source_content_digest": source["content_digest"],
         "intent_digest": intent["intent_digest"], "owner": owner, "source_kind": source["kind"],
         "task_digest": intent["task_content_digest"], "references": references, "inspection": reports,
+        "source_filenames": {"primary": primary_asset["source_original_filename"],
+                             "collision": collision["source_original_filename"]},
         "object_bindings": selected, "coordinate_frame": frame,
         "status": "needs_input" if blockers else "source_task_objects_bound", "blockers": blockers,
         "physical_scale_measured": False, "physical_registration_proven": False,

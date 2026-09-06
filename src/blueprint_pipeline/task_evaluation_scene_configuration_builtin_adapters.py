@@ -212,7 +212,7 @@ def _extract_source_candidate_subtree(
     """Retain the exact SAGE target as candidate geometry before excision."""
 
     try:
-        from pxr import Sdf, Usd, UsdGeom
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
     except ImportError as exc:  # pragma: no cover - production image owns USD
         raise TaskEvaluationSceneConfigurationAdapterError(
             "sage_source_candidate_usd_runtime_missing"
@@ -252,6 +252,43 @@ def _extract_source_candidate_subtree(
         candidate, UsdGeom.GetStageMetersPerUnit(stage)
     )
     UsdGeom.SetStageUpAxis(candidate, UsdGeom.GetStageUpAxis(stage))
+    copied_root = candidate.GetPrimAtPath("/Root/SourceObjectCandidate")
+    parent = prim.GetParent()
+    parent_transform = (UsdGeom.XformCache().GetLocalToWorldTransform(parent)
+                        if not parent.IsPseudoRoot() else Gf.Matrix4d(1))
+    if parent_transform != Gf.Matrix4d(1):
+        transform = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
+        xform = UsdGeom.Xformable(copied_root)
+        xform.ClearXformOpOrder()
+        xform.AddTransformOp(opSuffix="blueprintSourceWorld").Set(transform)
+    # A material may live beside the source mesh, outside its subtree. Carry
+    # exactly its bound internal shader graph so completed input appearance is
+    # not replaced by an unbound default material during extraction.
+    remaps = [(prim.GetPath(), copied_root.GetPath())]
+    materials = {}
+    for source_prim in Usd.PrimRange(prim):
+        material, _ = UsdShade.MaterialBindingAPI(source_prim).ComputeBoundMaterial()
+        if material and not material.GetPath().HasPrefix(prim.GetPath()):
+            materials[str(material.GetPath())] = material.GetPath()
+    for index, material_path in enumerate(sorted(materials.values())):
+        target_path = copied_root.GetPath().AppendPath(f"BlueprintSourceLooks/material_{index:04d}")
+        UsdGeom.Scope.Define(candidate, target_path.GetParentPath())
+        if not Sdf.CopySpec(flattened, material_path, candidate.GetRootLayer(), target_path):
+            raise TaskEvaluationSceneConfigurationAdapterError("source_candidate_material_copy_failed")
+        remaps.append((material_path, target_path))
+    for copied in Usd.PrimRange(copied_root):
+        for prop in (*copied.GetRelationships(), *copied.GetAttributes()):
+            relation = isinstance(prop, Usd.Relationship)
+            targets = prop.GetTargets() if relation else prop.GetConnections()
+            remapped = []
+            for target in targets:
+                for old, new in remaps:
+                    if target.HasPrefix(old):
+                        target = target.ReplacePrefix(old, new)
+                        break
+                remapped.append(target)
+            if targets:
+                prop.SetTargets(remapped) if relation else prop.SetConnections(remapped)
     candidate.GetRootLayer().Save()
     digest, size = _sha256_and_size(output_path)
     return {
@@ -1781,6 +1818,14 @@ def builtin_scene_configuration_adapter_handlers(
         for identity in ADMITTED_STAGE_ADAPTER_IDENTITIES
         if identity.adapter_id == "simready_native_import_qualification"
     )
+    from .task_evaluation_completed_scene_adapters import (
+        execute_provided_mesh_appearance, execute_provided_mesh_authoring,
+    )
+    completed = {identity: (execute_provided_mesh_appearance
+                            if identity.adapter_id == "provided_mesh_appearance_excision"
+                            else execute_provided_mesh_authoring)
+                 for identity in ADMITTED_STAGE_ADAPTER_IDENTITIES
+                 if identity.adapter_id in {"provided_mesh_appearance_excision", "provided_mesh_rigid_authoring"}}
     return {
         artifixer_identity: execute_artifixer3d_observed_object_removal,
         sage_identity: execute_sage_exact_prim_excision,
@@ -1788,6 +1833,7 @@ def builtin_scene_configuration_adapter_handlers(
         static_identity: execute_simready_static_rigid_qualification,
         native_import_identity: execute_simready_native_import_qualification,
         assembly_identity: execute_native_task_scene_assembly,
+        **completed,
     }
 
 

@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_scene_configuration_disclosure import (
+    MESH_INPUT_STATUS,
     PENDING_PROVIDER_RENDER_STATUS,
     RENDER_INPUT_STATUSES,
     render_inputs_disclosure_is_coherent,
@@ -140,7 +141,8 @@ def _provider_reference_suffix(row: Mapping[str, Any], *, source: Path) -> str:
     guessing from bytes or from a mutable local path.
     """
 
-    if row.get("contract_path") != _COLLISION_REFERENCE_CONTRACT_PATH:
+    contract_path = row.get("contract_path")
+    if contract_path not in {_COLLISION_REFERENCE_CONTRACT_PATH, "task.destination.asset"}:
         return source.suffix
     try:
         suffix = Path(urlsplit(str(row.get("uri") or "")).path).suffix.lower()
@@ -148,7 +150,8 @@ def _provider_reference_suffix(row: Mapping[str, Any], *, source: Path) -> str:
         raise TaskEvaluationSceneConfigurationBundleError(
             "scene_configuration_bundle_collision_reference_format_invalid"
         ) from exc
-    if suffix not in _OPENUSD_REFERENCE_SUFFIXES:
+    allowed = _OPENUSD_REFERENCE_SUFFIXES | ({".usdz"} if contract_path == "task.destination.asset" else set())
+    if suffix not in allowed:
         raise TaskEvaluationSceneConfigurationBundleError(
             "scene_configuration_bundle_collision_reference_format_invalid"
         )
@@ -278,6 +281,14 @@ def _portable_render_inputs(
 ) -> dict[str, Any]:
     portable = json.loads(json.dumps(dict(render)))
     source_result_digest = str(portable.get("result_digest") or "")
+    if render.get("status") == MESH_INPUT_STATUS:
+        source = _bound_file(render["derived_visual_geometry"], code="scene_configuration_mesh_input_invalid")
+        target = runtime / "input/render/normalized_visual_geometry.usda"
+        _copy_file(source, target)
+        portable["derived_visual_geometry"]["path"] = target.relative_to(runtime).as_posix()
+        portable["control_plane_result_digest"] = source_result_digest
+        portable["result_digest"] = canonical_digest(portable, digest_field="result_digest")
+        return portable
     calibration = _bound_file(render["camera_calibration"], code="scene_configuration_render_input_invalid")
     calibration_target = runtime / "input/render/cameras.json"
     _copy_file(calibration, calibration_target)
@@ -953,7 +964,8 @@ def build_scene_configuration_provider_bundle(
     portable["provider_disclosure_receipt"] = {
         "raw_interiorgs_reference_count_omitted": 0 if provider_render else len(raw_paths),
         "raw_interiorgs_bytes_in_provider_bundle": provider_render,
-        "derived_rendered_views_in_provider_bundle": not provider_render,
+        "derived_rendered_views_in_provider_bundle": not provider_render and render_inputs.get("status") != MESH_INPUT_STATUS,
+        "derived_visual_geometry_in_provider_bundle": render_inputs.get("status") == MESH_INPUT_STATUS,
         "render_execution_site": render_inputs.get("render_execution_site")
         or "control_plane",
         "disclosure_decision_digest": (
