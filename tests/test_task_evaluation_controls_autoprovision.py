@@ -261,3 +261,12 @@ def test_activation_filter_allows_other_scene(tmp_path, monkeypatch):
         standing_authorization_dir=tmp_path / "authorizations", blocked_scene_keys={(TEAM, SCENE_ID, TASK_ID)})
     assert observed == ["other-scene"]
     assert rows[0]["blockers"] == ["scene_configuration_owner_authority_refused"]
+
+
+def test_scene_intent_uses_cross_runtime_number_encoding(tmp_path, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+    monkeypatch.setattr(intake, "canonical_digest", cross_runtime_canonical_digest)
+    kwargs = setup(tmp_path, cap=20.0)
+    receipt = worker.provision_link(**kwargs)
+    assert receipt["status"] == "installed"
+    assert worker.provision_link(**kwargs) == receipt
