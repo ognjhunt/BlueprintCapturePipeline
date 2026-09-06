@@ -21,6 +21,7 @@ from blueprint_pipeline.task_evaluation_policy_canary_preparation_dispatch impor
 from blueprint_pipeline.task_evaluation_policy_canary_setup import (
     validate_policy_canary_setup,
 )
+from blueprint_pipeline import task_evaluation_scene_policy_binding as scene_policy
 
 
 def attach_internal_policy_canary_setup(
@@ -80,8 +81,7 @@ def materialize_policy_canary_launch_profile(
         "materialization_digest",
     }
     if (
-        set(wrapper)
-        not in (expected_wrapper_fields, expected_wrapper_fields | {"scene_id"})
+        set(wrapper) - {"scene_id", "scene_attempt_binding"} != expected_wrapper_fields
         or wrapper.get("schema_version")
         != "task_evaluation_policy_canary_profile_materialization_input.v1"
         or wrapper.get("materialization_digest")
@@ -119,6 +119,17 @@ def materialize_policy_canary_launch_profile(
             "policy_run_setup": plan["legacy_policy_run_setup"],
         }
     )
+    binding = plan.get("scene_policy_binding")
+    if base.get("scene_intent_digest") is not None or binding is not None:
+        if not isinstance(binding, Mapping) or not isinstance(wrapper.get("scene_attempt_binding"), Mapping):
+            raise ValueError("scene_policy_profile_binding_missing")
+        scene_policy.validate_owner_binding(base, binding, source_commit=wrapper["source_commit"])
+        output.update(scene_intent_digest=binding["scene_intent_digest"],
+            scene_attempt_id=binding["attempt_id"], scene_policy_candidates=binding["policy_candidates"],
+            scene_attempt_binding=wrapper["scene_attempt_binding"])
+        blockers = scene_policy.profile_binding_blockers(output)
+        if blockers:
+            raise ValueError(",".join(blockers))
     resource = plan["resource_authority"]
     output["allocator"] = {
         "entrypoint": "python -m blueprint_pipeline.paid_resource_allocator gpu-canary",

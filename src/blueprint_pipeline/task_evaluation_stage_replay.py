@@ -455,7 +455,13 @@ def replay_parent(
         sam31_ready=boundary,
     )
     result_path = scratch_queue / "results" / located.envelope_path.name
-    admission = replay_next_consumers(result_path=result_path, queue_root=scratch_queue) if result_path.is_file() else []
+    # Only a queued parent is read by the next consumers; a blocked or boundary row would just
+    # report the missing materialized envelope.
+    queued = str(row.get("status")) == "queued_for_production_scene_configuration"
+    admission = (
+        replay_next_consumers(result_path=result_path, queue_root=scratch_queue)
+        if queued and result_path.is_file() else []
+    )
     report.update(
         next_consumer_admission=admission,
         next_consumers_admitted=bool(admission) and all(row["status"] == "accepted" for row in admission),
@@ -496,6 +502,50 @@ def replay_next_consumers(*, result_path: Path, queue_root: Path) -> list[dict[s
             row["fired_predicates"] = [p for e in outcome["explanations"] for p in e["fired"]]
         rows.append(row)
     return rows
+
+
+PARENT_UNIT = "blueprint-task-evaluation-launch-preparation.service"
+CHILD_UNIT = "blueprint-task-evaluation-sam31-preparation-execution.service"
+_EXECUTE_GATE_PREFIX = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE"
+
+
+def default_unit_for(*, parent: bool) -> str:
+    """The production unit whose environment a replay of this kind should run under."""
+
+    return PARENT_UNIT if parent else CHILD_UNIT
+
+
+def _systemctl_show(unit: str) -> str:
+    completed = subprocess.run(  # nosec B603 - fixed binary, unit name from the CLI
+        ["systemctl", "show", unit, "-p", "EnvironmentFiles", "-p", "Environment", "--no-pager"],
+        check=False, capture_output=True, text=True,
+    )
+    return completed.stdout if completed.returncode == 0 else ""
+
+
+def unit_environment(
+    unit: str, *, show: Callable[[str], str] = _systemctl_show
+) -> tuple[list[str], dict[str, str]]:
+    """The unit's EnvironmentFiles and Environment, minus the execute gates.
+
+    Production binds per-scene state (the SAM profile, installed-source bindings) to a unit
+    through drop-ins; an isolated replay that reads only the shared env files runs without
+    them and refuses for reasons production never sees.  Execute gates stay behind: a replay
+    never launches.
+    """
+
+    files: list[str] = []
+    environment: dict[str, str] = {}
+    for line in show(unit).splitlines():
+        key, _, value = line.partition("=")
+        if key == "EnvironmentFiles" and value.strip():
+            files.append(value.split(" (", 1)[0].strip())
+        elif key == "Environment":
+            for item in value.split():
+                name, _, item_value = item.partition("=")
+                if name and not name.startswith(_EXECUTE_GATE_PREFIX):
+                    environment[name] = item_value
+    return files, environment
 
 
 def isolation_command(
@@ -543,6 +593,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--isolate", action="store_true", help="re-run under systemd-run as --user with PrivateNetwork=yes")
     parser.add_argument("--user", default="blueprint")
     parser.add_argument("--environment-file", action="append", default=list(DEFAULT_ENVIRONMENT_FILES))
+    parser.add_argument("--unit", default=None,
+                        help="production unit whose EnvironmentFiles and Environment the isolated run takes")
+    parser.add_argument("--no-unit-environment", action="store_true", help="isolate with the --environment-file list only")
     parser.add_argument("--json-out", default=None)
     return parser
 
@@ -567,8 +620,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.json_out:
             inner.extend(["--json-out", args.json_out])
         environment = {"PYTHONPATH": os.environ.get("PYTHONPATH", "")} if os.environ.get("PYTHONPATH") else {}
+        files = list(args.environment_file)
+        if not args.no_unit_environment:
+            unit_files, unit_env = unit_environment(args.unit or default_unit_for(parent=bool(args.parent)))
+            files.extend(path for path in unit_files if path not in files)
+            environment = {**unit_env, **environment}
         completed = subprocess.run(
-            isolation_command(inner, user=args.user, environment_files=args.environment_file, environment=environment),
+            isolation_command(inner, user=args.user, environment_files=files, environment=environment),
             check=False,
         )
         return completed.returncode
@@ -633,7 +691,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     return {"completed": 0, "waiting": 3}.get(str(report.get("status")), 2)
 
 
-__all__ = ["LocatedChild", "LocatedParent", "ReplayBoundary", "discover_input_root", "discover_server_profile", "envelope_uri_prefixes", "locate_parent", "replay_next_consumers", "replay_parent", "isolation_command", "locate_child", "main", "replay_child"]
+__all__ = ["LocatedChild", "LocatedParent", "ReplayBoundary", "discover_input_root", "default_unit_for", "discover_server_profile", "envelope_uri_prefixes", "locate_parent", "replay_next_consumers", "replay_parent", "unit_environment", "isolation_command", "locate_child", "main", "replay_child"]
 
 if __name__ == "__main__":
     raise SystemExit(main())

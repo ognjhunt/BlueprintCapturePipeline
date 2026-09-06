@@ -354,6 +354,12 @@ def validate_sam31_ai_visual_review_rights(
         code="sam31_ai_review_rights_attestation_invalid",
     )
     overlay_sha256 = sorted(str(row["overlay_sha256"]) for row in frame_inventory)
+    scene_owner = rights.get("scene_owner_authority") is not None
+    if scene_owner:
+        from .task_evaluation_sam31_preparation_review_authority import validate_scene_review_binding
+        validate_scene_review_binding(rights["scene_owner_authority"], candidate_path=candidate_file,
+            accepted_by=rights.get("accepted_by"), accepted_on=rights.get("accepted_on"),
+            human_authority_reference=rights.get("human_authority_reference"))
     if (
         rights.get("schema_version") != AI_RIGHTS_SCHEMA_VERSION
         or rights.get("status") != "accepted_for_private_derived_visual_review"
@@ -391,7 +397,7 @@ def validate_sam31_ai_visual_review_rights(
         or rights.get("max_inference_spend_usd") != AI_REVIEW_MAX_COST_USD
         or rights.get("agent_accepted_terms") is not False
         or rights.get("issued_by_agent") is not False
-        or rights.get("accepted_by") != AI_REVIEW_ACCEPTED_BY
+        or (not scene_owner and rights.get("accepted_by") != AI_REVIEW_ACCEPTED_BY)
         or not str(rights.get("accepted_on") or "").strip()
         or not str(rights.get("human_authority_reference") or "").strip()
     ):
@@ -406,6 +412,7 @@ def materialize_sam31_ai_visual_review_rights(
     accepted_on: str,
     human_authority_reference: str,
     output_path: str | Path,
+    scene_owner_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Retain an exact human authorization after the 16 overlays exist."""
 
@@ -416,8 +423,13 @@ def materialize_sam31_ai_visual_review_rights(
         candidate_path=candidate_file
     )
     overlay_sha256 = sorted(str(row["overlay_sha256"]) for row in frame_inventory)
+    if scene_owner_authority is not None:
+        from .task_evaluation_sam31_preparation_review_authority import validate_scene_review_binding
+        validate_scene_review_binding(scene_owner_authority, candidate_path=candidate_file,
+            accepted_by=accepted_by, accepted_on=accepted_on,
+            human_authority_reference=human_authority_reference)
     if (
-        accepted_by != AI_REVIEW_ACCEPTED_BY
+        (scene_owner_authority is None and accepted_by != AI_REVIEW_ACCEPTED_BY)
         or not str(accepted_on).strip()
         or not str(human_authority_reference).strip()
         or len(overlay_sha256) != AI_REVIEW_FRAME_COUNT
@@ -460,6 +472,8 @@ def materialize_sam31_ai_visual_review_rights(
         "human_authority_reference": str(human_authority_reference).strip(),
         "attestation_digest": "",
     }
+    if scene_owner_authority is not None:
+        rights["scene_owner_authority"] = dict(scene_owner_authority)
     rights["attestation_digest"] = canonical_digest(
         rights, digest_field="attestation_digest"
     )

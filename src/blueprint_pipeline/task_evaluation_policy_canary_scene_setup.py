@@ -55,6 +55,7 @@ from .task_evaluation_policy_run_contract import (
     policy_run_setup_digest,
     validate_policy_run_setup,
 )
+from . import task_evaluation_scene_policy_binding as scene_policy
 
 
 SETUP_SCHEMA_VERSION = "task_evaluation_policy_canary_execution_setup.v1"
@@ -537,6 +538,7 @@ def materialize_scene839873_policy_canary_setup(
     activation_lineage: Mapping[str, Any] | None = None,
     activation_authorization: Mapping[str, Any] | None = None,
     scene_id: str = SCENE_ID,
+    scene_policy_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     del (
         activation_release_window_template,
@@ -681,6 +683,18 @@ def materialize_scene839873_policy_canary_setup(
         for row in readiness.get("candidates") or []
         if isinstance(row, Mapping)
     }
+    try:
+        owner = scene_policy.owner_for_profile(profile)
+        if owner is not None:
+            actual = scene_policy.candidate_map([{"id": candidate_id,
+                "artifact_digest": (candidates.get(candidate_id, {}).get("checkpoint") or {}).get("inventory_digest")}
+                for candidate_id in CANDIDATE_IDS])
+            if actual != scene_policy.candidate_map(owner["request"]["execution"]["policy_candidates"]):
+                blockers.append("scene_policy_execution_checkpoint_mismatch")
+        if scene_policy_binding is not None:
+            scene_policy.validate_owner_binding(profile, scene_policy_binding, source_commit=source_commit)
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        blockers.append(str(exc))
     if tuple(candidate for candidate in CANDIDATE_IDS if candidate in candidates) != CANDIDATE_IDS:
         blockers.append("policy_canary_candidate_pair_missing")
     for candidate_id in CANDIDATE_IDS:
@@ -715,6 +729,7 @@ def materialize_scene839873_policy_canary_setup(
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     spec_paths = {}
+    specs = []
     for candidate_id in CANDIDATE_IDS:
         spec = _candidate_spec(
             candidate=candidates[candidate_id],
@@ -722,6 +737,14 @@ def materialize_scene839873_policy_canary_setup(
             scene_plan=scene_plan,
             task_success_contract=task_success_contract,
         )
+        specs.append(spec)
+    if scene_policy_binding is not None:
+        try:
+            scene_policy.validate_execution_specs(specs, scene_policy_binding)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise PolicyCanarySetupError([str(exc)]) from exc
+    for spec in specs:
+        candidate_id = spec["candidate_id"]
         path = destination / f"{candidate_id}.policy_canary_execution_spec.v1.json"
         write_json(path, spec)
         spec_paths[candidate_id] = path
@@ -778,6 +801,21 @@ def materialize_scene839873_policy_canary_setup(
         },
         "scene_promotion_authorized": False,
         "official_ranking_authorized": False,
+        **({"scene_policy_binding": dict(scene_policy_binding)} if scene_policy_binding is not None else {}),
+        **({
+            "scene_intent_digest": scene_policy_binding["scene_intent_digest"],
+            "scene_attempt_id": scene_policy_binding["attempt_id"],
+            "scene_policy_candidates": scene_policy_binding["policy_candidates"],
+            "scene_attempt_binding": {
+                "schema_version": "task_evaluation_scene_attempt_binding.v1",
+                "intent_id": owner["intent_id"],
+                "intent_digest": scene_policy_binding["scene_intent_digest"],
+                "attempt_id": scene_policy_binding["attempt_id"],
+                "source_commit": source_commit,
+                "runtime_digest": scene_policy_binding["runtime_digest"],
+                "input_digest": scene_policy_binding["input_digest"],
+            },
+        } if scene_policy_binding is not None else {}),
         "setup_digest": "",
     }
     setup["setup_digest"] = canonical_digest(setup, digest_field="setup_digest")
@@ -972,7 +1010,12 @@ def materialize_policy_canary_presubmission_setup(
         for index, row in enumerate(quick["cells"])
     ]
     empty_counts = {family: 0 for family in QUICK_FAMILY_COUNTS}
-    as_of = utc_now_iso()
+    try:
+        as_of = scene_policy.stable_presubmission_as_of(
+            profile=_read(launch_profile_path, code="policy_canary_launch_profile_invalid"),
+            source_commit=source_commit, profile_id=profile_id, output_dir=output_dir, as_of=utc_now_iso())
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        raise PolicyCanarySetupError([str(exc)]) from exc
 
     def estimate(*, minimum: float, maximum: float, preset_id: str) -> dict[str, Any]:
         basis = {
@@ -1425,6 +1468,11 @@ def materialize_policy_canary_presubmission_setup(
         configured_base_profile, digest_field="profile_digest"
     ):
         raise PolicyCanarySetupError(["policy_canary_profile_digest_invalid"])
+    try:
+        execution_plan, scene_attempt_binding = scene_policy.bind_execution_plan(
+            profile=configured_base_profile, plan=execution_plan, setup=setup)
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        raise PolicyCanarySetupError([str(exc)]) from exc
     wrapper: dict[str, Any] = {
         "schema_version": PROFILE_INPUT_SCHEMA_VERSION,
         "profile_id": profile_id,
@@ -1437,6 +1485,7 @@ def materialize_policy_canary_presubmission_setup(
         "internal_policy_canary_execution_plan": execution_plan,
         "task_success_contract": deepcopy(setup["task_success_contract"]),
         "task_success_contract_digest": setup["task_success_contract_digest"],
+        **({"scene_attempt_binding": scene_attempt_binding} if scene_attempt_binding is not None else {}),
         "materialization_digest": "",
     }
     wrapper["materialization_digest"] = canonical_digest(
@@ -1478,6 +1527,8 @@ def materialize_policy_canary_presubmission_setup(
         "hard_cap_usd": hard_cap_usd,
         "hard_ttl_seconds": hard_ttl_seconds,
         "profile_materialization_input": _record(wrapper_path),
+        **({"scene_policy_binding": execution_plan["scene_policy_binding"]}
+           if "scene_policy_binding" in execution_plan else {}),
         "provider_mutation_performed": False,
         "paid_execution_requested": False,
         "template_digest": "",
@@ -1553,6 +1604,16 @@ def materialize_scene839873_policy_canary_setup_from_template(
         != canonical_digest(wrapper, digest_field="materialization_digest")
     ):
         raise PolicyCanarySetupError(["policy_canary_profile_materialization_input_invalid"])
+    plan = wrapper.get("internal_policy_canary_execution_plan") or {}
+    binding = plan.get("scene_policy_binding")
+    source_profile = _read(template["launch_profile_path"], code="policy_canary_launch_profile_invalid")
+    if source_profile.get("scene_intent_digest") is not None or binding is not None:
+        if binding is None or template.get("scene_policy_binding") != binding:
+            raise PolicyCanarySetupError(["scene_policy_execution_template_binding_missing"])
+        try:
+            scene_policy.validate_owner_binding(source_profile, binding, source_commit=str(template["source_commit"]))
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            raise PolicyCanarySetupError([str(exc)]) from exc
     if (
         activation_envelope.get("schema_version")
         != "task_evaluation_policy_canary_dispatch_envelope.v1"
@@ -1622,6 +1683,7 @@ def materialize_scene839873_policy_canary_setup_from_template(
         task_success_contract=validated_activation_contract,
         require_confirmed_task_success_contract=True,
         scene_id=str(template.get("scene_id") or SCENE_ID),
+        **({"scene_policy_binding": binding} if binding is not None else {}),
     )
 
 

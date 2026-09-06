@@ -21,6 +21,7 @@ from .task_evaluation_launch_preparation_contract import (
 )
 from .task_evaluation_launch_webapp_sync import sync_launch_receipt_to_webapp
 from .task_evaluation_policy_canary_setup import validate_policy_canary_setup
+from . import task_evaluation_scene_policy_binding as scene_policy
 from .task_evaluation_policy_run_contract import (
     TaskEvaluationPolicyRunContractError,
     expand_policy_run_preparation_request,
@@ -150,7 +151,7 @@ def validate_policy_canary_execution_plan(
         "plan_digest",
     }
     if (
-        set(plan) not in (expected_plan_fields, expected_plan_fields | {"scene_id"})
+        set(plan) - {"scene_id", "scene_policy_binding"} != expected_plan_fields
         or plan.get("schema_version") != PLAN_SCHEMA_VERSION
         or not re.fullmatch(r"[0-9a-f]{40}", str(plan.get("source_commit") or ""))
         or plan.get("configured_source_launch_id") != setup["source_launch_id"]
@@ -188,6 +189,13 @@ def validate_policy_canary_execution_plan(
             "policy_canary_execution_plan_invalid"
         )
     _validate_activation_automation(plan.get("activation_automation"))
+    if "scene_policy_binding" in plan:
+        bound = scene_policy.validate_binding(plan["scene_policy_binding"])
+        scene_policy.validate_setup_pair(setup, bound)
+        runtime, inputs = scene_policy.policy_attempt_identity(plan, bound["policy_candidates"])
+        if (runtime, inputs) != (bound["runtime_digest"], bound["input_digest"]) or set(
+                legacy["candidate_ids"]) != set(scene_policy.candidate_map(bound["policy_candidates"])):
+            raise PolicyCanaryPreparationDispatchError("scene_policy_plan_attempt_identity_mismatch")
     quick = legacy["presets"][0]
     if quick.get("preset_id") != "quick_10" or quick.get("availability") != "enabled":
         raise PolicyCanaryPreparationDispatchError(
@@ -235,7 +243,7 @@ def policy_canary_execution_plan_blockers(profile: Mapping[str, Any]) -> list[st
         != profile.get("configured_source_launch_id")
     ):
         return ["launch_profile_policy_canary_execution_plan_binding_mismatch"]
-    return []
+    return scene_policy.profile_binding_blockers(profile)
 
 
 def _validate_selection(
@@ -383,6 +391,14 @@ def maybe_dispatch_policy_canary_preparation(
             _mapping(profile.get("internal_policy_canary_execution_plan")),
             public_setup=setup,
         )
+        owner_blockers = scene_policy.profile_binding_blockers(profile)
+        if owner_blockers:
+            raise PolicyCanaryPreparationDispatchError(",".join(owner_blockers))
+        if "scene_policy_binding" in plan:
+            scene_policy.validate_owner_binding(profile, plan["scene_policy_binding"],
+                                                 source_commit=plan["source_commit"])
+            scene_policy.validate_requested_interpretation(profile=profile, plan=plan,
+                authority=request.get("episode_interpretation_authority"))
         selection = _validate_selection(request, setup=setup, plan=plan)
         preparation_queue_root = preparation_queue_root or os.getenv(
             "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT"
@@ -423,6 +439,8 @@ def maybe_dispatch_policy_canary_preparation(
             run_id=request["run_id"],
             preparation_id=preparation_id,
         )
+        if "scene_policy_binding" in plan:
+            preparation["scene_intent_digest"] = plan["scene_policy_binding"]["scene_intent_digest"]
         preparation["policy_canary_activation"] = {
             **plan["activation_automation"],
             **(
