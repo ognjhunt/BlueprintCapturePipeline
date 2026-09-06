@@ -290,3 +290,131 @@ def test_scene_intent_uses_cross_runtime_number_encoding(tmp_path, monkeypatch):
     receipt = worker.provision_link(**kwargs)
     assert receipt["status"] == "installed"
     assert worker.provision_link(**kwargs) == receipt
+
+
+# --- Automatic controls provisioning from a configured scene (no hand-authored link) ---
+#
+# provision_configured_scene_controls derives the preparation link from the
+# retained owner intent plus the scene's own preparation envelope, binds it to
+# the ACTIVE deployed release, and provisions+installs the controls intent. No
+# operator ever writes a preparation-link.json, so a controls intent can never
+# be left pinned to a superseded release.
+
+
+def _configured_scene(tmp_path, **kw):
+    """The same real scene + preparation as ``setup`` but with NO hand-authored
+    link on disk: the derivation must reconstruct it from the queue truth."""
+    kwargs = setup(tmp_path, **kw)
+    link_path = kwargs.pop("link_path")
+    kwargs["intent_id"] = link_path.parent.name
+    link_path.unlink()
+    return kwargs
+
+
+def _corrupt_preparation_task_id(kwargs, new_task_id):
+    materialized = kwargs["preparation_queue_root"] / "materialized"
+    results = kwargs["preparation_queue_root"] / "results"
+    intent = json.loads((kwargs["scene_root"] / kwargs["intent_id"] / "intent.json").read_text())
+    for path in list(materialized.glob("*.json")):
+        envelope = json.loads(path.read_text())
+        request = envelope.get("request") or {}
+        if request.get("scene_intent_digest") != intent["intent_digest"]:
+            continue
+        result = json.loads((results / path.name).read_text())
+        request["task"]["identity"]["id"] = new_task_id
+        digest = canonical_digest(request)
+        envelope["request_digest"] = digest
+        envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+        name = request["preparation_id"] + "-" + digest.removeprefix("sha256:") + ".json"
+        path.unlink()
+        (results / path.name).unlink()
+        _write(materialized / name, envelope)
+        _write(results / name, result)
+        return
+    raise AssertionError("no matching preparation envelope for the configured scene")
+
+
+def test_configured_scene_autoprovisions_controls_at_active_release(tmp_path):
+    kwargs = _configured_scene(tmp_path)
+    receipt = worker.provision_configured_scene_controls(**kwargs)
+    assert receipt["status"] == "installed"
+    # The derived controls intent carries the owner's task and the active release.
+    assert receipt["provisioning"]["task_id"] == TASK_ID
+    assert receipt["provisioning"]["expected_production_commit"] == COMMIT
+    installed = json.loads(Path(receipt["installation"]["registry_path"]).read_text())
+    assert installed["intent_digest"] == receipt["provisioning"]["intent_digest"]
+    # No hand-authored link is required or written for the controls decision.
+    assert not (kwargs["scene_root"] / kwargs["intent_id"] / "preparation-link.json").exists()
+    # Idempotent across a worker restart: byte-identical receipt, no new attempts.
+    kwargs["now"] += 60
+    assert worker.provision_configured_scene_controls(**kwargs) == receipt
+    assert len(list((kwargs["scene_root"] / kwargs["intent_id"] / "attempts").glob("*.json"))) == 3
+
+
+def test_configured_scene_against_a_different_release_fails_closed(tmp_path):
+    kwargs = _configured_scene(tmp_path)
+    # The scene's preparation targets COMMIT; the deployed release is different.
+    kwargs["expected_production_commit"] = "d" * 40
+    def unexpected(**_):
+        pytest.fail("producer must not run when the release does not match")
+    kwargs["provisioner"] = unexpected
+    with pytest.raises(ValueError, match="release_mismatch"):
+        worker.provision_configured_scene_controls(**kwargs)
+    assert not (kwargs["scene_root"] / kwargs["intent_id"] / "attempts").exists()
+    assert not kwargs["intent_root"].exists()
+
+
+@pytest.mark.parametrize("mutation,error", [
+    ("revoked", "authority_revoked"),
+    ("expired", "authority_expired"),
+    ("issuer", "owner_intent_invalid"),
+    ("task", "task_mismatch"),
+])
+def test_configured_scene_preserves_owner_authority(tmp_path, mutation, error):
+    kwargs = _configured_scene(tmp_path)
+    directory = kwargs["scene_root"] / kwargs["intent_id"]
+    if mutation == "revoked":
+        _write(directory / "revoked.json", {})
+    elif mutation == "expired":
+        kwargs["now"] += 7201
+    elif mutation == "issuer":
+        kwargs["trusted_clients"] = {"another"}
+    elif mutation == "task":
+        _corrupt_preparation_task_id(kwargs, "someone-elses-task")
+    def unexpected(**_):
+        pytest.fail("producer must not run for an unauthorized request")
+    kwargs["provisioner"] = unexpected
+    with pytest.raises((ValueError, OSError), match=error):
+        worker.provision_configured_scene_controls(**kwargs)
+    assert not (directory / "attempts").exists()
+
+
+def test_configured_scene_waits_until_its_preparation_lands(tmp_path):
+    kwargs = _configured_scene(tmp_path)
+    for sub in ("materialized", "results"):
+        for path in (kwargs["preparation_queue_root"] / sub).glob("*.json"):
+            path.unlink()
+    result = worker.provision_configured_scene_controls(**kwargs)
+    assert result["status"] == "waiting_for_preparation_result"
+    assert not (kwargs["scene_root"] / kwargs["intent_id"] / "attempts").exists()
+
+
+def test_process_config_scopes_a_refused_scene_by_its_identity(tmp_path, monkeypatch):
+    # A per-scene refusal (e.g. a stale-release scene) must stay scoped to its
+    # own (team, scene, task) identity, never a global stop-all.
+    kwargs = _configured_scene(tmp_path)
+    catalog_path = _write(tmp_path / "catalog.json", kwargs["catalog"])
+    config_path = _write(tmp_path / "autoprovision-config.json", {
+        "robot_catalog_path": str(catalog_path), "scene_root": str(kwargs["scene_root"]),
+        "preparation_queue_root": str(kwargs["preparation_queue_root"]),
+        "controls_root": str(kwargs["controls_root"]), "intent_root": str(kwargs["intent_root"]),
+        "profile_dir": str(kwargs["profile_dir"]), "trusted_clients": ["webapp"]})
+
+    def refuse(**_):
+        raise ValueError("controls_autoprovision_authority_expired")
+
+    monkeypatch.setattr(worker, "provision_configured_scene_controls", refuse)
+    rows = worker.process_config(str(config_path), expected_production_commit=COMMIT)
+    assert [row["status"] for row in rows] == ["controls_autoprovision_refused"]
+    assert rows[0]["blocked_scene_key"] == [TEAM, SCENE_ID, TASK_ID]
+    assert "scope_unresolved" not in rows[0]

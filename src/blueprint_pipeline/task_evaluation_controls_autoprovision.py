@@ -137,6 +137,21 @@ def provision_link(*, link_path: Path, scene_root: Path, preparation_queue_root:
     moment = time.time() if now is None else now
     link = validate_preparation_link(_sealed(link_path, "link_digest"))
     _require(link_path.parent == scene_root / link["intent_id"], "link_location_invalid")
+    return _provision_validated_link(link=link, scene_root=scene_root,
+        preparation_queue_root=preparation_queue_root, catalog=catalog, controls_root=controls_root,
+        intent_root=intent_root, profile_dir=profile_dir,
+        expected_production_commit=expected_production_commit, trusted_clients=trusted_clients,
+        now=now, moment=moment, provisioner=provisioner, installer=installer,
+        service_group=service_group)
+
+
+def _provision_validated_link(*, link: Mapping[str, Any], scene_root: Path,
+                   preparation_queue_root: Path, catalog: Mapping[str, Any], controls_root: Path,
+                   intent_root: Path, profile_dir: Path, expected_production_commit: str,
+                   trusted_clients: set[str], now: float | None, moment: float,
+                   provisioner: Callable[..., Mapping[str, Any]] | None,
+                   installer: Callable[..., Mapping[str, Any]] | None,
+                   service_group: str | None) -> dict[str, Any]:
     directory = scene_root / link["intent_id"]
     intent = _scene_intent(directory / "intent.json")
     _require(intent.get("schema_version") == intake.INTENT_SCHEMA and
@@ -267,27 +282,156 @@ def provision_link(*, link_path: Path, scene_root: Path, preparation_queue_root:
         return receipt
 
 
+def _nested_identity_id(value: Any) -> Any:
+    identity = value.get("identity") if isinstance(value, Mapping) else None
+    return identity.get("id") if isinstance(identity, Mapping) else None
+
+
+def _configured_scene_preparation_link(*, intent: Mapping[str, Any], preparation_queue_root: Path,
+                                       expected_production_commit: str) -> dict[str, Any] | None:
+    """Derive the preparation link for a configured scene from queue truth alone.
+
+    Every field is read back from the sealed preparation envelope whose
+    ``scene_intent_digest`` matches this owner intent; the link is bound to the
+    active deployed release and never hand-authored.  A scene whose only
+    preparation targets a different release fails closed
+    (``configured_scene_release_mismatch``); a scene with no preparation yet
+    returns ``None`` so the caller can wait rather than fabricate one.
+    """
+    _require(isinstance(expected_production_commit, str)
+             and intake._COMMIT.fullmatch(expected_production_commit) is not None, "release_identity_invalid")
+    materialized = preparation_queue_root / "materialized"
+    if not materialized.is_dir() or materialized.is_symlink():
+        return None
+    digest = intent["intent_digest"]
+    at_release: list[tuple[Path, Mapping[str, Any], Mapping[str, Any]]] = []
+    other_release = False
+    for path in sorted(materialized.glob("*.json")):
+        if path.is_symlink():
+            continue
+        try:
+            envelope = _json(path)
+        except (ValueError, OSError):
+            continue
+        request = envelope.get("request")
+        if not isinstance(request, Mapping) or request.get("scene_intent_digest") != digest:
+            continue
+        commit = request.get("expected_production_commit")
+        if not (isinstance(commit, str) and intake._COMMIT.fullmatch(commit) is not None):
+            continue
+        if commit != expected_production_commit:
+            other_release = True
+            continue
+        at_release.append((path, envelope, request))
+    if not at_release:
+        # A preparation exists, but only for a superseded release: refuse rather
+        # than leave the controls intent pinned to an older commit.
+        _require(not other_release, "configured_scene_release_mismatch")
+        return None
+    _require(len(at_release) == 1, "configured_scene_preparation_ambiguous")
+    path, envelope, request = at_release[0]
+    request_digest = envelope.get("request_digest")
+    _require(isinstance(request_digest, str) and intake._DIGEST.fullmatch(request_digest) is not None,
+             "configured_scene_preparation_invalid")
+    preparation_id = request.get("preparation_id")
+    result_filename = str(preparation_id) + "-" + request_digest.removeprefix("sha256:") + ".json"
+    _require(path.name == result_filename, "configured_scene_preparation_filename")
+    return build_preparation_link(intent_id=intent["intent_id"], intent_digest=digest,
+        preparation_id=preparation_id, request_digest=request_digest,
+        expected_production_commit=expected_production_commit,
+        team_namespace=request.get("team_namespace"),
+        scene_id=_nested_identity_id(request.get("scene")),
+        task_id=_nested_identity_id(request.get("task")), result_filename=result_filename)
+
+
+def provision_configured_scene_controls(*, intent_id: str, scene_root: Path,
+        preparation_queue_root: Path, catalog: Mapping[str, Any], controls_root: Path,
+        intent_root: Path, profile_dir: Path, expected_production_commit: str,
+        trusted_clients: set[str], now: float | None = None,
+        provisioner: Callable[..., Mapping[str, Any]] | None = None,
+        installer: Callable[..., Mapping[str, Any]] | None = None,
+        service_group: str | None = "blueprint") -> dict[str, Any]:
+    """Automatically provision and install the controls intent for a configured scene.
+
+    The retained owner intent and the scene's own preparation envelope are the
+    only inputs.  The preparation link is derived (never hand-authored) and
+    bound to the ACTIVE deployed release; from there the canonical validated
+    path runs unchanged, so every owner-authority, task-id, release, expiry and
+    consent check is preserved.  It reserves nothing and installs nothing when
+    the release does not match, the inputs are missing, or authority is absent.
+    """
+    moment = time.time() if now is None else now
+    _require(intake._identifier(intent_id), "scene_identity_invalid")
+    directory = scene_root / intent_id
+    _require(not any(p.is_symlink() for p in (directory, *directory.parents)), "scene_root_unsafe")
+    intent = _scene_intent(directory / "intent.json")
+    _require(intent.get("intent_id") == intent_id, "scene_identity_invalid")
+    link = _configured_scene_preparation_link(intent=intent,
+        preparation_queue_root=preparation_queue_root,
+        expected_production_commit=expected_production_commit)
+    if link is None:
+        return {"status": "waiting_for_preparation_result", "intent_id": intent_id}
+    return _provision_validated_link(link=link, scene_root=scene_root,
+        preparation_queue_root=preparation_queue_root, catalog=catalog, controls_root=controls_root,
+        intent_root=intent_root, profile_dir=profile_dir,
+        expected_production_commit=expected_production_commit, trusted_clients=trusted_clients,
+        now=now, moment=moment, provisioner=provisioner, installer=installer,
+        service_group=service_group)
+
+
+def _configured_scene_key(intent_path: Path, preparation_queue_root: Path) -> list[str] | None:
+    """Recover ``[team_namespace, scene_id, task_id]`` for a refused scene from
+    its preparation envelope so the refusal stays scoped to its own identity
+    rather than stopping every scene.  Any release is acceptable here: a
+    stale-release scene must still be scoped, never global."""
+    try:
+        intent = _scene_intent(intent_path)
+        digest = intent["intent_digest"]
+    except (ValueError, OSError, KeyError, TypeError):
+        return None
+    materialized = preparation_queue_root / "materialized"
+    if not materialized.is_dir() or materialized.is_symlink():
+        return None
+    for path in sorted(materialized.glob("*.json")):
+        if path.is_symlink():
+            continue
+        try:
+            request = _json(path).get("request")
+        except (ValueError, OSError):
+            continue
+        if not isinstance(request, Mapping) or request.get("scene_intent_digest") != digest:
+            continue
+        key = [request.get("team_namespace"), _nested_identity_id(request.get("scene")),
+               _nested_identity_id(request.get("task"))]
+        if all(intake._identifier(item) for item in key):
+            return [str(item) for item in key]
+    return None
+
+
 def process_config(config_path: str | Path, *, expected_production_commit: str) -> list[dict[str, Any]]:
     config = _json(Path(config_path))
     catalog = resolve_robot_catalog(_sealed(Path(config["robot_catalog_path"]), "catalog_digest"),
                                     source_commit=expected_production_commit)
     scene_root = Path(config["scene_root"])
+    preparation_queue_root = Path(config["preparation_queue_root"])
     rows = []
-    for link_path in sorted(scene_root.glob("scene-*/preparation-link.json")):
+    for intent_path in sorted(scene_root.glob("scene-*/intent.json")):
+        if intent_path.parent.is_symlink():
+            continue
+        intent_id = intent_path.parent.name
         try:
-            rows.append(provision_link(link_path=link_path, scene_root=scene_root, catalog=catalog,
-                preparation_queue_root=Path(config["preparation_queue_root"]),
+            rows.append(provision_configured_scene_controls(intent_id=intent_id, scene_root=scene_root,
+                catalog=catalog, preparation_queue_root=preparation_queue_root,
                 controls_root=Path(config["controls_root"]), intent_root=Path(config["intent_root"]),
                 profile_dir=Path(config["profile_dir"]), expected_production_commit=expected_production_commit,
                 trusted_clients=set(config["trusted_clients"]), service_group=config.get("service_group", "blueprint")))
         except (ValueError, OSError, KeyError, TypeError, producer.ConfiguredControlsProvisioningError) as exc:
-            row = {"status": "controls_autoprovision_refused", "intent_id": link_path.parent.name,
-                   "blocker": str(exc)}
-            try:
-                link = validate_preparation_link(_sealed(link_path, "link_digest"))
-                row["blocked_scene_key"] = [link[k] for k in ("team_namespace", "scene_id", "task_id")]
-            except (ValueError, OSError, KeyError, TypeError):
-                # Corruption with no recoverable scene scope cannot authorize
+            row = {"status": "controls_autoprovision_refused", "intent_id": intent_id, "blocker": str(exc)}
+            key = _configured_scene_key(intent_path, preparation_queue_root)
+            if key is not None:
+                row["blocked_scene_key"] = key
+            else:
+                # A scene with no recoverable preparation scope cannot authorize
                 # an older installed intent; only this unresolved case stops all.
                 row["scope_unresolved"] = True
             rows.append(row)
