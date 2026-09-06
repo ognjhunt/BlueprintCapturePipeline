@@ -675,3 +675,69 @@ def test_calibrated_input_output_cannot_overwrite_retained_evidence(tmp_path: Pa
             data_root=paths["data"], output_root=paths["output"],
         )
     assert retained.read_text() == '{"status":"retained"}'
+
+
+def _clean_git_repo_for_identity(root: Path) -> Path:
+    """A minimal committed git repo with one tracked file."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "tracked.txt").write_text("content\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "t@e.com"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "T"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
+    return root
+
+
+def test_git_identity_trusts_its_repo_under_suppressed_config_and_foreign_ownership(tmp_path, monkeypatch):
+    """The look-ahead replay runs the SAM CPU stage in-process inside the
+    progression service, whose environment lacks the per-service
+    GIT_CONFIG_KEY=safe.directory drop-ins the SAM service is provisioned with.
+    On the root-owned release worktree git then refuses with dubious ownership
+    -> edit_input_repository_identity_unavailable: a FALSE look-ahead blocker,
+    since the real worker's git is provisioned to trust the repo. _git_identity
+    must trust the specific repo it deliberately inspects, independent of host
+    git config, exactly as the package's other git call sites already do.
+    """
+    import os
+    import re as _re
+    from blueprint_pipeline.public_scene_inpainting_inputs import _git_identity
+
+    repo = _clean_git_repo_for_identity(tmp_path / "release")
+    # Mirror production: system/global git config suppressed, repo owned by
+    # another user (git's own test hook). Only an inline safe.directory saves it.
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+    identity = _git_identity(repo)
+    assert identity["tracked_files_clean"] is True
+    assert _re.fullmatch(r"[0-9a-f]{40}", identity["commit"])
+    assert _re.fullmatch(r"[0-9a-f]{40}", identity["tree"])
+
+
+def test_git_identity_trust_does_not_disable_the_dirty_tracked_file_gate(tmp_path, monkeypatch):
+    import os
+    from blueprint_pipeline.public_scene_inpainting_inputs import (
+        _git_identity, PublicSceneInpaintingInputError,
+    )
+
+    repo = _clean_git_repo_for_identity(tmp_path / "release")
+    (repo / "tracked.txt").write_text("mutated\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+    with pytest.raises(PublicSceneInpaintingInputError) as caught:
+        _git_identity(repo)
+    assert caught.value.codes == ("edit_input_repository_tracked_files_dirty",)
+
+
+def test_git_identity_fails_closed_when_not_a_repository(tmp_path):
+    from blueprint_pipeline.public_scene_inpainting_inputs import (
+        _git_identity, PublicSceneInpaintingInputError,
+    )
+
+    bare = tmp_path / "not-a-repo"
+    bare.mkdir()
+    with pytest.raises(PublicSceneInpaintingInputError) as caught:
+        _git_identity(bare)
+    assert caught.value.codes == ("edit_input_repository_identity_unavailable",)
