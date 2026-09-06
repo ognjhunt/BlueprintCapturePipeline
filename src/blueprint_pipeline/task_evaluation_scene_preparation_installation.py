@@ -190,25 +190,25 @@ def install_scene_preparation(*, bootstrap_path):
         config["public_source_binding_root"] = str(public_binding_root)
         config["machinery_path"] = str(config_root / "task-evaluation-public-scene-machinery.json")
     if bool(bootstrap.get("activation_authorized")):
-        # A3: emit the separately-admitted activation config the service runs as a
-        # second no-spend pass. It shares the preparation config's roots/state but
-        # sets activation_enabled True so _advance_intent provisions the
-        # scene-configuration activation intent the configured-controls worker
-        # consumes. project_spend_current_path is where the project-spend monitor
-        # (capacity/funding) publishes the fresh reconciliation _activation requires;
-        # activation fails closed on a stale/absent pointer (never allocates).
+        # A3: the separately-admitted activation on-ramp. The production progression
+        # timer (blueprint-task-evaluation-scene-progression.service) execs
+        # `task_evaluation_scene_progression --config <THIS file>` directly, so
+        # activation is enabled by setting activation_enabled True on the ONE config
+        # that service reads -- a typed, separately-admitted mode gated by the
+        # owner's --activation-authorized, not a second wrapper pass. _advance_intent
+        # then provisions the scene-configuration activation intent (no allocation)
+        # the configured-controls worker consumes. project_spend_current_path is
+        # where the project-spend monitor (capacity/funding) publishes the fresh
+        # reconciliation _activation requires; activation fails closed on a
+        # stale/absent pointer (never allocates). Off by default -> preparation-only.
         activation_intent_root = inputs / "scene-configuration-activation-intents"
         if not activation_intent_root.exists():
             activation_intent_root.mkdir(parents=True, mode=0o750)
             if os.geteuid() == 0:
                 os.chown(activation_intent_root, account.pw_uid, account.pw_gid)
-        activation_config = {**config, "activation_enabled": True,
-            "activation_intent_root": str(activation_intent_root),
-            "project_spend_current_path": str(state / "scene-project-spend" / "current.json")}
-        activation_config["config_digest"] = canonical_digest(activation_config, digest_field="config_digest")
-        activation_config_path = config_root / "task-evaluation-scene-activation.json"
-        _managed_json(activation_config_path, activation_config, account)
-        config["activation_service_config"] = str(activation_config_path)
+        config["activation_enabled"] = True
+        config["activation_intent_root"] = str(activation_intent_root)
+        config["project_spend_current_path"] = str(state / "scene-project-spend" / "current.json")
     config["config_digest"] = canonical_digest(config, digest_field="config_digest")
     config_path = config_root / "task-evaluation-scene-progression.json"
     _managed_json(config_path, config, account)

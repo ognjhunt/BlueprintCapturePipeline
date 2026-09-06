@@ -24,23 +24,10 @@ def run_preparation_service(*, config_path, now=None):
         storage_pins_root=safe_path(preparation["storage_pins_root"]),
         max_messages=preparation.get("max_messages", 1))
     after = process_scene_intents(config_path=config_path, now=now)
-    # A3: the preparation config is preparation-only (activation_enabled False,
-    # required above). When a SEPARATELY-ADMITTED activation config is installed
-    # (activation authorized by the owner), run a second, sequential activation
-    # pass over the same published intents with that config (activation_enabled
-    # True + activation_intent_root + project_spend_current_path). This is
-    # no-allocation: _activation requires provider_mutation_performed False and a
-    # fresh project-spend reconciliation; the paid GPU dispatch stays gated
-    # downstream. Absent the activation config, the service stays preparation-only.
-    activation = None
-    activation_config = config.get("activation_service_config")
-    if activation_config:
-        activation = process_scene_intents(config_path=safe_path(activation_config), now=now)
     result = {"schema_version": "task_evaluation_scene_preparation_service.v1",
         "status": "processed" if after["results"] else "idle", "source_commit": after["source_commit"],
         "scene_progression": after, "preparation_worker": worker,
-        "scene_configuration_activation": activation,
-        "execution_activation_enabled": activation is not None, "provider_allocation_performed": False}
+        "execution_activation_enabled": False, "provider_allocation_performed": False}
     result["service_digest"] = canonical_digest(result, digest_field="service_digest")
     atomic_json(safe_path(config["service_status_path"]), result)
     return result
