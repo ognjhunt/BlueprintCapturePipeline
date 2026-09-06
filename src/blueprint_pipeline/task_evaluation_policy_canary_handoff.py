@@ -76,13 +76,7 @@ CANARY_HARD_TTL_SECONDS = 9_000
 CANARY_HOURLY_RATE_USD = 0.8
 RELEASE_WINDOW_VALID_SECONDS = 3_600
 NOTIFY_ON = ("completed", "blocked", "cancelled")
-EPISODE_INTERPRETATION = {
-    "enabled": True,
-    "external_disclosure_authorized": True,
-    "provider_training_authorized": False,
-    "public_redistribution_authorized": False,
-    "maximum_cost_usd": 1.5,
-}
+EPISODE_INTERPRETATION = dict(scene_policy.INTERPRETATION_DEFAULT)
 MANIFESTS = {
     "policy_controller_template": (
         "docs/arm_decision_proof_v1/manifests/"

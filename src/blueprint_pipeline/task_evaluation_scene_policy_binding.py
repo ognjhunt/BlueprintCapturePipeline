@@ -17,6 +17,11 @@ from .decision_evidence_contracts import canonical_digest
 from . import task_evaluation_scene_intake as intake
 
 SCHEMA = "task_evaluation_scene_policy_binding.v1"
+INTERPRETATION_DEFAULT = {
+    "enabled": True, "external_disclosure_authorized": True,
+    "provider_training_authorized": False, "public_redistribution_authorized": False,
+    "maximum_cost_usd": 1.5,
+}
 
 
 class ScenePolicyBindingError(ValueError):
@@ -266,6 +271,18 @@ def interpretation_for_owner(*, profile: Mapping[str, Any], plan: Mapping[str, A
                                         "source_commit": plan["source_commit"], "authority": default}),
         input_digest=bound["input_digest"], provider="openai", maximum_spend_usd=default["maximum_cost_usd"])
     return dict(default)
+
+
+def validate_requested_interpretation(*, profile: Mapping[str, Any], plan: Mapping[str, Any],
+                                     authority: Any) -> None:
+    if "scene_intent_digest" not in profile or authority is None:
+        return
+    _require(isinstance(authority, Mapping) and intake._number(authority.get("maximum_cost_usd")) and
+             0 < authority["maximum_cost_usd"] <= INTERPRETATION_DEFAULT["maximum_cost_usd"] and
+             (authority.get("interpreter") or {}).get("provider_id") == "openai",
+             "interpretation_authority_scope_invalid")
+    admitted = interpretation_for_owner(profile=profile, plan=plan, default=INTERPRETATION_DEFAULT)
+    _require(admitted.get("enabled") is True, "interpretation_not_requested")
 
 
 def execution_setup_binding_blockers(setup: Mapping[str, Any],

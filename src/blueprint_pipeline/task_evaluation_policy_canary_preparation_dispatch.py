@@ -397,6 +397,8 @@ def maybe_dispatch_policy_canary_preparation(
         if "scene_policy_binding" in plan:
             scene_policy.validate_owner_binding(profile, plan["scene_policy_binding"],
                                                  source_commit=plan["source_commit"])
+            scene_policy.validate_requested_interpretation(profile=profile, plan=plan,
+                authority=request.get("episode_interpretation_authority"))
         selection = _validate_selection(request, setup=setup, plan=plan)
         preparation_queue_root = preparation_queue_root or os.getenv(
             "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT"

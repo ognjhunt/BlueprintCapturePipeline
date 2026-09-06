@@ -16,6 +16,8 @@ from blueprint_pipeline.adp009d_policy_candidate_admission import EXPECTED_CANDI
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests import test_task_evaluation_policy_canary_handoff as rehearsal
 from tests.test_task_evaluation_scene_intake import request
+from tests.test_task_evaluation_policy_canary_preparation_dispatch import _profile_and_request
+from blueprint_pipeline.task_evaluation_launch_dispatcher import dispatch_launch_request, validate_launch_request
 
 
 def _seal(value, field):
@@ -241,3 +243,54 @@ def test_crash_after_reservation_before_handoff_checkpoint_reuses_same_attempt(t
     _, profile, _ = _run(tmp_path, state)
     assert len(list((owner_dir / "attempts").glob("*.json"))) == 2
     assert profile["internal_policy_canary_setup"]["episode_presets"][0]["estimate"]["as_of"] != "2099-01-01T00:00:00Z"
+
+
+def test_real_dispatch_queues_same_pair_and_owner_digest_without_allocator(tmp_path, monkeypatch):
+    state, _, pair = _owner_scene(tmp_path, monkeypatch)
+    _, profile, _ = _run(tmp_path, state)
+    template_root = tmp_path / "request-template"
+    template_root.mkdir()
+    _, selected = _profile_and_request(template_root)
+    public = profile["internal_policy_canary_setup"]
+    plan = profile["internal_policy_canary_execution_plan"]
+    matrix = public["episode_presets"][0]["matrix"]
+    selected.update({key: profile[key] for key in ("source_bundle", "evaluation_run_spec", "source_commit")})
+    selected.update(launch_profile_id=profile["profile_id"], launch_profile_digest=profile["profile_digest"],
+        source_launch_id=public["source_launch_id"], offering_digest=public["offering_digest"],
+        setup_digest=public["setup_digest"], scene_revision_digest=public["scene_revision_digest"],
+        task_success_contract=public["task_success_contract"], task_success_contract_digest=public["task_success_contract_digest"])
+    selected["episode_plan"].update(variation_matrix_digest=matrix["matrix_digest"],
+        resolved_cells=matrix["cells"], resolved_seeds=[row["seed"] for row in matrix["cells"]])
+    selected["authorization"]["actor"]["id"] = "u1"
+    selected["authorization"]["spend"].update(max_spend_usd=plan["resource_authority"]["hard_cap_usd"],
+        hard_ttl_seconds=plan["resource_authority"]["hard_ttl_seconds"])
+    selected.pop("episode_interpretation_authority")
+    selected.pop("episode_interpretation_source_rights_admission")
+    _seal(selected, "request_digest")
+    assert validate_launch_request(selected) == []
+    profiles = tmp_path / "actual-dispatch-profiles"
+    rehearsal._write(profiles / (profile["profile_id"] + ".json"), profile)
+    selected_path = rehearsal._write(tmp_path / "selected-policy-request.json", selected)
+    queue = tmp_path / "actual-preparation-queue"
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT", str(queue))
+    receipt = dispatch_launch_request(request_path=selected_path, profile_dir=profiles,
+        state_root=tmp_path / "actual-dispatch", execute=True,
+        allocator_runner=lambda argv: pytest.fail("No provider allocator may run during preparation"))
+    assert receipt["status"] == "queued_for_no_spend_preparation", receipt.get("blockers")
+    assert receipt["allocator_invoked"] is False and receipt["provider_mutation_attempted"] is False
+    preparation = json.loads(next((queue / "pending").glob("*.json")).read_text())["request"]
+    assert preparation["scene_intent_digest"] == profile["scene_intent_digest"]
+    assert set(preparation["policy_run_configuration"]["candidate_ids"]) == set(binding.candidate_map(pair))
+
+
+def test_late_interpretation_selection_cannot_bypass_owner_request(tmp_path, monkeypatch):
+    state, _, _ = _owner_scene(tmp_path, monkeypatch)
+    _, profile, _ = _run(tmp_path, state)
+    request = {"run_kind": "internal_policy_canary", "launch_id": "new-policy-request",
+        "run_id": "new-policy-request", "request_digest": "sha256:" + "9" * 64,
+        "episode_interpretation_authority": {"maximum_cost_usd": 1.5, "interpreter": {"provider_id": "openai"}}}
+    receipt = dispatch.maybe_dispatch_policy_canary_preparation(request=request, profile=profile,
+        blockers=[], state_root=tmp_path / "queued-launches", preparation_queue_root=tmp_path / "queue")
+    assert receipt["status"] == "blocked"
+    assert "scene_policy_interpretation_not_requested" in receipt["blockers"]
+    assert not (tmp_path / "queue").exists()
