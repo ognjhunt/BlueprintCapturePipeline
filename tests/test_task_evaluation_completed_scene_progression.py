@@ -174,3 +174,45 @@ def test_completed_asset_produces_a_preparation_queue_row(tmp_path, monkeypatch)
     assert len(rows) == 1, rows
     link = json.loads((intake_root / intent_id / "preparation-link.json").read_text())
     assert link["scene_configuration_attempt"]["path"]
+
+
+def test_owner_task_id_bridges_controls_autoprovision(tmp_path, monkeypatch):
+    """The owner's declared task_id must survive unchanged into the preparation
+    request's task identity and the preparation link, because controls
+    autoprovision requires ``link["task_id"] == owner_intent.task.task_id`` and
+    ``preparation.task.identity.id == link["task_id"]`` simultaneously. A
+    synthesized ``completed-task-<digest>`` identity breaks that bridge.
+    """
+    from blueprint_pipeline.task_evaluation_launch_preparation_queue import (
+        ensure_launch_preparation_queue_root, stage_launch_preparation_request,
+    )
+    queue = tmp_path / "queue"
+    ensure_launch_preparation_queue_root(queue)
+    config_path, intent_id, intake_root, now = _config(tmp_path, monkeypatch, submission_enabled=True,
+        extra={"preparation_queue_root": str(queue), "publication_lock_root": str(tmp_path / "publication-locks")})
+
+    def publish(**kwargs):
+        return dict(status="published_and_read_back", source_commit=kwargs["expected_source_commit"],
+                    raw_source_uploaded=False, provider_allocated=False,
+                    manifest_sha256=record(kwargs["manifest_path"])["sha256"])
+
+    def post(*, request_path, config):
+        req = json.loads(Path(request_path).read_text())
+        stage_launch_preparation_request(value=req, queue_root=queue, submitted_by="test-webapp")
+        return {"schema_version": "task_evaluation_launch_preparation_web_submission_receipt.v1",
+                "status": "submitted", "webapp_request_digest": cross_runtime_canonical_digest(req),
+                "preparation_id": req["preparation_id"], "paid_execution_requested_by_this_tool": False}
+
+    engine.process_scene_intents(config_path=config_path, publisher=publish, submitter=post, now=now)
+
+    directory = intake_root / intent_id
+    intent = json.loads((directory / "intent.json").read_text())
+    owner_task_id = intent["request"]["task"]["task_id"]
+    assert owner_task_id == "book-onto-table"
+
+    link = json.loads((directory / "preparation-link.json").read_text())
+    assert link["task_id"] == owner_task_id, link
+
+    factory = json.loads(Path(state.load_progression(directory, intent)["state"]["factory"]["path"]).read_text())
+    req = json.loads(Path(factory["submission_request"]["path"]).read_text())
+    assert req["task"]["identity"]["id"] == owner_task_id, req["task"]["identity"]
