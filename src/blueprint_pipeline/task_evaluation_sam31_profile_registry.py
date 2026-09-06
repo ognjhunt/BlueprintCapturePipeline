@@ -14,6 +14,17 @@ from .task_evaluation_scene_configuration_submission_inputs import read, require
 
 REGISTRY_ENV = "BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR"
 
+#: One fixed, scene-independent content-addressed registry every control-plane
+#: unit resolves from (``REGISTRY_ENV`` in the base unit files) and the
+#: scene-progression factory / provisioning write into. Placing it under the
+#: shared task-evaluation input root lets the deploy's unit-sandbox installer
+#: create it blueprint-owned and 0750 without a per-scene unit edit, so the
+#: look-ahead admission replay -- which runs in a unit that never received a
+#: per-scene ``PROFILE_ENV`` drop-in -- can still resolve the profile by digest.
+DEFAULT_PROFILE_REGISTRY_ROOT = (
+    "/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry"
+)
+
 
 def resolve_sam31_profile(plan: Mapping[str, Any]) -> Path:
     digest = plan.get("server_profile_sha256")

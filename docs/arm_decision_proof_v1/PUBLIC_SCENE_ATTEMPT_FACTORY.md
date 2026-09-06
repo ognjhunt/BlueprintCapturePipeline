@@ -82,7 +82,11 @@ FILE paths, FlashSplat tree, dependency wheelhouse/manifest, ffmpeg, and the
 calibration site/avoidlist. Secret values are never read or copied.
 
 `profile_registry_root`, `child_queue_root`, `parent_queue_root`, `execution_root`
-and `release_retention_binding_root` locate the existing server services. If the
+and `release_retention_binding_root` locate the existing server services.
+`profile_registry_root` is optional and defaults to the fixed, scene-independent
+content registry (`DEFAULT_PROFILE_REGISTRY_ROOT`,
+`/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry`) that every
+resolver unit reads, so registration is hands-off without a per-scene unit edit. If the
 task names `robot_binding_id`, `robot_catalog` binds the existing controls robot
 catalog; the factory verifies its robot/camera files, runtime digest and release.
 `episode_interpretation` is optional boolean or `{enabled: boolean}` owner consent

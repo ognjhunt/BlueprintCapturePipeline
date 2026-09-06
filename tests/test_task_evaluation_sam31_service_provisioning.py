@@ -127,10 +127,40 @@ def test_cli_installs_both_bindings_and_writes_receipt(configuration, tmp_path, 
         '--openai-api-key-id', configuration['openai_api_key_id'],
         '--environment-root', str(configuration['environment_root']),
         '--systemd-unit-root', str(configuration['systemd_unit_root']),
+        '--profile-registry-root', str(tmp_path/'registry'),
         '--allow-live-agents-sdk', '--receipt-out', str(out),
     ]) == 0
     assert json.loads(out.read_text()) == json.loads(capsys.readouterr().out)
     assert json.loads(out.read_text())['allow_live_agents_sdk'] is True
+    from pathlib import Path
+    assert Path(json.loads(out.read_text())['profile_registry']['path']).is_file()
+
+
+def test_cli_defaults_registry_root_to_the_fixed_content_registry(configuration, tmp_path, monkeypatch):
+    """Hands-off: an operator/deploy provisioning run registers into the one fixed
+    content registry the resolver units read, with no extra flag; an empty value
+    opts out. The library function keeps its no-registration default untouched."""
+    from blueprint_pipeline.task_evaluation_sam31_profile_registry import DEFAULT_PROFILE_REGISTRY_ROOT
+
+    seen = {}
+    def stub(**kwargs):
+        seen.update(kwargs)
+        return {"schema_version": module.SCHEMA, "status": "installed"}
+    monkeypatch.setattr(module, "provision_sam31_service_environment", stub)
+    monkeypatch.setattr(module, "_atomic_write", lambda *a, **k: None)
+    base = [
+        '--profile', str(configuration['profile_path']),
+        '--expected-source-commit', configuration['expected_source_commit'],
+        '--openai-api-key-file', str(configuration['openai_api_key_file']),
+        '--openai-api-key-id', configuration['openai_api_key_id'],
+        '--environment-root', str(configuration['environment_root']),
+        '--systemd-unit-root', str(configuration['systemd_unit_root']),
+        '--receipt-out', str(tmp_path/'receipt.json'),
+    ]
+    assert module.main(base) == 0
+    assert seen['profile_registry_root'] == DEFAULT_PROFILE_REGISTRY_ROOT
+    assert module.main(base + ['--profile-registry-root', '']) == 0
+    assert seen['profile_registry_root'] is None
 
 
 def test_exact_git_trust_handles_other_owner_and_restores_environment(configuration, monkeypatch):

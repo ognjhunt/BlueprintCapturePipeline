@@ -36,6 +36,7 @@ ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/sam31-preparations
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/watchdog-cgroup-cleanup
 ReadWritePaths=/var/lib/blueprint/spend-authority
+ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 TasksMax=512
 LimitNOFILE=4096
 MemoryMax=8G
@@ -45,6 +46,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-eva
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
 Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true
+Environment=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env
 WorkingDirectory=/
