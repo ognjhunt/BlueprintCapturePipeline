@@ -47,6 +47,14 @@ def validate_recovery_evidence(evidence, *, prior_attempt, provider, now):
     require(producer.get("status") in {"failed", "blocked", "refused"}
             and producer.get("allocation_created") is not True,
             "scene_recovery_producer_not_failed")
+    blockers = [str(b) for b in producer.get("blockers", [])]
+    blockers.append(str(producer.get("blocker") or ""))
+    create_evidence = (producer.get("allocation_created") is False
+                       or producer.get("allocation_outcome_ambiguous") is True
+                       or any(marker in blocker for blocker in blockers for marker in (
+                           "create_outcome_ambiguous", "create_refused", "create_rejected",
+                           "create_returned_null", "started_without_terminal_reconciliation")))
+    require(create_evidence, "scene_recovery_create_failure_evidence_missing")
     from .task_evaluation_launch_reconciler import _guard_provider_zero
     zero, blockers = _guard_provider_zero(
         guard=values["provider_guard"], required_providers=[provider], max_age_seconds=300,

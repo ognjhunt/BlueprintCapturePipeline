@@ -90,6 +90,16 @@ def test_zero_retry_consent_cannot_be_bypassed_by_paid_attempt_capacity(tmp_path
         recover(tmp_path, intent, evidence)
 
 
+def test_unrelated_scientific_failure_cannot_be_relabeled_as_create_refusal(tmp_path):
+    intent, _, evidence = setup(tmp_path)
+    producer = write(tmp_path / "producer.json", {"status": "failed", "blockers": ["invalid_tracking"]})
+    failure = json.loads((tmp_path / "failure.json").read_text())
+    failure["producer_result"] = producer
+    evidence["failure"] = write(tmp_path / "failure.json", failure, "failure_digest")
+    with pytest.raises(ValueError, match="create_failure_evidence_missing"):
+        recover(tmp_path, intent, evidence)
+
+
 def test_concurrent_successors_cannot_reset_retry_count(tmp_path):
     intent, _, evidence = setup(tmp_path)
     def run(name):
