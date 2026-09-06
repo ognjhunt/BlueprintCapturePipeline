@@ -195,18 +195,47 @@ def test_handoff_checks_name_each_missing_piece_of_the_canary_chain(tmp_path: Pa
         dispatcher: {"effective_environment": {"BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE": "0"}},
     }
 
-    codes = sorted(f["code"] for f in preflight.handoff_checks(units, (os.getuid(), os.getgid())))
+    findings = preflight.handoff_checks(units, (os.getuid(), os.getgid()))
+    codes = sorted(f["code"] for f in findings if f["severity"] == "blocker")
 
     assert codes == [
-        "launch_dispatcher_execute_gate_closed",
-        "launch_dispatcher_execute_id_unset",
+        "launch_dispatcher_execution_hold_present",
         "launch_profile_catalog_path_disagrees_with_intake",
         "policy_canary_notification_email_unset",
     ]
+    # The empty per-launch id is the hands-off state (standing authorization admits): recorded, not blocking.
+    assert [f["code"] for f in findings if f["severity"] == "info"] == ["launch_dispatcher_execute_id_unset"]
     units[progression]["effective_environment"]["BLUEPRINT_POLICY_CANARY_NOTIFICATION_EMAIL"] = "owner@example.com"
     units["blueprint-pipeline-intake.service"]["effective_environment"]["BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH"] = "/var/lib/blueprint/pipeline-control-plane/catalog.json"
-    units[dispatcher]["effective_environment"] = {"BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE": "1", "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID": "gate-1"}
-    assert preflight.handoff_checks(units, (os.getuid(), os.getgid())) == []
+    units[dispatcher]["effective_environment"] = {"BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE": "1"}
+    assert [f["code"] for f in preflight.handoff_checks(units, (os.getuid(), os.getgid())) if f["severity"] == "blocker"] == []
+
+
+def test_execution_holds_are_named_with_their_source(tmp_path: Path) -> None:
+    """2026-09-05: the construction launch was held by LAUNCH_EXECUTE=false in a per-scene
+    EnvironmentFile and the canary dispatcher by an ExecCondition=/usr/bin/false drop-in;
+    both are operator holds that stall a hands-off run without queue evidence."""
+
+    hold = tmp_path / "scene.env"
+    hold.write_text("BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=false\n", encoding="utf-8")
+    dispatcher = "blueprint-task-evaluation-launch-dispatcher.service"
+    units = {dispatcher: {
+        "effective_environment": {"BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE": "false"},
+        "properties": {"EnvironmentFiles": [f"{hold} (ignore_errors=yes)"]},
+    }}
+
+    [finding] = [f for f in preflight.handoff_checks(units, (os.getuid(), os.getgid())) if f["code"] == "launch_dispatcher_execution_hold_present"]
+    assert finding["held_by"] == [str(hold)]
+
+    canary = "blueprint-task-evaluation-policy-canary-dispatcher.service"
+    health = preflight.unit_health_checks({canary: {"properties": {
+        "ActiveState": ["inactive"], "Result": ["exec-condition"], "LoadState": ["loaded"], "TriggeredBy": [""],
+        "ExecCondition": ["{ path=/usr/bin/false ; argv[]=/usr/bin/false ; ignore_errors=no }"],
+        "DropInPaths": ["/etc/systemd/system/blueprint-task-evaluation-policy-canary-dispatcher.service.d/99-no-dispatch-hold.conf"],
+    }}})
+    [hold_finding] = [f for f in health if f["code"] == "unit_execution_hold_present"]
+    assert hold_finding["severity"] == "blocker"
+    assert hold_finding["drop_ins"] == ["/etc/systemd/system/blueprint-task-evaluation-policy-canary-dispatcher.service.d/99-no-dispatch-hold.conf"]
 
 
 def test_probe_imports_from_the_release_src_root_not_the_package_directory(tmp_path: Path, monkeypatch) -> None:

@@ -922,12 +922,31 @@ def handoff_checks(units: Mapping[str, dict[str, Any]], ids: tuple[int, int]) ->
     public = str(units.get("blueprint-pipeline-intake.service", {}).get("effective_environment", {}).get("BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH") or "")
     if catalog and public and catalog != public:
         findings.append(_finding("blocker", "launch_profile_catalog_path_disagrees_with_intake", progression=catalog, intake=public))
-    dispatcher = units.get("blueprint-task-evaluation-launch-dispatcher.service", {}).get("effective_environment", {})
+    dispatcher_unit = "blueprint-task-evaluation-launch-dispatcher.service"
+    dispatcher = units.get(dispatcher_unit, {}).get("effective_environment", {})
     if str(dispatcher.get("BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE") or "").strip() not in {"1", "true", "yes"}:
-        findings.append(_finding("blocker", "launch_dispatcher_execute_gate_closed", unit="blueprint-task-evaluation-launch-dispatcher.service"))
+        # The unit file ships EXECUTE=true; a false value can only come from an
+        # operator hold in an EnvironmentFile or drop-in. Name where it lives so
+        # lifting it is one edit, not a search. Hands-off runs carry no hold: the
+        # bounded, expiring standing authorization is the control.
+        findings.append(_finding("blocker", "launch_dispatcher_execution_hold_present", unit=dispatcher_unit,
+                                 held_by=environment_hold_sources(units.get(dispatcher_unit, {}), "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE") or None))
     if not str(dispatcher.get("BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID") or "").strip():
-        findings.append(_finding("blocker", "launch_dispatcher_execute_id_unset", unit="blueprint-task-evaluation-launch-dispatcher.service"))
+        # No per-launch id is the hands-off state: the standing authorization the
+        # activation publishes admits the launch. Recorded, not a blocker.
+        findings.append(_finding("info", "launch_dispatcher_execute_id_unset", unit=dispatcher_unit))
     return findings
+
+
+def environment_hold_sources(unit: Mapping[str, Any], name: str) -> list[str]:
+    """The EnvironmentFile paths that set ``name`` to a non-truthy value for this unit."""
+
+    sources: list[str] = []
+    for path_text, _ignore in environment_files(unit.get("properties", {})):
+        value = _parse_env_file(Path(path_text)).get(name)
+        if value is not None and value.strip() not in {"1", "true", "yes"}:
+            sources.append(path_text)
+    return sources
 
 
 def credential_file_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1081,6 +1100,12 @@ def unit_health_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str, An
             findings.append(_finding("warning", "unit_failed_state", unit=unit_name, active_state=state, result=result, exec_main_status=_first(props, "ExecMainStatus")))
         if _first(props, "LoadState") != "loaded":
             findings.append(_finding("blocker", "unit_not_loaded", unit=unit_name, load_state=_first(props, "LoadState")))
+        for condition in props.get("ExecCondition", []):
+            if "/usr/bin/false" in condition or "/bin/false" in condition:
+                # An ExecCondition that always fails is an operator hold on the
+                # unit; the chain stalls there without any queue evidence.
+                drop_ins = [p for p in (_first(props, "DropInPaths") or "").split() if p]
+                findings.append(_finding("blocker", "unit_execution_hold_present", unit=unit_name, exec_condition=condition[:160], drop_ins=drop_ins or None))
         for trigger in (_first(props, "TriggeredBy") or "").split():
             trigger_state = _first(unit_properties(trigger), "ActiveState")
             if trigger_state != "active":
