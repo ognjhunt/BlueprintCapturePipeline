@@ -273,8 +273,9 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
             and attempt.get("provider") == "vast" and attempt.get("maximum_spend_usd") == maximum,
             "public_factory_attempt_binding_mismatch")
     if "robot_binding_id" in request["task"]:
-        from .task_evaluation_controls_autoprovision import CATALOG_SCHEMA, _asset, payload_digest
-        catalog = read(_reference(machinery["robot_catalog"]), digest_field="catalog_digest")
+        from .task_evaluation_controls_autoprovision import CATALOG_SCHEMA, _asset, payload_digest, resolve_robot_catalog
+        catalog = resolve_robot_catalog(read(_reference(machinery["robot_catalog"]), digest_field="catalog_digest"),
+                                        source_commit=commit)
         require(catalog.get("schema_version") == CATALOG_SCHEMA, "public_factory_robot_catalog_invalid")
         robot = catalog["bindings"].get(request["task"]["robot_binding_id"])
         require(isinstance(robot, dict) and robot.get("expected_production_commit") == commit,
@@ -318,6 +319,12 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
             if key in request["task"]:
                 task[key] = request["task"][key]
         task["expected_production_commit"] = commit
+        # Each owner attempt gets a distinct internal namespace. Reusing the
+        # seed's namespace would collide in the controls/activation registry
+        # across tenants and releases and require operator-only supersession.
+        task["team_namespace"] = "scene-" + canonical_digest({
+            "intent_digest": intent["intent_digest"], "attempt_digest": attempt["attempt_digest"],
+        })[7:55]
         task["run_prefix"] = "scene-" + intent["intent_id"].removeprefix("scene-")[:20] + "-" + attempt_id
         task["scene_intent_authority"] = {"intent": intent_ref, "intent_digest": intent["intent_digest"],
                                           "attempt": record(attempt_path)}

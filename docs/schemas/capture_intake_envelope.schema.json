@@ -113,6 +113,7 @@
         "monocular_video",
         "precomputed_external_reconstruction",
         "provided_scene_mesh",
+        "provided_scene_splat",
         "public_processed_rgbd_pose_sequence"
       ]
     }

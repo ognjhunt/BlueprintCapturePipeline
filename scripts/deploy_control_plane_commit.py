@@ -112,6 +112,16 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-configured-controls-progression.service",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
+    "blueprint-task-evaluation-scene-progression.service",
+    "blueprint-task-evaluation-scene-progression.timer",
+    "blueprint-task-evaluation-launch-supervisor.service",
+    "blueprint-task-evaluation-launch-supervisor.timer",
+    "blueprint-task-evaluation-launch-reconciler.service",
+    "blueprint-task-evaluation-launch-reconciler.timer",
+    "blueprint-task-evaluation-terminal-resource-release.service",
+    "blueprint-task-evaluation-terminal-resource-release.path",
+    "blueprint-gpu-spend-guard.service",
+    "blueprint-gpu-spend-guard.timer",
     "blueprint-control-plane-storage-gc.service",
     "blueprint-control-plane-storage-gc.timer",
     "blueprint-control-plane-capacity.service",
@@ -150,6 +160,7 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
 #: moment a no-spend canary compiles, so it carries the same progression
 #: authority rather than the no-spend watcher category.
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
+    "blueprint-task-evaluation-scene-progression.timer",
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
@@ -831,6 +842,23 @@ def _unit_sandbox_entries(unit_text: str) -> list[tuple[str, bool, str]]:
     return entries
 
 
+def _install_retention_plan_reader_access(root: Path, *, owner_gid: int) -> dict[str, Any]:
+    """Repair only directory traversal for retained deployment plans, not file authority."""
+    if not root.exists():
+        return {"status": "absent", "path": str(root)}
+    if not root.is_absolute() or any(p.is_symlink() for p in (root, *root.parents)) or not root.is_dir():
+        raise ControlPlaneDeployError("deploy_retention_reader_root_unsafe")
+    metadata = root.stat()
+    if metadata.st_gid != owner_gid:
+        os.chown(root, -1, owner_gid)
+    root.chmod(0o750)
+    observed = root.stat()
+    if observed.st_uid != metadata.st_uid or observed.st_gid != owner_gid or stat.S_IMODE(observed.st_mode) != 0o750:
+        raise ControlPlaneDeployError("deploy_retention_reader_readback_failed")
+    return {"status": "readable_directory", "path": str(root), "owner_uid": observed.st_uid,
+            "reader_gid": observed.st_gid, "mode": "0750", "file_permissions_changed": False}
+
+
 def _install_unit_sandbox_paths(
     *,
     release_path: str | Path,
@@ -854,6 +882,14 @@ def _install_unit_sandbox_paths(
     """
 
     release = Path(release_path).expanduser()
+    retention_path = Path("/var/lib/blueprint/pipeline-control-plane/release-retention")
+    if root_prefix is not None:
+        retention_path = Path(root_prefix) / retention_path.relative_to("/")
+    if retention_path.exists():
+        reader_ids = owner_ids or _service_account_ids(account)
+        if reader_ids is None:
+            raise ControlPlaneDeployError("deploy_retention_reader_account_missing")
+        _install_retention_plan_reader_access(retention_path, owner_gid=reader_ids[1])
     created: list[dict[str, Any]] = []
     verified: list[dict[str, str]] = []
     blockers: list[str] = []

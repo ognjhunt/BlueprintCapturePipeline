@@ -1592,6 +1592,8 @@ def dispatch_policy_canary_activation(
     allocator_invoked = False
     if not adapter_path.is_file():
         if execute:
+            from .task_evaluation_owner_dispatch_scope import require_owner_dispatch_scope
+            require_owner_dispatch_scope(setup)
             require_scene_execution_authority(setup, source_commit=implementation_commit,
                                              maximum_spend_usd=float(resource["hard_cap_usd"]), provider="vast")
         if invocation_started_path.is_file():
@@ -2152,7 +2154,8 @@ def process_policy_canary_dispatch_queue(
         processed.append(blocked)
         return blocked
 
-    for envelope_path in sorted((queue / "pending").glob("*.json"))[:max_messages]:
+    from .task_evaluation_owner_dispatch_scope import owner_policy_sources
+    for envelope_path in owner_policy_sources(sorted((queue / "pending").glob("*.json")))[:max_messages]:
         try:
             envelope = _read(
                 envelope_path,

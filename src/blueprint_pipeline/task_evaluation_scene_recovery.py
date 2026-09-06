@@ -51,6 +51,10 @@ def validate_recovery_evidence(evidence, *, prior_attempt, provider, now):
     blockers.append(str(producer.get("blocker") or ""))
     create_evidence = (producer.get("allocation_created") is False
                        or producer.get("allocation_outcome_ambiguous") is True
+                       or (any("instance_not_created" in b for b in blockers)
+                           and producer.get("provider_mutations_performed") == 0
+                           and producer.get("instance_id") in (None, "")
+                           and producer.get("provider_mutation_outcome_ambiguous") is False)
                        or any(marker in blocker for blocker in blockers for marker in (
                            "create_outcome_ambiguous", "create_refused", "create_rejected",
                            "create_returned_null", "started_without_terminal_reconciliation")))

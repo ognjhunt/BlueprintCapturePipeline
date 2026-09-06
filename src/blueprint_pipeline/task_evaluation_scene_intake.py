@@ -67,12 +67,22 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
              and all(isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:._@-]{0,127}", v)
                      for v in owner.values()), "owner_invalid")
     source = value.get("source")
-    _require(isinstance(source, Mapping) and set(source) == {"kind", "binding_id", "content_digest"},
+    _require(isinstance(source, Mapping) and set(source) - {"collision_mesh"} == {"kind", "binding_id", "content_digest"},
              "source_invalid")
-    _require(source["kind"] in {"capture_bundle", "mesh", "public_scene"}
+    _require(source["kind"] in {"capture_bundle", "mesh", "gaussian_splat", "public_scene"}
              and _identifier(source["binding_id"])
              and isinstance(source["content_digest"], str)
              and _DIGEST.fullmatch(source["content_digest"]) is not None, "source_invalid")
+    if "collision_mesh" in source:
+        companion = source["collision_mesh"]
+        _require(source["kind"] == "gaussian_splat" and isinstance(companion, Mapping)
+                 and set(companion) == {"binding_id", "content_digest", "rights_reference", "frame_relation"}
+                 and _identifier(companion.get("binding_id")) and companion["binding_id"] != source["binding_id"]
+                 and isinstance(companion.get("content_digest"), str)
+                 and _DIGEST.fullmatch(companion["content_digest"]) is not None
+                 and isinstance(companion.get("rights_reference"), str)
+                 and _DIGEST.fullmatch(companion["rights_reference"]) is not None
+                 and companion.get("frame_relation") == "owner_declared_common_frame", "collision_mesh_binding_invalid")
     task = value.get("task")
     _require(isinstance(task, Mapping) and task.get("strategy") == "pick_and_place"
              and _identifier(task.get("task_id")), "task_invalid")

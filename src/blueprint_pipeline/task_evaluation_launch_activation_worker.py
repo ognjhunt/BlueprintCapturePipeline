@@ -1470,6 +1470,7 @@ def _policy_campaign_activation_result(
         "preparation_result_digest": preparation_result["result_digest"],
         "release_window_digest": window["window_digest"],
         "policy_campaign_activation_digest": manifest["activation_digest"],
+        **({"scene_intent_digest": preparation_request["scene_intent_digest"]} if "scene_intent_digest" in preparation_request else {}),
         "policy_campaign_activation_sha256": _sha256_file(manifest_path),
         "campaign_unit_count": manifest["campaign_unit_count"],
         "run_kind": manifest["run_kind"],
@@ -1857,34 +1858,8 @@ def process_launch_activation_queue(
             dispatch_root = Path(policy_canary_dispatch_queue_root).expanduser().resolve()
             for name in ("pending", "processing", "completed", "blocked"):
                 (dispatch_root / name).mkdir(parents=True, exist_ok=True, mode=0o750)
-            dispatch_envelope = {
-                "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
-                "activation_id": result["activation_id"],
-                "run_kind": "internal_policy_canary",
-                "claim_ceiling": "diagnostic_policy_execution",
-                "source_commit": result["source_commit"],
-                "activation_result": {
-                    "path": str(result_path),
-                    "size_bytes": result_path.stat().st_size,
-                    "sha256": _sha256_file(result_path),
-                },
-                "capture_session_id": result["capture_session_id"],
-                "intake_id": result["intake_id"],
-                "request_digest": result["website_request_digest"],
-                "task_success_contract": result["task_success_contract"],
-                "task_success_contract_digest": result[
-                    "task_success_contract_digest"
-                ],
-                "maximum_provider_allocations": 1,
-                "retry_cap": 0,
-                "automatic_retry_authorized": False,
-                "provider_mutation_performed": False,
-                "paid_execution_requested": False,
-                "envelope_digest": "",
-            }
-            dispatch_envelope["envelope_digest"] = canonical_digest(
-                dispatch_envelope, digest_field="envelope_digest"
-            )
+            from .task_evaluation_owner_dispatch_scope import policy_dispatch_envelope
+            dispatch_envelope = policy_dispatch_envelope(result, result_path)
             dispatch_path = (
                 dispatch_root
                 / "pending"

@@ -114,7 +114,7 @@ def context(tmp_path, monkeypatch, request):
             for key, description in {"subject": options.get("subject", "book"), "support": "TV cabinet",
                 "destination": "tray", "success": options.get("success",
                     "Place the object fully inside the destination, release it, and move the gripper clear.")}.items()})
-    owner["execution"].update(max_total_spend_usd=20, max_paid_attempts=4,
+    owner["execution"].update(max_total_spend_usd=options.get("max_total_spend_usd", 20), max_paid_attempts=4,
         allowed_providers=["vast", "openai"], expires_at_epoch=now + 3600)
     owner["consent"].update(accepted_at_epoch=now - 1, provider_terms_reference=ref(terms)["sha256"])
     intake_root = tmp_path / "intents"
@@ -187,6 +187,9 @@ def test_real_producers_materialize_then_revalidate_same_attempt_without_raw_rei
     assert all(source[key].read_bytes() == value for key, value in before.items())
     task = json.loads(Path(receipt["task_request"]["path"]).read_text())
     assert task["human_authority"]["accepted_by"] == "u1"
+    assert task["team_namespace"] == "scene-" + canonical_digest({
+        "intent_digest": receipt["intent_digest"], "attempt_digest": receipt["attempt_digest"],
+    })[7:55]
     request = json.loads(Path(receipt["submission_request"]["path"]).read_text())
     assert request["scene_intent_digest"] == receipt["intent_digest"]
     assert len(receipt["frozen_policy_candidates"]) == 2

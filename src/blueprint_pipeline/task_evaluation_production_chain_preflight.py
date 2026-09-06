@@ -277,6 +277,13 @@ def path_probe(path_text: str) -> dict[str, Any]:
             return verdict
     if stat.S_ISDIR(st.st_mode):
         verdict["kind"] = "directory"
+        try:
+            with os.scandir(path) as entries:
+                next(entries, None)
+            verdict["directory_readable"] = True
+        except OSError as exc:
+            verdict.update(status="unreadable", directory_readable=False, errno=exc.errno)
+            return verdict
         verdict.update(write_probe(path))
         return verdict
     verdict["kind"] = "file"

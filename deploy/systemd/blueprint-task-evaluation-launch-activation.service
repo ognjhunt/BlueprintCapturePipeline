@@ -5,6 +5,8 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
+ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/release-retention
+ReadOnlyPaths=-/var/lib/blueprint/task-evaluation-inputs/sam31-preparations -/var/lib/blueprint/pubsub-handoffs -/var/lib/blueprint/spend-authority
 Type=oneshot
 User=blueprint
 Group=blueprint

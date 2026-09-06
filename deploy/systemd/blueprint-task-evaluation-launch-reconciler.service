@@ -5,6 +5,7 @@ Wants=network-online.target blueprint-gpu-spend-guard.service
 After=network-online.target blueprint-gpu-spend-guard.service
 
 [Service]
+ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/release-retention
 Type=oneshot
 User=blueprint
 Group=blueprint

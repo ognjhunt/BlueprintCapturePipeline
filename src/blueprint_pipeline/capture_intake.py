@@ -33,6 +33,7 @@ CAPTURE_AUTHORITY_PROFILES = {
     "monocular_video",
     "precomputed_external_reconstruction",
     "provided_scene_mesh",
+    "provided_scene_splat",
     "public_processed_rgbd_pose_sequence",
 }
 
@@ -78,6 +79,7 @@ _REQUIRED_STREAMS = {
     "monocular_video": {"retained_video"},
     "precomputed_external_reconstruction": {"external_reconstruction"},
     "provided_scene_mesh": {"scene_mesh"},
+    "provided_scene_splat": {"scene_splat"},
     "public_processed_rgbd_pose_sequence": {
         "processed_rgb_observations",
         "camera_poses",
@@ -315,6 +317,7 @@ def _recapture_plan(profile: str, missing: Sequence[str]) -> list[dict[str, Any]
         "camera_metadata": "Export the 360 camera model, stitch/equirectangular layout, orientation, and firmware metadata.",
         "external_reconstruction": "Attach the external reconstruction files and their provider/runtime manifest.",
         "scene_mesh": "Attach the original scene mesh with declared units and up axis; this is provided geometry, not capture observations.",
+        "scene_splat": "Attach the completed standard 3DGS PLY with declared units and up axis; it is not collision or physical evidence.",
     }
     return [
         {
@@ -345,7 +348,7 @@ def _claim_ceiling(profile: str, streams: Mapping[str, str], *, admitted: bool) 
         {"retained_video", "retained_original", "processed_rgb_observations"}
         & available
     )
-    if profile == "provided_scene_mesh":
+    if profile in {"provided_scene_mesh", "provided_scene_splat"}:
         calibrated_pose = observed_video = False
     return {
         "capture_admitted": admitted,
@@ -398,6 +401,11 @@ def build_capture_admission(envelope_value: Mapping[str, Any]) -> dict[str, Any]
         reduced_authority_reasons.extend([
             "provided_mesh_is_not_observed_capture", "mesh_units_are_declared_not_measured",
             "mesh_collision_and_physics_require_independent_native_validation",
+        ])
+    if profile == "provided_scene_splat":
+        reduced_authority_reasons.extend([
+            "provided_splat_is_not_observed_capture", "splat_units_are_declared_not_measured",
+            "splat_is_not_collision_or_physics_evidence",
         ])
     if profile == "public_processed_rgbd_pose_sequence":
         reduced_authority_reasons.extend(

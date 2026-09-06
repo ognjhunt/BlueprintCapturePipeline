@@ -163,6 +163,9 @@ def read_exact_preparation_request(path: str | Path) -> tuple[dict[str, Any], by
     request = _mapping(value, blocker="preparation_request_object_required")
     run_mode = request.get("run_mode")
     expected_keys = set(_BASE_REQUEST_KEYS)
+    if "scene_intent_digest" in request:
+        expected_keys.add("scene_intent_digest")
+        _digest(request["scene_intent_digest"], blocker="preparation_scene_intent_digest_invalid")
     if run_mode == "episode_evaluation":
         expected_keys.update({"robot", "controller"})
     elif run_mode != "scene_configuration":

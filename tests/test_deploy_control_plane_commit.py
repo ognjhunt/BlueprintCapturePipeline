@@ -37,6 +37,23 @@ assert _SPEC.loader is not None
 _SPEC.loader.exec_module(deploy)
 
 
+def test_retention_reader_repair_preserves_owner_and_private_file_modes(tmp_path):
+    root = tmp_path / "release-retention"
+    root.mkdir(mode=0o700)
+    private = root / "plan.json"
+    private.write_text("{}")
+    private.chmod(0o600)
+    owner = root.stat().st_uid
+    receipt = deploy._install_retention_plan_reader_access(root, owner_gid=os.getgid())
+    assert receipt["file_permissions_changed"] is False
+    assert root.stat().st_uid == owner and root.stat().st_mode & 0o777 == 0o750
+    assert private.stat().st_mode & 0o777 == 0o600
+    linked = tmp_path / "linked"
+    linked.symlink_to(root)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="root_unsafe"):
+        deploy._install_retention_plan_reader_access(linked, owner_gid=os.getgid())
+
+
 def test_script_bootstraps_repo_src_for_the_bare_host_interpreter() -> None:
     """The production host runs this script with python3, not an installed CLI."""
 
@@ -420,6 +437,17 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "[Service]\nExecStart=/usr/bin/blueprint-live-pipeline-control-plane\n",
         encoding="utf-8",
     )
+    additional_sources = []
+    for name in (
+        "blueprint-task-evaluation-scene-progression.service", "blueprint-task-evaluation-scene-progression.timer",
+        "blueprint-task-evaluation-launch-supervisor.service", "blueprint-task-evaluation-launch-supervisor.timer",
+        "blueprint-task-evaluation-launch-reconciler.service", "blueprint-task-evaluation-launch-reconciler.timer",
+        "blueprint-task-evaluation-terminal-resource-release.service", "blueprint-task-evaluation-terminal-resource-release.path",
+        "blueprint-gpu-spend-guard.service", "blueprint-gpu-spend-guard.timer",
+    ):
+        extra = unit_dir / name
+        extra.write_text("[Unit]\nDescription=Exact fixture " + name + "\n")
+        additional_sources.append(extra)
     systemd = tmp_path / "systemd"
     systemd.mkdir()
     (systemd / service.name).write_text(
@@ -455,6 +483,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         progression_service,
         progression_timer,
         progression_path,
+        *additional_sources,
         storage_gc_service,
         storage_gc_timer,
         capacity_service,
@@ -507,6 +536,16 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-configured-controls-progression.service",
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-task-evaluation-configured-controls-progression.path",
+        "blueprint-task-evaluation-scene-progression.service",
+        "blueprint-task-evaluation-scene-progression.timer",
+        "blueprint-task-evaluation-launch-supervisor.service",
+        "blueprint-task-evaluation-launch-supervisor.timer",
+        "blueprint-task-evaluation-launch-reconciler.service",
+        "blueprint-task-evaluation-launch-reconciler.timer",
+        "blueprint-task-evaluation-terminal-resource-release.service",
+        "blueprint-task-evaluation-terminal-resource-release.path",
+        "blueprint-gpu-spend-guard.service",
+        "blueprint-gpu-spend-guard.timer",
         "blueprint-control-plane-storage-gc.service",
         "blueprint-control-plane-storage-gc.timer",
         "blueprint-control-plane-capacity.service",
@@ -523,6 +562,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-object-discovery.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
+        "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-sam31-preparation-execution.timer",
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-task-evaluation-configured-controls-progression.path",
