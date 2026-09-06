@@ -8335,6 +8335,10 @@ def run_vast_provider_adapter(
         lane_label_prefix=resolved_label_prefix,
     )
     prelaunch_inventory_blockers = _string_list(prelaunch_inventory_guard.get("blockers"))
+    from .provider_credit_admission import record_vast_credit_admission
+    credit_guard = record_vast_credit_admission(resolved_job_dir, api_key, hard_cap_usd)
+    prelaunch_inventory_blockers.extend(credit_guard["blockers"])
+    base_result["provider_credit_admission"] = credit_guard
     base_result.update(
         {
             "prelaunch_inventory_guard_status": prelaunch_inventory_guard.get("status"),

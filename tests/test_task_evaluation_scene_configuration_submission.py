@@ -492,10 +492,18 @@ def test_submission_refuses_tampered_source_bytes(tmp_path: Path) -> None:
         _materialize(fixture)
 
 
-def test_submission_refuses_stale_source_preparation(tmp_path: Path) -> None:
+def test_submission_binds_persistent_scene_intent(tmp_path: Path) -> None:
+    fixture = production_fixture(tmp_path)
+    _materialize(fixture, scene_intent_digest="sha256:" + "c" * 64)
+    request = json.loads((fixture["staging_root"] / "scene_configuration_preparation_request.v1.json").read_text())
+    assert request["scene_intent_digest"] == "sha256:" + "c" * 64
+    assert request["expected_production_commit"] == SHA
+
+
+def test_submission_refuses_invalid_source_preparation_provenance(tmp_path: Path) -> None:
     fixture = production_fixture(tmp_path)
     record = json.loads(fixture["source_preparation"].read_text())
-    record["source_commit"] = "1" * 40
+    record["source_commit"] = "invalid-commit"
     _write_json(fixture["source_preparation"], _digested(record, "receipt_digest"))
     with pytest.raises(SceneConfigurationSubmissionError, match="source_preparation_commit_mismatch"):
         _materialize(fixture)

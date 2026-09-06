@@ -40,6 +40,9 @@ from .task_evaluation_configured_controls_autostart import (
     configured_controls_autostart_registry_name,
 )
 from .task_evaluation_launch_activation_queue import stage_launch_activation_request
+from .task_evaluation_launch_preparation_queue import (
+    ENVELOPE_SCHEMA_VERSION as PREPARATION_ENVELOPE_SCHEMA_VERSION,
+)
 from .task_evaluation_release_identity import running_release_commit
 from .task_evaluation_shared_mutation_window import (
     TaskEvaluationSharedMutationWindowError,
@@ -663,7 +666,7 @@ def _preparation_envelope(
     request = envelope.get("request")
     if (
         not isinstance(request, Mapping)
-        or envelope.get("schema_version") != "task_evaluation_launch_preparation_intake_envelope.v1"
+        or envelope.get("schema_version") != PREPARATION_ENVELOPE_SCHEMA_VERSION
         or request.get("schema_version") != "task_evaluation_launch_preparation_request.v1"
         or envelope.get("request_digest") != canonical_digest(request)
         or envelope.get("provider_mutation_performed_inside_intake") is not False
@@ -851,6 +854,14 @@ def advance_scene_configuration_activation(
         raise SceneConfigurationActivationAutomationError(
             "scene_configuration_activation_provider_zero_stale"
         )
+    from .task_evaluation_progression_replay import replay_progression_admission
+    lookahead = replay_progression_admission(result_path=result_path, queue_root=queue_root,
+                                            replay_root=state_root / "lookahead")
+    if lookahead["status"] != "accepted":
+        return {"status": "scene_configuration_lookahead_blocked",
+                "preparation_id": preparation_id, "blockers": lookahead["blockers"],
+                "lookahead_report": _artifact(Path(lookahead["report_path"])),
+                "provider_mutation_performed": False}
     activation_id = _activation_id(preparation_id)
     attempt = _sealed({
         "schema_version": "task_evaluation_scene_configuration_activation_attempt.v1",
@@ -973,6 +984,7 @@ def advance_scene_configuration_activation(
             "rights_scope": intent["rights_scope"],
             "preparation_result_digest": result["result_digest"],
             "preparation_request_digest": envelope["request_digest"],
+            "lookahead_report": _artifact(Path(lookahead["report_path"])),
             "provider_zero_digest": zero["provider_zero_digest"],
             "project_spend_reconciliation_digest": spend_reference["digest"],
             "release_window_digest": window["window_digest"],
@@ -1297,6 +1309,7 @@ def process_scene_configuration_activations(
     submitter: Submitter | None = None,
     now: datetime | None = None,
     running_commit: str | None = None,
+    blocked_scene_keys: set[tuple[str, str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Advance every prepared configuration one safe step; one row per preparation."""
 
@@ -1305,6 +1318,19 @@ def process_scene_configuration_activations(
     for result_path in _awaiting_scene_configurations(queue_root):
         preparation_id = result_path.name.split("-sha256", 1)[0]
         try:
+            if blocked_scene_keys:
+                try:
+                    envelope = json.loads((queue_root / "materialized" / result_path.name).read_text())
+                    request = envelope["request"]
+                    key = (request["team_namespace"], request["scene"]["identity"]["id"],
+                           request["task"]["identity"]["id"])
+                    if key in blocked_scene_keys:
+                        rows.append({"preparation_id": preparation_id, "status": "blocked",
+                            "blockers": ["scene_configuration_owner_authority_refused"]})
+                        continue
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    raise SceneConfigurationActivationAutomationError(
+                        "scene_configuration_owner_scope_unreadable") from exc
             activation = advance_scene_configuration_activation(
                 preparation_result_path=result_path,
                 preparation_queue_root=queue_root,
@@ -1375,6 +1401,7 @@ def progression_rows(
     repo_root: str | Path | None,
     webapp_secret_file: str | Path | None,
     webapp_endpoint: str,
+    blocked_scene_keys: set[tuple[str, str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Drive the Website-started configuration activation from the progression timer."""
 
@@ -1408,6 +1435,7 @@ def progression_rows(
         configured_controls_intent_root=configured_controls_intent_root,
         submitter=submitter,
         running_commit=running_release_commit() or None,
+        **({"blocked_scene_keys": blocked_scene_keys} if blocked_scene_keys else {}),
     )
     return [{"lane": LANE, **row} for row in rows]
 

@@ -2210,10 +2210,14 @@ class VastRenderProvider(GpuRenderProvider):
         prelaunch_blockers = _render_prelaunch_guard_blockers(
             request, provider_name="vast"
         )
+        from .provider_credit_admission import render_credit_admission
+        credit_guard = render_credit_admission(request, key)
+        prelaunch_blockers.extend(credit_guard["blockers"])
         if prelaunch_blockers:
             return {
                 "status": "blocked",
                 "blockers": prelaunch_blockers,
+                "provider_credit_admission": credit_guard,
                 "prelaunch_spend_guard": _mapping(request.get("prelaunch_spend_guard")) or None,
                 "allocation_created": False, "spend_occurred": False,
             }

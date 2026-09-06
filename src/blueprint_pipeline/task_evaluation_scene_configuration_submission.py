@@ -164,6 +164,7 @@ def materialize_scene_configuration_submission(
     sam31_server_profile_path: str | Path | None = None,
     sam31_completed_prefix_adoption_path: str | Path | None = None,
     release_admission_mode: str = "promoted",
+    scene_intent_digest: str | None = None,
 ) -> dict[str, Any]:
     """Validate evidence joins, retain exact inputs, then emit the production request."""
     commit = expected_production_commit
@@ -443,6 +444,8 @@ def materialize_scene_configuration_submission(
         request["runtime"]["mounts"].append({
             "source": sam_plan_ref, "container_path": "/inputs/sam31-preparation-plan.json",
             "mode": "read_only"})
+    if scene_intent_digest is not None:
+        request["scene_intent_digest"] = scene_intent_digest
     validate_launch_preparation_request(request)
     references = stage.reference_rows(request)
     decision = resolve_scene_configuration_disclosure(

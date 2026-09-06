@@ -1,5 +1,17 @@
 # BlueprintCapturePipeline Changelog
 
+## 2026-09-06
+
+### Employee-Facing
+
+- ADP-009D/day-28 autonomous-operation funding guard: the capacity controller can
+  retain sanitized Vast credit observations and alert on low or unknown funds.
+  With `BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true`, both Vast execution adapters
+  require a fresh balance covering the bounded attempt plus a reserve before
+  allocation. This does not fund the account, reserve credit, authorize spend,
+  or prevent billing/teardown. The live deployment must explicitly enable the
+  guard; tests alone do not establish live funding protection.
+
 ## 2026-08-03
 
 ### Employee-Facing
