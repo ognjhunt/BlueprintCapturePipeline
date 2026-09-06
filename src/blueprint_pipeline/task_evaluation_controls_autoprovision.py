@@ -233,9 +233,44 @@ def process_config(config_path: str | Path, *, expected_production_commit: str) 
                 profile_dir=Path(config["profile_dir"]), expected_production_commit=expected_production_commit,
                 trusted_clients=set(config["trusted_clients"]), service_group=config.get("service_group", "blueprint")))
         except (ValueError, OSError, KeyError, TypeError, producer.ConfiguredControlsProvisioningError) as exc:
-            rows.append({"status": "controls_autoprovision_refused", "intent_id": link_path.parent.name,
-                         "blocker": str(exc)})
+            row = {"status": "controls_autoprovision_refused", "intent_id": link_path.parent.name,
+                   "blocker": str(exc)}
+            try:
+                link = validate_preparation_link(_sealed(link_path, "link_digest"))
+                row["blocked_scene_key"] = [link[k] for k in ("team_namespace", "scene_id", "task_id")]
+            except (ValueError, OSError, KeyError, TypeError):
+                # Corruption with no recoverable scene scope cannot authorize
+                # an older installed intent; only this unresolved case stops all.
+                row["scope_unresolved"] = True
+            rows.append(row)
     return rows
+
+
+def owner_authority_blocker(config_path: str | Path, *, scene_intent_digest: str,
+                            now: float | None = None) -> str | None:
+    """Reopen owner consent at queued dispatch; None means owner consent is live.
+
+    This supplements, never replaces, exact attempt/cap/provider admission.
+    Callers must require a digest on autonomous profiles, not downgrade missing
+    bindings to legacy authority.
+    """
+    try:
+        _require(isinstance(scene_intent_digest, str) and
+                 intake._DIGEST.fullmatch(scene_intent_digest) is not None, "owner_digest_missing")
+        config = _json(Path(config_path))
+        moment = time.time() if now is None else now
+        for path in Path(config["scene_root"]).glob("scene-*/intent.json"):
+            intent = _sealed(path, "intent_digest")
+            if intent["intent_digest"] != scene_intent_digest:
+                continue
+            _require(intent.get("authenticated_issuer") in config["trusted_clients"], "owner_intent_invalid")
+            request = intake.validate_request(intent["request"], now=intent["accepted_at_epoch"])
+            _require(not (path.parent / "revoked.json").exists(), "authority_revoked")
+            _require(moment < request["execution"]["expires_at_epoch"], "authority_expired")
+            return None
+        return "controls_autoprovision_owner_intent_missing"
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        return str(exc)
 
 
 def main() -> int:

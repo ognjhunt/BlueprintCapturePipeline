@@ -1706,6 +1706,7 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
     )
     launch_state_root = Path(kwargs["launch_state_root"]).expanduser()
     rows: list[dict[str, Any]] = []
+    blocked_scene_keys: set[tuple[str, str, str]] = set()
     # Preparation-to-controls provisioning precedes activation on every worker
     # tick. Omitted configuration preserves existing standalone controls lanes.
     from .task_evaluation_controls_autoprovision import CONFIG_ENV, process_config
@@ -1716,9 +1717,12 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
                 expected_production_commit=running_release_commit()))
         except (ValueError, OSError, KeyError, TypeError) as exc:
             rows.append({"status": "controls_autoprovision_refused", "blocker": str(exc)})
-        if any(row["status"] == "controls_autoprovision_refused" for row in rows):
-            # An already-installed intent cannot outlive revoked/expired owner
-            # authority while this tick continues into activation or dispatch.
+        blocked_scene_keys = {tuple(row["blocked_scene_key"]) for row in rows if row.get("blocked_scene_key")}
+        if any(row.get("scope_unresolved") or
+               (row["status"] == "controls_autoprovision_refused" and not row.get("blocked_scene_key"))
+               for row in rows):
+            # Only corruption/configuration failures with unresolved ownership
+            # stop all scenes. Known expired/revoked scenes are filtered below.
             return {"schema_version": WORKER_RESULT_SCHEMA_VERSION, "status": "blocked",
                     "rows": rows, "provider_mutation_performed": False, "allocator_invoked": False}
     if scene_configuration_intent_root is not None:
@@ -1737,6 +1741,7 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
                     kwargs.get("webapp_endpoint")
                     or scene_configuration_activation.DEFAULT_WEBAPP_ENDPOINT
                 ),
+                **({"blocked_scene_keys": blocked_scene_keys} if blocked_scene_keys else {}),
             )
         )
     # Configuration profiles carrying the required autostart intent need no
@@ -1752,8 +1757,22 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
     # Canary launches bound to another release can never activate here; a branch
     # checkout has no release identity and filters nothing.
     release = running_release_commit() or None
+    def owner_blocked(run_root: Path) -> bool:
+        if not blocked_scene_keys:
+            return False
+        try:
+            profile = _load(run_root / "launch_profile.json", blocker="configured_controls_owner_profile_missing")
+            task = profile.get("task_evaluation_run") or {}
+            return tuple(str(task.get(k) or "") for k in ("team_namespace", "scene_id", "task_id")) in blocked_scene_keys
+        except TaskEvaluationConfiguredControlsProgressionWorkerError:
+            return True
+
     for run_root in sorted(launch_state_root.iterdir()) if launch_state_root.is_dir() else []:
         if not run_root.is_dir() or run_root.is_symlink():
+            continue
+        if owner_blocked(run_root):
+            rows.append({"status": "blocked", "source_launch_id": run_root.name,
+                         "blockers": ["configured_controls_owner_authority_refused"]})
             continue
         launch_request_path = run_root / "launch_request.json"
         if launch_request_path.is_file() and not launch_request_path.is_symlink():
@@ -1914,6 +1933,16 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
     # to fail before it could revisit the completed canary compilation.
     configured_controls_kwargs.pop("episode_compilation_queue_root", None)
     for path in sorted(plan_root.glob("*.json")) if plan_root.is_dir() else []:
+        if blocked_scene_keys:
+            try:
+                source_id = str(_load(path, blocker="configured_controls_worker_plan_invalid").get("source_launch_id") or "")
+                if not source_id or Path(source_id).name != source_id or owner_blocked(launch_state_root / source_id):
+                    rows.append({"status": "blocked", "plan": path.name,
+                                 "blockers": ["configured_controls_owner_authority_refused"]})
+                    continue
+            except TaskEvaluationConfiguredControlsProgressionWorkerError as exc:
+                rows.append({"status": "blocked", "plan": path.name, "blockers": [str(exc)]})
+                continue
         foreign = bound_to_other_release(path, release)
         if foreign:  # sealed for another release: never admissible here, not an alarm
             rows.append({"status": "plan_bound_to_superseded_release", "plan": path.name, "source_commit": foreign, "running_commit": release})

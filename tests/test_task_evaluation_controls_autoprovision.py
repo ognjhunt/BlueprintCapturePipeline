@@ -212,9 +212,52 @@ def test_expired_installed_intent_cannot_continue_progression(tmp_path, monkeypa
     monkeypatch.setenv(worker.CONFIG_ENV, "catalog-config.json")
     monkeypatch.setattr(progression, "running_release_commit", lambda: COMMIT)
     monkeypatch.setattr(worker, "process_config", lambda *a, **kw: [
-        {"status": "controls_autoprovision_refused", "blocker": "authority_expired"}])
+        {"status": "controls_autoprovision_refused", "blocker": "authority_expired",
+         "blocked_scene_key": [TEAM, SCENE_ID, TASK_ID]}])
+    events = []
     monkeypatch.setattr(progression.scene_configuration_activation, "progression_rows",
-        lambda **_: pytest.fail("expired owner must not activate"))
+        lambda **kw: events.append(kw["blocked_scene_keys"]) or [])
+    _write(tmp_path / "launches" / "revoked" / "launch_profile.json", {
+        "task_evaluation_run": {"team_namespace": TEAM, "scene_id": SCENE_ID, "task_id": TASK_ID}})
+    _write(tmp_path / "launches" / "valid" / "launch_profile.json", {
+        "task_evaluation_run": {"team_namespace": TEAM, "scene_id": "other-scene", "task_id": TASK_ID}})
+    _write(tmp_path / "plans" / "revoked.json", {"source_launch_id": "revoked"})
+    _write(tmp_path / "plans" / "valid.json", {"source_launch_id": "valid"})
+    monkeypatch.setattr(progression, "advance_configured_controls_plan",
+        lambda **kw: events.append(Path(kw["plan_path"]).stem) or {"status": "awaiting_controls"})
     result = progression.process_plans(plan_root=tmp_path / "plans",
-        launch_state_root=tmp_path / "launches", scene_configuration_activation_intent_root=tmp_path / "intents")
+        launch_state_root=tmp_path / "launches", scene_configuration_activation_intent_root=tmp_path / "intents",
+        preparation_queue_root=tmp_path / "preparations", activation_queue_root=tmp_path / "activations",
+        progression_root=tmp_path / "progression")
     assert result["status"] == "blocked"
+    assert events == [{(TEAM, SCENE_ID, TASK_ID)}, "valid"]
+
+
+def test_queued_dispatch_owner_guard_reopens_current_consent(tmp_path):
+    kwargs = setup(tmp_path)
+    config = _write(tmp_path / "config.json", {"scene_root": str(kwargs["scene_root"]), "trusted_clients": ["webapp"]})
+    digest = json.loads(kwargs["link_path"].read_text())["intent_digest"]
+    assert worker.owner_authority_blocker(config, scene_intent_digest=digest, now=NOW.timestamp()) is None
+    _write(kwargs["link_path"].parent / "revoked.json", {})
+    assert "authority_revoked" in worker.owner_authority_blocker(config, scene_intent_digest=digest, now=NOW.timestamp())
+
+
+def test_activation_filter_allows_other_scene(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_configuration_activation_automation as activation
+    queue = tmp_path / "preparations"
+    files = []
+    for scene in (SCENE_ID, "other-scene"):
+        files.append(_write(queue / "results" / (scene + ".json"), {}))
+        _write(queue / "materialized" / (scene + ".json"), {"request": {
+            "team_namespace": TEAM, "scene": {"identity": {"id": scene}},
+            "task": {"identity": {"id": TASK_ID}}}})
+    monkeypatch.setattr(activation, "_awaiting_scene_configurations", lambda root: files)
+    observed = []
+    monkeypatch.setattr(activation, "advance_scene_configuration_activation", lambda **kw:
+        observed.append(kw["preparation_result_path"].stem) or {"status": "awaiting_configuration"})
+    rows = activation.process_scene_configuration_activations(preparation_queue_root=queue,
+        activation_queue_root=tmp_path / "activations", progression_root=tmp_path / "progression",
+        intent_root=tmp_path / "intents", profile_dir=tmp_path / "profiles",
+        standing_authorization_dir=tmp_path / "authorizations", blocked_scene_keys={(TEAM, SCENE_ID, TASK_ID)})
+    assert observed == ["other-scene"]
+    assert rows[0]["blockers"] == ["scene_configuration_owner_authority_refused"]

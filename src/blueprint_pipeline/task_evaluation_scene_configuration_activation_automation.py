@@ -1300,6 +1300,7 @@ def process_scene_configuration_activations(
     submitter: Submitter | None = None,
     now: datetime | None = None,
     running_commit: str | None = None,
+    blocked_scene_keys: set[tuple[str, str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Advance every prepared configuration one safe step; one row per preparation."""
 
@@ -1308,6 +1309,19 @@ def process_scene_configuration_activations(
     for result_path in _awaiting_scene_configurations(queue_root):
         preparation_id = result_path.name.split("-sha256", 1)[0]
         try:
+            if blocked_scene_keys:
+                try:
+                    envelope = json.loads((queue_root / "materialized" / result_path.name).read_text())
+                    request = envelope["request"]
+                    key = (request["team_namespace"], request["scene"]["identity"]["id"],
+                           request["task"]["identity"]["id"])
+                    if key in blocked_scene_keys:
+                        rows.append({"preparation_id": preparation_id, "status": "blocked",
+                            "blockers": ["scene_configuration_owner_authority_refused"]})
+                        continue
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    raise SceneConfigurationActivationAutomationError(
+                        "scene_configuration_owner_scope_unreadable") from exc
             activation = advance_scene_configuration_activation(
                 preparation_result_path=result_path,
                 preparation_queue_root=queue_root,
@@ -1378,6 +1392,7 @@ def progression_rows(
     repo_root: str | Path | None,
     webapp_secret_file: str | Path | None,
     webapp_endpoint: str,
+    blocked_scene_keys: set[tuple[str, str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Drive the Website-started configuration activation from the progression timer."""
 
@@ -1411,6 +1426,7 @@ def progression_rows(
         configured_controls_intent_root=configured_controls_intent_root,
         submitter=submitter,
         running_commit=running_release_commit() or None,
+        **({"blocked_scene_keys": blocked_scene_keys} if blocked_scene_keys else {}),
     )
     return [{"lane": LANE, **row} for row in rows]
 

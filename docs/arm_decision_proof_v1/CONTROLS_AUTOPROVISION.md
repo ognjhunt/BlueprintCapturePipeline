@@ -70,6 +70,10 @@ run or grade them.
 The canonical continuation producer and registry installer are the defaults.
 Tests replace external readback/publication only. The worker can publish admitted
 runtime metadata and read provider inventory; it never calls a provider create.
-Expiry, revocation, corruption, mismatched releases, and failed provisioning
-stop the configured-controls tick before activation. This conservative stop also
-prevents an older installed intent from bypassing a newly observed refusal.
+Expiry, revocation, mismatched releases, and failed provisioning filter the
+affected scene from configuration activation, controls progression, and canary
+handoff. Other scenes continue. Corruption with unresolved scene ownership stops
+the tick so an older installed intent cannot bypass an unreadable authority.
+Queued dispatch can call `owner_authority_blocker(config_path,
+scene_intent_digest=...)`; `None` means owner consent remains live, and a string
+is the refusal code. This supplements exact attempt and paid-resource admission.
