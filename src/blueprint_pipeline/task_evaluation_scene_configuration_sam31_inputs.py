@@ -319,7 +319,7 @@ def _materialize_sam31_exact_mask_render_inputs(
     _require(masks["camera_frame_map"] == inputs[task_id]["camera_frame_map"],
              "camera_frame_map_changed")
     tracks = _verified_source_tracks(Path(inputs[task_id]["source_track_result_path"]))
-    frames = _frame_map(tracks)
+    frames = _frame_map(tracks, task_input_packet_path=inputs[task_id]["task_input_packet_path"])
     frame_rows = {row["camera_id"]: row for row in masks["source_images"]}
     mask_rows = {row["camera_id"]: row for row in masks["masks"]}
     _require(set(frame_rows) == set(mask_rows) == set(camera_ids), "frame_camera_join_invalid")
