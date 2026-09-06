@@ -430,6 +430,7 @@ def isolation_command(
     user: str = "blueprint",
     environment_files: Sequence[str] = (),
     environment: Mapping[str, str] | None = None,
+    working_directory: str | None = None,
 ) -> list[str]:
     """Wrap ``argv`` so it runs as the service user with no network at all."""
 
@@ -437,6 +438,10 @@ def isolation_command(
         "systemd-run", "--wait", "--pipe", "--collect", "--quiet", "--service-type=exec",
         f"--unit=stage-replay-{os.getpid()}", "-p", "PrivateNetwork=yes", "-p", f"User={user}",
         "-p", "TimeoutStartSec=1800",
+        # The caller's working directory is the code root of the replay: a candidate
+        # checkout's ``src`` resolves the package before any PYTHONPATH an
+        # EnvironmentFile may override (files win over --setenv in systemd).
+        "-p", f"WorkingDirectory={working_directory or os.getcwd()}",
     ]
     for path in environment_files:
         command.extend(["-p", f"EnvironmentFile={path}"])
