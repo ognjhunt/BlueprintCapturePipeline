@@ -98,6 +98,7 @@ def build_evidence_offload_manifest(
     abandoned_after_seconds: int | None = None,
     now: Callable[[], float] = time.time,
     classifier: Callable[..., Any] = require_storage_class,
+    protection_checker: Callable[[Path], bool] | None = None,
 ) -> dict[str, Any]:
     """List sealed run directories past their hot window, without mutating anything.
 
@@ -133,6 +134,9 @@ def build_evidence_offload_manifest(
                 retained["already_offloaded"] += 1
                 continue
             receipt = _terminal_receipt(child)
+            if protection_checker is not None and protection_checker(child):
+                retained["active_or_unsealed"] += 1
+                continue
             if receipt is None and abandoned_after_seconds is None:
                 retained["active_or_unsealed"] += 1
                 continue
@@ -189,16 +193,38 @@ def _pack(directory: Path, archive_path: Path) -> list[dict[str, Any]]:
                 info = archive.gettarinfo(str(path), arcname=relative)
                 info.uid = info.gid = 0
                 info.uname = info.gname = ""
+                digest = hashlib.sha256()
                 with path.open("rb") as stream:
-                    archive.addfile(info, stream)
+                    class HashingReader:
+                        def read(self, size=-1):
+                            chunk = stream.read(size)
+                            digest.update(chunk)
+                            return chunk
+                    archive.addfile(info, HashingReader())
                 members.append(
                     {
                         "relative_path": relative,
-                        "size_bytes": path.stat().st_size,
-                        "sha256": _sha256(path),
+                        "size_bytes": info.size,
+                        "sha256": "sha256:" + digest.hexdigest(),
                     }
                 )
     return members
+
+
+def _members_unchanged(directory: Path, members: Sequence[Mapping[str, Any]]) -> bool:
+    """Reopen exact packed bytes immediately before local eviction."""
+    try:
+        actual = {}
+        for root, directories, files in os.walk(directory):
+            if any((Path(root) / name).is_symlink() for name in (*directories, *files)):
+                return False
+            for name in files:
+                path = Path(root) / name
+                actual[path.relative_to(directory).as_posix()] = (path.stat().st_size, _sha256(path))
+        expected = {row["relative_path"]: (row["size_bytes"], row["sha256"]) for row in members}
+        return actual == expected and len(expected) == len(members)
+    except (OSError, KeyError, TypeError):
+        return False
 
 
 def _candidate_still_sealed(
@@ -227,6 +253,7 @@ def apply_evidence_offload(
     ack: str,
     publisher: Callable[..., Mapping[str, Any]] = publish_configured_scene_artifact,
     now: Callable[[], float] = time.time,
+    protection_checker: Callable[[Path], bool] | None = None,
 ) -> dict[str, Any]:
     """Offload every manifest candidate whose state is unchanged; keep the rest."""
 
@@ -255,6 +282,7 @@ def apply_evidence_offload(
             or not directory.is_dir()
             or pointer.exists()
             or not _candidate_still_sealed(directory, row, abandoned_after, now)
+            or (protection_checker is not None and protection_checker(directory))
         ):
             skipped.append({"name": name, "reason": "candidate_changed"})
             continue
@@ -274,6 +302,11 @@ def apply_evidence_offload(
                 raise ControlPlaneEvidenceOffloadError(
                     "control_plane_evidence_offload_publication_mismatch"
                 )
+            if (not _candidate_still_sealed(directory, row, abandoned_after, now)
+                    or (protection_checker is not None and protection_checker(directory))
+                    or not _members_unchanged(directory, members)):
+                skipped.append({"name": name, "reason": "candidate_changed_during_archive"})
+                continue
             payload: dict[str, Any] = {
                 "schema_version": POINTER_SCHEMA_VERSION,
                 "status": "offloaded",

@@ -81,6 +81,24 @@ def test_manifest_lists_only_sealed_runs_past_the_hot_window(tmp_path: Path) -> 
         )
 
 
+def test_local_write_during_archive_publication_prevents_eviction(tmp_path):
+    root = tmp_path / "runs"
+    root.mkdir()
+    directory = _run(root, "run-1", receipt="dispatch_receipt.json", age=100, now=1000)
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        now=lambda: 1000, classifier=_unclassified)
+    client = _ContentAddressedClient()
+    def publisher(**kwargs):
+        result = store.publish_configured_scene_artifact(**kwargs, client=client, bucket=BUCKET)
+        (directory / "episodes" / "frame.bin").write_bytes(b"new evidence")
+        return result
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK, publisher=publisher)
+    assert result["offloaded_count"] == 0
+    assert result["skipped"] == [{"name": "run-1", "reason": "candidate_changed_during_archive"}]
+    assert (directory / "episodes" / "frame.bin").read_bytes() == b"new evidence"
+    assert not (root / ("run-1" + POINTER_SUFFIX)).exists()
+
+
 def test_offload_publishes_verifies_points_then_removes_and_restore_round_trips(
     tmp_path: Path,
 ) -> None:
