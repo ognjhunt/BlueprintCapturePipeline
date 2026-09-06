@@ -8335,6 +8335,14 @@ def run_vast_provider_adapter(
         lane_label_prefix=resolved_label_prefix,
     )
     prelaunch_inventory_blockers = _string_list(prelaunch_inventory_guard.get("blockers"))
+    # Run under the existing launch lock. Funding must cover the entire bounded
+    # attempt plus a reserve; an unknown balance is not permission to allocate.
+    from .provider_credit_admission import configured_vast_credit_admission
+
+    credit_guard = configured_vast_credit_admission(api_key=api_key, required_usd=hard_cap_usd)
+    write_json(resolved_job_dir / "provider_credit_admission.json", credit_guard)
+    prelaunch_inventory_blockers.extend(credit_guard["blockers"])
+    base_result["provider_credit_admission"] = credit_guard
     base_result.update(
         {
             "prelaunch_inventory_guard_status": prelaunch_inventory_guard.get("status"),

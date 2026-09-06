@@ -419,6 +419,9 @@ def run_controller(
     resizer: Callable[..., dict[str, Any]] = resize_volume,
     disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
     now: float | None = None,
+    credit_collector: Callable[[], Mapping[str, Any]] | None = None,
+    credit_warning_usd: float = 5.0,
+    credit_reserve_usd: float = 1.0,
 ) -> dict[str, Any]:
     observed = time.time() if now is None else float(now)
     previous = _read_json(report_root / "latest.json")
@@ -429,6 +432,20 @@ def run_controller(
         disk_usage=disk_usage,
         now=observed,
     )
+    if credit_collector is not None:
+        from .provider_credit_admission import credit_admission
+
+        try:
+            observation = credit_collector()
+        except Exception:  # never include credential-bearing provider exceptions
+            observation = {}
+        funding = credit_admission(observation, required_usd=credit_warning_usd,
+                                   reserve_usd=credit_reserve_usd, now=observed)
+        report["provider_funding"] = funding
+        if funding["blockers"]:
+            report["level"] = "critical"
+            report["alerts"].extend({"provider": "vast", "code": code}
+                                    for code in funding["blockers"])
     report["alert_posted"] = False
     if webhook_url and alert_due(previous, report, now=observed):
         try:
@@ -486,6 +503,10 @@ def _volume_from_environment() -> dict[str, Any] | None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from .provider_credit_admission import (
+        ENABLED_ENV, RESERVE_ENV, WARNING_ENV, observe_vast_credit,
+    )
+
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--mount", action="append", default=None)
     parser.add_argument("--report-root", default=os.getenv(REPORT_ROOT_ENV) or str(DEFAULT_REPORT_ROOT))
@@ -504,6 +525,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         volume=_volume_from_environment(),
         ack=str(os.getenv(RESIZE_ACK_ENV) or "").strip(),
         token=_read_secret(str(os.getenv(DO_TOKEN_FILE_ENV) or "")) if os.getenv(VOLUME_ID_ENV) else "",
+        credit_collector=(observe_vast_credit if os.getenv(ENABLED_ENV, "false").lower()
+                          not in {"false", "0", ""} else None),
+        credit_warning_usd=float(os.getenv(WARNING_ENV, "5")),
+        credit_reserve_usd=float(os.getenv(RESERVE_ENV, "1")),
     )
     if args.print_report:
         print(json.dumps(report, indent=2, sort_keys=True))
