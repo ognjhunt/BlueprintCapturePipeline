@@ -197,18 +197,35 @@ def test_activation_authorized_enables_activation_on_the_progression_config(tmp_
     assert "activation_service_config" not in auth_config
 
 
-def test_preparation_service_wrapper_refuses_the_authorized_activation_config(tmp_path, monkeypatch):
-    """The preparation-only service wrapper (a test convenience -- NOT the
-    production entrypoint) refuses an activation-enabled config: production runs
-    activation via blueprint-task-evaluation-scene-progression.service, which
-    execs process_scene_intents on the authorized config directly."""
-    import pytest
-    from blueprint_pipeline import task_evaluation_scene_preparation_service as svc
+def test_production_cli_routes_both_modes_through_the_owned_preparation_worker(tmp_path, monkeypatch):
+    """R1: the production entrypoint is `task_evaluation_scene_progression --config`,
+    whose main() routes to run_preparation_service whenever preparation_worker is
+    present -- for BOTH the unarmed (activation_enabled False) and the authorized
+    (activation_enabled True) config. Neither is refused, and BOTH run the owned
+    preparation worker. (process_scene_intents / worker are stubbed to isolate the
+    routing; the full authorized flow is proven by the end-to-end rehearsal.)"""
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    from blueprint_pipeline import task_evaluation_launch_preparation_worker as lw
     old_config_path, _iid, _intents, _now = _config(tmp_path, monkeypatch, source_kind="mesh", real_destination=True)
     old = json.loads(old_config_path.read_text())
     machinery = json.loads(Path(old["completed_source_machinery_path"]).read_text())
-    receipt = _install_bootstrap(tmp_path, machinery, old["capture_store_root"], True, tmp_path / "authorized")
-    auth_config = json.loads(Path(receipt["config"]["path"]).read_text())
-    assert auth_config["activation_enabled"] is True
-    with pytest.raises(ValueError, match="preparation_service_scope_invalid"):
-        svc.run_preparation_service(config_path=receipt["config"]["path"])
+
+    processed: list[str] = []
+    worker_calls: list[bool] = []
+    monkeypatch.setattr(engine, "process_scene_intents",
+                        lambda *, config_path, now=None: (processed.append(str(config_path)),
+                                                          {"results": [], "source_commit": "a" * 40})[1])
+    monkeypatch.setattr(lw, "process_launch_preparation_queue", lambda **kwargs: worker_calls.append(True) or {"status": "idle"})
+
+    for authorized in (False, True):
+        processed.clear()
+        worker_calls.clear()
+        receipt = _install_bootstrap(tmp_path, machinery, old["capture_store_root"], authorized,
+                                     tmp_path / ("authorized" if authorized else "unarmed"))
+        config_path = receipt["config"]["path"]
+        assert json.loads(Path(config_path).read_text())["activation_enabled"] is authorized
+        # main() (the real systemd ExecStart) must route to the owned preparation
+        # worker for BOTH modes without raising preparation_service_scope_invalid.
+        engine.main(["--config", config_path])
+        assert worker_calls == [True], f"owned worker must run (authorized={authorized})"
+        assert config_path in processed

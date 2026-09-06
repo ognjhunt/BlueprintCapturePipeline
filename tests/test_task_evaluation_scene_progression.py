@@ -93,4 +93,7 @@ def test_transport_timeout_reconciles_exact_local_queue_without_second_post(cont
     assert second["results"][0]["status"] == "running", second
     assert len(calls) == 1
     link = json.loads((context[0]["intent_path"].parent / "preparation-link.json").read_text())
-    assert link["scene_configuration_attempt"]["path"]
+    # R3: the preparation link is immutable + mode-independent -- the paid
+    # construction reservation lives on the separate activation link, minted only
+    # at the activation transition (not reached in this mid-preparation timeout).
+    assert "scene_configuration_attempt" not in link

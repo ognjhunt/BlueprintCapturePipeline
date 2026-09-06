@@ -197,7 +197,9 @@ def test_completed_asset_produces_a_preparation_queue_row(tmp_path, monkeypatch)
     rows = [p for statename in ("pending", "processing") for p in (queue / statename).glob("*.json")]
     assert len(rows) == 1, rows
     link = json.loads((intake_root / intent_id / "preparation-link.json").read_text())
-    assert link["scene_configuration_attempt"]["path"]
+    # R3: the preparation link never carries the paid construction reservation; that
+    # moves to the versioned activation link at the activation transition.
+    assert "scene_configuration_attempt" not in link
 
 
 def test_real_publisher_retains_owner_sources_and_worker_reads_them_without_network(tmp_path, monkeypatch):
