@@ -195,18 +195,47 @@ def test_handoff_checks_name_each_missing_piece_of_the_canary_chain(tmp_path: Pa
         dispatcher: {"effective_environment": {"BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE": "0"}},
     }
 
-    codes = sorted(f["code"] for f in preflight.handoff_checks(units, (os.getuid(), os.getgid())))
+    findings = preflight.handoff_checks(units, (os.getuid(), os.getgid()))
+    codes = sorted(f["code"] for f in findings if f["severity"] == "blocker")
 
     assert codes == [
-        "launch_dispatcher_execute_gate_closed",
-        "launch_dispatcher_execute_id_unset",
+        "launch_dispatcher_execution_hold_present",
         "launch_profile_catalog_path_disagrees_with_intake",
         "policy_canary_notification_email_unset",
     ]
+    # The empty per-launch id is the hands-off state (standing authorization admits): recorded, not blocking.
+    assert [f["code"] for f in findings if f["severity"] == "info"] == ["launch_dispatcher_execute_id_unset"]
     units[progression]["effective_environment"]["BLUEPRINT_POLICY_CANARY_NOTIFICATION_EMAIL"] = "owner@example.com"
     units["blueprint-pipeline-intake.service"]["effective_environment"]["BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH"] = "/var/lib/blueprint/pipeline-control-plane/catalog.json"
-    units[dispatcher]["effective_environment"] = {"BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE": "1", "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID": "gate-1"}
-    assert preflight.handoff_checks(units, (os.getuid(), os.getgid())) == []
+    units[dispatcher]["effective_environment"] = {"BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE": "1"}
+    assert [f["code"] for f in preflight.handoff_checks(units, (os.getuid(), os.getgid())) if f["severity"] == "blocker"] == []
+
+
+def test_execution_holds_are_named_with_their_source(tmp_path: Path) -> None:
+    """2026-09-05: the construction launch was held by LAUNCH_EXECUTE=false in a per-scene
+    EnvironmentFile and the canary dispatcher by an ExecCondition=/usr/bin/false drop-in;
+    both are operator holds that stall a hands-off run without queue evidence."""
+
+    hold = tmp_path / "scene.env"
+    hold.write_text("BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=false\n", encoding="utf-8")
+    dispatcher = "blueprint-task-evaluation-launch-dispatcher.service"
+    units = {dispatcher: {
+        "effective_environment": {"BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE": "false"},
+        "properties": {"EnvironmentFiles": [f"{hold} (ignore_errors=yes)"]},
+    }}
+
+    [finding] = [f for f in preflight.handoff_checks(units, (os.getuid(), os.getgid())) if f["code"] == "launch_dispatcher_execution_hold_present"]
+    assert finding["held_by"] == [str(hold)]
+
+    canary = "blueprint-task-evaluation-policy-canary-dispatcher.service"
+    health = preflight.unit_health_checks({canary: {"properties": {
+        "ActiveState": ["inactive"], "Result": ["exec-condition"], "LoadState": ["loaded"], "TriggeredBy": [""],
+        "ExecCondition": ["{ path=/usr/bin/false ; argv[]=/usr/bin/false ; ignore_errors=no }"],
+        "DropInPaths": ["/etc/systemd/system/blueprint-task-evaluation-policy-canary-dispatcher.service.d/99-no-dispatch-hold.conf"],
+    }}})
+    [hold_finding] = [f for f in health if f["code"] == "unit_execution_hold_present"]
+    assert hold_finding["severity"] == "blocker"
+    assert hold_finding["drop_ins"] == ["/etc/systemd/system/blueprint-task-evaluation-policy-canary-dispatcher.service.d/99-no-dispatch-hold.conf"]
 
 
 def test_probe_imports_from_the_release_src_root_not_the_package_directory(tmp_path: Path, monkeypatch) -> None:
@@ -299,11 +328,17 @@ def test_sam31_provider_profile_from_another_release_is_a_blocker_before_submiss
     [finding] = findings
     assert finding["severity"] == "blocker"
     assert finding["code"] == "sam31_provider_profile_bound_to_other_release"
-    assert finding["bound"] == {"provider_profile": "b" * 12, "worker_stack_manifest": "b" * 12}
+    # #1669: only the provider profile itself must carry the active release; the worker stack
+    # manifest and runtime image build receipt need a valid commit, not the active one.
+    assert finding["bound"] == {"provider_profile": "b" * 12}
+    assert finding["records"] == {"provider_profile": "b" * 12, "worker_stack_manifest": "b" * 12}
 
     provider.write_text(
         json.dumps({"source_commit_sha": "a" * 40, "worker_stack_manifest": {"path": str(stack)}}), encoding="utf-8"
     )
+    [current] = preflight._sam31_provider_profile_findings(hardware, "sam.service", "a" * 40)
+    assert current["code"] == "sam31_provider_profile_bound_to_active_release"
+    assert current["severity"] != "blocker"
     stack.write_text(json.dumps({"source_commit_sha": "a" * 40}), encoding="utf-8")
     [current] = preflight._sam31_provider_profile_findings(hardware, "sam.service", "a" * 40)
     assert current["code"] == "sam31_provider_profile_bound_to_active_release"
@@ -395,4 +430,49 @@ def test_probe_replays_the_paid_admission_identity_gate_from_the_release(tmp_pat
     assert ("release_evidence_grade_development_only", None) in findings
     assert report["paid_admission_identity"]["observed_commit"] == "a" * 40
     assert not any(row["code"] == "paid_admission_identity_probe_failed" for row in report["findings"])
+
+
+def test_preflight_refuses_a_paid_unit_without_the_credit_guard_and_reads_the_credit_once(tmp_path: Path) -> None:
+    """A paid unit that leaves BLUEPRINT_VAST_CREDIT_GUARD_ENABLED off would let an attempt start on credit
+    Vast tears down mid-run; the preflight also reads the credit once ($0) so a thin account is named before
+    a submission rather than at the guard."""
+
+    from blueprint_pipeline import provider_credit_admission as credit
+
+    key_file = tmp_path / "vast_api_key"
+    key_file.write_text("k\n")
+    dispatcher = "blueprint-task-evaluation-launch-dispatcher.service"
+    canary = "blueprint-task-evaluation-policy-canary-dispatcher.service"
+    units = {
+        dispatcher: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file), credit.ENABLED_ENV: "true"}},
+        canary: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file)}},
+    }
+    seen: list = []
+
+    def observer(*, api_key, credit_usd=4.67):
+        seen.append(api_key)
+        return credit.observe_vast_credit(api_key=api_key, request=lambda **_kw: (200, {"credit": credit_usd}))
+
+    findings = preflight.provider_credit_check(units, observer=observer)
+
+    assert seen == ["k"]
+    assert findings[0] == preflight._finding(
+        "blocker", "provider_credit_guard_disabled", unit=canary, env=credit.ENABLED_ENV, value=None
+    )
+    assert findings[1]["severity"] == "warning" and findings[1]["code"] == "provider_credit_low"
+    assert findings[1]["credit_usd"] == 4.67 and findings[1]["warning_usd"] == 5.0
+
+    units[canary]["effective_environment"][credit.ENABLED_ENV] = "true"
+    [fine] = preflight.provider_credit_check(units, observer=lambda *, api_key: observer(api_key=api_key, credit_usd=20.6))
+    assert fine["severity"] == "info" and fine["code"] == "provider_credit_available" and fine["credit_usd"] == 20.6
+    [exhausted] = preflight.provider_credit_check(units, observer=lambda *, api_key: observer(api_key=api_key, credit_usd=0.2))
+    assert exhausted["severity"] == "blocker" and exhausted["code"] == "provider_credit_exhausted"
+    [unknown] = preflight.provider_credit_check(
+        units, observer=lambda *, api_key: credit.observe_vast_credit(api_key=api_key, request=lambda **_kw: (503, {}))
+    )
+    assert unknown["severity"] == "warning" and unknown["code"] == "provider_credit_unverifiable"
+    assert unknown["blockers"] == ["provider_credit_unverifiable"] and unknown["http_status"] == 503
+    assert preflight.provider_credit_check({"other.service": {"effective_environment": {}}}, observer=observer) == [
+        preflight._finding("warning", "provider_credit_key_file_unset")
+    ]
 
