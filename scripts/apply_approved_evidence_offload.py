@@ -2,8 +2,13 @@
 """Apply only the exact approved offload manifest, preserving newly protected evidence."""
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
+
+# EnvironmentFile can override a transient unit's PYTHONPATH. This destructive
+# entrypoint must import the implementation belonging to its pinned checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.control_plane_evidence_offload import (

@@ -6,6 +6,8 @@ import functools
 import hashlib
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,20 @@ from tests.test_task_evaluation_configured_scene_object_store import (
 
 
 BUCKET = "blueprint-production-inputs"
+
+
+@pytest.mark.slow
+def test_approved_entrypoint_ignores_host_pythonpath(tmp_path: Path) -> None:
+    stale = tmp_path / "blueprint_pipeline"
+    stale.mkdir()
+    (stale / "__init__.py").write_text("raise RuntimeError('stale installed release')")
+    checkout = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, str(checkout / "scripts/apply_approved_evidence_offload.py"), "--help"],
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+        capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _unclassified(*_args, **_kwargs) -> None:
