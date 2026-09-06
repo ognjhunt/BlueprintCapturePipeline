@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 from pathlib import Path
@@ -100,8 +101,14 @@ def source_inputs(*, installation_path: Path, publisher_path: Path,
             installation.get("service_readable") is True and
             preparation.get("schema_version") == "public_scene_source_preparation.v1",
             "source_preparation_invalid")
-    require(installation.get("source_commit_sha") == commit and
-            preparation.get("source_commit") == commit, "source_preparation_commit_mismatch")
+    # Installation and geometric preparation identify retained content. Their
+    # executing commits are provenance, not a requirement to reinstall the same
+    # publisher bytes after every control-plane deployment. Reopen all inventory,
+    # identity and collision evidence below; the current task remains exact-release.
+    require(all(re.fullmatch(r"[0-9a-f]{40}", str(value or "")) is not None for value in (
+                installation.get("source_commit_sha"), preparation.get("source_commit"), commit))
+            and task.get("expected_production_commit", commit) == commit,
+            "source_preparation_commit_mismatch")
     require(preparation.get("source_installation_digest") == installation["receipt_digest"],
             "source_preparation_installation_mismatch")
     root = Path(installation["destination_root"])
@@ -303,8 +310,18 @@ class Staging:
         require(source.is_file(), "input_file_invalid")
         target = beneath(self.root, relative)
         target.parent.mkdir(parents=True, exist_ok=True)
-        with source.open("rb") as src, target.open("xb") as dst:
-            shutil.copyfileobj(src, dst, length=1024 * 1024)
+        if publisher_uri is not None and not source.stat().st_mode & 0o222:
+            # Publisher assets are already immutable installer-owned content.
+            # Keep an independent pathname without duplicating multi-GB raw
+            # files for every administrative execution-release change.
+            try:
+                os.link(source, target, follow_symlinks=False)
+            except OSError:
+                with source.open("rb") as src, target.open("xb") as dst:
+                    shutil.copyfileobj(src, dst, length=1024 * 1024)
+        else:
+            with source.open("rb") as src, target.open("xb") as dst:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
         require(sha(source) == sha(target), "staged_bytes_mismatch")
         return self._record(relative, publisher_uri=publisher_uri)
 
