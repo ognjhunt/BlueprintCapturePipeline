@@ -58,6 +58,7 @@ from .task_evaluation_policy_canary_scene_setup import (
 from .task_evaluation_scene_configuration_activation_automation import (
     load_scene_configuration_activation_intent,
 )
+from . import task_evaluation_scene_policy_binding as scene_policy
 
 __all__ = [
     "PolicyCanaryHandoffError",
@@ -730,6 +731,8 @@ def advance_policy_canary_handoff(
         }
     lineage, _published_paths = predecessor
     request_path, launch_request, base_profile_path, _base_profile = _configured_run(launches, source_launch_id)
+    owner = scene_policy.owner_for_profile(_base_profile,
+        now=now.timestamp() if now is not None else None)
     compiled = _compiled_construction(
         Path(episode_compilation_queue_root).expanduser(),
         preparation_id=preparation_id,
@@ -742,6 +745,12 @@ def advance_policy_canary_handoff(
     profile_id = f"{source_launch_id}-internal-policy-canary-{expected_production_commit[:10]}"
     if existing is None:
         authorization = dict(intent["authorization_template"])
+        if owner is not None:
+            remaining = int(owner["request"]["execution"]["expires_at_epoch"] -
+                (now or datetime.now(timezone.utc)).timestamp())
+            if remaining < 300:
+                raise PolicyCanaryHandoffError("scene_policy_owner_authority_window_too_short")
+            authorization["valid_for_seconds"] = min(authorization["valid_for_seconds"], remaining)
         native_controller_path = repo / MANIFESTS["native_controller_configuration"]
         controller_document = rebind_policy_controller_configuration_to_scene(
             template_path=repo / MANIFESTS["policy_controller_template"],
@@ -823,7 +832,9 @@ def advance_policy_canary_handoff(
             "hard_ttl_seconds": CANARY_HARD_TTL_SECONDS,
             "scene_id": numeric_scene_id,
         }
-        _write_or_reuse(inputs / "presubmission_parameters.json", parameters)
+        parameters = _write_or_reuse(inputs / "presubmission_parameters.json", parameters)
+        if parameters.get("profile_id") != profile_id or parameters.get("source_commit") != expected_production_commit:
+            raise PolicyCanaryHandoffError("policy_canary_handoff_retained_parameters_mismatch")
         try:
             emitted = dict(presubmission(**parameters))
         except Exception as exc:  # the presubmission raises its own typed blockers
@@ -859,6 +870,12 @@ def advance_policy_canary_handoff(
     setup = _load(setup_path, blocker="policy_canary_handoff_setup_invalid")
     if setup.get("setup_digest") != existing.get("setup_digest") or setup.get("setup_digest") != policy_canary_setup_digest(setup):
         raise PolicyCanaryHandoffError("policy_canary_handoff_setup_invalid")
+    wrapper = _load(wrapper_path, blocker="policy_canary_handoff_wrapper_invalid")
+    execution_plan = wrapper.get("internal_policy_canary_execution_plan") or {}
+    if owner is not None:
+        binding = scene_policy.validate_owner_binding(_base_profile,
+            execution_plan.get("scene_policy_binding") or {}, source_commit=expected_production_commit)
+        scene_policy.validate_setup_pair(setup, binding)
 
     profile_path = state / "policy-canary-profile.json"
     if existing["status"] == "canary_presubmitted":
@@ -894,6 +911,13 @@ def advance_policy_canary_handoff(
     if _IDENTIFIER.fullmatch(run_id) is None:
         raise PolicyCanaryHandoffError("policy_canary_handoff_run_id_invalid")
     selection = _selection(setup=setup, run_id=run_id, notification_email=notification_email)
+    if owner is not None:
+        profile = _load(profile_path, blocker="policy_canary_handoff_profile_invalid")
+        pair_blockers = scene_policy.profile_binding_blockers(profile)
+        if pair_blockers:
+            raise PolicyCanaryHandoffError(",".join(pair_blockers))
+        selection["episode_interpretation"] = scene_policy.interpretation_for_owner(
+            profile=_base_profile, plan=execution_plan, default=EPISODE_INTERPRETATION)
     body = json.dumps(selection, sort_keys=True, separators=(",", ":")).encode()
     _write_immutable(state / "policy-canary-selection.json", selection)
     endpoint = webapp_endpoint.rstrip("/") + "/policy-canary-runs/" + urllib.parse.quote(source_launch_id, safe="")
