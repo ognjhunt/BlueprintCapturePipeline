@@ -40,3 +40,12 @@ def test_signed_intake_and_nonce_replay(tmp_path, monkeypatch):
     assert response.json()["provider_mutation_performed_inside_http_request"] is False
     assert client.post(endpoint, content=body, headers=headers).status_code == 401
     assert len(list((tmp_path / "queue").glob("scene-*"))) == 1
+    status_nonce = "scene-intake-nonce-status"
+    status_signature = hmac.new(b"test-token", f"{timestamp}.webapp.{status_nonce}.".encode(), "sha256").hexdigest()
+    status_headers = {**headers, "x-blueprint-pipeline-nonce": status_nonce,
+                      "x-blueprint-pipeline-signature": "sha256=" + status_signature}
+    inspected = client.get(endpoint + "/" + response.json()["intent_id"], headers=status_headers)
+    assert inspected.status_code == 200, inspected.text
+    assert inspected.json()["request_digest"] == response.json()["request_digest"]
+    assert inspected.json()["owner"] == value["owner"]
+    assert inspected.json()["status"] == "accepted"
