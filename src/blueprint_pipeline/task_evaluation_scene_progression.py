@@ -479,6 +479,7 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
                     progress = advance(directory, intent, progress, status="blocked", phase="preparation",
                         state=progress.get("state", {}) if progress else {}, blockers=[code], now=moment)
                 rows.append({"intent_id": directory.name, "status": progress["status"], "phase": progress["phase"],
+                             "blockers": progress.get("blockers", []),
                              "progression_digest": progress["progression_digest"]})
         except (OSError, ValueError, KeyError, TypeError):
             rows.append({"intent_id": directory.name, "status": "blocked", "blockers": ["scene_progression_state_invalid"]})

@@ -114,7 +114,7 @@ def context(tmp_path, monkeypatch, request):
             for key, description in {"subject": options.get("subject", "book"), "support": "TV cabinet",
                 "destination": "tray", "success": options.get("success",
                     "Place the object fully inside the destination, release it, and move the gripper clear.")}.items()})
-    owner["execution"].update(max_total_spend_usd=20, max_paid_attempts=4,
+    owner["execution"].update(max_total_spend_usd=options.get("max_total_spend_usd", 20), max_paid_attempts=4,
         allowed_providers=["vast", "openai"], expires_at_epoch=now + 3600)
     owner["consent"].update(accepted_at_epoch=now - 1, provider_terms_reference=ref(terms)["sha256"])
     intake_root = tmp_path / "intents"
