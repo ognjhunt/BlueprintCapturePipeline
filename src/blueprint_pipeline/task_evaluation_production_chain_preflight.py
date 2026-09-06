@@ -854,8 +854,9 @@ def binding_checks(units: Mapping[str, dict[str, Any]], active_sha: str, ids: tu
 def _sam31_provider_profile_findings(hardware_profile: Path, unit_name: str, active_sha: str) -> list[dict[str, Any]]:
     """The provider profile a SAM hardware profile references must be bound to the active release.
 
-    The SAM launch-packet validator refuses a GPU request whose provider profile,
-    worker stack manifest or runtime image build receipt carries another commit.
+    The SAM launch-packet validator refuses a GPU request whose provider profile carries
+    another commit (since #1669 the worker stack manifest and runtime image build receipt
+    only need a valid commit, so those are recorded, not refused).
     On 2026-09-05 the hardware profile for scene 841757 pointed at scene 840920's
     provider profile from three weeks earlier; the refusal surfaced only after a
     paid calibration render, as one anonymous blocker among forty predicates.
@@ -880,7 +881,10 @@ def _sam31_provider_profile_findings(hardware_profile: Path, unit_name: str, act
         record_path = Path(str(record.get("path") or "")) if isinstance(record, Mapping) else None
         if record_path is not None and record_path.is_file():
             records[role] = str((_read_json(record_path) or {}).get("source_commit_sha") or "")
-    stale = {role: sha for role, sha in records.items() if sha and sha != active_sha}
+    # #1669: only the provider profile itself must carry the active release; the worker stack
+    # manifest and runtime image build receipt need a valid commit (no image-build producer
+    # exists in the repo), so another commit there is provenance, not a refusal.
+    stale = {"provider_profile": bound} if bound and bound != active_sha else {}
     if stale:
         findings.append(
             _finding(
@@ -889,6 +893,7 @@ def _sam31_provider_profile_findings(hardware_profile: Path, unit_name: str, act
                 unit=unit_name,
                 path=str(provider_path),
                 bound={role: sha[:12] for role, sha in stale.items()},
+                records={role: sha[:12] for role, sha in records.items() if sha},
                 active_sha=active_sha[:12],
                 consequence="sam31_gpu_canary_request_configuration_invalid after the paid calibration render",
             )
