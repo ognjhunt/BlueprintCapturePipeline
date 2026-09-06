@@ -274,6 +274,9 @@ def _baseline(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
 
 def _unposted_authority(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
     source, value = _read(path, code="project_spend_unposted_authority_invalid")
+    if value.get("schema_version") == "task_evaluation_scene_attempt.v1":
+        from .task_evaluation_scene_spend import scene_reservation_spend_record
+        return scene_reservation_spend_record(source)
     cap = value.get("hard_attempt_spend_cap_usd")
     digest = value.get("authorization_digest")
     if (
@@ -602,6 +605,11 @@ def project_spend_dependency_records(
         if not isinstance(record, Mapping):
             raise ValueError("project_spend_dependency_invalid")
         dependencies.append((f"unposted_authority_{index}", record))
+        if record.get("accounting_kind") == "persistent_scene_reservation":
+            owner = record.get("owner_intent")
+            if not isinstance(owner, Mapping):
+                raise ValueError("project_spend_dependency_invalid")
+            dependencies.append((f"unposted_owner_intent_{index}", owner))
     return dependencies
 
 

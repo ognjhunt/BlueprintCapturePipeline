@@ -849,17 +849,23 @@ def run_storage_gc(
     evidence_present, absent = _existing(evidence_roots)
     report["skipped_roots"].extend(absent)
     if evidence_present:
+        def evidence_protected(directory: Path) -> bool:
+            pinned = live_pinned_paths(pins_root, now=clock)
+            if any(Path(p) == directory or directory in Path(p).parents or Path(p) in directory.parents for p in pinned):
+                return True
+            return directory.name in _queue_reference_text(queue_roots)
         offload = build_evidence_offload_manifest(
             evidence_roots=evidence_present,
             hot_window_seconds=hot_window_seconds,
             abandoned_after_seconds=abandoned_after_seconds,
             now=clock,
             classifier=classifier,
+            protection_checker=evidence_protected,
         )
         if apply and offload_enabled:
             extra = {"publisher": publisher} if publisher is not None else {}
             report["evidence_offload"] = apply_evidence_offload(
-                offload, ack=OFFLOAD_ACK, now=clock, **extra
+                offload, ack=OFFLOAD_ACK, now=clock, protection_checker=evidence_protected, **extra
             )
         else:
             report["evidence_offload"] = offload
