@@ -217,17 +217,25 @@ def _validate_release(retained: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _validate_conversion(retained: Mapping[str, Any], commit: str) -> None:
-    """The retained standard-splat conversion must be an exact-release receipt.
+    """The retained standard-splat conversion must be a structurally valid receipt.
 
-    The factory rebinds the conversion at ``release.source_commit`` and reruns the
-    canonical converter only when the commit drifts; a receipt that no longer
-    names this release is an invalid retained artifact, so fail closed here rather
-    than letting the worker discover it after reserving an attempt.
+    Content identity, not commit identity. The standard-splat converter needs the
+    3DGS decoder, which exists only in the decoder-equipped SAM preparation, never
+    on the control plane where provisioning runs. The preparation (the public-scene
+    factory) rebinds the conversion at ``release.source_commit`` when it drifts, so
+    requiring the retained receipt to already name this release is both
+    unsatisfiable at provisioning time and contrary to the content-identity goal --
+    a deploy must not invalidate a retained per-scene document (piece 1). Validate
+    the receipt's structure and that it names a real commit; leave the exact-release
+    rebind to the decoder-equipped preparation. ``commit`` is accepted for context
+    but no longer required to equal the recorded conversion commit.
     """
     conversion = _load(retained["standard_splat_conversion_receipt"],
                        reason="public_scene_source_evidence_absent", digest_field="receipt_digest")
+    recorded = conversion.get("repository", {}).get("commit")
     if (conversion.get("schema_version") != "standard_splat_conversion_receipt.v1"
-            or conversion.get("repository", {}).get("commit") != commit
+            or not (isinstance(recorded, str) and len(recorded) == 40
+                    and all(c in "0123456789abcdef" for c in recorded))
             or not isinstance(conversion.get("output"), Mapping)
             or not isinstance(conversion.get("source"), Mapping)):
         _fail("public_scene_source_evidence_absent")

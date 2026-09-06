@@ -211,12 +211,16 @@ def main(argv=None):
     parser.add_argument("--destination-simready")
     parser.add_argument("--destination-alias", action="append", default=[])
     parser.add_argument("--install", action="store_true")
+    parser.add_argument("--public-scene-enabled", action="store_true",
+                        help="Admit rights-admitted public-scene persistent intents (Spec A: the "
+                             "legacy public-scene path, e.g. 841757) in addition to owner uploads.")
     args = parser.parse_args(argv)
     if args.destination_simready:
         path = safe_path(args.destination_simready)
         identity = read(path, digest_field="result_digest")["destination_identity"]
         bootstrap = build_bootstrap(destination_catalog=[{"binding_id": identity["id"] + "-" + identity["version"],
-            "owner_description_aliases": args.destination_alias, "simready_result": record(path)}])
+            "owner_description_aliases": args.destination_alias, "simready_result": record(path)}],
+            public_scene_enabled=args.public_scene_enabled)
         _managed_json(safe_path(args.bootstrap), bootstrap, pwd.getpwnam(bootstrap["service_account"]))
     result = install_scene_preparation(bootstrap_path=args.bootstrap) if args.install else {"bootstrap": record(args.bootstrap)}
     print(json.dumps(result, sort_keys=True))

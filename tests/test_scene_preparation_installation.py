@@ -136,3 +136,23 @@ def test_owner_upload_default_still_refuses_public_scene(tmp_path, monkeypatch):
         capture_store_root=old["capture_store_root"], running_repo_root=tmp_path / "repo", service_account=ACCOUNT)
     assert bootstrap["supported_source_kinds"] == ["mesh", "gaussian_splat"]
     assert "public_scene" not in bootstrap["supported_source_kinds"]
+
+
+def test_cli_public_scene_enabled_flag_builds_a_public_scene_bootstrap(tmp_path, monkeypatch):
+    """`--public-scene-enabled` must reach build_bootstrap so the public_scene
+    config is reproducible from the CLI (not hand-generated)."""
+    captured = {}
+
+    def recording_build(**kwargs):
+        captured.update(kwargs)
+        return {"schema_version": installation.BOOTSTRAP_SCHEMA, "service_account": ACCOUNT}
+
+    monkeypatch.setattr(installation, "build_bootstrap", recording_build)
+    # Stub the simready read so the CLI reaches build_bootstrap without a real asset.
+    monkeypatch.setattr(installation, "read", lambda *a, **k: {"destination_identity": {"id": "tray", "version": "v1"}})
+    monkeypatch.setattr(installation, "record", lambda p: {"path": str(p), "sha256": "sha256:" + "0" * 64, "size_bytes": 1})
+    monkeypatch.setattr(installation, "_managed_json", lambda *a, **k: None)
+    sim = tmp_path / "sim.json"; sim.write_text("{}")
+    installation.main(["--bootstrap", str(tmp_path / "bootstrap.json"),
+                       "--destination-simready", str(sim), "--public-scene-enabled"])
+    assert captured.get("public_scene_enabled") is True

@@ -263,10 +263,25 @@ def test_absent_retained_artifact_fails_closed(retained, tmp_path, absent, expec
         (tmp_path / "public-source-bindings").glob("*.json"))
 
 
-def test_conversion_receipt_for_a_stale_release_fails_closed(retained, tmp_path):
+def test_conversion_receipt_from_another_release_is_accepted_content_bound(retained, tmp_path):
+    # Content identity, not commit identity: a structurally valid conversion recorded
+    # at a different (real) release is accepted. The standard-splat converter needs the
+    # 3DGS decoder present only in the SAM preparation, so the exact-release rebind is
+    # left to that decoder-equipped preparation; a deploy must not invalidate the
+    # retained per-scene document (piece 1).
     retained_paths, owner_authority, extras = retained
     conversion = json.loads(retained_paths["standard_splat_conversion_receipt"].read_text())
-    conversion["repository"]["commit"] = "0" * 40  # a different, stale release
+    conversion["repository"]["commit"] = "a" * 40  # a different, real release commit
+    _write(retained_paths["standard_splat_conversion_receipt"], conversion, "receipt_digest")
+    # Not refused: the provisioner accepts the content-valid conversion and provisions.
+    result = _provision(tmp_path, retained_paths, owner_authority, now=extras["now"])
+    assert result
+
+
+def test_structurally_invalid_conversion_still_fails_closed(retained, tmp_path):
+    retained_paths, owner_authority, extras = retained
+    conversion = json.loads(retained_paths["standard_splat_conversion_receipt"].read_text())
+    conversion["repository"]["commit"] = "not-a-real-commit"  # not 40 hex → structurally invalid
     _write(retained_paths["standard_splat_conversion_receipt"], conversion, "receipt_digest")
     with pytest.raises(provisioner.PublicSceneIntentProvisionError, match="public_scene_source_evidence_absent"):
         _provision(tmp_path, retained_paths, owner_authority, now=extras["now"])
