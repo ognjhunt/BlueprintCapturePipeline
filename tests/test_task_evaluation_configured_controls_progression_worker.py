@@ -706,6 +706,62 @@ def test_process_plans_advances_scene_configuration_activations_from_the_intent_
         assert name not in forwarded
 
 
+def test_scene_configuration_activation_scans_the_owned_preparation_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A4: when the owner autoprovision config is present, the scene-configuration
+    activation selector must scan the OWNED preparation queue (where owned
+    preparations land), not the worker's CLI preparation_queue_root -- otherwise
+    owned preparations are invisible to activation."""
+    from blueprint_pipeline import task_evaluation_scene_configuration_activation_automation as automation
+    from blueprint_pipeline import task_evaluation_controls_autoprovision as autoprovision
+
+    owned_queue = tmp_path / "task-evaluation-owned-scene-preparations"
+    config = {"scene_root": str(tmp_path / "scenes"), "preparation_queue_root": str(owned_queue),
+              "controls_root": str(tmp_path / "controls"), "intent_root": str(tmp_path / "cintents"),
+              "profile_dir": str(tmp_path / "cprofiles"), "robot_catalog_path": str(tmp_path / "cat.json"),
+              "trusted_clients": ["blueprint-webapp"]}
+    config_path = tmp_path / "autoprovision.json"
+    config_path.write_text(json.dumps(config))
+    monkeypatch.setenv(autoprovision.CONFIG_ENV, str(config_path))
+    # Isolate the owner-scope: skip the heavy controls provisioning, keep the real
+    # progression_owner_scope so it captures the owned preparation queue from the config.
+    monkeypatch.setattr(autoprovision, "process_config", lambda *a, **k: [])
+    monkeypatch.setattr(worker, "running_release_commit", lambda: "a" * 40)
+    monkeypatch.setattr(automation, "running_release_commit", lambda: "a" * 40)
+
+    observed: dict[str, object] = {}
+
+    def process(**kwargs: object) -> list[dict[str, object]]:
+        observed.update(kwargs)
+        return []
+
+    monkeypatch.setattr(automation, "process_scene_configuration_activations", process)
+    intent_root = tmp_path / "scene-configuration-intents"
+    intent_root.mkdir()
+    plan_root = tmp_path / "plans"
+    _write(plan_root / "configured-controls.json", {"schema_version": "test.plan.v1"})
+    worker.process_plans(
+        plan_root=plan_root,
+        autostart_intent_root=tmp_path / "intents",
+        launch_state_root=tmp_path / "launch",
+        progression_root=tmp_path / "progression",
+        preparation_queue_root=tmp_path / "cli-launch-preparations",  # the WRONG (CLI) queue
+        episode_compilation_queue_root=tmp_path / "compilations",
+        activation_queue_root=tmp_path / "activations",
+        repo_root=tmp_path / "repo",
+        webapp_secret_file=tmp_path / "secret",
+        webapp_endpoint="https://tryblueprint.io/api/internal/task-evaluation-launch-submissions",
+        scene_configuration_activation_intent_root=intent_root,
+        profile_dir=tmp_path / "profiles",
+        standing_authorization_dir=tmp_path / "standing",
+    )
+    # The activation selector receives the OWNED queue from the config, not the CLI queue.
+    assert Path(observed["preparation_queue_root"]) == owned_queue
+    assert Path(observed["preparation_queue_root"]) != tmp_path / "cli-launch-preparations"
+
+
 def test_process_plans_passes_no_running_commit_when_the_checkout_is_not_detached(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

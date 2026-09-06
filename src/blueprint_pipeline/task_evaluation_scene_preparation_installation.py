@@ -77,7 +77,7 @@ def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
                     inputs_root="/var/lib/blueprint/task-evaluation-inputs",
                     capture_store_root="/var/lib/blueprint/capture-intake",
                     running_repo_root="/opt/blueprint/task-evaluation-control-plane", service_account="blueprint",
-                    public_scene_enabled=False):
+                    public_scene_enabled=False, activation_authorized=False):
     rows = validate_destination_catalog(destination_catalog)
     roots = {key: str(safe_path(value)) for key, value in {
         "config_root": config_root, "state_root": state_root, "inputs_root": inputs_root,
@@ -88,6 +88,13 @@ def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
         "running_repo_root": str(running_repo_root), "service_account": service_account,
         "destination_catalog": rows, "simulation_physics_bounds": {key: list(value) for key, value in DEFAULT_PHYSICS_BOUNDS.items()},
         "execution_activation_enabled": False,
+        # A3: the SEPARATELY-ADMITTED activation on-ramp. Off by default keeps the
+        # installed service preparation-only (no scene-configuration activation is
+        # produced). When the owner authorizes activation, the installer emits an
+        # activation config (activation_enabled True + activation_intent_root +
+        # project_spend_current_path) that the service runs as a second no-spend
+        # pass. This never arms paid dispatch; the paid GPU flip stays separate.
+        "activation_authorized": bool(activation_authorized),
         "supported_source_kinds": PUBLIC_SCENE_SOURCE_KINDS if public_scene_enabled else OWNER_UPLOAD_SOURCE_KINDS}
     value["bootstrap_digest"] = canonical_digest(value, digest_field="bootstrap_digest")
     return value
@@ -128,7 +135,8 @@ def install_scene_preparation(*, bootstrap_path):
         inputs / "owner-source-store", inputs / "completed-scene-preparation",
         inputs / "completed-scene-preparation-inputs", state / "scene-preparation-release-bindings",
         state / "scene-preparation-service", state / "submission-publication-locks",
-        state / "disk-reservations", state / "storage-pins"]
+        state / "disk-reservations", state / "storage-pins",
+        inputs / "task-evaluation-terminal-results"]
     if public_scene_enabled:
         # The public-scene binding directory the per-scene provisioner writes
         # <binding_id>.json into; the scene-progression _source resolver reads
@@ -155,6 +163,10 @@ def install_scene_preparation(*, bootstrap_path):
         "intent_root": str(directories[0]), "capture_store_root": bootstrap["capture_store_root"],
         "factory_output_root": str(inputs / "completed-scene-preparation"),
         "completed_source_machinery_path": str(machinery_path),
+        # A6: where the terminal-result index files a paid run's sealed receipts.
+        # The reconciler hook is additionally gated on an activation record, so this
+        # is inert until the activation on-ramp runs and a run is indexed here.
+        "terminal_result_root": str(inputs / "task-evaluation-terminal-results"),
         "deployment_receipt_root": str(state / "deploy-receipts"),
         "release_binding_root": str(state / "scene-preparation-release-bindings"),
         "running_repo_root": bootstrap["running_repo_root"], "runtime_publication_root": str(inputs / "system-runtimes"),
@@ -177,6 +189,26 @@ def install_scene_preparation(*, bootstrap_path):
         # worker only reads machinery_path once a public_scene intent exists.
         config["public_source_binding_root"] = str(public_binding_root)
         config["machinery_path"] = str(config_root / "task-evaluation-public-scene-machinery.json")
+    if bool(bootstrap.get("activation_authorized")):
+        # A3: emit the separately-admitted activation config the service runs as a
+        # second no-spend pass. It shares the preparation config's roots/state but
+        # sets activation_enabled True so _advance_intent provisions the
+        # scene-configuration activation intent the configured-controls worker
+        # consumes. project_spend_current_path is where the project-spend monitor
+        # (capacity/funding) publishes the fresh reconciliation _activation requires;
+        # activation fails closed on a stale/absent pointer (never allocates).
+        activation_intent_root = inputs / "scene-configuration-activation-intents"
+        if not activation_intent_root.exists():
+            activation_intent_root.mkdir(parents=True, mode=0o750)
+            if os.geteuid() == 0:
+                os.chown(activation_intent_root, account.pw_uid, account.pw_gid)
+        activation_config = {**config, "activation_enabled": True,
+            "activation_intent_root": str(activation_intent_root),
+            "project_spend_current_path": str(state / "scene-project-spend" / "current.json")}
+        activation_config["config_digest"] = canonical_digest(activation_config, digest_field="config_digest")
+        activation_config_path = config_root / "task-evaluation-scene-activation.json"
+        _managed_json(activation_config_path, activation_config, account)
+        config["activation_service_config"] = str(activation_config_path)
     config["config_digest"] = canonical_digest(config, digest_field="config_digest")
     config_path = config_root / "task-evaluation-scene-progression.json"
     _managed_json(config_path, config, account)
@@ -214,13 +246,17 @@ def main(argv=None):
     parser.add_argument("--public-scene-enabled", action="store_true",
                         help="Admit rights-admitted public-scene persistent intents (Spec A: the "
                              "legacy public-scene path, e.g. 841757) in addition to owner uploads.")
+    parser.add_argument("--activation-authorized", action="store_true",
+                        help="Separately admit the scene-configuration activation on-ramp (A3): the "
+                             "service runs a second no-spend pass that provisions activation intents. "
+                             "Off by default keeps the service preparation-only. Never arms paid dispatch.")
     args = parser.parse_args(argv)
     if args.destination_simready:
         path = safe_path(args.destination_simready)
         identity = read(path, digest_field="result_digest")["destination_identity"]
         bootstrap = build_bootstrap(destination_catalog=[{"binding_id": identity["id"] + "-" + identity["version"],
             "owner_description_aliases": args.destination_alias, "simready_result": record(path)}],
-            public_scene_enabled=args.public_scene_enabled)
+            public_scene_enabled=args.public_scene_enabled, activation_authorized=args.activation_authorized)
         _managed_json(safe_path(args.bootstrap), bootstrap, pwd.getpwnam(bootstrap["service_account"]))
     result = install_scene_preparation(bootstrap_path=args.bootstrap) if args.install else {"bootstrap": record(args.bootstrap)}
     print(json.dumps(result, sort_keys=True))
