@@ -63,7 +63,10 @@ def preparation_evidence_roots(input_root: str | Path, queue_root: str | Path) -
     ``evidence_path_invalid`` after every GPU stage had succeeded.
     """
 
-    return (Path(input_root), Path(queue_root), CONTROL_PLANE_ROOT, SAM31_EXECUTION_ROOT)
+    from .task_evaluation_scene_configuration_sam31_plan import HOST_ROOTS
+    # Adopted conversions live in the canonical host-input tree, alongside
+    # sam31-preparations, and retain independent exact-file evidence bindings.
+    return (Path(input_root), Path(queue_root), CONTROL_PLANE_ROOT, SAM31_EXECUTION_ROOT, *HOST_ROOTS)
 
 
 def ensure_progress_roots(root: Path) -> None:
