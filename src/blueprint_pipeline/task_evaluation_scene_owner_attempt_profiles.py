@@ -216,3 +216,21 @@ def require_fresh_task_owner(task: Mapping[str, Any], *, source_commit: str,
     if output_path is not None:
         _write_once(output_path, fields)
     return fields
+
+
+def record_owner_attempt(
+    operations: dict[str, Any],
+    mode: str,
+    activation_request: Mapping[str, Any],
+    preparation_request: Mapping[str, Any],
+    activation_root: Path,
+) -> None:
+    """Retain the native ("native") or configuration ("config") owner attempt into ``operations``."""
+    retain = retain_native_owner_attempt if mode == "native" else reserve_configuration_owner_attempt
+    attempt = retain(
+        activation_request=activation_request,
+        preparation_request=preparation_request,
+        output_path=Path(activation_root) / "scene_owner_attempt.json",
+    )
+    if attempt is not None:
+        operations["scene_owner_attempt"] = attempt
