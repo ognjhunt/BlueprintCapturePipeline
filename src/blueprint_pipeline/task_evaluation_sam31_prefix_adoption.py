@@ -184,7 +184,7 @@ def validate_completed_prefix_adoption(path, *, expected_source_commit, approved
                                      tracking_origin["commit"], _ref(value["sam31_billing_source"], roots))
         require(tracking == value["tracking_identity"], "sam31_adoption_tracking_identity_changed")
     if value["through_phase"] == "segment_cutout":
-        from .task_evaluation_sam31_preparation_paid_stages import validate_retained_paid_stage
+        from .task_evaluation_sam31_retained_evidence import validate_retained_paid_stage
         validate_retained_paid_stage(outcomes["contribution_sweep"], stage_id="contribution_sweep")
         for relative in (
             "scripts/adp_gaussian_excision_provider_runner.py",
@@ -293,7 +293,7 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
         old_inputs.update(result["artifacts"])
         if phase == "standard_splat_conversion":
             old_inputs["standard_splat_conversion"] = old_inputs["standard_splat_conversion_receipt"]
-    from .task_evaluation_sam31_preparation_execution import _parent
+    from .task_evaluation_sam31_parent_evidence import _parent
     _, state, parent_path = _parent(job, Path(parent_queue_root))
     require(state in {"blocked", "completed", "materialized"}, "sam31_adoption_parent_not_terminal")
     value = {"schema_version": SCHEMA, "status": "verified_completed_prefix", "created_at_epoch": at,
