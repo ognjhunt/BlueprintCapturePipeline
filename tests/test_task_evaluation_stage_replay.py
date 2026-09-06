@@ -325,6 +325,17 @@ def test_envelope_uri_prefixes_come_from_the_request_itself() -> None:
     assert replay.envelope_uri_prefixes({"request": {}}) == []
 
 
+def test_parent_fetch_boundary_is_not_ready_for_progression(tmp_path: Path):
+    request, _ = _sam_request()
+    queue = tmp_path / "parent"
+    stage_launch_preparation_request(value=request, queue_root=queue, submitted_by="blueprint-webapp")
+    report = replay.replay_parent(parent_queue_root=queue, preparation_id=request["preparation_id"],
+        child_queue_root=tmp_path / "children", input_root=tmp_path / "empty-inputs",
+        replay_root=tmp_path / "replays", allowed_uri_prefixes=PREFIXES, service_account=SERVICE_ACCOUNT)
+    assert report["sam31_ready"] is False
+    assert report["reached_render_inputs_boundary"] is False
+
+
 def _queued_preparation(tmp_path: Path) -> tuple[Path, Path]:
     """A parent staged by the real producer, materialized, with a queued result — as the host holds it."""
 
@@ -378,4 +389,3 @@ def test_next_consumer_replay_admits_a_queued_parent_and_names_a_consumer_that_w
     assert activation["status"] == "refused"
     assert activation["blocker"] == "scene_configuration_activation_preparation_envelope_invalid"
     assert activation["fired_predicates"] == ["envelope.get('schema_version') != PREPARATION_ENVELOPE_SCHEMA_VERSION"]
-

@@ -387,6 +387,11 @@ def replay_parent(
                 linked += 1
     scratch_inputs.mkdir(parents=True, exist_ok=True)
     fetch_calls: list[str] = []
+    render_reached = False
+    def render_boundary(**kwargs: Any) -> dict[str, Any]:
+        nonlocal render_reached
+        render_reached = True
+        return _render_boundary(**kwargs)
     account = service_account or pwd.getpwuid(os.geteuid()).pw_name
     previous_child_env = os.environ.get(driver.CHILD_QUEUE_ENV)
     os.environ[driver.CHILD_QUEUE_ENV] = str(scratch_child)
@@ -412,7 +417,7 @@ def replay_parent(
             queue_root=scratch_queue, input_root=scratch_inputs, allowed_uri_prefixes=list(allowed_uri_prefixes),
             service_account=account, source_commit=str(request.get("expected_production_commit") or ""),
             max_messages=1, fetcher=_refusing_fetcher(fetch_calls),
-            sam31_preparation_advancer=advancer, scene_render_input_materializer=_render_boundary,
+            sam31_preparation_advancer=advancer, scene_render_input_materializer=render_boundary,
             construction_queue_root=run_root / "scene-constructions",
             episode_compilation_queue_root=run_root / "episode-compilations",
             # No disk reservation: a replay reads production evidence and writes only scratch; the
@@ -431,7 +436,7 @@ def replay_parent(
     rows = outcome.get("results") or []
     row = rows[0] if rows else {}
     blockers = [str(item) for item in (row.get("blockers") or [])]
-    boundary = any("ReplayBoundary" in item for item in blockers)
+    boundary = render_reached and not fetch_calls and any("ReplayBoundary" in item for item in blockers)
     report.update(
         status=str(row.get("status") or "no_row"),
         row={key: row.get(key) for key in ("status", "blockers", "preparation_id", "observed_at_iso")},
