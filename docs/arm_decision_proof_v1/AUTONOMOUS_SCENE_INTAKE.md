@@ -62,3 +62,30 @@ input requirement, not permission to invent geometry or physics.
 
 Completion requires merged implementation, deployment receipts, and authenticated
 live-path evidence for all seven. Unit tests or helpers alone do not complete it.
+
+## Recovery and progression interfaces
+
+The source factory uses `select_completed_prefix_adoption` to try the longest
+compatible completed prefix first. It runs the full existing scientific,
+renderer, model, camera, rights, billing and provenance validators; incompatibility
+returns `no_reusable_prefix` with the retained rejection reasons. Selection never
+rewrites the original child evidence.
+
+`reserve_scene_attempt` accepts optional `recovery_from_attempt_id` and
+`recovery_evidence`. A recovery creates a new immutable attempt and keeps both
+the failed attempt's maximum exposure and the original producer failure. The
+same durable intent lock enforces aggregate spending, paid attempt count,
+the separate owner retry cap, and one successor per failed attempt. A zero retry
+cap remains zero after deployment. Recovery requires digest-bound failure,
+fresh global provider-zero guard bytes observed after the failure, and closed
+ownership reconciliation with no active writer or unresolved create. An
+ambiguous create without those observations cannot reserve a successor.
+
+The activation progression calls `replay_progression_admission` before publishing
+authority or staging activation. Its retained report binds the original parent
+result, envelope, child jobs/results and consumer code digests. It replays child
+worker admission, the parent worker in a scratch queue, and both actual next
+consumers. Model/GPU child handlers are not executed. A fetch boundary does not
+count as reaching the rendering boundary. The same interface is available to
+deployment validation; an accepted report is preparation evidence, never a paid
+execution or scientific completion receipt.

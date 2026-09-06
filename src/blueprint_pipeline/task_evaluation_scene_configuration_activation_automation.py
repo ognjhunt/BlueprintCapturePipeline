@@ -854,6 +854,14 @@ def advance_scene_configuration_activation(
         raise SceneConfigurationActivationAutomationError(
             "scene_configuration_activation_provider_zero_stale"
         )
+    from .task_evaluation_progression_replay import replay_progression_admission
+    lookahead = replay_progression_admission(result_path=result_path, queue_root=queue_root,
+                                            replay_root=state_root / "lookahead")
+    if lookahead["status"] != "accepted":
+        return {"status": "scene_configuration_lookahead_blocked",
+                "preparation_id": preparation_id, "blockers": lookahead["blockers"],
+                "lookahead_report": _artifact(Path(lookahead["report_path"])),
+                "provider_mutation_performed": False}
     activation_id = _activation_id(preparation_id)
     attempt = _sealed({
         "schema_version": "task_evaluation_scene_configuration_activation_attempt.v1",
@@ -976,6 +984,7 @@ def advance_scene_configuration_activation(
             "rights_scope": intent["rights_scope"],
             "preparation_result_digest": result["result_digest"],
             "preparation_request_digest": envelope["request_digest"],
+            "lookahead_report": _artifact(Path(lookahead["report_path"])),
             "provider_zero_digest": zero["provider_zero_digest"],
             "project_spend_reconciliation_digest": spend_reference["digest"],
             "release_window_digest": window["window_digest"],

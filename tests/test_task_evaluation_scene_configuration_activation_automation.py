@@ -182,6 +182,16 @@ def _preparation(tmp_path: Path, *, status: str = "queued_for_production_scene_c
     )
     suffix = request_digest.removeprefix("sha256:")
     _write(queue / "materialized" / f"{PREPARATION_ID}-{suffix}.json", envelope)
+    from blueprint_pipeline.task_evaluation_configured_controls_continuation_provisioning import PREPARATION_CONTRACT_PATHS
+    references = []
+    for name, contract_path in PREPARATION_CONTRACT_PATHS.items():
+        path = _write(tmp_path / "consumer-inputs" / (name + ".json"), {
+            "schema_version": "task_evaluation_rigid_relocation_template.v1",
+            "target_center_xyz_m": [0.4, 0.0, 0.1]})
+        references.append({"contract_path": contract_path, "materialized_path": str(path),
+            "uri": "s3://blueprint/consumer-inputs/" + name + ".json",
+            "digest": _sha256(path), "size_bytes": path.stat().st_size,
+            "full_byte_service_account_readback_passed": True})
     result = _sealed(
         {
             "schema_version": "task_evaluation_launch_preparation_result.v1",
@@ -193,7 +203,7 @@ def _preparation(tmp_path: Path, *, status: str = "queued_for_production_scene_c
             "source_commit": COMMIT,
             "provider_mutation_performed": False,
             "paid_execution_requested": False,
-            "references": [],
+            "references": references,
         },
         "result_digest",
     )
@@ -923,7 +933,8 @@ def test_activation_rejects_future_provider_zero_before_publication(tmp_path: Pa
     with pytest.raises(automation.SceneConfigurationActivationAutomationError, match="provider_zero_future"):
         _advance(tmp_path, result_path, intent_root, zero=_provider_zero(NOW + offset))
     assert not (tmp_path / "activations").exists()
-    assert not (tmp_path / "progression").exists()
+    assert not list((tmp_path / "progression").rglob("activation_progression.json"))
+    assert all("lookahead" in p.parts for p in (tmp_path / "progression").rglob("*.json"))
 
 
 @pytest.mark.parametrize("field,value", [
@@ -1062,4 +1073,3 @@ def test_activation_accepts_the_envelope_the_preparation_queue_actually_writes(t
 
     assert envelope["schema_version"] == ENVELOPE_SCHEMA_VERSION
     assert accepted_request["preparation_id"] == request["preparation_id"]
-
