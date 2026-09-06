@@ -88,6 +88,13 @@ def bind_completed_scene_source(*, intent, config):
     blockers = [f"source_{role}_object_identity_required" for role, value in selected.items() if value is None]
     if not blockers and selected["subject"]["source_object_id"] == selected["support"]["source_object_id"]:
         blockers.append("source_subject_and_support_must_differ")
+    # The declared metric frame is a required typed input: `source_task_objects_bound`
+    # never fires on an undeclared or non-physical scale, so no downstream stage
+    # can silently treat unit-less geometry as metric.
+    scale = frame.get("meters_per_unit")
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not (0 < scale <= 1000) \
+            or frame.get("up_axis") not in {"Y", "Z"}:
+        blockers.append("source_metric_scale_declaration_required")
     value = {"schema_version": "task_evaluation_completed_scene_source.v1",
         "binding_id": source["binding_id"], "source_content_digest": source["content_digest"],
         "intent_digest": intent["intent_digest"], "owner": owner, "source_kind": source["kind"],
