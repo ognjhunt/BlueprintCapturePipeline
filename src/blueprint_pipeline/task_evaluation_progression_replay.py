@@ -62,7 +62,9 @@ def replay_progression_admission(*, result_path, queue_root, replay_root,
             row.update(status="refused", blocker=str(exc)[:700])
             report["blockers"].append("child:" + job["child_id"] + ":" + str(exc)[:500])
         report["child_admission"].append(row)
-    if jobs:
+    sam_plan_bound = any(row.get("container_path") == "/inputs/sam31-preparation-plan.json"
+                         for row in envelope.get("request", {}).get("runtime", {}).get("mounts", []))
+    if jobs or sam_plan_bound:
         try:
             parent = replay.replay_parent(parent_queue_root=queue_root,
                 preparation_id=result["preparation_id"], child_queue_root=child_queue,
