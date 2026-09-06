@@ -84,11 +84,12 @@ def public_source_content_digest(installation):
 def _prefix_candidates(binding, machinery, release, task):
     """Discover prior exact task jobs; a retained hint is optional, never opt-in."""
     from .task_evaluation_sam31_phase_queue import PHASES
+    from .task_evaluation_sam31_profile_registry import DEFAULT_PROFILE_REGISTRY_ROOT
     candidates = []
     if binding.get("prefix_candidate"):
         candidates.append(binding["prefix_candidate"])
     queue = Path(machinery.get("child_queue_root", "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions"))
-    registry = Path(machinery["profile_registry_root"])
+    registry = Path(machinery.get("profile_registry_root") or DEFAULT_PROFILE_REGISTRY_ROOT)
     paths = sorted((queue / "completed").glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     seen = {(c["parent_request_digest"], c["source_plan"]["sha256"]) for c in candidates}
     discoveries = []
@@ -197,7 +198,7 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
     from .sam31_provider_launch_packet import materialize_sam31_execution_authorization, materialize_sam31_provider_profile
     from .task_evaluation_sam31_preparation_profile import materialize_sam31_preparation_profile
     from .task_evaluation_sam31_preparation_review_authority import materialize_sam31_review_authority
-    from .task_evaluation_sam31_profile_registry import register_sam31_profile
+    from .task_evaluation_sam31_profile_registry import DEFAULT_PROFILE_REGISTRY_ROOT, register_sam31_profile
     from .task_evaluation_sam31_prefix_adoption import select_completed_prefix_adoption
 
     moment = time.time() if now is None else now
@@ -417,7 +418,8 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
             sam31_review_rights_attestation_path=review_path, completed_prefix_adoption_path=adopted_path)
         profile = materialize_sam31_preparation_profile(**preparation)
         profile_path = _write(output / "sam31_preparation_profile.json", profile)
-        registry = register_sam31_profile(profile_path=profile_path, registry_root=machinery["profile_registry_root"])
+        registry = register_sam31_profile(profile_path=profile_path,
+            registry_root=machinery.get("profile_registry_root") or DEFAULT_PROFILE_REGISTRY_ROOT)
         submission_root = output / "submission"
         manifest_path = submission_root / "bundle_manifest.v1.json"
         if not manifest_path.exists():

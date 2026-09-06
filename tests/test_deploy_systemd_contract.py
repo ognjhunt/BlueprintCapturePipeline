@@ -794,6 +794,41 @@ def test_sim_only_gate_uses_headless_linux_mujoco_rendering():
     assert "MUJOCO_GL: glfw" not in text
 
 
+def test_sam31_profile_registry_is_content_bound_in_the_base_units():
+    """Every unit that resolves the SAM server profile -- including the progression
+    service that runs the look-ahead admission replay, which never received a
+    per-scene PROFILE_ENV drop-in -- reads one fixed content-addressed registry from
+    its base unit file. The scene-progression factory (the registrar) mounts it
+    read-write; the resolvers mount it read-only. The path lives under
+    /var/lib/blueprint so the deploy's unit-sandbox installer creates it."""
+    from blueprint_pipeline.task_evaluation_sam31_profile_registry import (
+        DEFAULT_PROFILE_REGISTRY_ROOT as FIXED,
+    )
+
+    assert FIXED.startswith("/var/lib/blueprint/") and Path(FIXED).suffix == ""
+    env_line = f"Environment=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR={FIXED}"
+
+    resolvers = (
+        "blueprint-task-evaluation-configured-controls-progression.service",
+        "blueprint-task-evaluation-launch-preparation.service",
+        "blueprint-task-evaluation-sam31-preparation-execution.service",
+        "blueprint-task-evaluation-launch-activation.service",
+        "blueprint-task-evaluation-launch-supervisor.service",
+        "blueprint-task-evaluation-launch-reconciler.service",
+        "blueprint-task-evaluation-launch-dispatcher.service",
+    )
+    for name in resolvers:
+        text = _read(name)
+        assert env_line in text, name
+        assert f"ReadOnlyPaths={FIXED}" in text, name
+        assert f"ReadWritePaths={FIXED}" not in text, name
+
+    registrar = _read("blueprint-task-evaluation-scene-progression.service")
+    assert env_line in registrar
+    assert f"ReadWritePaths={FIXED}" in registrar
+    assert f"ReadOnlyPaths={FIXED}" not in registrar
+
+
 def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read_credit():
     """The per-attempt credit guard and the hourly credit alert are opt-in in code
     (BLUEPRINT_VAST_CREDIT_GUARD_ENABLED); production turns them on in the unit files

@@ -828,7 +828,13 @@ def binding_checks(units: Mapping[str, dict[str, Any]], active_sha: str, ids: tu
                 if digest != str(row.get("publisher_intake_sha256") or ""):
                     findings.append(_finding("blocker", "publisher_intake_digest_mismatch", path=str(intake_path)))
             findings.append(_finding("info", "installed_source_binding", receipt=str(receipt_path), bound_sha=bound[:12]))
-    for unit_name in ("blueprint-task-evaluation-launch-preparation.service", "blueprint-task-evaluation-sam31-preparation-execution.service"):
+    # The look-ahead admission replay re-runs the launch-preparation worker
+    # inside the progression service, so that unit must resolve the profile too;
+    # before the content registry it never received a per-scene PROFILE_ENV
+    # drop-in and refused with sam31_server_profile_missing.
+    for unit_name in ("blueprint-task-evaluation-launch-preparation.service",
+                      "blueprint-task-evaluation-sam31-preparation-execution.service",
+                      "blueprint-task-evaluation-configured-controls-progression.service"):
         unit = units.get(unit_name, {})
         registry = unit.get("effective_environment", {}).get("BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR")
         if registry:

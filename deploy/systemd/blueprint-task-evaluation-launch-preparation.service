@@ -31,6 +31,7 @@ SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations /var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions /var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations /var/lib/blueprint/pipeline-control-plane/disk-reservations /var/lib/blueprint/task-evaluation-inputs /var/lib/blueprint/pipeline-control-plane/storage-pins
 # The parent publishes typed source-phase jobs for the separate SAM worker.
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions
+ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 TasksMax=512
 LimitNOFILE=8192
 MemoryMax=8G
@@ -54,5 +55,6 @@ Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod
 Environment='BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON=["s3://blueprint/task-evaluation/production-inputs/","s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/configured-scenes/artifacts/","s3://blueprint/blueprint/arm-decision-proof-v1/configured-scenes/"]'
+Environment=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 WorkingDirectory=/
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_launch_preparation_worker --max-messages 4'

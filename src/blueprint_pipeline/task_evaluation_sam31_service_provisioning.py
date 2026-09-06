@@ -227,6 +227,8 @@ def provision_sam31_service_environment(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from .task_evaluation_sam31_profile_registry import DEFAULT_PROFILE_REGISTRY_ROOT
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--expected-source-commit", required=True)
@@ -236,7 +238,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--environment-root", default="/etc/blueprint")
     parser.add_argument("--systemd-unit-root", default="/etc/systemd/system")
     parser.add_argument("--reload-systemd", action="store_true")
-    parser.add_argument("--profile-registry-root")
+    # Default the registry root so every operator/deploy provisioning run
+    # registers the release profile into the one fixed content-addressed
+    # registry the resolver units read, with no extra flag. Pass an empty
+    # string to opt out of registration for a specific run.
+    parser.add_argument("--profile-registry-root", default=DEFAULT_PROFILE_REGISTRY_ROOT)
     parser.add_argument("--receipt-out", required=True)
     args = parser.parse_args(argv)
     receipt_path = _path(args.receipt_out)
@@ -246,7 +252,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         openai_api_key_file=args.openai_api_key_file, openai_api_key_id=args.openai_api_key_id,
         allow_live_agents_sdk=args.allow_live_agents_sdk, environment_root=args.environment_root,
         systemd_unit_root=args.systemd_unit_root, reload_systemd=args.reload_systemd,
-        profile_registry_root=args.profile_registry_root,
+        profile_registry_root=args.profile_registry_root or None,
     )
     _atomic_write(receipt_path, canonical_json(result) + "\n", immutable=True)
     print(json.dumps(result, sort_keys=True))

@@ -81,6 +81,10 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-supervision", "evidence_hot", "blueprint", "launch supervisor reports"),
     StorageRoot(f"{_CONTROL_PLANE}/storage-gc", "evidence_hot", "blueprint", "storage reclaim reports"),
     StorageRoot(f"{_CONTROL_PLANE}/episode-interpretation-rights", "evidence_hot", "blueprint", "human-approved per-episode disclosure rights"),
+    # Digest-bound SAM server profiles registered once per release and read by
+    # every resolver unit (including the look-ahead admission replay). Profiles
+    # are evidence, not reproducible cache: never evicted or offloaded.
+    StorageRoot(f"{_INPUTS}/sam31-profile-registry", "evidence_hot", "blueprint", "content-addressed SAM server profile registry"),
     StorageRoot("/var/lib/blueprint/production-gpu-campaigns.sqlite", "evidence_hot", "blueprint", "gpu campaign ledger"),
     StorageRoot("/var/lib/blueprint/production-gpu-worker-pool.sqlite", "evidence_hot", "blueprint", "gpu worker pool ledger"),
     # --- sealed run evidence; offloadable after the hot window

@@ -39,6 +39,7 @@ SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint
 ReadOnlyPaths=/etc/blueprint/task-evaluation-launch-profiles /etc/blueprint/provider-secrets -/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
+ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 TasksMax=512
 LimitNOFILE=65536
 MemoryMax=8G
@@ -119,6 +120,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-t
 Environment=PIPELINE_TASK_EVALUATION_LAUNCH_WEBAPP_URL=https://tryblueprint.io/api/internal/pipeline/task-evaluation-launches
 Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PUBLICATION_READINESS_URL=https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-publication-readiness
 Environment=PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token
+Environment=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
 # A runtime drop-in may set FORCE_DRY_RUN=true while the canonical environment
