@@ -36,6 +36,8 @@ class TaskEvaluationLaunchActivationContractError(ValueError):
 def activation_request_schema() -> dict[str, Any]:
     try:
         value = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        value["properties"]["authorization"]["properties"]["scene_owner_attempt"] = json.loads(
+            SCHEMA_PATH.with_name("task_evaluation_scene_owner_attempt.v1.schema.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise TaskEvaluationLaunchActivationContractError(
             "launch_activation_schema_unavailable"

@@ -557,6 +557,8 @@ def provision_configured_controls_continuation(
     external_layer_bucket: str | None = None,
     external_layer_min_bytes: int = DEFAULT_EXTERNAL_LAYER_MIN_BYTES,
     now: datetime | None = None,
+    scene_phase_attempts: Mapping[str, Mapping[str, Any]] | None = None,
+    scene_intake_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Author, publish, and seal every continuation input; return the intent path."""
 
@@ -567,6 +569,10 @@ def provision_configured_controls_continuation(
         raise ConfiguredControlsProvisioningError(
             "configured_controls_provisioning_authority_text_missing"
         )
+    if scene_phase_attempts is None and str(authorization_reference).startswith("scene-intent:"):
+        raise ConfiguredControlsProvisioningError("configured_controls_provisioning_scene_phase_attempts_missing")
+    if scene_phase_attempts is not None and set(scene_phase_attempts) != set(PHASES):
+        raise ConfiguredControlsProvisioningError("configured_controls_provisioning_scene_phase_attempts_invalid")
     if (
         isinstance(phase_hard_cap_usd, bool)
         or not isinstance(phase_hard_cap_usd, (int, float))
@@ -710,6 +716,19 @@ def provision_configured_controls_continuation(
     phases: dict[str, dict[str, str]] = {}
     for phase in PHASES:
         phase_root = root / phase
+        scene_owner_attempt = None
+        if scene_phase_attempts is not None:
+            from .task_evaluation_scene_owner_attempt_profiles import (
+                make_owner_attempt_record, validate_owner_attempt_record,
+            )
+            scene_owner_attempt = make_owner_attempt_record(owner_fields=scene_phase_attempts[phase],
+                phase=phase, team_namespace=context["team_namespace"], scene_id=context["scene_id"],
+                task_id=context["task_id"], runtime_source_bundle_digest=runtime_source["digest"])
+            validate_owner_attempt_record(scene_owner_attempt, phase=phase, source_commit=commit,
+                scene_id=context["scene_id"], task_id=context["task_id"], team_namespace=context["team_namespace"],
+                maximum_spend_usd=float(phase_hard_cap_usd), queue_root=scene_intake_root,
+                now=issued.timestamp(),
+                runtime_source_bundle_digest=runtime_source["digest"])
         template = {
             "schema_version": RELEASE_WINDOW_TEMPLATE_SCHEMA_VERSION,
             "status": "authorized_for_dynamic_release",
@@ -739,8 +758,11 @@ def provision_configured_controls_continuation(
                 "authorized_on": _iso(issued),
                 "standing_authorization_expires_at": _iso(expires),
                 "profile_revision": f"scene-{context['scene_id']}-{commit[:12]}",
+                **({"scene_owner_attempt": scene_owner_attempt} if scene_owner_attempt is not None else {}),
             },
         )
+        if scene_owner_attempt is not None and authorization.get("scene_owner_attempt") != scene_owner_attempt:
+            raise ConfiguredControlsProvisioningError("configured_controls_provisioning_retained_owner_attempt_mismatch")
         _write_once(
             phase_root / "launch_authority.v1.json",
             {

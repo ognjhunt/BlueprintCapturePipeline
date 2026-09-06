@@ -31,6 +31,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_paid_authority impor
 from blueprint_pipeline.task_evaluation_configured_controls_autostart import (
     validate_configured_controls_autostart_intent,
 )
+from blueprint_pipeline.task_evaluation_scene_owner_attempt_profiles import profile_owner_fields
 
 
 PROFILE_BUILDER = "build_task_evaluation_scene_configuration_live_profile.py"
@@ -138,7 +139,23 @@ def _inputs(context: LaneLiveProfileContext) -> list[dict[str, Any]]:
                 "digest": file_digest(autostart_intent_path),
             }
         )
+    owner_path = context.extra_paths.get("scene_owner_attempt")
+    if owner_path is not None:
+        rows.append({"name": "scene_owner_attempt", "path": str(owner_path), "digest": file_digest(owner_path)})
     return rows
+
+
+def _profile_fields(context: LaneLiveProfileContext) -> dict[str, Any]:
+    return {
+        "task_evaluation_run": {"run_mode": "scene_configuration",
+            "team_namespace": context.extra_values["team_namespace"],
+            "scene_id": context.extra_values["scene_id"], "task_id": context.extra_values["task_id"],
+            "configuration_run_id": context.receipt["run_id"], "evaluation_episode_executed": False},
+        **profile_owner_fields(path=context.extra_paths.get("scene_owner_attempt"), authority=_authority(context),
+            phase="scene_configuration", source_commit=context.source_commit,
+            scene_id=context.extra_values["scene_id"], task_id=context.extra_values["task_id"],
+            team_namespace=context.extra_values["team_namespace"], maximum_spend_usd=context.max_spend_usd),
+    }
 
 
 SPEC = LaneLiveProfileSpec(
@@ -152,20 +169,11 @@ SPEC = LaneLiveProfileSpec(
     lane_argv=_argv,
     immutable_inputs=_inputs,
     lane_blockers=_blockers,
-    profile_fields=lambda context: {
-        "task_evaluation_run": {
-            "run_mode": "scene_configuration",
-            "team_namespace": context.extra_values["team_namespace"],
-            "scene_id": context.extra_values["scene_id"],
-            "task_id": context.extra_values["task_id"],
-            "configuration_run_id": context.receipt["run_id"],
-            "evaluation_episode_executed": False,
-        }
-    },
+    profile_fields=_profile_fields,
     declared_spend=lambda context: context.max_spend_usd,
     claim_ceiling="development_only",
     extra_path_names=("attempt_authority",),
-    optional_extra_path_names=("configured_controls_autostart_intent",),
+    optional_extra_path_names=("configured_controls_autostart_intent", "scene_owner_attempt"),
     one_use_standing_authority_required=True,
     additional_terminal_path_fields=(
         "execution_result_path",
@@ -189,8 +197,12 @@ def build_scene_configuration_live_profile(
     scene_id: str,
     task_id: str,
     configured_controls_autostart_intent_path: str | Path | None = None,
+    scene_owner_attempt_path: str | Path | None = None,
     pod_name: str | None = None,
 ) -> dict[str, Any]:
+    if scene_owner_attempt_path is not None and any(
+            p.is_symlink() for p in (Path(scene_owner_attempt_path), *Path(scene_owner_attempt_path).parents)):
+        raise TaskEvaluationLaunchError("scene_owner_profile_path_unsafe")
     return build_lane_live_profile(
         SPEC,
         bundle_receipt_path=bundle_receipt_path,
@@ -207,6 +219,7 @@ def build_scene_configuration_live_profile(
             "configured_controls_autostart_intent": (
                 configured_controls_autostart_intent_path
             ),
+            "scene_owner_attempt": scene_owner_attempt_path,
         },
         extra_values={
             "team_namespace": team_namespace,
@@ -255,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scene-id", required=True)
     parser.add_argument("--task-id", required=True)
     parser.add_argument("--configured-controls-autostart-intent", default=None)
+    parser.add_argument("--scene-owner-attempt", default=None)
     parser.add_argument(
         "--pod-name",
         default=None,
@@ -283,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
             configured_controls_autostart_intent_path=(
                 args.configured_controls_autostart_intent
             ),
+            scene_owner_attempt_path=args.scene_owner_attempt,
             pod_name=args.pod_name,
         )
     except (OSError, ValueError, TaskEvaluationLaunchError) as exc:
