@@ -57,7 +57,7 @@ def setup(tmp_path, *, cap=20, attempts=8):
         "project_spend_reconciliation": asset(spend_path),
         "project_spend_observed_at_epoch": moment,
         "openai_project_id": "proj_test", "openai_api_key_id": "key_test"}
-    catalog = intake._seal({"schema_version": worker.CATALOG_SCHEMA,
+    catalog = worker._seal({"schema_version": worker.CATALOG_SCHEMA,
         "bindings": {"franka-droid": binding}}, "catalog_digest")
     publisher = _Publisher()
     return dict(link_path=link_path, scene_root=scene_root,
@@ -120,7 +120,7 @@ def test_refuses_before_provisioning(tmp_path, mutation, error):
     elif mutation == "owner":
         link = json.loads(kwargs["link_path"].read_text())
         link["scene_id"] = "another"
-        _write(kwargs["link_path"], intake._seal(link, "link_digest"))
+        _write(kwargs["link_path"], worker._seal(link, "link_digest"))
     elif mutation == "result":
         link = json.loads(kwargs["link_path"].read_text())
         _write(kwargs["preparation_queue_root"] / "results" / link["result_filename"], {})
@@ -165,17 +165,17 @@ def test_link_rejects_path_escape(tmp_path):
     link = json.loads(kwargs["link_path"].read_text())
     link["result_filename"] = "../result.json"
     with pytest.raises(ValueError, match="filename_invalid"):
-        worker.validate_preparation_link(intake._seal(link, "link_digest"))
+        worker.validate_preparation_link(worker._seal(link, "link_digest"))
 
 
 def test_current_spend_pointer_is_read_when_preparation_arrives(tmp_path):
     kwargs = setup(tmp_path)
     binding = kwargs["catalog"]["bindings"]["franka-droid"]
-    pointer = intake._seal({"schema_version": "task_evaluation_project_spend_current.v1",
+    pointer = worker._seal({"schema_version": "task_evaluation_project_spend_current.v1",
         **binding.pop("project_spend_reconciliation"),
         "observed_at_epoch": binding.pop("project_spend_observed_at_epoch")}, "receipt_digest")
     binding["project_spend_current_path"] = str(_write(tmp_path / "current-spend.json", pointer))
-    kwargs["catalog"] = intake._seal(kwargs["catalog"], "catalog_digest")
+    kwargs["catalog"] = worker._seal(kwargs["catalog"], "catalog_digest")
     receipt = worker.provision_link(**kwargs)
     # A refreshed current pointer cannot alter this attempt's retained baseline.
     _write(tmp_path / "current-spend.json", {"invalid": "new pointer"})

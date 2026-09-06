@@ -42,6 +42,19 @@ def _sealed(path: Path, field: str) -> dict[str, Any]:
     return value
 
 
+def _seal(value: Mapping[str, Any], field: str) -> dict[str, Any]:
+    result = dict(value)
+    result[field] = canonical_digest(result, digest_field=field)
+    return result
+
+
+def _scene_intent(path: Path) -> dict[str, Any]:
+    # Scene intents cross the Website/Pipeline boundary; let their canonical
+    # contract own its number encoding rather than using controls-only hashing.
+    _json(path)
+    return intake._read(path, "intent_digest")
+
+
 def build_preparation_link(**fields: Any) -> dict[str, Any]:
     value = {"schema_version": LINK_SCHEMA, **fields}
     value["link_digest"] = canonical_digest(value, digest_field="link_digest")
@@ -96,7 +109,7 @@ def provision_link(*, link_path: Path, scene_root: Path, preparation_queue_root:
     link = validate_preparation_link(_sealed(link_path, "link_digest"))
     _require(link_path.parent == scene_root / link["intent_id"], "link_location_invalid")
     directory = scene_root / link["intent_id"]
-    intent = _sealed(directory / "intent.json", "intent_digest")
+    intent = _scene_intent(directory / "intent.json")
     _require(intent.get("schema_version") == intake.INTENT_SCHEMA and
              intent.get("intent_id") == link["intent_id"] and
              intent.get("intent_digest") == link["intent_digest"] and
@@ -169,7 +182,7 @@ def provision_link(*, link_path: Path, scene_root: Path, preparation_queue_root:
                 _require(_sealed(snapshot_path, "receipt_digest") == spend, "spend_snapshot_conflict")
             else:
                 intake.write_exclusive(snapshot_path, spend)
-            retained = intake._seal({**identity, "issued_at_epoch": int(moment),
+            retained = _seal({**identity, "issued_at_epoch": int(moment),
                 "spend_path": str(snapshot_path), "spend_digest": producer._sha256(snapshot_path)}, "receipt_digest")
             intake.write_exclusive(retained_path, retained)
         _require(producer._sha256(Path(retained["spend_path"])) == retained["spend_digest"], "spend_changed")
@@ -207,7 +220,7 @@ def provision_link(*, link_path: Path, scene_root: Path, preparation_queue_root:
             expected_production_commit=expected_production_commit, service_group=service_group))
         _require(installed.get("status") == "installed" and installed.get("intent_digest") ==
                  result["intent_digest"], "registry_readback_invalid")
-        receipt = intake._seal({"schema_version": "task_evaluation_controls_autoprovision_receipt.v1",
+        receipt = _seal({"schema_version": "task_evaluation_controls_autoprovision_receipt.v1",
             "status": "installed", **identity, "intent_id": intent["intent_id"],
             "owner_intent_digest": intent["intent_digest"], "policy_candidates": request["execution"]["policy_candidates"],
             "provisioning": result, "installation": installed,
@@ -260,7 +273,7 @@ def owner_authority_blocker(config_path: str | Path, *, scene_intent_digest: str
         config = _json(Path(config_path))
         moment = time.time() if now is None else now
         for path in Path(config["scene_root"]).glob("scene-*/intent.json"):
-            intent = _sealed(path, "intent_digest")
+            intent = _scene_intent(path)
             if intent["intent_digest"] != scene_intent_digest:
                 continue
             _require(intent.get("authenticated_issuer") in config["trusted_clients"], "owner_intent_invalid")
