@@ -60,7 +60,8 @@ DEFAULT_PYTHON = "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
 SERVICE_ACCOUNT = "blueprint"
 PACKAGE = "blueprint_pipeline"
 INTAKE_CATALOG_URL = "http://127.0.0.1:8765/api/live-pipeline/task-evaluation-launch-profiles"
-ACTIVATION_INTENT_ROOT = Path("/etc/blueprint/task-evaluation-scene-configuration-activation-intents")
+ACTIVATION_INTENT_ROOT = Path(  # R4: canonical producer-writable registry (see installer/unit/automation)
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-configuration-activation-intents")
 CONTROLS_INTENT_ROOT = Path("/etc/blueprint/task-evaluation-configured-controls-intents")
 DISK_RESERVATION_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/disk-reservations")
 DISK_TARGET_ROOT = Path("/var/lib/blueprint")

@@ -68,7 +68,9 @@ AUTHORITY_MATERIALIZED_STATUS = "profile_authority_materialized_no_execution"
 PROJECT_SPEND_SCHEMA_VERSION = "adp_project_spend_reconciliation.v1"
 PROVIDER_ZERO_SCHEMA_VERSION = "adp_paid_provider_zero.v1"
 DEFAULT_INTENT_ROOT = (
-    "/etc/blueprint/task-evaluation-scene-configuration-activation-intents"
+    # R4: producer-writable (scene-progression.service can write /var/lib/blueprint,
+    # not /etc/blueprint) and consumer-readable; matches the installer + unit + preflight.
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-configuration-activation-intents"
 )
 DEFAULT_MATERIALIZATION_ROOT = (
     "/var/lib/blueprint/task-evaluation-inputs/scene-configuration-activation-intents"

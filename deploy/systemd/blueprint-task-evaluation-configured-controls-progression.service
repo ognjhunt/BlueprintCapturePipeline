@@ -29,7 +29,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
-ReadOnlyPaths=/etc/blueprint/provider-secrets -/etc/blueprint/task-evaluation-scene-configuration-activation-intents
+ReadOnlyPaths=/etc/blueprint/provider-secrets
 # The controls-autoprovision worker installs write-once 0440 controls intents
 # into the canonical registry the activation+progression consumer reads, so this
 # directory must be writable by the service (Spec B). The deploy makes the
@@ -57,7 +57,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT=/var/lib/bl
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations
 Environment=BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE=/etc/blueprint/provider-secrets/blueprint_task_evaluation_launch_submit_secret
 Environment=BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_URL=https://tryblueprint.io/api/internal/task-evaluation-launch-submissions
-Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_ACTIVATION_INTENT_ROOT=/etc/blueprint/task-evaluation-scene-configuration-activation-intents
+Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_ACTIVATION_INTENT_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-configuration-activation-intents
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
 Environment=BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR=/var/lib/blueprint/pipeline-control-plane/standing-authorizations
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_CATALOG=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json

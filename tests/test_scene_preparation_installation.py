@@ -229,3 +229,26 @@ def test_production_cli_routes_both_modes_through_the_owned_preparation_worker(t
         engine.main(["--config", config_path])
         assert worker_calls == [True], f"owned worker must run (authorized={authorized})"
         assert config_path in processed
+
+
+def test_activation_intent_registry_identity_is_canonical(tmp_path, monkeypatch):
+    """R4: producer (installer), consumer unit default, preflight, and the activation
+    automation must all name ONE activation-intent registry root -- producer-writable
+    (under /var/lib/blueprint, which scene-progression.service can write) and distinct
+    from the materialization root. Otherwise the producer writes where the consumer
+    never scans."""
+    from blueprint_pipeline import task_evaluation_scene_configuration_activation_automation as automation
+    from blueprint_pipeline import task_evaluation_production_chain_preflight as preflight
+    canonical = "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-configuration-activation-intents"
+    assert automation.DEFAULT_INTENT_ROOT == canonical
+    assert str(preflight.ACTIVATION_INTENT_ROOT) == canonical
+    # Distinct from the activation materialization root.
+    assert automation.DEFAULT_MATERIALIZATION_ROOT != canonical
+    # The authorized installer writes the intent root under state_root with the same
+    # trailing identity (production state_root is /var/lib/blueprint/pipeline-control-plane).
+    old_config_path, _iid, _intents, _now = _config(tmp_path, monkeypatch, source_kind="mesh", real_destination=True)
+    old = json.loads(old_config_path.read_text())
+    machinery = json.loads(Path(old["completed_source_machinery_path"]).read_text())
+    receipt = _install_bootstrap(tmp_path, machinery, old["capture_store_root"], True, tmp_path / "authorized")
+    auth_config = json.loads(Path(receipt["config"]["path"]).read_text())
+    assert Path(auth_config["activation_intent_root"]).name == "task-evaluation-scene-configuration-activation-intents"
