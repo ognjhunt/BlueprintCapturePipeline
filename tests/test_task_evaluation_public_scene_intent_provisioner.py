@@ -347,3 +347,22 @@ def test_source_preparation_is_materialized_by_the_canonical_producer(tmp_path):
     # A retained receipt is adopted verbatim, not re-derived.
     assert provisioner.resolve_source_preparation_receipt(
         source_preparation_receipt_path=receipt_path) == Path(receipt_path)
+
+
+def test_provisioned_machinery_carries_completed_prefix_reuse_roots(retained, tmp_path):
+    # A2: the factory's completed-prefix adoption path reads child_queue_root,
+    # parent_queue_root, execution_root and release_retention_binding_root directly
+    # from the machinery. The provisioner must emit those canonical host roots so a
+    # re-attempt of the same owner intent can adopt already-completed GPU stages
+    # (never repeat paid work) instead of KeyError-ing on a missing machinery key.
+    from blueprint_pipeline.task_evaluation_sam31_prefix_adoption import (
+        DEFAULT_QUEUE, DEFAULT_PARENT_QUEUE, DEFAULT_EXECUTION)
+    from blueprint_pipeline.task_evaluation_release_retention import DEFAULT_EVIDENCE_BINDING_ROOT
+    retained_paths, owner_authority, extras = retained
+    result, _intents, _bindings, _machinery_out = _provision(
+        tmp_path, retained_paths, owner_authority, now=extras["now"])
+    machinery = json.loads(Path(result["machinery_path"]).read_text())
+    assert machinery["child_queue_root"] == str(DEFAULT_QUEUE)
+    assert machinery["parent_queue_root"] == str(DEFAULT_PARENT_QUEUE)
+    assert machinery["execution_root"] == str(DEFAULT_EXECUTION)
+    assert machinery["release_retention_binding_root"] == str(DEFAULT_EVIDENCE_BINDING_ROOT)

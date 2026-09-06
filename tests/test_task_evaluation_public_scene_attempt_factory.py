@@ -235,6 +235,54 @@ def test_current_conversion_uses_canonical_cpu_producer_without_reinstalling_raw
     assert raw_path.read_bytes() == before and old_path.read_bytes() == retained
 
 
+def test_current_conversion_rebinds_by_content_when_decoder_absent(tmp_path, monkeypatch):
+    # A1: on the control plane the 3DGS decoder is absent (standard_splat_decoder_missing).
+    # When the retained conversion's source + output bytes are verified unchanged,
+    # _current_conversion must rebind the receipt to the current release by CONTENT
+    # identity WITHOUT re-running the decoder, and transparently mark it as not
+    # re-decoded. A deploy must never invalidate a retained per-scene document.
+    from tests.test_sam31_contribution_disclosure import converted_job
+    import blueprint_pipeline.standard_splat_conversion as ssc
+    job, _, _, raw_path, old_path = converted_job(tmp_path, monkeypatch)
+    old = json.loads(old_path.read_text())
+    old["repository"]["commit"] = "b" * 40  # a prior, real release commit
+    write(old_path, old, "receipt_digest")
+    before_raw, before_old = raw_path.read_bytes(), old_path.read_bytes()
+
+    def _decoder_must_not_run(*a, **k):
+        raise ssc.StandardSplatConversionError(["standard_splat_decoder_missing"])
+    monkeypatch.setattr(ssc, "materialize_standard_splat_conversion", _decoder_must_not_run)
+
+    data = tmp_path / "conversion-fixture/data"
+    new_path = factory._current_conversion(refs={"standard_splat_conversion_receipt": ref(old_path)},
+        inputs={"raw": {"appearance_3dgs": {"path": raw_path}}},
+        release={"source_commit": job["expected_source_commit"], "repo_root": tmp_path / "conversion-fixture/repo"},
+        machinery={"preparation": {"server_data_root": data, "runtime_root": None}}, output=data / "factory")
+    rebound = json.loads(new_path.read_text())
+    assert new_path != old_path
+    assert rebound["repository"]["commit"] == job["expected_source_commit"]
+    assert rebound["content_identity_rebind"]["redecoded"] is False
+    assert rebound["content_identity_rebind"]["original_commit"] == "b" * 40
+    assert rebound["claim_ceiling"] == "local_format_conversion_only"
+    # Retained inputs untouched; the rebound output resolves to the same bytes.
+    assert raw_path.read_bytes() == before_raw and old_path.read_bytes() == before_old
+    assert (new_path.parent / rebound["output"]["relative_path"]).is_file()
+    assert rebound["output"]["sha256"] == old["output"]["sha256"]
+
+
+def test_current_conversion_rejects_changed_source_bytes(tmp_path, monkeypatch):
+    # A1 acceptance: changed admitted bytes must be rejected, never silently reused.
+    from tests.test_sam31_contribution_disclosure import converted_job
+    job, _, _, raw_path, old_path = converted_job(tmp_path, monkeypatch)
+    raw_path.write_bytes(raw_path.read_bytes() + b"tampered")  # the raw source changed
+    data = tmp_path / "conversion-fixture/data"
+    with pytest.raises(Exception):  # checked_file refuses the changed source bytes
+        factory._current_conversion(refs={"standard_splat_conversion_receipt": ref(old_path)},
+            inputs={"raw": {"appearance_3dgs": {"path": raw_path}}},
+            release={"source_commit": "b" * 40, "repo_root": tmp_path / "conversion-fixture/repo"},
+            machinery={"preparation": {"server_data_root": data, "runtime_root": None}}, output=data / "factory")
+
+
 @pytest.mark.parametrize("context", [{"descriptive": True}], indirect=True)
 def test_gui_descriptions_bind_the_existing_numeric_seed_without_owner_measurement_claim(context):
     args, _ = context
