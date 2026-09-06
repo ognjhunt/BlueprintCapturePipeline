@@ -323,10 +323,10 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                     activation_provisioner, now):
     progress = load_progression(directory, intent)
     state = deepcopy(progress.get("state", {})) if progress else {}
-    def emit(status, phase, blockers=()):
+    def emit(status, phase, blockers=(), result_reference=None):
         nonlocal progress
         progress = advance(directory, intent, progress, status=status, phase=phase, state=deepcopy(state),
-                           blockers=blockers, now=now)
+                           blockers=blockers, result_reference=result_reference, now=now)
         return progress
     if progress and progress["status"] == "completed":
         return progress
@@ -335,6 +335,20 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                                               else "scene_intake_authority_expired"])
     if intent["intent_id"] in config.get("paused_intent_ids", []):
         return emit("awaiting_execution", "paused", ["scene_intent_paused"])
+    # Spec E: once activation has been issued, join any retained downstream
+    # terminal receipts (policy result, authenticated Website readback,
+    # provider-zero closure) back into the persistent owner status before
+    # re-running the preparation chain. This never launches, retries, or reruns
+    # completed GPU work; it only reconciles evidence into a truthful terminal
+    # status and otherwise leaves the intent untouched.
+    if config.get("terminal_result_root") and state.get("activation"):
+        from .task_evaluation_scene_terminal_reconciler import reconcile_terminal_owner_result
+        terminal = reconcile_terminal_owner_result(intent=intent, config=config, release=release, now=now,
+            output=safe_path(Path(config["factory_output_root"]) / intent["intent_id"] / "terminal-reconciliation"))
+        if terminal is not None:
+            state.update(terminal.get("state", {}))
+            return emit(terminal["status"], terminal["phase"], terminal.get("blockers", ()),
+                        terminal.get("result_reference"))
     if config.get("supported_source_kinds") is not None and intent["request"]["source"]["kind"] not in config["supported_source_kinds"]:
         return emit("needs_input", "source", ["source_kind_not_supported_by_progression"])
     resolution = _source(intent, config, release, resolver)
