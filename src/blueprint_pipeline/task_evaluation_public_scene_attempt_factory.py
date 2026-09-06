@@ -120,8 +120,20 @@ def _prefix_candidates(binding, machinery, release, task):
 
 
 def _current_conversion(*, refs, inputs, release, machinery, output):
-    """Retain original raw files; only canonical local format conversion may rerun."""
-    from .standard_splat_conversion import build_standard_splat_conversion_request, materialize_standard_splat_conversion
+    """Reuse the retained standard-splat conversion, rebinding it to the current
+    release by CONTENT identity when the release commit has drifted.
+
+    The factory only ever reuses a conversion produced earlier by the
+    decoder-equipped SAM preparation; it never performs a first decode. The raw
+    source bytes and the standard-splat output bytes are verified unchanged
+    (``checked_file`` below), so the deterministic local-format conversion output
+    is byte-identical to what a re-decode at the current release would produce. On
+    commit drift we therefore re-attest the SAME output at ``release.source_commit``
+    WITHOUT re-running the 3DGS decoder (absent on the control plane) -- a deploy
+    must never invalidate a retained per-scene document (piece 1). The original
+    decode provenance is preserved verbatim and the receipt is transparently
+    marked as not re-decoded. Changed source/output bytes fail closed above.
+    """
     old_path = _reference(refs["standard_splat_conversion_receipt"])
     old = read(old_path, digest_field="receipt_digest")
     original = inputs["raw"]["appearance_3dgs"]["path"]
@@ -129,24 +141,33 @@ def _current_conversion(*, refs, inputs, release, machinery, output):
     checked_file(old_path.parent / old["output"]["relative_path"], old["output"])
     if old.get("repository", {}).get("commit") == release["source_commit"]:
         return old_path
-    source = {key: value for key, value in old["source"].items()
-              if key not in {"source_bytes_unchanged", "source_gaussian_count"}}
-    data = Path(machinery["preparation"]["server_data_root"])
-    require(original.is_relative_to(data), "public_factory_raw_source_outside_data_root")
-    source["relative_path"] = original.relative_to(data).as_posix()
-    request = build_standard_splat_conversion_request({
-        "schema_version": "standard_splat_conversion_request.v1", "program_id": "arm-decision-proof-v1",
-        "frozen_before_conversion": True, "learned_policy_outcomes_observed": False,
-        "source": source, "rights": old["rights"], "output_filename": Path(old["output"]["relative_path"]).name})
-    request_path = _write(output / "conversion_request.json", request)
+    # Bytes verified unchanged above -> a re-decode is provably redundant. Only a
+    # local-format-only conversion whose source bytes are unchanged is rebindable.
+    old_commit = old.get("repository", {}).get("commit")
+    require(old.get("claim_ceiling") == "local_format_conversion_only"
+            and old.get("source", {}).get("source_bytes_unchanged") is True
+            and old.get("output", {}).get("gaussian_count_preserved") is True
+            and old.get("raw_source_uploaded") is False
+            and isinstance(old_commit, str) and len(old_commit) == 40
+            and all(c in "0123456789abcdef" for c in old_commit),
+            "public_factory_conversion_not_rebindable")
     converted = output / "conversion" / "standard_splat_conversion_receipt.v1.json"
     if not converted.exists():
-        materialize_standard_splat_conversion(request_path=request_path, repo_root=release["repo_root"],
-            data_root=data, output_root=converted.parent,
-            production_runtime_root=machinery["preparation"]["runtime_root"])
+        converted.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+        relative = old["output"]["relative_path"]
+        (converted.parent / relative).write_bytes((old_path.parent / relative).read_bytes())
+        rebound = deepcopy(old)
+        rebound["repository"] = {"commit": release["source_commit"]}
+        rebound["content_identity_rebind"] = {
+            "kind": "standard_splat_content_identity_reattestation",
+            "reattested_at_commit": release["source_commit"], "original_commit": old_commit,
+            "original_receipt_digest": old["receipt_digest"], "original_repository": old["repository"],
+            "redecoded": False, "basis": "source_and_output_bytes_unchanged"}
+        rebound["receipt_digest"] = canonical_digest(rebound, digest_field="receipt_digest")
+        _write(converted, rebound)
     value = read(converted, digest_field="receipt_digest")
-    require(value.get("request_digest") == request["request_digest"]
-            and value.get("repository", {}).get("commit") == release["source_commit"],
+    require(value.get("repository", {}).get("commit") == release["source_commit"]
+            and value.get("content_identity_rebind", {}).get("redecoded") is False,
             "public_factory_conversion_binding_changed")
     checked_file(converted.parent / value["output"]["relative_path"], value["output"])
     return converted

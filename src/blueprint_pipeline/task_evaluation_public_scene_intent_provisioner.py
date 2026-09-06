@@ -194,12 +194,22 @@ def _machinery(*, retained: Mapping[str, Any], profile_registry_root: str | Path
             and not isinstance(maximum_preparation_spend_usd, bool)
             and maximum_preparation_spend_usd >= 4.5):
         _fail("public_scene_provider_machinery_absent")
+    # A2: the factory's completed-prefix adoption path reads these host roots
+    # directly from the machinery. Emit the canonical roots so a re-attempt of the
+    # same owner intent can adopt already-completed GPU stages (never repeat paid
+    # work) rather than KeyError on a missing machinery key. The fresh provider-zero
+    # that gates a real adoption is produced live at paid time, never baked here.
+    from .task_evaluation_sam31_prefix_adoption import DEFAULT_QUEUE, DEFAULT_PARENT_QUEUE, DEFAULT_EXECUTION
+    from .task_evaluation_release_retention import DEFAULT_EVIDENCE_BINDING_ROOT
     machinery = {"schema_version": MACHINERY_SCHEMA,
                  "maximum_preparation_spend_usd": maximum_preparation_spend_usd,
                  "provider_references": provider_references, "provider_options": provider_options,
                  "preparation": preparation,
                  "review_terms": _reference(retained["review_terms"],
                                             reason="public_scene_provider_machinery_absent"),
+                 "child_queue_root": str(DEFAULT_QUEUE), "parent_queue_root": str(DEFAULT_PARENT_QUEUE),
+                 "execution_root": str(DEFAULT_EXECUTION),
+                 "release_retention_binding_root": str(DEFAULT_EVIDENCE_BINDING_ROOT),
                  "profile_registry_root": str(profile_registry_root)}
     machinery["machinery_digest"] = canonical_digest(machinery, digest_field="machinery_digest")
     return machinery
