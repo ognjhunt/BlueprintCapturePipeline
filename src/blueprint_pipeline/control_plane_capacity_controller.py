@@ -432,6 +432,13 @@ def run_controller(
         disk_usage=disk_usage,
         now=observed,
     )
+    from .task_evaluation_scene_spend import refresh_configured_scene_project_spend
+    try:
+        if project_spend := refresh_configured_scene_project_spend():
+            report["project_spend"] = project_spend
+    except (OSError, ValueError, TypeError):
+        report["level"] = "critical"
+        report["alerts"].append({"code": "project_spend_refresh_blocked"})
     if credit_collector is not None:
         from .provider_credit_admission import credit_admission
 
