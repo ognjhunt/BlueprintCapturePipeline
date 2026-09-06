@@ -77,3 +77,53 @@ the tick so an older installed intent cannot bypass an unreadable authority.
 Queued dispatch can call `owner_authority_blocker(config_path,
 scene_intent_digest=...)`; `None` means owner consent remains live, and a string
 is the refusal code. This supplements exact attempt and paid-resource admission.
+
+## Deployment: materializing the config before its env pointer
+
+`task_evaluation_controls_autoprovision_installation.install_controls_autoprovision`
+recompiles one operator-owned, sealed bootstrap
+(`/etc/blueprint/task-evaluation-controls-autoprovision-bootstrap.json`,
+schema `task_evaluation_controls_autoprovision_bootstrap.v1`) into three
+service-owned files: the sealed **content** catalog
+(`task_evaluation_controls_robot_content_catalog.v1`, so the worker re-binds it
+to the active release each tick without this step mutating source bytes), the
+config JSON, and the `EnvironmentFile`. The bootstrap names
+`robot_catalog_bindings` (each binding is validated by running the real
+`resolve_robot_catalog`, so a changed robot USD, camera template or runtime
+payload is refused at install), `scene_root`, `preparation_queue_root`,
+`controls_root`, `intent_root`, `profile_dir`, `trusted_clients`, and the
+service account/group.
+
+The order is load-bearing: the config and catalog are written and validated
+**before** the `EnvironmentFile` that exports
+`BLUEPRINT_TASK_EVALUATION_CONTROLS_AUTOPROVISION_CONFIG`. If that variable ever
+named a missing or unparseable file, `progression_owner_scope` would set
+`unresolved` and the worker would return a blocked report, stopping every scene.
+So the env pointer is only written once a readable, valid config exists.
+`deploy_control_plane_commit` runs the installer after the autostart-intent
+registry step (so the registry directory's group-writable permission wins) and
+before the unit restart; without the operator bootstrap the deploy records
+`not_configured` and the worker stays in the legacy no-autoprovision lane. The
+`--controls-autoprovision-bootstrap-file` flag overrides the default path.
+
+The autoprovision worker installs its write-once `0440` controls intents into
+`/etc/blueprint/task-evaluation-configured-controls-intents` (the registry the
+configuration-activation and controls-progression consumer already read), so the
+controls-progression unit lists that directory under `ReadWritePaths` and the
+deploy makes the directory group-writable while the intent files stay immutable.
+
+## Owner-only dispatch selection
+
+Both dispatchers and controls progression carry
+`BLUEPRINT_TASK_EVALUATION_DISPATCH_OWNER_SCOPE=persistent_owner_only` and load
+the shared owner-store identity
+(`/etc/blueprint/task-evaluation-scene-progression.env`, which supplies
+`BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT` and
+`…_SCENE_INTAKE_CLIENT_IDS`) so `scene_policy_binding.scene_store()` can resolve
+the persistent owner. Selection is not authority: it only narrows which rows a
+dispatcher may claim; every owner reservation, frozen profile, standing grant,
+release, spend, expiry, revocation and provider-zero gate still runs before any
+paid step, and the execute/dry-run holds are untouched. The production chain
+preflight's owner-mode checks (`owner_scope_checks`) refuse a default scope, an
+unresolvable owner store, a missing/unreadable autoprovision config, and missing
+robot/camera/runtime assets before a dispatch selects a wrong or empty row.

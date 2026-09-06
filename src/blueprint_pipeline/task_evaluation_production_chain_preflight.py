@@ -83,6 +83,17 @@ CHAIN_UNITS: tuple[str, ...] = (
     "blueprint-control-plane-storage-gc.service",
 )
 
+# The persistent-owner authority consumers: both dispatchers and controls
+# progression.  Selection scope, owner-store resolution and (for controls) the
+# autoprovision config + assets are checked here so an owner-mode gap is named
+# before a dispatch rather than after a wrong or empty selection.
+OWNER_AUTHORITY_UNITS: tuple[str, ...] = (
+    "blueprint-task-evaluation-launch-dispatcher.service",
+    "blueprint-task-evaluation-policy-canary-dispatcher.service",
+    "blueprint-task-evaluation-configured-controls-progression.service",
+)
+CONTROLS_PROGRESSION_UNIT = "blueprint-task-evaluation-configured-controls-progression.service"
+
 # Directives replayed onto the transient probe unit when the deployed unit (or
 # one of its drop-ins) sets them.  Values come from the merged ``systemctl show``
 # view so drop-ins are included.
@@ -728,6 +739,28 @@ def readable_by(path: Path, uid: int, gid: int) -> bool:
     return bool(mode & stat.S_IROTH)
 
 
+def writable_by(path: Path, uid: int, gid: int) -> bool:
+    """Discretionary write access for a non-root service account by mode bits.
+
+    Callers pass the service uid/gid (never 0), so the root bypass in
+    ``readable_by`` does not apply and this reports what the ``blueprint`` account
+    can actually do to the directory under the real sandbox.
+    """
+
+    try:
+        st = path.stat()
+    except OSError:
+        return False
+    if uid == 0:
+        return True
+    mode = stat.S_IMODE(st.st_mode)
+    if st.st_uid == uid:
+        return bool(mode & stat.S_IWUSR)
+    if st.st_gid == gid:
+        return bool(mode & stat.S_IWGRP)
+    return bool(mode & stat.S_IWOTH)
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
@@ -990,6 +1023,152 @@ def credential_file_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str
     return findings
 
 
+def _scope_override_sources(unit: Mapping[str, Any], name: str, expected: str) -> list[str]:
+    """EnvironmentFile paths that set ``name`` to something other than ``expected``."""
+
+    sources: list[str] = []
+    for path_text, _ignore in environment_files(unit.get("properties", {})):
+        value = _parse_env_file(Path(path_text)).get(name)
+        if value is not None and value.strip() != expected:
+            sources.append(path_text)
+    return sources
+
+
+def _owner_store_findings(unit_name: str, unit: Mapping[str, Any], ids: tuple[int, int]) -> list[dict[str, Any]]:
+    """The scene-intake root or the autoprovision config must resolve the owner."""
+
+    uid, gid = ids
+    env = unit.get("effective_environment", {})
+    findings: list[dict[str, Any]] = []
+    root = str(env.get("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT") or "").strip()
+    config = str(env.get("BLUEPRINT_TASK_EVALUATION_CONTROLS_AUTOPROVISION_CONFIG") or "").strip()
+    clients = str(env.get("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS") or "").strip()
+    trusted = [c for c in clients.split(",") if c]
+    resolved = False
+    if root:
+        path = Path(root)
+        if path.is_absolute() and path.is_dir() and not path.is_symlink() and readable_by(path, uid, gid):
+            resolved = True
+        else:
+            findings.append(_finding("blocker", "owner_scene_intake_root_unreadable_by_service", unit=unit_name, path=root))
+    if config:
+        cfg = _read_json(Path(config))
+        if cfg is None or not readable_by(Path(config), uid, gid):
+            findings.append(_finding("blocker", "owner_store_config_unreadable_by_service", unit=unit_name, path=config))
+        else:
+            scene_root = str(cfg.get("scene_root") or "")
+            if scene_root and Path(scene_root).is_dir() and readable_by(Path(scene_root), uid, gid):
+                resolved = True
+            if not trusted and isinstance(cfg.get("trusted_clients"), list):
+                trusted = [c for c in cfg["trusted_clients"] if c]
+    if not resolved:
+        findings.append(_finding(
+            "blocker", "owner_store_unresolvable", unit=unit_name,
+            scene_intake_root=root or None, controls_autoprovision_config=config or None,
+            consequence="scene_policy_binding.scene_store() raises owner_store_missing before allocator entry"))
+    if not trusted:
+        findings.append(_finding("blocker", "owner_store_trusted_clients_unset", unit=unit_name))
+    return findings
+
+
+def _controls_autoprovision_findings(units: Mapping[str, dict[str, Any]], ids: tuple[int, int]) -> list[dict[str, Any]]:
+    """Report a missing or broken controls-autoprovision config or its assets.
+
+    A config env that names an unreadable/invalid file fails
+    ``progression_owner_scope`` closed and stops every scene, so that case is a
+    blocker; in owner mode an unset config is also a blocker because the hands-off
+    construction->controls path never advances without it.
+    """
+
+    uid, gid = ids
+    unit = units.get(CONTROLS_PROGRESSION_UNIT)
+    if unit is None:
+        return []
+    env = unit.get("effective_environment", {})
+    owner_mode = str(env.get("BLUEPRINT_TASK_EVALUATION_DISPATCH_OWNER_SCOPE") or "").strip() == "persistent_owner_only"
+    config = str(env.get("BLUEPRINT_TASK_EVALUATION_CONTROLS_AUTOPROVISION_CONFIG") or "").strip()
+    findings: list[dict[str, Any]] = []
+    if not config:
+        findings.append(_finding(
+            "blocker" if owner_mode else "warning", "controls_autoprovision_config_unset",
+            unit=CONTROLS_PROGRESSION_UNIT,
+            consequence="progression_owner_scope skips autoprovisioning; construction->controls never advances"))
+        return findings
+    cfg_path = Path(config)
+    cfg = _read_json(cfg_path)
+    if cfg is None or not readable_by(cfg_path, uid, gid):
+        findings.append(_finding("blocker", "controls_autoprovision_config_unreadable_by_service",
+            unit=CONTROLS_PROGRESSION_UNIT, path=config,
+            consequence="progression_owner_scope fails closed (unresolved) and stops every scene"))
+        return findings
+    missing = [key for key in ("scene_root", "preparation_queue_root", "controls_root", "intent_root",
+                               "profile_dir", "robot_catalog_path", "trusted_clients") if not cfg.get(key)]
+    if missing:
+        findings.append(_finding("blocker", "controls_autoprovision_config_incomplete",
+            unit=CONTROLS_PROGRESSION_UNIT, missing=missing))
+        return findings
+    for key in ("controls_root", "intent_root"):
+        path = Path(str(cfg[key]))
+        if not path.is_dir() or path.is_symlink():
+            findings.append(_finding("blocker", "controls_autoprovision_root_missing",
+                unit=CONTROLS_PROGRESSION_UNIT, root=key, path=str(path)))
+        elif not writable_by(path, uid, gid):
+            findings.append(_finding("blocker", "controls_autoprovision_root_not_writable_by_service",
+                unit=CONTROLS_PROGRESSION_UNIT, root=key, path=str(path), **_owner(path.stat())))
+    catalog_path = Path(str(cfg["robot_catalog_path"]))
+    catalog = _read_json(catalog_path)
+    if catalog is None or not readable_by(catalog_path, uid, gid):
+        findings.append(_finding("blocker", "controls_autoprovision_robot_catalog_unreadable",
+            unit=CONTROLS_PROGRESSION_UNIT, path=str(catalog_path)))
+        return findings
+    bindings = catalog.get("bindings")
+    if not isinstance(bindings, dict) or not bindings:
+        findings.append(_finding("blocker", "controls_autoprovision_robot_catalog_invalid",
+            unit=CONTROLS_PROGRESSION_UNIT, path=str(catalog_path)))
+        return findings
+    for name, row in bindings.items():
+        row = row if isinstance(row, Mapping) else {}
+        for asset in ("robot_asset_usd", "embodiment_camera_template"):
+            reference = row.get(asset) if isinstance(row.get(asset), Mapping) else {}
+            asset_path = Path(str(reference.get("path") or ""))
+            if not (str(asset_path).startswith("/") and asset_path.is_file() and readable_by(asset_path, uid, gid)):
+                findings.append(_finding("blocker", "controls_autoprovision_asset_missing",
+                    unit=CONTROLS_PROGRESSION_UNIT, binding=str(name), asset=asset, path=str(asset_path)))
+        runtime = Path(str(row.get("runtime_source_payload_dir") or ""))
+        if not (str(runtime).startswith("/") and runtime.is_dir() and not runtime.is_symlink()):
+            findings.append(_finding("blocker", "controls_autoprovision_runtime_missing",
+                unit=CONTROLS_PROGRESSION_UNIT, binding=str(name), path=str(runtime)))
+    return findings
+
+
+def owner_scope_checks(units: Mapping[str, dict[str, Any]], ids: tuple[int, int]) -> list[dict[str, Any]]:
+    """Owner-mode preflight: selection scope, owner store, and autoprovision assets.
+
+    Selection is not authority; this only proves the persistent-owner posture is
+    installed and resolvable so a dispatch selects the correctly bound owner row
+    (and refuses when the store, config or assets are absent) before the
+    allocator ever runs.  It changes nothing about the execute/dry-run holds.
+    """
+
+    findings: list[dict[str, Any]] = []
+    for unit_name in OWNER_AUTHORITY_UNITS:
+        unit = units.get(unit_name)
+        if unit is None:
+            continue
+        env = unit.get("effective_environment", {})
+        scope = str(env.get("BLUEPRINT_TASK_EVALUATION_DISPATCH_OWNER_SCOPE") or "").strip()
+        if scope != "persistent_owner_only":
+            findings.append(_finding(
+                "blocker", "dispatch_owner_scope_not_persistent_owner_only", unit=unit_name,
+                value=scope or None,
+                overridden_by=_scope_override_sources(unit, "BLUEPRINT_TASK_EVALUATION_DISPATCH_OWNER_SCOPE",
+                                                      "persistent_owner_only") or None,
+                consequence="dispatcher defaults to all_authorized and can select legacy or unowned rows"))
+        findings.extend(_owner_store_findings(unit_name, unit, ids))
+    findings.extend(_controls_autoprovision_findings(units, ids))
+    return findings
+
+
 PAID_ALLOCATION_UNITS: tuple[str, ...] = (
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-task-evaluation-policy-canary-dispatcher.service",
@@ -1221,6 +1400,7 @@ def run_chain(args: argparse.Namespace) -> int:
     report["host_findings"].extend(intent_checks(active_sha, ids))
     report["host_findings"].extend(binding_checks(units, active_sha, ids))
     report["host_findings"].extend(handoff_checks(units, ids))
+    report["host_findings"].extend(owner_scope_checks(units, ids))
     report["host_findings"].extend(credential_file_checks(units))
     report["host_findings"].extend(provider_credit_check(units))
     report["host_findings"].extend(disk_admission_check(units))
