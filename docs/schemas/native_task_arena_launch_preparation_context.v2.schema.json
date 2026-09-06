@@ -199,6 +199,7 @@
         "zero_action_result": {"type": "string", "minLength": 1},
         "controls_qualification_manifest": {"type": "string", "minLength": 1},
         "machine_avoidlist": {"type": "string"},
+        "scene_owner_attempt": {"type": "string", "minLength": 1},
         "python": {"type": "string", "minLength": 1},
         "service_account": {"type": "string", "minLength": 1},
         "service_group": {"type": "string", "minLength": 1}

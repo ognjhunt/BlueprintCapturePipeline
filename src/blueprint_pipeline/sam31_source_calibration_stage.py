@@ -67,6 +67,12 @@ def validate_retained_source_calibration_stage(outcome: Mapping[str, Any]) -> No
     charge=read(checked_file(artifacts['source_calibration_official_charge']['path'],artifacts['source_calibration_official_charge']),digest_field='charge_digest')
     require(charge.get('provider_instance_id')==result['vast_instance_ids'][0]
             and 0<=charge.get('official_charge_usd',-1)<=1.0,'retained_official_charge_invalid')
+    if 'scene_owner_attempt' in outcome:
+        from .task_evaluation_scene_execution_authority import require_scene_execution_authority
+        reference=outcome['scene_owner_attempt']
+        owner=read(checked_file(reference['path'],reference))
+        require_scene_execution_authority(owner,
+            source_commit=owner['scene_attempt_binding']['source_commit'],reopen_records=False)
 
 
 def execute_source_calibration_stage(job: Mapping[str, Any], *, allocator_runner: Callable[...,int]=_run) -> dict[str, Any]:
@@ -112,6 +118,11 @@ def execute_source_calibration_stage(job: Mapping[str, Any], *, allocator_runner
     started=root/'allocator_started.json'
     if not result_path.exists():
         require(not started.exists(),'prior_allocation_requires_reconciliation')
+        require(not job.get('resume_only'),'prior_allocation_requires_reconciliation')
+        from .task_evaluation_scene_owner_attempt_profiles import require_fresh_task_owner
+        require_fresh_task_owner(read(checked_file(task_ref['path'], task_ref)),
+            source_commit=job['expected_source_commit'], maximum_spend_usd=settings['max_spend_usd'],
+            output_path=root/'scene_owner_attempt.json')
         argv=[sys.executable,'-m','blueprint_pipeline.paid_resource_allocator','gpu-canary','--provider','vast',
             '--probe-kind','adp-retained-scene-gpu-render','--execute','--expected-source-commit',job['expected_source_commit'],
             '--admission-out',str(root/'admission.json'),'--adapter-output',str(result_path),
@@ -129,9 +140,12 @@ def execute_source_calibration_stage(job: Mapping[str, Any], *, allocator_runner
     return_path=Path(result['source_calibration_return']['return_path'])
     verify_source_calibration_return(prepared,return_path)
     charge=_posted_charge(result,root)
+    owner_path=root/'scene_owner_attempt.json'
+    owner_metadata={'scene_owner_attempt':record(owner_path)} if owner_path.exists() else {}
     if charge is None:
         return {'status':'waiting_for_external_result','stage_id':'calibrated_views',
                 'waiting_reason':'official_vast_billing_not_posted','candidate_policy_queried':False,
+                **owner_metadata,
                 'artifacts':{'source_calibration_execution':record(result_path),
                              'source_calibration_prepared_inputs':record(prepared_path),
                              'source_calibration_return':record(return_path)}}
@@ -166,6 +180,6 @@ def execute_source_calibration_stage(job: Mapping[str, Any], *, allocator_runner
         'source_calibration_return':record(return_path),'source_calibration_official_charge':record(charge)}
     outcome={'status':'completed','stage_id':'calibrated_views','source_commit':job['expected_source_commit'],
              'artifacts':artifacts,'candidate_policy_queried':False,'evaluation_authorized':False,
-             'provider_mutation_performed':True}
+             'provider_mutation_performed':True,**owner_metadata}
     validate_retained_source_calibration_stage(outcome)
     return outcome

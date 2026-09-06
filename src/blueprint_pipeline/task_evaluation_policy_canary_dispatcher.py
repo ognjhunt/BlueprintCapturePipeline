@@ -89,6 +89,11 @@ from .vast_official_billing_extractor import (
 )
 
 
+from .task_evaluation_scene_execution_authority import (
+    OWNER_FIELDS, POLICY_FIELDS, proves_no_provider_allocation as _proves_no_provider_allocation,
+    require_scene_execution_authority, validate_policy_setup_owner_fields,
+)
+
 SCHEMA_VERSION = "task_evaluation_policy_canary_dispatch.v1"
 SETUP_SCHEMA_VERSION = "task_evaluation_policy_canary_execution_setup.v1"
 ACTIVATION_SCHEMA_VERSION = "task_evaluation_launch_activation_result.v1"
@@ -103,17 +108,6 @@ class TaskEvaluationPolicyCanaryDispatchError(ValueError):
 AllocatorRunner = Callable[[Sequence[str]], int]
 ProviderZeroCollector = Callable[[], Mapping[str, Any]]
 SyncRunner = Callable[..., Mapping[str, Any]]
-
-
-def _proves_no_provider_allocation(adapter: Mapping[str, Any]) -> bool:
-    instance_ids = adapter.get("vast_instance_ids")
-    return bool(
-        instance_ids in (None, [])
-        and adapter.get("provider_mutations_performed") in {0, False}
-        and adapter.get("provider_create_attempted") is not True
-        and adapter.get("vast_side_effects_may_have_occurred") is not True
-        and adapter.get("continuing_spend_from_this_run") is not True
-    )
 
 
 def _sync_pending_progress(
@@ -222,7 +216,7 @@ def validate_policy_canary_execution_setup(
         "scene_promotion_authorized",
         "official_ranking_authorized",
         "setup_digest",
-    }
+    } | OWNER_FIELDS | POLICY_FIELDS
     if (
         not set(setup).issubset(allowed_fields)
         or setup.get("schema_version") != SETUP_SCHEMA_VERSION
@@ -278,6 +272,7 @@ def validate_policy_canary_execution_setup(
         raise TaskEvaluationPolicyCanaryDispatchError(
             "policy_canary_setup_task_success_contract_digest_mismatch"
         )
+    validate_policy_setup_owner_fields(setup)
     return setup
 
 
@@ -1596,6 +1591,9 @@ def dispatch_policy_canary_activation(
         )
     allocator_invoked = False
     if not adapter_path.is_file():
+        if execute:
+            require_scene_execution_authority(setup, source_commit=implementation_commit,
+                                             maximum_spend_usd=float(resource["hard_cap_usd"]), provider="vast")
         if invocation_started_path.is_file():
             raise TaskEvaluationPolicyCanaryDispatchError(
                 "policy_canary_allocator_previous_invocation_without_result"

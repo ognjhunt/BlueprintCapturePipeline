@@ -21,6 +21,11 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .paid_attempt_authority import bind_lane_prior_spend
+from .task_evaluation_sam31_retained_evidence import (
+    Sam31PreparationPaidStageError as Sam31PreparationPaidStageError,
+    _require, _terminal_manifest_valid, _teardown_valid,
+    validate_retained_paid_stage as validate_retained_paid_stage,
+)
 from .task_evaluation_scene_configuration_submission_inputs import (
     beneath,
     checked_file,
@@ -41,13 +46,6 @@ ALLOCATOR_PREFIX = (
 )
 
 
-class Sam31PreparationPaidStageError(ValueError):
-    """A paid precursor could not be derived or closed safely."""
-
-
-def _require(condition: bool, code: str) -> None:
-    if not condition:
-        raise Sam31PreparationPaidStageError("sam31_preparation_paid_" + code)
 
 
 def _record(path: Path) -> dict[str, Any]:
@@ -78,14 +76,19 @@ def _input(job: Mapping[str, Any], name: str, roots: tuple[Path, ...]) -> Path:
     return checked_file(path, dict(row))
 
 
-def _task_authority(job: Mapping[str, Any], roots: tuple[Path, ...]) -> dict[str, Any]:
+def _task_document(job: Mapping[str, Any], roots: tuple[Path, ...]) -> dict[str, Any]:
     host = (job.get("plan") or {}).get("host_inputs") or {}
     row = host.get("task_request")
     _require(isinstance(row, Mapping), "task_authority_missing")
     path = _resident(str(row.get("path") or ""), roots, "task_authority_path_invalid")
     checked_file(path, dict(row))
     task = json.loads(path.read_text(encoding="utf-8"))
-    authority = task.get("human_authority") if isinstance(task, Mapping) else None
+    _require(isinstance(task, Mapping), "task_authority_missing")
+    return dict(task)
+
+
+def _task_authority(job: Mapping[str, Any], roots: tuple[Path, ...]) -> dict[str, Any]:
+    authority = _task_document(job, roots).get("human_authority")
     _require(isinstance(authority, Mapping), "task_authority_missing")
     for field in ("accepted_by", "accepted_on", "authority_reference"):
         _require(bool(str(authority.get(field) or "").strip()), "task_authority_invalid")
@@ -142,6 +145,8 @@ def _invoke_allocator(
     repo: Path,
     timeout: int,
     allocator_runner: Callable[..., int],
+    approved_roots: tuple[Path, ...],
+    maximum_spend_usd: float,
 ) -> tuple[dict[str, Any] | None, int | None]:
     _require(argv[:4] == [sys.executable, *ALLOCATOR_PREFIX], "allocator_entrypoint_invalid")
     _require(argv[-1] == "--execute" and "--experimental-branch-diagnostic" not in argv,
@@ -150,6 +155,10 @@ def _invoke_allocator(
         return json.loads(result_path.read_text(encoding="utf-8")), None
     if job.get("resume_only"):
         return None, None
+    from .task_evaluation_scene_owner_attempt_profiles import require_fresh_task_owner
+    require_fresh_task_owner(_task_document(job, approved_roots),
+        source_commit=str(job["expected_source_commit"]), maximum_spend_usd=maximum_spend_usd,
+        output_path=result_path.parent / "scene_owner_attempt.json")
     return_code = allocator_runner(argv, cwd=repo, timeout=timeout)
     result = json.loads(result_path.read_text(encoding="utf-8")) if result_path.is_file() else None
     return result, return_code
@@ -266,6 +275,7 @@ def _sam31_stage(
         repo=repo,
         timeout=ttl + 900,
         allocator_runner=allocator_runner,
+        approved_roots=roots, maximum_spend_usd=cap,
     )
     if result is None:
         return {"status": "failed", "stage_id": "sam31_tracking", "artifacts": {},
@@ -371,47 +381,6 @@ def _sam31_stage(
 
 
 
-def _terminal_manifest_valid(
-    path: Path, *, lane: str, required_paths: tuple[Path, ...], binding: Mapping[str, Any] | None = None
-) -> bool:
-    """Rehash retained files using the canonical allocator's actual inventory format."""
-    try:
-        manifest = read(path, digest_field="manifest_digest")
-        rows = manifest.get("files")
-        actual_binding = manifest.get("binding") or {}
-        if (
-            manifest.get("schema_version") != "task_evaluation_artifact_manifest.v1"
-            or manifest.get("status") != "completed" or manifest.get("blockers") != []
-            or actual_binding.get("allocator_lane") != lane
-            or actual_binding.get("retry_cap") != 0
-            or any(actual_binding.get(key) != value for key, value in (binding or {}).items())
-            or not isinstance(rows, list) or not rows or manifest.get("file_count") != len(rows)
-        ):
-            return False
-        seen: set[Path] = set()
-        total = 0
-        for row in rows:
-            artifact = beneath(path.parent, row["relative_path"])
-            size = row.get("size_bytes")
-            if (artifact in seen or type(size) is not int or size < 0
-                    or not artifact.is_file() or artifact.stat().st_size != size
-                    or sha(artifact) != row.get("sha256")):
-                return False
-            seen.add(artifact)
-            total += size
-        return (manifest.get("total_size_bytes") == total
-                and set(required_paths).issubset(seen))
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return False
-
-
-def _teardown_valid(path: Path) -> bool:
-    try:
-        teardown = read(path)
-        return (teardown.get("schema_version") == "vast_teardown_manifest.v1"
-                and teardown.get("continuing_spend_from_this_run") is False)
-    except (OSError, ValueError, KeyError, TypeError):
-        return False
 
 def _gaussian_execution_authority(
     *, freeze: Mapping[str, Any], authority: Mapping[str, Any], path: Path,
@@ -660,6 +629,7 @@ def _contribution_stage(
         repo=repo,
         timeout=GAUSSIAN_TTL_SECONDS + 900,
         allocator_runner=allocator_runner,
+        approved_roots=roots, maximum_spend_usd=GAUSSIAN_MAX_SPEND_USD,
     )
     if result is None:
         return {"status": "failed", "stage_id": "contribution_sweep", "artifacts": {},
@@ -758,31 +728,6 @@ def _contribution_stage(
 
 
 
-def validate_retained_paid_stage(outcome: Mapping[str, Any], *, stage_id: str) -> None:
-    """Read-only validation of a completed phase's exact retained artifact set."""
-    _require(stage_id in STAGES and outcome.get("stage_id") == stage_id
-             and outcome.get("status") == "completed", "replay_stage_invalid")
-    prefix, lane, names = (
-        ("sam31", "semantic_sam31_source_tracks", ("source_tracks", "provider_zero"))
-        if stage_id == "sam31_tracking"
-        else ("gaussian", "adp_gaussian_excision", ("provider_execution_result", "contribution_evidence"))
-    )
-    required = {prefix + "_" + name for name in ("allocator_result", "teardown", "artifact_manifest", *names)}
-    records = outcome.get("artifacts")
-    _require(isinstance(records, Mapping) and set(records) == required,
-             "replay_artifact_set_changed")
-    paths = {}
-    for name, row in records.items():
-        _require(isinstance(row, Mapping), "replay_artifact_invalid")
-        path = Path(str(row.get("path") or ""))
-        _require(path.is_absolute(), "replay_artifact_invalid")
-        paths[name] = checked_file(path, dict(row))
-    manifest = paths[prefix + "_artifact_manifest"]
-    teardown = paths[prefix + "_teardown"]
-    retained = tuple(paths[prefix + "_" + name] for name in (*names, "teardown"))
-    _require(_teardown_valid(teardown) and _terminal_manifest_valid(
-        manifest, lane=lane, required_paths=retained,
-    ), "replay_terminal_artifacts_changed")
 
 def execute_paid_stage(
     job: Mapping[str, Any],
@@ -820,14 +765,19 @@ def execute_paid_stage(
     else:
         output.mkdir(parents=True, exist_ok=True)
     if stage == "sam31_tracking":
-        return _sam31_stage(
+        result = _sam31_stage(
             job, roots=roots, output=output, repo=repo, config=config,
             allocator_runner=allocator_runner,
         )
-    return _contribution_stage(
-        job, roots=roots, output=output, repo=repo, config=config,
-        allocator_runner=allocator_runner,
-    )
+    else:
+        result = _contribution_stage(
+            job, roots=roots, output=output, repo=repo, config=config,
+            allocator_runner=allocator_runner,
+        )
+    owner_path = output / "allocator" / "scene_owner_attempt.json"
+    if owner_path.exists():
+        result["scene_owner_attempt"] = _record(owner_path)
+    return result
 
 
 __all__ = ["execute_paid_stage", "validate_retained_paid_stage"]
