@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline import task_evaluation_sam31_prefix_adoption as adoption
+import blueprint_pipeline.task_evaluation_sam31_prefix_adoption as adoption
 from blueprint_pipeline import task_evaluation_sam31_prefix_evidence as evidence
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline.task_evaluation_sam31_phase_queue import enqueue_sam31_phase

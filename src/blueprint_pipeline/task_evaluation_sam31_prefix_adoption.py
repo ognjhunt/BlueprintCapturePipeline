@@ -72,7 +72,9 @@ def _seed(plan, profile, roots):
     return inputs, inherited
 
 
-def _render_artifacts(artifacts):
+def _render_artifacts(artifacts, source_profile):
+    if source_profile.get("completed_prefix_adoption") is None:
+        return artifacts
     # Administrative conversion rebinding must not rewrite the original renderer input.
     request = read(artifacts["calibrated_view_request"]["path"])
     original = record(request["scene"]["standard_splat_path"])
@@ -172,7 +174,7 @@ def validate_completed_prefix_adoption(path, *, expected_source_commit, approved
     current_repo = Path(value["current_release_root"])
     require(_git_identity(current_repo)["commit"] == expected_source_commit, "sam31_adoption_current_release_changed")
     tracking_phase = "sam31_tracking" if PREFIX_LENGTHS[value["through_phase"]] >= 5 else "calibrated_views"
-    release = validate_render(outcomes["calibrated_views"], _render_artifacts(artifacts), old_plan, current_repo, tracking_phase)
+    release = validate_render(outcomes["calibrated_views"], _render_artifacts(artifacts, old_profile), old_plan, current_repo, tracking_phase)
     require(release == value["retained_release_pin"], "sam31_adoption_retained_release_changed")
     provider_path = _ref(value["current_sam31_provider_profile"], roots)
     if current_provider_profile_path is not None:
@@ -305,7 +307,7 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
     roots = tuple(Path(root) for root in approved_roots)
     _, _, artifacts, outcomes, tracking_origin = _phase_chain(value, roots)
     tracking_phase = "sam31_tracking" if PREFIX_LENGTHS[through_phase] >= 5 else "calibrated_views"
-    value["retained_release_pin"] = validate_render(outcomes["calibrated_views"], _render_artifacts(artifacts), old_plan, Path(current_repo_root), tracking_phase)
+    value["retained_release_pin"] = validate_render(outcomes["calibrated_views"], _render_artifacts(artifacts, old_profile), old_plan, Path(current_repo_root), tracking_phase)
     if PREFIX_LENGTHS[through_phase] >= 5:
         require(sam31_billing_source_path is not None, "sam31_adoption_official_billing_required")
         value["sam31_billing_source"] = record(sam31_billing_source_path)
