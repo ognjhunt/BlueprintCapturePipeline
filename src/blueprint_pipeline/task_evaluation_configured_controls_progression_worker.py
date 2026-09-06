@@ -1706,6 +1706,21 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
     )
     launch_state_root = Path(kwargs["launch_state_root"]).expanduser()
     rows: list[dict[str, Any]] = []
+    # Preparation-to-controls provisioning precedes activation on every worker
+    # tick. Omitted configuration preserves existing standalone controls lanes.
+    from .task_evaluation_controls_autoprovision import CONFIG_ENV, process_config
+    autoprovision_config = os.getenv(CONFIG_ENV)
+    if autoprovision_config:
+        try:
+            rows.extend(process_config(autoprovision_config,
+                expected_production_commit=running_release_commit()))
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            rows.append({"status": "controls_autoprovision_refused", "blocker": str(exc)})
+        if any(row["status"] == "controls_autoprovision_refused" for row in rows):
+            # An already-installed intent cannot outlive revoked/expired owner
+            # authority while this tick continues into activation or dispatch.
+            return {"schema_version": WORKER_RESULT_SCHEMA_VERSION, "status": "blocked",
+                    "rows": rows, "provider_mutation_performed": False, "allocator_invoked": False}
     if scene_configuration_intent_root is not None:
         rows.extend(
             scene_configuration_activation.progression_rows(
@@ -1944,7 +1959,7 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
             )
     return {
         "schema_version": WORKER_RESULT_SCHEMA_VERSION,
-        "status": "blocked" if any(row["status"] == "blocked" for row in rows) else "completed",
+        "status": "blocked" if any(row["status"] in {"blocked", "controls_autoprovision_refused"} for row in rows) else "completed",
         "rows": rows,
         "provider_mutation_performed": False,
         "allocator_invoked": False,
