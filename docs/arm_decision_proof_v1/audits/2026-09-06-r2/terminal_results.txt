@@ -1,0 +1,6 @@
+wrong_commit None
+failed_notification ('completed', [], {'uri': 'https://runs.blueprint.example/task-evaluation-runs/scene-1-policy-canary-abc123', 'digest': 'sha256:91b8a3bcdbbd2e27027d2cc39b100257b407b0313ebc0b9d262edc6b9705b0ca', 'size_bytes': 4096})
+nonexistent_uri_via_real_index ('completed', [], {'uri': 'https://unpublished.invalid/never-published.json', 'digest': 'sha256:91b8a3bcdbbd2e27027d2cc39b100257b407b0313ebc0b9d262edc6b9705b0ca', 'size_bytes': 123456})
+invalid_sync_poisons_retry first_index terminal_result_indexed
+invalid_sync_poisons_retry corrected_retry terminal_result_index_immutable_conflict
+expired_blocked_status progress blocked ['provider_capacity_unavailable'] website_status expired ['scene_intake_authority_expired']
