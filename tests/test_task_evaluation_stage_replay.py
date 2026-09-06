@@ -305,3 +305,22 @@ def test_parent_replay_reaches_the_render_boundary_after_a_ready_advancement(tmp
     assert report["sam31_ready"] is True
     assert report["reached_render_inputs_boundary"] is True
     assert report["status"] == "blocked" and "ReplayBoundary" in ";".join(report["row"]["blockers"])
+
+
+def test_envelope_uri_prefixes_come_from_the_request_itself() -> None:
+    """Inside an isolated shell the unit's JSON prefix list did not reach the replay; a replay
+    fetches nothing, so the envelope's own reference URIs are the only prefixes it needs."""
+
+    envelope = {"request": {
+        "construction": {"recipe": {"uri": "s3://blueprint/task-evaluation/production-inputs/adp-x/recipe.json", "digest": "sha256:" + "0" * 64}},
+        "scene": {"appearance": {"representation": {"uri": "https://huggingface.co/datasets/spatialverse/InteriorGS/resolve/abc/scene.ply"}}},
+        "runtime": {"mounts": [{"source": {"uri": "s3://blueprint-task-evaluation-artifacts-prod/blueprint/x/y.json"}}]},
+    }}
+
+    assert replay.envelope_uri_prefixes(envelope) == [
+        "https://huggingface.co/datasets/",
+        "s3://blueprint-task-evaluation-artifacts-prod/blueprint/",
+        "s3://blueprint/task-evaluation/",
+    ]
+    assert replay.envelope_uri_prefixes({"request": {}}) == []
+

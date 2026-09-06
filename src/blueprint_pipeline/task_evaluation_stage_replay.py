@@ -278,6 +278,28 @@ def locate_parent(parent_queue_root: str | Path, preparation_id: str) -> Located
     return LocatedParent(envelope_path=path, state=state, stem=path.stem)
 
 
+def envelope_uri_prefixes(envelope: Mapping[str, Any]) -> list[str]:
+    """The URI prefixes (scheme://authority/first-segment/) the request's references use."""
+
+    prefixes: set[str] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, Mapping):
+            uri = value.get("uri")
+            if isinstance(uri, str) and "://" in uri:
+                scheme, _, rest = uri.partition("://")
+                parts = rest.split("/")
+                prefixes.add(f"{scheme}://{parts[0]}/" + (f"{parts[1]}/" if len(parts) > 2 else ""))
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(envelope.get("request") or {})
+    return sorted(prefixes)
+
+
 def _refusing_fetcher(calls: list[str]):
     def fetch(uri: str, destination: Path, size: int) -> None:
         calls.append(str(uri))
@@ -505,6 +527,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 prefixes = [str(item) for item in json.loads(os.environ[ALLOWED_URI_PREFIXES_ENV])]
             except ValueError:
                 prefixes = []
+        if not prefixes:
+            # A replay fetches nothing, so the prefixes only have to admit the URIs the
+            # envelope already carries; derive them from the envelope itself rather than
+            # depend on how the unit's environment reaches an isolated shell.
+            prefixes = envelope_uri_prefixes(_read(locate_parent(args.parent_queue_root, args.parent).envelope_path))
         if args.server_profile:
             os.environ[PROFILE_ENV] = args.server_profile
         elif not os.environ.get(PROFILE_ENV):
@@ -553,7 +580,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     return {"completed": 0, "waiting": 3}.get(str(report.get("status")), 2)
 
 
-__all__ = ["LocatedChild", "LocatedParent", "ReplayBoundary", "discover_input_root", "discover_server_profile", "locate_parent", "replay_parent", "isolation_command", "locate_child", "main", "replay_child"]
+__all__ = ["LocatedChild", "LocatedParent", "ReplayBoundary", "discover_input_root", "discover_server_profile", "envelope_uri_prefixes", "locate_parent", "replay_parent", "isolation_command", "locate_child", "main", "replay_child"]
 
 if __name__ == "__main__":
     raise SystemExit(main())
