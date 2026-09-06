@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline import task_evaluation_sam31_prefix_adoption as adoption
+import blueprint_pipeline.task_evaluation_sam31_prefix_adoption as adoption
 from tests.test_sam31_prefix_adoption import OLD, NEW, prefix as prefix, write
 
 

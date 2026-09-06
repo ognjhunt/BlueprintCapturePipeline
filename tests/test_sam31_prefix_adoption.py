@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline import task_evaluation_sam31_prefix_adoption as adoption
+import blueprint_pipeline.task_evaluation_sam31_prefix_adoption as adoption
 from blueprint_pipeline import task_evaluation_sam31_prefix_evidence as evidence
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline.task_evaluation_sam31_phase_queue import enqueue_sam31_phase
@@ -177,7 +177,7 @@ def test_driver_adopts_old_five_stage_chain_and_only_enqueues_new_review(prefix,
     """Test orchestration; scientific validators are isolated at their explicit seam."""
     from blueprint_pipeline import task_evaluation_scene_configuration_sam31_preparation_driver as driver
     value, old_plan, old_profile, _ = prefix
-    _, _, artifacts, _ = adoption._phase_chain(value, (tmp_path,))
+    _, _, artifacts, _, _ = adoption._phase_chain(value, (tmp_path,))
     current_host = deepcopy(old_plan["host_inputs"])
     current_host["task_request"] = write(tmp_path / "current-task.json", {"expected_production_commit": NEW, "subject": {"source_instance_id": "115"}})
     new_conversion = write(tmp_path / "new-conversion.json", {"commit": NEW})
