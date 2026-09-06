@@ -135,7 +135,8 @@ def install_scene_preparation(*, bootstrap_path):
         inputs / "owner-source-store", inputs / "completed-scene-preparation",
         inputs / "completed-scene-preparation-inputs", state / "scene-preparation-release-bindings",
         state / "scene-preparation-service", state / "submission-publication-locks",
-        state / "disk-reservations", state / "storage-pins"]
+        state / "disk-reservations", state / "storage-pins",
+        inputs / "task-evaluation-terminal-results"]
     if public_scene_enabled:
         # The public-scene binding directory the per-scene provisioner writes
         # <binding_id>.json into; the scene-progression _source resolver reads
@@ -162,6 +163,10 @@ def install_scene_preparation(*, bootstrap_path):
         "intent_root": str(directories[0]), "capture_store_root": bootstrap["capture_store_root"],
         "factory_output_root": str(inputs / "completed-scene-preparation"),
         "completed_source_machinery_path": str(machinery_path),
+        # A6: where the terminal-result index files a paid run's sealed receipts.
+        # The reconciler hook is additionally gated on an activation record, so this
+        # is inert until the activation on-ramp runs and a run is indexed here.
+        "terminal_result_root": str(inputs / "task-evaluation-terminal-results"),
         "deployment_receipt_root": str(state / "deploy-receipts"),
         "release_binding_root": str(state / "scene-preparation-release-bindings"),
         "running_repo_root": bootstrap["running_repo_root"], "runtime_publication_root": str(inputs / "system-runtimes"),
