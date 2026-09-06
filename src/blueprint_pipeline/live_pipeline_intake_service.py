@@ -1834,46 +1834,8 @@ def create_app() -> FastAPI:
             },
         )
 
-    @app.post(
-        "/api/live-pipeline/task-evaluation-scene-intents",
-        dependencies=[Depends(_require_admission)],
-    )
-    async def intake_task_evaluation_scene_intent(request: Request) -> JSONResponse:
-        from .task_evaluation_scene_intake import (
-            CLIENTS_ENV, ROOT_ENV, SceneIntakeError, stage_scene_intent,
-        )
-
-        # This grants bounded future execution, unlike preparation-only intake.
-        # Legacy bearer admission is deliberately insufficient here.
-        if not request.headers.get("x-blueprint-pipeline-signature"):
-            raise HTTPException(status_code=401, detail="scene intake requires signed owner authority")
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(payload, Mapping):
-            raise HTTPException(status_code=400, detail="expected JSON object")
-        root = _string(os.getenv(ROOT_ENV))
-        if not root:
-            raise HTTPException(status_code=503, detail="scene intake queue not configured")
-        if _disk_role_refused(deployment_identity_payload(), "launch_preparation"):
-            raise HTTPException(status_code=503, detail="scene intake disk admission refused")
-        trusted = {item.strip() for item in os.getenv(CLIENTS_ENV, "blueprint-webapp").split(",")
-                   if item.strip()}
-        try:
-            receipt = await run_in_threadpool(
-                stage_scene_intent, value=payload, queue_root=root,
-                authenticated_client=_string(getattr(request.state, "intake_client_id", "")),
-                trusted_clients=trusted,
-            )
-        except SceneIntakeError as exc:
-            code = str(exc)
-            return JSONResponse(status_code=(403 if code.endswith("issuer_not_authorized")
-                else 409 if code.endswith("idempotency_conflict") else 422),
-                content={"status": "rejected", "blockers": [code],
-                         "provider_mutation_performed_inside_http_request": False})
-        return JSONResponse(status_code=202, content=receipt)
-
+    from .task_evaluation_scene_intake_http import register_scene_intake_routes
+    register_scene_intake_routes(app, _require_admission, deployment_identity_payload)
     @app.post(
         "/api/live-pipeline/task-evaluation-launch-preparations",
         dependencies=[Depends(_require_admission)],
