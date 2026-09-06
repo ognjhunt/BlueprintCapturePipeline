@@ -194,12 +194,22 @@ def _machinery(*, retained: Mapping[str, Any], profile_registry_root: str | Path
             and not isinstance(maximum_preparation_spend_usd, bool)
             and maximum_preparation_spend_usd >= 4.5):
         _fail("public_scene_provider_machinery_absent")
+    # A2: the factory's completed-prefix adoption path reads these host roots
+    # directly from the machinery. Emit the canonical roots so a re-attempt of the
+    # same owner intent can adopt already-completed GPU stages (never repeat paid
+    # work) rather than KeyError on a missing machinery key. The fresh provider-zero
+    # that gates a real adoption is produced live at paid time, never baked here.
+    from .task_evaluation_sam31_prefix_adoption import DEFAULT_QUEUE, DEFAULT_PARENT_QUEUE, DEFAULT_EXECUTION
+    from .task_evaluation_release_retention import DEFAULT_EVIDENCE_BINDING_ROOT
     machinery = {"schema_version": MACHINERY_SCHEMA,
                  "maximum_preparation_spend_usd": maximum_preparation_spend_usd,
                  "provider_references": provider_references, "provider_options": provider_options,
                  "preparation": preparation,
                  "review_terms": _reference(retained["review_terms"],
                                             reason="public_scene_provider_machinery_absent"),
+                 "child_queue_root": str(DEFAULT_QUEUE), "parent_queue_root": str(DEFAULT_PARENT_QUEUE),
+                 "execution_root": str(DEFAULT_EXECUTION),
+                 "release_retention_binding_root": str(DEFAULT_EVIDENCE_BINDING_ROOT),
                  "profile_registry_root": str(profile_registry_root)}
     machinery["machinery_digest"] = canonical_digest(machinery, digest_field="machinery_digest")
     return machinery
@@ -217,17 +227,25 @@ def _validate_release(retained: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _validate_conversion(retained: Mapping[str, Any], commit: str) -> None:
-    """The retained standard-splat conversion must be an exact-release receipt.
+    """The retained standard-splat conversion must be a structurally valid receipt.
 
-    The factory rebinds the conversion at ``release.source_commit`` and reruns the
-    canonical converter only when the commit drifts; a receipt that no longer
-    names this release is an invalid retained artifact, so fail closed here rather
-    than letting the worker discover it after reserving an attempt.
+    Content identity, not commit identity. The standard-splat converter needs the
+    3DGS decoder, which exists only in the decoder-equipped SAM preparation, never
+    on the control plane where provisioning runs. The preparation (the public-scene
+    factory) rebinds the conversion at ``release.source_commit`` when it drifts, so
+    requiring the retained receipt to already name this release is both
+    unsatisfiable at provisioning time and contrary to the content-identity goal --
+    a deploy must not invalidate a retained per-scene document (piece 1). Validate
+    the receipt's structure and that it names a real commit; leave the exact-release
+    rebind to the decoder-equipped preparation. ``commit`` is accepted for context
+    but no longer required to equal the recorded conversion commit.
     """
     conversion = _load(retained["standard_splat_conversion_receipt"],
                        reason="public_scene_source_evidence_absent", digest_field="receipt_digest")
+    recorded = conversion.get("repository", {}).get("commit")
     if (conversion.get("schema_version") != "standard_splat_conversion_receipt.v1"
-            or conversion.get("repository", {}).get("commit") != commit
+            or not (isinstance(recorded, str) and len(recorded) == 40
+                    and all(c in "0123456789abcdef" for c in recorded))
             or not isinstance(conversion.get("output"), Mapping)
             or not isinstance(conversion.get("source"), Mapping)):
         _fail("public_scene_source_evidence_absent")
@@ -333,9 +351,18 @@ def provision_public_scene_intent(*, retained: Mapping[str, Any], owner_authorit
     rights_reference = consent.get("rights_reference")
     if not (isinstance(rights_reference, str) and rights_reference):
         _fail("public_scene_owner_authority_invalid")
-    # The provider-terms reference is BOUND to the retained review terms, never
-    # taken on faith from the caller.
-    consent["provider_terms_reference"] = review_terms_digest
+    # The owner's accepted provider-terms reference is VALIDATED against the
+    # retained review terms, never manufactured. If the owner's recorded consent
+    # does not already reference exactly the retained review-terms bytes, we have
+    # no evidence they accepted these provider terms and fail closed rather than
+    # rewriting consent to fabricate acceptance (the downstream owner-authority
+    # check would otherwise be vacuous, since we would have set the very value it
+    # compares against).
+    accepted_terms = consent.get("provider_terms_reference")
+    if not (isinstance(accepted_terms, str) and accepted_terms):
+        _fail("public_scene_owner_authority_invalid")
+    if accepted_terms != review_terms_digest:
+        _fail("public_scene_provider_terms_not_accepted")
 
     binding = _binding(retained=retained, seed=seed, installation=installation,
                        content_digest=content_digest, binding_id=binding_id, owner=owner,
@@ -346,12 +373,16 @@ def provision_public_scene_intent(*, retained: Mapping[str, Any], owner_authorit
     request = {"schema_version": intake.REQUEST_SCHEMA, "submission_id": submission_id, "owner": dict(owner),
                "source": {"kind": "public_scene", "binding_id": binding_id, "content_digest": content_digest},
                "task": task_contract_projection(seed), "execution": dict(execution), "consent": consent}
+
+    # A11: publish the immutable binding + machinery the worker resolves BEFORE
+    # staging the persistent intent that makes the scene visible to the worker.
+    # An immutable conflict or I/O failure on a dependency then leaves no dangling
+    # intent; re-running the provisioner is idempotent (byte-identical _put/stage).
+    binding_path = _put(_abs(public_source_binding_root) / (binding_id + ".json"), binding)
+    machinery_path = _put(_abs(machinery_output_path), machinery)
     intent = intake.stage_scene_intent(value=request, queue_root=intent_root,
                                        authenticated_client=authenticated_client,
                                        trusted_clients=set(trusted_clients), now=moment)
-
-    binding_path = _put(_abs(public_source_binding_root) / (binding_id + ".json"), binding)
-    machinery_path = _put(_abs(machinery_output_path), machinery)
     return {"schema_version": PROVISION_SCHEMA, "status": "public_scene_intent_provisioned",
             "intent_id": intent["intent_id"], "intent_digest": intent["intent_digest"],
             "binding_id": binding_id, "binding_digest": binding["binding_digest"],
