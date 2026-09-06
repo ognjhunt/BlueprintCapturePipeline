@@ -101,6 +101,17 @@ def _task_and_blockers(*, intent: dict, binding: dict, commit: str) -> tuple[dic
             "attempt_binding": binding["binding_digest"]})[7:55],
         "run_prefix": "scene-" + intent["intent_id"].removeprefix("scene-")[:20] + "-completed",
         "scene_identity": {"id": "completed-scene-" + scene_key, "version": version},
+
+
+        # The owner's declared task_id is carried unchanged as the task identity.
+        # Controls autoprovision binds the owner authorization to the configured
+        # scene by requiring the preparation link's task_id to equal BOTH the
+        # owner intent's task_id and the preparation request's task identity id
+        # (task_evaluation_controls_autoprovision.provision_link). A synthesized
+        # "completed-task-<digest>" id would satisfy the second equality but never
+        # the first, stranding every completed-asset run at the controls seam.
+        # Intake already constrains task_id to a safe identifier (a subset of the
+        # recipe schema's identifier pattern), so it is safe to use verbatim.
         "task_identity": {"id": owner_task["task_id"], "version": version},
         "output_identity": {"id": "completed-scene-" + scene_key + "-configured", "version": version},
         "appearance_kind": APPEARANCE_KIND[binding["source_kind"]],

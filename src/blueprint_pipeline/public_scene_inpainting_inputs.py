@@ -418,8 +418,20 @@ def _record(path: Path, root: Path) -> dict[str, Any]:
 def _git_identity(repo: Path) -> dict[str, Any]:
     def run(*args: str) -> str:
         try:
+            # Trust the exact repository we deliberately inspect via an inline
+            # ``safe.directory``, matching every other git call site in this
+            # package (e.g. paid_resource_allocator, task_evaluation_release_retention,
+            # task_evaluation_splat_render_runtime). The production release worktree
+            # is root-owned while the worker runs as ``blueprint``; a service that
+            # suppresses the system/global git config (as the look-ahead parent
+            # replay does when it runs the SAM CPU stage in-process inside the
+            # progression service, which lacks the SAM service's provisioned
+            # GIT_CONFIG_KEY=safe.directory drop-ins) would otherwise fail with
+            # ``detected dubious ownership`` -> edit_input_repository_identity_unavailable,
+            # a false blocker. safe.directory only waives the ownership refusal; the
+            # dirty-tree and identity checks below are unaffected.
             return subprocess.run(
-                ["git", "-C", str(repo), *args],
+                ["git", "-c", f"safe.directory={repo}", "-C", str(repo), *args],
                 check=True,
                 capture_output=True,
                 text=True,

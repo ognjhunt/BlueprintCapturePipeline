@@ -444,3 +444,18 @@ def test_dispatcher_exit_code_separates_outcome_from_dispatch_failure() -> None:
         'return 0 if result.get("schema_version") == QUEUE_RUN_SCHEMA_VERSION else 2'
         in source
     )
+
+
+def test_provider_billing_reconciler_timer_is_deployed_for_accounting_closure() -> None:
+    """The provider billing reconciler must be part of the deployed unit set.
+
+    Its evidence is the accounting-closure feed the capacity/credit guard reads;
+    an enabled-but-unmanaged timer drifts inactive after a deploy or reboot (it
+    last fired weeks before its omission was noticed), leaving spend accounting
+    stale on a control plane that is meant to run hands-off with real money.
+    Deploying the service + timer makes every deploy install, enable, and start
+    them, so the ten-minute reconciliation keeps running.
+    """
+    deployer = _text("scripts/deploy_control_plane_commit.py")
+    assert '"blueprint-provider-billing-reconciler.service",' in deployer
+    assert '"blueprint-provider-billing-reconciler.timer",' in deployer

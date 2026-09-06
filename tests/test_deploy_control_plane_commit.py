@@ -442,6 +442,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "blueprint-task-evaluation-scene-progression.service", "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-launch-supervisor.service", "blueprint-task-evaluation-launch-supervisor.timer",
         "blueprint-task-evaluation-launch-reconciler.service", "blueprint-task-evaluation-launch-reconciler.timer",
+        "blueprint-provider-billing-reconciler.service", "blueprint-provider-billing-reconciler.timer",
         "blueprint-task-evaluation-terminal-resource-release.service", "blueprint-task-evaluation-terminal-resource-release.path",
         "blueprint-gpu-spend-guard.service", "blueprint-gpu-spend-guard.timer",
     ):
@@ -542,6 +543,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-supervisor.timer",
         "blueprint-task-evaluation-launch-reconciler.service",
         "blueprint-task-evaluation-launch-reconciler.timer",
+        "blueprint-provider-billing-reconciler.service",
+        "blueprint-provider-billing-reconciler.timer",
         "blueprint-task-evaluation-terminal-resource-release.service",
         "blueprint-task-evaluation-terminal-resource-release.path",
         "blueprint-gpu-spend-guard.service",

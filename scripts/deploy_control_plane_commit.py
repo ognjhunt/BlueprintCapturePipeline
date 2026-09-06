@@ -118,6 +118,12 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-launch-supervisor.timer",
     "blueprint-task-evaluation-launch-reconciler.service",
     "blueprint-task-evaluation-launch-reconciler.timer",
+    # Provider billing reconciliation is the accounting-closure feed the
+    # capacity/credit guard reads; deploying its timer (not merely enabling it
+    # once by hand) keeps the ten-minute reconciliation running across deploys
+    # and reboots instead of drifting inactive.
+    "blueprint-provider-billing-reconciler.service",
+    "blueprint-provider-billing-reconciler.timer",
     "blueprint-task-evaluation-terminal-resource-release.service",
     "blueprint-task-evaluation-terminal-resource-release.path",
     "blueprint-gpu-spend-guard.service",
