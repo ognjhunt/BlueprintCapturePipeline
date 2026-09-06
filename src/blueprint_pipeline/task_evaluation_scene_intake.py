@@ -15,10 +15,11 @@ import re
 from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import cross_runtime_canonical_digest as canonical_digest
 from .task_evaluation_launch_preparation_queue import (
     _write_launch_preparation_record_exclusive_locked as write_exclusive,
 )
@@ -116,7 +117,9 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
              "consent_missing")
     # Detach mutable caller state and reject non-JSON/NaN task values.
     try:
-        return json.loads(json.dumps(value, allow_nan=False))
+        detached = json.loads(json.dumps(value, allow_nan=False))
+        canonical_digest(detached)
+        return detached
     except (TypeError, ValueError) as exc:
         raise SceneIntakeError("scene_intake_json_invalid") from exc
 
@@ -243,8 +246,89 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             return existing
         rows = [_read(p, "attempt_digest") for p in attempts.glob("*.json")]
         _require(len(rows) < execution["max_paid_attempts"], "attempt_cap_exhausted")
-        _require(sum(row["maximum_spend_usd"] for row in rows) + maximum_spend_usd
-                 <= execution["max_total_spend_usd"], "spend_cap_exhausted")
+        exposure = sum((Decimal(str(row["maximum_spend_usd"])) for row in rows), Decimal(0))
+        _require(exposure + Decimal(str(maximum_spend_usd))
+                 <= Decimal(str(execution["max_total_spend_usd"])), "spend_cap_exhausted")
         result = _seal({**body, "reserved_at_epoch": moment}, "attempt_digest")
         write_exclusive(path, result)
         return result
+
+
+def scene_intent_status(*, queue_root: str | Path, intent_id: str,
+                        now: float | None = None) -> dict[str, Any]:
+    """Public projection from retained records; a status read never changes state."""
+    _require(_identifier(intent_id), "intent_id_invalid")
+    root = Path(queue_root)
+    directory = root / intent_id
+    _require(root.is_dir() and not root.is_symlink() and not directory.is_symlink(), "root_unsafe")
+    intent = _read(directory / "intent.json", "intent_digest")
+    moment = datetime.now(timezone.utc).timestamp() if now is None else now
+    status, phase, blockers, result_reference = "accepted", None, [], None
+    progress_path = directory / "progression.json"
+    if progress_path.exists():
+        progress = _read(progress_path, "progression_digest")
+        _require(progress.get("intent_digest") == intent["intent_digest"], "progression_binding_invalid")
+        permitted = {"accepted", "preparing", "awaiting_source", "awaiting_execution", "running",
+                     "completed", "needs_input", "blocked"}
+        _require(progress.get("status") in permitted, "progression_status_invalid")
+        status = progress["status"]
+        phase = progress.get("phase")
+        _require(phase is None or _identifier(phase), "progression_phase_invalid")
+        raw_blockers = progress.get("blockers", [])
+        _require(isinstance(raw_blockers, list), "progression_blockers_invalid")
+        # Internal diagnostics stay in worker receipts; never return paths,
+        # secrets, or arbitrary exception text as a customer-facing blocker.
+        blockers = sorted({str(b).split(":", 1)[0] for b in raw_blockers
+                           if re.fullmatch(r"[a-z][a-z0-9_:-]{0,255}", str(b))})
+        result_reference = progress.get("result_reference")
+        if result_reference is not None:
+            _require(isinstance(result_reference, Mapping)
+                     and set(result_reference) == {"uri", "digest", "size_bytes"}
+                     and isinstance(result_reference["digest"], str)
+                     and _DIGEST.fullmatch(result_reference["digest"]) is not None
+                     and type(result_reference["size_bytes"]) is int and result_reference["size_bytes"] > 0
+                     and isinstance(result_reference["uri"], str)
+                     and result_reference["uri"].startswith(("https://", "b2://", "gs://", "r2://"))
+                     and "?" not in result_reference["uri"], "result_reference_invalid")
+        _require(status != "completed" or result_reference is not None, "completed_result_missing")
+    attempts_path = directory / "attempts"
+    _require(not attempts_path.is_symlink(), "record_unsafe")
+    attempts = []
+    for path in sorted(attempts_path.glob("*.json")):
+        row = _read(path, "attempt_digest")
+        _require(row.get("intent_digest") == intent["intent_digest"], "attempt_binding_invalid")
+        attempts.append({key: row[key] for key in (
+            "attempt_id", "source_commit", "runtime_digest", "input_digest", "provider",
+            "maximum_spend_usd", "status")})
+    if status != "completed":
+        if (directory / "revoked.json").exists():
+            status, blockers = "revoked", ["scene_intake_authority_revoked"]
+        elif moment >= intent["request"]["execution"]["expires_at_epoch"]:
+            status, blockers = "expired", ["scene_intake_authority_expired"]
+    return _seal({"schema_version": "task_evaluation_scene_intent_status.v1", "intent_id": intent_id,
+        "intent_digest": intent["intent_digest"], "request_digest": canonical_digest(intent["request"]),
+        "owner": intent["request"]["owner"], "status": status, "phase": phase, "blockers": blockers,
+        "attempts": attempts, "result_reference": result_reference,
+        "provider_mutation_performed_by_status_read": False}, "status_digest")
+
+
+def revoke_scene_intent(*, queue_root: str | Path, intent_id: str, intent_digest: str,
+                        owner: Mapping[str, Any], now: float | None = None) -> dict[str, Any]:
+    """Revoke future admissions without deleting evidence or pretending to stop a GPU."""
+    _require(_identifier(intent_id), "intent_id_invalid")
+    root = Path(queue_root)
+    directory = root / intent_id
+    _require(root.is_dir() and not root.is_symlink() and not directory.is_symlink(), "root_unsafe")
+    with _lock(root):
+        intent = _read(directory / "intent.json", "intent_digest")
+        _require(intent["intent_digest"] == intent_digest and intent["request"]["owner"] == owner,
+                 "owner_or_intent_mismatch")
+        path = directory / "revoked.json"
+        if path.exists():
+            return _read(path, "receipt_digest")
+        receipt = _seal({"schema_version": "task_evaluation_scene_intent_revocation.v1",
+            "intent_id": intent_id, "intent_digest": intent_digest, "owner": dict(owner),
+            "status": "revoked", "revoked_at_epoch": datetime.now(timezone.utc).timestamp() if now is None else now,
+            "scope": "future_execution", "provider_mutation_performed": False}, "receipt_digest")
+        write_exclusive(path, receipt)
+        return receipt
