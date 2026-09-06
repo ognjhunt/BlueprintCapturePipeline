@@ -274,6 +274,19 @@ def _materialize_sam31_exact_mask_render_inputs(
     task = _read(freezes[0], "task_freeze_digest")
     task_id = task["task_id"]
     source_object = config["source_object"]
+    if "collision_candidate_prim" not in source_object or "scene_id" not in source_object:
+        selections = [row for row in envelope["materialized_references"]
+                      if row.get("contract_path") == "task.subject.source_object"]
+        _require(len(selections) == 1, "source_selection_missing")
+        selection_path = _file({**selections[0], "path": selections[0]["materialized_path"]})
+        selection = json.loads(selection_path.read_text())
+        _require(selection.get("schema_version") == "task_evaluation_source_object_selection.v1"
+                 and selection.get("status") == "frozen_before_scene_configuration_run"
+                 and selection.get("scene_id") == config.get("scene_id")
+                 and all(selection.get(key) == source_object.get(key) for key in
+                         ("publisher_instance_id", "aabb_min_xyz_m", "aabb_max_xyz_m", "center_xyz_m")),
+                 "source_selection_changed")
+        source_object = selection
     _require(task["source_object"]["instance_id"] == source_object["publisher_instance_id"]
              and task["removal_plan"]["source_collider_prim_path"] == source_object["collision_candidate_prim"],
              "task_source_identity_mismatch")
