@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -62,7 +63,7 @@ def build_preparation_link(**fields: Any) -> dict[str, Any]:
 
 
 def validate_preparation_link(value: Mapping[str, Any]) -> dict[str, Any]:
-    _require(set(value) == {"schema_version", "intent_id", "intent_digest", "preparation_id",
+    _require(set(value) - {"scene_configuration_attempt"} == {"schema_version", "intent_id", "intent_digest", "preparation_id",
         "request_digest", "expected_production_commit", "team_namespace", "scene_id", "task_id",
         "result_filename", "link_digest"}, "link_fields_invalid")
     _require(value["schema_version"] == LINK_SCHEMA and value["link_digest"] ==
@@ -77,6 +78,13 @@ def validate_preparation_link(value: Mapping[str, Any]) -> dict[str, Any]:
              "link_release_invalid")
     expected = value["preparation_id"] + "-" + value["request_digest"].removeprefix("sha256:") + ".json"
     _require(value["result_filename"] == expected, "link_filename_invalid")
+    if "scene_configuration_attempt" in value:
+        reference = value["scene_configuration_attempt"]
+        _require(isinstance(reference, Mapping) and set(reference) == {"path", "sha256", "size_bytes"}
+                 and isinstance(reference.get("path"), str) and Path(reference["path"]).is_absolute()
+                 and isinstance(reference.get("sha256"), str) and intake._DIGEST.fullmatch(reference["sha256"]) is not None
+                 and type(reference.get("size_bytes")) is int and reference["size_bytes"] > 0,
+                 "link_configuration_attempt_invalid")
     return dict(value)
 
 
@@ -188,12 +196,16 @@ def provision_link(*, link_path: Path, scene_root: Path, preparation_queue_root:
         _require(producer._sha256(Path(retained["spend_path"])) == retained["spend_digest"], "spend_changed")
         # A construction allocation and controls allocation are TWO holds. The
         # OpenAI placement call is a third hold, never hidden outside the cap.
+        from .task_evaluation_scene_execution_authority import bind_scene_attempt
+        scene_phase_attempts = {}
         for phase, provider, amount in [(p, "vast", cap) for p in producer.PHASES] + [
                 ("placement", "openai", inference_cap)]:
-            intake.reserve_scene_attempt(queue_root=scene_root, intent_id=link["intent_id"],
+            attempt = intake.reserve_scene_attempt(queue_root=scene_root, intent_id=link["intent_id"],
                 attempt_id="controls-" + key[:40] + "-" + phase,
                 source_commit=expected_production_commit, runtime_digest=binding["runtime_digest"],
                 input_digest=link["request_digest"], provider=provider, maximum_spend_usd=amount, now=moment)
+            if phase in producer.PHASES:
+                scene_phase_attempts[phase] = bind_scene_attempt(attempt)
         issued = retained["issued_at_epoch"]
         # Derive text authority from the persisted authenticated record only.
         authority = "scene-intent:" + intent["intent_digest"]
@@ -209,7 +221,8 @@ def provision_link(*, link_path: Path, scene_root: Path, preparation_queue_root:
                 int(cap * 3600 / producer.DEFAULT_HOURLY_RATE_USD)),
             authority_valid_seconds=int(request["execution"]["expires_at_epoch"] - issued),
             now=datetime.fromtimestamp(issued, timezone.utc),
-            external_layer_bucket=binding.get("external_layer_bucket")))
+            external_layer_bucket=binding.get("external_layer_bucket"),
+            scene_phase_attempts=scene_phase_attempts, scene_intake_root=scene_root))
         _require(result.get("provider_mutation_performed") is False and
                  result.get("status") == "configured_controls_continuation_provisioned", "producer_result_invalid")
         # Check live authority again immediately before registry installation.
@@ -257,6 +270,73 @@ def process_config(config_path: str | Path, *, expected_production_commit: str) 
                 row["scope_unresolved"] = True
             rows.append(row)
     return rows
+
+
+@dataclass
+class ProgressionOwnerScope:
+    """Scoped refusals shared by configuration activation and controls plans."""
+
+    rows: list[dict[str, Any]]
+    blocked_scene_keys: set[tuple[str, str, str]]
+    unresolved: bool
+
+    def blocked_report(self, schema_version: str) -> dict[str, Any]:
+        return {"schema_version": schema_version, "status": "blocked", "rows": self.rows,
+                "provider_mutation_performed": False, "allocator_invoked": False}
+
+    def configuration_activation_rows(self, *, intent_root: str | Path,
+            configured_controls_intent_root: str | Path | None, profile_dir: str | Path | None,
+            standing_authorization_dir: str | Path | None, context: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Apply the same owner refusals before the existing activation producer."""
+        from . import task_evaluation_scene_configuration_activation_automation as activation
+        return activation.progression_rows(
+            intent_root=Path(intent_root).expanduser(),
+            configured_controls_intent_root=configured_controls_intent_root,
+            profile_dir=profile_dir, standing_authorization_dir=standing_authorization_dir,
+            preparation_queue_root=context["preparation_queue_root"],
+            activation_queue_root=context["activation_queue_root"], progression_root=context["progression_root"],
+            repo_root=context.get("repo_root"), webapp_secret_file=context.get("webapp_secret_file"),
+            webapp_endpoint=str(context.get("webapp_endpoint") or activation.DEFAULT_WEBAPP_ENDPOINT),
+            **({"blocked_scene_keys": self.blocked_scene_keys} if self.blocked_scene_keys else {}))
+
+    def run_blocked(self, run_root: Path) -> bool:
+        if not self.blocked_scene_keys:
+            return False
+        try:
+            task = _json(run_root / "launch_profile.json").get("task_evaluation_run") or {}
+            return tuple(str(task.get(k) or "") for k in ("team_namespace", "scene_id", "task_id")) in self.blocked_scene_keys
+        except (ValueError, OSError, TypeError, AttributeError):
+            return True
+
+    def plan_blocker(self, path: Path, launch_root: Path) -> str | None:
+        if not self.blocked_scene_keys:
+            return None
+        try:
+            source_id = str(_json(path).get("source_launch_id") or "")
+            if not source_id or Path(source_id).name != source_id or self.run_blocked(launch_root / source_id):
+                return "configured_controls_owner_authority_refused"
+        except (ValueError, OSError, TypeError):
+            return "configured_controls_worker_plan_invalid"
+        return None
+
+
+def progression_owner_scope(expected_production_commit: str) -> ProgressionOwnerScope:
+    """Provision before activation; omitted configuration preserves legacy lanes.
+
+    Only corruption/configuration failures with unresolved ownership stop all
+    scenes. Known expired/revoked scenes remain scoped to their own identity.
+    """
+    rows: list[dict[str, Any]] = []
+    config = os.getenv(CONFIG_ENV)
+    if config:
+        try:
+            rows.extend(process_config(config, expected_production_commit=expected_production_commit))
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            rows.append({"status": "controls_autoprovision_refused", "blocker": str(exc)})
+    keys = {tuple(row["blocked_scene_key"]) for row in rows if row.get("blocked_scene_key")}
+    unresolved = any(row.get("scope_unresolved") or
+        (row["status"] == "controls_autoprovision_refused" and not row.get("blocked_scene_key")) for row in rows)
+    return ProgressionOwnerScope(rows, keys, unresolved)
 
 
 def owner_authority_blocker(config_path: str | Path, *, scene_intent_digest: str,

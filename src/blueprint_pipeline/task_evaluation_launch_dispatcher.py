@@ -41,9 +41,9 @@ from .task_evaluation_standing_launch_authorization import (
     STANDING_AUTHORIZATION_DIR_ENV,
     StandingAuthorizationError,
     consume_standing_authorization_once,
-    consumption_totals,
-    standing_authorization_admits,
+    standing_authorization_decision,
 )
+from .task_evaluation_scene_execution_authority import scene_execution_authority_blockers
 from .task_evaluation_immutable_input_resolver import (
     STAGING_RECEIPT_ENV,
     STAGING_SCHEMA_VERSION,
@@ -158,23 +158,8 @@ def _standing_authorization_decision(
     profile: Mapping[str, Any], live_requested: bool, state_root: str | Path
 ) -> dict[str, Any]:
     """Consult the standing per-profile authorization, if this host has one."""
-    if not live_requested:
-        return {"admitted": False, "blockers": []}
-    directory = standing_authorization_directory(state_root)
-    if not directory:
-        return {"admitted": False, "blockers": []}
-    profile_id = str(profile.get("profile_id") or "")
-    try:
-        launches, spend = consumption_totals(directory=directory, profile_id=profile_id)
-    except StandingAuthorizationError as exc:
-        # Spend we cannot account for must not be treated as zero.
-        return {"admitted": False, "blockers": [str(exc)]}
-    return standing_authorization_admits(
-        profile=profile,
-        directory=directory,
-        launches_consumed=launches,
-        spend_consumed_usd=spend,
-    )
+    return standing_authorization_decision(profile, live_requested=live_requested,
+                                           directory=standing_authorization_directory(state_root))
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -494,6 +479,7 @@ def _validate_launch_profile(
     profile = _mapping(value)
     blockers: list[str] = []
     blockers.extend(_native_policy_binding_blockers(profile))
+    blockers.extend(scene_execution_authority_blockers(profile, reopen_records=reopen_external_lineage))
     if profile.get("schema_version") != LAUNCH_PROFILE_SCHEMA_VERSION:
         blockers.append("launch_profile_schema_version_mismatch")
     if not _is_identifier(profile.get("profile_id")):
@@ -1741,6 +1727,8 @@ def dispatch_launch_request(
         except (OSError, StandingAuthorizationError, TypeError, ValueError):
             blockers.append("standing_authorization_consumption_not_recorded")
 
+    if live_requested and profile:
+        blockers.extend(scene_execution_authority_blockers(profile))
     if not blockers and profile:
         argv = [
             "gpu-canary",

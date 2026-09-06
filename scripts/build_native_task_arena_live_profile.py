@@ -90,6 +90,7 @@ from blueprint_pipeline.task_evaluation_live_profile import (
 from blueprint_pipeline.task_evaluation_launch_preparation_contract import (
     EXECUTION_ADAPTER_PROVIDER_CAPABILITIES,
 )
+from blueprint_pipeline.task_evaluation_scene_owner_attempt_profiles import profile_owner_fields
 
 
 def _write_profile_output_exclusive(path: Path, payload: bytes) -> bool:
@@ -967,17 +968,26 @@ def _immutable_inputs(link: ArenaLink):
             rows.append(
                 {"name": f"native_task_arena_{name}", "path": str(path), "digest": file_digest(path)}
             )
+        owner_path = context.extra_paths.get("scene_owner_attempt")
+        if owner_path is not None:
+            rows.append({"name": "scene_owner_attempt", "path": str(owner_path), "digest": file_digest(owner_path)})
         return rows
 
     return inputs
 
 
-def _native_policy_profile_fields(link: ArenaLink):
+def _native_policy_profile_fields(link: ArenaLink, *, expected_scene_id: str, expected_task_id: str, provider: str):
     """Expose private frozen-policy identity without claiming generic OCI support."""
 
     def fields(context: LaneLiveProfileContext) -> Mapping[str, Any]:
+        authority = _read_mapping(context.extra_paths["attempt_authority"],
+            error="native_task_arena_attempt_authority_invalid")
+        owner_fields = profile_owner_fields(path=context.extra_paths.get("scene_owner_attempt"),
+            authority=authority, phase=link.probe_kind.removeprefix("native-task-arena-"),
+            source_commit=context.source_commit, scene_id=expected_scene_id, task_id=expected_task_id,
+            maximum_spend_usd=context.max_spend_usd, provider=provider)
         if "policy_execution_spec" not in link.predecessors:
-            return {}
+            return owner_fields
         spec = _read_mapping(
             context.extra_paths["policy_execution_spec"],
             error="native_task_arena_policy_execution_spec_invalid",
@@ -1018,6 +1028,7 @@ def _native_policy_profile_fields(link: ArenaLink):
                 )
             }
         return {
+            **owner_fields,
             "native_policy_binding": {
                 "schema_version": "native_task_arena_policy_binding.v1",
                 "candidate_id": spec.get("candidate_id"),
@@ -1112,7 +1123,8 @@ def _spec(
             expected_scene_id=expected_scene_id,
             expected_task_id=expected_task_id,
         ),
-        profile_fields=_native_policy_profile_fields(link),
+        profile_fields=_native_policy_profile_fields(link, expected_scene_id=expected_scene_id,
+            expected_task_id=expected_task_id, provider=provider),
         # The skeleton requires every declared path, so the optional
         # avoidlist is only declared on the calls that actually supply one.
         extra_path_names=(
@@ -1128,6 +1140,7 @@ def _spec(
             ),
             *link.predecessors,
         ),
+        optional_extra_path_names=("scene_owner_attempt",),
         required_providers=(provider,),
         provider=provider,
     )
@@ -1151,6 +1164,7 @@ def build_native_task_arena_live_profile(
     machine_avoidlist_path: str | Path | None = None,
     warm_session_path: str | Path | None = None,
     terminal_feedback_adoption_path: str | Path | None = None,
+    scene_owner_attempt_path: str | Path | None = None,
     revision: str | None = None,
     max_hourly_rate_usd: float = 1.0,
     max_spend_usd: float = 2.0,
@@ -1161,6 +1175,9 @@ def build_native_task_arena_live_profile(
 ) -> dict[str, Any]:
     """Derive a live profile from the packet receipt the link will run."""
 
+    if scene_owner_attempt_path is not None and any(
+            p.is_symlink() for p in (Path(scene_owner_attempt_path), *Path(scene_owner_attempt_path).parents)):
+        raise TaskEvaluationLaunchError("scene_owner_profile_path_unsafe")
     entry = LINKS[link]
     if provider not in EXECUTION_ADAPTER_PROVIDER_CAPABILITIES[
         ("native_task_arena", "v1")
@@ -1181,6 +1198,7 @@ def build_native_task_arena_live_profile(
         "machine_avoidlist": machine_avoidlist_path,
         "warm_session": warm_session_path,
         "terminal_feedback_adoption": terminal_feedback_adoption_path,
+        "scene_owner_attempt": scene_owner_attempt_path,
     }
     missing = [name for name in entry.predecessors if supplied.get(name) is None]
     if missing:
@@ -1218,6 +1236,7 @@ def build_native_task_arena_live_profile(
                 "machine_avoidlist",
                 "warm_session",
                 "terminal_feedback_adoption",
+                "scene_owner_attempt",
             }
         )
     }
@@ -1324,6 +1343,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         )
         target.add_argument("--output", required=True)
+        target.add_argument("--scene-owner-attempt", default=None)
         if "construction_result" in entry.predecessors:
             target.add_argument("--construction-result", required=True)
         if "control_result" in entry.predecessors:
@@ -1359,6 +1379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             terminal_feedback_adoption_path=getattr(
                 args, "terminal_feedback_adoption", None
             ),
+            scene_owner_attempt_path=args.scene_owner_attempt,
             revision=args.revision,
             max_hourly_rate_usd=args.max_hourly_rate_usd,
             max_spend_usd=args.max_spend_usd,

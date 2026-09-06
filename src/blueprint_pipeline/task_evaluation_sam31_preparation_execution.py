@@ -12,12 +12,7 @@ from typing import Any, Callable, Mapping, Sequence
 from .fail_closed_blocker_explainer import annotate_blocker
 from .decision_evidence_contracts import canonical_digest
 from .public_scene_host_input_intake import _verified_checkout_head
-from .task_evaluation_launch_preparation_contract import (
-    launch_preparation_request_digest, validate_launch_preparation_request,
-)
-from .task_evaluation_launch_preparation_queue import (
-    QUEUE_STATES,
-)
+from .task_evaluation_sam31_parent_evidence import _parent as _parent
 from .task_evaluation_release_reference_lock import release_reference_lock
 from .task_evaluation_sam31_preparation_queue import (
     SAM31_EXECUTION_ROOT, WAITING_STATE, load_progress, stage_resume_signal, verify_evidence_reference,
@@ -80,25 +75,6 @@ def _file_record(path: Path) -> dict:
             digest.update(chunk)
             size += len(chunk)
     return {"path": str(path), "sha256": "sha256:" + digest.hexdigest(), "size_bytes": size}
-
-
-def _parent(job: dict, root: Path) -> tuple[dict, str, Path]:
-    digest = job.get("parent_request_digest")
-    identifier = job.get("parent_preparation_id")
-    _require(isinstance(identifier, str) and identifier and "/" not in identifier
-             and isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is not None,
-             "parent_identity_invalid")
-    filename = f"{identifier}-{digest.removeprefix('sha256:')}.json"
-    matches = [(state, root / state / filename) for state in QUEUE_STATES if (root / state / filename).exists()]
-    _require(len(matches) == 1, "parent_identity_ambiguous")
-    state, path = matches[0]
-    envelope = _read(path)
-    request = validate_launch_preparation_request(envelope["request"])
-    _require(envelope.get("envelope_digest") == canonical_digest(envelope, digest_field="envelope_digest")
-             and envelope.get("request_digest") == digest
-             and launch_preparation_request_digest(request) == digest
-             and request["preparation_id"] == identifier, "parent_envelope_invalid")
-    return request, state, path
 
 
 def _validated_job(job: dict, *, parent_queue: Path, input_root: Path,

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/schemas/task_evaluation_scene_owner_attempt.v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "scene_intent_digest", "scene_attempt_id", "scene_attempt_binding", "phase", "team_namespace", "scene_id", "task_id", "runtime_source_bundle_digest", "owner_attempt_digest"],
+  "properties": {
+    "schema_version": {"const": "task_evaluation_scene_owner_attempt.v1"},
+    "scene_intent_digest": {"$ref": "#/$defs/digest"},
+    "scene_attempt_id": {"$ref": "#/$defs/id"},
+    "phase": {"enum": ["scene_configuration", "construction", "controls"]},
+    "team_namespace": {"$ref": "#/$defs/id"},
+    "scene_id": {"$ref": "#/$defs/id"},
+    "task_id": {"$ref": "#/$defs/id"},
+    "runtime_source_bundle_digest": {"$ref": "#/$defs/digest"},
+    "owner_attempt_digest": {"$ref": "#/$defs/digest"},
+    "scene_attempt_binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "intent_id", "intent_digest", "attempt_id", "source_commit", "runtime_digest", "input_digest"],
+      "properties": {
+        "schema_version": {"const": "task_evaluation_scene_attempt_binding.v1"},
+        "intent_id": {"$ref": "#/$defs/id"},
+        "intent_digest": {"$ref": "#/$defs/digest"},
+        "attempt_id": {"$ref": "#/$defs/id"},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "runtime_digest": {"$ref": "#/$defs/digest"},
+        "input_digest": {"$ref": "#/$defs/digest"}
+      }
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

@@ -534,6 +534,7 @@ def _native_task_arena_steps(
             exports=(("profile_id", "profile_id"),),
             repeated_argv=(
                 ("--machine-avoidlist", "machine_avoidlist"),
+                ("--scene-owner-attempt", "scene_owner_attempt"),
                 *(
                     (
                         (
@@ -829,6 +830,7 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
                     "--configured-controls-autostart-intent",
                     "configured_controls_autostart_intent_artifacts",
                 ),
+                ("--scene-owner-attempt", "scene_owner_attempt"),
             ),
             exports=(("profile_id", "profile_id"),),
         ),

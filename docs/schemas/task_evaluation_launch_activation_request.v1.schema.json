@@ -109,7 +109,8 @@
         "authorized_by": {"$ref": "#/$defs/identifier"},
         "authorized_on": {"type": "string", "format": "date-time"},
         "standing_authorization_expires_at": {"type": "string", "format": "date-time"},
-        "profile_revision": {"$ref": "#/$defs/identifier"}
+        "profile_revision": {"$ref": "#/$defs/identifier"},
+        "scene_owner_attempt": {"$ref": "task_evaluation_scene_owner_attempt.v1.schema.json"}
       }
     },
     "requested_mutations": {

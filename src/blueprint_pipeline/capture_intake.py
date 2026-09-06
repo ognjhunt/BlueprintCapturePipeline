@@ -32,6 +32,7 @@ CAPTURE_AUTHORITY_PROFILES = {
     "camera_360_native",
     "monocular_video",
     "precomputed_external_reconstruction",
+    "provided_scene_mesh",
     "public_processed_rgbd_pose_sequence",
 }
 
@@ -76,6 +77,7 @@ _REQUIRED_STREAMS = {
     "camera_360_native": {"retained_original", "camera_metadata"},
     "monocular_video": {"retained_video"},
     "precomputed_external_reconstruction": {"external_reconstruction"},
+    "provided_scene_mesh": {"scene_mesh"},
     "public_processed_rgbd_pose_sequence": {
         "processed_rgb_observations",
         "camera_poses",
@@ -312,6 +314,7 @@ def _recapture_plan(profile: str, missing: Sequence[str]) -> list[dict[str, Any]
         "coordinate_frame_semantics": "Export the site/world coordinate-frame, gravity, up-axis, handedness, and transform semantics.",
         "camera_metadata": "Export the 360 camera model, stitch/equirectangular layout, orientation, and firmware metadata.",
         "external_reconstruction": "Attach the external reconstruction files and their provider/runtime manifest.",
+        "scene_mesh": "Attach the original scene mesh with declared units and up axis; this is provided geometry, not capture observations.",
     }
     return [
         {
@@ -342,6 +345,8 @@ def _claim_ceiling(profile: str, streams: Mapping[str, str], *, admitted: bool) 
         {"retained_video", "retained_original", "processed_rgb_observations"}
         & available
     )
+    if profile == "provided_scene_mesh":
+        calibrated_pose = observed_video = False
     return {
         "capture_admitted": admitted,
         "task_candidate_discovery": admitted and observed_video,
@@ -389,6 +394,11 @@ def build_capture_admission(envelope_value: Mapping[str, Any]) -> dict[str, Any]
         )
     if profile == "precomputed_external_reconstruction":
         reduced_authority_reasons.append("derived_reconstruction_cannot_replace_source_capture_authority")
+    if profile == "provided_scene_mesh":
+        reduced_authority_reasons.extend([
+            "provided_mesh_is_not_observed_capture", "mesh_units_are_declared_not_measured",
+            "mesh_collision_and_physics_require_independent_native_validation",
+        ])
     if profile == "public_processed_rgbd_pose_sequence":
         reduced_authority_reasons.extend(
             [

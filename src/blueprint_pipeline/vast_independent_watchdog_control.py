@@ -16,6 +16,7 @@ from typing import Any
 from collections.abc import Mapping, Sequence
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .vast_inventory_evidence import _inventory_is_confirmed_zero as _inventory_is_confirmed_zero
 from .watchdog_owner_teardown_contract import (
     OWNER_TEARDOWN_CANCEL_NAME,
     WATCHDOG_EVIDENCE_NAME,
@@ -261,19 +262,6 @@ def _global_inventory_contains_only_allowed(
     return len(observed) == count
 
 
-def _inventory_is_confirmed_zero(
-    value: Mapping[str, Any], *, name_prefix: str
-) -> bool:
-    """Accept only one internally consistent, API-confirmed Vast zero row."""
-
-    return bool(
-        value.get("status") == "observed"
-        and value.get("provider") == "vast"
-        and value.get("name_prefix") == name_prefix
-        and value.get("api_confirmed") is True
-        and value.get("live_resource_count") == 0
-        and value.get("resources") == []
-    )
 
 
 def _safe_suffix(value: str) -> str:

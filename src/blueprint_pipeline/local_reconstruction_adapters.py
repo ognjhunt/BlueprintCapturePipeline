@@ -39,6 +39,7 @@ from .reconstruction_capability import (
     build_reconstruction_method_profile,
     normalize_reconstruction_result,
 )
+from .provided_scene_mesh import ADAPTER as PROVIDED_SCENE_MESH_ADAPTER, ProvidedSceneMeshImportAdapter
 
 
 LOCAL_DECODED_OBSERVATION_ADAPTER = "local://decoded-observation-index-v1"
@@ -1779,17 +1780,18 @@ def authorized_local_reconstruction_adapter_registry(
     str,
     LocalDecodedObservationAdapter
     | LocalArkitMetricScaffoldAdapter
-    | LocalExternalReconstructionImportAdapter,
+    | LocalExternalReconstructionImportAdapter | ProvidedSceneMeshImportAdapter,
 ]:
     available: dict[
         str,
         LocalDecodedObservationAdapter
         | LocalArkitMetricScaffoldAdapter
-        | LocalExternalReconstructionImportAdapter,
+        | LocalExternalReconstructionImportAdapter | ProvidedSceneMeshImportAdapter,
     ] = {
         LOCAL_DECODED_OBSERVATION_ADAPTER: LocalDecodedObservationAdapter(),
         LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER: LocalArkitMetricScaffoldAdapter(),
         LOCAL_EXTERNAL_RECONSTRUCTION_IMPORT_ADAPTER: (LocalExternalReconstructionImportAdapter()),
+        PROVIDED_SCENE_MESH_ADAPTER: ProvidedSceneMeshImportAdapter(),
     }
     requested = sorted({_text(item) for item in authorized_references if _text(item)})
     unknown = sorted(set(requested) - set(available))
