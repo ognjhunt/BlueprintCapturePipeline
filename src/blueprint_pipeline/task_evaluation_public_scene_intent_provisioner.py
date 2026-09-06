@@ -351,9 +351,18 @@ def provision_public_scene_intent(*, retained: Mapping[str, Any], owner_authorit
     rights_reference = consent.get("rights_reference")
     if not (isinstance(rights_reference, str) and rights_reference):
         _fail("public_scene_owner_authority_invalid")
-    # The provider-terms reference is BOUND to the retained review terms, never
-    # taken on faith from the caller.
-    consent["provider_terms_reference"] = review_terms_digest
+    # The owner's accepted provider-terms reference is VALIDATED against the
+    # retained review terms, never manufactured. If the owner's recorded consent
+    # does not already reference exactly the retained review-terms bytes, we have
+    # no evidence they accepted these provider terms and fail closed rather than
+    # rewriting consent to fabricate acceptance (the downstream owner-authority
+    # check would otherwise be vacuous, since we would have set the very value it
+    # compares against).
+    accepted_terms = consent.get("provider_terms_reference")
+    if not (isinstance(accepted_terms, str) and accepted_terms):
+        _fail("public_scene_owner_authority_invalid")
+    if accepted_terms != review_terms_digest:
+        _fail("public_scene_provider_terms_not_accepted")
 
     binding = _binding(retained=retained, seed=seed, installation=installation,
                        content_digest=content_digest, binding_id=binding_id, owner=owner,
@@ -364,12 +373,16 @@ def provision_public_scene_intent(*, retained: Mapping[str, Any], owner_authorit
     request = {"schema_version": intake.REQUEST_SCHEMA, "submission_id": submission_id, "owner": dict(owner),
                "source": {"kind": "public_scene", "binding_id": binding_id, "content_digest": content_digest},
                "task": task_contract_projection(seed), "execution": dict(execution), "consent": consent}
+
+    # A11: publish the immutable binding + machinery the worker resolves BEFORE
+    # staging the persistent intent that makes the scene visible to the worker.
+    # An immutable conflict or I/O failure on a dependency then leaves no dangling
+    # intent; re-running the provisioner is idempotent (byte-identical _put/stage).
+    binding_path = _put(_abs(public_source_binding_root) / (binding_id + ".json"), binding)
+    machinery_path = _put(_abs(machinery_output_path), machinery)
     intent = intake.stage_scene_intent(value=request, queue_root=intent_root,
                                        authenticated_client=authenticated_client,
                                        trusted_clients=set(trusted_clients), now=moment)
-
-    binding_path = _put(_abs(public_source_binding_root) / (binding_id + ".json"), binding)
-    machinery_path = _put(_abs(machinery_output_path), machinery)
     return {"schema_version": PROVISION_SCHEMA, "status": "public_scene_intent_provisioned",
             "intent_id": intent["intent_id"], "intent_digest": intent["intent_digest"],
             "binding_id": binding_id, "binding_digest": binding["binding_digest"],

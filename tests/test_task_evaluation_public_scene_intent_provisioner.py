@@ -147,7 +147,11 @@ def retained(tmp_path, monkeypatch):
     base = owner_request()
     execution = {**base["execution"], "max_total_spend_usd": 20, "max_paid_attempts": 4,
                  "allowed_providers": ["vast", "openai"], "expires_at_epoch": now + 3600}
-    consent = {**base["consent"], "accepted_at_epoch": now - 1}
+    # An honest owner records acceptance of exactly the retained review terms:
+    # consent.provider_terms_reference is the sha256 of the retained review-terms
+    # file. The provisioner VALIDATES this equality; it never manufactures it.
+    consent = {**base["consent"], "accepted_at_epoch": now - 1,
+               "provider_terms_reference": factory.record(review_terms)["sha256"]}
     owner_authority = {"owner": base["owner"], "submission_id": base["submission_id"],
                        "execution": execution, "consent": consent}
 
@@ -285,6 +289,43 @@ def test_structurally_invalid_conversion_still_fails_closed(retained, tmp_path):
     _write(retained_paths["standard_splat_conversion_receipt"], conversion, "receipt_digest")
     with pytest.raises(provisioner.PublicSceneIntentProvisionError, match="public_scene_source_evidence_absent"):
         _provision(tmp_path, retained_paths, owner_authority, now=extras["now"])
+
+
+def test_owner_consent_with_unaccepted_provider_terms_is_refused(retained, tmp_path):
+    # A5: the provisioner must NOT rewrite the owner's accepted provider-terms
+    # reference to match the retained review file. If the owner's recorded consent
+    # references different terms than the retained review-terms bytes, we have no
+    # evidence they accepted these provider terms; the provisioner fails closed
+    # and stages no intent, rather than fabricating acceptance.
+    retained_paths, owner_authority, extras = retained
+    owner_authority["consent"]["provider_terms_reference"] = "sha256:" + "9" * 64  # not the review terms
+    with pytest.raises(provisioner.PublicSceneIntentProvisionError,
+                       match="public_scene_provider_terms_not_accepted"):
+        _provision(tmp_path, retained_paths, owner_authority, now=extras["now"])
+    assert not (tmp_path / "intents").exists() or not list((tmp_path / "intents").glob("scene-*"))
+    assert not (tmp_path / "public-source-bindings").exists() or not list(
+        (tmp_path / "public-source-bindings").glob("*.json"))
+
+
+def test_provisioning_writes_dependencies_before_publishing_the_intent(retained, tmp_path):
+    # A11: the persistent intent is the signal the scene-progression worker acts
+    # on; it must never become visible unless its immutable binding + machinery
+    # are already durably written. Force an immutable conflict on the binding
+    # write and assert no intent was staged (dependencies precede publication).
+    retained_paths, owner_authority, extras = retained
+    intents = tmp_path / "intents"
+    bindings = tmp_path / "public-source-bindings"
+    machinery_out = tmp_path / "config" / "machinery.json"
+    bindings.mkdir(parents=True)
+    (bindings / "public-scene-841757.json").write_text('{"different":true}')  # conflicting bytes
+    with pytest.raises(provisioner.PublicSceneIntentProvisionError,
+                       match="public_scene_provision_immutable_conflict"):
+        provisioner.provision_public_scene_intent(
+            retained=retained_paths, owner_authority=owner_authority, binding_id="public-scene-841757",
+            profile_registry_root=str(tmp_path / "reg"), maximum_preparation_spend_usd=4.5,
+            intent_root=intents, public_source_binding_root=bindings, machinery_output_path=machinery_out,
+            now=extras["now"])
+    assert not intents.exists() or not list(intents.glob("scene-*")), "no intent may be staged on dep failure"
 
 
 def test_missing_disclosure_authority_fails_closed_as_rights_absent(retained, tmp_path):
