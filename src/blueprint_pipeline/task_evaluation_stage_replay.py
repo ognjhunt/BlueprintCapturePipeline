@@ -35,7 +35,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from . import task_evaluation_sam31_preparation_execution as execution
 from . import task_evaluation_sam31_preparation_stages as stages
