@@ -156,3 +156,89 @@ def test_cli_public_scene_enabled_flag_builds_a_public_scene_bootstrap(tmp_path,
     installation.main(["--bootstrap", str(tmp_path / "bootstrap.json"),
                        "--destination-simready", str(sim), "--public-scene-enabled"])
     assert captured.get("public_scene_enabled") is True
+
+
+def test_activation_authorized_emits_a_separate_activation_config(tmp_path, monkeypatch):
+    """A3: without authorization the installed service is preparation-only (no
+    activation config). With activation authorized, the installer emits a SEPARATE
+    activation config (activation_enabled True + activation_intent_root +
+    project_spend_current_path) and points the preparation config at it; the
+    preparation config itself stays activation-off (preparation-only preserved)."""
+    old_config_path, _iid, _intents, _now = _config(tmp_path, monkeypatch, source_kind="mesh", real_destination=True)
+    old = json.loads(old_config_path.read_text())
+    machinery = json.loads(Path(old["completed_source_machinery_path"]).read_text())
+
+    def _install(authorized, root):
+        bootstrap = installation.build_bootstrap(destination_catalog=machinery["destination_catalog"],
+            config_root=root / "etc", state_root=root / "state", inputs_root=root / "inputs",
+            capture_store_root=old["capture_store_root"], running_repo_root=root / "repo",
+            service_account=ACCOUNT, activation_authorized=authorized)
+        path = root / "bootstrap.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(bootstrap))
+        path.chmod(0o640)
+        return installation.install_scene_preparation(bootstrap_path=path)
+
+    default_receipt = _install(False, tmp_path / "default")
+    default_config = json.loads(Path(default_receipt["config"]["path"]).read_text())
+    assert default_config["activation_enabled"] is False
+    assert "activation_service_config" not in default_config
+
+    auth_receipt = _install(True, tmp_path / "authorized")
+    auth_config = json.loads(Path(auth_receipt["config"]["path"]).read_text())
+    assert auth_config["activation_enabled"] is False  # the preparation config stays activation-off
+    activation_path = Path(auth_config["activation_service_config"])
+    assert activation_path.is_file()
+    activation_config = json.loads(activation_path.read_text())
+    assert activation_config["activation_enabled"] is True
+    assert activation_config.get("activation_intent_root")
+    assert activation_config.get("project_spend_current_path")
+    assert Path(activation_config["activation_intent_root"]).is_dir()
+    # The activation config shares the preparation config's intent root/state.
+    assert activation_config["intent_root"] == auth_config["intent_root"]
+
+
+def test_service_runs_the_activation_pass_only_when_authorized(tmp_path, monkeypatch):
+    """A3: the service runs the activation config as a second no-spend pass when
+    (and only when) a separately-admitted activation config is installed."""
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    from blueprint_pipeline import task_evaluation_launch_preparation_worker as lw
+    from blueprint_pipeline import task_evaluation_scene_preparation_service as svc
+
+    old_config_path, _iid, _intents, _now = _config(tmp_path, monkeypatch, source_kind="mesh", real_destination=True)
+    old = json.loads(old_config_path.read_text())
+    machinery = json.loads(Path(old["completed_source_machinery_path"]).read_text())
+
+    def _install(authorized, root):
+        bootstrap = installation.build_bootstrap(destination_catalog=machinery["destination_catalog"],
+            config_root=root / "etc", state_root=root / "state", inputs_root=root / "inputs",
+            capture_store_root=old["capture_store_root"], running_repo_root=root / "repo",
+            service_account=ACCOUNT, activation_authorized=authorized)
+        path = root / "bootstrap.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(bootstrap))
+        path.chmod(0o640)
+        return installation.install_scene_preparation(bootstrap_path=path)
+
+    calls: list[str] = []
+    monkeypatch.setattr(engine, "process_scene_intents",
+                        lambda *, config_path, now=None: (calls.append(str(config_path)), {"results": [], "source_commit": "a" * 40})[1])
+    monkeypatch.setattr(lw, "process_launch_preparation_queue", lambda **kwargs: {"status": "idle"})
+
+    default_receipt = _install(False, tmp_path / "default")
+    calls.clear()
+    result = svc.run_preparation_service(config_path=default_receipt["config"]["path"])
+    assert result["execution_activation_enabled"] is False
+    assert result["scene_configuration_activation"] is None
+    # Preparation-only: the service ran only the preparation config, never a second
+    # (activation) config.
+    assert set(calls) == {str(default_receipt["config"]["path"])}
+
+    auth_receipt = _install(True, tmp_path / "authorized")
+    auth_config = json.loads(Path(auth_receipt["config"]["path"]).read_text())
+    activation_config_path = auth_config["activation_service_config"]
+    calls.clear()
+    result = svc.run_preparation_service(config_path=auth_receipt["config"]["path"])
+    assert result["execution_activation_enabled"] is True
+    assert result["scene_configuration_activation"] is not None
+    assert activation_config_path in calls  # the activation config was run as a second pass

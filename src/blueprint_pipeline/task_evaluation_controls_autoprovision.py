@@ -445,6 +445,12 @@ class ProgressionOwnerScope:
     rows: list[dict[str, Any]]
     blocked_scene_keys: set[tuple[str, str, str]]
     unresolved: bool
+    #: The OWNED preparation queue from the autoprovision config (where the owned
+    #: scene preparations land). The scene-configuration activation selector must
+    #: scan THIS queue, not the worker's CLI preparation_queue_root, or owned
+    #: preparations are invisible to activation (A4). None -> legacy: fall back to
+    #: the caller's context value.
+    owned_preparation_queue_root: str | None = None
 
     def blocked_report(self, schema_version: str) -> dict[str, Any]:
         return {"schema_version": schema_version, "status": "blocked", "rows": self.rows,
@@ -459,7 +465,9 @@ class ProgressionOwnerScope:
             intent_root=Path(intent_root).expanduser(),
             configured_controls_intent_root=configured_controls_intent_root,
             profile_dir=profile_dir, standing_authorization_dir=standing_authorization_dir,
-            preparation_queue_root=context["preparation_queue_root"],
+            # A4: scan the OWNED preparation queue (from the autoprovision config)
+            # for prepared scene configurations, not the worker's CLI queue.
+            preparation_queue_root=(self.owned_preparation_queue_root or context["preparation_queue_root"]),
             activation_queue_root=context["activation_queue_root"], progression_root=context["progression_root"],
             repo_root=context.get("repo_root"), webapp_secret_file=context.get("webapp_secret_file"),
             webapp_endpoint=str(context.get("webapp_endpoint") or activation.DEFAULT_WEBAPP_ENDPOINT),
@@ -493,8 +501,15 @@ def progression_owner_scope(expected_production_commit: str) -> ProgressionOwner
     scenes. Known expired/revoked scenes remain scoped to their own identity.
     """
     rows: list[dict[str, Any]] = []
+    owned_preparation_queue_root: str | None = None
     config = os.getenv(CONFIG_ENV)
     if config:
+        try:
+            # A4: capture the OWNED preparation queue so the activation selector
+            # scans where owned preparations land, not the worker's CLI queue.
+            owned_preparation_queue_root = str(_json(Path(config))["preparation_queue_root"])
+        except (ValueError, OSError, KeyError, TypeError):
+            owned_preparation_queue_root = None
         try:
             rows.extend(process_config(config, expected_production_commit=expected_production_commit))
         except (ValueError, OSError, KeyError, TypeError) as exc:
@@ -502,7 +517,8 @@ def progression_owner_scope(expected_production_commit: str) -> ProgressionOwner
     keys = {tuple(row["blocked_scene_key"]) for row in rows if row.get("blocked_scene_key")}
     unresolved = any(row.get("scope_unresolved") or
         (row["status"] == "controls_autoprovision_refused" and not row.get("blocked_scene_key")) for row in rows)
-    return ProgressionOwnerScope(rows, keys, unresolved)
+    return ProgressionOwnerScope(rows, keys, unresolved,
+                                 owned_preparation_queue_root=owned_preparation_queue_root)
 
 
 def owner_authority_blocker(config_path: str | Path, *, scene_intent_digest: str,
