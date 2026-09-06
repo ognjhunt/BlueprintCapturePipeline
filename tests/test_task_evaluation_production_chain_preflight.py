@@ -299,11 +299,17 @@ def test_sam31_provider_profile_from_another_release_is_a_blocker_before_submiss
     [finding] = findings
     assert finding["severity"] == "blocker"
     assert finding["code"] == "sam31_provider_profile_bound_to_other_release"
-    assert finding["bound"] == {"provider_profile": "b" * 12, "worker_stack_manifest": "b" * 12}
+    # #1669: only the provider profile itself must carry the active release; the worker stack
+    # manifest and runtime image build receipt need a valid commit, not the active one.
+    assert finding["bound"] == {"provider_profile": "b" * 12}
+    assert finding["records"] == {"provider_profile": "b" * 12, "worker_stack_manifest": "b" * 12}
 
     provider.write_text(
         json.dumps({"source_commit_sha": "a" * 40, "worker_stack_manifest": {"path": str(stack)}}), encoding="utf-8"
     )
+    [current] = preflight._sam31_provider_profile_findings(hardware, "sam.service", "a" * 40)
+    assert current["code"] == "sam31_provider_profile_bound_to_active_release"
+    assert current["severity"] != "blocker"
     stack.write_text(json.dumps({"source_commit_sha": "a" * 40}), encoding="utf-8")
     [current] = preflight._sam31_provider_profile_findings(hardware, "sam.service", "a" * 40)
     assert current["code"] == "sam31_provider_profile_bound_to_active_release"
