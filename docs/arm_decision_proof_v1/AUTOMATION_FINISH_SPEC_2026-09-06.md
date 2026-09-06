@@ -19,6 +19,14 @@ installer, adapter, and reconciliation changes over new execution machinery.
 - #1722 merged as `987e61a40651b655a36db938e1b55a8a3b9410d6` fixes that readback.
   Its focused regression and hosted impacted checks passed. The candidate was
   also replayed as the host service account before deployment.
+- Final live readback: deployment receipt
+  `deploy-receipts/iteration_987e61a_scene_preparation.json` completed successfully;
+  the active release is `987e61a4`. At 17:55:48 UTC the scene-progression timer's
+  worker exited 0 and wrote `scene-preparation-service/latest.json`, status `idle`,
+  zero processed submissions, activation disabled and no provider allocation.
+  Receipt digest: `sha256:2d47d91c86a1aa2c400c3ecc7fa14c08c200691847b55f2fb22ab0ee202938c4`.
+  Its first tick during deployment refused the not-yet-written final deployment
+  receipt; the next automatic tick recovered without a manual service repair.
 - The 17:31–17:40 UTC host audit was against deployed `2ef95d1e`. Below, host
   findings refer to that snapshot; recheck them after any subsequent deployment.
 - Website task intake now validates destination pose and deterministic success
