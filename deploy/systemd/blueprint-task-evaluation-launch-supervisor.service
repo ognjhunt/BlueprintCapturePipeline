@@ -5,6 +5,7 @@ Wants=network-online.target
 After=network-online.target blueprint-task-evaluation-launch-reconciler.service
 
 [Service]
+ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/release-retention
 Type=oneshot
 User=blueprint
 Group=blueprint
@@ -29,6 +30,9 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-supervision
+# Imported replay consumers read these production roots; all replay writes stay
+# under task-evaluation-launch-supervision. Do not grant launch/spend writes.
+ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions -/var/lib/blueprint/pipeline-control-plane/standing-authorizations -/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations -/var/lib/blueprint/task-evaluation-inputs/sam31-preparations -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-derived -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-queue -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-runs -/var/lib/blueprint/pubsub-handoffs -/var/lib/blueprint/spend-authority -/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases-state
 ReadOnlyPaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs /var/lib/blueprint/pipeline-control-plane/gpu_spend_guard -/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json /etc/blueprint/task-evaluation-launch-profiles /etc/blueprint/provider-secrets
 TasksMax=512
 LimitNOFILE=4096

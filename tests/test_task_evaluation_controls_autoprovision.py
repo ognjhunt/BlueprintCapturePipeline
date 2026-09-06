@@ -75,6 +75,21 @@ def setup(tmp_path, *, cap=20, attempts=8):
             provider_zero_collector=_provider_zero))
 
 
+def test_content_catalog_rebinds_execution_only_after_real_asset_checks(tmp_path):
+    original = setup(tmp_path)["catalog"]
+    row = dict(original["bindings"]["franka-droid"])
+    row.pop("expected_production_commit")
+    content = worker._seal({"schema_version": worker.CONTENT_CATALOG_SCHEMA,
+        "bindings": {"franka-droid": row}}, "catalog_digest")
+    derived = worker.resolve_robot_catalog(content, source_commit="b" * 40)
+    assert derived["bindings"]["franka-droid"]["expected_production_commit"] == "b" * 40
+    assert "expected_production_commit" not in content["bindings"]["franka-droid"]
+    assert derived["source_content_catalog_digest"] == content["catalog_digest"]
+    Path(row["robot_asset_usd"]["path"]).write_text("changed")
+    with pytest.raises(ValueError):
+        worker.resolve_robot_catalog(content, source_commit="c" * 40)
+
+
 def test_real_preparation_to_installed_controls_and_retry(tmp_path):
     kwargs = setup(tmp_path)
     receipt = worker.provision_link(**kwargs)

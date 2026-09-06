@@ -1728,6 +1728,8 @@ def dispatch_launch_request(
             blockers.append("standing_authorization_consumption_not_recorded")
 
     if live_requested and profile:
+        from .task_evaluation_owner_dispatch_scope import owner_dispatch_blockers
+        blockers.extend(owner_dispatch_blockers(profile))
         blockers.extend(scene_execution_authority_blockers(profile))
     if not blockers and profile:
         argv = [
@@ -1930,7 +1932,8 @@ def process_launch_queue(
     # a stale one silently filtered every newer request out of the queue.
     standing_root = Path(standing_authorization_directory(state_root)).expanduser()
     standing_present = standing_root.is_dir() and any(standing_root.glob("*.json"))
-    sources = sorted(pending.glob("*.json"))
+    from .task_evaluation_owner_dispatch_scope import owner_launch_sources
+    sources = owner_launch_sources(sorted(pending.glob("*.json")), Path(profile_dir).expanduser().resolve())
     if execute and armed and standing_present:
         scoped_sources = [
             source for source in sources if source.name.startswith(f"{execution_scope_launch_id}-")

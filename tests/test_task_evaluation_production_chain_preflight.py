@@ -40,6 +40,15 @@ def _package(tmp_path: Path) -> Path:
     return src
 
 
+def test_declaring_read_only_does_not_hide_an_unreadable_directory(tmp_path, monkeypatch):
+    def denied(_):
+        raise PermissionError(13, "not readable")
+    monkeypatch.setattr(preflight.os, "scandir", denied)
+    verdict = preflight.path_probe(str(tmp_path))
+    assert verdict["status"] == "unreadable"
+    assert preflight._severity_for_directory(verdict, storage_class="ledger", in_rw=False, declared_ro=True) == "blocker"
+
+
 def test_import_closure_follows_absolute_relative_and_lazy_imports_only(tmp_path: Path) -> None:
     src = _package(tmp_path)
 
@@ -475,4 +484,3 @@ def test_preflight_refuses_a_paid_unit_without_the_credit_guard_and_reads_the_cr
     assert preflight.provider_credit_check({"other.service": {"effective_environment": {}}}, observer=observer) == [
         preflight._finding("warning", "provider_credit_key_file_unset")
     ]
-

@@ -273,8 +273,9 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
             and attempt.get("provider") == "vast" and attempt.get("maximum_spend_usd") == maximum,
             "public_factory_attempt_binding_mismatch")
     if "robot_binding_id" in request["task"]:
-        from .task_evaluation_controls_autoprovision import CATALOG_SCHEMA, _asset, payload_digest
-        catalog = read(_reference(machinery["robot_catalog"]), digest_field="catalog_digest")
+        from .task_evaluation_controls_autoprovision import CATALOG_SCHEMA, _asset, payload_digest, resolve_robot_catalog
+        catalog = resolve_robot_catalog(read(_reference(machinery["robot_catalog"]), digest_field="catalog_digest"),
+                                        source_commit=commit)
         require(catalog.get("schema_version") == CATALOG_SCHEMA, "public_factory_robot_catalog_invalid")
         robot = catalog["bindings"].get(request["task"]["robot_binding_id"])
         require(isinstance(robot, dict) and robot.get("expected_production_commit") == commit,

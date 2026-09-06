@@ -5,6 +5,7 @@ Wants=network-online.target
 After=network-online.target blueprint-task-evaluation-launch-reconciler.service
 
 [Service]
+ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/release-retention
 Type=oneshot
 User=blueprint
 Group=blueprint

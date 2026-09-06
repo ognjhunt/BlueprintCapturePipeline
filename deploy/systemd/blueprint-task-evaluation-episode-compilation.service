@@ -3,6 +3,7 @@ Description=Compile Blueprint Task Evaluation configured-scene episodes
 Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
 
 [Service]
+ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/release-retention
 Type=oneshot
 User=blueprint
 Group=blueprint

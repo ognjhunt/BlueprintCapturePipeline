@@ -3,6 +3,8 @@ Description=Advance bounded Blueprint SAM preparation child phases
 Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
 
 [Service]
+ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/release-retention
+ReadOnlyPaths=-/var/lib/blueprint/pubsub-handoffs
 Type=oneshot
 KillMode=process
 Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process

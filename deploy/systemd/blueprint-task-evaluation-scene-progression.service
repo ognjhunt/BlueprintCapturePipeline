@@ -5,6 +5,7 @@ After=network-online.target
 ConditionPathExists=/etc/blueprint/task-evaluation-scene-progression.json
 
 [Service]
+ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/release-retention
 Type=oneshot
 User=blueprint
 Group=blueprint

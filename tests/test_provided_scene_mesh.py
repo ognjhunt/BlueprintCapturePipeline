@@ -28,7 +28,7 @@ def test_mesh_upload_requires_no_invented_source_capture_binding(tmp_path):
     submission = _submission(USD)
     submission["request"].update(capture_authority_profile="provided_scene_mesh", source_type="provided_scene_mesh",
         original_file={"original_filename": "room.usda", "size_bytes": len(USD), "media_type": "application/octet-stream"},
-        available_sensor_streams=[{"stream_type": "scene_mesh", "status": "available"}],
+        available_sensor_streams=[{"stream_type": "provided_geometry", "status": "available"}],
         coordinate_frame_declaration={"meters_per_unit": 1, "up_axis": "Z"},
         permitted_evidence_uses=["appearance_review"])
     receipt = process_capture_upload_submission(submission, store_root=tmp_path,

@@ -411,11 +411,12 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     link = read(_reference(state["preparation_link"]), digest_field="link_digest")
     if observed.get("result_reference"):
         state["preparation_result"] = observed["result_reference"]
-    if observed["status"] == "blocked":
+    if observed["status"] in {"blocked", "awaiting_source_preparation"}:
         if _recover(directory=directory, intent=intent, state=state, attempt=attempt, link=link,
                     config=config, release=release, machinery=machinery, output=output, now=now):
             return emit("preparing", "recovery_reserved")
-        return emit("blocked", "source_preparation", ["preparation_failed"])
+        if observed["status"] == "blocked" or state.get("failure"):
+            return emit("blocked", "source_preparation", ["preparation_failed"])
     if observed["status"] == "awaiting_source_preparation":
         phase = observed["source_progress"].get("advancement", {}).get("phase", "source_preparation")
         return emit("running", phase if intake._identifier(phase) else "source_preparation")
@@ -444,9 +445,9 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
     require(type(config.get("maximum_http_submission_attempts", 2)) is int
             and 1 <= config.get("maximum_http_submission_attempts", 2) <= 3, "http_retry_bound_invalid")
     require(type(config.get("submission_enabled", False)) is bool, "submission_mode_invalid")
-    release = read(config["release_binding_path"], digest_field="release_digest")
     from .public_scene_host_input_intake import _verified_checkout_head
-    require(release.get("source_commit") == _verified_checkout_head(), "running_release_mismatch")
+    from .task_evaluation_scene_release_binding import resolve_release_binding
+    release = resolve_release_binding(config, running_commit=_verified_checkout_head())
     moment = time.time() if now is None else now
     directories = sorted(path for path in root.glob("scene-*") if path.is_dir())
     require(len(directories) <= 10000, "intent_inventory_bound_exceeded")

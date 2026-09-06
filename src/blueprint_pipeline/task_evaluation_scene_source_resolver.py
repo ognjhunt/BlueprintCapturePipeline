@@ -83,24 +83,9 @@ def resolve_scene_source(*, intent, config, release):
     from .task_evaluation_scene_progression import SourceResolution
     source = intent["request"]["source"]
     if source["binding_id"].startswith("native-"):
-        registry = config.get("native_capture_registry_root") or os.getenv("BLUEPRINT_NATIVE_SCENE_SOURCE_REGISTRY_ROOT")
-        path = Path(registry) / (source["binding_id"][7:] + ".json") if registry else None
-        if path is None or not path.is_file():
-            return SourceResolution("awaiting_source", blockers=("native_capture_bytes_not_staged",))
-        native = read(path, digest_field="binding_digest")
-        if native.get("owner") != intent["request"]["owner"] or native.get("capture_digest") != source["content_digest"]:
-            raise ValueError("native_capture_owner_or_digest_mismatch")
-        from .capture_reconstruction_launch_dispatcher import compute_capture_digest
-        if compute_capture_digest(native["raw_root"]) != source["content_digest"]:
-            raise ValueError("native_capture_bytes_changed")
-        compiled = _compiled(intent, config, release)
-        if compiled is not None:
-            return compiled
-        evidence = _retain(intent, config, {"source_kind": "capture_bundle", "capture_digest": source["content_digest"],
-            "raw_bytes_verified": True, "source_binding": _record(path),
-            "missing_measurements": ["registered_task_object_geometry", "native_scene_construction_evidence"]})
-        return SourceResolution("needs_input", blockers=("registered_task_object_geometry_required",),
-                                analysis_reference=evidence)
+        # This workflow starts after reconstruction. A raw-capture record may
+        # still exist in the shared intake API, but does not start a trainer.
+        return SourceResolution("needs_input", blockers=("completed_3d_scene_result_required",))
     store = Path(config.get("capture_store_root") or os.getenv("PIPELINE_CAPTURE_INTAKE_STORE_ROOT", "/var/lib/blueprint/capture-intake"))
     matches = []
     for path in (store / "transfer_receipts").glob("*.json"):
@@ -122,6 +107,15 @@ def resolve_scene_source(*, intent, config, release):
     compiled = _compiled(intent, config, release)
     if compiled is not None:
         return compiled
+    if source["kind"] == "gaussian_splat":
+        if envelope["capture_authority_profile"] != "provided_scene_splat":
+            raise ValueError("provided_splat_source_kind_mismatch")
+        from .provided_scene_splat import inspect_splat
+        report = inspect_splat(verified["object_path"], coordinate_frame_declaration=envelope["coordinate_frame_declaration"])
+        evidence = _retain(intent, config, {"source_kind": "gaussian_splat", "source_receipt": _record(path),
+                                           "splat_inspection": report, "captured_observations_supplied": False})
+        return SourceResolution("needs_input", blockers=("registered_collision_mesh_and_task_object_identity_required",),
+                                analysis_reference=evidence)
     if source["kind"] == "mesh":
         if envelope["capture_authority_profile"] != "provided_scene_mesh":
             raise ValueError("provided_mesh_source_kind_mismatch")

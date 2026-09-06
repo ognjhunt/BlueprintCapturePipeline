@@ -23,6 +23,7 @@ from .project_spend_reconciliation import validate_project_spend_reconciliation
 LINK_SCHEMA = "task_evaluation_scene_preparation_link.v1"
 CATALOG_SCHEMA = "task_evaluation_controls_robot_catalog.v1"
 CONFIG_ENV = "BLUEPRINT_TASK_EVALUATION_CONTROLS_AUTOPROVISION_CONFIG"
+CONTENT_CATALOG_SCHEMA = "task_evaluation_controls_robot_content_catalog.v1"
 
 
 def _require(condition: bool, code: str) -> None:
@@ -54,6 +55,26 @@ def _scene_intent(path: Path) -> dict[str, Any]:
     # contract own its number encoding rather than using controls-only hashing.
     _json(path)
     return intake._read(path, "intent_digest")
+
+
+def resolve_robot_catalog(value: Mapping[str, Any], *, source_commit: str) -> dict[str, Any]:
+    """Bind retained robot/runtime content to execution without rewriting the seed."""
+    _require(value.get("catalog_digest") == canonical_digest(value, digest_field="catalog_digest"), "catalog_invalid")
+    if value.get("schema_version") == CATALOG_SCHEMA:
+        return dict(value)
+    _require(value.get("schema_version") == CONTENT_CATALOG_SCHEMA
+             and isinstance(value.get("bindings"), dict)
+             and intake._COMMIT.fullmatch(source_commit) is not None, "content_catalog_invalid")
+    bindings = {}
+    for name, row in value["bindings"].items():
+        _require(intake._identifier(name) and isinstance(row, dict)
+                 and "expected_production_commit" not in row, "content_catalog_binding_invalid")
+        _asset(row["robot_asset_usd"])
+        _asset(row["embodiment_camera_template"])
+        _require(payload_digest(Path(row["runtime_source_payload_dir"])) == row["runtime_digest"], "runtime_digest_mismatch")
+        bindings[name] = {**row, "expected_production_commit": source_commit}
+    return _seal({"schema_version": CATALOG_SCHEMA, "bindings": bindings,
+                  "source_content_catalog_digest": value["catalog_digest"]}, "catalog_digest")
 
 
 def build_preparation_link(**fields: Any) -> dict[str, Any]:
@@ -248,7 +269,8 @@ def provision_link(*, link_path: Path, scene_root: Path, preparation_queue_root:
 
 def process_config(config_path: str | Path, *, expected_production_commit: str) -> list[dict[str, Any]]:
     config = _json(Path(config_path))
-    catalog = _sealed(Path(config["robot_catalog_path"]), "catalog_digest")
+    catalog = resolve_robot_catalog(_sealed(Path(config["robot_catalog_path"]), "catalog_digest"),
+                                    source_commit=expected_production_commit)
     scene_root = Path(config["scene_root"])
     rows = []
     for link_path in sorted(scene_root.glob("scene-*/preparation-link.json")):
