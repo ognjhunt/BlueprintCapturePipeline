@@ -305,6 +305,9 @@ def test_parent_replay_reaches_the_render_boundary_after_a_ready_advancement(tmp
     assert report["sam31_ready"] is True
     assert report["reached_render_inputs_boundary"] is True
     assert report["status"] == "blocked" and "ReplayBoundary" in ";".join(report["row"]["blockers"])
+    # A boundary row is not read by the next consumers, so their admission is not replayed for it.
+    assert report["next_consumer_admission"] == [] and report["next_consumers_admitted"] is False
+
 
 
 def test_envelope_uri_prefixes_come_from_the_request_itself() -> None:
@@ -389,3 +392,40 @@ def test_next_consumer_replay_admits_a_queued_parent_and_names_a_consumer_that_w
     assert activation["status"] == "refused"
     assert activation["blocker"] == "scene_configuration_activation_preparation_envelope_invalid"
     assert activation["fired_predicates"] == ["envelope.get('schema_version') != PREPARATION_ENVELOPE_SCHEMA_VERSION"]
+
+
+def test_unit_environment_is_read_from_systemd_and_execute_gates_are_left_behind() -> None:
+    """2026-09-06: an isolated parent replay reported ``sam31_server_profile_missing`` because the
+    parent unit's SAM profile binding lives in an EnvironmentFile drop-in the replay never read.
+    ``--isolate`` now takes the unit's own EnvironmentFiles and Environment, minus execute gates."""
+
+    shown = (
+        "EnvironmentFiles=/etc/blueprint/pipeline-control-plane.env (ignore_errors=yes)\n"
+        "EnvironmentFiles=/etc/blueprint/sam31/scene-x.env (ignore_errors=no)\n"
+        "Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/x "
+        "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID=gate-1 "
+        "BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519\n"
+    )
+    calls: list = []
+
+    def show(unit: str) -> str:
+        calls.append(unit)
+        return shown
+
+    files, environment = replay.unit_environment("blueprint-task-evaluation-launch-preparation.service", show=show)
+
+    assert calls == ["blueprint-task-evaluation-launch-preparation.service"]
+    assert files == ["/etc/blueprint/pipeline-control-plane.env", "/etc/blueprint/sam31/scene-x.env"]
+    assert environment == {
+        "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO": "/opt/blueprint/x",
+        "BLUEPRINT_VAST_SSH_IDENTITY_FILE": "/etc/blueprint/provider-secrets/vast_ssh_id_ed25519",
+    }
+    command = replay.isolation_command(
+        ["python", "-m", "x"], user="blueprint", environment_files=files, environment=environment,
+        working_directory="/tmp/code/src",
+    )
+    assert command.count("EnvironmentFile=/etc/blueprint/sam31/scene-x.env") == 1
+    assert "--setenv=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/x" in command
+    assert not any("LAUNCH_EXECUTE" in item for item in command)
+    assert replay.default_unit_for(parent=True) == "blueprint-task-evaluation-launch-preparation.service"
+    assert replay.default_unit_for(parent=False) == "blueprint-task-evaluation-sam31-preparation-execution.service"
