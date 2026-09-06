@@ -21,6 +21,30 @@ from tests.test_task_evaluation_launch_preparation_worker import production_requ
 OLD, NEW = "a" * 40, "b" * 40
 
 
+def test_automatic_selector_prefers_longest_compatible_and_keeps_rejections(monkeypatch):
+    calls = []
+    def materialize(**kwargs):
+        calls.append((kwargs["through_phase"], kwargs["output_path"]))
+        if kwargs["through_phase"] == "segment_cutout":
+            raise ValueError("sam31_adoption_producer_code_changed")
+        return {"through_phase": kwargs["through_phase"]}
+    monkeypatch.setattr(adoption, "materialize_completed_prefix_adoption", materialize)
+    result = adoption.select_completed_prefix_adoption(output_path="selected.json")
+    assert result["through_phase"] == "sam31_tracking"
+    assert result["rejected_candidates"][0]["blocker"] == "sam31_adoption_producer_code_changed"
+    assert calls == [("segment_cutout", None), ("sam31_tracking", None), ("sam31_tracking", "selected.json")]
+
+
+def test_automatic_selector_reports_no_compatible_prefix_without_publishing(monkeypatch):
+    def materialize(**kwargs):
+        assert kwargs["output_path"] is None
+        raise ValueError("sam31_adoption_task_or_source_changed")
+    monkeypatch.setattr(adoption, "materialize_completed_prefix_adoption", materialize)
+    result = adoption.select_completed_prefix_adoption(output_path="must-not-exist.json")
+    assert result["status"] == "no_reusable_prefix"
+    assert len(result["rejected_candidates"]) == 3
+
+
 def write(path, value, field=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     if field:
