@@ -42,6 +42,8 @@ Environment=BLUEPRINT_CAPACITY_MOUNTS=/var/lib/blueprint
 Environment=BLUEPRINT_CAPACITY_REPORT_ROOT=/var/lib/blueprint/pipeline-control-plane/capacity
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 Environment=DIGITALOCEAN_API_TOKEN_FILE=/etc/blueprint/provider-secrets/digitalocean_api_token
+Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
+Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true
 # Volume growth is opt-in per host: set BLUEPRINT_CAPACITY_VOLUME_ID, _MOUNT, _DEVICE,
 # _MAX_GIB and BLUEPRINT_CAPACITY_AUTORESIZE_ACK=grow-control-plane-volume in the
 # environment file once the work volume is attached.  Without them the controller

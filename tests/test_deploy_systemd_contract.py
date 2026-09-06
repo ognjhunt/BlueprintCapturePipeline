@@ -778,3 +778,22 @@ def test_sim_only_gate_uses_headless_linux_mujoco_rendering():
     assert "libosmesa6" in text
     assert "runs-on: macos-latest" not in text
     assert "MUJOCO_GL: glfw" not in text
+
+
+def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read_credit():
+    """The per-attempt credit guard and the hourly credit alert are opt-in in code
+    (BLUEPRINT_VAST_CREDIT_GUARD_ENABLED); production turns them on in the unit files
+    that reach the Vast adapter, and the chain preflight refuses a paid unit without it."""
+
+    flag = "Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true"
+    for name in (
+        "blueprint-task-evaluation-launch-dispatcher.service",
+        "blueprint-task-evaluation-policy-canary-dispatcher.service",
+        "blueprint-task-evaluation-sam31-preparation-execution.service",
+    ):
+        assert flag in (SYSTEMD_DIR / name).read_text(encoding="utf-8"), name
+    capacity = (SYSTEMD_DIR / "blueprint-control-plane-capacity.service").read_text(encoding="utf-8")
+    assert flag in capacity
+    assert "Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key" in capacity
+    assert "ReadOnlyPaths=/etc/blueprint/provider-secrets" in capacity
+

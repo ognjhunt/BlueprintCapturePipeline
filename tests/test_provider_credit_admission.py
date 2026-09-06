@@ -67,6 +67,34 @@ def test_capacity_reports_low_credit_without_disk_pressure(tmp_path):
     assert alerts and result["alert_posted"]
 
 
+
+def test_run_controller_does_not_flag_a_just_taken_credit_observation_stale(tmp_path):
+    """The credit GET happens after the pass-start clock (disk measurement + HTTP run first),
+    so the observation's epoch is later than run_controller's ``now``.  Freshness must be judged
+    against a clock no earlier than the observation, or every live reading is falsely stale."""
+    from collections import namedtuple
+
+    usage = namedtuple("Usage", "total used free")(100 * 1024**3, 10 * 1024**3, 90 * 1024**3)
+    # Pass-start now=100; the observation is taken at 105 (as the real GET is, after the pass began).
+    later = credit.observe_vast_credit(api_key="k", now=105, request=lambda **kw: (200, {"credit": 20.0}))
+    result = capacity.run_controller(
+        mounts=["/test"], report_root=tmp_path / "report", reservation_root=tmp_path / "ledger",
+        webhook_url="", volume=None, ack="", token="", disk_usage=lambda _: usage,
+        credit_collector=lambda: later, now=100,
+    )
+    assert "provider_credit_observation_stale" not in result["provider_funding"]["blockers"]
+    assert result["provider_funding"]["status"] == "admitted"
+
+    # A genuinely old observation is still caught: epoch far before the pass clock.
+    old = credit.observe_vast_credit(api_key="k", now=10, request=lambda **kw: (200, {"credit": 20.0}))
+    stale = capacity.run_controller(
+        mounts=["/test"], report_root=tmp_path / "report2", reservation_root=tmp_path / "ledger2",
+        webhook_url="", volume=None, ack="", token="", disk_usage=lambda _: usage,
+        credit_collector=lambda: old, now=1000,
+    )
+    assert stale["provider_funding"]["blockers"] == ["provider_credit_observation_stale"]
+
+
 def test_allocation_guard_is_wired_before_offer_search():
     # The adapter's existing blocked-inventory path releases its lock and emits
     # no-allocation teardown evidence; funding uses that same path.
