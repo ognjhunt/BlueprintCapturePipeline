@@ -183,20 +183,41 @@ def _link(*, intent, attempt, observed, directory, config, now):
     digest = observed["request_digest"]
     for key in ("preparation_id", "team_namespace"):
         require(intake._identifier(request[key]), "preparation_identifier_too_long")
-    paid = {}
-    if config.get("activation_enabled", True):
-        main = intake.reserve_scene_attempt(queue_root=config["intent_root"], intent_id=intent["intent_id"],
-            attempt_id="scene-configuration-" + digest[7:31], source_commit=attempt["source_commit"],
-            runtime_digest=request["execution_adapter"]["runtime_source_bundle"]["digest"],
-            input_digest=digest, provider="vast", maximum_spend_usd=request["spend"]["hard_cap_usd"], now=now)
-        paid["scene_configuration_attempt"] = record(directory / "attempts" / (main["attempt_id"] + ".json"))
+    # R3: the preparation link is immutable and mode-independent -- it never carries
+    # the paid construction reservation. The scene_configuration_attempt is added by
+    # a separate, versioned activation link (_activation_link) only when activation
+    # is authorized, so a prepared-then-authorized transition never rewrites this
+    # link in place (and _activation never KeyErrors on a link prepared unarmed).
     link = build_preparation_link(intent_id=intent["intent_id"], intent_digest=intent["intent_digest"],
         preparation_id=request["preparation_id"], request_digest=digest, expected_production_commit=attempt["source_commit"],
         team_namespace=request["team_namespace"], scene_id=request["scene"]["identity"]["id"],
-        task_id=request["task"]["identity"]["id"], result_filename=observed["result_filename"],
-        **paid)
+        task_id=request["task"]["identity"]["id"], result_filename=observed["result_filename"])
     path = _put(directory / "preparations" / (digest[7:] + ".json"), link)
     atomic_json(directory / "preparation-link.json", link)
+    return record(path)
+
+
+def _activation_link(*, intent, attempt, link, observed, directory, config, now):
+    """R3: under current consent, reserve the paid construction attempt and build a
+    versioned, digest-bound activation link from the immutable preparation link.
+
+    Idempotent: the reservation is keyed by the exact scene-configuration attempt id
+    and the activation-link file is content-addressed, so prepare -> restart ->
+    authorize -> activate -> restart creates exactly one reservation and one link.
+    """
+    request = observed["request"]
+    digest = link["request_digest"]
+    main = intake.reserve_scene_attempt(queue_root=config["intent_root"], intent_id=intent["intent_id"],
+        attempt_id="scene-configuration-" + digest[7:31], source_commit=attempt["source_commit"],
+        runtime_digest=request["execution_adapter"]["runtime_source_bundle"]["digest"],
+        input_digest=digest, provider="vast", maximum_spend_usd=request["spend"]["hard_cap_usd"], now=now)
+    from .task_evaluation_controls_autoprovision import build_preparation_link
+    activation = build_preparation_link(intent_id=link["intent_id"], intent_digest=link["intent_digest"],
+        preparation_id=link["preparation_id"], request_digest=digest,
+        expected_production_commit=link["expected_production_commit"], team_namespace=link["team_namespace"],
+        scene_id=link["scene_id"], task_id=link["task_id"], result_filename=link["result_filename"],
+        scene_configuration_attempt=record(directory / "attempts" / (main["attempt_id"] + ".json")))
+    path = _put(directory / "preparations" / (digest[7:] + ".activation.json"), activation)
     return record(path)
 
 
@@ -386,8 +407,14 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                     "source_commit": release["source_commit"], "runtime_digest": release["runtime_digest"]}
         active_id = "source-" + canonical_digest(identity)[7:31]
         state.update(attempt_id=active_id, attempt_commit=release["source_commit"])
-    preparation_only = (config.get("activation_enabled") is False
-                        and machinery.get("schema_version") == "task_evaluation_completed_scene_machinery.v1")
+    # R2: the SOURCE attempt's accounting follows the source's own contract, NOT
+    # activation permission. Completed-scene machinery declares zero preparation
+    # spend on the control plane, so it takes the administrative (zero-cost)
+    # preparation attempt in BOTH unarmed and authorized modes; the paid
+    # CONSTRUCTION exposure is reserved separately (scene_configuration_attempt in
+    # _link) only when activation is authorized. Paid-preparation sources (e.g. the
+    # public-scene SAM machinery) keep their real reserve_scene_attempt path.
+    preparation_only = (machinery.get("schema_version") == "task_evaluation_completed_scene_machinery.v1")
     attempt_args = {"source_commit": release["source_commit"], "runtime_digest": release["runtime_digest"],
         "input_digest": binding["binding_digest"], "provider": machinery.get("provider", "vast"),
         "maximum_spend_usd": machinery["maximum_preparation_spend_usd"]}
@@ -479,6 +506,13 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     if result.get("status") == "queued_for_production_scene_configuration":
         if config.get("activation_enabled", True) is False:
             return emit("awaiting_execution", "construction_prepared")
+        # R3: mint (once) the versioned activation link carrying the paid
+        # construction reservation from the immutable preparation link, then activate
+        # from it -- never from the unarmed preparation link.
+        if not state.get("activation_link"):
+            state["activation_link"] = _activation_link(intent=intent, attempt=attempt, link=link,
+                observed=observed, directory=directory, config=config, now=now)
+        link = read(_reference(state["activation_link"]), digest_field="link_digest")
         if not state.get("activation"):
             emit("preparing", "activation")
         state["activation"] = _activation(intent=intent, link=link, config=config, output=output,

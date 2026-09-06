@@ -60,7 +60,8 @@ DEFAULT_PYTHON = "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
 SERVICE_ACCOUNT = "blueprint"
 PACKAGE = "blueprint_pipeline"
 INTAKE_CATALOG_URL = "http://127.0.0.1:8765/api/live-pipeline/task-evaluation-launch-profiles"
-ACTIVATION_INTENT_ROOT = Path("/etc/blueprint/task-evaluation-scene-configuration-activation-intents")
+ACTIVATION_INTENT_ROOT = Path(  # R4: canonical producer-writable registry (see installer/unit/automation)
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-configuration-activation-intents")
 CONTROLS_INTENT_ROOT = Path("/etc/blueprint/task-evaluation-configured-controls-intents")
 DISK_RESERVATION_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/disk-reservations")
 DISK_TARGET_ROOT = Path("/var/lib/blueprint")
@@ -805,17 +806,6 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
-def _file_sha256(path: Path) -> str:
-    """The ``sha256:``-prefixed digest of a file's bytes, matching the format the
-    controls-autoprovision consumer records for catalog assets."""
-    import hashlib
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
-
-
 def active_release() -> tuple[Path | None, str, list[dict[str, Any]]]:
     findings: list[dict[str, Any]] = []
     try:
@@ -1168,21 +1158,15 @@ def _controls_autoprovision_findings(units: Mapping[str, dict[str, Any]], ids: t
         findings.append(_finding("blocker", "controls_autoprovision_robot_catalog_unreadable",
             unit=CONTROLS_PROGRESSION_UNIT, path=str(catalog_path)))
         return findings
-    # A9: validate the SEAL and the actual asset/runtime hashes exactly as the real
-    # consumer (resolve_robot_catalog) does -- a readable file at a valid path is
-    # not a valid catalog. The installed catalog must be the sealed, RESOLVED
-    # catalog; a content catalog, an unsealed record, a tampered seal or a
-    # bogus/stale asset digest is refused downstream (controls_autoprovision
-    # digest invalid), so surface it here as a blocker instead of falsely green.
-    from .decision_evidence_contracts import canonical_digest
-    from .task_evaluation_controls_autoprovision import CATALOG_SCHEMA, payload_digest
-    if not (catalog.get("schema_version") == CATALOG_SCHEMA
-            and isinstance(catalog.get("catalog_digest"), str)
-            and catalog.get("catalog_digest") == canonical_digest(catalog, digest_field="catalog_digest")):
-        findings.append(_finding("blocker", "controls_autoprovision_robot_catalog_unsealed",
-            unit=CONTROLS_PROGRESSION_UNIT, path=str(catalog_path),
-            consequence="resolve_robot_catalog refuses the schema/seal; construction->controls never advances"))
-        return findings
+    # A9/R7: bind the catalog with the SAME resolver the real consumer uses, at the
+    # active release -- do NOT invent a stricter schema rule. resolve_robot_catalog
+    # accepts the sealed content catalog the installer actually writes
+    # (task_evaluation_controls_robot_content_catalog.v1) as well as a resolved
+    # catalog, verifies the catalog seal, and binds each asset by actual sha256 +
+    # the runtime payload digest. First confirm the asset/runtime files are readable
+    # BY THE SERVICE USER (the resolver reads as this process, which may be root),
+    # then let the resolver refuse any unsealed/tampered/wrong-digest/invalid catalog.
+    from .task_evaluation_controls_autoprovision import resolve_robot_catalog
     bindings = catalog.get("bindings")
     if not isinstance(bindings, dict) or not bindings:
         findings.append(_finding("blocker", "controls_autoprovision_robot_catalog_invalid",
@@ -1197,23 +1181,24 @@ def _controls_autoprovision_findings(units: Mapping[str, dict[str, Any]], ids: t
                     and readable_by(asset_path, uid, gid)):
                 findings.append(_finding("blocker", "controls_autoprovision_asset_missing",
                     unit=CONTROLS_PROGRESSION_UNIT, binding=str(name), asset=asset, path=str(asset_path)))
-            elif _file_sha256(asset_path) != reference.get("digest"):
-                findings.append(_finding("blocker", "controls_autoprovision_asset_digest_mismatch",
-                    unit=CONTROLS_PROGRESSION_UNIT, binding=str(name), asset=asset, path=str(asset_path)))
         runtime = Path(str(row.get("runtime_source_payload_dir") or ""))
-        if not (str(runtime).startswith("/") and runtime.is_dir() and not runtime.is_symlink()):
+        if not (str(runtime).startswith("/") and runtime.is_dir() and not runtime.is_symlink()
+                and readable_by(runtime, uid, gid)):
             findings.append(_finding("blocker", "controls_autoprovision_runtime_missing",
                 unit=CONTROLS_PROGRESSION_UNIT, binding=str(name), path=str(runtime)))
-        else:
-            try:
-                actual_runtime = payload_digest(runtime)
-            except (OSError, ValueError, KeyError, TypeError):
-                actual_runtime = None
-            except Exception:  # a ControlsAutoprovision refusal (missing/symlink/empty runtime)
-                actual_runtime = None
-            if actual_runtime != row.get("runtime_digest"):
-                findings.append(_finding("blocker", "controls_autoprovision_runtime_digest_mismatch",
-                    unit=CONTROLS_PROGRESSION_UNIT, binding=str(name), path=str(runtime)))
+    if any(finding["severity"] == "blocker" for finding in findings):
+        return findings
+    _, release_commit, _ = active_release()
+    if not re.fullmatch(r"[0-9a-f]{40}", release_commit or ""):
+        findings.append(_finding("blocker", "controls_autoprovision_active_release_unresolved",
+            unit=CONTROLS_PROGRESSION_UNIT, path=str(catalog_path)))
+        return findings
+    try:
+        resolve_robot_catalog(catalog, source_commit=release_commit)
+    except ValueError as exc:
+        findings.append(_finding("blocker", "controls_autoprovision_robot_catalog_unbindable",
+            unit=CONTROLS_PROGRESSION_UNIT, path=str(catalog_path), reason=str(exc),
+            consequence="resolve_robot_catalog refuses this catalog; construction->controls never advances"))
     return findings
 
 

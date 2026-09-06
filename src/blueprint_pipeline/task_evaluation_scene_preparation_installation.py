@@ -201,7 +201,12 @@ def install_scene_preparation(*, bootstrap_path):
         # where the project-spend monitor (capacity/funding) publishes the fresh
         # reconciliation _activation requires; activation fails closed on a
         # stale/absent pointer (never allocates). Off by default -> preparation-only.
-        activation_intent_root = inputs / "scene-configuration-activation-intents"
+        # R4: the ONE canonical activation-intent registry -- producer-writable
+        # (scene-progression.service ReadWritePaths cover /var/lib/blueprint, not
+        # /etc/blueprint) and consumer-readable, and DISTINCT from the activation
+        # materialization root. The configured-controls consumer unit + preflight +
+        # activation automation DEFAULT_INTENT_ROOT all point at this same path.
+        activation_intent_root = state / "task-evaluation-scene-configuration-activation-intents"
         if not activation_intent_root.exists():
             activation_intent_root.mkdir(parents=True, mode=0o750)
             if os.geteuid() == 0:

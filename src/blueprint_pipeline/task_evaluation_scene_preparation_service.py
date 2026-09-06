@@ -12,8 +12,15 @@ def run_preparation_service(*, config_path, now=None):
     from .task_evaluation_launch_preparation_worker import process_launch_preparation_queue
     config = read(safe_path(config_path), digest_field="config_digest")
     preparation = config.get("preparation_worker")
+    # R1: main() routes here whenever preparation_worker is present -- for BOTH the
+    # unarmed preparation-only config (activation_enabled False) and the
+    # owner-authorized activation config (activation_enabled True). Both are driven
+    # by process_scene_intents, whose activation_enabled gate decides whether an
+    # intent stops at construction_prepared or is advanced to the scene-configuration
+    # activation (no allocation). The owned preparation worker runs in either mode.
+    activation_enabled = config.get("activation_enabled")
     require(isinstance(preparation, dict) and config.get("submission_transport") == "local_owned_queue"
-            and config.get("activation_enabled") is False, "preparation_service_scope_invalid")
+            and isinstance(activation_enabled, bool), "preparation_service_scope_invalid")
     before = process_scene_intents(config_path=config_path, now=now)
     worker = process_launch_preparation_queue(queue_root=safe_path(config["preparation_queue_root"]),
         input_root=safe_path(preparation["input_root"]),
@@ -27,7 +34,7 @@ def run_preparation_service(*, config_path, now=None):
     result = {"schema_version": "task_evaluation_scene_preparation_service.v1",
         "status": "processed" if after["results"] else "idle", "source_commit": after["source_commit"],
         "scene_progression": after, "preparation_worker": worker,
-        "execution_activation_enabled": False, "provider_allocation_performed": False}
+        "execution_activation_enabled": activation_enabled, "provider_allocation_performed": False}
     result["service_digest"] = canonical_digest(result, digest_field="service_digest")
     atomic_json(safe_path(config["service_status_path"]), result)
     return result
