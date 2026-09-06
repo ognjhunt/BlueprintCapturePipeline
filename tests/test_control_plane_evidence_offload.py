@@ -308,3 +308,54 @@ def test_an_abandoned_candidate_touched_after_the_dry_run_is_kept(tmp_path: Path
             now=lambda: now,
             classifier=_unclassified,
         )
+
+
+def test_pointer_adopts_the_evidence_root_owner_so_the_service_user_can_read_it(tmp_path, monkeypatch):
+    """The GC unit runs as root; the pointer it leaves behind is the ONLY durable
+    reference to the archived run. A root-owned 0440 pointer is unreadable by the
+    ``blueprint`` service user (observed on the production host), so the terminal
+    reconciler could never derive the result publication from it. The pointer
+    must adopt the evidence root's owner/group (a no-op when the GC already runs
+    as that user)."""
+    import os as _os
+
+    root = tmp_path / "runs"
+    root.mkdir()
+    _run(root, "run-1", receipt="dispatch_receipt.json", age=100, now=1000)
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        now=lambda: 1000, classifier=_unclassified)
+    client = _ContentAddressedClient()
+    chowned = []
+    monkeypatch.setattr(_os, "chown", lambda path, uid, gid: chowned.append((Path(path).name, uid, gid)))
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK,
+        publisher=functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET))
+    pointer = root / ("run-1" + POINTER_SUFFIX)
+    assert result["offloaded_count"] == 1 and pointer.is_file()
+    owner = root.stat()
+    assert chowned and chowned[-1][1:] == (owner.st_uid, owner.st_gid)
+    assert chowned[-1][0].startswith(".run-1.pointer-")  # adopted BEFORE the atomic publish
+    assert oct(pointer.stat().st_mode & 0o777) == "0o440"
+
+
+def test_pointer_ownership_failure_keeps_the_evidence(tmp_path, monkeypatch):
+    """If the pointer cannot be made readable by the evidence owner, the run
+    directory must NOT be deleted: an unreadable pointer would strand the evidence."""
+    import os as _os
+
+    root = tmp_path / "runs"
+    root.mkdir()
+    directory = _run(root, "run-1", receipt="dispatch_receipt.json", age=100, now=1000)
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        now=lambda: 1000, classifier=_unclassified)
+    client = _ContentAddressedClient()
+
+    def refuse(path, uid, gid):
+        raise PermissionError("chown refused")
+
+    monkeypatch.setattr(_os, "chown", refuse)
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK,
+        publisher=functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET))
+    assert result["offloaded_count"] == 0
+    assert result["skipped"] == [{"name": "run-1", "reason": "offload_failed:PermissionError"}]
+    assert directory.is_dir() and (directory / "dispatch_receipt.json").is_file()
+    assert not (root / ("run-1" + POINTER_SUFFIX)).exists()

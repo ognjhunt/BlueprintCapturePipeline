@@ -305,7 +305,7 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
                      and _DIGEST.fullmatch(result_reference["digest"]) is not None
                      and type(result_reference["size_bytes"]) is int and result_reference["size_bytes"] > 0
                      and isinstance(result_reference["uri"], str)
-                     and result_reference["uri"].startswith(("https://", "b2://", "gs://", "r2://"))
+                     and result_reference["uri"].startswith(("https://", "s3://", "b2://", "gs://", "r2://"))
                      and "?" not in result_reference["uri"], "result_reference_invalid")
         _require(status != "completed" or result_reference is not None, "completed_result_missing")
     attempts_path = directory / "attempts"

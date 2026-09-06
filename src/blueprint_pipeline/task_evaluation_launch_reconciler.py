@@ -836,6 +836,77 @@ def _validated_terminal_unmatched_webapp_sync_row(
     }
 
 
+def _index_terminal_results(
+    *,
+    receipt_paths: Sequence[Path],
+    policy_canary_dispatch_root: str | Path | None,
+    terminal_result_root: str | Path | None,
+    scene_intent_root: str | Path | None,
+) -> list[dict[str, Any]]:
+    """File owner terminal receipts for the scene-progression reconciler (R8).
+
+    Retention duty of this tick: every launch run root is offered to the launch
+    bridge (owner-bound policy-canary launches file their request/profile into
+    the owner's terminal directory; public launches are skipped silently) and
+    every canary root carrying a sealed ``dispatch_receipt.json`` is offered to
+    the canary terminal index. Both are idempotent and read-only over evidence;
+    a typed index refusal is reported as ``terminal_index_blocked`` so the unit
+    alarms instead of silently stranding an owner's completed run.
+    """
+
+    if not (policy_canary_dispatch_root and terminal_result_root and scene_intent_root):
+        return [{"status": "terminal_index_not_configured", "provider_mutation_performed": False}]
+    from .task_evaluation_scene_terminal_result_index import (
+        TerminalResultIndexError,
+        index_launch_bridge,
+        index_policy_canary_terminal,
+    )
+
+    rows: list[dict[str, Any]] = []
+
+    def attempt(operation, *, location_key: str, location: Path, **kwargs: Any) -> None:
+        try:
+            result = operation(**{location_key: location, **kwargs})
+        except TerminalResultIndexError as exc:
+            rows.append({
+                "status": "terminal_index_blocked",
+                location_key: str(location),
+                "blockers": [str(exc)],
+                "provider_mutation_performed": False,
+            })
+            return
+        except (OSError, ValueError) as exc:
+            rows.append({
+                "status": "terminal_index_blocked",
+                location_key: str(location),
+                "blockers": ["terminal_result_index_input_invalid"],
+                "error_type": type(exc).__name__,
+                "provider_mutation_performed": False,
+            })
+            return
+        if result.get("status") != "not_owner_bound":
+            rows.append(result)
+
+    for receipt_path in receipt_paths:
+        attempt(
+            index_launch_bridge,
+            location_key="launch_run_root",
+            location=receipt_path.parent,
+            scene_intent_root=scene_intent_root,
+            terminal_result_root=terminal_result_root,
+        )
+    dispatch_root = Path(policy_canary_dispatch_root).expanduser().resolve()
+    if dispatch_root.is_dir():
+        for receipt_path in sorted(dispatch_root.glob("*/dispatch_receipt.json")):
+            attempt(
+                index_policy_canary_terminal,
+                location_key="canary_run_root",
+                location=receipt_path.parent,
+                terminal_result_root=terminal_result_root,
+            )
+    return rows
+
+
 def reconcile_launches(
     *,
     queue_root: str | Path,
@@ -845,6 +916,9 @@ def reconcile_launches(
     now: datetime | None = None,
     fallback_stale_seconds: int = 14_400,
     publish_progress: bool = True,
+    policy_canary_dispatch_root: str | Path | None = None,
+    terminal_result_root: str | Path | None = None,
+    scene_intent_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Reconcile all launch leases without invoking or retrying the allocator."""
 
@@ -1050,6 +1124,13 @@ def reconcile_launches(
                 "error_type": type(exc).__name__,
             })
 
+    terminal_index_rows = _index_terminal_results(
+        receipt_paths=receipt_paths,
+        policy_canary_dispatch_root=policy_canary_dispatch_root,
+        terminal_result_root=terminal_result_root,
+        scene_intent_root=scene_intent_root,
+    )
+
     sync_rows: list[dict[str, Any]] = []
     from .task_evaluation_launch_webapp_sync import sync_launch_receipt_to_webapp
 
@@ -1187,13 +1268,15 @@ def reconcile_launches(
                 "webapp_sync_not_configured",
                 "webapp_sync_failed",
                 "webapp_sync_reconciliation_blocked",
+                "terminal_index_blocked",
             }
-            for row in [*rows, *terminal_provider_zero_rows, *sync_rows]
+            for row in [*rows, *terminal_provider_zero_rows, *sync_rows, *terminal_index_rows]
         ) else "blocked",
         "processing_count": len(rows),
         "launches": rows,
         "terminal_provider_zero": terminal_provider_zero_rows,
         "webapp_sync": sync_rows,
+        "terminal_index": terminal_index_rows,
         "automatic_retry_performed": False,
         "allocator_invoked": False,
     }
@@ -1211,6 +1294,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--profile-dir")
     parser.add_argument("--report-out", required=True)
     parser.add_argument("--fallback-stale-seconds", type=int, default=14_400)
+    # R8 retention duty: file owner terminal receipts for the scene-progression
+    # reconciler. Unset roots leave the duty explicitly ``not_configured``.
+    parser.add_argument(
+        "--policy-canary-dispatch-root",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT") or None,
+    )
+    parser.add_argument(
+        "--terminal-result-root",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_TERMINAL_RESULT_ROOT") or None,
+    )
+    parser.add_argument(
+        "--scene-intent-root",
+        default=os.getenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT") or None,
+    )
     args = parser.parse_args(argv)
     result = reconcile_launches(
         queue_root=args.queue_root,
@@ -1218,6 +1315,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         guard_report_path=args.guard_report,
         profile_dir=args.profile_dir,
         fallback_stale_seconds=max(1, args.fallback_stale_seconds),
+        policy_canary_dispatch_root=args.policy_canary_dispatch_root,
+        terminal_result_root=args.terminal_result_root,
+        scene_intent_root=args.scene_intent_root,
     )
     output = Path(args.report_out).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)

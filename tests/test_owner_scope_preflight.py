@@ -17,6 +17,12 @@ from blueprint_pipeline import task_evaluation_production_chain_preflight as pre
 LAUNCH = "blueprint-task-evaluation-launch-dispatcher.service"
 POLICY = "blueprint-task-evaluation-policy-canary-dispatcher.service"
 CONTROLS = "blueprint-task-evaluation-configured-controls-progression.service"
+RECONCILER = "blueprint-task-evaluation-launch-reconciler.service"
+TERMINAL_INDEX_ENV = {
+    "BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries",
+    "BLUEPRINT_TASK_EVALUATION_TERMINAL_RESULT_ROOT": "/var/lib/blueprint/task-evaluation-inputs/task-evaluation-terminal-results",
+    "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents",
+}
 IDS = (os.getuid(), os.getgid())
 
 
@@ -199,3 +205,23 @@ def test_controls_intent_root_not_writable_is_a_blocker(tmp_path):
             preflight.owner_scope_checks(units, IDS))
     finally:
         Path(json.loads(config_path.read_text())["intent_root"]).chmod(0o770)
+
+
+def test_launch_reconciler_with_terminal_index_roots_has_no_blockers(tmp_path):
+    # R8: the launch reconciler tick files owner terminal receipts; a fully wired
+    # unit (dispatch root + terminal result root + intake root) is clean.
+    config_path = _controls_config(tmp_path)
+    units = {**_wired_units(tmp_path, config_path), RECONCILER: _unit(TERMINAL_INDEX_ENV)}
+    assert _blockers(preflight.owner_scope_checks(units, IDS)) == []
+
+
+@pytest.mark.parametrize("missing", sorted(TERMINAL_INDEX_ENV))
+def test_launch_reconciler_missing_a_terminal_index_root_is_a_blocker(tmp_path, missing):
+    # Without any one root the retention duty is explicitly not configured and a
+    # completed owner run never closes out -- named before a dispatch, not after.
+    config_path = _controls_config(tmp_path)
+    env = {name: value for name, value in TERMINAL_INDEX_ENV.items() if name != missing}
+    units = {**_wired_units(tmp_path, config_path), RECONCILER: _unit(env)}
+    findings = [f for f in preflight.owner_scope_checks(units, IDS) if f["code"] == "terminal_index_root_unset"]
+    assert [f["variable"] for f in findings] == [missing]
+    assert findings[0]["unit"] == RECONCILER and findings[0]["severity"] == "blocker"
