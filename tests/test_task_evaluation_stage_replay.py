@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import textwrap
@@ -198,3 +199,106 @@ def test_replay_falls_back_to_the_job_input_root_when_the_given_one_has_no_store
     assert report["status"] == "completed"
     assert seen["input_root"] == inputs
 
+
+
+# --------------------------------------------------------------------------- #
+# Parent-level replay: the whole parent worker pass on a scratch queue
+# --------------------------------------------------------------------------- #
+
+from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker  # noqa: E402
+from blueprint_pipeline.task_evaluation_launch_preparation_queue import stage_launch_preparation_request  # noqa: E402
+from tests.test_task_evaluation_launch_preparation_worker import (  # noqa: E402
+    SERVICE_ACCOUNT, _rebind_recipe, fetcher, production_request_with_fetchable_bytes,
+)
+
+PREFIXES = ["s3://blueprint-production-inputs/"]
+
+
+def _sam_request():
+    """A production request whose stage one routes to the SAM advancement (as in the execution tests)."""
+    import hashlib as _hashlib
+    request, payloads = production_request_with_fetchable_bytes()
+    plan_data = json.dumps({"schema_version": "test_plan.v1", "reviewer_kind": "ai"}).encode()
+    plan_uri = "s3://blueprint-production-inputs/plan.json"
+    plan_ref = {"uri": plan_uri, "digest": "sha256:" + _hashlib.sha256(plan_data).hexdigest(), "size_bytes": len(plan_data)}
+    payloads[plan_uri] = plan_data
+    request["runtime"]["mounts"].append({"source": plan_ref, "container_path": "/inputs/sam31-plan.json", "mode": "read_only"})
+    recipe = json.loads(payloads[request["construction"]["recipe"]["uri"]])
+    stage_ref = recipe["stage_sequence"][0]["configuration"]
+    stage = {"required_views": {"mask_source": "sam31_reviewed_calibrated_object_masks"},
+             "sam31_review_kind": "ai", "sam31_preparation_plan": plan_ref}
+    data = json.dumps(stage).encode()
+    payloads[stage_ref["uri"]] = data
+    stage_ref.update(digest="sha256:" + _hashlib.sha256(data).hexdigest(), size_bytes=len(data))
+    _rebind_recipe(request, payloads, recipe)
+    return request, payloads
+
+
+def _tree_digest(root: Path) -> dict:
+    return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_parent_replay_reruns_the_worker_on_a_scratch_queue_and_leaves_production_untouched(tmp_path: Path, monkeypatch) -> None:
+    """2026-09-05 23:42Z: the parent refused its first ``ready`` advancement after every GPU
+    stage had passed; the stage replay covered children only.  This replays the parent
+    worker itself: envelope and progress copied to a scratch queue, child results copied,
+    the content store reused read-only, nothing fetched, the render step a boundary."""
+
+    request, payloads = _sam_request()
+    parent_queue, input_root, children = tmp_path / "parent", tmp_path / "prepared-references", tmp_path / "children"
+    stage_launch_preparation_request(value=request, queue_root=parent_queue, submitted_by="blueprint-webapp")
+    worker.process_launch_preparation_queue(
+        queue_root=parent_queue, input_root=input_root, allowed_uri_prefixes=PREFIXES,
+        service_account=SERVICE_ACCOUNT, source_commit=request["expected_production_commit"], fetcher=fetcher(payloads),
+        sam31_preparation_advancer=lambda context: {"status": "waiting_for_child", "evidence_refs": []},
+    )
+    before = _tree_digest(parent_queue), _tree_digest(input_root)
+    monkeypatch.setenv(replay.driver.CHILD_QUEUE_ENV, str(children))
+
+    report = replay.replay_parent(
+        parent_queue_root=parent_queue, preparation_id=request["preparation_id"], child_queue_root=children,
+        input_root=input_root, replay_root=tmp_path / "replays", allowed_uri_prefixes=PREFIXES,
+        service_account=SERVICE_ACCOUNT,
+        advancer=lambda context: {"status": "waiting_for_child", "evidence_refs": []},
+    )
+
+    assert report["status"] == "waiting_for_child"
+    assert report["row"]["blockers"] in (None, [])
+    assert report["nothing_fetched"] is True
+    assert (before[0], before[1]) == (_tree_digest(parent_queue), _tree_digest(input_root))
+    scratch = Path(report["scratch_queue_root"])
+    assert scratch.is_relative_to(tmp_path / "replays") and any(scratch.rglob("*.json"))
+    assert Path(report["report_path"]).is_file()
+
+
+def test_parent_replay_reaches_the_render_boundary_after_a_ready_advancement(tmp_path: Path, monkeypatch) -> None:
+    request, payloads = _sam_request()
+    parent_queue, input_root, children = tmp_path / "parent", tmp_path / "prepared-references", tmp_path / "children"
+    stage_launch_preparation_request(value=request, queue_root=parent_queue, submitted_by="blueprint-webapp")
+    worker.process_launch_preparation_queue(
+        queue_root=parent_queue, input_root=input_root, allowed_uri_prefixes=PREFIXES,
+        service_account=SERVICE_ACCOUNT, source_commit=request["expected_production_commit"], fetcher=fetcher(payloads),
+        sam31_preparation_advancer=lambda context: {"status": "waiting_for_child", "evidence_refs": []},
+    )
+    monkeypatch.setenv(replay.driver.CHILD_QUEUE_ENV, str(children))
+
+    def ready(context):
+        out = Path(context["output_root"]) / "evidence"
+        refs = []
+        for name in ("a", "b", "c", "d", "e"):
+            path = out / f"{name}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"name": name}), encoding="utf-8")
+            refs.append({"path": str(path), "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(), "size_bytes": path.stat().st_size})
+        return {"status": "ready", "evidence_refs": refs, "sam31_exact_mask_inputs": {r["path"]: r for r in refs},
+                "sam31_preparation_result": {"status": "exact_mask_inputs_ready"}, "human_review_required": False, "candidate_policy_queried": False}
+
+    report = replay.replay_parent(
+        parent_queue_root=parent_queue, preparation_id=request["preparation_id"], child_queue_root=children,
+        input_root=input_root, replay_root=tmp_path / "replays", allowed_uri_prefixes=PREFIXES,
+        service_account=SERVICE_ACCOUNT, advancer=ready,
+    )
+
+    assert report["sam31_ready"] is True
+    assert report["reached_render_inputs_boundary"] is True
+    assert report["status"] == "blocked" and "ReplayBoundary" in ";".join(report["row"]["blockers"])
