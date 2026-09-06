@@ -153,7 +153,10 @@ def test_isolation_command_runs_as_the_service_user_without_network() -> None:
     assert "EnvironmentFile=/etc/blueprint/pipeline-control-plane.env" in argv
     assert "--setenv=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_FILE=/etc/p.json" in argv
     assert argv[-4:] == ["-m", "blueprint_pipeline.task_evaluation_stage_replay", "--child", CHILD]
+    assert f"WorkingDirectory={os.getcwd()}" in argv
     assert os.environ.get("BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH") is None
+    explicit = replay.isolation_command(["python", "-m", "x"], working_directory="/opt/release/src")
+    assert "WorkingDirectory=/opt/release/src" in explicit
 
 
 def test_the_input_root_comes_from_the_job_not_from_a_guess(tmp_path: Path) -> None:
