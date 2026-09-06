@@ -2095,6 +2095,7 @@ def deploy_control_plane_commit(
     ),
     configured_controls_autostart_intent_sources: Sequence[str] = (),
     scene_preparation_bootstrap_file: str | Path = "/etc/blueprint/task-evaluation-scene-preparation-bootstrap.json",
+    controls_autoprovision_bootstrap_file: str | Path = "/etc/blueprint/task-evaluation-controls-autoprovision-bootstrap.json",
     arm_path_units: bool = False,
     disk_reservation_root: str | Path | None = None,
     release_retirement_reference_roots: Sequence[str] = (
@@ -2363,6 +2364,30 @@ def deploy_control_plane_commit(
                 source_commit=commit,
             )
         )
+        # Controls-autoprovision config + sealed content catalog + env pointer
+        # (Spec B). Runs AFTER the autostart registry so the group-writable
+        # registry permission wins, and BEFORE the unit restart so the config the
+        # env pointer names already exists when the worker reads it. The bootstrap
+        # is operator-owned; without it the worker stays in the legacy lane and
+        # BLUEPRINT_TASK_EVALUATION_CONTROLS_AUTOPROVISION_CONFIG stays unset, so
+        # progression is never pointed at a missing config (which fails closed).
+        controls_autoprovision_bootstrap = Path(
+            controls_autoprovision_bootstrap_file
+        ).expanduser()
+        if controls_autoprovision_bootstrap.exists():
+            from blueprint_pipeline.task_evaluation_controls_autoprovision_installation import (
+                install_controls_autoprovision,
+            )
+
+            controls_autoprovision_installation = install_controls_autoprovision(
+                bootstrap_path=controls_autoprovision_bootstrap
+            )
+        else:
+            controls_autoprovision_installation = {
+                "status": "not_configured",
+                "bootstrap_path": str(controls_autoprovision_bootstrap),
+                "provider_mutation_performed": False,
+            }
 
         runtime_binding = _install_intake_runtime_identity_drop_in(
             Path(intake_runtime_drop_in).expanduser(),
@@ -2484,6 +2509,7 @@ def deploy_control_plane_commit(
         "cad_skill_sources": cad_skill_sources,
         "scene_configuration_environment": scene_configuration_environment,
         "scene_preparation_installation": scene_preparation_installation,
+        "controls_autoprovision_installation": controls_autoprovision_installation,
         # Every slot actually held, not the one base path the caller named.
         # The lock is an N-slot semaphore, so recording the input would
         # under-report what this deploy was exclusive with -- and a receipt
@@ -2580,6 +2606,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--scene-preparation-bootstrap-file",
                         default="/etc/blueprint/task-evaluation-scene-preparation-bootstrap.json")
+    parser.add_argument("--controls-autoprovision-bootstrap-file",
+                        default="/etc/blueprint/task-evaluation-controls-autoprovision-bootstrap.json")
     parser.add_argument(
         "--splat-render-prerequisite-root",
         default=DEFAULT_SPLAT_RENDER_PREREQUISITE_ROOT,
@@ -2636,6 +2664,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             scene_configuration_runtime_root=args.scene_configuration_runtime_root,
             scene_preparation_bootstrap_file=args.scene_preparation_bootstrap_file,
+            controls_autoprovision_bootstrap_file=args.controls_autoprovision_bootstrap_file,
             splat_render_prerequisite_root=args.splat_render_prerequisite_root,
             artifixer_source_root=args.artifixer_source_root,
             content_agents_source_root=args.content_agents_source_root,

@@ -53,6 +53,13 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/Bluepr
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json
+# Persistent-owner selection scope (Spec C): the dispatcher claims only launch
+# rows whose profile carries the authenticated persistent-owner binding. This
+# NARROWS selection; it grants no execution authority and touches no execute or
+# dry-run hold. The canonical allocator still reopens the full owner reservation,
+# frozen profile, standing grant, release, spend, expiry, revocation and
+# provider-zero gates before any paid step.
+Environment=BLUEPRINT_TASK_EVALUATION_DISPATCH_OWNER_SCOPE=persistent_owner_only
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations
 Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions
@@ -122,6 +129,11 @@ Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PUBLICATION_READINESS_URL=https://tr
 Environment=PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token
 Environment=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+# Shared owner-store identity (scene-intake root + trusted clients) so
+# scene_policy_binding.scene_store() can resolve the persistent owner of a
+# selected row (Spec C). Materialized by the scene-preparation installer;
+# optional so its absence never blocks the unit start.
+EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
 WorkingDirectory=/
 # A runtime drop-in may set FORCE_DRY_RUN=true while the canonical environment
 # file still permits execution.  EnvironmentFile values override Environment=

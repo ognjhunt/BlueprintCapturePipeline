@@ -29,8 +29,12 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
-ReadOnlyPaths=/etc/blueprint/provider-secrets /etc/blueprint/task-evaluation-configured-controls-intents -/etc/blueprint/task-evaluation-scene-configuration-activation-intents
-ReadWritePaths=/var/lib/blueprint /etc/blueprint/task-evaluation-configured-controls-plans /etc/blueprint/task-evaluation-launch-profiles
+ReadOnlyPaths=/etc/blueprint/provider-secrets -/etc/blueprint/task-evaluation-scene-configuration-activation-intents
+# The controls-autoprovision worker installs write-once 0440 controls intents
+# into the canonical registry the activation+progression consumer reads, so this
+# directory must be writable by the service (Spec B). The deploy makes the
+# directory group-writable; the intent files themselves stay immutable.
+ReadWritePaths=/var/lib/blueprint /etc/blueprint/task-evaluation-configured-controls-plans /etc/blueprint/task-evaluation-launch-profiles /etc/blueprint/task-evaluation-configured-controls-intents
 ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 TasksMax=512
 LimitNOFILE=4096
@@ -41,6 +45,11 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-eva
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_PLAN_ROOT=/etc/blueprint/task-evaluation-configured-controls-plans
 Environment=BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT=/etc/blueprint/task-evaluation-configured-controls-intents
+# Persistent-owner selection scope (Spec C). Selection grants no execution
+# authority; every owner reservation, frozen profile, standing grant, release,
+# spend, expiry, revocation and provider-zero gate still runs. This does not
+# touch any execute/dry-run hold.
+Environment=BLUEPRINT_TASK_EVALUATION_DISPATCH_OWNER_SCOPE=persistent_owner_only
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
 Environment=BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-configured-controls
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations
@@ -61,6 +70,16 @@ Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blue
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+# Shared owner-store identity (scene-intake root + trusted clients) so scene_store()
+# resolves the persistent owner (Spec C). Materialized by the scene-preparation
+# installer; optional so its absence leaves the legacy lane, never a hard failure.
+EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
+# Controls-autoprovision config pointer (Spec B). The deploy writes this file
+# ONLY after the config and its digest-bound Franka/camera/runtime assets
+# validate, so BLUEPRINT_TASK_EVALUATION_CONTROLS_AUTOPROVISION_CONFIG never
+# names a missing file (which would fail progression_owner_scope closed and stop
+# every scene). Absent file => legacy no-autoprovision lane.
+EnvironmentFile=-/etc/blueprint/task-evaluation-controls-autoprovision.env
 # Placement review deliberately reuses the already-provisioned scene visual-
 # review key. systemd applies EnvironmentFile values after Environment values
 # regardless of their textual order, so ExecStart rebinds the generic SDK key
