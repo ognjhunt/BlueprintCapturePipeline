@@ -264,10 +264,15 @@ def test_launch_read_only_catalog_is_optional_until_first_publication() -> None:
         "deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service",
         "deploy/systemd/blueprint-task-evaluation-launch-supervisor.service",
     ):
-        read_only_line = next(
-            line for line in _text(unit).splitlines() if line.startswith("ReadOnlyPaths=")
-        )
-        assert catalog in read_only_line.split()
+        # systemd merges every ReadOnlyPaths= line; the catalog may sit on any of them
+        # (release-retention and the SAM profile registry now precede it), so scan all.
+        read_only_paths = [
+            entry
+            for line in _text(unit).splitlines()
+            if line.startswith("ReadOnlyPaths=")
+            for entry in line.removeprefix("ReadOnlyPaths=").split()
+        ]
+        assert catalog in read_only_paths, unit
 
 
 def test_canonical_environment_binds_scene_configuration_runtime_secret_paths() -> None:
