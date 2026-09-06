@@ -44,9 +44,10 @@ def record_identity(value):
 def task_science(task):
     """Only explicitly named release/namespace fields may differ on adoption."""
     value = deepcopy(task)
-    for name in ("expected_production_commit", "run_prefix", "output_identity"):
+    for name in ("expected_production_commit", "run_prefix", "output_identity", "request_digest"):
         value.pop(name, None)
     value.get("configuration_provenance", {}).pop("execution_release_rebinding", None)
+    value.get("scene_intent_authority", {}).pop("attempt", None)
     # These are independently reopened through the source and rights validators.
     references = value.get("source_input_references", {})
     for name in ("installation_receipt", "source_preparation_receipt", "standard_splat_conversion_receipt"):
