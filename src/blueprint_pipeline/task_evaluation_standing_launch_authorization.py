@@ -56,6 +56,20 @@ class StandingAuthorizationError(ValueError):
     """The standing authorization cannot admit a launch."""
 
 
+def standing_authorization_decision(
+    profile: Mapping[str, Any], *, live_requested: bool, directory: str,
+) -> dict[str, Any]:
+    """Read retained consumption before deciding; missing accounting is never zero."""
+    if not live_requested or not directory:
+        return {"admitted": False, "blockers": []}
+    try:
+        launches, spend = consumption_totals(directory=directory, profile_id=str(profile.get("profile_id") or ""))
+    except StandingAuthorizationError as exc:
+        return {"admitted": False, "blockers": [str(exc)]}
+    return standing_authorization_admits(profile=profile, directory=directory,
+        launches_consumed=launches, spend_consumed_usd=spend)
+
+
 def _parse_timestamp(value: Any) -> datetime | None:
     text = str(value or "").strip()
     if not text:
