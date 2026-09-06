@@ -22,6 +22,11 @@
   ],
   "additionalProperties": false,
   "properties": {
+    "scene_intent_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Persistent authenticated owner intent; execution remains bound to this request's exact release and input bytes."
+    },
     "schema_version": {
       "const": "task_evaluation_launch_preparation_request.v1"
     },
