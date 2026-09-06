@@ -36,10 +36,27 @@ def mesh_filename(path: Path, filename: str):
 
 
 def _usd_copy(source: Path, output: Path, *, scale: float, axis: str) -> dict[str, str]:
-    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
     original = Usd.Stage.Open(str(source), Usd.Stage.LoadNone)
     require(original is not None, "completed_mesh_open_failed")
+    safe_types = {"", "Xform", "Scope", "Mesh", "Material", "Shader", "GeomSubset", "Camera",
+                  "DistantLight", "RectLight", "SphereLight", "DomeLight", "DiskLight", "CylinderLight"}
+    safe_apis = {"MaterialBindingAPI", "CollectionAPI", "GeomModelAPI", "NodeDefAPI", "PhysicsCollisionAPI",
+                "PhysicsMeshCollisionAPI", "PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysicsMaterialAPI"}
+    safe_shaders = {"UsdPreviewSurface", "UsdUVTexture", "UsdTransform2d", "UsdPrimvarReader_float",
+                    "UsdPrimvarReader_float2", "UsdPrimvarReader_float3", "UsdPrimvarReader_float4",
+                    "UsdPrimvarReader_int", "UsdPrimvarReader_string", "UsdPrimvarReader_normal",
+                    "UsdPrimvarReader_vector", "UsdPrimvarReader_point"}
+    for prim in original.Traverse():
+        require(prim.GetTypeName() in safe_types, "completed_mesh_prim_type_not_supported")
+        schemas = prim.GetMetadata("apiSchemas")
+        require(schemas is None or all(str(value).split(":", 1)[0] in safe_apis for value in schemas.GetAppliedItems()),
+                "completed_mesh_api_schema_not_supported")
+        if prim.IsA(UsdShade.Shader):
+            shader = UsdShade.Shader(prim)
+            require(shader.GetImplementationSourceAttr().Get() == "id" and shader.GetIdAttr().Get() in safe_shaders,
+                    "completed_mesh_shader_not_supported")
     source_layer = original.Flatten()
     stage = Usd.Stage.CreateNew(str(output))
     parent = UsdGeom.Xform.Define(stage, "/Root")
@@ -125,8 +142,8 @@ def _triangle_copy(source: Path, output: Path, *, suffix: str, scale: float, axi
     return mapping
 
 
-def normalize_completed_mesh(*, source: Path, original_filename: str, coordinate_frame: dict,
-                             output_root: Path) -> dict:
+def _normalize_completed_mesh(*, source: Path, original_filename: str, coordinate_frame: dict,
+                              output_root: Path) -> dict:
     """Read, convert, and independently verify every source object's bounds."""
     inspection = inspect_mesh(source, original_filename=original_filename,
                               coordinate_frame_declaration=coordinate_frame)
@@ -172,3 +189,19 @@ def normalize_completed_mesh(*, source: Path, original_filename: str, coordinate
     value["normalization_digest"] = canonical_digest(value, digest_field="normalization_digest")
     receipt_path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
     return value
+
+
+def normalize_completed_mesh(*, source: Path, original_filename: str, coordinate_frame: dict,
+                             output_root: Path) -> dict:
+    """An interrupted normalization never exposes a half-written cache entry."""
+    arguments = {"source": source, "original_filename": original_filename, "coordinate_frame": coordinate_frame}
+    require(output_root.is_absolute() and not any(p.is_symlink() for p in (output_root, *output_root.parents)),
+            "completed_mesh_output_unsafe")
+    if output_root.exists():
+        return _normalize_completed_mesh(**arguments, output_root=output_root)
+    output_root.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    with tempfile.TemporaryDirectory(prefix=".mesh-normalization-", dir=output_root.parent) as temporary:
+        staged = Path(temporary) / "normalized"
+        value = _normalize_completed_mesh(**arguments, output_root=staged)
+        os.rename(staged, output_root)
+        return value

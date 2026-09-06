@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
@@ -65,8 +66,10 @@ def validate_completed_scene_inputs(*, envelope: dict, configurations: dict,
     require(object_row is not None and support_row is not None and object_row != support_row
             and normalization["object_mapping"].get(subject.get("source_object_id")) == subject.get("runtime_prim_path")
             and normalization["object_mapping"].get(support.get("source_object_id")) == support.get("runtime_prim_path")
-            and object_row["world_aabb_min_m"] == subject.get("source_aabb_min_xyz_m")
-            and object_row["world_aabb_max_m"] == subject.get("source_aabb_max_xyz_m")
+            and all(math.isclose(a, b, rel_tol=1e-6, abs_tol=1e-7)
+                    for key, expected in (("world_aabb_min_m", "source_aabb_min_xyz_m"),
+                                          ("world_aabb_max_m", "source_aabb_max_xyz_m"))
+                    for a, b in zip(object_row[key], subject.get(expected, []), strict=True))
             and second.get("exact_target_prim") == subject["runtime_prim_path"]
             and second.get("support_prim_must_remain_active") == support["runtime_prim_path"]
             and second.get("collision_source_digest") == collision_row["digest"]
@@ -75,7 +78,16 @@ def validate_completed_scene_inputs(*, envelope: dict, configurations: dict,
     require(first.get("source_origin") == "owner_provided_completed_asset"
             and first.get("source_object", {}).get("source_object_id") == subject["source_object_id"],
             "completed_scene_appearance_binding_invalid")
+    require(second.get("expected_target", {}).get("aabb_min_xyz_m") == subject["source_aabb_min_xyz_m"]
+            and second.get("expected_target", {}).get("aabb_max_xyz_m") == subject["source_aabb_max_xyz_m"]
+            and third.get("metric_envelope", {}).get("minimum_xyz_m") == subject["source_aabb_min_xyz_m"]
+            and third.get("metric_envelope", {}).get("maximum_xyz_m") == subject["source_aabb_max_xyz_m"],
+            "completed_scene_stage_geometry_mismatch")
     mesh = request["scene"]["appearance"]["kind"] == "other_observed"
+    if not mesh:
+        require(first["source_object"].get("aabb_min_xyz_m") == subject["source_aabb_min_xyz_m"]
+                and first["source_object"].get("aabb_max_xyz_m") == subject["source_aabb_max_xyz_m"],
+                "completed_scene_removal_bounds_mismatch")
     require(recipe["stage_sequence"][0]["adapter"]["id"] == (
         "provided_mesh_appearance_excision" if mesh else "artifixer3d_observed_object_removal"),
         "completed_scene_appearance_adapter_mismatch")

@@ -399,9 +399,11 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     if state.get("factory"):
         factory = read(_reference(state["factory"]), digest_field="factory_digest")
     else:
-        factory = resolution.materializer(intent_path=directory / "intent.json", source_binding_path=binding_path,
-            machinery_path=machinery_path, release_binding_path=release_path, output_root=output / "materialized",
-            attempt_id=active_id)
+        from .task_evaluation_scene_preparation_attempts import preparation_storage
+        with preparation_storage(config, binding, output):
+            factory = resolution.materializer(intent_path=directory / "intent.json", source_binding_path=binding_path,
+                machinery_path=machinery_path, release_binding_path=release_path, output_root=output / "materialized",
+                attempt_id=active_id)
         if factory.get("status") in {"needs_input", "awaiting_source", "blocked"}:
             return emit(factory["status"], "factory", factory.get("blockers", []))
         require(factory.get("status") == "publication_ready"

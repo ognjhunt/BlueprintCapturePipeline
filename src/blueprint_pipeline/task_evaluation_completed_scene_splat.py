@@ -5,6 +5,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import subprocess  # nosec B404 - fixed, sealed local format converter; no provider call
 import tempfile
 
@@ -42,7 +43,10 @@ def normalize_completed_splat(*, source: Path, coordinate_frame: dict, output_ro
     with tempfile.TemporaryDirectory(prefix=".normalize-", dir=output_root) as temporary:
         temporary = Path(temporary)
         named = temporary / "source.ply"
-        os.link(source, named, follow_symlinks=False)
+        try:
+            os.link(source, named, follow_symlinks=False)
+        except OSError:
+            shutil.copyfile(source, named)
         output = temporary / "normalized.ply"
         arguments = [str(runtime["node"]), str(cli), "-w", "-q", str(named), "--scale", str(scale)]
         if axis == "Y":

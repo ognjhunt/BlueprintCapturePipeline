@@ -1,6 +1,7 @@
 """Preparation identities are not paid reservations and cannot authorize a GPU."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 
 from . import task_evaluation_scene_intake as intake
 from .task_evaluation_scene_owner_authority import reopen_scene_intent
@@ -8,6 +9,22 @@ from .task_evaluation_public_scene_attempt_factory import record
 from .task_evaluation_scene_progression_state import require, safe_path
 
 SCHEMA = "task_evaluation_scene_preparation_attempt.v1"
+
+
+@contextmanager
+def preparation_storage(config, binding, output_root):
+    """Reserve normalization/staging headroom before the first large write."""
+    root = (config.get("preparation_worker") or {}).get("disk_reservation_root")
+    if root is None:
+        yield  # Hermetic/direct factory callers have no shared host ledger.
+        return
+    from .control_plane_disk_budget import reserve_control_plane_disk
+    refs = binding.get("references", {})
+    expected = (3 * refs.get("primary", {}).get("size_bytes", 0)
+                + 8 * refs.get("collision", {}).get("size_bytes", 0) + 256 * 1024**2)
+    with reserve_control_plane_disk("launch_preparation", target_root=output_root,
+                                   expected_bytes=expected, reservation_root=root):
+        yield
 
 
 def preparation_attempt_path(directory, attempt_id):

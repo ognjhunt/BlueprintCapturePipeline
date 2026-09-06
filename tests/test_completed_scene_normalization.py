@@ -14,6 +14,15 @@ from tests.test_task_evaluation_completed_scene_source import MESH
 from tests.test_provided_scene_splat import splat_bytes
 
 
+def test_runtime_execution_graph_is_refused_before_normalized_output(tmp_path):
+    source = tmp_path / "graph.usda"
+    source.write_bytes(MESH + b'\ndef OmniGraph "Execution" {}\n')
+    with pytest.raises(ValueError, match="completed_mesh_prim_type_not_supported"):
+        normalize_completed_mesh(source=source, original_filename=source.name,
+            coordinate_frame={"meters_per_unit": 1.0, "up_axis": "Z"}, output_root=tmp_path / "out")
+    assert not (tmp_path / "out/normalized_scene.usda").exists()
+
+
 def test_y_up_centimeter_mesh_retains_world_geometry_and_material_through_extraction(tmp_path):
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
     source = tmp_path / "source.usda"

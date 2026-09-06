@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import pwd
 import zipfile
+import pytest
 from urllib.parse import urlsplit
 
 from blueprint_pipeline import task_evaluation_scene_progression as engine
@@ -25,6 +26,7 @@ from tests.test_task_evaluation_scene_configuration_submission import SHA
 from tests.test_task_evaluation_scene_configuration_submission_publication import Store
 
 ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
+pytestmark = pytest.mark.slow
 
 
 def _prepare(tmp_path, monkeypatch, *, source_kind="mesh", render_materializer=None):

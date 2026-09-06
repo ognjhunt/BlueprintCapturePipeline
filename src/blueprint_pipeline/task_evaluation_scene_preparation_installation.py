@@ -75,7 +75,7 @@ def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
     pwd.getpwnam(service_account)
     value = {"schema_version": BOOTSTRAP_SCHEMA, "managed_by": MANAGED_BY, **roots,
         "running_repo_root": str(running_repo_root), "service_account": service_account,
-        "destination_catalog": rows, "simulation_physics_bounds": DEFAULT_PHYSICS_BOUNDS,
+        "destination_catalog": rows, "simulation_physics_bounds": {key: list(value) for key, value in DEFAULT_PHYSICS_BOUNDS.items()},
         "execution_activation_enabled": False, "supported_source_kinds": ["mesh", "gaussian_splat"]}
     value["bootstrap_digest"] = canonical_digest(value, digest_field="bootstrap_digest")
     return value
@@ -83,12 +83,13 @@ def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
 
 def _managed_json(path, value, account):
     path = safe_path(path)
+    unchanged = False
     if path.exists():
         old = read(path)
         require(old.get("managed_by") == MANAGED_BY, "scene_preparation_unmanaged_file")
-        if old == value:
-            return
-    atomic_json(path, value)
+        unchanged = old == value
+    if not unchanged:
+        atomic_json(path, value)
     if os.geteuid() == 0:
         os.chown(path, 0, account.pw_gid)
     path.chmod(0o640)
@@ -104,6 +105,8 @@ def install_scene_preparation(*, bootstrap_path):
             and bootstrap.get("supported_source_kinds") == ["mesh", "gaussian_splat"],
             "scene_preparation_bootstrap_scope_invalid")
     validate_destination_catalog(bootstrap["destination_catalog"])
+    from .task_evaluation_scene_configuration_content_agents_driver import _physics_bounds
+    _physics_bounds({"required_output": bootstrap["simulation_physics_bounds"]})
     account = pwd.getpwnam(bootstrap["service_account"])
     state, inputs, config_root = (safe_path(bootstrap[key]) for key in ("state_root", "inputs_root", "config_root"))
     owner_queue = state / "task-evaluation-owned-scene-preparations"

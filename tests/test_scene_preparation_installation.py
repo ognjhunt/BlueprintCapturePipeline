@@ -19,6 +19,7 @@ from tests.test_task_evaluation_scene_configuration_submission import SHA
 from tests.test_task_evaluation_scene_configuration_submission_publication import Store
 
 ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name
+pytestmark = pytest.mark.slow
 
 
 def _installed(tmp_path, monkeypatch):
