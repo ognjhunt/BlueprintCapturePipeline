@@ -178,7 +178,8 @@ def profile_binding_blockers(profile: Mapping[str, Any]) -> list[str]:
                  attempt.get("source_commit") == plan.get("source_commit") and
                  attempt.get("runtime_digest") == runtime and attempt.get("input_digest") == inputs,
                  "profile_attempt_mismatch")
-        _require(set((plan.get("legacy_policy_run_setup") or {}).get("candidate_ids") or []) ==
+        legacy_ids = (plan.get("legacy_policy_run_setup") or {}).get("candidate_ids")
+        _require(isinstance(legacy_ids, list) and len(legacy_ids) == 2 and set(legacy_ids) ==
                  set(candidate_map(bound["policy_candidates"])), "legacy_candidate_mismatch")
         return []
     except (ValueError, KeyError, TypeError) as exc:
@@ -299,11 +300,13 @@ def execution_setup_binding_blockers(setup: Mapping[str, Any],
     try:
         _require(fields.issubset(setup), "execution_owner_fields_missing")
         bound = validate_binding(setup["scene_policy_binding"])
-        _require(setup["scene_intent_digest"] == bound["scene_intent_digest"] and
+        candidate_ids = setup.get("candidate_ids")
+        _require(isinstance(candidate_ids, list) and len(candidate_ids) == 2 and
+                 setup["scene_intent_digest"] == bound["scene_intent_digest"] and
                  setup["scene_attempt_id"] == bound["attempt_id"] and
                  candidate_map(setup["scene_policy_candidates"]) ==
                  candidate_map(bound["policy_candidates"]) and
-                 set(setup.get("candidate_ids") or []) == set(candidate_map(bound["policy_candidates"])),
+                 set(candidate_ids) == set(candidate_map(bound["policy_candidates"])),
                  "execution_owner_binding_mismatch")
         attempt = setup["scene_attempt_binding"]
         _require(attempt.get("schema_version") == "task_evaluation_scene_attempt_binding.v1" and

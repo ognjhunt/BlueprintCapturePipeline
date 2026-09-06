@@ -110,6 +110,8 @@ def test_owner_checkpoint_pair_reaches_real_profile_and_native_specs(tmp_path, m
     assert binding.execution_setup_binding_blockers(emitted, wrong_spec) == ["scene_policy_execution_checkpoint_mismatch"]
     missing_owner_field = {key: value for key, value in emitted.items() if key != "scene_intent_digest"}
     assert binding.execution_setup_binding_blockers(missing_owner_field, specs) == ["scene_policy_execution_owner_fields_missing"]
+    repeated_candidate = {**emitted, "candidate_ids": [*emitted["candidate_ids"], emitted["candidate_ids"][0]]}
+    assert binding.execution_setup_binding_blockers(repeated_candidate, specs) == ["scene_policy_execution_owner_binding_mismatch"]
     # The actual post-activation template consumer must preserve the same pair.
     activation_path = rehearsal._write(tmp_path / "activation-result.json", {
         "schema_version": "task_evaluation_launch_activation_result.v1",
