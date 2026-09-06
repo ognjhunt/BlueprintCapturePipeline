@@ -74,7 +74,7 @@ def test_allocation_guard_is_wired_before_offer_search():
     from blueprint_pipeline import vast_provider_adapter
     source = Path(vast_provider_adapter.__file__).read_text()
     assert "prelaunch_inventory_blockers.extend(credit_guard[\"blockers\"])" in source
-    assert source.index("credit_guard = configured_vast_credit_admission") < source.index(
+    assert source.index("credit_guard = record_vast_credit_admission") < source.index(
         "if prelaunch_inventory_blockers:")
 
 

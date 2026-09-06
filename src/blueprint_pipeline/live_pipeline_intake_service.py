@@ -1834,6 +1834,8 @@ def create_app() -> FastAPI:
             },
         )
 
+    from .task_evaluation_scene_intake_http import register_scene_intake_routes
+    register_scene_intake_routes(app, _require_admission, deployment_identity_payload)
     @app.post(
         "/api/live-pipeline/task-evaluation-launch-preparations",
         dependencies=[Depends(_require_admission)],

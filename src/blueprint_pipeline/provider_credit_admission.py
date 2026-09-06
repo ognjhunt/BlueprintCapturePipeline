@@ -12,6 +12,7 @@ import os
 import time
 from collections.abc import Callable, Mapping
 from typing import Any
+from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
 
@@ -98,3 +99,18 @@ def configured_vast_credit_admission(*, api_key: str, required_usd: float) -> di
         return {"status": "blocked", "blockers": ["provider_credit_guard_config_invalid"]}
     return credit_admission(observe_vast_credit(api_key=api_key), required_usd=required_usd,
                             reserve_usd=reserve)
+
+
+def record_vast_credit_admission(job_dir: Path, api_key: str, required_usd: float) -> dict[str, Any]:
+    """Called under the adapter's launch lock, before its no-allocation failure path."""
+    from .common import write_json
+
+    result = configured_vast_credit_admission(api_key=api_key, required_usd=required_usd)
+    write_json(job_dir / "provider_credit_admission.json", result)
+    return result
+
+
+def render_credit_admission(request: Mapping[str, Any], api_key: str) -> dict[str, Any]:
+    guard = request.get("prelaunch_spend_guard")
+    amount = guard.get("max_spend_usd") if isinstance(guard, Mapping) else None
+    return configured_vast_credit_admission(api_key=api_key, required_usd=amount)
