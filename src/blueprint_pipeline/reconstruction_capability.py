@@ -39,6 +39,7 @@ METHOD_KINDS = {
     "generated_visual_completion",
     "manual_owner_attested_correction",
     "precomputed_external_reconstruction_import",
+    "provided_scene_mesh_import",
 }
 REPRESENTATIONS = {
     "decoded_observation_frames",
