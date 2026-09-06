@@ -49,7 +49,7 @@ import sys
 import textwrap
 import time
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -854,8 +854,9 @@ def binding_checks(units: Mapping[str, dict[str, Any]], active_sha: str, ids: tu
 def _sam31_provider_profile_findings(hardware_profile: Path, unit_name: str, active_sha: str) -> list[dict[str, Any]]:
     """The provider profile a SAM hardware profile references must be bound to the active release.
 
-    The SAM launch-packet validator refuses a GPU request whose provider profile,
-    worker stack manifest or runtime image build receipt carries another commit.
+    The SAM launch-packet validator refuses a GPU request whose provider profile carries
+    another commit (since #1669 the worker stack manifest and runtime image build receipt
+    only need a valid commit, so those are recorded, not refused).
     On 2026-09-05 the hardware profile for scene 841757 pointed at scene 840920's
     provider profile from three weeks earlier; the refusal surfaced only after a
     paid calibration render, as one anonymous blocker among forty predicates.
@@ -880,7 +881,10 @@ def _sam31_provider_profile_findings(hardware_profile: Path, unit_name: str, act
         record_path = Path(str(record.get("path") or "")) if isinstance(record, Mapping) else None
         if record_path is not None and record_path.is_file():
             records[role] = str((_read_json(record_path) or {}).get("source_commit_sha") or "")
-    stale = {role: sha for role, sha in records.items() if sha and sha != active_sha}
+    # #1669: only the provider profile itself must carry the active release; the worker stack
+    # manifest and runtime image build receipt need a valid commit (no image-build producer
+    # exists in the repo), so another commit there is provenance, not a refusal.
+    stale = {"provider_profile": bound} if bound and bound != active_sha else {}
     if stale:
         findings.append(
             _finding(
@@ -889,6 +893,7 @@ def _sam31_provider_profile_findings(hardware_profile: Path, unit_name: str, act
                 unit=unit_name,
                 path=str(provider_path),
                 bound={role: sha[:12] for role, sha in stale.items()},
+                records={role: sha[:12] for role, sha in records.items() if sha},
                 active_sha=active_sha[:12],
                 consequence="sam31_gpu_canary_request_configuration_invalid after the paid calibration render",
             )
@@ -917,12 +922,31 @@ def handoff_checks(units: Mapping[str, dict[str, Any]], ids: tuple[int, int]) ->
     public = str(units.get("blueprint-pipeline-intake.service", {}).get("effective_environment", {}).get("BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH") or "")
     if catalog and public and catalog != public:
         findings.append(_finding("blocker", "launch_profile_catalog_path_disagrees_with_intake", progression=catalog, intake=public))
-    dispatcher = units.get("blueprint-task-evaluation-launch-dispatcher.service", {}).get("effective_environment", {})
+    dispatcher_unit = "blueprint-task-evaluation-launch-dispatcher.service"
+    dispatcher = units.get(dispatcher_unit, {}).get("effective_environment", {})
     if str(dispatcher.get("BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE") or "").strip() not in {"1", "true", "yes"}:
-        findings.append(_finding("blocker", "launch_dispatcher_execute_gate_closed", unit="blueprint-task-evaluation-launch-dispatcher.service"))
+        # The unit file ships EXECUTE=true; a false value can only come from an
+        # operator hold in an EnvironmentFile or drop-in. Name where it lives so
+        # lifting it is one edit, not a search. Hands-off runs carry no hold: the
+        # bounded, expiring standing authorization is the control.
+        findings.append(_finding("blocker", "launch_dispatcher_execution_hold_present", unit=dispatcher_unit,
+                                 held_by=environment_hold_sources(units.get(dispatcher_unit, {}), "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE") or None))
     if not str(dispatcher.get("BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE_ID") or "").strip():
-        findings.append(_finding("blocker", "launch_dispatcher_execute_id_unset", unit="blueprint-task-evaluation-launch-dispatcher.service"))
+        # No per-launch id is the hands-off state: the standing authorization the
+        # activation publishes admits the launch. Recorded, not a blocker.
+        findings.append(_finding("info", "launch_dispatcher_execute_id_unset", unit=dispatcher_unit))
     return findings
+
+
+def environment_hold_sources(unit: Mapping[str, Any], name: str) -> list[str]:
+    """The EnvironmentFile paths that set ``name`` to a non-truthy value for this unit."""
+
+    sources: list[str] = []
+    for path_text, _ignore in environment_files(unit.get("properties", {})):
+        value = _parse_env_file(Path(path_text)).get(name)
+        if value is not None and value.strip() not in {"1", "true", "yes"}:
+            sources.append(path_text)
+    return sources
 
 
 def credential_file_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -951,6 +975,72 @@ def credential_file_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str
                 if mode & 0o077 or path.stat().st_uid != uid:
                     findings.append(_finding("blocker", "ssh_identity_permissions_refused_by_ssh", unit=unit_name, path=value, **_owner(path.stat())))
     return findings
+
+
+PAID_ALLOCATION_UNITS: tuple[str, ...] = (
+    "blueprint-task-evaluation-launch-dispatcher.service",
+    "blueprint-task-evaluation-policy-canary-dispatcher.service",
+    "blueprint-task-evaluation-sam31-preparation-execution.service",
+)
+
+
+def _env_usd(name: str, default: float, *environments: Mapping[str, Any]) -> float:
+    for environment in (*environments, os.environ):
+        raw = str(environment.get(name) or "").strip()
+        if raw:
+            try:
+                value = float(raw)
+            except ValueError:
+                return default
+            return value if value >= 0 else default
+    return default
+
+
+def provider_credit_check(
+    units: Mapping[str, dict[str, Any]], *, observer: Callable[..., Mapping[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Refuse a paid unit that leaves the per-attempt credit guard off; read the credit once ($0).
+
+    Vast stops every instance when the account balance crosses its threshold, so an attempt
+    that starts on thin credit is torn down mid-episode and loses its evidence.  The guard in
+    ``provider_credit_admission`` is opt-in by environment; production must turn it on in every
+    unit that reaches the adapter.  The read here is the same GET the guard performs, done before
+    a submission so a thin account is named here rather than at the first paid attempt.
+    """
+
+    from .provider_credit_admission import ENABLED_ENV, RESERVE_ENV, WARNING_ENV, observe_vast_credit
+
+    findings: list[dict[str, Any]] = []
+    environments = [dict(unit.get("effective_environment", {})) for _, unit in sorted(units.items())]
+    for unit_name in PAID_ALLOCATION_UNITS:
+        unit = units.get(unit_name)
+        if unit is None:
+            continue
+        enabled = str(unit.get("effective_environment", {}).get(ENABLED_ENV) or "").strip().lower()
+        if enabled not in {"true", "1"}:
+            findings.append(
+                _finding("blocker", "provider_credit_guard_disabled", unit=unit_name, env=ENABLED_ENV, value=enabled or None)
+            )
+    key_file = next((str(e.get("VAST_API_KEY_FILE") or "").strip() for e in environments if e.get("VAST_API_KEY_FILE")), "")
+    if not key_file:
+        return [*findings, _finding("warning", "provider_credit_key_file_unset")]
+    try:
+        api_key = Path(key_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        return [*findings, _finding("warning", "provider_credit_key_file_unreadable", path=key_file)]
+    observation = (observer or observe_vast_credit)(api_key=api_key)
+    credit = observation.get("credit_usd")
+    if observation.get("status") != "observed" or not isinstance(credit, (int, float)) or isinstance(credit, bool):
+        return [*findings, _finding(
+            "warning", "provider_credit_unverifiable",
+            http_status=observation.get("http_status"), blockers=list(observation.get("blockers") or []),
+        )]
+    reserve = _env_usd(RESERVE_ENV, 1.0, *environments)
+    warning = _env_usd(WARNING_ENV, 5.0, *environments)
+    if float(credit) < reserve:
+        return [*findings, _finding("blocker", "provider_credit_exhausted", credit_usd=float(credit), reserve_usd=reserve)]
+    severity, code = ("warning", "provider_credit_low") if float(credit) < warning else ("info", "provider_credit_available")
+    return [*findings, _finding(severity, code, credit_usd=float(credit), warning_usd=warning)]
 
 
 def disk_admission_check(units: Mapping[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1010,6 +1100,12 @@ def unit_health_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str, An
             findings.append(_finding("warning", "unit_failed_state", unit=unit_name, active_state=state, result=result, exec_main_status=_first(props, "ExecMainStatus")))
         if _first(props, "LoadState") != "loaded":
             findings.append(_finding("blocker", "unit_not_loaded", unit=unit_name, load_state=_first(props, "LoadState")))
+        for condition in props.get("ExecCondition", []):
+            if "/usr/bin/false" in condition or "/bin/false" in condition:
+                # An ExecCondition that always fails is an operator hold on the
+                # unit; the chain stalls there without any queue evidence.
+                drop_ins = [p for p in (_first(props, "DropInPaths") or "").split() if p]
+                findings.append(_finding("blocker", "unit_execution_hold_present", unit=unit_name, exec_condition=condition[:160], drop_ins=drop_ins or None))
         for trigger in (_first(props, "TriggeredBy") or "").split():
             trigger_state = _first(unit_properties(trigger), "ActiveState")
             if trigger_state != "active":
@@ -1113,6 +1209,7 @@ def run_chain(args: argparse.Namespace) -> int:
     report["host_findings"].extend(binding_checks(units, active_sha, ids))
     report["host_findings"].extend(handoff_checks(units, ids))
     report["host_findings"].extend(credential_file_checks(units))
+    report["host_findings"].extend(provider_credit_check(units))
     report["host_findings"].extend(disk_admission_check(units))
     report["host_findings"].extend(unit_health_checks(units))
     report["host_findings"].extend(intake_check(units, ids))

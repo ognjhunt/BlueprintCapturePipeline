@@ -75,7 +75,11 @@ def _derive(task_path: Path, terms_path: Path) -> dict[str, Any]:
     _, terms = _read(terms_path)
     owner = task.get("human_authority")
     _require(isinstance(owner, dict), "task_owner_missing")
-    _require(owner.get("accepted_by") == review.AI_REVIEW_ACCEPTED_BY
+    scene_owner = task.get("scene_intent_authority") is not None
+    if scene_owner:
+        from .task_evaluation_scene_owner_authority import validate_task_scene_owner
+        validate_task_scene_owner(task, provider_terms_path=terms_path)
+    _require((scene_owner or owner.get("accepted_by") == review.AI_REVIEW_ACCEPTED_BY)
              and all(isinstance(owner.get(k), str) and owner[k].strip()
                      for k in ("accepted_on", "authority_reference")), "task_owner_invalid")
     _require(all(owner.get(k) is True for k in (
@@ -88,7 +92,7 @@ def _derive(task_path: Path, terms_path: Path) -> dict[str, Any]:
     _require(terms.get("schema_version") == review.AI_RIGHTS_SCHEMA_VERSION
              and terms.get("attestation_digest") == canonical_digest(terms, digest_field="attestation_digest")
              and terms.get("status") == "accepted_for_private_derived_visual_review"
-             and terms.get("accepted_by") == owner["accepted_by"]
+             and (scene_owner or terms.get("accepted_by") == owner["accepted_by"])
              and all(terms.get(k) == v and type(terms.get(k)) is type(v)
                      for k, v in TERMS.items() if k != "max_inference_spend_usd")
              and not isinstance(terms.get("max_inference_spend_usd"), bool)
@@ -111,6 +115,8 @@ def _derive(task_path: Path, terms_path: Path) -> dict[str, Any]:
         "candidate_policy_queried": False, "evaluation_authorized": False,
         "authority_digest": "",
     }
+    if scene_owner:
+        receipt["scene_intent_authority"] = task["scene_intent_authority"]
     receipt["authority_digest"] = canonical_digest(receipt, digest_field="authority_digest")
     return receipt
 
@@ -144,6 +150,40 @@ def validate_sam31_review_authority(authority_path: str | Path, *,
         _require(_record(_path(task_request_path)) == value["task_request"], "task_mismatch")
     _require(value == _derive(task_path, terms_path), "receipt_invalid")
     return value
+
+
+def validate_scene_review_binding(binding, *, candidate_path, accepted_by, accepted_on,
+                                  human_authority_reference):
+    """A dynamic owner is admitted only through live, exact-task intake lineage."""
+    _require(isinstance(binding, dict) and set(binding) in (
+        {"standing_authority"}, {"standing_authority", "completed_prefix_adoption"}),
+        "scene_binding_invalid")
+    standing_path, _ = _reopen(binding["standing_authority"])
+    authority = validate_sam31_review_authority(standing_path)
+    _require(authority.get("scene_intent_authority") is not None
+             and accepted_by == authority["accepted_by"] and accepted_on == authority["accepted_on"]
+             and human_authority_reference == authority["human_authority_reference"],
+             "scene_owner_mismatch")
+    _, candidate = review.load_validated_sam31_track_selection_review_candidate(candidate_path)
+    rows = candidate.get("selection_bindings", [])
+    _require(len(rows) == 1, "candidate_task_mismatch")
+    freeze_path, freeze = _reopen(rows[0].get("task_freeze"))
+    from .public_scene_removal_selection import validate_removal_task_selection
+    validate_removal_task_selection(freeze)
+    _, scene = _reopen(freeze.get("scene_selection"))
+    source_task = scene.get("source_evidence", {}).get("task_request")
+    if source_task != authority["task_request"]:
+        _require("completed_prefix_adoption" in binding, "candidate_task_mismatch")
+        adoption_path, _ = _reopen(binding["completed_prefix_adoption"])
+        from .task_evaluation_sam31_prefix_adoption import validate_completed_prefix_adoption
+        adopted = validate_completed_prefix_adoption(adoption_path,
+            expected_source_commit=authority["source_commit"],
+            approved_roots=(Path("/var/lib/blueprint"), Path("/opt/blueprint"), Path("/etc/blueprint")))
+        _, old_plan = _reopen(adopted["record"]["source_plan"])
+        _require(adopted["record"]["current_host_inputs"]["task_request"] == authority["task_request"]
+                 and adopted["artifacts"]["task_selection"] == _record(freeze_path)
+                 and old_plan["host_inputs"]["task_request"] == source_task, "candidate_task_mismatch")
+    return authority
 
 
 def resolve_sam31_review_rights(*, authority_path: str | Path, task_request_path: str | Path,
@@ -186,7 +226,10 @@ def resolve_sam31_review_rights(*, authority_path: str | Path, task_request_path
     result = review.materialize_sam31_ai_visual_review_rights(
         candidate_path=candidate_file, accepted_by=authority["accepted_by"],
         accepted_on=authority["accepted_on"],
-        human_authority_reference=authority["human_authority_reference"], output_path=output_path)
+        human_authority_reference=authority["human_authority_reference"], output_path=output_path,
+        **({"scene_owner_authority": {"standing_authority": _record(source),
+             **({"completed_prefix_adoption": adoption_record} if adoption_record else {})}}
+           if authority.get("scene_intent_authority") is not None else {}))
     # Separate immutable derivation receipt preserves compatibility with exact
     # candidate rights consumers without rewriting their freshly sealed bytes.
     derivation = {
