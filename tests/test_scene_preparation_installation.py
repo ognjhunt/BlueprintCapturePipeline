@@ -92,3 +92,47 @@ def test_installed_service_prepares_a_mesh_then_restarts_without_a_paid_attempt(
     assert record(intent / "progression.json") == projection
     assert store.puts == before
     assert list((intent / "preparation-attempts").glob("*.json")) == attempts
+
+
+def test_public_scene_mode_config_enables_the_public_source_path(tmp_path, monkeypatch):
+    """With public_scene_enabled the installed config admits public_scene source
+    intents (Spec A): supported_source_kinds gains public_scene, and the config
+    carries public_source_binding_root + machinery_path so the scene-progression
+    _source resolver can bind a public-scene intent. The owner-upload default
+    (public_scene_enabled off) is unchanged and still refuses public sources.
+    """
+    machinery_catalog = installation.DEFAULT_PHYSICS_BOUNDS  # sanity: module import
+    assert machinery_catalog is not None
+    from tests.test_task_evaluation_completed_scene_progression import _config
+    old_config_path, _intent_id, _intents, _now = _config(tmp_path, monkeypatch, source_kind="mesh", real_destination=True)
+    old = json.loads(old_config_path.read_text())
+    machinery = json.loads(Path(old["completed_source_machinery_path"]).read_text())
+    state = tmp_path / "prod/pipeline-control-plane"
+    inputs = tmp_path / "prod/task-evaluation-inputs"
+    bootstrap = installation.build_bootstrap(destination_catalog=machinery["destination_catalog"],
+        config_root=tmp_path / "etc", state_root=state, inputs_root=inputs,
+        capture_store_root=old["capture_store_root"], running_repo_root=tmp_path / "repo",
+        service_account=ACCOUNT, public_scene_enabled=True)
+    assert bootstrap["supported_source_kinds"] == ["mesh", "gaussian_splat", "public_scene"]
+    path = tmp_path / "bootstrap.json"
+    path.write_text(json.dumps(bootstrap)); path.chmod(0o640)
+    receipt = installation.install_scene_preparation(bootstrap_path=path)
+    config = json.loads(Path(receipt["config"]["path"]).read_text())
+    assert "public_scene" in config["supported_source_kinds"]
+    assert config.get("public_source_binding_root")
+    assert config.get("machinery_path")
+    assert Path(config["public_source_binding_root"]).is_dir()
+
+
+def test_owner_upload_default_still_refuses_public_scene(tmp_path, monkeypatch):
+    """The default (public_scene_enabled off) config must not admit public_scene,
+    so a public source under a mesh-only config fails with the typed refusal."""
+    from tests.test_task_evaluation_completed_scene_progression import _config
+    old_config_path, _intent_id, _intents, _now = _config(tmp_path, monkeypatch, source_kind="mesh", real_destination=True)
+    old = json.loads(old_config_path.read_text())
+    machinery = json.loads(Path(old["completed_source_machinery_path"]).read_text())
+    bootstrap = installation.build_bootstrap(destination_catalog=machinery["destination_catalog"],
+        config_root=tmp_path / "etc", state_root=tmp_path / "s", inputs_root=tmp_path / "i",
+        capture_store_root=old["capture_store_root"], running_repo_root=tmp_path / "repo", service_account=ACCOUNT)
+    assert bootstrap["supported_source_kinds"] == ["mesh", "gaussian_splat"]
+    assert "public_scene" not in bootstrap["supported_source_kinds"]

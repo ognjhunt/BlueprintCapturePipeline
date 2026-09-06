@@ -62,11 +62,22 @@ def validate_destination_catalog(rows):
     return rows
 
 
+#: Owner-upload sources the preparation service admits by default.
+OWNER_UPLOAD_SOURCE_KINDS = ["mesh", "gaussian_splat"]
+#: With public_scene_enabled the service additionally admits rights-admitted
+#: public-scene persistent intents (Spec A: the legacy public-scene path for
+#: scenes such as 841757). It stays a separate no-spend preparation phase; the
+#: per-scene public-source binding and public-scene machinery are materialized
+#: by the public-scene provisioner, not manufactured here.
+PUBLIC_SCENE_SOURCE_KINDS = ["mesh", "gaussian_splat", "public_scene"]
+
+
 def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
                     state_root="/var/lib/blueprint/pipeline-control-plane",
                     inputs_root="/var/lib/blueprint/task-evaluation-inputs",
                     capture_store_root="/var/lib/blueprint/capture-intake",
-                    running_repo_root="/opt/blueprint/task-evaluation-control-plane", service_account="blueprint"):
+                    running_repo_root="/opt/blueprint/task-evaluation-control-plane", service_account="blueprint",
+                    public_scene_enabled=False):
     rows = validate_destination_catalog(destination_catalog)
     roots = {key: str(safe_path(value)) for key, value in {
         "config_root": config_root, "state_root": state_root, "inputs_root": inputs_root,
@@ -76,7 +87,8 @@ def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
     value = {"schema_version": BOOTSTRAP_SCHEMA, "managed_by": MANAGED_BY, **roots,
         "running_repo_root": str(running_repo_root), "service_account": service_account,
         "destination_catalog": rows, "simulation_physics_bounds": {key: list(value) for key, value in DEFAULT_PHYSICS_BOUNDS.items()},
-        "execution_activation_enabled": False, "supported_source_kinds": ["mesh", "gaussian_splat"]}
+        "execution_activation_enabled": False,
+        "supported_source_kinds": PUBLIC_SCENE_SOURCE_KINDS if public_scene_enabled else OWNER_UPLOAD_SOURCE_KINDS}
     value["bootstrap_digest"] = canonical_digest(value, digest_field="bootstrap_digest")
     return value
 
@@ -102,7 +114,7 @@ def install_scene_preparation(*, bootstrap_path):
     require(bootstrap.get("schema_version") == BOOTSTRAP_SCHEMA
             and bootstrap.get("managed_by") == MANAGED_BY
             and bootstrap.get("execution_activation_enabled") is False
-            and bootstrap.get("supported_source_kinds") == ["mesh", "gaussian_splat"],
+            and bootstrap.get("supported_source_kinds") in (OWNER_UPLOAD_SOURCE_KINDS, PUBLIC_SCENE_SOURCE_KINDS),
             "scene_preparation_bootstrap_scope_invalid")
     validate_destination_catalog(bootstrap["destination_catalog"])
     from .task_evaluation_scene_configuration_content_agents_driver import _physics_bounds
@@ -110,11 +122,18 @@ def install_scene_preparation(*, bootstrap_path):
     account = pwd.getpwnam(bootstrap["service_account"])
     state, inputs, config_root = (safe_path(bootstrap[key]) for key in ("state_root", "inputs_root", "config_root"))
     owner_queue = state / "task-evaluation-owned-scene-preparations"
+    public_scene_enabled = "public_scene" in bootstrap["supported_source_kinds"]
+    public_binding_root = inputs / "public-source-bindings"
     directories = [state / "task-evaluation-scene-intents", owner_queue,
         inputs / "owner-source-store", inputs / "completed-scene-preparation",
         inputs / "completed-scene-preparation-inputs", state / "scene-preparation-release-bindings",
         state / "scene-preparation-service", state / "submission-publication-locks",
         state / "disk-reservations", state / "storage-pins"]
+    if public_scene_enabled:
+        # The public-scene binding directory the per-scene provisioner writes
+        # <binding_id>.json into; the scene-progression _source resolver reads
+        # public_source_binding_root/<binding_id>.json for a public_scene intent.
+        directories.append(public_binding_root)
     for directory in directories:
         safe_path(directory)
         if not directory.exists():
@@ -150,6 +169,14 @@ def install_scene_preparation(*, bootstrap_path):
             "disk_reservation_root": str(state / "disk-reservations"), "storage_pins_root": str(state / "storage-pins"),
             "max_messages": 1, "allowed_uri_prefixes": ["s3://blueprint/task-evaluation/production-inputs/",
                                                          "s3://blueprint/task-evaluation/host-only-owner-sources/"]}}
+    if public_scene_enabled:
+        # public_source_binding_root + machinery_path let the scene-progression
+        # _source resolver bind a public_scene intent. The public-scene machinery
+        # (task_evaluation_public_scene_machinery.v1) is release/provider bound and
+        # is materialized per scene by the public-scene provisioner, not here — the
+        # worker only reads machinery_path once a public_scene intent exists.
+        config["public_source_binding_root"] = str(public_binding_root)
+        config["machinery_path"] = str(config_root / "task-evaluation-public-scene-machinery.json")
     config["config_digest"] = canonical_digest(config, digest_field="config_digest")
     config_path = config_root / "task-evaluation-scene-progression.json"
     _managed_json(config_path, config, account)

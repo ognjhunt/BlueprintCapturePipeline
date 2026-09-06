@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import stat
 import textwrap
 from collections import namedtuple
@@ -150,7 +151,7 @@ def test_sandbox_replay_uses_only_the_directives_the_unit_configured(tmp_path: P
     assert "Group=" not in joined and "CapabilityBoundingSet" not in joined
     assert f"-p EnvironmentFile=-{env_file}" in joined
     assert "--setenv=BLUEPRINT_A=1" in command and '--setenv=BLUEPRINT_JSON=["s3://x/"]' in command
-    assert command[-6:] == ["--active-sha", "a" * 40, "--read-write-paths", "/var/lib/blueprint/a -/var/lib/blueprint/b", "--read-only-paths", "/etc/blueprint/profiles"]
+    assert command[-4:] == ["--active-sha", "a" * 40, "--read-write-paths=/var/lib/blueprint/a -/var/lib/blueprint/b", "--read-only-paths=/etc/blueprint/profiles"]
     effective = preflight.effective_environment(props)
     assert effective["BLUEPRINT_FROM_FILE"] == "/var/lib/blueprint/from-file"
     assert effective["QUOTED"] == "v w" and effective["BLUEPRINT_A"] == "1"
@@ -484,3 +485,147 @@ def test_preflight_refuses_a_paid_unit_without_the_credit_guard_and_reads_the_cr
     assert preflight.provider_credit_check({"other.service": {"effective_environment": {}}}, observer=observer) == [
         preflight._finding("warning", "provider_credit_key_file_unset")
     ]
+
+
+def _probe_argv(command: list[str]) -> list[str]:
+    """The argv the probe subcommand actually receives, from ``probe`` onward.
+
+    ``systemd_run_command`` appends ``-- <python> <script> probe ...`` so the
+    real subparser sees everything after ``python`` and ``script``.
+    """
+
+    tail = command[command.index("--") + 1 :]
+    assert tail[2] == "probe", tail[:3]
+    return tail[2:]
+
+
+def test_sandbox_probe_paths_survive_the_real_parser_even_with_leading_dash(tmp_path: Path) -> None:
+    """systemd path directives may start with ``-`` (optional path).  Serialised
+    as a separate ``--read-only-paths`` ``-/x`` pair, argparse read the value as
+    another option and failed the probe with ``expected one argument`` — exactly
+    what blocked the live intake and gpu-spend-guard units.  The ``--opt=value``
+    form keeps every value one argv element through the real parser."""
+
+    parser = preflight.build_parser()
+    # (read_only, read_write, read_only tokens once the probe shlex-splits it, read_write tokens)
+    cases = {
+        "empty": ("", "", [], []),
+        "leading_dash": (
+            "-/var/lib/blueprint/pipeline-control-plane/release-retention",
+            "/var/lib/blueprint",
+            ["-/var/lib/blueprint/pipeline-control-plane/release-retention"],
+            ["/var/lib/blueprint"],
+        ),
+        "leading_dash_and_second_path": (
+            "-/var/lib/blueprint/a /var/lib/blueprint/b",
+            "-/etc/blueprint/x /etc/blueprint/y",
+            ["-/var/lib/blueprint/a", "/var/lib/blueprint/b"],
+            ["-/etc/blueprint/x", "/etc/blueprint/y"],
+        ),
+        "space_containing": (
+            '"/var/lib/blue print"',
+            "/var/lib/blueprint",
+            ["/var/lib/blue print"],
+            ["/var/lib/blueprint"],
+        ),
+        "multiple_plain": (
+            "/var/lib/blueprint/a /var/lib/blueprint/b",
+            "/etc/blueprint/profiles",
+            ["/var/lib/blueprint/a", "/var/lib/blueprint/b"],
+            ["/etc/blueprint/profiles"],
+        ),
+    }
+    for label, (read_only, read_write, ro_tokens, rw_tokens) in cases.items():
+        props = {"ReadOnlyPaths": [read_only], "ReadWritePaths": [read_write]}
+        command = preflight.systemd_run_command(
+            unit="blueprint-x.service",
+            props=props,
+            directives=set(),
+            python="/usr/bin/python3",
+            script=tmp_path / "probe.py",
+            module="blueprint_pipeline.worker",
+            release=tmp_path / "release",
+            active_sha="a" * 40,
+        )
+        probe_argv = _probe_argv(command)
+        # Each path is exactly one argv element, so a leading dash or an embedded
+        # space never spills into another token or trips the parser.
+        assert f"--read-only-paths={read_only}" in probe_argv, label
+        assert f"--read-write-paths={read_write}" in probe_argv, label
+        namespace = parser.parse_args(probe_argv)  # the real argparse; must not raise SystemExit
+        assert namespace.read_only_paths == read_only, label
+        assert namespace.read_write_paths == read_write, label
+        # The probe tokenises with shlex; multi-path, optional-path and space
+        # semantics must survive the round trip unchanged.
+        assert shlex.split(namespace.read_only_paths or "") == ro_tokens, label
+        assert shlex.split(namespace.read_write_paths or "") == rw_tokens, label
+
+
+def test_git_safe_directory_value_env_names_pairs_key_and_value() -> None:
+    environ = {
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": "/opt/blueprint/task-evaluation-control-plane-releases/" + "c" * 40,
+        "GIT_CONFIG_KEY_1": "http.sslVerify",
+        "GIT_CONFIG_VALUE_1": "false",
+        "GIT_CONFIG_KEY_2": " safe.directory ",
+        "GIT_CONFIG_VALUE_2": "/opt/blueprint/task-evaluation-control-plane-releases/" + "d" * 40,
+        "PATH": "/usr/bin",
+    }
+    assert preflight._git_safe_directory_value_env_names(environ) == {"GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_2"}
+    assert preflight._git_safe_directory_value_env_names({}) == set()
+
+
+def test_probe_reclassifies_safe_directory_release_waiver_but_keeps_real_binding(tmp_path: Path, monkeypatch) -> None:
+    """An old-release path reached through a git ``safe.directory`` env waiver is
+    a trust declaration, not a runtime binding, so it must be an ``info`` finding.
+    A genuine code-literal binding to another release stays a blocker."""
+
+    src = tmp_path / "release" / "src"
+    package = src / "blueprint_pipeline"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "worker.py").write_text(
+        "from blueprint_pipeline import binding\ndef tick():\n    return binding.OLD_RELEASE\n",
+        encoding="utf-8",
+    )
+    real_binding_sha = "b" * 40
+    (package / "binding.py").write_text(
+        f'OLD_RELEASE = "/opt/blueprint/task-evaluation-control-plane-releases/{real_binding_sha}/src"\n',
+        encoding="utf-8",
+    )
+    waiver_sha = "c" * 40
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "safe.directory")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", f"/opt/blueprint/task-evaluation-control-plane-releases/{waiver_sha}")
+
+    args = preflight.argparse.Namespace(
+        unit="blueprint-x.service",
+        module="blueprint_pipeline.worker",
+        release=str(tmp_path / "release"),
+        active_sha="a" * 40,
+        read_write_paths="",
+        read_only_paths="",
+    )
+    report = preflight.run_probe(args)
+    findings = report["findings"]
+
+    # The real binding (named as a code literal) is still a blocker.
+    binding_blockers = [
+        f for f in findings if f["code"] == "path_bound_to_other_release" and f["bound_sha"] == real_binding_sha
+    ]
+    assert len(binding_blockers) == 1
+    assert binding_blockers[0]["severity"] == "blocker"
+    assert binding_blockers[0]["source"] == "code_literal"
+
+    # The safe.directory waiver is preserved but reclassified to info.
+    waiver = [f for f in findings if f["code"] == "git_safe_directory_names_other_release"]
+    assert len(waiver) == 1
+    assert waiver[0]["severity"] == "info"
+    assert waiver[0]["bound_sha"] == waiver_sha
+    assert waiver[0]["source"] == "env:GIT_CONFIG_VALUE_0"
+
+    # The waiver is never counted as a binding blocker.
+    assert not any(
+        f["code"] == "path_bound_to_other_release" and f["bound_sha"] == waiver_sha for f in findings
+    )
