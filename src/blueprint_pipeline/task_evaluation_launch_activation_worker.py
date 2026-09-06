@@ -776,6 +776,11 @@ def _build_native_context(
             lineage, activation_materialized
         )
     )
+    from .task_evaluation_scene_owner_attempt_profiles import retain_native_owner_attempt
+    scene_owner_attempt = retain_native_owner_attempt(activation_request=activation_request,
+        preparation_request=preparation_request, output_path=activation_root / "scene_owner_attempt.json")
+    if scene_owner_attempt is not None:
+        operations["scene_owner_attempt"] = scene_owner_attempt
     context = {
         "schema_version": "native_task_arena_launch_preparation_context.v2",
         "lane": activation_request["lane"],
@@ -1025,6 +1030,11 @@ def _build_scene_configuration_context(
         "service_account": service_account,
         "service_group": service_group,
     }
+    from .task_evaluation_scene_owner_attempt_profiles import reserve_configuration_owner_attempt
+    scene_owner_attempt = reserve_configuration_owner_attempt(activation_request=activation_request,
+        preparation_request=preparation_request, output_path=activation_root / "scene_owner_attempt.json")
+    if scene_owner_attempt is not None:
+        operations["scene_owner_attempt"] = scene_owner_attempt
     return {
         "schema_version": (
             "task_evaluation_scene_configuration_launch_preparation_context.v1"

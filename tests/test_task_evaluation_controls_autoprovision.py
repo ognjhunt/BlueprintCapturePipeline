@@ -17,6 +17,11 @@ from tests.test_project_spend_reconciliation import _human_baseline
 from blueprint_pipeline.project_spend_reconciliation import materialize_project_spend_reconciliation
 
 
+@pytest.fixture(autouse=True)
+def trusted_scene_issuer(monkeypatch):
+    monkeypatch.setenv(intake.CLIENTS_ENV, "webapp")
+
+
 def setup(tmp_path, *, cap=20, attempts=8):
     moment = NOW.timestamp()
     owner = request()

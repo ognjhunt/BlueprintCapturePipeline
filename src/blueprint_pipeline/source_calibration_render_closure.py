@@ -14,7 +14,7 @@ CLOSURE_ROLES = frozenset({'source_disclosure', 'private_store', 'provider_execu
 
 def _validate_closure(prepared: Mapping, value: Mapping) -> None:
     from .sam31_contribution_disclosure import PROOF_SCHEMA, AUTHORITY_SCHEMA
-    from .vast_independent_watchdog_control import _inventory_is_confirmed_zero
+    from .vast_inventory_evidence import _inventory_is_confirmed_zero
     from .vast_official_billing_extractor import extract_vast_official_instance_charge
     closure = value.get('execution_closure', {})
     require(set(closure) == CLOSURE_ROLES, 'execution_closure_missing')
