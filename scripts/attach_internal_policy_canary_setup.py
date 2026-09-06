@@ -14,6 +14,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_dispatcher import validate_launch_profile
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     public_launch_profile_descriptor,
+    validate_launch_profile_structure,
 )
 from blueprint_pipeline.task_evaluation_policy_canary_preparation_dispatch import (
     validate_policy_canary_execution_plan,
@@ -63,7 +64,14 @@ def materialize_policy_canary_launch_profile(
     """Create a new current-main canary profile without editing configured bytes."""
 
     base = deepcopy(dict(base_configured_profile))
-    blockers = validate_launch_profile(base)
+    # The base is the completed scene-configuration profile used only as a $0
+    # materialization template; this step admits nothing for paid execution. It is
+    # validated structurally so the paid-admission owner-record reopen (provider,
+    # reservation, consent) is NOT run against the configuration-time attempt the
+    # template still points at. That reopen is preserved where it belongs: on the
+    # materialized canary `output` below (full `validate_launch_profile`) and again
+    # at dispatch time, both of which carry the reserved policy attempt.
+    blockers = validate_launch_profile_structure(base)
     if blockers:
         raise ValueError("policy_canary_source_profile_invalid:" + ",".join(blockers))
     wrapper = deepcopy(dict(profile_materialization_input))
