@@ -21,6 +21,7 @@ Fail-closed rules:
 from __future__ import annotations
 
 import json
+import math
 import fcntl
 from functools import wraps
 from contextlib import contextmanager
@@ -30,9 +31,10 @@ import stat
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Callable
 
 from .common import ensure_dir, utc_now_iso, write_json
+from .decision_evidence_contracts import canonical_digest
 from .provider_reliability_manifest import (
     TEARDOWN_STATUS_SOURCE_PROVIDER_API,
     build_pre_spend_preflight,
@@ -262,7 +264,10 @@ def _pending_registry_lock(registry: Path):
 def _serialized_pending_update(function):
     @wraps(function)
     def update(record_path, *args, **kwargs):
-        with _pending_registry_lock(Path(record_path).parent):
+        path = Path(record_path)
+        with _pending_registry_lock(path.parent):
+            if path.is_symlink() or not _read_record(path):
+                raise ValueError("pending_teardown_record_missing_or_invalid")
             return function(record_path, *args, **kwargs)
     return update
 
@@ -327,6 +332,10 @@ def bind_pending_teardown_instance(
     path = Path(record_path)
     record = _read_record(path)
     requested = str(instance_id or "").strip()
+    if record.get("status") != "open":
+        if str(record.get("instance_id") or "") == requested:
+            return record
+        raise ValueError("pending_teardown_record_terminal")
     existing = str(record.get("instance_id") or "").strip()
     if not requested or (existing and existing != requested):
         raise ValueError("pending_teardown_instance_identity_conflict")
@@ -386,7 +395,8 @@ def mark_pending_teardown_ambiguous(
     """
     path = Path(record_path)
     record = _read_record(path)
-    record["status"] = "open"
+    if record.get("status") != "open":
+        raise ValueError("pending_teardown_record_terminal")
     record["allocation_outcome_ambiguous"] = True
     record["ambiguity_reason"] = str(reason or "").strip() or "provider_response_lost"
     record["ambiguity_evidence"] = _mapping(evidence) or None
@@ -403,6 +413,12 @@ def close_pending_teardown(
     path = Path(record_path)
     record = _read_record(path)
     proof = _mapping(teardown_proof)
+    if record.get("status") != "open":
+        if (record.get("status") == "closed" and proof.get("status") == "PASS"
+                and proof.get("provider") == record.get("provider")
+                and str(proof.get("allocation_id") or "") == str(record.get("instance_id") or "")):
+            return record
+        raise ValueError("pending_teardown_record_terminal")
     if str(proof.get("status") or "").strip().upper() != "PASS":
         record["close_refused_reason"] = "teardown_proof_not_passed"
         record["last_refused_teardown_proof"] = proof or None
@@ -436,6 +452,10 @@ def cancel_pending_teardown(
     """
     path = Path(record_path)
     record = _read_record(path)
+    if record.get("status") != "open":
+        if record.get("status") == "cancelled_no_allocation":
+            return record
+        raise ValueError("pending_teardown_record_terminal")
     if str(record.get("instance_id") or "").strip():
         record["cancel_refused_reason"] = "instance_id_bound_requires_teardown_proof"
         write_json(path, record)
@@ -511,12 +531,57 @@ def _default_provider_client(provider: str):
     return get_render_provider(provider)
 
 
+@_serialized_pending_update
+def recover_pending_teardown_instance(record_path, *, inventory: Mapping[str, Any], now_epoch: float) -> dict[str, Any]:
+    """Recover an ambiguous create only from one exact, fresh owner-name match."""
+    path = Path(record_path)
+    record = _read_record(path)
+    rows = inventory.get("resources")
+    observed = inventory.get("observed_at_epoch")
+    name = record.get("resource_name")
+    if (record.get("status") != "open" or record.get("instance_id")
+            or record.get("allocation_outcome_ambiguous") is not True
+            or record.get("resource_kind") != "compute_instance"
+            or not name or inventory.get("provider") != record.get("provider")
+            or inventory.get("api_confirmed") is not True or inventory.get("status") != "observed"
+            or type(observed) not in (int, float) or not math.isfinite(observed)
+            or not 0 <= now_epoch - observed <= 60
+            or not isinstance(rows, list) or type(inventory.get("live_resource_count")) is not int
+            or inventory["live_resource_count"] != len(rows)
+            or any(not isinstance(row, Mapping) for row in rows)):
+        raise ValueError("pending_teardown_recovery_inventory_invalid")
+    identifiers = [str(row.get("instance_id") or "") for row in rows]
+    if any(type(row.get("instance_id")) not in (int, str) for row in rows):
+        raise ValueError("pending_teardown_recovery_inventory_invalid")
+    if record["provider"] == "vast" and any(not value.isdigit() or int(value) <= 0 for value in identifiers):
+        raise ValueError("pending_teardown_recovery_inventory_invalid")
+    if not all(identifiers) or len(set(identifiers)) != len(identifiers):
+        raise ValueError("pending_teardown_recovery_inventory_invalid")
+    matches = [row for row in rows if row.get("name") == name]
+    if len(matches) != 1:
+        raise ValueError("pending_teardown_recovery_identity_unresolved")
+    identifier = str(matches[0]["instance_id"])
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", identifier):
+        raise ValueError("pending_teardown_recovery_instance_invalid")
+    record["instance_id"] = identifier
+    observation = {key: inventory[key] for key in (
+        "provider", "status", "api_confirmed", "observed_at_epoch", "live_resource_count",
+    )}
+    observation["resources"] = [{"instance_id": str(row["instance_id"]), "name": row.get("name")} for row in rows]
+    record["identity_recovery"] = {"provider": record["provider"], "resource_name": name,
+        "instance_id": identifier, "observed_at_epoch": observed, "inventory": observation,
+        "inventory_digest": canonical_digest(observation), "recovered_at_epoch": now_epoch}
+    write_json(path, record)
+    return record
+
+
 def _reap_one(
     record: Mapping[str, Any],
     *,
     client: Any,
     now_epoch: float,
     dry_run: bool,
+    clock: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
     provider = str(record.get("provider") or "").strip().lower()
     instance_id = str(record.get("instance_id") or "").strip()
@@ -544,7 +609,12 @@ def _reap_one(
             )
             expected_name = str(record.get("resource_name") or "")
             expected_location = str(record.get("provider_location") or "")
-            inventory_rows = inventory if isinstance(inventory, list) else []
+            if (inventory_http != 200 or not isinstance(inventory, list)
+                    or any(not isinstance(row, Mapping) or not row.get("id") for row in inventory)):
+                entry["outcome"] = "network_volume_inventory_unverified"
+                entry["open_billing_risk"] = True
+                return entry
+            inventory_rows = inventory
             matches = [
                 str(row.get("id"))
                 for row in inventory_rows
@@ -554,8 +624,11 @@ def _reap_one(
                 and row.get("dataCenterId") == expected_location
                 and row.get("id")
             ]
-            if inventory_http == 200 and not matches:
-                cancel_pending_teardown(
+            if not matches:
+                if dry_run:
+                    entry["outcome"] = "would_reconcile_network_volume_absence"
+                    return entry
+                cancellation = cancel_pending_teardown(
                     str(record.get("path")),
                     reason="provider_inventory_verified_no_matching_network_volume",
                     evidence={
@@ -565,7 +638,9 @@ def _reap_one(
                         "matching_resource_count": 0,
                     },
                 )
-                entry["outcome"] = "network_volume_absence_verified"
+                cancelled = cancellation.get("status") == "cancelled_no_allocation"
+                entry["outcome"] = "network_volume_absence_verified" if cancelled else "network_volume_identity_unresolved"
+                entry["open_billing_risk"] = not cancelled
                 return entry
             if len(matches) != 1:
                 entry["outcome"] = "network_volume_identity_unresolved"
@@ -573,7 +648,8 @@ def _reap_one(
                 return entry
             instance_id = matches[0]
             entry["instance_id"] = instance_id
-            bind_pending_teardown_instance(str(record.get("path")), instance_id)
+            if not dry_run:
+                bind_pending_teardown_instance(str(record.get("path")), instance_id)
         pre_http, _pre = _runpod_call(
             "GET", f"/networkvolumes/{instance_id}", None, key=key, timeout=30
         )
@@ -615,6 +691,22 @@ def _reap_one(
             entry["outcome"] = "network_volume_teardown_unverified"
             entry["open_billing_risk"] = True
         return entry
+    if not instance_id and client is not None and record.get("resource_name"):
+        try:
+            inventory = client.billable_inventory(name_prefix="")
+            if dry_run:
+                entry["outcome"] = "identity_recovery_required"
+                entry["open_billing_risk"] = True
+                return entry
+            recovered = recover_pending_teardown_instance(str(record["path"]), inventory=inventory, now_epoch=clock() if clock is not None else now_epoch)
+            instance_id = recovered["instance_id"]
+            entry["instance_id"] = instance_id
+            entry["identity_recovery"] = recovered["identity_recovery"]
+        except Exception as exc:  # noqa: BLE001 - unresolved identity never authorizes deletion
+            entry["outcome"] = "instance_identity_recovery_unproven"
+            entry["error_type"] = type(exc).__name__
+            entry["open_billing_risk"] = True
+            return entry
     if not instance_id:
         entry["outcome"] = "unresolvable_instance_id_missing"
         entry["open_billing_risk"] = True
@@ -629,7 +721,10 @@ def _reap_one(
     if dry_run:
         entry["outcome"] = "would_terminate"
         return entry
-    terminate_result = client.terminate(instance_id)
+    try:
+        terminate_result = client.terminate(instance_id)
+    except Exception as exc:  # noqa: BLE001 - the subsequent exact-ID read is authoritative
+        terminate_result = {"status": "terminate_failed", "error_type": type(exc).__name__}
     entry["terminate_result"] = _mapping(terminate_result) or {
         "status": str(terminate_result)
     }
@@ -703,7 +798,13 @@ def reap_orphans(
                 client = _default_provider_client(provider)
             except ValueError:
                 client = None
-        entries.append(_reap_one(record, client=client, now_epoch=now, dry_run=dry_run))
+        try:
+            entries.append(_reap_one(record, client=client, now_epoch=now, dry_run=dry_run,
+                clock=time.time if now_epoch is None else lambda: now))
+        except Exception as exc:  # noqa: BLE001 - preserve this obligation and continue unrelated owners
+            entries.append({"run_id": record.get("run_id"), "instance_id": record.get("instance_id"),
+                "record_path": record.get("path"), "outcome": "teardown_reconciliation_failed",
+                "open_billing_risk": True, "error_type": type(exc).__name__})
     reaped_outcomes = {
         "reaped_terminal_proven",
         "network_volume_absence_verified",

@@ -1168,6 +1168,18 @@ def _require_completed_episode_media(output_root: Path, episode: Mapping[str, An
             role=str(row.get("role") or ""), role_match=lambda _name: True,
         ) is None:
             raise ValueError("policy_canary_episode_media_identity_invalid")
+    # A valid inventory hash cannot hide a missing frame by omitting its row.
+    # Validate the producer's manifest and every referenced observation as well.
+    from .episode_visual_evidence import validate_multicamera_frame_manifest
+    manifests = [row for row in artifacts if row.get("role") == "multicamera_observation_frame_manifest"]
+    if len(manifests) != 1:
+        raise ValueError("policy_canary_episode_multicamera_manifest_missing_or_ambiguous")
+    media_root = output_root / "episodes"
+    manifest = _read(media_root / manifests[0]["relative_path"])
+    if (set(manifest.get("required_camera_ids") or []) != {"external", "wrist", "overview"}
+            or set(manifest.get("review_only_camera_ids") or []) != {"overview"}):
+        raise ValueError("policy_canary_episode_camera_contract_invalid")
+    validate_multicamera_frame_manifest(manifest, output_dir=media_root, verify_files=True)
 
 
 def _write_indexed_telemetry(

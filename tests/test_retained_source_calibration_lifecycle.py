@@ -521,6 +521,7 @@ def _closed_source_fixture(tmp_path, monkeypatch):
         label=label, total=.4, gpu=.3, disk=.1)]}))
     source_path = root/'provider-billing-source.json'
     _seal_json(source_path, {'schema_version': BILLING_SOURCE_SCHEMA_VERSION, 'status': 'reconciled',
+        'cohort_start_at': '2026-07-01T00:00:00+00:00', 'cohort_end_at': '2026-08-18T00:00:00+00:00',
         'provider_totals_usd': {'vast': .4}, 'provider_mutation_performed': False, 'raw_secret_values_recorded': False,
         'sources': [{'provider': 'vast', 'retained_path': str(response_path), 'endpoint': VAST_CHARGES_URL,
                      'response_digest': _json_record(response_path)['sha256'],

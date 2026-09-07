@@ -15,7 +15,7 @@ def offline_edges(tmp_path, monkeypatch):
     from blueprint_pipeline import control_plane_evidence_offload as offload
 
     def forbidden(*_args, **_kwargs):
-        raise AssertionError("offline_lifecycle_external_network_forbidden")
+        pytest.fail("offline_lifecycle_external_network_forbidden", pytrace=False)
 
     monkeypatch.setattr(socket.socket, "connect", forbidden)
     monkeypatch.setattr(socket.socket, "connect_ex", forbidden)

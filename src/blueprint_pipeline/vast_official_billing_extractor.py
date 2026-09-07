@@ -1371,15 +1371,15 @@ def _terminal_evidence(
 def _validate_charge_period(row: Mapping[str, Any], source_receipt: Mapping[str, Any]) -> None:
     """Reject reversed/future/out-of-query periods without repricing any row.
 
-    Older retained receipts may omit the cohort window. In that case this
-    checks only the row's own interval, not an exact-run billing period.
+    A source without a declared cohort must be refreshed before it can
+    authorize financial closure; historical bytes are never rewritten.
     """
     start, end = row.get("start"), row.get("end")
     if any(isinstance(value, bool) or not isinstance(value, (int, float))
            or not math.isfinite(value) for value in (start, end)) or not 0 <= start <= end:
         raise VastOfficialBillingExtractionError("vast_official_charge_period_invalid")
-    if not {"cohort_start_at", "cohort_end_at"}.intersection(source_receipt):
-        return
+    if not {"cohort_start_at", "cohort_end_at"}.issubset(source_receipt):
+        raise VastOfficialBillingExtractionError("vast_official_charge_period_window_missing")
     try:
         lower = datetime.fromisoformat(str(source_receipt["cohort_start_at"]).replace("Z", "+00:00"))
         upper = datetime.fromisoformat(str(source_receipt["cohort_end_at"]).replace("Z", "+00:00"))

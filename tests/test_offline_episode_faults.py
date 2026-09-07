@@ -67,7 +67,7 @@ def test_real_episode_interruption_preserves_reached_truth_and_other_candidate(
             assert "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"]
 
 
-@pytest.mark.parametrize("fault", ["missing_manifest", "changed_manifest", "missing_video", "missing_frame"])
+@pytest.mark.parametrize("fault", ["missing_manifest", "changed_manifest", "missing_video", "missing_frame", "unlisted_missing_frame", "rebound_missing_terminal"])
 def test_worker_does_not_reseal_incomplete_episode_media_as_completed(tmp_path, fault):
     runtime_root, output = _stage_runtime_root(tmp_path)
     child = output / "cell_runs" / "03"
@@ -79,14 +79,24 @@ def test_worker_does_not_reseal_incomplete_episode_media_as_completed(tmp_path, 
         episode = run_policy_episode(**kwargs)
         if kwargs["candidate_id"] != CANDIDATE_IDS[0]:
             return episode
-        role = "video" if fault == "missing_video" else "frame_manifest" if fault != "missing_frame" else "policy_input_camera_frame"
+        role = "video" if fault == "missing_video" else "frame_manifest" if fault not in {"missing_frame", "unlisted_missing_frame"} else "policy_input_camera_frame"
         row = next(row for row in episode["media_artifacts"] if role in row["role"])
         path = kwargs["media_output_dir"] / row["relative_path"]
         removed.append((path, row["sha256"]))
         if fault == "changed_manifest":
             path.write_bytes(b"corrupt manifest")
+        elif fault == "rebound_missing_terminal":
+            from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+            manifest = json.loads(path.read_text())
+            manifest["terminal_observation"] = None
+            manifest["frame_manifest_digest"] = canonical_digest(manifest, digest_field="frame_manifest_digest")
+            path.write_text(json.dumps(manifest))
+            row["sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+            row["size_bytes"] = path.stat().st_size
         else:
             path.unlink()
+            if fault == "unlisted_missing_frame":
+                episode["media_artifacts"].remove(row)
         return episode
     runtime = worker.CellRuntime(**{**base.__dict__, "run_policy_episode": runner})
     with pytest.raises(SystemExit):
