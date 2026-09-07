@@ -926,6 +926,17 @@ def _emit_artifixer_runtime_diagnostics(
         )
 
 
+def _default_semantic_frame_cost(candidate: Mapping[str, Any]) -> float:
+    """Scale the observed 1024-square planning estimate for larger source views."""
+    largest_pixels = max(
+        (int(frame["image_pixel_count"])
+         for task in candidate.get("tasks") or []
+         for frame in task.get("frames") or []),
+        default=1024 * 1024,
+    )
+    return round(0.22 * max(1.0, largest_pixels / (1024 * 1024)), 6)
+
+
 def _semantic_runtime_request(
     *,
     packet_root: Path,
@@ -938,7 +949,13 @@ def _semantic_runtime_request(
         code="scene_configuration_artifixer_semantic_packet_invalid",
     )
     tasks = []
+    supported_sizes = packet["backend"]["execution"]["supported_output_sizes"]
     for task in packet["tasks"]:
+        for frame in task["frames"]:
+            if f"{frame.get('width')}x{frame.get('height')}" not in supported_sizes:
+                raise TaskEvaluationSceneConfigurationArtifixerError(
+                    "scene_configuration_artifixer_semantic_frame_size_unsupported"
+                )
         tasks.append(
             {
                 "task_id": task["task_id"],
@@ -1488,8 +1505,10 @@ def execute_artifixer_component(
         float(expected_frame_cost_raw)
         if expected_frame_cost_raw
         # gpt-image-2-2026-04-21 billed a constant $0.219282 per 1024x1024
-        # edited frame across every observed request; keep a small margin.
-        else 0.22
+        # edited frame across every observed request. Scale the planning
+        # estimate for larger source frames; official returned usage remains
+        # the cost evidence and the stage's hard cap does not increase.
+        else _default_semantic_frame_cost(candidate)
     )
     semantic_request = _semantic_runtime_request(
         packet_root=packet_root,
