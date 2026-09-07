@@ -267,7 +267,8 @@ def install_scene_preparation(*, bootstrap_path):
     config["config_digest"] = canonical_digest(config, digest_field="config_digest")
     config_path = config_root / "task-evaluation-scene-progression.json"
     _managed_json(config_path, config, account)
-    environment = {"BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT": config["intent_root"],
+    environment = {"BLUEPRINT_TASK_EVALUATION_SCENE_PROGRESSION_CONFIG": str(config_path),
+        "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT": config["intent_root"],
         "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS": "blueprint-webapp",
         "BLUEPRINT_TASK_EVALUATION_OWNER_SOURCE_STORE_ROOT": str(inputs / "owner-source-store"),
         "PIPELINE_CAPTURE_INTAKE_STORE_ROOT": bootstrap["capture_store_root"]}

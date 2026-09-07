@@ -343,3 +343,24 @@ def test_producer_code_drift_is_tolerated_but_a_missing_file_still_refuses(tmp_p
     (old_root / rel).unlink()
     with pytest.raises(ValueError, match="sam31_adoption_producer_code_missing:" + rel):
         evidence.require_producer_files_present((rel,), old_root, new_root)
+
+
+def test_source_science_ignores_new_owner_issuance_but_keeps_task_and_permissions():
+    original = {"team_namespace": "legacy", "subject": {"source_instance_id": "115"},
+        "success": {"minimum_lift_m": 0.1},
+        "human_authority": {"accepted_by": "owner", "accepted_on": "old", "authority_reference": "old",
+            "task_parameter_proposal_authorized": True, "private_derived_frame_disclosure_authorized": True},
+        "success_contract_authority": {"authority_reference": "old", "confirmed_by_team_id": "legacy",
+            "delegation_authority_reference": "old", "proposal_digest": "same-numeric-proposal"}}
+    current = deepcopy(original)
+    current.update(team_namespace="owned", robot_binding_id="franka", scene_intent_authority={"intent": "new"})
+    current["human_authority"].update(accepted_on="now", authority_reference="new", task_success_contract_confirmed=True)
+    current["human_authority"].pop("task_parameter_proposal_authorized")
+    current["success_contract_authority"].update(authority_reference="new", confirmed_by_team_id="owned",
+        delegation_authority_reference="new")
+    assert evidence.task_science(original) == evidence.task_science(current)
+    current["success"]["minimum_lift_m"] = 0.2
+    assert evidence.task_science(original) != evidence.task_science(current)
+    current["success"]["minimum_lift_m"] = 0.1
+    current["human_authority"]["private_derived_frame_disclosure_authorized"] = False
+    assert evidence.task_science(original) != evidence.task_science(current)

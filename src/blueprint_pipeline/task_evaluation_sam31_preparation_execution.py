@@ -12,7 +12,7 @@ from typing import Any, Callable, Mapping, Sequence
 from .fail_closed_blocker_explainer import annotate_blocker
 from .decision_evidence_contracts import canonical_digest
 from .public_scene_host_input_intake import _verified_checkout_head
-from .task_evaluation_sam31_parent_evidence import _parent as _parent
+from .task_evaluation_sam31_parent_evidence import _parent as _parent, configured_parent_route
 from .task_evaluation_release_reference_lock import release_reference_lock
 from .task_evaluation_sam31_preparation_queue import (
     SAM31_EXECUTION_ROOT, WAITING_STATE, load_progress, stage_resume_signal, verify_evidence_reference,
@@ -91,6 +91,7 @@ def _validated_job(job: dict, *, parent_queue: Path, input_root: Path,
     _require(job["inputs_digest"] == canonical_digest(identities)
              and job["child_id"] == "sam31-" + canonical_digest(key).removeprefix("sha256:"),
              "job_identity_invalid")
+    parent_queue, input_root = configured_parent_route(job, parent_queue, input_root)
     request, _, _ = _parent(job, parent_queue)
     _require(request["expected_production_commit"] == source_commit == job["expected_source_commit"],
              "source_commit_mismatch")
@@ -139,6 +140,7 @@ def _wake_parent(root: Path, job: dict, parent_queue: Path, roots: Sequence[Path
         _require(_read(completed_marker).get("job_digest") == job["job_digest"], "wake_identity_conflict")
         (root / "wake-pending" / completed_marker.name).unlink(missing_ok=True)
         return False
+    parent_queue, _ = configured_parent_route(job, parent_queue, DEFAULT_INPUT_ROOT)
     _, state, parent_path = _parent(job, parent_queue)
     marker = root / "wake-pending" / f"{job['child_id']}.json"
     if state in {"blocked", "completed", "materialized"}:
@@ -210,9 +212,10 @@ def process_sam31_phase_queue(
                         executor = execute_stage
                     else:
                         executor = phase_executor
+                    _, job_input_root = configured_parent_route(job, parent_queue, input_root)
                     outcome = executor({**job, "request": request, "plan": plan,
                                         "queue_root": str(root), "output_root": str(output),
-                                        "preparation_input_root": str(input_root),
+                                        "preparation_input_root": str(job_input_root),
                                         "resume_only": resume_only, "previous_progress": previous})
                     _require(isinstance(outcome, dict) and outcome.get("status") in {
                         "completed", "waiting_for_external_result", "failed"}, "executor_result_invalid")
@@ -268,8 +271,11 @@ def process_sam31_phase_queue(
                 continue
             try:
                 job = _read(jobs[0])
+                # Delivery reopens a retained result at its original release; it
+                # cannot execute a phase. Otherwise one old pending wake starves
+                # every later owned parent after a production deployment.
                 _validated_job(job, parent_queue=parent_queue, input_root=input_root,
-                               source_commit=observed_commit, approved_roots=approved_roots)
+                               source_commit=job["expected_source_commit"], approved_roots=approved_roots)
                 if _wake_parent(root, job, parent_queue, approved_roots):
                     wakes.append(job["child_id"])
             except (OSError, ValueError):

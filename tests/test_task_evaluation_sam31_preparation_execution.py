@@ -324,3 +324,56 @@ def test_a_failed_stage_outcome_names_its_blockers_on_the_child_result(setup):
     assert receipt["blocker"] == "gpu_canary_checkout_not_remote_main;gpu_canary_checkout_promotion_provenance_invalid"
     assert receipt["executor_result"]["blockers"] == refused["blockers"]
 
+
+
+def test_owned_parent_route_uses_owned_cas_and_wakes_same_parent(setup, monkeypatch):
+    root, args, process = setup
+    configured = {"schema_version": "task_evaluation_scene_progression_config.v1",
+        "preparation_queue_root": str(process["parent_queue_root"]),
+        "preparation_worker": {"input_root": str(process["preparation_input_root"])}}
+    configured["config_digest"] = canonical_digest(configured, digest_field="config_digest")
+    path = root / "owned-config.json"
+    path.write_text(json.dumps(configured))
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_PROGRESSION_CONFIG", str(path))
+    own_inputs = process["preparation_input_root"]
+    process.update(parent_queue_root=root / "legacy-parent", preparation_input_root=root / "legacy-inputs")
+    queued = execution.enqueue_sam31_phase(**args)
+    calls = []
+    result = execution.process_sam31_phase_queue(**process,
+        phase_executor=lambda context: calls.append(context) or _complete(context))
+    assert result["results"][0]["status"] == "completed", result
+    assert calls[0]["preparation_input_root"] == str(own_inputs)
+    assert result["parent_wakeups"] == [queued["child_id"]]
+
+
+def test_duplicate_parent_across_owned_and_legacy_stores_refuses(setup, monkeypatch):
+    import shutil
+    root, args, process = setup
+    owned = root / "owned-parent"
+    shutil.copytree(process["parent_queue_root"], owned)
+    config = {"schema_version": "task_evaluation_scene_progression_config.v1",
+        "preparation_queue_root": str(owned),
+        "preparation_worker": {"input_root": str(process["preparation_input_root"])}}
+    config["config_digest"] = canonical_digest(config, digest_field="config_digest")
+    path = root / "owned-config.json"
+    path.write_text(json.dumps(config))
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_PROGRESSION_CONFIG", str(path))
+    queued = execution.enqueue_sam31_phase(**args)
+    execution.process_sam31_phase_queue(**process,
+        phase_executor=lambda _: pytest.fail("ambiguous parent must never execute"))
+    result = json.loads(Path(queued["result_path"]).read_text())
+    assert result["blocker"] == "sam31_phase_parent_identity_ambiguous"
+
+
+def test_retained_parent_wake_survives_deployment_without_reexecution(setup, monkeypatch):
+    root, args, process = setup
+    queued = execution.enqueue_sam31_phase(**args)
+    execution.process_sam31_phase_queue(**process, phase_executor=_complete)
+    queue = Path(args["queue_root"])
+    marker = queue / "wake-completed" / (queued["child_id"] + ".json")
+    os.replace(marker, queue / "wake-pending" / marker.name)
+    monkeypatch.setattr(execution, "_verified_checkout_head", lambda: "f" * 40)
+    result = execution.process_sam31_phase_queue(**process,
+        phase_executor=lambda _: pytest.fail("delivery must never execute old work"))
+    assert result["parent_wakeups"] == [queued["child_id"]]
+    assert not (queue / "wake-pending" / marker.name).exists()
