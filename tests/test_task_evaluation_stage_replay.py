@@ -19,6 +19,23 @@ CHILD = "sam31-" + "7" * 64
 COMMIT = "c" * 40
 
 
+@pytest.fixture(autouse=True)
+def isolated_disk_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr(replay, "DEFAULT_RESERVATION_ROOT", tmp_path / "disk-reservations")
+
+
+def test_disk_refusal_precedes_any_replay_scratch_or_handler(tmp_path, monkeypatch):
+    from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
+    def refuse(*args, **kwargs):
+        assert args == ("stage_replay",)
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_exceeded")
+    monkeypatch.setattr(replay, "reserve_control_plane_disk", refuse)
+    for function in (replay.replay_child, replay.replay_parent):
+        with pytest.raises(ControlPlaneDiskBudgetError):
+            function(replay_root=tmp_path / "scratch")
+    assert not (tmp_path / "scratch").exists()
+
+
 def _queue(tmp_path: Path, *, state: str = "failed") -> tuple[Path, Path, dict]:
     root = tmp_path / "children"
     for name in ("pending", "processing", "waiting_external", "completed", "failed", "results"):

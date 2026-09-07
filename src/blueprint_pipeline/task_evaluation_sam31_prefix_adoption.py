@@ -12,6 +12,7 @@ from pathlib import Path
 import time
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .validation_file_digests import file_digest_scope
 from .task_evaluation_scene_configuration_submission_inputs import read, require, sha
 from .task_evaluation_scene_configuration_sam31_plan import PHASES, PROFILE_SCHEMA, validate_sam31_preparation_plan
 from . import task_evaluation_sam31_prefix_evidence as evidence
@@ -186,6 +187,7 @@ def _phase_chain(value, roots):
     return plan, profile, artifacts, outcomes, tracking_origin
 
 
+@file_digest_scope()
 def validate_completed_prefix_adoption(path, *, expected_source_commit, approved_roots,
                                       current_plan=None, current_provider_profile_path=None):
     roots = tuple(Path(root) for root in approved_roots)
@@ -304,6 +306,7 @@ def publish_adoption_release_binding(adoption_path, *, binding_root=None):
     return record(target)
 
 
+@file_digest_scope()
 def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_path, parent_request_digest,
     through_phase, current_host_inputs, current_provider_profile_path, current_repo_root,
     expected_source_commit, provider_zero_path, output_path, approved_roots,
@@ -410,6 +413,7 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
     return value
 
 
+@file_digest_scope()
 def select_completed_prefix_adoption(**kwargs):
     """Select the longest scientifically compatible retained prefix by default.
 

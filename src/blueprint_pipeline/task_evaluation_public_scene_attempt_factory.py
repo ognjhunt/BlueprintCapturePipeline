@@ -13,6 +13,7 @@ import tempfile
 import time
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .validation_file_digests import file_digest_scope
 from .task_evaluation_launch_preparation_queue import write_launch_preparation_record_exclusive
 from .task_evaluation_scene_configuration_submission_inputs import (
     checked_file, read, require, sha, source_inputs, release_inputs,
@@ -239,6 +240,7 @@ def _source_authorities(*, task, seed, refs, conversion_path, original_source, o
             approved_roots=roots, purpose=purpose)
 
 
+@file_digest_scope()
 def materialize_public_scene_attempt(*, intent_path, source_binding_path, machinery_path,
                                      release_binding_path, output_root, attempt_id, now=None):
     """Build publication-ready inputs from an already reserved immutable attempt."""

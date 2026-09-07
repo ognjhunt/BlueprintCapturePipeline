@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .control_plane_storage_roots import require_storage_class
+from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_configured_scene_object_store import (
     materialize_configured_scene_artifact,
@@ -194,6 +195,10 @@ def _pack(directory: Path, archive_path: Path) -> list[dict[str, Any]]:
                 info.uid = info.gid = 0
                 info.uname = info.gname = ""
                 digest = hashlib.sha256()
+                # Tar stores later names of an inode as zero-byte hardlink
+                # headers. The evidence manifest describes the restored file,
+                # whose bytes and size are those of its target, not the header.
+                size = path.stat().st_size
                 with path.open("rb") as stream:
                     class HashingReader:
                         def read(self, size=-1):
@@ -201,14 +206,36 @@ def _pack(directory: Path, archive_path: Path) -> list[dict[str, Any]]:
                             digest.update(chunk)
                             return chunk
                     archive.addfile(info, HashingReader())
+                    if info.islnk():
+                        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                            digest.update(chunk)
                 members.append(
                     {
                         "relative_path": relative,
-                        "size_bytes": info.size,
+                        "size_bytes": size,
                         "sha256": "sha256:" + digest.hexdigest(),
                     }
                 )
     return members
+
+
+def _archive_footprint(directory: Path) -> int:
+    """Reserve tar payload once per inode plus bounded header/padding overhead."""
+    seen = set()
+    size = 1024 * 1024
+    for path in directory.rglob("*"):
+        if path.is_symlink():
+            raise ControlPlaneEvidenceOffloadError("control_plane_evidence_offload_symlink")
+        if not path.is_file():
+            continue
+        metadata = path.stat()
+        identity = (metadata.st_dev, metadata.st_ino)
+        # Covers PAX path metadata and block padding even for long nested names.
+        size += 8192 + 4 * len(str(path).encode("utf-8"))
+        if identity not in seen:
+            seen.add(identity)
+            size += metadata.st_size
+    return size
 
 
 def _members_unchanged(directory: Path, members: Sequence[Mapping[str, Any]]) -> bool:
@@ -300,10 +327,17 @@ def apply_evidence_offload(
         ):
             skipped.append({"name": name, "reason": "candidate_changed"})
             continue
-        descriptor, archive_name = tempfile.mkstemp(prefix=f".{name}.offload-", suffix=".tar", dir=root)
-        os.close(descriptor)
-        archive_path = Path(archive_name)
+        archive_path = None
+        reservation = None
         try:
+            reservation = reserve_control_plane_disk(
+                "evidence_offload", target_root=root,
+                expected_bytes=_archive_footprint(directory),
+                reservation_root=DEFAULT_RESERVATION_ROOT,
+            )
+            descriptor, archive_name = tempfile.mkstemp(prefix=f".{name}.offload-", suffix=".tar", dir=root)
+            os.close(descriptor)
+            archive_path = Path(archive_name)
             members = _pack(directory, archive_path)
             digest = _sha256(archive_path)
             size = archive_path.stat().st_size
@@ -346,7 +380,10 @@ def apply_evidence_offload(
             skipped.append({"name": name, "reason": f"offload_failed:{type(exc).__name__}"})
             continue
         finally:
-            archive_path.unlink(missing_ok=True)
+            if archive_path is not None:
+                archive_path.unlink(missing_ok=True)
+            if reservation is not None:
+                reservation.release()
         offloaded.append({"name": name, "uri": reference["uri"], "digest": digest, "size_bytes": size})
     result: dict[str, Any] = {
         "schema_version": RECEIPT_SCHEMA_VERSION,

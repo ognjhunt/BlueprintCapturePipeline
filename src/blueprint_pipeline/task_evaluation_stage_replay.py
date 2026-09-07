@@ -34,8 +34,9 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from . import task_evaluation_sam31_preparation_execution as execution
 from . import task_evaluation_sam31_preparation_stages as stages
@@ -43,6 +44,8 @@ from . import task_evaluation_scene_configuration_sam31_preparation_driver as dr
 from .task_evaluation_launch_preparation_queue import QUEUE_STATES as PARENT_QUEUE_STATES
 from .fail_closed_blocker_explainer import explain_blocker, fired_predicates
 from .task_evaluation_scene_configuration_sam31_plan import PROFILE_ENV
+from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
+from .validation_file_digests import file_digest_scope
 
 SCHEMA = "task_evaluation_stage_replay_report.v1"
 JOB_STATES = ("failed", "completed", "waiting_external", "processing", "pending")
@@ -158,6 +161,25 @@ def _write_report(run_root: Path, report: Mapping[str, Any]) -> str:
     return str(path)
 
 
+def _reserved_replay(function):
+    @wraps(function)
+    def run(**kwargs):
+        # Diagnostics compete for the same filesystem as production. Reserve
+        # their working set before making a scratch directory, and release on
+        # every success or failure. Retained output still counts in free space.
+        with reserve_control_plane_disk(
+            "stage_replay", target_root=kwargs["replay_root"],
+            reservation_root=DEFAULT_RESERVATION_ROOT,
+        ) as reservation, file_digest_scope():
+            report = function(**kwargs)
+            report["disk_reservation"] = reservation.receipt()
+            if report.get("report_path"):
+                _write_report(Path(report["report_path"]).parent, report)
+            return report
+    return run
+
+
+@_reserved_replay
 def replay_child(
     *,
     queue_root: str | Path,
@@ -343,6 +365,7 @@ def _copy_children_of(parent_digest: str, child_queue_root: Path, scratch_child:
     return copied
 
 
+@_reserved_replay
 def replay_parent(
     *,
     parent_queue_root: str | Path,

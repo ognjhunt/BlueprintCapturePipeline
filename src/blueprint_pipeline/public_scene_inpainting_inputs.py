@@ -10,7 +10,6 @@ result, object removal, or SimReady replacement.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import itertools
 import json
 import math
@@ -23,6 +22,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .validation_file_digests import sha256_file
 from .public_scene_removal_selection import (
     ADAPTER as REMOVAL_SELECTION_ADAPTER,
     validate_source_preparation_scene_selection as validate_scene_freeze,
@@ -58,11 +58,7 @@ class PublicSceneInpaintingInputError(ValueError):
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+    return sha256_file(path)
 
 
 def _require_under(path: Path, roots: Sequence[Path], *, code: str) -> Path:

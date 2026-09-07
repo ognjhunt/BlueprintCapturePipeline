@@ -9,6 +9,7 @@ import numpy as np
 from PIL import Image
 
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, sha
+from .validation_file_digests import scoped_measurement
 
 RECOVERY_SCHEMA = "source_calibration_camera_recovery.v1"
 RESOLUTION_SCHEMA = "source_calibration_camera_resolution.v1"
@@ -62,6 +63,13 @@ def validate_recovery_contract(prepared: dict) -> dict | None:
 
 def measure_candidate(groups: dict, camera_id: str, gate: dict) -> dict:
     paths = {role: group["root"] / "frames" / f"{camera_id}.png" for role, group in groups.items()}
+    digests = {role: sha(path) for role, path in paths.items()}
+    key = ("source_calibration_camera_measurement", camera_id,
+           tuple(sorted(digests.items())), json.dumps(gate, sort_keys=True, allow_nan=False))
+    return scoped_measurement(key, lambda: _measure_pixels(paths, camera_id, gate, digests))
+
+
+def _measure_pixels(paths, camera_id, gate, digests):
     pixels = {role: np.asarray(Image.open(path).convert("RGB")) for role, path in paths.items()}
     rgb, support, background = (pixels[role] for role in ROLES)
     _require(rgb.shape == support.shape == background.shape, "measurement_dimensions_invalid")
@@ -70,11 +78,13 @@ def measure_candidate(groups: dict, camera_id: str, gate: dict) -> dict:
     count = int((support_mask & (changed >= gate["visual_contribution_threshold_8bit"])).sum())
     total = int(rgb.shape[0] * rgb.shape[1])
     fraction, std = count / total, float(rgb.std())
+    _require({role: sha(path) for role, path in paths.items()} == digests,
+             "measurement_inputs_changed")
     return {"candidate_camera_id": camera_id, "rgb_std": std,
             "support_contribution_pixels": count, "total_pixels": total,
             "visible_fraction": fraction,
             "passed": fraction >= gate["minimum_visible_target_fraction"] and std >= 1.0,
-            "frame_digests": {role: sha(path) for role, path in paths.items()}}
+            "frame_digests": digests}
 
 
 def _with_cameras(prepared: dict, file_record: dict, cameras: list) -> dict:

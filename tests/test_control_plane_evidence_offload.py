@@ -30,6 +30,41 @@ from tests.test_task_evaluation_configured_scene_object_store import (
 BUCKET = "blueprint-production-inputs"
 
 
+@pytest.fixture(autouse=True)
+def isolated_disk_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr("blueprint_pipeline.control_plane_evidence_offload.DEFAULT_RESERVATION_ROOT",
+                        tmp_path / "disk-reservations")
+
+
+def test_archive_disk_refusal_keeps_source_without_creating_temporary_archive(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_evidence_offload as offload
+    from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
+    root = tmp_path / "runs"
+    root.mkdir()
+    directory = _run(root, "run", receipt="dispatch_receipt.json", age=100, now=1000)
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        now=lambda: 1000, classifier=_unclassified)
+    def refuse(*args, **kwargs):
+        assert args == ("evidence_offload",)
+        assert kwargs["expected_bytes"] > 2048
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_exceeded")
+    monkeypatch.setattr(offload, "reserve_control_plane_disk", refuse)
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK)
+    assert result["offloaded_count"] == 0
+    assert result["skipped"][0]["reason"] == "offload_failed:ControlPlaneDiskBudgetError"
+    assert directory.exists()
+    assert not list(root.glob(".*.offload-*"))
+
+
+def test_archive_footprint_counts_hardlinked_payload_once(tmp_path):
+    from blueprint_pipeline.control_plane_evidence_offload import _archive_footprint
+    path = tmp_path / "large"
+    path.write_bytes(b"x" * (2 * 1024 * 1024))
+    initial = _archive_footprint(tmp_path)
+    os.link(path, tmp_path / "alias")
+    assert 0 < _archive_footprint(tmp_path) - initial < 16384
+
+
 @pytest.mark.slow
 def test_approved_entrypoint_ignores_host_pythonpath(tmp_path: Path) -> None:
     stale = tmp_path / "blueprint_pipeline"
@@ -115,13 +150,17 @@ def test_local_write_during_archive_publication_prevents_eviction(tmp_path):
     assert not (root / ("run-1" + POINTER_SUFFIX)).exists()
 
 
+@pytest.mark.parametrize("hardlinked", [False, True])
 def test_offload_publishes_verifies_points_then_removes_and_restore_round_trips(
-    tmp_path: Path,
+    tmp_path: Path, hardlinked: bool,
 ) -> None:
     root = tmp_path / "launch-runs"
     root.mkdir()
     now = 2_000_000.0
     directory = _run(root, "run-1", receipt="dispatch_receipt.json", age=30 * 86400, now=now)
+    if hardlinked:
+        os.link(directory / "episodes" / "frame.bin", directory / "episodes" / "frame-copy.bin")
+        os.utime(directory / "episodes", (now - 30 * 86400,) * 2)
     original = {
         path.relative_to(directory).as_posix(): path.read_bytes()
         for path in directory.rglob("*")
