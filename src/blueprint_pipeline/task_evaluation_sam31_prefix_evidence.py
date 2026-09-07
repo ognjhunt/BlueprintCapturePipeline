@@ -178,6 +178,7 @@ def validate_tracking(outcome, artifacts, old_profile, current_profile_path, old
     tracks = _verified_source_tracks(Path(artifacts["sam31_source_tracks"]["path"]))
     require(runtime["normalized_source_tracks"] == tracks and execution["source_commit_sha"] == old_commit
             and execution["status"] == "completed" and execution["provider_zero_verified"] is True
+            and execution.get("provider_mutation_outcome_ambiguous") is not True
             and execution["all_staged_objects_absent"] is True
             and execution["continuing_spend_from_this_run"] is False
             and execution["retry_cap"] == 0 and execution["blockers"] == []

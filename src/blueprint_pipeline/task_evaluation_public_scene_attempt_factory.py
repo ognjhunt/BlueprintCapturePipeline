@@ -90,8 +90,32 @@ def _prefix_candidates(binding, machinery, release, task):
         candidates.append(binding["prefix_candidate"])
     queue = Path(machinery.get("child_queue_root", "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions"))
     registry = Path(machinery.get("profile_registry_root") or DEFAULT_PROFILE_REGISTRY_ROOT)
-    paths = sorted((queue / "completed").glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    seen = {(c["parent_request_digest"], c["source_plan"]["sha256"]) for c in candidates}
+    try:
+        paths = sorted((queue / "completed").glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        paths = []
+    seen = set()
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            parent = candidate.get("parent_request_digest")
+            plan = candidate.get("source_plan")
+            if isinstance(parent, str) and isinstance(plan, dict) and isinstance(plan.get("sha256"), str):
+                seen.add((parent, plan["sha256"]))
+
+    def inherited_billing(profile):
+        direct = profile.get("sam31_billing_source")
+        if isinstance(direct, dict):
+            return direct
+        adoption = profile.get("completed_prefix_adoption")
+        if not isinstance(adoption, dict):
+            return None
+        try:
+            retained = read(_reference(adoption), digest_field="adoption_digest")
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        billing = retained.get("sam31_billing_source")
+        return billing if isinstance(billing, dict) else None
+
     discoveries = []
     for path in paths[:4096]:
         try:
@@ -107,11 +131,16 @@ def _prefix_candidates(binding, machinery, release, task):
             profile = registry / (plan["server_profile_sha256"].removeprefix("sha256:") + ".json")
             if not profile.is_file() or sha(profile) != plan["server_profile_sha256"]:
                 continue
+            profile_value = read(profile, digest_field="profile_digest")
+            if (profile_value.get("schema_version") != "task_evaluation_sam31_preparation_profile.v1"
+                    or profile_value.get("source_commit") != plan.get("source_commit")):
+                continue
             seen.add(key)
             discoveries.append((PHASES.index(job["phase"]), path.stat().st_mtime, {
                 "source_plan": job["plan_ref"], "source_profile": record(profile),
                 "parent_request_digest": job["parent_request_digest"],
-                "sam31_billing_source": release.get("sam31_billing_source")}))
+                "sam31_billing_source": (release.get("sam31_billing_source")
+                                         or inherited_billing(profile_value))}))
         except (OSError, ValueError, KeyError, TypeError):
             # Unrelated/invalid historical records are not reuse authority.
             continue
@@ -335,7 +364,6 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
         else:
             identity["factory_started_at_epoch"] = moment
             _write(identity_path, identity)
-        factory_moment = identity["factory_started_at_epoch"]
         task = deepcopy(seed)
         for key in ("robot_binding_id", "episode_interpretation"):
             if key in request["task"]:
@@ -395,15 +423,25 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
         _produce(materialize_sam31_review_authority, review_path, task_request_path=task_path,
                  provider_terms_evidence_path=terms)
         adopted_path = None
-        selection = {"status": "no_reusable_prefix", "rejected_candidates": [{"blocker": "no_retained_prefix_candidate"}]}
+        selection_path = output / "prefix_selection.json"
+        persisted_selection = (
+            read(selection_path, digest_field="selection_digest")
+            if selection_path.exists() else None
+        )
+        selection = {"schema_version": "task_evaluation_sam31_prefix_selection.v1",
+                     "status": "no_reusable_prefix",
+                     "rejected_candidates": [{"blocker": "no_retained_prefix_candidate"}],
+                     "paid_execution_performed": False, "selection_digest": ""}
+        selection["selection_digest"] = canonical_digest(
+            selection, digest_field="selection_digest"
+        )
         candidates = _prefix_candidates(binding, machinery, release, task)
         best, best_kwargs = None, None
         selection_reports = []
         if candidates:
-            require(release.get("provider_zero") is not None, "public_factory_prefix_reconciliation_required")
-            zero_path = _reference(release["provider_zero"])
-            from .task_evaluation_sam31_prefix_adoption import _zero, PREFIX_LENGTHS
-            _zero(zero_path, at=factory_moment)
+            from .task_evaluation_prefix_observation import selection_observation
+            from .task_evaluation_sam31_prefix_adoption import PREFIX_LENGTHS
+            zero_path, adoption_moment = selection_observation(output)
         for candidate in candidates:
             kwargs = dict(source_plan_path=_reference(candidate["source_plan"]),
                 source_profile_path=_reference(candidate["source_profile"]),
@@ -413,7 +451,7 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
                 current_provider_profile_path=provider_path, current_repo_root=release["repo_root"],
                 expected_source_commit=commit, provider_zero_path=zero_path, approved_roots=roots,
                 queue_root=machinery["child_queue_root"], parent_queue_root=machinery["parent_queue_root"],
-                execution_root=machinery["execution_root"], now_epoch=factory_moment,
+                execution_root=machinery["execution_root"], now_epoch=adoption_moment,
                 sam31_billing_source_path=(_reference(candidate["sam31_billing_source"])
                     if candidate.get("sam31_billing_source") else None),
                 release_binding_root=machinery["release_retention_binding_root"])
@@ -429,11 +467,53 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
             if not adopted_path.exists():
                 best = select_completed_prefix_adoption(**best_kwargs, output_path=adopted_path)
             else:
-                require(read(adopted_path) == best["adoption"], "public_factory_adoption_changed")
-            selection = {**best, "candidate_selections": selection_reports}
+                # Revalidate the existing adoption against the fresh current
+                # zero while preserving its original witness and digest.
+                from .task_evaluation_sam31_prefix_adoption import materialize_completed_prefix_adoption
+                persisted = materialize_completed_prefix_adoption(
+                    **best_kwargs, output_path=adopted_path)
+                best = {**best, "adoption": persisted}
+            computed_selection = {**best, "candidate_selections": selection_reports}
+            if persisted_selection is not None:
+                require(persisted_selection.get("status") == "reusable_prefix_selected"
+                        and persisted_selection.get("adoption") == computed_selection.get("adoption"),
+                        "public_factory_selection_changed")
+                selection = persisted_selection
+            else:
+                selection = computed_selection
         elif selection_reports:
-            selection = {"status": "no_reusable_prefix", "candidate_selections": selection_reports}
-        _write(output / "prefix_selection.json", selection)
+            computed_selection = {
+                "schema_version": "task_evaluation_sam31_prefix_selection.v1",
+                "status": "no_reusable_prefix", "candidate_selections": selection_reports,
+                "paid_execution_performed": False,
+            }
+            if persisted_selection is not None:
+                require(persisted_selection.get("status") == "no_reusable_prefix",
+                        "public_factory_selection_changed")
+                selection = persisted_selection
+            else:
+                selection = computed_selection
+        if candidates and persisted_selection is None:
+            selection.update(provider_zero_observation=record(zero_path),
+                             provider_zero_checked_at_epoch=adoption_moment)
+            # The observation is added after the selector seals its report;
+            # reseal the complete immutable selection before publishing it.
+            selection["selection_digest"] = canonical_digest(
+                selection, digest_field="selection_digest"
+            )
+        if persisted_selection is not None:
+            # A completed attempt may be replayed after queue retention removes
+            # the discovery rows.  Its immutable selection remains authoritative
+            # for this output directory and must not be replaced by the default
+            # no-candidate placeholder.
+            if not candidates:
+                selection = persisted_selection
+                if selection.get("status") == "reusable_prefix_selected":
+                    adopted_path = output / "completed_prefix_adoption.json"
+            require(read(selection_path, digest_field="selection_digest") == selection,
+                    "public_factory_selection_changed")
+        else:
+            _write(selection_path, selection)
         preparation = dict(machinery["preparation"])
         preparation.update(source_commit=commit, repo_root=release["repo_root"], sam31_provider_profile_path=provider_path,
             sam31_review_rights_attestation_path=review_path, completed_prefix_adoption_path=adopted_path)
