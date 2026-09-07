@@ -36,6 +36,10 @@ TimeoutStartSec=90min
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
+# Prefix reuse performs an account-wide, read-only Vast inventory observation
+# before adopting retained work. The key is file-backed and the service has no
+# provider mutation authority; paid dispatch remains a separate held unit.
+Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env
 EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
