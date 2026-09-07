@@ -71,6 +71,25 @@ class TaskEvaluationArtifixerAIVisualReviewError(ValueError):
     """The candidate or retained independent review is not admissible."""
 
 
+_PRE_TRAINING_PROMPT = (
+    "Independently review each digest-identified SEMANTIC TRAINING TARGET before "
+    "ArtiFixer training. These are intermediate targets, not final appearance outputs. "
+    "Reject surviving target-object parts or shadows, wrong background material or "
+    "surface geometry, large hallucinated structures, damaged unrelated objects, "
+    "incorrect orientation, and major cross-view material or geometric inconsistency. "
+    "Minor seams, modest brightness or grain differences and small blending artifacts "
+    "are warnings, not reasons to reject an otherwise plausible object-free training "
+    "target. Record those warnings explicitly in rationale; do not claim they are fixed. "
+    "Set repair_is_locally_plausible true for a plausible underlying surface despite "
+    "minor seams. Evaluate multiview consistency at the material and geometry level. "
+    "Return every task/camera exactly once and bind its exact frame digest. For a "
+    "rejection, describe specifically what a corrective masked image edit must preserve "
+    "or restore. Choose one accepted upright frame as a preview thumbnail. "
+    "No training-target decision qualifies final 3D appearance or physical truth."
+)
+SEMANTIC_TARGET_REVIEW_SCHEMA_VERSION = "task_evaluation_artifixer_semantic_target_review.v1"
+
+
 class ArtifixerFrameReviewDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -252,7 +271,8 @@ def build_artifixer_ai_visual_review_input(
             "artifixer_ai_review_frame_count_exceeds_cap"
         )
     frame_rows = final["tasks"][0]["frames"]
-    content: list[dict[str, Any]] = [{"type": "input_text", "text": _PROMPT}]
+    content: list[dict[str, Any]] = [{"type": "input_text", "text": (
+        _PRE_TRAINING_PROMPT if final.get("review_phase") == "pre_training_semantic_targets" else _PROMPT)}]
     for sealed, row in zip(inventory, frame_rows, strict=True):
         final_record = row["final_frame"]
         raw = Path(str(final_record.get("path") or "")).expanduser()
@@ -574,7 +594,9 @@ def run_artifixer_ai_visual_review(
         run_id=run_id,
         capability="task_evaluation_artifixer_ai_visual_review",
         name="Blueprint ArtiFixer Independent Visual Reviewer",
-        instructions=_PROMPT,
+        instructions=(_PRE_TRAINING_PROMPT
+                      if final.get("review_phase") == "pre_training_semantic_targets"
+                      else _PROMPT),
         model=model,
         max_turns=1,
         max_output_tokens=AI_REVIEW_MAX_OUTPUT_TOKENS,
@@ -629,6 +651,7 @@ def run_artifixer_ai_visual_review(
         "schema_version": EXECUTION_SCHEMA_VERSION,
         "status": "completed",
         "configuration_run_id": configuration_run_id,
+        "review_phase": final.get("review_phase", "post_training"),
         "publisher_instance_id": publisher_instance_id,
         "task_id": task_id,
         "decision": "accepted" if accepted else "rejected",
@@ -646,12 +669,12 @@ def run_artifixer_ai_visual_review(
         "frames": structured["frames"],
         "task_thumbnail": structured["task_thumbnail"],
         "summary": structured["summary"],
-        "all_frames_upright": accepted and output.all_frames_upright,
+        "all_frames_upright": output.all_frames_upright and all(row.orientation_is_upright for row in output.frames),
         "semantic_object_absence_review_passed": (
-            accepted and output.semantic_object_absence_review_passed
+            output.semantic_object_absence_review_passed and all(row.source_object_absent for row in output.frames)
         ),
         "multiview_consistency_review_passed": (
-            accepted and output.multiview_consistency_review_passed
+            output.multiview_consistency_review_passed
         ),
         "input_digest": input_digest,
         "structured_output_digest": structured_digest,
@@ -676,7 +699,14 @@ def run_artifixer_ai_visual_review(
     execution_path = destination / f"{EXECUTION_SCHEMA_VERSION}.json"
     write_json(execution_path, execution)
     review: dict[str, Any] | None = None
-    if accepted:
+    if accepted and final.get("review_phase") == "pre_training_semantic_targets":
+        review = {"schema_version": SEMANTIC_TARGET_REVIEW_SCHEMA_VERSION,
+            "status": "accepted_for_training_only", "appearance_repair_qualified": False,
+            "review_execution_digest": execution["execution_digest"],
+            "review_input_digest": final["receipt_digest"], "receipt_digest": ""}
+        review["receipt_digest"] = canonical_digest(review, digest_field="receipt_digest")
+        write_json(destination / f"{SEMANTIC_TARGET_REVIEW_SCHEMA_VERSION}.json", review)
+    elif accepted:
         review = seal_artifixer_ai_visual_review(
             final_composite_receipt_path=final_path,
             review_execution_receipt_path=execution_path,
@@ -697,7 +727,9 @@ def run_artifixer_ai_visual_review(
         },
         "review_receipt": (
             {
-                **_record(destination / f"{RECEIPT_SCHEMA_VERSION}.json"),
+                **_record(destination / (f"{SEMANTIC_TARGET_REVIEW_SCHEMA_VERSION}.json"
+                    if final.get("review_phase") == "pre_training_semantic_targets"
+                    else f"{RECEIPT_SCHEMA_VERSION}.json")),
                 "receipt_digest": review["receipt_digest"],
             }
             if review is not None
@@ -727,6 +759,9 @@ def seal_artifixer_ai_visual_review(
     execution_path = Path(review_execution_receipt_path).expanduser().resolve()
     final = _read(final_path, code="artifixer_ai_review_final_composite_invalid")
     execution = _read(execution_path, code="artifixer_ai_review_execution_receipt_invalid")
+    if (final.get("review_phase") == "pre_training_semantic_targets"
+            or execution.get("review_phase") == "pre_training_semantic_targets"):
+        raise TaskEvaluationArtifixerAIVisualReviewError("artifixer_training_review_not_final_appearance")
     task_id, inventory = _frame_inventory(final_path=final_path, final=final)
     reviewer = execution.get("reviewer")
     accepted = _validate_decisions(execution=execution, task_id=task_id, inventory=inventory)

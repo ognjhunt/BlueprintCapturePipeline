@@ -34,9 +34,12 @@ from blueprint_pipeline.task_evaluation_scene_construction_recipe import (
 def _inputs(tmp_path: Path):
     stages = []
     configurations = {}
+    # The registry also admits alternative mesh adapters; this fixture exercises
+    # the canonical six-stage ArtiFixer construction recipe.
+    identities = [next(identity for identity in ADMITTED_STAGE_ADAPTER_IDENTITIES
+                       if identity.capability == capability) for capability in CAPABILITY_ORDER]
     for index, (capability, identity) in enumerate(
-        zip(CAPABILITY_ORDER, ADMITTED_STAGE_ADAPTER_IDENTITIES, strict=True),
-        start=1,
+        zip(CAPABILITY_ORDER, identities, strict=True), start=1,
     ):
         stage_id = f"stage-{index}"
         stage = {

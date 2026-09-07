@@ -328,7 +328,8 @@ def test_diagnostic_driver_repairs_only_rejected_semantic_frame_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The retained render/semantic checkpoint feeds one bounded repair loop."""
-    monkeypatch.setattr(driver, "_review_semantic_targets_before_training", lambda **kwargs: None)
+    monkeypatch.setattr(driver, "_review_semantic_targets_before_training",
+                        lambda **kwargs: {"review": {"decision": "accepted", "review_receipt": {"path": "fixture"}}})
 
     checkpoint_root, _checkpoint, fixture = _materialize_diagnostic_checkpoint(
         tmp_path
@@ -569,7 +570,7 @@ def test_diagnostic_driver_repairs_only_rejected_semantic_frame_once(
     assert training_calls[1]["post_training_checkpoint_root"] is None
     assert len(review_calls) == 2
     assert [call["review_round"] for call in review_calls] == [0, 1]
-    assert review_calls[1]["max_cost_usd"] == pytest.approx(0.065)
+    assert review_calls[1]["max_cost_usd"] == pytest.approx(0.11)
     assert len(selective_calls) == 1
     assert selective_calls[0]["semantic_runtime_result"]["request_count"] == 8
     assert len(paid_semantic_calls) == 1

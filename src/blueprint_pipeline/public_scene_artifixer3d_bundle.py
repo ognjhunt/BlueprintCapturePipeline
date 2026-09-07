@@ -49,6 +49,7 @@ RUNTIME_BLUEPRINT_MODULES = (
     "image_editor_backend_registry.py",
     "artifixer_cuda_package_paths.py",
     "decision_evidence_contracts.py",
+    "semantic_target_training_selection.py",
     "gaussian_field_quality.py",
     "gaussian_splat_decode.py",
     "nurec_usdz_layer_transform.py",
@@ -307,6 +308,11 @@ def _candidate_receipt(path: Path) -> dict[str, Any]:
         ):
             raise ArtiFixer3DBundleError(["artifixer3d_bundle_dual_target_transition_invalid"])
         for task in tasks:
+            from .semantic_target_training_selection import validate_training_partition
+            try:
+                expected_anchors, expected_teachers = validate_training_partition(task)
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ArtiFixer3DBundleError(["artifixer3d_bundle_training_selection_invalid"]) from exc
             physical = task.get("physical_camera_count") if isinstance(task, Mapping) else None
             training = task.get("training_record_count") if isinstance(task, Mapping) else None
             frames = task.get("frames") if isinstance(task, Mapping) else None
@@ -320,8 +326,8 @@ def _candidate_receipt(path: Path) -> dict[str, Any]:
                 or training != 2 * physical
                 or not isinstance(frames, list)
                 or len(frames) != physical
-                or anchors != list(range(0, training, 2))
-                or teachers != list(range(1, training, 2))
+                or anchors != expected_anchors
+                or teachers != expected_teachers
                 or set(anchors) & set(teachers)
                 or task.get("loss_contract", {}).get("same_pose_and_intrinsics_per_pair")
                 is not True

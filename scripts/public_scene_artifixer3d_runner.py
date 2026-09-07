@@ -428,6 +428,11 @@ def _dual_target_candidate_is_bound(candidate: Mapping[str, Any]) -> bool:
     for task in tasks:
         if not isinstance(task, Mapping):
             return False
+        from blueprint_pipeline.semantic_target_training_selection import validate_training_partition
+        try:
+            expected_anchors, expected_teachers = validate_training_partition(task)
+        except (ValueError, KeyError, TypeError):
+            return False
         physical_count = task.get("physical_camera_count")
         training_count = task.get("training_record_count")
         frames = task.get("frames")
@@ -442,8 +447,7 @@ def _dual_target_candidate_is_bound(candidate: Mapping[str, Any]) -> bool:
             or len(frames) != physical_count
             or not isinstance(selected, list)
             or not isinstance(teachers, list)
-            or len(selected) != physical_count
-            or len(teachers) != physical_count
+            or len(selected) + len(teachers) != training_count
         ):
             return False
         frame_anchor_indices: list[int] = []
@@ -473,7 +477,10 @@ def _dual_target_candidate_is_bound(candidate: Mapping[str, Any]) -> bool:
             ):
                 return False
             frame_anchor_indices.append(anchor_index)
-            frame_teacher_indices.append(teacher_index)
+            if frame.get("semantic_teacher_excluded_from_training"):
+                frame_anchor_indices.append(teacher_index)
+            else:
+                frame_teacher_indices.append(teacher_index)
         if (
             selected != frame_anchor_indices
             or teachers != frame_teacher_indices
@@ -1239,6 +1246,8 @@ def _prepare_dual_target_teacher_frames(
     teacher_root.mkdir(parents=True)
     rows: list[dict[str, Any]] = []
     for frame in task["frames"]:
+        if frame.get("semantic_teacher_excluded_from_training"):
+            continue
         physical_index = int(frame["physical_camera_index"])
         teacher_index = int(frame["semantic_teacher_training_index"])
         original = _bound(
@@ -1290,7 +1299,13 @@ def _stage_dual_target_anchor_masks(
 
     image_root = distillation_input_dir / "images"
     rows: list[dict[str, Any]] = []
+    anchor_frames = []
     for frame in task["frames"]:
+        anchor_frames.append(frame)
+        if frame.get("semantic_teacher_excluded_from_training"):
+            anchor_frames.append({**frame, "anchor_training_index": frame["semantic_teacher_training_index"],
+                                  "anchor_loss_mask": frame["excluded_teacher_anchor_mask"]})
+    for frame in anchor_frames:
         anchor_index = int(frame["anchor_training_index"])
         matches = [
             path
@@ -1455,6 +1470,18 @@ def _prepare_dual_target_distillation_replay(
         task["transforms"],
         "artifixer3d_dual_target_transforms_unbound",
     )
+    if task.get("training_view_selection") is not None:
+        from blueprint_pipeline.semantic_target_training_selection import validate_selection
+        physical = task["training_view_selection"]["source_transforms"]["frames"]
+        training_frames = json.loads(transforms_path.read_text())["frames"]
+        for i, original in enumerate(physical):
+            for row in training_frames[2*i:2*i+2]:
+                if any(row.get(k) != v for k,v in original.items() if k != "file_path"):
+                    raise ValueError("artifixer_training_selection_pose_mismatch")
+        validate_selection(task["training_view_selection"],
+            transforms=task["training_view_selection"]["source_transforms"],
+            teacher_frames=[{"camera_id": f["camera_id"], "whole_frame_semantic_teacher": f["source_whole_frame_semantic_teacher"]}
+                            for f in task["frames"]])
     selected_path = _bound(
         staged_task,
         task["selected_anchor_indices_file"],
