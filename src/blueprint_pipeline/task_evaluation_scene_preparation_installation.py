@@ -15,6 +15,7 @@ import pwd
 import tempfile
 
 from .decision_evidence_contracts import canonical_digest
+from .project_spend_reconciliation import validate_project_spend_reconciliation
 from .task_evaluation_public_scene_attempt_factory import record
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
 from .task_evaluation_scene_progression_state import atomic_json, require, safe_path
@@ -70,6 +71,7 @@ OWNER_UPLOAD_SOURCE_KINDS = ["mesh", "gaussian_splat"]
 #: per-scene public-source binding and public-scene machinery are materialized
 #: by the public-scene provisioner, not manufactured here.
 PUBLIC_SCENE_SOURCE_KINDS = ["mesh", "gaussian_splat", "public_scene"]
+PROJECT_SPEND_MONITOR_SCHEMA = "task_evaluation_scene_project_spend_monitor.v1"
 
 
 def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
@@ -77,13 +79,25 @@ def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
                     inputs_root="/var/lib/blueprint/task-evaluation-inputs",
                     capture_store_root="/var/lib/blueprint/capture-intake",
                     running_repo_root="/opt/blueprint/task-evaluation-control-plane", service_account="blueprint",
-                    public_scene_enabled=False, activation_authorized=False):
+                    public_scene_enabled=False, activation_authorized=False,
+                    project_spend_reconciliation_path=None):
     rows = validate_destination_catalog(destination_catalog)
     roots = {key: str(safe_path(value)) for key, value in {
         "config_root": config_root, "state_root": state_root, "inputs_root": inputs_root,
         "capture_store_root": capture_store_root}.items()}
     require(Path(running_repo_root).is_absolute(), "scene_preparation_running_repo_invalid")
     pwd.getpwnam(service_account)
+    project_spend_seed = None
+    if project_spend_reconciliation_path is not None:
+        seed = safe_path(project_spend_reconciliation_path)
+        require(seed.is_file() and not seed.is_symlink(), "project_spend_seed_missing")
+        seed_reference = record(seed)
+        try:
+            spend, _ = validate_project_spend_reconciliation(seed)
+        except (OSError, ValueError, TypeError):
+            require(False, "project_spend_seed_invalid")
+        require(spend.get("provider_mutation_performed") is False, "project_spend_seed_scope_invalid")
+        project_spend_seed = seed_reference
     value = {"schema_version": BOOTSTRAP_SCHEMA, "managed_by": MANAGED_BY, **roots,
         "running_repo_root": str(running_repo_root), "service_account": service_account,
         "destination_catalog": rows, "simulation_physics_bounds": {key: list(value) for key, value in DEFAULT_PHYSICS_BOUNDS.items()},
@@ -96,6 +110,8 @@ def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
         # pass. This never arms paid dispatch; the paid GPU flip stays separate.
         "activation_authorized": bool(activation_authorized),
         "supported_source_kinds": PUBLIC_SCENE_SOURCE_KINDS if public_scene_enabled else OWNER_UPLOAD_SOURCE_KINDS}
+    if project_spend_seed is not None:
+        value["project_spend_seed"] = project_spend_seed
     value["bootstrap_digest"] = canonical_digest(value, digest_field="bootstrap_digest")
     return value
 
@@ -131,11 +147,22 @@ def install_scene_preparation(*, bootstrap_path):
     owner_queue = state / "task-evaluation-owned-scene-preparations"
     public_scene_enabled = "public_scene" in bootstrap["supported_source_kinds"]
     public_binding_root = inputs / "public-source-bindings"
+    project_spend_seed = bootstrap.get("project_spend_seed")
+    seed_path = None
+    if project_spend_seed is not None:
+        require(isinstance(project_spend_seed, dict), "project_spend_seed_invalid")
+        seed_path = checked_file(project_spend_seed.get("path", ""), project_spend_seed)
+        try:
+            seed, _ = validate_project_spend_reconciliation(seed_path)
+        except (OSError, ValueError, TypeError):
+            require(False, "project_spend_seed_invalid")
+        require(seed.get("provider_mutation_performed") is False, "project_spend_seed_scope_invalid")
+    project_spend_root = state / "scene-project-spend"
     directories = [state / "task-evaluation-scene-intents", owner_queue,
         inputs / "owner-source-store", inputs / "completed-scene-preparation",
         inputs / "completed-scene-preparation-inputs", state / "scene-preparation-release-bindings",
         state / "scene-preparation-service", state / "submission-publication-locks",
-        state / "disk-reservations", state / "storage-pins",
+        state / "disk-reservations", state / "storage-pins", project_spend_root,
         inputs / "task-evaluation-terminal-results"]
     if public_scene_enabled:
         # The public-scene binding directory the per-scene provisioner writes
@@ -214,6 +241,22 @@ def install_scene_preparation(*, bootstrap_path):
         config["activation_enabled"] = True
         config["activation_intent_root"] = str(activation_intent_root)
         config["project_spend_current_path"] = str(state / "scene-project-spend" / "current.json")
+    if project_spend_seed is not None:
+        # The monitor is a retained-input reader and conservative reservation
+        # publisher. It never calls a provider. Keep its seed reference digest
+        # bound in the installer-managed config, and expose only the config path
+        # through the shared service environment.
+        monitor = {"schema_version": PROJECT_SPEND_MONITOR_SCHEMA,
+            "managed_by": MANAGED_BY,
+            "scene_root": str(directories[0]),
+            "seed_reconciliation_path": str(seed_path),
+            "seed_reconciliation_reference": dict(project_spend_seed),
+            "output_root": str(project_spend_root / "outputs"),
+            "current_path": str(project_spend_root / "current.json")}
+        monitor["config_digest"] = canonical_digest(monitor, digest_field="config_digest")
+        monitor_path = project_spend_root / "monitor.json"
+        _managed_json(monitor_path, monitor, account)
+        config["project_spend_monitor_config_path"] = str(monitor_path)
     config["config_digest"] = canonical_digest(config, digest_field="config_digest")
     config_path = config_root / "task-evaluation-scene-progression.json"
     _managed_json(config_path, config, account)
@@ -221,6 +264,8 @@ def install_scene_preparation(*, bootstrap_path):
         "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS": "blueprint-webapp",
         "BLUEPRINT_TASK_EVALUATION_OWNER_SOURCE_STORE_ROOT": str(inputs / "owner-source-store"),
         "PIPELINE_CAPTURE_INTAKE_STORE_ROOT": bootstrap["capture_store_root"]}
+    if project_spend_seed is not None:
+        environment["BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG"] = config["project_spend_monitor_config_path"]
     require(all(not any(c.isspace() for c in value) for value in environment.values()), "scene_preparation_environment_path_invalid")
     content = "# Managed by " + MANAGED_BY + ".\n" + "".join(f"{key}={value}\n" for key, value in sorted(environment.items()))
     env_path = safe_path(config_root / "task-evaluation-scene-progression.env")
@@ -236,10 +281,13 @@ def install_scene_preparation(*, bootstrap_path):
         if os.geteuid() == 0:
             os.chown(temporary, 0, account.pw_gid)
         os.replace(temporary, env_path)
-    return {"schema_version": "task_evaluation_scene_preparation_installation.v1", "status": "installed",
+    result = {"schema_version": "task_evaluation_scene_preparation_installation.v1", "status": "installed",
         "bootstrap": record(bootstrap_path), "config": record(config_path), "environment": record(env_path),
         "machinery": record(machinery_path), "execution_activation_enabled": False,
         "provider_mutation_performed": False, "service_start_requested": False}
+    if project_spend_seed is not None:
+        result["project_spend_monitor"] = record(config["project_spend_monitor_config_path"])
+    return result
 
 
 def main(argv=None):
@@ -255,13 +303,16 @@ def main(argv=None):
                         help="Separately admit the scene-configuration activation on-ramp (A3): the "
                              "service runs a second no-spend pass that provisions activation intents. "
                              "Off by default keeps the service preparation-only. Never arms paid dispatch.")
+    parser.add_argument("--project-spend-reconciliation",
+                        help="Digest-bound retained project-spend reconciliation used by the no-spend monitor.")
     args = parser.parse_args(argv)
     if args.destination_simready:
         path = safe_path(args.destination_simready)
         identity = read(path, digest_field="result_digest")["destination_identity"]
         bootstrap = build_bootstrap(destination_catalog=[{"binding_id": identity["id"] + "-" + identity["version"],
             "owner_description_aliases": args.destination_alias, "simready_result": record(path)}],
-            public_scene_enabled=args.public_scene_enabled, activation_authorized=args.activation_authorized)
+            public_scene_enabled=args.public_scene_enabled, activation_authorized=args.activation_authorized,
+            project_spend_reconciliation_path=args.project_spend_reconciliation)
         _managed_json(safe_path(args.bootstrap), bootstrap, pwd.getpwnam(bootstrap["service_account"]))
     result = install_scene_preparation(bootstrap_path=args.bootstrap) if args.install else {"bootstrap": record(args.bootstrap)}
     print(json.dumps(result, sort_keys=True))

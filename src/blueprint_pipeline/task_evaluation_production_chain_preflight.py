@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import ast
 import grp
+import hashlib
 import importlib
 import json
 import os
@@ -94,6 +95,9 @@ OWNER_AUTHORITY_UNITS: tuple[str, ...] = (
     "blueprint-task-evaluation-configured-controls-progression.service",
 )
 CONTROLS_PROGRESSION_UNIT = "blueprint-task-evaluation-configured-controls-progression.service"
+SCENE_PROGRESSION_UNIT = "blueprint-task-evaluation-scene-progression.service"
+SCENE_PROGRESSION_CONFIG_PATH = Path("/etc/blueprint/task-evaluation-scene-progression.json")
+PROJECT_SPEND_CONFIG_ENV = "BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG"
 # R8: the launch reconciler tick files owner terminal receipts (launch bridge +
 # canary terminal set) for the scene-progression reconciler. Without these roots
 # the duty is explicitly ``not_configured`` and a completed owner run never
@@ -1031,6 +1035,66 @@ def handoff_checks(units: Mapping[str, dict[str, Any]], ids: tuple[int, int]) ->
     return findings
 
 
+def project_spend_checks(units: Mapping[str, dict[str, Any]], ids: tuple[int, int]) -> list[dict[str, Any]]:
+    """Verify the monitor input required by an activation-enabled scene config.
+
+    ``_activation`` refreshes this monitor before reading its current pointer.
+    A service environment that omits the monitor silently makes refresh a no-op,
+    so the later pointer read fails only after the scene has reached activation.
+    Keep this check read-only and use the same spend validator as the consumer;
+    the check never publishes a pointer or changes reservations.
+    """
+    unit = units.get(SCENE_PROGRESSION_UNIT)
+    if unit is None:
+        return []
+    config = _read_json(SCENE_PROGRESSION_CONFIG_PATH)
+    if not isinstance(config, Mapping) or config.get("activation_enabled") is not True:
+        return []
+    env = unit.get("effective_environment", {})
+    monitor_text = str(env.get(PROJECT_SPEND_CONFIG_ENV) or "").strip()
+    if not monitor_text:
+        return [_finding("blocker", "scene_project_spend_config_unset", unit=SCENE_PROGRESSION_UNIT,
+                         env=PROJECT_SPEND_CONFIG_ENV,
+                         consequence="activation cannot refresh or read a fresh project-spend pointer")]
+    monitor_path = Path(monitor_text)
+    if not monitor_path.is_file() or monitor_path.is_symlink() or not readable_by(monitor_path, *ids):
+        return [_finding("blocker", "scene_project_spend_config_unreadable", unit=SCENE_PROGRESSION_UNIT,
+                         path=monitor_text)]
+    monitor = _read_json(monitor_path)
+    from .decision_evidence_contracts import canonical_digest
+    base_keys = {"schema_version", "scene_root", "seed_reconciliation_path", "output_root", "current_path", "config_digest"}
+    allowed = (base_keys, base_keys | {"managed_by"},
+               base_keys | {"seed_reconciliation_reference"},
+               base_keys | {"managed_by", "seed_reconciliation_reference"})
+    if (not isinstance(monitor, Mapping) or set(monitor) not in allowed
+            or monitor.get("schema_version") != "task_evaluation_scene_project_spend_monitor.v1"
+            or monitor.get("config_digest") != canonical_digest(monitor, digest_field="config_digest")):
+        return [_finding("blocker", "scene_project_spend_config_invalid", unit=SCENE_PROGRESSION_UNIT,
+                         path=monitor_text)]
+    seed_path = Path(str(monitor.get("seed_reconciliation_path") or ""))
+    if not seed_path.is_file() or seed_path.is_symlink() or not readable_by(seed_path, *ids):
+        return [_finding("blocker", "scene_project_spend_seed_unreadable", unit=SCENE_PROGRESSION_UNIT,
+                         path=str(seed_path))]
+    reference = monitor.get("seed_reconciliation_reference")
+    if reference is not None:
+        digest = reference.get("sha256") if isinstance(reference, Mapping) else None
+        size = reference.get("size_bytes") if isinstance(reference, Mapping) else None
+        actual = "sha256:" + hashlib.sha256(seed_path.read_bytes()).hexdigest()
+        if (not isinstance(reference, Mapping)
+                or set(reference) != {"path", "sha256", "size_bytes"}
+                or reference.get("path") != str(seed_path)
+                or digest != actual or type(size) is not int or size != seed_path.stat().st_size):
+            return [_finding("blocker", "scene_project_spend_seed_reference_invalid",
+                             unit=SCENE_PROGRESSION_UNIT, path=str(seed_path))]
+    try:
+        from .project_spend_reconciliation import validate_project_spend_reconciliation
+        validate_project_spend_reconciliation(seed_path)
+    except (OSError, TypeError, ValueError):
+        return [_finding("blocker", "scene_project_spend_seed_invalid", unit=SCENE_PROGRESSION_UNIT,
+                         path=str(seed_path))]
+    return []
+
+
 def environment_hold_sources(unit: Mapping[str, Any], name: str) -> list[str]:
     """The EnvironmentFile paths that set ``name`` to a non-truthy value for this unit."""
 
@@ -1486,6 +1550,7 @@ def run_chain(args: argparse.Namespace) -> int:
     report["host_findings"].extend(intent_checks(active_sha, ids))
     report["host_findings"].extend(binding_checks(units, active_sha, ids))
     report["host_findings"].extend(handoff_checks(units, ids))
+    report["host_findings"].extend(project_spend_checks(units, ids))
     report["host_findings"].extend(owner_scope_checks(units, ids))
     report["host_findings"].extend(credential_file_checks(units))
     report["host_findings"].extend(provider_credit_check(units))

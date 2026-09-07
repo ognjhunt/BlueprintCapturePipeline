@@ -845,3 +845,4 @@ def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read
     assert flag in capacity
     assert "Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key" in capacity
     assert "ReadOnlyPaths=/etc/blueprint/provider-secrets" in capacity
+    assert "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env" in capacity

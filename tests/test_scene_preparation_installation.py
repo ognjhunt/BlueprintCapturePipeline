@@ -197,6 +197,42 @@ def test_activation_authorized_enables_activation_on_the_progression_config(tmp_
     assert "activation_service_config" not in auth_config
 
 
+def test_project_spend_seed_installs_shared_refresh_config(tmp_path, monkeypatch):
+    """An explicitly retained spend receipt wires the same monitor into
+    progression and capacity without inventing a balance or enabling execution."""
+    from tests.test_task_evaluation_scene_spend import seed
+    old_config_path, _iid, _intents, _now = _config(tmp_path, monkeypatch, source_kind="mesh", real_destination=True)
+    old = json.loads(old_config_path.read_text())
+    machinery = json.loads(Path(old["completed_source_machinery_path"]).read_text())
+    spend_root = tmp_path / "spend-seed"
+    spend_root.mkdir()
+    spend_seed = seed(spend_root)
+    bootstrap = installation.build_bootstrap(
+        destination_catalog=machinery["destination_catalog"], config_root=tmp_path / "etc",
+        state_root=tmp_path / "state", inputs_root=tmp_path / "inputs",
+        capture_store_root=old["capture_store_root"], running_repo_root=tmp_path / "repo",
+        service_account=ACCOUNT, activation_authorized=True,
+        project_spend_reconciliation_path=spend_seed)
+    bootstrap_path = tmp_path / "bootstrap.json"
+    bootstrap_path.write_text(json.dumps(bootstrap))
+    bootstrap_path.chmod(0o640)
+    receipt = installation.install_scene_preparation(bootstrap_path=bootstrap_path)
+    config = json.loads(Path(receipt["config"]["path"]).read_text())
+    assert config["project_spend_monitor_config_path"]
+    monitor_path = Path(config["project_spend_monitor_config_path"])
+    monitor = json.loads(monitor_path.read_text())
+    assert monitor["schema_version"] == installation.PROJECT_SPEND_MONITOR_SCHEMA
+    assert monitor["seed_reconciliation_path"] == str(spend_seed)
+    assert monitor["current_path"] == config["project_spend_current_path"]
+    env = Path(receipt["environment"]["path"]).read_text()
+    assert f"BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG={monitor_path}" in env
+    monkeypatch.setenv("BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG", str(monitor_path))
+    from blueprint_pipeline.task_evaluation_scene_spend import refresh_configured_scene_project_spend
+    refreshed = refresh_configured_scene_project_spend()
+    assert refreshed["provider_mutation_performed"] is False
+    assert Path(monitor["current_path"]).is_file()
+
+
 def test_production_cli_routes_both_modes_through_the_owned_preparation_worker(tmp_path, monkeypatch):
     """R1: the production entrypoint is `task_evaluation_scene_progression --config`,
     whose main() routes to run_preparation_service whenever preparation_worker is

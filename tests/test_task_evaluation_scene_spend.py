@@ -9,6 +9,7 @@ from blueprint_pipeline.project_spend_reconciliation import (
     project_spend_dependency_records,
 )
 from blueprint_pipeline.task_evaluation_scene_spend import publish_current_scene_project_spend
+from blueprint_pipeline import task_evaluation_production_chain_preflight as preflight
 from blueprint_pipeline.task_evaluation_scene_intake import revoke_scene_intent
 from tests.test_project_spend_reconciliation import _human_baseline
 from tests.test_task_evaluation_scene_intake import stage, attempt, request
@@ -63,3 +64,16 @@ def test_revocation_never_implies_a_zero_bill_and_corruption_does_not_refresh(tm
     with pytest.raises(ValueError):
         publish_current_scene_project_spend(**args, now=3000)
     assert (tmp_path / "current.json").read_bytes() == old
+
+
+def test_activation_preflight_requires_the_configured_monitor(tmp_path, monkeypatch):
+    scene_config = tmp_path / "scene-progression.json"
+    scene_config.write_text(json.dumps({"activation_enabled": True}))
+    monkeypatch.setattr(preflight, "SCENE_PROGRESSION_CONFIG_PATH", scene_config)
+    units = {
+        preflight.SCENE_PROGRESSION_UNIT: {
+            "effective_environment": {},
+        }
+    }
+    findings = preflight.project_spend_checks(units, (0, 0))
+    assert [row["code"] for row in findings] == ["scene_project_spend_config_unset"]
