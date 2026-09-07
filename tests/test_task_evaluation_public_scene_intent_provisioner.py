@@ -407,3 +407,38 @@ def test_provisioned_machinery_carries_completed_prefix_reuse_roots(retained, tm
     assert machinery["parent_queue_root"] == str(DEFAULT_PARENT_QUEUE)
     assert machinery["execution_root"] == str(DEFAULT_EXECUTION)
     assert machinery["release_retention_binding_root"] == str(DEFAULT_EVIDENCE_BINDING_ROOT)
+
+
+def test_robot_binding_survives_real_public_scene_preparation(retained, tmp_path, monkeypatch):
+    from tests.test_task_evaluation_controls_autoprovision import setup
+    from blueprint_pipeline import task_evaluation_controls_autoprovision as controls
+    retained_paths, authority, extras = retained
+    robot_root = tmp_path / "robot-assets"
+    robot_root.mkdir()
+    row = dict(setup(robot_root)["catalog"]["bindings"]["franka-droid"])
+    row.pop("expected_production_commit")
+    catalog = controls._seal({"schema_version": controls.CONTENT_CATALOG_SCHEMA,
+                             "bindings": {"franka-droid": row}}, "catalog_digest")
+    catalog_path = _write(tmp_path / "robot-catalog.json", catalog)
+    result, intents, bindings, machinery = _provision(tmp_path, retained_paths, authority,
+        now=extras["now"], robot_binding_id="franka-droid", robot_catalog_path=catalog_path)
+    intent = json.loads((intents / result["intent_id"] / "intent.json").read_text())
+    assert intent["request"]["task"]["robot_binding_id"] == "franka-droid"
+    _bind_runtime_env(monkeypatch, intents, extras["commit"])
+    config = _progression_config(tmp_path, intents, bindings, machinery, retained_paths["release_binding"])
+    run = engine.process_scene_intents(config_path=config)
+    assert run["results"][0]["phase"] == "publication_ready", run
+    assert run["provider_allocation_performed"] is False
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"robot_binding_id": "franka-droid"},
+    {"robot_catalog_path": "/missing/catalog.json"},
+    {"robot_binding_id": "franka-droid", "robot_catalog_path": "/missing/catalog.json"},
+])
+def test_robot_binding_refusal_leaves_no_visible_intent(retained, tmp_path, kwargs):
+    retained_paths, authority, extras = retained
+    with pytest.raises(ValueError):
+        _provision(tmp_path, retained_paths, authority, now=extras["now"], **kwargs)
+    assert not list((tmp_path / "intents").glob("scene-*/intent.json"))
+    assert not (tmp_path / "public-source-bindings" / "public-scene-841757.json").exists()
