@@ -1079,7 +1079,11 @@ def project_spend_checks(units: Mapping[str, dict[str, Any]], ids: tuple[int, in
     if reference is not None:
         digest = reference.get("sha256") if isinstance(reference, Mapping) else None
         size = reference.get("size_bytes") if isinstance(reference, Mapping) else None
-        actual = "sha256:" + hashlib.sha256(seed_path.read_bytes()).hexdigest()
+        try:
+            actual = "sha256:" + hashlib.sha256(seed_path.read_bytes()).hexdigest()
+        except OSError:
+            return [_finding("blocker", "scene_project_spend_seed_unreadable",
+                             unit=SCENE_PROGRESSION_UNIT, path=str(seed_path))]
         if (not isinstance(reference, Mapping)
                 or set(reference) != {"path", "sha256", "size_bytes"}
                 or reference.get("path") != str(seed_path)
