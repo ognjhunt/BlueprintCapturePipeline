@@ -1499,7 +1499,7 @@ def _admit_semantic_training_targets(*, locality_seal, work, output_root,
         semantic_cap, token, candidate, candidate_path, teacher_receipt_path):
     """Review, correct once, or admit a coverage-checked subset for training."""
     from .public_scene_artifixer3d_dual_target_inputs import _source_task_frames, _validated_transforms
-    from .semantic_target_training_selection import build_selection
+    from .semantic_target_training_selection import MINIMUM_VIEWS, build_selection
 
     per_review_cap = visual_review_cap / 3
     common = dict(output_root=output_root, publisher_scene_id=publisher_scene_id,
@@ -1550,7 +1550,7 @@ def _admit_semantic_training_targets(*, locality_seal, work, output_root,
         execution = _read(Path(reviewed["review"]["execution_receipt"]["path"]),
                           code="scene_configuration_artifixer_target_review_invalid")
         selection = build_selection(review_input=reviewed["review_input"], review_execution=execution,
-            transforms=transforms, minimum_views=configuration["required_views"]["minimum"])
+            transforms=transforms, minimum_views=MINIMUM_VIEWS)
         (recovery / "training_view_selection.json").write_text(canonical_json(selection) + "\n")
     admitted_teacher = recovery / "admitted_whole_frame_semantic_teacher.v1.json"
     materialize_whole_frame_semantic_teacher_receipt(

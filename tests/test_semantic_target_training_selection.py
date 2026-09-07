@@ -194,7 +194,7 @@ def test_pretraining_recovery_is_bounded_and_remaining_bad_view_can_be_excluded(
         publisher_scene_id="fixture",
         task_id="task",
         rights_path=tmp_path / "rights",
-        configuration={"required_views": {"minimum": 8}},
+        configuration={"required_views": {"minimum": 16}},
         stage_input={},
         values={},
         visual_review_cap=0.96,
