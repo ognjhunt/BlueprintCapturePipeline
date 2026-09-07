@@ -1,0 +1,66 @@
+..........................................................F............. [ 94%]
+....                                                                     [100%]
+=================================== FAILURES ===================================
+______ test_forbidden_robot_object_collision_emits_specific_safety_event _______
+
+    def test_forbidden_robot_object_collision_emits_specific_safety_event() -> None:
+        task_spec = _rigid_v2_spec()
+        task_spec["control_frequency_hz"] = 15.0
+        samples = [
+            _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
+            _rigid_v2_sample(1, [1.0, 2.0, 0.83]),
+            _rigid_v2_sample(72, [1.15, 2.0, 0.83]),
+            _rigid_v2_sample(73, [1.15, 2.0, 0.8]),
+            _rigid_v2_sample(74, [1.15, 2.0, 0.8]),
+            _rigid_v2_sample(75, [1.15, 2.0, 0.8]),
+        ]
+        samples[2].update(
+            robot_collision_failure=True,
+            forbidden_robot_task_collision_failure=True,
+            robot_task_forbidden_collision_peak_force_n=4.519003553,
+            collision_failure_minimum_force_n=1.0,
+        )
+    
+>       report = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_adp_task_scoring.py:1004: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/blueprint_pipeline/adp_task_scoring.py:1276: in score_task_episode_from_spec
+    return score_rigid_task_episode(task_spec=task_spec, samples=samples)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/adp_task_scoring.py:1263: in score_rigid_task_episode
+    return score(task_spec=task_spec, samples=samples)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+task_spec = {'schema_version': 'adp_task_spec.v2', 'task_kind': 'rigid_pick_place', 'subject_asset_id': 'notebook_replacement', 'start_pose_world': [1.0, 2.0, 0.8, 0.0, 0.0, 0.0, ...], ...}
+samples = [{'step_index': 0, 'task_object_pose_world': [1.0, 2.0, 0.8, 0.0, 0.0, 0.0, ...], 'gripper_width_m': 0.04, 'task_conta..._object_pose_world': [1.15, 2.0, 0.8, 0.0, 0.0, 0.0, ...], 'gripper_width_m': 0.08, 'task_contact_active': False, ...}]
+
+    def score_rigid_task_episode(
+        *, task_spec: Mapping[str, Any], samples: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        """Score a scene-neutral rigid relocation from deterministic native state."""
+    
+        spec = _normalize_rigid_task_spec(task_spec)
+        if not isinstance(samples, Sequence) or isinstance(samples, (str, bytes)) or not samples:
+            raise TaskNeutralScoringError(["rigid_task_samples_invalid"])
+        normalized: list[dict[str, Any]] = []
+        previous_step: int | None = None
+        for index, sample in enumerate(samples):
+            if not isinstance(sample, Mapping):
+                raise TaskNeutralScoringError([f"rigid_task_sample_invalid:{index}"])
+            step = sample.get("step_index")
+            if (
+                isinstance(step, bool)
+                or not isinstance(step, int)
+                or step < 0
+                or (previous_step is not None and step != previous_step + 1)
+            ):
+>               raise TaskNeutralScoringError([f"rigid_task_sample_step_invalid:{index}"])
+E               blueprint_pipeline.adp_task_scoring.TaskNeutralScoringError: rigid_task_sample_step_invalid:2
+
+src/blueprint_pipeline/adp_rigid_task_scoring.py:319: TaskNeutralScoringError
+=========================== short test summary info ============================
+FAILED tests/test_adp_task_scoring.py::test_forbidden_robot_object_collision_emits_specific_safety_event
+1 failed, 75 passed in 3.29s

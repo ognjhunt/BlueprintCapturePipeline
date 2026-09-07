@@ -1,0 +1,484 @@
+[
+  {
+    "number": 1764,
+    "title": "Preserve completed SAM stages across immutable restarts",
+    "branch": "codex/restart-compatibility-audit-20260907-01a07da6",
+    "policy_files": []
+  },
+  {
+    "number": 1737,
+    "title": "Specify remaining autonomy gaps after the second independent audit",
+    "branch": "codex/autonomy-reaudit-20260906",
+    "policy_files": []
+  },
+  {
+    "number": 1730,
+    "title": "Audit remaining autonomous chain defects before live execution",
+    "branch": "codex/independent-autonomy-audit-20260906",
+    "policy_files": []
+  },
+  {
+    "number": 1723,
+    "title": "Specify remaining production automation wiring and evidence gaps",
+    "branch": "codex/seven-piece-audit-specs-20260906",
+    "policy_files": []
+  },
+  {
+    "number": 1549,
+    "title": "Preserve policy evidence when an action is rejected",
+    "branch": "codex/policy-canary-action-rejection-evidence",
+    "policy_files": [
+      "src/blueprint_pipeline/native_task_arena_policy_canary_session.py",
+      "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py",
+      "tests/test_native_task_arena_policy_canary_lifecycle_rehearsal.py",
+      "tests/test_native_task_arena_policy_canary_session.py"
+    ]
+  },
+  {
+    "number": 1545,
+    "title": "Retain GR00T DROID frame support diagnostics",
+    "branch": "codex/groot-droid-eef-support-20260902",
+    "policy_files": [
+      "src/blueprint_pipeline/adp009d_policy_episode.py",
+      "src/blueprint_pipeline/groot_n17_droid_policy_runtime.py",
+      "src/blueprint_pipeline/native_task_arena_policy_canary_session.py",
+      "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py",
+      "tests/test_adp009d_policy_episode.py",
+      "tests/test_groot_n17_droid_policy_runtime.py",
+      "tests/test_native_task_arena_policy_canary_session.py"
+    ]
+  },
+  {
+    "number": 1544,
+    "title": "Score rigid canary reset readback in the task frame",
+    "branch": "codex/policy-canary-reset-readback",
+    "policy_files": []
+  },
+  {
+    "number": 1543,
+    "title": "Close canary billing from watchdog instance lineage",
+    "branch": "codex/policy-canary-billing-instance-lineage",
+    "policy_files": [
+      "src/blueprint_pipeline/policy_canary_official_billing.py",
+      "src/blueprint_pipeline/task_evaluation_policy_canary_dispatcher.py",
+      "tests/test_task_evaluation_policy_canary_dispatcher.py"
+    ]
+  },
+  {
+    "number": 1542,
+    "title": "Reconnect pi0.5 policy clients at query time",
+    "branch": "codex/pi05-lazy-websocket-reconnect",
+    "policy_files": [
+      "src/blueprint_pipeline/openpi_droid_policy_runtime.py",
+      "tests/test_adp009d_policy_episode.py",
+      "tests/test_openpi_droid_policy_runtime.py"
+    ]
+  },
+  {
+    "number": 1541,
+    "title": "Bind NuRec setup into policy canary execution",
+    "branch": "codex/policy-canary-nurec-runtime-warmup",
+    "policy_files": [
+      "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py",
+      "tests/test_native_task_arena_policy_canary_lifecycle_rehearsal.py"
+    ]
+  },
+  {
+    "number": 1540,
+    "title": "Publish live policy-canary progress to Website",
+    "branch": "codex/policy-canary-live-progress-sync",
+    "policy_files": [
+      "deploy/systemd/blueprint-task-evaluation-policy-canary-dispatcher.service",
+      "src/blueprint_pipeline/task_evaluation_policy_canary_dispatcher.py",
+      "tests/test_task_evaluation_policy_canary_dispatch_deploy_wiring.py",
+      "tests/test_task_evaluation_policy_canary_dispatcher.py"
+    ]
+  },
+  {
+    "number": 1539,
+    "title": "Fail closed on legacy Vast machine avoidlists",
+    "branch": "codex/vast-avoidlist-machines-shape",
+    "policy_files": []
+  },
+  {
+    "number": 1470,
+    "title": "Bump github/codeql-action/init from 4.37.0 to 4.37.9",
+    "branch": "dependabot/github_actions/github/codeql-action/init-4.37.9",
+    "policy_files": []
+  },
+  {
+    "number": 1462,
+    "title": "Retry pinned FFmpeg download on checksum mismatch",
+    "branch": "codex/ffmpeg-checksum-aware-retry",
+    "policy_files": []
+  },
+  {
+    "number": 1452,
+    "title": "Add cuRobo and MoveIt construction candidate generators",
+    "branch": "codex/curobo-moveit-candidate-generators",
+    "policy_files": []
+  },
+  {
+    "number": 1434,
+    "title": "Prove Evaluation Ready nested scenario prefixes",
+    "branch": "codex/evaluation-ready-nested-prefix-proof",
+    "policy_files": [
+      "docs/schemas/task_evaluation_policy_run_configuration.v1.schema.json",
+      "docs/schemas/task_evaluation_policy_run_setup.v1.schema.json",
+      "docs/task_evaluation_policy_run_configuration.md",
+      "src/blueprint_pipeline/task_evaluation_policy_run_contract.py",
+      "tests/test_task_evaluation_policy_run_contract.py"
+    ]
+  },
+  {
+    "number": 1348,
+    "title": "Compile diagnostic scene result for native controls",
+    "branch": "codex/scene839873-franka-controls-diagnostic-20260828",
+    "policy_files": []
+  },
+  {
+    "number": 1332,
+    "title": "Add fail-closed configured-controls visual supervisor",
+    "branch": "codex/controls-visual-supervisor-20260828",
+    "policy_files": []
+  },
+  {
+    "number": 1087,
+    "title": "Add measured no-egress company policy sandbox",
+    "branch": "codex/company-policy-sandbox-v2-20260825",
+    "policy_files": [
+      "scripts/build_company_policy_sandbox_plan.py",
+      "scripts/execute_company_policy_sandbox_preflight.py",
+      "src/blueprint_pipeline/company_policy_proxy.py",
+      "src/blueprint_pipeline/company_policy_sandbox_executor.py",
+      "src/blueprint_pipeline/company_policy_sandbox_v2.py",
+      "tests/test_company_policy_proxy.py",
+      "tests/test_company_policy_sandbox_v2.py"
+    ]
+  },
+  {
+    "number": 1086,
+    "title": "Add immutable no-spend company policy admission",
+    "branch": "codex/company-policy-admission-intake-20260825",
+    "policy_files": [
+      "src/blueprint_pipeline/company_policy_container_admission.py",
+      "tests/test_company_policy_container_admission.py"
+    ]
+  },
+  {
+    "number": 1069,
+    "title": "Scope planar push contact retention to push path",
+    "branch": "codex/planar-push-contact-gate-20260825",
+    "policy_files": []
+  },
+  {
+    "number": 923,
+    "title": "Run public pi0.5 policy on retained Arena worker",
+    "branch": "codex/arena-policy-current-preflight",
+    "policy_files": []
+  },
+  {
+    "number": 770,
+    "title": "Bound the Full Test Lane playwright install so a stalled download cannot eat the job",
+    "branch": "claude/full-lane-playwright-timeout-20260819",
+    "policy_files": []
+  },
+  {
+    "number": 720,
+    "title": "Bump astral-sh/setup-uv from 8.3.2 to 10.0.1",
+    "branch": "dependabot/github_actions/astral-sh/setup-uv-10.0.1",
+    "policy_files": []
+  },
+  {
+    "number": 690,
+    "title": "Let the native-arena controls and policy modes launch (rebased)",
+    "branch": "claude/arena-lanes-launchable-rebased-20260816",
+    "policy_files": [
+      "src/blueprint_pipeline/native_task_arena_policy_bundle.py",
+      "src/blueprint_pipeline/openpi_droid_policy_runtime.py"
+    ]
+  },
+  {
+    "number": 689,
+    "title": "Arm two more lanes on the names they actually create",
+    "branch": "claude/pin-lanes-without-independent-watchdog-20260816",
+    "policy_files": []
+  },
+  {
+    "number": 688,
+    "title": "Seal the new-site lanes where their own contract reads",
+    "branch": "claude/new-site-lanes-seal-their-evidence-20260816",
+    "policy_files": [
+      "src/blueprint_pipeline/openpi_policy_ranking_runpod.py"
+    ]
+  },
+  {
+    "number": 687,
+    "title": "Make native Arena execution modes preflight-exact",
+    "branch": "codex/native-arena-exact-mode-contracts",
+    "policy_files": [
+      "src/blueprint_pipeline/native_task_arena_policy_bundle.py",
+      "src/blueprint_pipeline/openpi_droid_policy_runtime.py"
+    ]
+  },
+  {
+    "number": 686,
+    "title": "Produce fresh SAM preflight for dry runs",
+    "branch": "codex/sam31-live-preflight-dry-run",
+    "policy_files": []
+  },
+  {
+    "number": 685,
+    "title": "Re-seal the appearance export the host can actually open",
+    "branch": "claude/artifixer-appearance-receipt-usable-20260816",
+    "policy_files": []
+  },
+  {
+    "number": 684,
+    "title": "Seal reconstruction smoke failures before full TTL",
+    "branch": "codex/reconstruction-worker-output-liveness",
+    "policy_files": []
+  },
+  {
+    "number": 683,
+    "title": "Name the probe set on the SimReady bundle receipt",
+    "branch": "claude/simready-adjudicator-can-read-its-probe-set-20260816",
+    "policy_files": []
+  },
+  {
+    "number": 682,
+    "title": "Complete the arena policy bundle's import closure",
+    "branch": "claude/policy-bundle-import-closure-complete-20260816",
+    "policy_files": [
+      "src/blueprint_pipeline/native_task_arena_policy_bundle.py",
+      "src/blueprint_pipeline/openpi_droid_policy_runtime.py"
+    ]
+  },
+  {
+    "number": 681,
+    "title": "Refuse a joint-agent profile before its authority is consumed",
+    "branch": "claude/joint-agent-refuse-before-authority-burn-20260816",
+    "policy_files": []
+  },
+  {
+    "number": 680,
+    "title": "Count one rented instance as having reached a provider",
+    "branch": "claude/new-site-lanes-satisfy-terminal-contract-20260816",
+    "policy_files": []
+  },
+  {
+    "number": 678,
+    "title": "Bridge ArtiFixer provider exports to paired-native inputs",
+    "branch": "codex/artifixer-native-export-bridge",
+    "policy_files": []
+  },
+  {
+    "number": 677,
+    "title": "Seal direct fresh-site canary terminal evidence",
+    "branch": "codex/fresh-lane-terminal-sealers-20260816",
+    "policy_files": [
+      "src/blueprint_pipeline/openpi_policy_ranking_runpod.py"
+    ]
+  },
+  {
+    "number": 676,
+    "title": "Name a material the shipped agent-CAD USD actually contains",
+    "branch": "claude/content-agents-material-binding-resolves-20260816",
+    "policy_files": []
+  },
+  {
+    "number": 675,
+    "title": "Arm the joint-agent watchdog on the names it actually creates",
+    "branch": "claude/joint-agent-watchdog-binds-its-own-instances-20260816",
+    "policy_files": []
+  },
+  {
+    "number": 673,
+    "title": "Publish a preflight bundle the SAM dry run can actually read",
+    "branch": "claude/sam31-dry-run-preflight-path-20260816",
+    "policy_files": []
+  },
+  {
+    "number": 573,
+    "title": "Track full test timing history",
+    "branch": "agent/test-timing-history-20260814",
+    "policy_files": []
+  },
+  {
+    "number": 382,
+    "title": "Bump actions/attest from 4.1.1 to 4.2.2",
+    "branch": "dependabot/github_actions/actions/attest-4.2.2",
+    "policy_files": []
+  },
+  {
+    "number": 381,
+    "title": "Bump actions/attest-build-provenance from 3.0.0 to 4.2.2",
+    "branch": "dependabot/github_actions/actions/attest-build-provenance-4.2.2",
+    "policy_files": []
+  },
+  {
+    "number": 377,
+    "title": "ADP-009D: make cousin USD digests verify from any checkout",
+    "branch": "claude/adp009d-portable-cousin-digests",
+    "policy_files": []
+  },
+  {
+    "number": 376,
+    "title": "ADP-009D: lab-format episode evidence at the DROID control rate",
+    "branch": "claude/adp009d-lab-format-episodes-20260808",
+    "policy_files": [
+      "src/blueprint_pipeline/adp009d_policy_episode.py",
+      "tests/test_adp009d_policy_episode.py"
+    ]
+  },
+  {
+    "number": 324,
+    "title": "Publish terminal native-Isaac warehouse control experiment",
+    "branch": "codex/warehouse-native-isaac-control-20260803",
+    "policy_files": [
+      "docs/experiments/policy_ranking_thesis_20260726/nvidia_warehouse_native_control_spec_v1.json"
+    ]
+  },
+  {
+    "number": 318,
+    "title": "Add retained ARKitScenes scripted inspection run",
+    "branch": "codex/arkitscenes-40958756-task-eval-20260803",
+    "policy_files": []
+  },
+  {
+    "number": 306,
+    "title": "Integrate dynamic task/site measurement routing runtime lanes",
+    "branch": "codex/measurement-routing-main-integration-20260803",
+    "policy_files": []
+  },
+  {
+    "number": 269,
+    "title": "Bump nvidia/cuda from 12.6.3-cudnn-runtime-ubuntu24.04 to 13.3.1-cudnn-runtime-ubuntu24.04 in /deploy/docker/vip",
+    "branch": "dependabot/docker/deploy/docker/vip/nvidia/cuda-13.3.1-cudnn-runtime-ubuntu24.04",
+    "policy_files": []
+  },
+  {
+    "number": 268,
+    "title": "Bump nvidia/cuda from 12.6.3-cudnn-runtime-ubuntu24.04 to 13.3.1-cudnn-runtime-ubuntu24.04 in /deploy/docker/video_to_world",
+    "branch": "dependabot/docker/deploy/docker/video_to_world/nvidia/cuda-13.3.1-cudnn-runtime-ubuntu24.04",
+    "policy_files": []
+  },
+  {
+    "number": 267,
+    "title": "Bump nvidia/cuda from 12.6.3-cudnn-runtime-ubuntu24.04 to 13.3.1-cudnn-runtime-ubuntu24.04 in /deploy/docker/sam3",
+    "branch": "dependabot/docker/deploy/docker/sam3/nvidia/cuda-13.3.1-cudnn-runtime-ubuntu24.04",
+    "policy_files": []
+  },
+  {
+    "number": 266,
+    "title": "Bump nvidia/cuda from 12.4.1-runtime-ubuntu22.04 to 13.3.1-runtime-ubuntu22.04 in /deploy/docker/robot_eval_worker/unitree_groot_sonic_vast",
+    "branch": "dependabot/docker/deploy/docker/robot_eval_worker/unitree_groot_sonic_vast/nvidia/cuda-13.3.1-runtime-ubuntu22.04",
+    "policy_files": []
+  },
+  {
+    "number": 265,
+    "title": "Bump nvidia/cuda from 12.4.1-devel-ubuntu22.04 to 13.3.1-devel-ubuntu22.04 in /deploy/docker/reconstruction_worker",
+    "branch": "dependabot/docker/deploy/docker/reconstruction_worker/nvidia/cuda-13.3.1-devel-ubuntu22.04",
+    "policy_files": []
+  },
+  {
+    "number": 246,
+    "title": "Add native Warehouse camera and policy-WAM round-trip canaries",
+    "branch": "codex/new-site-oscar-canary-v1",
+    "policy_files": [
+      "src/blueprint_pipeline/openpi_policy_ranking_gpu_bootstrap.py",
+      "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
+      "tests/test_openpi_policy_ranking_gpu_admission.py",
+      "tests/test_openpi_policy_ranking_runpod.py"
+    ]
+  },
+  {
+    "number": 226,
+    "title": "Add first-principles audit of the World Labs R2S2R strategy analysis",
+    "branch": "claude/world-labs-blueprint-analysis-jpixj1",
+    "policy_files": []
+  },
+  {
+    "number": 195,
+    "title": "Bump actions/checkout from 4.3.1 to 7.0.1",
+    "branch": "dependabot/github_actions/actions/checkout-7.0.1",
+    "policy_files": []
+  },
+  {
+    "number": 133,
+    "title": "Bump github/codeql-action/analyze from 4.37.0 to 4.37.1",
+    "branch": "dependabot/github_actions/github/codeql-action/analyze-4.37.1",
+    "policy_files": []
+  },
+  {
+    "number": 131,
+    "title": "Bump actions/setup-node from 4.4.0 to 7.0.0",
+    "branch": "dependabot/github_actions/actions/setup-node-7.0.0",
+    "policy_files": []
+  },
+  {
+    "number": 116,
+    "title": "Integrate all current pull request changes",
+    "branch": "codex/integrate-all-open-prs-20260716",
+    "policy_files": [
+      "configs/data_retention_policy.json",
+      "docs/source_governance_policy.json",
+      "scripts/validate_data_retention_policy.py",
+      "scripts/validate_data_retention_policy_tests.py",
+      "tests/test_consent_policy_only_site_gate.py"
+    ]
+  },
+  {
+    "number": 71,
+    "title": "IMGFIX-004: runtime-user-writable Isaac kit dirs + bounded review canary",
+    "branch": "fix/imgfix-004-isaac-writable-dirs",
+    "policy_files": []
+  },
+  {
+    "number": 63,
+    "title": "Bump actions/download-artifact from 4.3.0 to 8.0.1",
+    "branch": "dependabot/github_actions/actions/download-artifact-8.0.1",
+    "policy_files": []
+  },
+  {
+    "number": 60,
+    "title": "Bump actions/upload-artifact from 4.6.2 to 7.0.1",
+    "branch": "dependabot/github_actions/actions/upload-artifact-7.0.1",
+    "policy_files": []
+  },
+  {
+    "number": 56,
+    "title": "Bump python from 3.12-slim to 3.14-slim in /deploy/docker/robot_eval_worker/mujoco",
+    "branch": "dependabot/docker/deploy/docker/robot_eval_worker/mujoco/python-3.14-slim",
+    "policy_files": []
+  },
+  {
+    "number": 55,
+    "title": "Bump python from 3.12-slim to 3.14-slim",
+    "branch": "dependabot/docker/python-3.14-slim",
+    "policy_files": []
+  },
+  {
+    "number": 54,
+    "title": "Bump nvidia/cuda from 11.7.1-cudnn8-devel-ubuntu22.04 to 12.2.2-cudnn8-devel-ubuntu22.04 in /deploy/docker/deepprivacy2",
+    "branch": "dependabot/docker/deploy/docker/deepprivacy2/nvidia/cuda-12.2.2-cudnn8-devel-ubuntu22.04",
+    "policy_files": []
+  },
+  {
+    "number": 53,
+    "title": "docs: pre-beta launch gap audit \u2014 100-user any-location (industrial-first) beta",
+    "branch": "claude/pre-beta-launch-audit-1pwvpr",
+    "policy_files": [
+      "configs/data_retention_policy.json",
+      "scripts/validate_data_retention_policy.py",
+      "scripts/validate_data_retention_policy_tests.py",
+      "tests/test_consent_policy_only_site_gate.py"
+    ]
+  },
+  {
+    "number": 51,
+    "title": "Full beta launch readiness audit \u2014 2026-07-07 (verdict: not ready)",
+    "branch": "claude/blueprint-pipeline-beta-audit-928ka6",
+    "policy_files": []
+  }
+]

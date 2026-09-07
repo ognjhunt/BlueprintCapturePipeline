@@ -1,0 +1,40 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_________ test_completed_unscored_episode_is_not_interpretable[score0] _________
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4839/test_completed_unscored_episod0')
+score = {'status': 'undetermined', 'task_succeeded': None}
+
+    @pytest.mark.parametrize("score", [
+        {"status": "undetermined", "task_succeeded": None},
+        {"status": "not_scored"},
+    ])
+    def test_completed_unscored_episode_is_not_interpretable(tmp_path, score):
+        result = _result(tmp_path, score=score)
+        assert result["status"] == "completed_unqualified"
+>       assert all(row["policy_outcome_interpretable"] is False for row in result["episodes"])
+E       assert False
+E        +  where False = all(<generator object test_completed_unscored_episode_is_not_interpretable.<locals>.<genexpr> at 0x1067eea80>)
+
+tests/test_policy_comparison_integrity_audit.py:71: AssertionError
+_________ test_completed_unscored_episode_is_not_interpretable[score1] _________
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4839/test_completed_unscored_episod1')
+score = {'status': 'not_scored'}
+
+    @pytest.mark.parametrize("score", [
+        {"status": "undetermined", "task_succeeded": None},
+        {"status": "not_scored"},
+    ])
+    def test_completed_unscored_episode_is_not_interpretable(tmp_path, score):
+        result = _result(tmp_path, score=score)
+        assert result["status"] == "completed_unqualified"
+>       assert all(row["policy_outcome_interpretable"] is False for row in result["episodes"])
+E       assert False
+E        +  where False = all(<generator object test_completed_unscored_episode_is_not_interpretable.<locals>.<genexpr> at 0x1067efed0>)
+
+tests/test_policy_comparison_integrity_audit.py:71: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_policy_comparison_integrity_audit.py::test_completed_unscored_episode_is_not_interpretable[score0]
+FAILED tests/test_policy_comparison_integrity_audit.py::test_completed_unscored_episode_is_not_interpretable[score1]
+2 failed, 27 deselected in 1.81s
