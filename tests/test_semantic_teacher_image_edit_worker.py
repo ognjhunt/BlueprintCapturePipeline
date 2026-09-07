@@ -1255,3 +1255,101 @@ def test_expected_request_cost_without_a_cap_is_accepted(tmp_path: Path) -> None
     )
 
     assert result["successful_request_count"] == 1
+
+
+def _request_with_retained_candidate(tmp_path):
+    request_path, sources = _runtime_request(tmp_path)
+    generated = _png_bytes(size=(6, 4), color=(90, 100, 110), mode="RGB")
+    original = execute_semantic_teacher_image_edits(
+        runtime_request_path=request_path, output_root=tmp_path / "old-output",
+        token="fixture-secret", opener=lambda *_args, **_kwargs: _Response(_inline_response(generated)))
+    root = request_path.parent
+    old_request = root / "original-request.json"
+    old_request.write_bytes(request_path.read_bytes())
+    old_result = root / "original-result.json"
+    old_result.write_text(json.dumps(original))
+    candidate = root / "retained-candidate.png"
+    candidate.write_bytes(generated)
+    request = json.loads(request_path.read_text())
+    # A wider or corrected mask must not be claimed as the original API mask.
+    mask = root / request["tasks"][0]["frames"][0]["edit_mask"]["relative_path"]
+    mask.write_bytes(_png_bytes(size=(6, 4), color=(0, 0, 0, 0), mode="RGBA"))
+    request["tasks"][0]["frames"][0]["edit_mask"] = _record(mask, root=root)
+    request["retained_candidates"] = [{
+        "task_id": request["tasks"][0]["task_id"], "camera_id": "camera_0",
+        "source_runtime_request": _record(old_request, root=root),
+        "source_runtime_result": _record(old_result, root=root),
+        "candidate": _record(candidate, root=root),
+    }]
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request))
+    return request_path, original, generated, candidate
+
+
+def test_reuse_retains_original_mask_lineage_and_bills_only_new_calls(tmp_path):
+    request_path, original, generated, _ = _request_with_retained_candidate(tmp_path)
+    calls = []
+    def opener(*args, **kwargs):
+        calls.append(args)
+        return _Response(_inline_response(generated))
+    result = execute_semantic_teacher_image_edits(runtime_request_path=request_path,
+        output_root=tmp_path / "new-output", token="fixture-secret", opener=opener)
+    assert len(calls) == result["request_count"] == 1
+    assert result["retained_candidate_frame_count"] == 1
+    assert result["source_frame_count"] == 2
+    reused = result["tasks"][0]["frames"][0]
+    assert reused["provider_call_performed"] is False
+    assert reused["provider_usage"] is None
+    assert reused["computed_editor_cost_usd"] == 0
+    assert reused["retained_candidate_lineage"]["source_runtime_result_digest"] == original["result_digest"]
+    assert reused["retained_candidate_lineage"]["original_edit_mask_sha256"] != reused["edit_mask_sha256"]
+    assert reused["retained_candidate_lineage"]["current_repair_support_sha256"] == reused["edit_mask_sha256"]
+    assert result["computed_editor_cost_usd"] == pytest.approx(original["computed_editor_cost_usd"] / 2)
+
+
+def test_corrupt_retained_candidate_refuses_before_any_new_call(tmp_path):
+    request_path, _, _, candidate = _request_with_retained_candidate(tmp_path)
+    candidate.write_bytes(b"changed")
+    with pytest.raises(SemanticTeacherImageEditWorkerError, match="retained_candidate_invalid"):
+        execute_semantic_teacher_image_edits(runtime_request_path=request_path,
+            output_root=tmp_path / "new-output", token="fixture-secret",
+            opener=lambda *_args, **_kwargs: pytest.fail("called provider before reuse admission"))
+    assert not (tmp_path / "new-output").exists()
+
+
+def test_attach_retained_candidates_preserves_signed_original_evidence(tmp_path):
+    from blueprint_pipeline.semantic_teacher_candidate_reuse import attach_retained_candidates, load_retained_candidates
+    request_path, original, _, _ = _request_with_retained_candidate(tmp_path)
+    request = json.loads(request_path.read_text())
+    candidates = request.pop("retained_candidates")
+    for row in candidates:
+        for field in ("source_runtime_request", "source_runtime_result", "candidate"):
+            row[field]["path"] = str(request_path.parent / row[field].pop("relative_path"))
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request))
+    attach_retained_candidates(runtime_request_path=request_path, candidates=candidates)
+    updated = json.loads(request_path.read_text())
+    assert updated["request_digest"] == canonical_digest(updated, digest_field="request_digest")
+    reused = load_retained_candidates(request=updated, request_root=request_path.parent)
+    assert next(iter(reused.values()))["lineage"]["source_runtime_result_digest"] == original["result_digest"]
+
+
+@pytest.mark.parametrize("source_changed", [False, True])
+def test_selection_matches_exact_current_render_before_bundle_admission(tmp_path, source_changed):
+    from blueprint_pipeline.semantic_teacher_candidate_reuse import load_retained_selection
+    request_path, _, _, _ = _request_with_retained_candidate(tmp_path)
+    request = json.loads(request_path.read_text())
+    selection = {"schema_version": "semantic_teacher_retained_candidate_selection.v1",
+        "candidates": request["retained_candidates"]}
+    selection["selection_digest"] = canonical_digest(selection, digest_field="selection_digest")
+    selection_path = request_path.parent / "selection.json"
+    selection_path.write_text(json.dumps(selection))
+    digest = request["tasks"][0]["frames"][0]["input_rgb"]["sha256"]
+    render = {"derived_frames": [{"camera_id": "camera_0", "digest": "sha256:" + "0" * 64 if source_changed else digest}]}
+    if source_changed:
+        with pytest.raises(ValueError, match="source_changed"):
+            load_retained_selection(selection_path=selection_path, render=render)
+    else:
+        selected = load_retained_selection(selection_path=selection_path, render=render)
+        assert len(selected) == 1
+        assert Path(selected[0]["candidate"]["path"]).is_file()

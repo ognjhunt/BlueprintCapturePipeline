@@ -46,7 +46,10 @@ AI_REVIEW_MAX_INPUT_TOKENS = 80_000
 AI_REVIEW_MAX_OUTPUT_TOKENS = 8_000
 AI_REVIEW_MAX_FRAMES = 32
 _PROMPT = (
-    "Independently review every digest-identified final ArtiFixer frame. The "
+    "Independently review every digest-identified candidate frame, whether a composited "
+    "semantic training target or a rendered ArtiFixer output. Inspect the entire source "
+    "object footprint for surviving covers, pages, rims, fragments, outlines or shadows; "
+    "reject any such remnant or visible repair seam. The "
     "source anchor and generated candidate must both be right-side-up; reject "
     "any upside-down or incorrectly rolled frame. The "
     "target source object must be absent, the locally generated replacement "

@@ -304,6 +304,45 @@ def _materialize(tmp_path: Path) -> tuple[Path, dict, dict[str, Path | dict]]:
     return root, result, fixture
 
 
+def test_checkpoint_counts_reused_candidates_separately_from_new_model_calls(tmp_path):
+    fixture = _fixture(tmp_path)
+    request_path = fixture["request_path"]
+    request = json.loads(request_path.read_text())
+    result = json.loads(fixture["result_path"].read_text())
+    frame = request["tasks"][0]["frames"][0]
+    original_frame = result["tasks"][0]["frames"][0]
+    original_frame.update(source_rgb_sha256=frame["input_rgb"]["sha256"],
+                          edit_mask_sha256=frame["edit_mask"]["sha256"])
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    original_request_path = _write(request_path.parent / "original-request.json", request)
+    original_result_path = _write(request_path.parent / "original-result.json", result)
+    def relative_record(path):
+        return {"relative_path": path.relative_to(request_path.parent).as_posix(),
+                "size_bytes": path.stat().st_size, "sha256": _sha256(path)}
+    request["retained_candidates"] = [{"task_id": request["tasks"][0]["task_id"],
+        "camera_id": frame["camera_id"], "source_runtime_request": relative_record(original_request_path),
+        "source_runtime_result": relative_record(original_result_path),
+        "candidate": relative_record(Path(original_frame["semantic_teacher_frame"]["path"]))}]
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    _write(request_path, request)
+    result.update(source_runtime_request_digest=request["request_digest"], request_count=7,
+                  successful_request_count=7, retained_candidate_frame_count=1)
+    original_frame["provider_call_performed"] = False
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    _write(fixture["result_path"], result)
+    receipt = json.loads(fixture["receipt_path"].read_text())
+    receipt["editor_identity"]["result_digest"] = result["result_digest"]
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    _write(fixture["receipt_path"], receipt)
+    checkpoint = materialize_scene_configuration_diagnostic_checkpoint(
+        stage_production_input_path=fixture["stage_path"], render_inputs_result_path=fixture["render_path"],
+        semantic_runtime_request_path=request_path, semantic_runtime_result_path=fixture["result_path"],
+        semantic_teacher_receipt_path=fixture["receipt_path"], output_root=tmp_path / "checkpoint")
+    assert checkpoint["semantic_teacher"]["model_request_count"] == 7
+    assert checkpoint["semantic_teacher"]["retained_candidate_frame_count"] == 1
+    assert len([row for row in checkpoint["inventory"] if row["role"].startswith("retained_candidate:")]) == 3
+
+
 @pytest.mark.parametrize("tamper", [None, "preserved_pixels", "provenance"])
 def test_sixteen_retained_views_preserve_source_and_bind_provenance(tmp_path: Path, tamper: str | None) -> None:
     fixture = _fixture(tmp_path, camera_count=16, preservation_count=7, retained_control_plane=True)

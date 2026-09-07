@@ -563,6 +563,9 @@ def materialize_selective_repair_request(
         "retry_count": 0,
         "request_digest": "",
     }
+    # A failed camera needs a fresh provider edit; never inherit its historical
+    # candidate reuse instruction from the initial request.
+    repair_request.pop("retained_candidates", None)
     repair_request["request_digest"] = canonical_digest(
         repair_request, digest_field="request_digest"
     )
@@ -832,12 +835,17 @@ def merge_selective_repair_outputs(
                     root=request_path.parent,
                     code="scene_configuration_artifixer_selective_repair_mask_invalid",
                 )
+                core_record = locality_by_camera[str(source_frame["camera_id"])].get("object_core_mask")
+                core_path = (_bound_file(core_record,
+                    code="scene_configuration_artifixer_selective_repair_core_invalid")
+                    if core_record is not None else None)
                 seal_semantic_teacher_frame(
                     source_path=original,
                     mask_path=exact_mask,
                     raw_teacher_path=source,
                     mask_encoding=mask_encoding,
                     output_path=destination,
+                    object_core_mask_path=core_path,
                 )
             inventory.append(
                 {

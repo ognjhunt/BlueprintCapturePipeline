@@ -433,13 +433,25 @@ def _materialize_sam31_exact_mask_render_inputs(
     root.mkdir(parents=True)
     calibration_path = root / "artifixer_method_input_cameras.v1.json"
     calibration_path.write_text(canonical_json([calibrations[key] for key in camera_ids]) + "\n")
+    from .task_evaluation_scene_configuration_repair_support import materialize_repair_support
+    calibrated_masks = {row["camera_id"]: row for row in rendered.get("masks", [])}
+    if calibrated_masks:
+        _require(set(calibrated_masks) == set(camera_ids), "repair_support_camera_join_invalid")
     derived = []
     for index, camera_id in enumerate(camera_ids):
         frame = _copy(frame_paths[camera_id], root / "frames" / f"{index:04d}.png")
         mask = _copy(mask_paths[camera_id], root / "masks" / f"{index:04d}.png")
         with Image.open(mask_paths[camera_id]) as image:
             mask["foreground_pixel_count"] = int(np.count_nonzero(np.asarray(image)))
-        derived.append({"camera_id": camera_id, **frame, "source_object_mask": mask})
+        repair = {}
+        if calibrated_masks:
+            calibrated_mask = _file(calibrated_masks[camera_id], root=upstream_render.parent)
+            repair = materialize_repair_support(
+                calibrated_mask_path=calibrated_mask, sam_mask_path=mask_paths[camera_id],
+                source_frame_path=frame_paths[camera_id], calibration_digest=_sha(camera_file),
+                output_root=root / "repair-support" / f"{index:04d}",
+            )
+        derived.append({"camera_id": camera_id, **frame, "source_object_mask": mask, **repair})
     result = {
         "schema_version": "task_evaluation_scene_configuration_render_inputs.v1",
         "status": "derived_method_inputs_materialized",

@@ -175,6 +175,9 @@ def _normalized_semantic_request(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def _portable_render_template(render_inputs: Mapping[str, Any]) -> dict[str, Any]:
     value = json.loads(json.dumps(dict(render_inputs)))
+    # Historical raw candidates are retained in the semantic inventory. A
+    # hydrated render consumes sealed targets, not the old provider paths.
+    value.pop("retained_semantic_candidates", None)
     source = value.get("source_appearance") or {}
     source.pop("path", None)
     source["checkpoint_role"] = None
@@ -195,6 +198,10 @@ def _portable_render_template(render_inputs: Mapping[str, Any]) -> dict[str, Any
         mask.pop("path", None)
         mask["checkpoint_role"] = f"source_object_mask:{camera_id}"
         frame["source_object_mask"] = mask
+        for field in ("repair_support_mask", "repair_object_core"):
+            if field in frame:
+                frame[field].pop("path", None)
+                frame[field]["checkpoint_role"] = f"{field}:{camera_id}"
     cutout = value.get("derived_gaussian_cutout") or {}
     retained = cutout.get("retained_scene_without_source_object") or {}
     retained.pop("path", None)
@@ -461,7 +468,10 @@ def materialize_scene_configuration_diagnostic_checkpoint(
     request_rows = [row for task in semantic_request.get("tasks") or [] if isinstance(task, Mapping)
                     for row in task.get("frames") or [] if isinstance(row, Mapping)]
     preservation_count = sum(row.get("frame_role", "semantic_edit") == "source_preservation" for row in request_rows)
-    model_count = len(request_rows) - preservation_count
+    from .semantic_teacher_candidate_reuse import load_retained_candidates, RETAINED_FILE_FIELDS, _bound
+    retained_candidates = load_retained_candidates(request=semantic_request, request_root=request_path.parent)
+    retained_count = len(retained_candidates)
+    model_count = len(request_rows) - preservation_count - retained_count
     minimum_count = ((stage_input.get("configuration") or {}).get("required_views") or {}).get("minimum", 8)
     if (
         stage_input.get("schema_version")
@@ -479,7 +489,8 @@ def materialize_scene_configuration_diagnostic_checkpoint(
         or not 8 <= frame_count <= MAX_CHECKPOINT_CAMERAS
         or isinstance(minimum_count, bool) or not isinstance(minimum_count, int)
         or not 8 <= minimum_count <= frame_count
-        or len(request_rows) != frame_count or model_count < 1
+        or len(request_rows) != frame_count or model_count < 0
+        or len(request_rows) == preservation_count
         or semantic_request.get("schema_version") != _SEMANTIC_REQUEST_SCHEMA
         or semantic_request.get("request_digest")
         != canonical_digest(semantic_request, digest_field="request_digest")
@@ -493,6 +504,7 @@ def materialize_scene_configuration_diagnostic_checkpoint(
         or semantic_result.get("request_count") != model_count
         or semantic_result.get("successful_request_count") != model_count
         or semantic_result.get("preserved_source_frame_count", 0) != preservation_count
+        or semantic_result.get("retained_candidate_frame_count", 0) != retained_count
         or semantic_result.get("failed_request_count") != 0
         or semantic_result.get("raw_secret_values_recorded") is not False
         or teacher_receipt.get("schema_version") != _SEMANTIC_RECEIPT_SCHEMA
@@ -559,7 +571,7 @@ def materialize_scene_configuration_diagnostic_checkpoint(
     for camera, frame in zip(cameras, frames, strict=True):
         camera_id = camera["camera_id"]
         role = request_by_camera[camera_id].get("frame_role", "semantic_edit")
-        mask_path = _bound_file(frame["source_object_mask"], code="scene_configuration_diagnostic_checkpoint_mask_invalid")
+        mask_path = _bound_file(frame.get("repair_support_mask") or frame["source_object_mask"], code="scene_configuration_diagnostic_checkpoint_mask_invalid")
         with Image.open(mask_path) as image:
             histogram = image.convert("L").histogram()
         preserved = role == "source_preservation"
@@ -660,6 +672,13 @@ def materialize_scene_configuration_diagnostic_checkpoint(
                 role=f"semantic_teacher_frame:{camera['camera_id']}",
             )
             inventory.extend((raw_row, mask_row, edit_row))
+            for field in ("repair_support_mask", "repair_object_core"):
+                if field in frame:
+                    inventory.append(_copy_inventory_file(
+                        source=_bound_file(frame[field], code="scene_configuration_diagnostic_checkpoint_mask_invalid"),
+                        root=root, relative=f"render/{field}/{index:05d}.png",
+                        role=f"{field}:{camera['camera_id']}",
+                    ))
             checkpoint_frames.append(
                 {
                     **camera,
@@ -669,6 +688,13 @@ def materialize_scene_configuration_diagnostic_checkpoint(
                     "semantic_teacher_frame_role": edit_row["role"],
                 }
             )
+        for index, row in enumerate(semantic_request.get("retained_candidates", [])):
+            for field in RETAINED_FILE_FIELDS:
+                inventory.append(_copy_inventory_file(
+                    source=_bound(request_path.parent, row[field]), root=root,
+                    relative=f"semantic/retained/{index}/{field}" + (".png" if field == "candidate" else ".json"),
+                    role=f"retained_candidate:{row['camera_id']}:{field}",
+                ))
         for source, relative, role in (
             (request_path, "semantic/runtime_request.json", "semantic_runtime_request"),
             (result_path, "semantic/runtime_result.json", "semantic_runtime_result"),
@@ -740,6 +766,7 @@ def materialize_scene_configuration_diagnostic_checkpoint(
                 "completed_frame_count": frame_count,
                 "model_request_count": model_count,
                 "preserved_source_frame_count": preservation_count,
+                "retained_candidate_frame_count": retained_count,
                 "failed_frame_count": 0,
                 "status": f"completed_{frame_count}_of_{frame_count}_unreviewed_candidates",
             },
@@ -883,7 +910,7 @@ def validate_scene_configuration_diagnostic_checkpoint(
     preserved = sum(row.get("frame_role", "semantic_edit") == "source_preservation" for row in cameras)
     if (any(row.get("frame_role", "semantic_edit") not in {"semantic_edit", "source_preservation"} for row in cameras)
             or semantic.get("preserved_source_frame_count", 0) != preserved
-            or semantic.get("model_request_count", camera_count) != camera_count - preserved
+            or semantic.get("model_request_count", camera_count) != camera_count - preserved - semantic.get("retained_candidate_frame_count", 0)
             or camera_count == preserved):
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_camera_set_invalid"
@@ -1329,6 +1356,9 @@ def hydrate_scene_configuration_diagnostic_render_inputs(
     for frame in render["derived_frames"]:
         hydrate(frame)
         hydrate(frame["source_object_mask"])
+        for field in ("repair_support_mask", "repair_object_core"):
+            if field in frame:
+                hydrate(frame[field])
     cutout = render["derived_gaussian_cutout"]
     hydrate(cutout["retained_scene_without_source_object"])
     candidate = cutout.get("source_object_candidate")
@@ -1538,6 +1568,7 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
         "successful_request_count": semantic.get("model_request_count", len(request_camera_ids)),
         "source_frame_count": len(request_camera_ids),
         "preserved_source_frame_count": semantic.get("preserved_source_frame_count", 0),
+        "retained_candidate_frame_count": semantic.get("retained_candidate_frame_count", 0),
         "failed_request_count": 0,
         "computed_editor_cost_usd": float(computed_editor_cost_usd),
         "tasks": [

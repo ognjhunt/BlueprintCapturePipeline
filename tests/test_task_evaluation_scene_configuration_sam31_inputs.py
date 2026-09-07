@@ -88,6 +88,14 @@ def _sam_case(tmp_path, *, review_kind="human", monkeypatch=None, removal_only=F
     calibrated = json.loads(calibrated_path.read_text())
     calibrated["scene"].update(target_instance_id=task["source_object"]["instance_id"],
                                publisher_scene_id=scene_id)
+    calibrated_masks = []
+    for row in calibrated["derived_artifacts"]["images"]:
+        mask_path = calibrated_path.parent / f"calibrated-{row['camera_id']}.png"
+        with Image.open(fixture["images"] / Path(row["relative_path"]).name) as image:
+            Image.new("L", image.size, 255).save(mask_path)
+        calibrated_masks.append({"camera_id": row["camera_id"],
+                                 **_relative_record(calibrated_path.parent, mask_path)})
+    calibrated["derived_artifacts"]["masks"] = calibrated_masks
     calibrated["source_admission"] = {
         "standard_splat_conversion_receipt_digest": conversion["receipt_digest"],
     }
@@ -317,6 +325,11 @@ def test_accepted_sam_masks_and_measured_global_cutout_are_consumed_exactly(tmp_
                 envelope["sam31_exact_mask_inputs"][key]["path"]
             ).read_bytes()
     assert not any(path.name == raw.name for path in runtime.rglob("*"))
+    for row in portable["derived_frames"]:
+        for field in ("repair_support_mask", "repair_object_core"):
+            assert not Path(row[field]["path"]).is_absolute()
+            assert (runtime / row[field]["path"]).is_file()
+            assert row[field]["provenance"]["sam_ownership_evidence_modified"] is False
     originals = {row["camera_id"]: row for row in masks["tasks"][0]["masks"]}
     for row in result["derived_frames"]:
         assert Path(row["source_object_mask"]["path"]).read_bytes() == (

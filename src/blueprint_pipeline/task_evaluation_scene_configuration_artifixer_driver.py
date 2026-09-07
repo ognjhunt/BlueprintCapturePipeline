@@ -685,7 +685,7 @@ def _materialize_preflight(
     for row in render.get("derived_frames") or []:
         camera_id = str(row.get("camera_id") or "") if isinstance(row, Mapping) else ""
         frame = Path(str((row or {}).get("path") or "")).resolve()
-        mask_row = (row or {}).get("source_object_mask") or {}
+        mask_row = (row or {}).get("repair_support_mask") or (row or {}).get("source_object_mask") or {}
         mask = Path(str(mask_row.get("path") or "")).resolve()
         calibration = calibrations.get(camera_id)
         if not camera_id or calibration is None or not frame.is_file() or not mask.is_file():
@@ -707,6 +707,14 @@ def _materialize_preflight(
                 "scene_configuration_artifixer_frame_shape_or_mask_invalid"
             )
         pixel_count = histogram[255]
+        # A zero SAM observation is not evidence that the target is absent.
+        # Track-identity acceptance explicitly does not qualify per-view
+        # coverage; do not silently turn missed detections into training targets.
+        if not pixel_count:
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_repair_support_missing:"
+                + camera_id
+            )
         camera_input = {
             "task_id": task_id,
             "camera_id": camera_id,
@@ -1257,6 +1265,7 @@ def _run_artifixer_visual_review_round(
     environment: Mapping[str, str],
     post_training_binding_digest: str,
     max_cost_usd: float,
+    review_phase: str = "post_training",
 ) -> dict[str, Any]:
     """Call the unchanged independent gate for one exact candidate inventory."""
 
@@ -1264,6 +1273,7 @@ def _run_artifixer_visual_review_round(
         "schema_version": DUAL_TARGET_REVIEW_SCHEMA_VERSION,
         "status": "paired_target_frames_pending_independent_visual_review",
         "publisher_scene_id": publisher_scene_id,
+        "review_phase": review_phase,
         "review_scope": "source_anchor_exact_mask_and_generated_full_frame_comparison",
         "tasks": [
             {
@@ -1314,11 +1324,17 @@ def _run_artifixer_visual_review_round(
         if review_round == 0
         else f"artifixer_visual_review_provider_call_started_round_{review_round}.v1.json"
     )
+    if review_phase == "pre_training_semantic_targets":
+        marker_name = "artifixer_semantic_target_review_provider_call_started.v1.json"
     visual_review_call_marker = output_root / marker_name
     visual_review_call = {
         "schema_version": "artifixer_visual_review_provider_call_started.v1",
         "review_round": review_round,
-        "post_training_binding_digest": post_training_binding_digest,
+        "review_phase": review_phase,
+        "post_training_binding_digest": (
+            post_training_binding_digest if review_phase == "post_training" else None
+        ),
+        "source_candidate_binding_digest": post_training_binding_digest,
         "review_input_digest": review_input["receipt_digest"],
         "provider_call_may_have_occurred": True,
         "marker_digest": "",
@@ -1355,6 +1371,42 @@ def _run_artifixer_visual_review_round(
         "review_input": review_input,
         "review_input_path": review_input_path,
     }
+
+
+def _review_semantic_targets_before_training(
+    *, locality_seal: Mapping[str, Any], round_root: Path,
+    output_root: Path, publisher_scene_id: str, task_id: str, rights_path: Path,
+    configuration: Mapping[str, Any], stage_input: Mapping[str, Any],
+    environment: Mapping[str, str], max_cost_usd: float,
+) -> None:
+    """Review the actual composited training targets before invoking training."""
+    rows = locality_seal["receipt"].get("frames") or []
+    if not rows:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_semantic_target_review_inventory_missing"
+        )
+    root = Path(locality_seal["receipt_path"]).parent
+    frames = [{
+        "frame_index": index, "camera_id": row["camera_id"],
+        "source_frame": row["source_frame"],
+        "exact_repair_mask": row["exact_edit_mask"],
+        "final_frame": {**row["sealed_semantic_teacher"],
+            "path": str(root / row["sealed_semantic_teacher"]["relative_path"])},
+    } for index, row in enumerate(rows)]
+    round_root.mkdir(parents=True)
+    reviewed = _run_artifixer_visual_review_round(
+        review_round=0, review_phase="pre_training_semantic_targets",
+        round_root=round_root, output_root=output_root, review_frames=frames,
+        publisher_scene_id=publisher_scene_id, task_id=task_id, rights_path=rights_path,
+        configuration=configuration, stage_input=stage_input, environment=environment,
+        post_training_binding_digest=locality_seal["receipt"]["receipt_digest"],
+        max_cost_usd=max_cost_usd,
+    )
+    if (reviewed["review"].get("decision") != "accepted"
+            or not reviewed["review"].get("review_receipt")):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_semantic_targets_rejected_before_training"
+        )
 
 
 def execute_artifixer_component(
@@ -1518,6 +1570,13 @@ def execute_artifixer_component(
         maximum_cost_usd=semantic_cap,
         expected_request_cost_usd=expected_frame_cost,
     )
+    from .semantic_teacher_candidate_reuse import attach_retained_candidates
+    retained_candidates = envelope["render_inputs_result"].get("retained_semantic_candidates", [])
+    if not isinstance(retained_candidates, list) or (checkpoint_root is not None and retained_candidates):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_retained_candidates_invalid"
+        )
+    attach_retained_candidates(runtime_request_path=semantic_request, candidates=retained_candidates)
     token = ""
     if checkpoint_root is not None:
         semantic_result = hydrate_scene_configuration_diagnostic_semantic_outputs(
@@ -1568,6 +1627,11 @@ def execute_artifixer_component(
         semantic_runtime_result=semantic_result,
         semantic_output_root=semantic_output,
         output_root=work / "semantic_teacher_exact_support_locality_seal",
+        object_core_records_by_camera={
+            row["camera_id"]: row["repair_object_core"]
+            for row in envelope["render_inputs_result"]["derived_frames"]
+            if "repair_object_core" in row
+        },
     )
     teacher_receipt_path = work / "whole_frame_semantic_teacher.v1.json"
     materialize_whole_frame_semantic_teacher_receipt(
@@ -1613,6 +1677,17 @@ def execute_artifixer_component(
         )
         or 0
     )
+    if review_mode == REQUIRED_MODE:
+        # Reserve half the existing visual-review allowance for input QA. This
+        # does not increase the stage's model-spend authority.
+        target_review_cap = visual_review_cap / 2
+        _review_semantic_targets_before_training(
+            locality_seal=locality_seal, round_root=work / "semantic_target_review",
+            output_root=output_root, publisher_scene_id=publisher_scene_id,
+            task_id=task_id, rights_path=rights_path, configuration=configuration,
+            stage_input=stage_input, environment=values, max_cost_usd=target_review_cap,
+        )
+        visual_review_cap -= target_review_cap
     first_round_root = work / "artifixer_candidate_round_0"
     training = _run_artifixer_training_round(
         round_root=first_round_root,
@@ -1774,7 +1849,7 @@ def execute_artifixer_component(
                     "scene_configuration_artifixer_selective_repair_request_cap_invalid"
                 ) from exc
             base_request_count = int(semantic_result.get("request_count") or 0)
-            if maximum_openai_requests < base_request_count + selected_frame_count + 2:
+            if maximum_openai_requests < base_request_count + selected_frame_count + 3:
                 raise TaskEvaluationArtifixerSelectiveRepairError(
                     "scene_configuration_artifixer_selective_repair_request_cap_insufficient"
                 )
