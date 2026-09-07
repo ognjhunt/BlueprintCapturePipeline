@@ -26,6 +26,39 @@ from scripts import gpu_spend_guard as guard
 UTC = timezone.utc
 
 
+@pytest.mark.parametrize("fault", [None, "expired", "dead_owner", "wrong_deadline", "cancelled", "terminal"])
+def test_task_evaluation_watchdog_protects_only_its_live_bounded_owner(tmp_path, fault):
+    root = tmp_path / "task-evaluation-launch-runs/run/allocator/scene-configuration-job/independent_vast_watchdog"
+    root.mkdir(parents=True)
+    deadline = 4600.0
+    prefix = "blueprint-task-evaluation-scene-config-fixture-"
+    record = {
+        "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
+        "status": "armed", "provider": "vast", "independent_process": True,
+        "pre_deadline_provider_mutation_allowed": False,
+        "provider_mutation_trigger": "hard_deadline_only",
+        "watchdog_out_dir": str(root.resolve()), "deadline_epoch": deadline,
+        "pod_name_prefix": prefix, "name_prefix": prefix,
+    }
+    (root / "started_vast_instance_id.txt").write_text("50204295\n")
+    command = (f"python -m blueprint_pipeline.groot_oscar_runpod_watchdog --provider vast "
+               f"--out-dir {root} --pod-name-prefix {prefix} --deadline-epoch {deadline}")
+    now = 1000.0
+    if fault == "expired":
+        now = deadline + 1
+    elif fault == "dead_owner":
+        command = "unrelated-worker"
+    elif fault == "wrong_deadline":
+        command = command.replace(str(deadline), "4700.0")
+    elif fault == "cancelled":
+        (root / "groot_oscar_runpod_canary_watchdog_cancel.json").write_text("{}")
+    elif fault == "terminal":
+        record["status"] = "provider_terminal"
+    (root / "groot_oscar_runpod_canary_watchdog.json").write_text(json.dumps(record))
+    protected = guard.find_protected_pod_ids([tmp_path], process_cmdlines=[command], now=now)
+    assert protected == ({"50204295"} if fault is None else set())
+
+
 def _epoch(*args: int) -> float:
     return datetime(*args, tzinfo=UTC).timestamp()
 
