@@ -1332,9 +1332,12 @@ def find_protected_pod_ids(
     process references it, the launching run has died and the instance is an orphan
     (eligible for reaping), not protected.
     """
-    protected: set[str] = set()
     observed_at = _now() if now is None else float(now)
     cmdlines = [c for c in process_cmdlines if isinstance(c, str)]
+    output_roots = tuple(output_roots)
+    protected = _task_evaluation_watchdog_owned_ids(
+        output_roots, process_cmdlines=cmdlines, now=observed_at
+    )
     owner_files: list[_OwnerBinding] = []
     for filename in OWNER_ID_FILENAMES:
         owner_files.extend(_iter_owner_bindings(output_roots, filename))
@@ -1415,6 +1418,60 @@ def find_protected_pod_ids(
             ):
                 protected.add(launched_id)
                 break
+    return protected
+
+
+def _task_evaluation_watchdog_owned_ids(
+    output_roots: Iterable[Path | str], *, process_cmdlines: Sequence[str], now: float
+) -> set[str]:
+    """Protect Task Evaluation allocations only while their exact watchdog lives.
+
+    These jobs use the canonical bounded Vast watchdog, not the historical G1
+    qualification manifest. An id file alone never protects an orphan. Match
+    the live process's module, output directory, provider, prefix and deadline;
+    expired or terminal watchdog records confer no protection.
+    """
+    protected: set[str] = set()
+    for root in output_roots:
+        for path in Path(root).glob("**/independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json"):
+            text = _read_bounded_regular_text(path, max_bytes=MAX_QUALIFICATION_MANIFEST_BYTES)
+            if text is None or any(p.is_symlink() for p in path.parents):
+                continue
+            try:
+                value = json.loads(text)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(value, Mapping):
+                continue
+            deadline = value.get("deadline_epoch")
+            prefix = value.get("pod_name_prefix")
+            if (value.get("schema_version") != "groot_oscar_runpod_canary_watchdog.v1"
+                    or value.get("status") != "armed" or value.get("provider") != "vast"
+                    or value.get("independent_process") is not True
+                    or value.get("pre_deadline_provider_mutation_allowed") is not False
+                    or value.get("provider_mutation_trigger") != "hard_deadline_only"
+                    or value.get("watchdog_out_dir") != str(path.parent.resolve())
+                    or type(deadline) not in (int, float) or not now < deadline < now + 86400
+                    or not isinstance(prefix, str) or not prefix.startswith("blueprint-task-evaluation-")
+                    or value.get("name_prefix") != prefix
+                    or (path.parent / "groot_oscar_runpod_canary_watchdog_cancel.json").exists()):
+                continue
+            launched_id = _read_bounded_regular_text(
+                path.parent / "started_vast_instance_id.txt", max_bytes=MAX_OWNER_ID_BYTES
+            )
+            if launched_id is None or not launched_id.strip().isdigit():
+                continue
+            if any(
+                _cmd_option_references_exact_value(cmd, "-m", "blueprint_pipeline.groot_oscar_runpod_watchdog")
+                and _cmd_option_references_exact_value(cmd, "--provider", "vast")
+                and _cmd_option_references_exact_value(cmd, "--pod-name-prefix", prefix)
+                and _cmd_option_references_exact_value(cmd, "--deadline-epoch", str(deadline))
+                and _cmd_option_references_exact_path(
+                    cmd, "--out-dir", str(path.parent), candidate_targets=(str(path.parent),)
+                )
+                for cmd in process_cmdlines
+            ):
+                protected.add(launched_id.strip())
     return protected
 
 

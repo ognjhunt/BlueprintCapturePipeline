@@ -174,3 +174,21 @@ a resealed parent whose contents no longer match the child's original digest.
 The already-started 95 focused tests passed before the owner instructed a direct
 GPU restart without further test/replay cycles. No GPU was allocated for R16; its
 future execution was revoked and its failure evidence retained.
+
+
+## R17 loading instance reaped despite its live owner
+
+Instance 50204295 never reached the worker. Host journal evidence shows
+blueprint-gpu-spend-guard terminating it at 21:35:14 UTC, age 8m09s, as
+`unbooted_dud_past_boot_ttl`. Its independent Task Evaluation watchdog was armed
+and performed zero termination actions. The global ownership scan recognized
+legacy render and G1 qualification markers but skipped this canonical Task
+Evaluation watchdog directory.
+
+Protect Task Evaluation ids only while an armed, unexpired watchdog record
+matches a live process's exact module, output directory, provider, resource
+prefix and deadline. Terminal, cancelled, expired or unowned records do not
+protect resources. The eight-minute orphan threshold and paid/deadline limits
+remain unchanged. A focused ownership regression is included for hosted CI; no
+additional local test or replay cycle is started under the owner's direct-restart
+instruction. R17 startup failure, billing and teardown evidence remain retained.
