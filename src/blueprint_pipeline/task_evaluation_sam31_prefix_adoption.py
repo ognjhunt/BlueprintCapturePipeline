@@ -374,8 +374,8 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
         old_inputs.update(result["artifacts"])
         if phase == "standard_splat_conversion":
             old_inputs["standard_splat_conversion"] = old_inputs["standard_splat_conversion_receipt"]
-    from .task_evaluation_sam31_parent_evidence import _parent
-    _, state, parent_path = _parent(job, Path(parent_queue_root))
+    from .task_evaluation_sam31_parent_evidence import retained_parent
+    _, state, parent_path = retained_parent(job, Path(parent_queue_root))
     require(state in {"blocked", "completed", "materialized"}, "sam31_adoption_parent_not_terminal")
     value = {"schema_version": SCHEMA, "status": "verified_completed_prefix", "created_at_epoch": at,
              "source_commit": expected_source_commit, "current_release_root": str(current_repo_root),
