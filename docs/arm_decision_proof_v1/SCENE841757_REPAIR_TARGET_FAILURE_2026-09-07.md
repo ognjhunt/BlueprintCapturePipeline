@@ -47,3 +47,10 @@ bundle transport, driver rejection before training, and selective repair. The
 policy lifecycle rehearsal and provider import-closure tests protect the later
 paid runtime boundary. No repository-wide suite is required for this bounded
 experimental repair.
+
+The first real host reuse replay refused before allocation because original
+render PNG bytes differ from the RGB PNG re-encoding sent to the editor. Bundle
+admission now verifies the retained render bytes and reproduces the existing
+RGB staging before comparing the original request hash. Changed pixels or
+unbound source bytes still refuse. A service-user replay admitted all six
+selected R11 candidates against the retained render inputs without a model call.
