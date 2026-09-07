@@ -681,6 +681,7 @@ def _materialize_preflight(
     }
     task_id = "remove-source-object-" + str(source_object["publisher_instance_id"])
     camera_inputs: list[dict[str, Any]] = []
+    no_repair_support_camera_inputs: list[dict[str, Any]] = []
     for row in render.get("derived_frames") or []:
         camera_id = str(row.get("camera_id") or "") if isinstance(row, Mapping) else ""
         frame = Path(str((row or {}).get("path") or "")).resolve()
@@ -692,21 +693,43 @@ def _materialize_preflight(
                 "scene_configuration_artifixer_render_inputs_invalid"
             )
         with Image.open(mask) as image:
-            pixel_count = sum(1 for value in image.convert("L").getdata() if value > 0)
-        camera_inputs.append(
-            {
-                "task_id": task_id,
-                "camera_id": camera_id,
-                "calibration": calibration,
-                "retained_scene_before": _record(frame),
-                "exact_residual_mask": {**_record(mask), "pixel_count": pixel_count},
-            }
-        )
+            mask_size = image.size
+            histogram = image.convert("L").histogram()
+        with Image.open(frame) as image:
+            frame_size = image.size
+        intrinsics = (calibration.get("spec") or {}).get("intrinsics") or {}
+        if (
+            mask_size != frame_size
+            or frame_size != (intrinsics.get("width"), intrinsics.get("height"))
+            or any(histogram[1:255])
+        ):
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_frame_shape_or_mask_invalid"
+            )
+        pixel_count = histogram[255]
+        camera_input = {
+            "task_id": task_id,
+            "camera_id": camera_id,
+            "calibration": calibration,
+            "retained_scene_before": _record(frame),
+            "exact_residual_mask": {**_record(mask), "pixel_count": pixel_count},
+        }
+        # Full-room source views can have no exact repair support. Keep their
+        # original bytes bound as evidence, but never request inpainting of an
+        # empty mask or invent support to satisfy the repair-input contract.
+        if pixel_count:
+            camera_inputs.append(camera_input)
+        else:
+            no_repair_support_camera_inputs.append(camera_input)
     retained_row = (render.get("derived_gaussian_cutout") or {}).get(
         "retained_scene_without_source_object"
     ) or {}
     retained = Path(str(retained_row.get("path") or "")).resolve()
-    if not camera_inputs or not retained.is_file():
+    if not camera_inputs:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_repair_support_missing"
+        )
+    if not retained.is_file():
         raise TaskEvaluationSceneConfigurationArtifixerError(
             "scene_configuration_artifixer_render_inputs_invalid"
         )
@@ -736,6 +759,15 @@ def _materialize_preflight(
             ),
         },
         "camera_inputs": camera_inputs,
+        "no_repair_support_camera_inputs": no_repair_support_camera_inputs,
+        "camera_input_selection": {
+            "policy": "nonempty_exact_mask_repair_views_only",
+            "source_camera_count": len(camera_inputs) + len(no_repair_support_camera_inputs),
+            "repair_camera_count": len(camera_inputs),
+            "no_repair_support_camera_count": len(no_repair_support_camera_inputs),
+            "source_frames_and_masks_modified": False,
+            "unselected_views_retained_in_preflight": True,
+        },
         "preflight_digest": "",
     }
     preflight["preflight_digest"] = canonical_digest(preflight, digest_field="preflight_digest")

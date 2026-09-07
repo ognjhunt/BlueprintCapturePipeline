@@ -783,6 +783,66 @@ def test_generic_render_contract_feeds_released_artifixer_inputs(tmp_path: Path)
     assert candidate["receipt_digest"] == canonical_digest(candidate, digest_field="receipt_digest")
 
 
+def test_empty_support_views_remain_bound_outside_repair_inputs(tmp_path: Path) -> None:
+    envelope, configuration = _inputs(tmp_path)
+    render = envelope["render_inputs_result"]
+    frame = Path(render["derived_frames"][0]["path"])
+    empty_mask = tmp_path / "context-mask.png"
+    Image.new("L", (1024, 1024), color=0).save(empty_mask)
+    before = (_sha256(frame), _sha256(empty_mask))
+    calibration_path = Path(render["camera_calibration"]["path"])
+    calibrations = json.loads(calibration_path.read_text())
+    context_calibration = json.loads(json.dumps(calibrations[0]))
+    context_calibration["id"] = "context-camera"
+    calibration_path.write_text(json.dumps([context_calibration, *calibrations]))
+    render["derived_frames"].insert(0, {
+        "camera_id": "context-camera", "path": str(frame),
+        "source_object_mask": {"path": str(empty_mask)},
+    })
+    authority_path = tmp_path / "authority.json"
+    authority, _, _ = _write_execution_authority(
+        envelope=envelope, configuration=configuration, destination=authority_path
+    )
+    preflight_path = tmp_path / "preflight.json"
+    preflight, _ = _materialize_preflight(
+        envelope=envelope, configuration=configuration, authority=authority,
+        authority_path=authority_path, output_path=preflight_path,
+    )
+    candidate = materialize_artifixer3d_candidate_inputs(
+        calibrated_residual_preflight_path=preflight_path, output_root=tmp_path / "candidate"
+    )
+    assert [r["camera_id"] for r in preflight["camera_inputs"]] == ["camera-0"]
+    preserved = preflight["no_repair_support_camera_inputs"]
+    assert [r["camera_id"] for r in preserved] == ["context-camera"]
+    assert preserved[0]["exact_residual_mask"]["sha256"] == before[1]
+    assert preserved[0]["exact_residual_mask"]["pixel_count"] == 0
+    assert preflight["camera_input_selection"]["source_camera_count"] == 2
+    assert preflight["preflight_digest"] == canonical_digest(preflight, digest_field="preflight_digest")
+    assert candidate["tasks"][0]["camera_count"] == 1
+    assert (_sha256(frame), _sha256(empty_mask)) == before
+    assert len(render["derived_frames"]) == 2
+
+
+@pytest.mark.parametrize("mask_case", ["all_empty", "nonbinary", "wrong_shape"])
+def test_repair_view_selection_does_not_admit_invalid_support(
+    tmp_path: Path, mask_case: str
+) -> None:
+    envelope, configuration = _inputs(tmp_path)
+    mask = Path(envelope["render_inputs_result"]["derived_frames"][0]["source_object_mask"]["path"])
+    Image.new("L", (512, 512) if mask_case == "wrong_shape" else (1024, 1024),
+              color=127 if mask_case == "nonbinary" else 0).save(mask)
+    authority_path = tmp_path / "authority.json"
+    authority, _, _ = _write_execution_authority(
+        envelope=envelope, configuration=configuration, destination=authority_path
+    )
+    with pytest.raises(driver.TaskEvaluationSceneConfigurationArtifixerError,
+                       match="repair_support_missing" if mask_case == "all_empty" else "frame_shape_or_mask_invalid"):
+        _materialize_preflight(
+            envelope=envelope, configuration=configuration, authority=authority,
+            authority_path=authority_path, output_path=tmp_path / "preflight.json",
+        )
+
+
 def test_generic_candidate_feeds_existing_semantic_teacher_packet(tmp_path: Path) -> None:
     envelope, configuration = _inputs(tmp_path)
     authority_path = tmp_path / "authority.json"
