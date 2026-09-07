@@ -300,7 +300,9 @@ def provision_public_scene_intent(*, retained: Mapping[str, Any], owner_authorit
                                   machinery_output_path: str | Path,
                                   authenticated_client: str = "blueprint-webapp",
                                   trusted_clients: Sequence[str] = ("blueprint-webapp",),
-                                  now: float | None = None) -> dict[str, Any]:
+                                  now: float | None = None,
+                                  robot_binding_id: str | None = None,
+                                  robot_catalog_path: str | Path | None = None) -> dict[str, Any]:
     """Transform a scene's retained artifacts into a persistent public_scene intent.
 
     ``retained`` maps every required retained-artifact key (see ``_ABSENT_REASON``)
@@ -370,9 +372,34 @@ def provision_public_scene_intent(*, retained: Mapping[str, Any], owner_authorit
     machinery = _machinery(retained=retained, profile_registry_root=profile_registry_root,
                            maximum_preparation_spend_usd=maximum_preparation_spend_usd)
 
+    task = task_contract_projection(seed)
+    if (robot_binding_id is None) != (robot_catalog_path is None):
+        _fail("public_scene_robot_binding_incomplete")
+    if robot_binding_id is not None:
+        from .task_evaluation_controls_autoprovision import resolve_robot_catalog, _asset, payload_digest
+        if not intake._identifier(robot_binding_id):
+            _fail("public_scene_robot_binding_invalid")
+        catalog_ref = _reference(robot_catalog_path, reason="public_scene_robot_catalog_invalid")
+        catalog = resolve_robot_catalog(_load(robot_catalog_path,
+            reason="public_scene_robot_catalog_invalid", digest_field="catalog_digest"),
+            source_commit=release["source_commit"])
+        robot = catalog["bindings"].get(robot_binding_id)
+        if not isinstance(robot, dict) or robot.get("expected_production_commit") != release["source_commit"]:
+            _fail("public_scene_robot_binding_invalid")
+        _asset(robot["robot_asset_usd"])
+        _asset(robot["embodiment_camera_template"])
+        if payload_digest(Path(robot["runtime_source_payload_dir"])) != robot["runtime_digest"]:
+            _fail("public_scene_robot_catalog_invalid")
+        task["robot_binding_id"] = robot_binding_id
+        binding["intent_task_digest"] = cross_runtime_canonical_digest(task)
+        binding["binding_digest"] = canonical_digest(binding, digest_field="binding_digest")
+        machinery["robot_catalog"] = catalog_ref
+        machinery["machinery_digest"] = canonical_digest(machinery, digest_field="machinery_digest")
+
     request = {"schema_version": intake.REQUEST_SCHEMA, "submission_id": submission_id, "owner": dict(owner),
                "source": {"kind": "public_scene", "binding_id": binding_id, "content_digest": content_digest},
-               "task": task_contract_projection(seed), "execution": dict(execution), "consent": consent}
+               "task": task, "execution": dict(execution), "consent": consent}
+    intake.validate_request(request, now=moment)
 
     # A11: publish the immutable binding + machinery the worker resolves BEFORE
     # staging the persistent intent that makes the scene visible to the worker.
@@ -402,6 +429,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--owner-authority", required=True,
                         help="JSON owner standing authority ({owner, submission_id, execution, consent}).")
     parser.add_argument("--binding-id", required=True)
+    parser.add_argument("--robot-binding-id")
+    parser.add_argument("--robot-catalog-path")
     parser.add_argument("--profile-registry-root", required=True)
     parser.add_argument("--maximum-preparation-spend-usd", type=float, default=4.5)
     parser.add_argument("--intent-root", required=True)
@@ -417,7 +446,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         maximum_preparation_spend_usd=args.maximum_preparation_spend_usd, intent_root=args.intent_root,
         public_source_binding_root=args.public_source_binding_root,
         machinery_output_path=args.machinery_output_path, authenticated_client=args.authenticated_client,
-        trusted_clients=tuple(args.trusted_clients or ("blueprint-webapp",)))
+        trusted_clients=tuple(args.trusted_clients or ("blueprint-webapp",)),
+        robot_binding_id=args.robot_binding_id, robot_catalog_path=args.robot_catalog_path)
     print(json.dumps(result, sort_keys=True))
     return 0
 
