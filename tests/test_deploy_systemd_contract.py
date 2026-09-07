@@ -830,6 +830,12 @@ def test_sam31_profile_registry_is_content_bound_in_the_base_units():
     assert f"ReadOnlyPaths={FIXED}" not in registrar
 
 
+def test_activation_loads_operator_owned_preparation_routing():
+    assert "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env" in _read(
+        "blueprint-task-evaluation-launch-activation.service"
+    )
+
+
 def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read_credit():
     """The per-attempt credit guard and the hourly credit alert are opt-in in code
     (BLUEPRINT_VAST_CREDIT_GUARD_ENABLED); production turns them on in the unit files

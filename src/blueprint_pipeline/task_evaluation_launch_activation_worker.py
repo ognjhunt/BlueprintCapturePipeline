@@ -295,6 +295,13 @@ def _load_verified_preparation(
 ]:
     binding = activation_request["preparation"]
     preparation_id = str(binding["preparation_id"])
+    if os.environ.get("BLUEPRINT_TASK_EVALUATION_SCENE_PROGRESSION_CONFIG"):
+        from .task_evaluation_sam31_parent_evidence import configured_parent_route
+        preparation_queue_root, preparation_input_root = configured_parent_route(
+            {"parent_preparation_id": preparation_id,
+             "parent_request_digest": binding["request_digest"]},
+            preparation_queue_root, preparation_input_root,
+        )
     filename = (
         f"{preparation_id}-{str(binding['request_digest']).removeprefix('sha256:')}.json"
     )
@@ -456,6 +463,21 @@ def _load_verified_preparation(
                 str(row.get("digest") or ""),
                 int(row.get("size_bytes") or 0),
             )
+        from .task_evaluation_launch_preparation_worker import (
+            SUPPLEMENTAL_DESTINATION_CONTRACT_PREFIX,
+            SUPPLEMENTAL_DESTINATION_RECIPE_REFERENCE_FIELDS,
+            _validated_production_recipe,
+        )
+        recipe = _validated_production_recipe(
+            request=request, materialized_path=materialized_references["construction.recipe"]
+        )
+        destination = recipe.get("supplemental_destination")
+        if destination is not None:
+            for field in SUPPLEMENTAL_DESTINATION_RECIPE_REFERENCE_FIELDS:
+                ref = destination[field]
+                expected_references[f"{SUPPLEMENTAL_DESTINATION_CONTRACT_PREFIX}.{field}"] = (
+                    ref["digest"], ref["size_bytes"]
+                )
     if request["run_mode"] == "episode_evaluation":
         revision_path = materialized_references.get("scene.configured_revision")
         try:
