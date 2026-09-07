@@ -49,5 +49,9 @@ Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true
 # environment file once the work volume is attached.  Without them the controller
 # only measures, forecasts and alerts.
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+# Reopen the same retained scene reservations used by activation when the
+# scene-preparation installer has provisioned a monitor config. Missing config
+# keeps the optional monitor disabled; activation itself remains fail-closed.
+EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
 WorkingDirectory=/
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.control_plane_capacity_controller'

@@ -151,6 +151,62 @@ def test_real_prefix_chain_rejects_changed_evidence(prefix, tmp_path, fault):
         adoption._phase_chain(value, (tmp_path,))
 
 
+def test_real_phase_chain_rejects_duplicate_child_owner_states(prefix, tmp_path):
+    """A completed child is not reusable while another queue state owns its id."""
+    value, _, _, _ = prefix
+    completed = Path(value["phase_records"][0]["job"]["path"])
+    processing = completed.parent.parent / "processing" / completed.name
+    processing.parent.mkdir(parents=True, exist_ok=True)
+    processing.write_bytes(completed.read_bytes())
+    with pytest.raises(ValueError, match="sam31_adoption_job_identity_ambiguous"):
+        adoption._phase_chain(value, (tmp_path,))
+
+
+def test_adoption_retry_returns_immutable_record_after_fresh_zero(tmp_path, monkeypatch):
+    """A retry rechecks live zero but never regenerates a new adoption digest."""
+    zero = write(tmp_path / "zero.json", {
+        "provider": "vast", "status": "observed", "api_confirmed": True,
+        "name_prefix": "", "live_resource_count": 0, "resources": [],
+        "http": 200, "observed_at_epoch": 1000.,
+    })
+    provider = write(tmp_path / "provider.json", {"profile": "current"})
+    plan = write(tmp_path / "plan.json", {"plan": "retained"})
+    profile = write(tmp_path / "profile.json", {"profile": "retained"})
+    host = {"task_request": write(tmp_path / "task.json", {"task": "current"})}
+    existing = {
+        "schema_version": adoption.SCHEMA,
+        "status": "verified_completed_prefix",
+        "source_commit": NEW,
+        "original_parent_request_digest": "sha256:" + "c" * 64,
+        "current_release_root": str(tmp_path / "release"),
+        "current_sam31_provider_profile": provider,
+        "current_host_inputs": host,
+        "source_plan": plan,
+        "source_profile": profile,
+        "through_phase": "calibrated_views",
+        "adoption_digest": "",
+    }
+    output = tmp_path / "adoption.json"
+    write(output, existing, "adoption_digest")
+    before = output.read_bytes()
+    checks = []
+    monkeypatch.setattr(
+        adoption, "validate_completed_prefix_adoption",
+        lambda value, **kwargs: checks.append((value, kwargs)),
+    )
+    result = adoption.materialize_completed_prefix_adoption(
+        source_plan_path=plan["path"], source_profile_path=profile["path"],
+        parent_request_digest=existing["original_parent_request_digest"],
+        through_phase="calibrated_views", current_host_inputs=host,
+        current_provider_profile_path=provider["path"],
+        current_repo_root=existing["current_release_root"], expected_source_commit=NEW,
+        provider_zero_path=zero["path"], output_path=output, approved_roots=(tmp_path,),
+        now_epoch=1001.,
+    )
+    assert result == json.loads(before.decode())
+    assert output.read_bytes() == before and checks
+
+
 @pytest.mark.parametrize("field", ["subject", "success", "support", "instruction", "destination"])
 def test_task_science_does_not_allow_scientific_changes(field):
     before = {"expected_production_commit": OLD, "run_prefix": "old", field: {"value": 1}}

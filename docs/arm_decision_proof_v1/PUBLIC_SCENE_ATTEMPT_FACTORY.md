@@ -100,10 +100,15 @@ root, `release_admission_mode`, and immutable `namespace_timestamp`. The reserve
 attempt must bind that commit/runtime and the source binding's `binding_digest`.
 The intent must admit every used provider (`vast` and `openai`).
 
-When retained prefixes exist, the release binding must provide fresh global
-`provider_zero` evidence and may provide `sam31_billing_source` for discovered
-SAM/cutout prefixes. Missing reconciliation blocks reuse preparation; it does
-not silently authorize redoing paid work. The selector tries the longest
+When retained prefixes exist, the factory performs a fresh, read-only global
+Vast inventory query through `VastRenderProvider.billable_inventory(name_prefix="")`
+immediately before adoption. The resulting digest-bound observation is retained
+under the attempt's output and is deliberately absent from the static release
+binding; a stale release snapshot can never grant reuse or spend authority. A
+discovered SAM/cutout prefix may carry its original `sam31_billing_source`, which
+is reopened and validated only when that longer prefix is selected. Missing,
+stale, nonzero or ambiguous inventory blocks reuse preparation; it does not
+silently authorize redoing paid work. The selector tries the longest
 scientifically compatible prefix and retains rejection evidence. A local format
 conversion may rerun when required by the current conversion contract; original
 publisher files are not reinstalled. Immutable publisher assets are hard-linked

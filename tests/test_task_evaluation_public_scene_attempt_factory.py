@@ -105,6 +105,8 @@ def context(tmp_path, monkeypatch, request):
         "accepted_by": "nijelhunt_1", "accepted_on": "2026-09-05", "human_authority_reference": "fixture-terms"}, "attestation_digest")
     now = time.time()
     owner = owner_request()
+    from blueprint_pipeline.task_evaluation_scene_policy_capability import supported_policy_candidates
+    owner["execution"]["policy_candidates"] = supported_policy_candidates()
     owner["source"] = {"kind": "public_scene", "binding_id": "public-scene-1",
         "content_digest": factory.public_source_content_digest(installation)}
     owner["task"] = task_contract_projection(seed)
@@ -338,3 +340,48 @@ def test_changed_source_task_owner_or_attempt_cannot_materialize(context, fault)
         with pytest.raises(ValueError):
             factory.materialize_public_scene_attempt(**args)
     assert not (args["output_root"] / "submission").exists()
+
+
+def test_discovered_prefix_uses_live_account_observation_without_static_release_zero(context, tmp_path, monkeypatch):
+    from blueprint_pipeline import gpu_render_providers as providers
+    from blueprint_pipeline.task_evaluation_sam31_phase_queue import enqueue_sam31_phase
+    args, _ = context
+    first = factory.materialize_public_scene_attempt(**args)
+    plan_path = args["output_root"] / "submission/configuration/sam31_preparation_plan.v1.json"
+    plan = json.loads(plan_path.read_text())
+    queue = tmp_path / "child-queue"
+    queued = enqueue_sam31_phase(queue_root=queue, parent_preparation_id="prior-preparation",
+        parent_request_digest="sha256:" + "a" * 64, expected_source_commit=first["source_commit"],
+        plan_ref=ref(plan_path), phase="calibrated_views", inputs=plan["host_inputs"])
+    job = Path(queued["job_path"])
+    job.rename(queue / "completed" / job.name)
+    machinery = json.loads(args["machinery_path"].read_text())
+    machinery.update(child_queue_root=str(queue), parent_queue_root=str(tmp_path / "parents"),
+                     execution_root=str(tmp_path / "executions"),
+                     release_retention_binding_root=str(tmp_path / "retention"))
+    updated = write(tmp_path / "second-machinery.json", machinery, "machinery_digest")
+    release_bytes = args["release_binding_path"].read_bytes()
+    assert "provider_zero" not in json.loads(release_bytes)
+    calls = []
+    class ReadOnly:
+        def billable_inventory(self, *, name_prefix):
+            calls.append(name_prefix)
+            return dict(provider="vast", status="observed", api_confirmed=True, name_prefix=name_prefix,
+                        live_resource_count=0, resources=[], http=200, observed_at_epoch=time.time(),
+                        raw_provider_response_recorded=False)
+    monkeypatch.setattr(providers, "get_render_provider", lambda name: ReadOnly())
+    output = tmp_path / "second-factory"
+    second = factory.materialize_public_scene_attempt(**{**args, "machinery_path": updated, "output_root": output})
+    assert second["status"] == "publication_ready" and calls == [""]
+    selection = json.loads((output / "prefix_selection.json").read_text())
+    # The real selector sees an incomplete historical prefix and preserves its
+    # rejection, rather than inventing a completed/scientific receipt.
+    assert selection["status"] == "no_reusable_prefix"
+    assert len(selection["candidate_selections"]) == 1
+    assert selection["candidate_selections"][0]["rejected_candidates"]
+    assert Path(selection["provider_zero_observation"]["path"]).is_file()
+    assert args["release_binding_path"].read_bytes() == release_bytes
+    selection_bytes = (output / "prefix_selection.json").read_bytes()
+    third = factory.materialize_public_scene_attempt(**{**args, "machinery_path": updated, "output_root": output})
+    assert third == second
+    assert (output / "prefix_selection.json").read_bytes() == selection_bytes

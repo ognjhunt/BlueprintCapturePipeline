@@ -39,7 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from . import task_evaluation_scene_intake as intake
 from . import task_evaluation_scene_policy_binding as scene_policy
@@ -74,6 +74,18 @@ PUBLICATION_POINTER_UNREADABLE = "terminal_result_publication_pointer_unreadable
 PUBLICATION_POINTER_UNBOUND = "terminal_result_publication_pointer_unbound"
 PUBLICATION_POINTER_INVALID = "terminal_result_publication_pointer_invalid"
 PUBLICATION_INDEX_INVALID = "terminal_result_publication_index_invalid"
+NONEXECUTION_FILENAME = "policy_canary_nonexecution.json"
+NONEXECUTION_STATE_FILENAME = "nonexecution_terminal_state.json"
+NONEXECUTION_STATE_SCHEMA = "task_evaluation_scene_nonexecution_terminal_state.v1"
+NONEXECUTION_STATUSES = frozenset(
+    {
+        "prepared_no_execution",
+        "blocked_before_paid_dispatch",
+        "blocked_awaiting_website_notification",
+        "blocked_without_provider_allocation",
+        "blocked_without_provider_allocation_awaiting_notification",
+    }
+)
 
 
 class TerminalReconciliationError(ValueError):
@@ -208,6 +220,102 @@ def _owner_binding(directory: Path, *, intent: dict, config: dict, release: dict
     return binding, attempt, profile, launch_request, projection
 
 
+def _nonexecution_owner_result(
+    *, directory: Path, intent: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Join a producer's preprovider/dry-run record without paid evidence.
+
+    These records are intentionally outside the normal policy-canary terminal
+    set: they have no policy projection, publication, or provider-zero receipt.
+    The dedicated index copies one sealed producer record into the owner
+    directory, where this read-only branch exposes either an awaiting-execution
+    dry-run or a truthful blocked owner status.
+    """
+
+    path = directory / NONEXECUTION_FILENAME
+    value = _read_json(path)
+    if value is None:
+        return None
+    schema = value.get("schema_version")
+    digest_field = (
+        "blocked_result_digest"
+        if schema == "task_evaluation_policy_canary_preprovider_blocked.v1"
+        else "receipt_digest"
+    )
+    if (
+        schema
+        not in {
+            "task_evaluation_policy_canary_preprovider_blocked.v1",
+            "task_evaluation_policy_canary_dispatch.v1",
+        }
+        or value.get("status") not in NONEXECUTION_STATUSES
+        or value.get("run_kind") != POLICY_CANARY_RUN_KIND
+        or value.get("claim_ceiling") != DIAGNOSTIC_CLAIM_CEILING
+        or value.get("provider_mutation_performed") is not False
+        or value.get("provider_allocation_performed") is not False
+        or value.get("provider_zero_required") is not False
+        or value.get("provider_zero_not_applicable") is not True
+        or value.get("paid_execution_requested") is not False
+        or value.get("automatic_retry_authorized") is not False
+        or value.get("automatic_retry_performed") is not False
+        or value.get("retry_cap") != 0
+        or value.get("provider_call_reached") is not False
+        or not _is_digest(value.get(digest_field))
+        or value.get(digest_field) != canonical_digest(value, digest_field=digest_field)
+        or "provider_zero" in value
+        or "policy_canary_result_projection" in value
+        or "terminal_result_publication" in value
+    ):
+        return None
+    run_id = value.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        return None
+    # The index only files into the owner directory after a launch bridge joins
+    # this run id.  Recheck the bridge here so a stale copied record can never
+    # be adopted by a different owner intent.
+    request = _read_json(directory / "launch_request.json")
+    if request is None or request.get("run_id") != run_id:
+        return None
+    state = _read_json(directory / NONEXECUTION_STATE_FILENAME)
+    if (
+        state is None
+        or state.get("schema_version") != NONEXECUTION_STATE_SCHEMA
+        or state.get("run_id") != run_id
+        or state.get("record_digest") != value[digest_field]
+        or state.get("status") != value["status"]
+        or state.get("state_digest") != canonical_digest(state, digest_field="state_digest")
+    ):
+        return None
+    result_record = _record(path)
+    state_record = {
+        "terminal_nonexecution": result_record,
+        "terminal_nonexecution_state": _record(directory / NONEXECUTION_STATE_FILENAME),
+        "run_id": run_id,
+        "status": value["status"],
+    }
+    if value["status"] == "prepared_no_execution":
+        return {
+            "terminal": False,
+            "status": "awaiting_execution",
+            "phase": "policy_canary_prepared",
+            "blockers": ["policy_canary_execution_not_requested"],
+            "result_reference": None,
+            "state": state_record,
+        }
+    blockers = [str(item) for item in value.get("blockers") or [] if str(item)]
+    terminal_sync = value.get("terminal_sync")
+    if not isinstance(terminal_sync, Mapping) or terminal_sync.get("status") != "succeeded":
+        blockers.append("policy_canary_website_notification_pending")
+    return {
+        "terminal": True,
+        "status": "blocked",
+        "phase": "policy_canary_preprovider_blocked",
+        "blockers": sorted(set(blockers or ["policy_canary_preprovider_blocked"])),
+        "result_reference": None,
+        "state": state_record,
+    }
+
+
 def _dispatch_receipt(directory: Path, projection: dict) -> dict | None:
     """Validate the dispatcher's sealed receipt as THIS run's binder.
 
@@ -336,6 +444,9 @@ def reconcile_terminal_owner_result(*, intent: dict, config: dict, release: dict
     directory = _safe_path(Path(root) / intent["intent_id"])
     if not directory.is_dir():
         return None
+    nonexecution = _nonexecution_owner_result(directory=directory, intent=intent)
+    if nonexecution is not None:
+        return nonexecution
     bound = _owner_binding(directory, intent=intent, config=config, release=release)
     if bound is None:
         return None
@@ -456,6 +567,9 @@ __all__ = [
     "DISPATCH_RECEIPT_FILENAME",
     "DISPATCH_RECEIPT_SCHEMA",
     "JOIN_SCHEMA",
+    "NONEXECUTION_FILENAME",
+    "NONEXECUTION_STATE_FILENAME",
+    "NONEXECUTION_STATE_SCHEMA",
     "PROVIDER_ZERO_SCHEMA",
     "PUBLICATION_SCHEMA",
     "TERMINAL_JOIN_FILENAME",
