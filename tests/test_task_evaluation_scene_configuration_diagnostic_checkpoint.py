@@ -164,7 +164,7 @@ def _fixture(tmp_path: Path, *, camera_count: int = 8, preservation_count: int =
                  "standard_splat_conversion", "track_selection_review")
         render_result.update(render_completed_on_provider=False, render_execution_site="control_plane",
             provider_render_required=False,
-            raw_interiorgs_bytes_in_provider_packet=False, full_source_scene_content_in_provider_packet=False,
+            raw_interiorgs_bytes_in_provider_packet=False, full_source_scene_content_in_provider_packet=True,
             source_splat_bytes_retained_on_control_plane=True,
             source_object_masks={"source": "sam31_reviewed_calibrated_object_masks",
                                  "all_masks_digest_bound": True, "count": camera_count},
@@ -335,6 +335,7 @@ def test_sixteen_retained_views_preserve_source_and_bind_provenance(tmp_path: Pa
         checkpoint_root=tmp_path / "checkpoint", expected_scientific_binding_digest=value["scientific_bindings"]["binding_digest"])
     assert len(hydrated["derived_frames"]) == 16
     assert len(hydrated["sam31_evidence_records"]) == 7
+    assert hydrated["full_source_scene_content_in_provider_packet"] is True
     assert "path" not in hydrated["source_appearance"]
 
 

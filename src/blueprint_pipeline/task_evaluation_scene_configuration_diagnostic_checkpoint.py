@@ -215,24 +215,24 @@ def _portable_render_template(render_inputs: Mapping[str, Any]) -> dict[str, Any
 
 def _retained_render_provenance(render_inputs: Mapping[str, Any]) -> dict[str, Path]:
     """Reopen admitted SAM/render provenance without requiring publisher bytes."""
-    if render_inputs.get("render_completed_on_provider") is True:
-        return {}
+    provider_rendered = render_inputs.get("render_completed_on_provider") is True
     masks = render_inputs.get("source_object_masks") or {}
     renderer = render_inputs.get("renderer_runtime") or {}
     records = render_inputs.get("sam31_evidence_records") or {}
     required = {"calibrated_mask_set", "segment_cutout_set", "selection_inputs",
                 "source_render_conversion", "source_render_receipt",
                 "standard_splat_conversion", "track_selection_review"}
-    if (render_inputs.get("render_execution_site") != "control_plane"
+    if provider_rendered and not records:
+        return {}
+    if ((not provider_rendered and (render_inputs.get("render_execution_site") != "control_plane"
             or render_inputs.get("provider_render_required") is not False
             or render_inputs.get("raw_interiorgs_bytes_in_provider_packet") is not False
-            or render_inputs.get("full_source_scene_content_in_provider_packet") is not False
             or render_inputs.get("source_splat_bytes_retained_on_control_plane") is not True
             or masks.get("source") != "sam31_reviewed_calibrated_object_masks"
             or masks.get("all_masks_digest_bound") is not True
             or masks.get("count") != render_inputs.get("derived_frame_count")
             or renderer.get("authorization_class") != "method_input"
-            or renderer.get("purpose_bound") is not True
+            or renderer.get("purpose_bound") is not True))
             or not isinstance(records, Mapping) or set(records) != required):
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_render_provenance_invalid"
