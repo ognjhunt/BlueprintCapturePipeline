@@ -36,6 +36,8 @@ _COMMIT = re.compile(r"[0-9a-f]{40}")
 _SCORER_SOURCES = (
     "src/blueprint_pipeline/adp_task_scoring.py",
     "src/blueprint_pipeline/adp009d_task_scoring.py",
+    "src/blueprint_pipeline/adp_rigid_task_scoring.py",
+    "src/blueprint_pipeline/adp_rigid_retreat_scoring.py",
     "src/blueprint_pipeline/articulation_graph_contract.py",
     "src/blueprint_pipeline/decision_evidence_contracts.py",
 )

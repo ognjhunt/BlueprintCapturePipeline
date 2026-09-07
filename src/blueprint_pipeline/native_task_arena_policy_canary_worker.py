@@ -1331,6 +1331,10 @@ def _aggregate_isolated_cell_results(
     candidate_ids = tuple(str(value) for value in inputs["candidate_ids"])
     if len(child_results) != len(inputs["cells"]):
         raise RuntimeError("policy_canary_isolated_cell_result_count_invalid")
+    indices = [child.get("selected_cell_index") for child in child_results]
+    if any(isinstance(index, bool) or not isinstance(index, int) for index in indices) or set(indices) != set(range(len(inputs["cells"]))):
+        raise RuntimeError("policy_canary_isolated_cell_indices_invalid")
+    child_results = sorted(child_results, key=lambda child: child["selected_cell_index"])
     episodes: list[dict[str, Any]] = []
     for index, child in enumerate(child_results):
         if (
@@ -1343,12 +1347,20 @@ def _aggregate_isolated_cell_results(
             != inputs.get("task_success_contract")
             or child.get("task_success_contract_digest")
             != inputs.get("task_success_contract_digest")
+            or child.get("result_digest") != canonical_digest(child, digest_field="result_digest")
         ):
             raise RuntimeError("policy_canary_isolated_cell_result_invalid")
+        cell = inputs["cells"][index]
+        for row in child["episodes"]:
+            if any(row.get(field) != cell.get(field) for field in (
+                "cell_id", "seed", "cell_spec_digest", "family",
+                "resolved_scenario", "resolved_scenario_digest",
+            )):
+                raise RuntimeError("policy_canary_isolated_cell_scenario_binding_invalid")
         prefix = f"cell_runs/{index:02d}"
         episodes.extend(
             _prefix_episode_evidence_paths(row, prefix=prefix)
-            for row in child["episodes"]
+            for row in sorted(child["episodes"], key=lambda row: str(row.get("candidate_id")))
         )
     expected = {
         (candidate, str(cell["cell_id"]), int(cell["seed"]))

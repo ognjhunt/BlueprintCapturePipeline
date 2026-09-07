@@ -526,6 +526,40 @@ def _project_media_reserve_bytes(
     )
 
 
+def _validate_task_reset_restoration(
+    initial: Mapping[str, Any], restored: Mapping[str, Any], task_spec: Mapping[str, Any]
+) -> None:
+    """Compare measured task reset fields, excluding episode bookkeeping.
+
+    Only frozen reset tolerances permit numerical differences. This is a task
+    readback check, not a claim that camera/physics configuration was measured.
+    """
+    fields = {
+        "can_pose_world", "task_object_pose_world", "destination_pose_world",
+        "joint_positions_rad", "joint_velocities_rad_s", "gripper_width_m",
+        "task_contact_active", "support_contact_active", "finger_contact_forces_n",
+        "robot_collision_failure", "scene_collision_failure", "containment_violation",
+        "forbidden_robot_task_collision_failure", "locked_joint_containment_violation",
+    }
+    for field in fields & (set(initial) | set(restored)):
+        left, right = initial.get(field), restored.get(field)
+        matches = field in initial and field in restored and left == right
+        if field.endswith("pose_world") and isinstance(left, list) and isinstance(right, list):
+            if len(left) == len(right) == 7:
+                prefix = "destination_" if field == "destination_pose_world" else ""
+                translation_tolerance = float(task_spec.get(prefix + "reset_translation_tolerance_m", 0.0))
+                rotation_key = "destination_reset_rotation_tolerance_rad" if prefix else "reset_orientation_tolerance_rad"
+                rotation_tolerance = float(task_spec.get(rotation_key, 0.0))
+                finite = all(math.isfinite(float(v)) for v in [*left, *right])
+                # q and -q represent the same physical rotation.
+                dot = abs(sum(float(a) * float(b) for a, b in zip(left[3:], right[3:], strict=True)))
+                matches = finite and math.dist(left[:3], right[:3]) <= translation_tolerance and (
+                    left[3:] == right[3:] or 2 * math.acos(min(1.0, dot)) <= rotation_tolerance
+                )
+        if not matches:
+            raise PolicyEpisodeError([f"{BLOCKER_PRESTART_READINESS}:task_reset_state_mismatch:{field}"])
+
+
 def _prestart_episode_readiness(
     *,
     environment: EpisodeEnvironment,
@@ -539,6 +573,7 @@ def _prestart_episode_readiness(
     max_policy_queries: int,
     open_loop_horizon: int,
     settle_window_samples: int,
+    task_spec: Mapping[str, Any],
     observation_integrity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Exercise every predictable runtime seam, then restore canonical reset.
@@ -711,6 +746,7 @@ def _prestart_episode_readiness(
         raise PolicyEpisodeError(
             [f"{BLOCKER_PRESTART_READINESS}:canonical_reset_state_mismatch"]
         )
+    _validate_task_reset_restoration(initial_task_sample, restored_task_sample, task_spec)
     queried = bool(getattr(policy, "candidate_policy_queried", False))
     readiness = seal_prestart_readiness(
         {
@@ -748,6 +784,8 @@ def _prestart_episode_readiness(
             "reset_joint_positions_rad": reset_joints,
             "probe_joint_positions_rad": probe_joints,
             "restored_joint_positions_rad": restored_joints,
+            "initial_task_sample": initial_task_sample,
+            "restored_task_sample": restored_task_sample,
             "initial_task_sample_digest": canonical_digest(initial_task_sample),
             "probe_task_sample_digest": canonical_digest(probe_task_sample),
             "restored_task_sample_digest": canonical_digest(restored_task_sample),
@@ -937,15 +975,13 @@ def run_policy_episode(
             max_policy_queries=int(max_policy_queries),
             open_loop_horizon=int(open_loop_horizon),
             settle_window_samples=int(settle_window_samples),
+            task_spec=resolved_task_spec,
             observation_integrity=observation_integrity,
         )
         episode_progress["prestart_readiness"] = prestart_readiness
         episode_progress["episode_readiness_verified"] = True
         _emit_progress("episode_readiness_verified")
     episode_started_monotonic = time.monotonic()
-    if require_prestart_readiness:
-        episode_progress["episode_started"] = True
-        _emit_progress("episode_started")
     timings_seconds = {
         "reset_and_initial_state": 0.0,
         "policy_input_read": 0.0,
@@ -980,6 +1016,16 @@ def run_policy_episode(
         )
     )
     previous_index = step_index
+    if require_prestart_readiness:
+        _validate_task_reset_restoration(
+            prestart_readiness["restored_task_sample"], samples[0], resolved_task_spec
+        )
+        if any(abs(left - right) > ARM_MOTION_EPSILON_RAD for left, right in zip(
+            prestart_readiness["restored_joint_positions_rad"], joint_trace[0], strict=True
+        )):
+            raise PolicyEpisodeError([f"{BLOCKER_PRESTART_READINESS}:canonical_reset_state_mismatch"])
+        episode_progress["episode_started"] = True
+        _emit_progress("episode_started")
     timings_seconds["reset_and_initial_state"] += time.monotonic() - phase_started
 
     queries: list[dict[str, Any]] = []
