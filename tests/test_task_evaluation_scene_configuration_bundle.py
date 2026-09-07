@@ -1942,6 +1942,50 @@ def test_provider_runner_hydrates_only_digest_bound_runtime_paths(tmp_path: Path
         raise AssertionError("tampered provider input was accepted")
 
 
+@pytest.mark.parametrize("runner_name", ["provider", "diagnostic_provider"])
+@pytest.mark.parametrize("corrupt", [None, "repair_support_mask", "repair_object_core",
+    "source_runtime_request", "source_runtime_result", "candidate"])
+def test_provider_hydrates_repair_and_retained_inputs_for_component_working_directory(
+    tmp_path: Path, monkeypatch, runner_name, corrupt,
+) -> None:
+    receipt = _build(tmp_path, "bundle")
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        archive.extractall(tmp_path / "extracted")
+    runtime = tmp_path / "extracted/provider_runtime"
+    portable = json.loads((runtime / "input/portable_construction_envelope.v1.json").read_text())
+    render = portable["render_inputs_result"]
+    frame = render["derived_frames"][0]
+    records = {}
+    for field in ("repair_support_mask", "repair_object_core", "source_runtime_request",
+                  "source_runtime_result", "candidate"):
+        original = frame["source_object_mask"] if field.startswith("repair_") else frame
+        target = runtime / "input" / (field + ".png")
+        target.write_bytes((runtime / original["path"]).read_bytes())
+        records[field] = {"path": target.relative_to(runtime).as_posix(),
+            "digest": original["digest"], "size_bytes": target.stat().st_size}
+    frame.update({field: records[field] for field in ("repair_support_mask", "repair_object_core")})
+    render["retained_semantic_candidates"] = [{"camera_id": frame["camera_id"],
+        **{field: records[field] for field in ("source_runtime_request", "source_runtime_result", "candidate")}}]
+    render["result_digest"] = canonical_digest(render, digest_field="result_digest")
+    portable["envelope_digest"] = canonical_digest(portable, digest_field="envelope_digest")
+    script = Path(__file__).resolve().parents[1] / "scripts" / f"task_evaluation_scene_configuration_{runner_name}_runner.py"
+    spec = importlib.util.spec_from_file_location("repair_hydration_" + runner_name, script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # Stage-tool subprocesses use toolchain as cwd, not the provider runtime root.
+    monkeypatch.chdir(runtime / "toolchain")
+    if corrupt:
+        (runtime / records[corrupt]["path"]).write_bytes(b"corrupt")
+        with pytest.raises(ValueError, match="bound_file_invalid"):
+            module._hydrate_envelope(runtime, portable)
+        return
+    hydrated = module._hydrate_envelope(runtime, portable)["render_inputs_result"]
+    bound = [hydrated["derived_frames"][0][field] for field in ("repair_support_mask", "repair_object_core")]
+    bound += [hydrated["retained_semantic_candidates"][0][field]
+        for field in ("source_runtime_request", "source_runtime_result", "candidate")]
+    assert all(Path(row["path"]).is_absolute() and Path(row["path"]).is_file() for row in bound)
+
+
 def test_provider_runner_accepts_the_owed_provider_render_manifest(
     tmp_path: Path,
 ) -> None:
