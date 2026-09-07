@@ -368,6 +368,22 @@ def test_resealed_render_cannot_hide_partition_payload_drift(tmp_path):
         require_partition_disclosure(render=result, configuration=config, expected_source_commit="a" * 40)
 
 
+def test_partition_bundle_disclosure_accepts_production_top_level_scene_identity(tmp_path):
+    from blueprint_pipeline.task_evaluation_configuration_partition_disclosure import require_partition_disclosure
+    envelope, config, _, _, _ = _sam_case(tmp_path)
+    result = _consume(envelope, config, tmp_path / "result")
+    config["scene_id"] = config["source_object"].pop("scene_id")
+    proof = require_partition_disclosure(render=result, configuration=config, expected_source_commit="a" * 40)
+    assert proof["publisher_scene_id"] == config["scene_id"]
+    config["source_object"]["scene_id"] = "another-scene"
+    with pytest.raises(ValueError, match="scene_identity_invalid"):
+        require_partition_disclosure(render=result, configuration=config, expected_source_commit="a" * 40)
+    del config["source_object"]["scene_id"]
+    config["scene_id"] = "another-scene"
+    with pytest.raises(ValueError):
+        require_partition_disclosure(render=result, configuration=config, expected_source_commit="a" * 40)
+
+
 @pytest.mark.parametrize("mutation,error", [
     ("mask_changed", "file_bytes_changed"),
     ("unbound_digest", "configuration_evidence_mismatch"),
