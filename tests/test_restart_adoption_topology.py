@@ -53,6 +53,9 @@ def topology(prefix, tmp_path, monkeypatch):
         assert outcome['synthetic_tracking_producer'] == commit
         assert profile['source_commit'] == commit
         return {'synthetic_tracking_producer': commit}
+    monkeypatch.setattr('blueprint_pipeline.task_evaluation_sam31_prefix_late_evidence.validate_late_prefix',
+                        lambda artifacts, *, phase_count: None)
+    monkeypatch.setattr(adoption.evidence, 'validate_sam_inputs', lambda *args: None)
     monkeypatch.setattr(adoption, 'source_science', source)
     monkeypatch.setattr(adoption, 'validate_current_rights', lambda task, context, host, commit, roots: conversions[commit])
     monkeypatch.setattr(adoption, 'validate_render', render)
@@ -78,7 +81,7 @@ def topology(prefix, tmp_path, monkeypatch):
         request = json.loads(Path(value['original_parent_envelope']['path']).read_text())['request']
         request['expected_production_commit'] = commit
         request['runtime']['mounts'][-1]['source'].update(digest=plan_ref['sha256'], size_bytes=plan_ref['size_bytes'])
-        request['spend']['external_service_caps']['openai']['stage_max_cost_usd']['artifixer_visual_review'] = .64
+        request['spend']['external_service_caps']['openai']['stage_max_cost_usd']['artifixer_visual_review'] = .64 if commit == A else .96
         digest = canonical_digest(request)
         write(tmp_path / 'parents/blocked' / (request['preparation_id'] + '-' + digest[7:] + '.json'),
             {'request': request, 'request_digest': digest}, 'envelope_digest')
@@ -128,7 +131,7 @@ def topology(prefix, tmp_path, monkeypatch):
             inputs.update(artifacts)
             if phase == 'standard_splat_conversion':
                 inputs['standard_splat_conversion'] = inputs['standard_splat_conversion_receipt']
-        return dict(plan=plan, profile=profile, plan_ref=plan_ref, profile_ref=profile_ref, digest=digest)
+        return dict(plan=plan, profile=profile, plan_ref=plan_ref, profile_ref=profile_ref, digest=digest, request=request)
 
     def materialize(built, successor, through, output_name):
         host = deepcopy(original_plan['host_inputs'])
@@ -181,8 +184,7 @@ def test_existing_adoption_retry_and_successor_schedule_are_byte_stable(topology
     monkeypatch.setenv(driver.CHILD_QUEUE_ENV, str(tmp_path / 'next-queue'))
     expected = dict(uri='s3://synthetic/plan.json', digest=current['plan_ref']['sha256'], size_bytes=current['plan_ref']['size_bytes'])
     context = dict(expected_source_commit=B, request_digest=current['digest'],
-        request=dict(preparation_id='successor', scene={'identity': current['plan']['scene_identity']},
-                     task={'identity': current['plan']['task_identity']}),
+        request=current['request'],
         stage_one_configuration={'sam31_preparation_plan': expected},
         materialized_references=[{**expected, 'materialized_path': current['plan_ref']['path']}])
     def enqueue(**kwargs):
@@ -220,8 +222,7 @@ def test_nested_tracking_adoption_keeps_original_producer_through_cutout(topolog
     expected = dict(uri='s3://synthetic/complete-plan.json', digest=successor['plan_ref']['sha256'],
                     size_bytes=successor['plan_ref']['size_bytes'])
     context = dict(expected_source_commit=D, request_digest=successor['digest'],
-        request=dict(preparation_id='complete-successor', scene={'identity': successor['plan']['scene_identity']},
-                     task={'identity': successor['plan']['task_identity']}),
+        request=successor['request'],
         stage_one_configuration={'sam31_preparation_plan': expected},
         materialized_references=[{**expected, 'materialized_path': successor['plan_ref']['path']}])
     def unexpected_enqueue(**kwargs):
@@ -252,12 +253,8 @@ def test_resealed_successor_cannot_change_task_science(topology, tmp_path, field
     assert Path(ref['path']).read_bytes() == before
 
 
-def test_failed_cutout_exposes_current_prefix_granularity(topology, tmp_path):
-    """Current contract supports 3/5/10, so nine completed stages retain only five.
-
-    This is a coverage lead about scheduling, not proof of a repeated paid call.
-    Changing the admitted prefix lengths needs independent scientific validation.
-    """
+def test_failed_cutout_preserves_every_completed_upstream_stage(topology, tmp_path, monkeypatch):
+    """A failed cutout leaves contribution reusable; only cutout may be queued."""
     build, materialize, calls = topology
     original = build(A, 'segment_cutout')
     completed, _, args = materialize(original, B, 'segment_cutout', 'completed')
@@ -270,8 +267,59 @@ def test_failed_cutout_exposes_current_prefix_granularity(topology, tmp_path):
     args.pop('through_phase')
     args['output_path'] = None
     selected = adoption.select_completed_prefix_adoption(**args)
-    assert selected['through_phase'] == 'sam31_tracking'
+    assert selected['through_phase'] == 'contribution_sweep'
     assert 'sam31_adoption_prefix_not_terminal' in selected['rejected_candidates'][0]['blocker']
-    assert adoption.PHASES[adoption.PREFIX_LENGTHS[selected['through_phase']]] == 'sam31_review'
+    assert adoption.PHASES[adoption.PREFIX_LENGTHS[selected['through_phase']]] == 'segment_cutout'
+    reuse = write(tmp_path / 'selected-nine.json', selected['adoption'])
+    successor = build(B, 'contribution_sweep', reuse)
+    monkeypatch.setenv(driver.PROFILE_ENV, successor['profile_ref']['path'])
+    monkeypatch.setenv(driver.CHILD_QUEUE_ENV, str(tmp_path / 'cutout-only-queue'))
+    expected = dict(uri='s3://synthetic/plan.json', digest=successor['plan_ref']['sha256'],
+                    size_bytes=successor['plan_ref']['size_bytes'])
+    context = dict(expected_source_commit=B, request_digest=successor['digest'],
+        request=successor['request'],
+        stage_one_configuration={'sam31_preparation_plan': expected},
+        materialized_references=[{**expected, 'materialized_path': successor['plan_ref']['path']}])
+    def enqueue(**kwargs):
+        calls['queue'].append(kwargs['phase'])
+        return enqueue_sam31_phase(**kwargs)
+    result = driver.advance_sam31_preparation(context, approved_roots=(tmp_path,), enqueue_phase=enqueue)
+    assert result['phase'] == 'segment_cutout'
+    assert calls['queue'] == ['segment_cutout']
+    assert len(list((tmp_path / 'cutout-only-queue/pending').glob('*.json'))) == 1
     assert path.read_bytes() == before
     assert calls['provider'] == calls['model'] == 0
+
+
+@pytest.mark.parametrize('through', list(adoption.PREFIX_LENGTHS)[:-1])
+def test_each_partial_prefix_queues_only_its_first_incomplete_phase(topology, tmp_path, monkeypatch, through):
+    build, materialize, calls = topology
+    original = build(A, through)
+    value, ref, _ = materialize(original, B, through, 'partial')
+    before = Path(ref['path']).read_bytes()
+    successor = build(B, through, ref)
+    monkeypatch.setenv(driver.PROFILE_ENV, successor['profile_ref']['path'])
+    monkeypatch.setenv(driver.CHILD_QUEUE_ENV, str(tmp_path / 'only-next-phase'))
+    expected = dict(uri='s3://synthetic/plan.json', digest=successor['plan_ref']['sha256'],
+                    size_bytes=successor['plan_ref']['size_bytes'])
+    context = dict(expected_source_commit=B, request_digest=successor['digest'],
+        request=successor['request'],
+        stage_one_configuration={'sam31_preparation_plan': expected},
+        materialized_references=[{**expected, 'materialized_path': successor['plan_ref']['path']}])
+    def enqueue(**kwargs):
+        calls['queue'].append(kwargs['phase'])
+        return enqueue_sam31_phase(**kwargs)
+    result = driver.advance_sam31_preparation(context, approved_roots=(tmp_path,), enqueue_phase=enqueue)
+    from blueprint_pipeline.task_evaluation_launch_preparation_contract import validate_launch_preparation_request
+    from blueprint_pipeline.task_evaluation_sam31_parent_evidence import _parent
+    assert validate_launch_preparation_request(successor['request']) == successor['request']
+    pending = list((tmp_path / 'only-next-phase/pending').glob('*.json'))
+    assert len(pending) == 1
+    queued_job = json.loads(pending[0].read_text())
+    assert _parent(queued_job, tmp_path / 'parents')[0] == successor['request']
+    next_phase = adoption.PHASES[adoption.PREFIX_LENGTHS[through]]
+    assert result['phase'] == next_phase
+    assert calls['queue'] == [next_phase]
+    assert calls['provider'] == calls['model'] == 0
+    assert Path(ref['path']).read_bytes() == before
+    assert value['historical_parent_contract']['request_source_commit'] == A

@@ -18,6 +18,7 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_configuration_runtime_budget import (
     MAX_EXTERNAL_SERVICE_SPEND_USD,
+    MAX_ATTEMPT_SPEND_USD,
     MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
     MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
     MIN_CONTENT_AGENTS_SPEND_USD,
@@ -96,24 +97,26 @@ def preparation_request_schema() -> dict[str, Any]:
 
 def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate a request for NEW execution under the current budget contract."""
-    return _validate_launch_preparation_request(
-        value, minimum_visual_review_spend=MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
-    )
+    from .task_evaluation_retained_preparation_contract import ScenePreparationBudget
+    budget = ScenePreparationBudget('current_execution', REQUIRED_PARENT_TTL_SECONDS,
+        MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD, MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
+        MIN_CONTENT_AGENTS_SPEND_USD, MAX_EXTERNAL_SERVICE_SPEND_USD, MAX_ATTEMPT_SPEND_USD, '')
+    return _validate_launch_preparation_request(value, scene_budget=budget)
 
 
 def validate_retained_preparation_request(value: Mapping[str, Any]) -> dict[str, Any]:
-    """Read historical parent evidence; this never authorizes successor execution.
+    """Interpret an enumerated historical contract; never admit new execution.
 
-    Completed render/SAM/cutout work predates the third appearance-review call.
-    Retain its original bytes and original two-call floor when verifying its
-    parent, while preserving every other request validation. New submissions
-    must continue through validate_launch_preparation_request.
+    Schema and administrative policy are frozen independently of current intake.
+    Every scientific/rights check and the immutable parent join remains required.
     """
-    return _validate_launch_preparation_request(value, minimum_visual_review_spend=0.64)
+    from .task_evaluation_retained_preparation_contract import retained_schema
+    return _validate_launch_preparation_request(value, schema=retained_schema())
+
 
 
 def _validate_launch_preparation_request(
-    value: Mapping[str, Any], *, minimum_visual_review_spend: float
+    value: Mapping[str, Any], *, scene_budget=None, schema=None
 ) -> dict[str, Any]:
     """Validate and copy one customer-facing preparation request.
 
@@ -126,7 +129,7 @@ def _validate_launch_preparation_request(
 
     request = dict(value)
     validator = jsonschema.Draft202012Validator(
-        preparation_request_schema(),
+        preparation_request_schema() if schema is None else schema,
         format_checker=jsonschema.FormatChecker(),
     )
     errors = sorted(validator.iter_errors(request), key=lambda row: list(row.path))
@@ -136,6 +139,9 @@ def _validate_launch_preparation_request(
             f"launch_preparation_request_invalid:{path}"
         )
 
+    if scene_budget is None:
+        from .task_evaluation_retained_preparation_contract import retained_budget
+        scene_budget = retained_budget(request)
     scene_rights = request["scene"].get("rights")
     if isinstance(scene_rights, Mapping) and (
         scene_rights["source_bytes_redistributable"] is False
@@ -258,12 +264,12 @@ def _validate_launch_preparation_request(
         request_count = int(openai["maximum_requests"])
         minimum_stage_caps = {
             "artifixer_semantic_teacher": (
-                MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+                scene_budget.semantic_teacher_minimum
             ),
-            "artifixer_visual_review": minimum_visual_review_spend,
-            "content_agents": MIN_CONTENT_AGENTS_SPEND_USD,
+            "artifixer_visual_review": scene_budget.visual_review_minimum,
+            "content_agents": scene_budget.content_agents_minimum,
         }
-        if spend["hard_ttl_seconds"] != REQUIRED_PARENT_TTL_SECONDS:
+        if spend["hard_ttl_seconds"] != scene_budget.parent_ttl_seconds:
             raise TaskEvaluationLaunchPreparationContractError(
                 "launch_preparation_scene_configuration_parent_runtime_budget_invalid"
             )
@@ -272,9 +278,10 @@ def _validate_launch_preparation_request(
             > float(spend["hard_cap_usd"]) + 1e-9
             or float(spend["provider_compute_spend_cap_usd"]) + 1e-9
             < float(spend["maximum_hourly_rate_usd"])
-            * REQUIRED_PARENT_TTL_SECONDS
+            * scene_budget.parent_ttl_seconds
             / 3_600
-            or openai_cap > MAX_EXTERNAL_SERVICE_SPEND_USD
+            or openai_cap > scene_budget.external_maximum
+            or float(spend["hard_cap_usd"]) > scene_budget.attempt_maximum
             or sum(float(value) for value in stage_caps.values())
             > openai_cap + 1e-9
             or any(

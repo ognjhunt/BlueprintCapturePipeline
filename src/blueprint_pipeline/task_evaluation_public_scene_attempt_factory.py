@@ -482,9 +482,16 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
                 # Revalidate the existing adoption against the fresh current
                 # zero while preserving its original witness and digest.
                 from .task_evaluation_sam31_prefix_adoption import materialize_completed_prefix_adoption
+                retained = read(adopted_path, digest_field="adoption_digest")
+                historical = {"source_plan_path": _reference(retained["source_plan"]),
+                    "source_profile_path": _reference(retained["source_profile"]),
+                    "parent_request_digest": retained["original_parent_request_digest"],
+                    "sam31_billing_source_path": (_reference(retained["sam31_billing_source"])
+                        if retained.get("sam31_billing_source") else None)}
                 persisted = materialize_completed_prefix_adoption(
-                    **best_kwargs, output_path=adopted_path)
-                best = {**best, "adoption": persisted}
+                    **{**best_kwargs, **historical}, through_phase=retained["through_phase"],
+                    output_path=adopted_path)
+                best = {**best, "through_phase": persisted["through_phase"], "adoption": persisted}
             computed_selection = {**best, "candidate_selections": selection_reports}
             if persisted_selection is not None:
                 require(persisted_selection.get("status") == "reusable_prefix_selected"

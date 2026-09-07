@@ -164,6 +164,8 @@ def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
             if selected_copy.is_symlink() or selected_copy.read_bytes() != selected_file.read_bytes():
                 raise PublicSceneInpaintingInputError(["edit_input_resolved_camera_conflict"])
         else:
+            if _adopt_existing:
+                raise PublicSceneInpaintingInputError(["edit_input_retained_artifact_missing"])
             with selected_copy.open("xb") as stream:
                 stream.write(selected_file.read_bytes())
         context["paths"]["camera_file"] = str(selected_copy)
@@ -203,6 +205,8 @@ def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
             if _sha256(source) != expected_digest:
                 raise PublicSceneInpaintingInputError(["edit_input_returned_artifact_changed"])
             if not target.exists():
+                if _adopt_existing:
+                    raise PublicSceneInpaintingInputError(["edit_input_retained_artifact_missing"])
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, target)
             if _sha256(target) != expected_digest:
