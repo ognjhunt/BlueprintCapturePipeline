@@ -26,6 +26,10 @@ def replay_progression_admission(*, result_path, queue_root, replay_root,
     envelope = replay._read(located.envelope_path)
     child_queue = Path(child_queue_root or os.environ.get(CHILD_QUEUE_ENV, str(replay.DEFAULT_QUEUE_ROOT)))
     inputs = Path(input_root or os.environ.get("BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT", str(replay.DEFAULT_INPUT_ROOT)))
+    from .task_evaluation_sam31_parent_evidence import configured_parent_route
+    queue_root, inputs = configured_parent_route(
+        {"parent_preparation_id": result["preparation_id"],
+         "parent_request_digest": envelope["request_digest"]}, queue_root, inputs)
     roots = tuple(Path(p) for p in (approved_roots or replay.DEFAULT_APPROVED_ROOTS))
     report = {"schema_version": "task_evaluation_progression_replay.v1",
               "source_commit": result.get("source_commit"),

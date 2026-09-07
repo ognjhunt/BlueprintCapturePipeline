@@ -1,11 +1,33 @@
 """Real retained queue consumers gate activation before any external mutation."""
 import json
+from pathlib import Path
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_progression_replay import replay_progression_admission
 from tests.test_task_evaluation_scene_configuration_activation_automation import (
     _preparation, _intent, _advance,
 )
+
+
+def test_owned_queue_overrides_legacy_input_default(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_sam31_parent_evidence import configured_parent_route
+    path = _preparation(tmp_path)
+    queue = path.parent.parent
+    envelope = json.loads(next((queue / "materialized").glob("*.json")).read_text())
+    inputs = tmp_path / "owned-inputs"
+    config = {"schema_version": "task_evaluation_scene_progression_config.v1",
+              "preparation_queue_root": str(queue),
+              "preparation_worker": {"input_root": str(inputs)}}
+    config["config_digest"] = canonical_digest(config, digest_field="config_digest")
+    config_path = tmp_path / "scene.json"
+    config_path.write_text(json.dumps(config))
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_PROGRESSION_CONFIG", str(config_path))
+    job = {"parent_preparation_id": envelope["request"]["preparation_id"],
+           "parent_request_digest": envelope["request_digest"]}
+    # Both entry routes must select the operator-bound CAS, including when the
+    # caller already resolved the owned queue but retained the legacy input default.
+    for incoming in (queue, tmp_path / "legacy-queue"):
+        assert configured_parent_route(job, Path(incoming), tmp_path / "legacy-inputs") == (queue, inputs)
 
 
 def test_actual_parent_consumers_pass_and_report_binds_retained_bytes(tmp_path):
