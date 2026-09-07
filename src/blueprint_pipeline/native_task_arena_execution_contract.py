@@ -164,6 +164,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
 )
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
+    "policy_canary_media_integrity.py",
     "adp009d_policy_episode.py",
     "adp009d_policy_episode_evidence.py",
     "adp009d_droid_action_execution.py",

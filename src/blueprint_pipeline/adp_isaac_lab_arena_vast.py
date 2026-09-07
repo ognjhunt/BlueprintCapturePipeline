@@ -12,7 +12,7 @@ import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 from collections.abc import Sequence
-from typing import Any, Mapping
+from typing import Any, Mapping, Callable
 
 from .adp_founder_sim_protocol import admit_founder_sim_execution, build_founder_sim_protocol
 from .adp_isaac_lab_arena_request import build_arena_worker_request
@@ -391,6 +391,7 @@ def run_arena_native_control_vast(
     job_dir: str | Path,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
     execute: bool,
+    pre_provider_mutation_hook: Callable[[], Mapping[str, Any]] | None = None,
     prepared_bundle: Mapping[str, Any] | None = None,
     machine_avoidlist_path: str | Path | None = None,
     max_hourly_rate_usd: float = 1.00,
@@ -707,6 +708,7 @@ def run_arena_native_control_vast(
             gated_backbone_authorized=forward_hf_token
         ):
             adapter = run_vast_provider_adapter(
+                pre_provider_mutation_hook=pre_provider_mutation_hook,
                 job_dir=provider_run,
                 mode="live-startup-probe",
                 allow_vast_api_call=True,

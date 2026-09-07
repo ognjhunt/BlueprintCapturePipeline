@@ -985,7 +985,7 @@ def test_worker_log_stream_waits_for_delayed_tee_before_staging(
     delayed_tee.write_text(
         """#!/usr/bin/env bash
 set -euo pipefail
-buffer="$(/usr/bin/mktemp)"
+buffer="$(/usr/bin/mktemp "$FIXTURE_LOG_ROOT/tee.XXXXXX")"
 trap 'rm -f "$buffer"' EXIT
 /bin/cat > "$buffer"
 /bin/sleep 0.15

@@ -365,6 +365,7 @@ def _fixture(
         "results": [
             {
                 "source": f"instance-{INSTANCE_ID}",
+                    "start": 1786924800, "end": 1786924800,
                 "type": "instance",
                 "amount": 0.007,
                 "metadata": {"label": LABEL},
@@ -383,6 +384,8 @@ def _fixture(
     billing_source = {
         "schema_version": "blueprint.provider_billing_source_receipt.v1",
         "status": "reconciled",
+        "cohort_start_at": "2026-07-01T00:00:00+00:00",
+        "cohort_end_at": "2026-09-07T00:00:00+00:00",
         "provider_totals_usd": {"vast": 1.0},
         "sources": [
             {

@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from blueprint_pipeline.policy_canary_media_integrity import (
+    bound_media_artifact as _bound_media_artifact,
+    require_completed_episode_media as _require_completed_episode_media,
+)
+
 from copy import deepcopy
 from dataclasses import dataclass
 from blueprint_pipeline.native_policy_canary_control_gate import controls_required, execute_native_controls, validate_controls_receipt
@@ -960,6 +965,15 @@ def _write_episode_failure_gap(
         action_rejection["rejection_digest"] = canonical_digest(
             action_rejection, digest_field="rejection_digest"
         )
+    if progress.get("media_integrity_failure"):
+        visual_evidence = {
+            **visual_evidence,
+            "status": "incomplete_after_first_observation",
+            "media_gap": {
+                "type": "after_first_observation_media_integrity_failed",
+                "reason": progress["media_integrity_failure"],
+            },
+        }
     evidence_artifacts: dict[str, Any] = {}
     media_root = output_root / "episodes"
     if media_artifacts:
@@ -1086,46 +1100,6 @@ def _write_episode_json_artifact(
     path = output_root / "episodes" / f"{episode_id}.{role}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return {
-        "role": role,
-        "relative_path": path.relative_to(output_root).as_posix(),
-        "size_bytes": path.stat().st_size,
-        "sha256": _sha256(path),
-    }
-
-
-def _bound_media_artifact(
-    output_root: Path,
-    *,
-    media_root: Path,
-    artifacts: Any,
-    role: str,
-    role_match: Callable[[str], bool],
-) -> dict[str, Any] | None:
-    """Bind one episode media artifact into run-root-relative evidence.
-
-    The episode runner records media rows relative to its ``media_output_dir``
-    (the run's ``episodes`` directory), not to the run root.  Resolving them
-    against the run root silently returned ``None`` for every frame manifest
-    and review video, so paid runs shipped episode evidence without either.
-    The hermetic lifecycle rehearsal pins the corrected binding.
-    """
-
-    matches = [
-        row
-        for row in artifacts or []
-        if isinstance(row, Mapping) and role_match(str(row.get("role") or ""))
-    ]
-    if not matches:
-        return None
-    row = matches[0]
-    path = (media_root / str(row.get("relative_path") or "")).resolve()
-    try:
-        path.relative_to(output_root)
-    except ValueError:
-        return None
-    if path.is_symlink() or not path.is_file():
-        return None
     return {
         "role": role,
         "relative_path": path.relative_to(output_root).as_posix(),
@@ -1766,6 +1740,11 @@ def _run_selected_cell(
                 },
                 progress=episode_progress,
             )
+            try:
+                _require_completed_episode_media(output_root, episode)
+            except (OSError, ValueError) as media_error:
+                episode_progress["media_integrity_failure"] = str(media_error)
+                raise
         except Exception as exc:
             failure_path = _write_episode_failure_gap(
                 output_root=output_root,

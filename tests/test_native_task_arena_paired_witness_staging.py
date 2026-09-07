@@ -42,6 +42,7 @@ class Client:
 @pytest.fixture
 def context(tmp_path, monkeypatch):
     client = Client()
+    monkeypatch.setenv("HF_TOKEN_FILE", str(tmp_path / "absent-hf-token"))
     monkeypatch.setitem(sys.modules, 'boto3', SimpleNamespace(client=lambda *a, **kw: client))
     monkeypatch.setitem(sys.modules, 'botocore.client', SimpleNamespace(Config=lambda **kw: None))
     monkeypatch.setattr(store, '_signed_output_round_trip_preflight', lambda *a, **kw: {'status': 'passed', 'blockers': []})

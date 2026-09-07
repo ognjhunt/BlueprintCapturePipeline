@@ -14,6 +14,7 @@ import re
 import tempfile
 from typing import Any
 
+from .vast_official_charge_period import VastOfficialBillingExtractionError, validate_charge_period as _validate_charge_period
 from .decision_evidence_contracts import canonical_digest
 from .provider_billing_reconciler import (
     BILLING_SOURCE_SCHEMA_VERSION,
@@ -63,10 +64,6 @@ _ARENA_RESULT_NAME = "adp_arena_vast_result.json"
 _ARENA_JOB_DIRS = frozenset(
     {"arena-construction-job", "arena-controls-job", "arena-policy-job"}
 )
-
-
-class VastOfficialBillingExtractionError(ValueError):
-    """The retained billing evidence was incomplete, ambiguous, or altered."""
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
@@ -1389,6 +1386,7 @@ def _entry(
         or metadata.get("label") != launch_label
     ):
         raise VastOfficialBillingExtractionError("vast_official_charge_identity_invalid")
+    _validate_charge_period(row, source_receipt)
     amount = _money(row.get("amount"), code="vast_official_charge_amount_invalid")
     items, bandwidth = _line_items(row)
     item_total = sum(
@@ -1557,6 +1555,7 @@ def _validate_entry(entry: Any) -> None:
     ):
         raise VastOfficialBillingExtractionError("vast_official_prior_entry_invalid")
     row = results[result_index]
+    _validate_charge_period(row, source_receipt)
     metadata = row.get("metadata")
     source_items, source_bandwidth = _line_items(row)
     if (
@@ -1759,6 +1758,7 @@ def extract_vast_official_instance_charge(
         or metadata.get("label") != launch_label
     ):
         raise VastOfficialBillingExtractionError("vast_official_charge_identity_invalid")
+    _validate_charge_period(row, source_receipt)
     amount = _money(row.get("amount"), code="vast_official_charge_amount_invalid")
     items, bandwidth = _line_items(row)
     item_total = sum((Decimal(str(value)) for value in items.values()), Decimal("0"))

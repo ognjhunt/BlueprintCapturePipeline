@@ -9,6 +9,8 @@ readback without ever invoking the allocator again.
 
 from __future__ import annotations
 
+from .policy_canary_billing_recovery import reconcile_posted_billing
+
 import argparse
 import contextlib
 import hashlib
@@ -87,7 +89,7 @@ from .task_evaluation_run_webapp_sync import (
 )
 from .task_evaluation_launch_webapp_sync import sync_launch_progress_to_webapp
 from .vast_official_billing_extractor import (
-    VastOfficialBillingExtractionError,
+    VastOfficialBillingExtractionError as VastOfficialBillingExtractionError,
     materialize_vast_official_same_goal_reconciliation,
     validate_vast_official_same_goal_reconciliation,
 )
@@ -578,7 +580,9 @@ def collect_policy_canary_vast_provider_zero() -> dict[str, Any]:
         "provider": "vast",
         "inventory_scope": "global_billable_resources",
         "api_confirmed": api_confirmed,
-        "live_instance_count": len(resources) if isinstance(resources, list) else None,
+        "live_instance_count": (len(resources) if api_confirmed
+                                and inventory.get("status") == "observed"
+                                and isinstance(resources, list) else None),
         "provider_zero_verified": verified,
         "global_gpu_guard_snapshot": guard_record,
         "blockers": [] if verified else blockers or ["vast_provider_zero_unproven"],
@@ -1042,39 +1046,11 @@ def _recovered_complete_policy_canary_result(
     return result, aggregate_path
 
 
-def _materialize_official_billing_if_posted(
-    *,
-    billing_audit_root: str | Path,
-    adapter_result_path: Path,
-    adapter: Mapping[str, Any],
-    launch_label: str,
-    output_path: Path,
-) -> bool:
-    if output_path.is_file():
-        validate_vast_official_same_goal_reconciliation(output_path)
-        return True
-    instance_ids = _adapter_instance_ids(adapter)
-    if len(instance_ids) != 1:
-        return False
-    audit = Path(billing_audit_root).expanduser().resolve()
-    if not audit.is_dir() or audit.is_symlink():
-        return False
-    candidates = sorted(
-        audit.rglob("provider_billing_source_receipt.json"),
-        key=lambda path: path.stat().st_mtime_ns,
-        reverse=True,
-    )
-    for source in candidates:
-        try:
-            materialize_vast_official_same_goal_reconciliation(
-                provider_billing_source_receipt_path=source,
-                expected_instances=[(int(instance_ids[0]), launch_label, adapter_result_path)],
-                output_path=output_path,
-            )
-        except (OSError, VastOfficialBillingExtractionError):
-            continue
-        return True
-    return False
+def _materialize_official_billing_if_posted(**kwargs) -> bool:
+    return reconcile_posted_billing(**kwargs, instance_ids_from_adapter=_adapter_instance_ids,
+        validate_reconciliation=validate_vast_official_same_goal_reconciliation,
+        materialize_reconciliation=materialize_vast_official_same_goal_reconciliation,
+        record_file=_record, write_json=write_json, dispatch_error=TaskEvaluationPolicyCanaryDispatchError)
 
 
 def _projection(
@@ -1660,7 +1636,24 @@ def dispatch_policy_canary_activation(
         hard_ttl_seconds=int(resource["hard_ttl_seconds"]),
         execution_release=execution_release,
     )
+    legacy_authority = dict(authority)
+    if "scene_attempt_binding" in setup:
+        authority["scene_execution_owner"] = {
+            key: setup[key] for key in (
+                "scene_intent_digest", "scene_attempt_id", "scene_attempt_binding", "source_commit",
+                "scene_policy_candidates",
+            ) if key in setup
+        }
+        authority["authority_digest"] = canonical_digest(authority, digest_field="authority_digest")
     authority_path = root / "policy_canary_session_authority.json"
+    if authority_path.is_file() and any((root / name).is_file() for name in (
+        "allocator_result.json", "allocator_invocation_started.json",
+    )):
+        retained_authority = _read(authority_path, code="policy_canary_retained_authority_invalid")
+        if retained_authority == legacy_authority:
+            # Delivery of an already started legacy attempt is not new authority.
+            # Preserve every original byte/digest; no other identity drift is accepted.
+            authority = retained_authority
     _write_exclusive(authority_path, authority)
     records = setup["records"]
     _event_and_sync(
@@ -1759,6 +1752,10 @@ def dispatch_policy_canary_activation(
             runner=progress_sync_runner,
         )
         if execute:
+            # Progress delivery can block long enough for owner authority to end.
+            # Reopen it before recording or invoking any allocator attempt.
+            require_scene_execution_authority(setup, source_commit=implementation_commit,
+                                             maximum_spend_usd=float(resource["hard_cap_usd"]), provider="vast")
             argv.append("--execute")
         invocation_started = {
             "schema_version": "task_evaluation_policy_canary_allocator_invocation.v1",

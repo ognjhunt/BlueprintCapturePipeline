@@ -23,7 +23,7 @@ def _run_upload_guard(
         [
             "bash",
             "-c",
-            provider_output_upload_shell_fragment()
+            provider_output_upload_shell_fragment(scratch_root=str(tmp_path))
             + 'blueprint_upload_put "https://unused.invalid/output.zip" "$1"; '
             + 'printf "UPLOAD_RC:%s\\n" "$?"',
             "upload-guard",
@@ -111,7 +111,7 @@ def _run_upload_with_fake_transport(
             parent_deadline_epoch
         )
     command = (
-        provider_output_upload_shell_fragment()
+        provider_output_upload_shell_fragment(scratch_root=str(tmp_path))
         + f"blueprint_upload_put {shlex.quote('https://signed.invalid/output.zip?secret=never-log')} \"$1\"; "
         + 'printf "UPLOAD_RC:%s\\n" "$?"'
     )
@@ -270,8 +270,8 @@ def test_provider_output_upload_accepts_scene_watchdog_float_deadline(
     assert len(attempts) == 1
 
 
-def test_provider_output_upload_has_no_whole_file_python_fallback() -> None:
-    fragment = provider_output_upload_shell_fragment()
+def test_provider_output_upload_has_no_whole_file_python_fallback(tmp_path) -> None:
+    fragment = provider_output_upload_shell_fragment(scratch_root=str(tmp_path))
 
     assert "handle.read()" not in fragment
     assert "urllib.request" not in fragment
@@ -314,7 +314,7 @@ def test_provider_output_upload_streams_sparse_archive_larger_than_two_gib(
         [
             "bash",
             "-c",
-            provider_output_upload_shell_fragment()
+            provider_output_upload_shell_fragment(scratch_root=str(tmp_path))
             + 'blueprint_upload_put "https://signed.invalid/output.zip" "$1"; '
             + 'printf "UPLOAD_RC:%s\\n" "$?"',
             "upload-transport",

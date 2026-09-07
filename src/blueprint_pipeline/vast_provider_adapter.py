@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
+from .vast_instance_inventory import instance_inventory_valid, active_instance_rows
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .vast_create_failure_diagnosis import diagnose_empty_create_400
@@ -5880,14 +5881,13 @@ def _sanitized_instance_row(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _instance_inventory_valid(payload: Any) -> bool:
+    return instance_inventory_valid(payload, status_reader=_instance_status)
+
+
 def _active_instance_rows_from_payload(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    active_rows: list[dict[str, Any]] = []
-    for row in _instance_list_rows(payload):
-        sanitized = _sanitized_instance_row(row)
-        status = _string(sanitized.get("raw_status_normalized")).lower()
-        if status and status not in set(VAST_TERMINAL_INSTANCE_STATUSES):
-            active_rows.append(sanitized)
-    return active_rows
+    return active_instance_rows(payload, status_reader=_instance_status, row_reader=_instance_list_rows,
+                                sanitizer=_sanitized_instance_row, terminal_statuses=VAST_TERMINAL_INSTANCE_STATUSES)
 
 
 def _prelaunch_inventory_guard(

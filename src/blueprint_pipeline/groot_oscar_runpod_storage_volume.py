@@ -1755,6 +1755,8 @@ def run_storage_model_volume(
                                     "status": "PASS",
                                     "provider_absence_confirmed": True,
                                     "instance_id": replacement_volume_id,
+                                    "allocation_id": replacement_volume_id,
+                                    "provider": "runpod",
                                     "replacement_volume_id": volume_id,
                                 },
                             )
@@ -1821,6 +1823,8 @@ def run_storage_model_volume(
                             "status": "PASS",
                             "provider_absence_confirmed": True,
                             "instance_id": volume_id,
+                            "allocation_id": volume_id,
+                            "provider": "runpod",
                         },
                     )
                 else:
