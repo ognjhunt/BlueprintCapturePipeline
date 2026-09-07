@@ -10,6 +10,7 @@ from blueprint_pipeline.task_evaluation_scene_intake import (
     REQUEST_SCHEMA, SceneIntakeError, reserve_scene_attempt, stage_scene_intent, scene_intent_status,
     revoke_scene_intent,
 )
+from blueprint_pipeline.adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
 from blueprint_pipeline.task_evaluation_scene_progression_state import advance
 
 
@@ -21,8 +22,8 @@ def request():
                  "support": {"id": "table"}, "destination": {"id": "tray"}, "success": {"inside": True}},
         "execution": {"max_total_spend_usd": 4, "max_paid_attempts": 2, "max_retries": 0,
             "expires_at_epoch": 1000, "allowed_providers": ["vast"], "claim_scope": "development_only",
-            "policy_candidates": [{"id": "pi05_droid", "artifact_digest": "sha256:" + "b" * 64},
-                                  {"id": "groot_n17_droid", "artifact_digest": "sha256:" + "c" * 64}]},
+            "policy_candidates": [{"id": "pi05_droid", "artifact_digest": EXPECTED_CANDIDATES["pi05_droid"]["checkpoint_inventory_digest"]},
+                                  {"id": "groot_n17_droid", "artifact_digest": EXPECTED_CANDIDATES["groot_n17_droid"]["checkpoint_inventory_digest"]}]},
         "consent": {"accepted_by": "u1", "accepted_at_epoch": 99, "rights_reference": "rights-v1",
             "provider_terms_reference": "terms-v1", "private_processing_authorized": True,
             "provider_training_authorized": False, "task_confirmed": True, "spend_authorized": True}}
