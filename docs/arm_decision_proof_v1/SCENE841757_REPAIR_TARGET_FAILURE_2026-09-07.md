@@ -144,3 +144,21 @@ appearance authority, scoped no-spend source preparation, and cold-source refusa
 Provider import closure and the policy lifecycle rehearsal remain required before
 paid continuation. The new live model decision and final 3D outcome remain unproven
 until their execution receipts are produced.
+
+
+## R15 retained-parent budget compatibility failure
+
+The 5ee65569 continuation stopped before provider allocation: prefix adoption
+revalidated its historical parent with the new USD 0.96 appearance-review
+minimum, rejecting the original valid USD 0.64 cap as
+`launch_preparation_scene_configuration_external_spend_invalid`. All completed
+render/SAM/cutout evidence remained intact. R15 future execution was revoked to
+avoid repeating this failed preparation. This compatibility boundary was missed
+by the prior semantic-stage replay and must be covered by retained-parent replay.
+
+Historical-parent validation now retains the original two-review budget floor
+while preserving schema, total budget, rights, immutable parent digest and child
+chain checks. New launch validation and its digest API still require the current
+three-review floor. No old bytes or source artifacts are rewritten, and adopting
+evidence grants no execution authority. Focused regression checks prove that the
+same historical request passes evidence validation and fails new-launch admission.

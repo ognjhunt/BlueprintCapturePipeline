@@ -248,10 +248,10 @@ def validate_completed_prefix_adoption(path, *, expected_source_commit, approved
             "src/blueprint_pipeline/task_evaluation_sam31_preparation_profile.py",
         ), old_profile["repo_root"], current_repo)
     # A canonical parent envelope must still join the old immutable plan and child chain.
-    from .task_evaluation_launch_preparation_contract import validate_launch_preparation_request, launch_preparation_request_digest
+    from .task_evaluation_launch_preparation_contract import validate_retained_preparation_request
     envelope = read(_ref(value["original_parent_envelope"], roots), digest_field="envelope_digest")
-    parent = validate_launch_preparation_request(envelope["request"])
-    require(launch_preparation_request_digest(parent) == envelope["request_digest"] == value["original_parent_request_digest"]
+    parent = validate_retained_preparation_request(envelope["request"])
+    require(canonical_digest(parent) == envelope["request_digest"] == value["original_parent_request_digest"]
             and parent["expected_production_commit"] == value["original_execution_commit"]
             and parent["scene"]["identity"] == old_plan["scene_identity"]
             and parent["task"]["identity"] == old_plan["task_identity"], "sam31_adoption_parent_changed")
