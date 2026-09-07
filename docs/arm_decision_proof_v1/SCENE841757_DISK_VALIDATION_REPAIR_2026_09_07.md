@@ -33,6 +33,13 @@ seconds: 74.24 seconds in the common file hasher and 76.18 seconds in repeated
 camera measurements, among other work. The factory repeats this validation
 while selecting and sealing the adopted prefix.
 
+The same saved production adoption passed with candidate `b05c66477` in
+125.69 seconds, versus 207.50 seconds before: a 39 percent wall-time reduction
+for one complete validation. Camera-measurement time fell from 76.18 to 11.85
+seconds. Both runs used the same host, network isolation and retained inputs;
+host contention can affect wall time. This is not yet a timing claim for a
+whole factory submission.
+
 The cache is confined to one outer synchronous operation and starts empty on
 the next attempt. It hashes all bytes on first use and only reuses hashes of
 read-only regular files of at least 1 MiB after checking inode, size, owner,
