@@ -51,6 +51,7 @@ from tests.test_task_evaluation_launch_preparation_worker import (
     fake_scene_render_inputs,
     fetcher as preparation_fetcher,
     production_request_with_fetchable_bytes,
+    production_request_with_supplemental_destination,
 )
 from tests.test_task_evaluation_configured_scene_revision import revision
 from tests.test_task_evaluation_scene_configuration_bundle import (
@@ -613,8 +614,9 @@ def test_activation_consumes_production_compiler_adapter_without_codex_handoff(
     assert loaded_adapter["result_digest"] == adapter["result_digest"]
 
 
-def _stage_scene_configuration_preparation(tmp_path: Path):
-    preparation, payloads = production_request_with_fetchable_bytes()
+def _stage_scene_configuration_preparation(tmp_path: Path, *, supplemental_destination=False):
+    preparation, payloads = (production_request_with_supplemental_destination()
+        if supplemental_destination else production_request_with_fetchable_bytes())
     preparation_queue = tmp_path / "preparation-queue"
     input_root = tmp_path / "inputs"
     construction_queue = tmp_path / "construction-queue"
@@ -714,6 +716,34 @@ def test_activation_consumes_operator_bound_owned_preparation_store(tmp_path, mo
             activation_request=activation, preparation_queue_root=legacy,
             preparation_input_root=tmp_path / "legacy-inputs",
             scene_construction_queue_root=construction_queue,
+        )
+
+
+def test_activation_binds_supplemental_destination_to_the_exact_recipe(tmp_path):
+    (_, _, queue, inputs, construction_queue, result, activation) = (
+        _stage_scene_configuration_preparation(tmp_path, supplemental_destination=True)
+    )
+    _, _, _, refs = worker._load_verified_preparation(
+        activation_request=activation, preparation_queue_root=queue,
+        preparation_input_root=inputs, scene_construction_queue_root=construction_queue,
+    )
+    name = "construction.recipe.supplemental_destination.authoring_receipt"
+    assert name in refs
+    assert "construction.recipe.supplemental_destination.simready_result" in refs
+    # Resealing a changed materialized result cannot override the recipe's bytes.
+    changed = refs[name].with_name("substituted-authoring-receipt")
+    changed.write_text('{}')
+    row = next(row for row in result['references'] if row['contract_path'] == name)
+    row.update(materialized_path=str(changed), digest='sha256:' + hashlib.sha256(changed.read_bytes()).hexdigest(), size_bytes=changed.stat().st_size)
+    result['result_digest'] = canonical_digest(result, digest_field='result_digest')
+    result_path = next((queue / 'results').glob('*.json'))
+    result_path.chmod(0o600)  # Deliberate tamper of this test-owned immutable fixture.
+    result_path.write_text(json.dumps(result))
+    activation['preparation']['result_digest'] = result['result_digest']
+    with pytest.raises(TaskEvaluationLaunchActivationWorkerError, match='launch_activation_preparation_reference_invalid'):
+        worker._load_verified_preparation(
+            activation_request=activation, preparation_queue_root=queue,
+            preparation_input_root=inputs, scene_construction_queue_root=construction_queue,
         )
 
 

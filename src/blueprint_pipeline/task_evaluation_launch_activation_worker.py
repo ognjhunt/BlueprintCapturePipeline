@@ -463,6 +463,21 @@ def _load_verified_preparation(
                 str(row.get("digest") or ""),
                 int(row.get("size_bytes") or 0),
             )
+        from .task_evaluation_launch_preparation_worker import (
+            SUPPLEMENTAL_DESTINATION_CONTRACT_PREFIX,
+            SUPPLEMENTAL_DESTINATION_RECIPE_REFERENCE_FIELDS,
+            _validated_production_recipe,
+        )
+        recipe = _validated_production_recipe(
+            request=request, materialized_path=materialized_references["construction.recipe"]
+        )
+        destination = recipe.get("supplemental_destination")
+        if destination is not None:
+            for field in SUPPLEMENTAL_DESTINATION_RECIPE_REFERENCE_FIELDS:
+                ref = destination[field]
+                expected_references[f"{SUPPLEMENTAL_DESTINATION_CONTRACT_PREFIX}.{field}"] = (
+                    ref["digest"], ref["size_bytes"]
+                )
     if request["run_mode"] == "episode_evaluation":
         revision_path = materialized_references.get("scene.configured_revision")
         try:
