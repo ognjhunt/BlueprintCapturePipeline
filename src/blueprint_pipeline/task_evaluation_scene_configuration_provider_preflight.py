@@ -272,6 +272,25 @@ def scene_configuration_bundle_contract(
                 blockers.append("scene_configuration_provider_input_path_invalid")
             else:
                 bound_rows.append((str(mask.get("path") or ""), mask))
+            for field in ("repair_support_mask", "repair_object_core"):
+                if field in row:
+                    repair = row[field]
+                    if not isinstance(repair, Mapping):
+                        blockers.append("scene_configuration_provider_input_path_invalid")
+                    else:
+                        bound_rows.append((str(repair.get("path") or ""), repair))
+        from .semantic_teacher_candidate_reuse import RETAINED_FILE_FIELDS
+        retained = render.get("retained_semantic_candidates", [])
+        if not isinstance(retained, list):
+            blockers.append("scene_configuration_provider_retained_candidates_invalid")
+        else:
+            for candidate in retained:
+                for field in RETAINED_FILE_FIELDS:
+                    record = candidate.get(field) if isinstance(candidate, Mapping) else None
+                    if not isinstance(record, Mapping):
+                        blockers.append("scene_configuration_provider_retained_candidates_invalid")
+                    else:
+                        bound_rows.append((str(record.get("path") or ""), record))
         evidence = render.get("sam31_evidence_records", {})
         if not isinstance(evidence, Mapping):
             blockers.append("scene_configuration_provider_sam31_evidence_invalid")

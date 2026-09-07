@@ -329,6 +329,24 @@ def _portable_render_inputs(
         portable_mask = portable["derived_frames"][index]["source_object_mask"]
         portable_mask.pop("materialized_path", None)
         portable_mask["path"] = mask_target.relative_to(runtime).as_posix()
+        for field in ("repair_support_mask", "repair_object_core"):
+            if field not in row:
+                continue
+            repair_source = _bound_file(row[field], code="scene_configuration_render_mask_input_invalid")
+            repair_target = runtime / "input/render" / field / f"{index:04d}.png"
+            _copy_file(repair_source, repair_target)
+            portable["derived_frames"][index][field]["path"] = repair_target.relative_to(runtime).as_posix()
+    from .semantic_teacher_candidate_reuse import RETAINED_FILE_FIELDS
+    candidates = render.get("retained_semantic_candidates", [])
+    if not isinstance(candidates, list):
+        raise TaskEvaluationSceneConfigurationBundleError("scene_configuration_retained_candidates_invalid")
+    for index, row in enumerate(candidates):
+        for field in RETAINED_FILE_FIELDS:
+            source = _bound_file(row[field], code="scene_configuration_retained_candidate_invalid")
+            target = runtime / "input/render/retained_candidates" / str(index) / (field + source.suffix)
+            _copy_file(source, target)
+            portable["retained_semantic_candidates"][index][field].pop("materialized_path", None)
+            portable["retained_semantic_candidates"][index][field]["path"] = target.relative_to(runtime).as_posix()
     evidence_records = render.get("sam31_evidence_records", {})
     if not isinstance(evidence_records, Mapping):
         raise TaskEvaluationSceneConfigurationBundleError(
@@ -454,6 +472,9 @@ def _diagnostic_portable_render_inputs(
     for frame in render["derived_frames"]:
         bind(frame)
         bind(frame["source_object_mask"])
+        for field in ("repair_support_mask", "repair_object_core"):
+            if field in frame:
+                bind(frame[field])
     cutout = render["derived_gaussian_cutout"]
     bind(cutout["retained_scene_without_source_object"])
     candidate = cutout.get("source_object_candidate")
@@ -530,6 +551,7 @@ def build_scene_configuration_provider_bundle(
     production_semantic_reuse_checkpoint_root: str | Path | None = None,
     production_semantic_reuse_queue_root: str | Path | None = None,
     production_semantic_reuse_revision_id: str | None = None,
+    retained_candidate_selection_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Package provider-authorized derived inputs; raw InteriorGS stays local."""
 
@@ -655,6 +677,18 @@ def build_scene_configuration_provider_bundle(
                                          expected_source_commit=construction_source_commit)
         except (ValueError, OSError, KeyError) as exc:
             raise TaskEvaluationSceneConfigurationBundleError(str(exc)) from exc
+    if retained_candidate_selection_path:
+        if diagnostic_mode_requested or production_semantic_reuse:
+            raise TaskEvaluationSceneConfigurationBundleError("scene_configuration_retained_candidate_source_ambiguous")
+        from .semantic_teacher_candidate_reuse import load_retained_selection
+        selection_path = Path(retained_candidate_selection_path).resolve()
+        try:
+            retained_candidates = load_retained_selection(selection_path=selection_path, render=render_inputs)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            raise TaskEvaluationSceneConfigurationBundleError("scene_configuration_retained_candidate_selection_invalid") from exc
+        render_inputs = {**render_inputs, "retained_semantic_candidates": retained_candidates,
+            "retained_candidate_selection_digest": _sha256(selection_path)}
+        render_inputs["result_digest"] = canonical_digest(render_inputs, digest_field="result_digest")
     output = Path(output_root).resolve()
     if output.exists() and any(output.iterdir()):
         raise TaskEvaluationSceneConfigurationBundleError(
@@ -1730,6 +1764,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--production-semantic-reuse-checkpoint-root")
     parser.add_argument("--production-semantic-reuse-queue-root")
     parser.add_argument("--production-semantic-reuse-revision-id")
+    parser.add_argument("--retained-candidate-selection", default=os.getenv(
+        "BLUEPRINT_SCENE_CONFIGURATION_RETAINED_CANDIDATE_SELECTION", ""))
     args = parser.parse_args(argv)
     receipt = build_scene_configuration_provider_bundle(
         construction_envelope_path=args.construction_envelope,
@@ -1750,6 +1786,7 @@ def main(argv: list[str] | None = None) -> int:
         production_semantic_reuse_revision_id=(
             args.production_semantic_reuse_revision_id
         ),
+        retained_candidate_selection_path=args.retained_candidate_selection or None,
     )
     print(canonical_json(receipt))
     return 0

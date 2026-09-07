@@ -682,6 +682,20 @@ def execute_semantic_teacher_image_edits(
     if any(not any(frame.get("frame_role", "semantic_edit") == "semantic_edit"
                    for frame, *_rest in frames) for _task_id, frames in prepared_tasks):
         raise SemanticTeacherImageEditWorkerError("semantic_teacher_runtime_edit_support_missing")
+    from .semantic_teacher_candidate_reuse import load_retained_candidates
+    try:
+        retained_candidates = load_retained_candidates(request=request, request_root=root)
+        for _task_id, frames in prepared_tasks:
+            for frame, _image, _mask, size in frames:
+                retained = retained_candidates.get((_task_id, frame["camera_id"]))
+                if retained is not None:
+                    with Image.open(retained["path"]) as image:
+                        if image.format != "PNG" or image.size != size:
+                            raise ValueError("semantic_teacher_retained_candidate_shape_invalid")
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        raise SemanticTeacherImageEditWorkerError(
+            "semantic_teacher_retained_candidate_invalid"
+        ) from exc
     output = Path(output_root).expanduser().resolve()
     if output.is_symlink() or (output.exists() and any(output.iterdir())):
         raise SemanticTeacherImageEditWorkerError(
@@ -691,6 +705,7 @@ def execute_semantic_teacher_image_edits(
     writer = progress_writer or (lambda line: print(line, flush=True))
     frame_jobs: list[dict[str, Any]] = []
     preserved_frames: dict[tuple[int, int], Path] = {}
+    reused_frames: dict[tuple[int, int], tuple[Path, Mapping[str, Any]]] = {}
     for task_index, (task_id, frames) in enumerate(prepared_tasks):
         (output / "tasks" / task_id).mkdir(parents=True)
         for frame_index, (frame, image_bytes, mask_bytes, expected_size) in enumerate(
@@ -700,6 +715,12 @@ def execute_semantic_teacher_image_edits(
                 destination = output / "tasks" / task_id / f"preserved-{frame_index:05d}.png"
                 destination.write_bytes(image_bytes)
                 preserved_frames[(task_index, frame_index)] = destination
+                continue
+            retained = retained_candidates.get((task_id, frame["camera_id"]))
+            if retained is not None:
+                destination = output / "tasks" / task_id / f"retained-{frame_index:05d}.png"
+                destination.write_bytes(retained["path"].read_bytes())
+                reused_frames[(task_index, frame_index)] = (destination, retained["lineage"])
                 continue
             frame_jobs.append(
                 {
@@ -909,6 +930,20 @@ def execute_semantic_teacher_image_edits(
                     "computed_editor_cost_usd": 0.0, "visual_reviewed": False,
                 })
                 continue
+            reused = reused_frames.get((task_index, frame_index))
+            if reused is not None:
+                destination, lineage = reused
+                frame_rows.append({
+                    **common, "terminal_state": "completed_unreviewed_candidate",
+                    "provider_call_performed": False, "retained_candidate_lineage": lineage,
+                    "semantic_teacher_frame": {
+                        "relative_path": destination.relative_to(output).as_posix(),
+                        "size_bytes": destination.stat().st_size, "sha256": _sha256(destination),
+                    },
+                    "provider_usage": None, "computed_editor_cost_usd": 0.0,
+                    "visual_reviewed": False, "multiview_consistency_qualified": False,
+                })
+                continue
             global_frame_index = job_by_key[(task_index, frame_index)]["global_frame_index"]
             outcome = outcomes.get(global_frame_index)
             if outcome is None:
@@ -1048,6 +1083,7 @@ def execute_semantic_teacher_image_edits(
         "task_count": len(task_rows),
         "source_frame_count": sum(len(frames) for _task_id, frames in prepared_tasks),
         "preserved_source_frame_count": len(preserved_frames),
+        "retained_candidate_frame_count": len(reused_frames),
         "request_count": request_count,
         "attempted_request_count": request_count,
         "successful_request_count": request_count,

@@ -633,3 +633,51 @@ def test_repair_packet_bytes_match_the_original_semantic_packet(
             assert (root / relative).read_bytes() == (
                 source_root / relative
             ).read_bytes()
+
+
+def test_object_core_never_blends_source_object_back_into_fill(tmp_path):
+    source = tmp_path / "source.png"
+    raw = tmp_path / "raw.png"
+    support_path = tmp_path / "support.png"
+    core_path = tmp_path / "core.png"
+    Image.new("RGB", (80, 80), (255, 0, 0)).save(source)
+    Image.new("RGB", (80, 80), (0, 255, 0)).save(raw)
+    support = Image.new("L", (80, 80), 0)
+    support.paste(255, (10, 10, 70, 70))
+    support.save(support_path)
+    core = Image.new("L", (80, 80), 0)
+    # The core touches support where a protected neighbour can constrain the
+    # margin. Even that edge must not be feathered back to the red object.
+    core.paste(255, (10, 20, 55, 60))
+    core.save(core_path)
+    result = seal_semantic_teacher_frame(
+        source_path=source, mask_path=support_path, raw_teacher_path=raw,
+        mask_encoding="binary_white_edit_region_png", output_path=tmp_path / "sealed.png",
+        object_core_mask_path=core_path,
+    )
+    with Image.open(tmp_path / "sealed.png") as sealed:
+        assert sealed.getpixel((10, 20)) == (0, 255, 0)
+        assert sealed.getpixel((54, 59)) == (0, 255, 0)
+        assert sealed.getpixel((9, 20)) == (255, 0, 0)
+    assert result["object_core_generated_pixels_preserved_exactly"] is True
+    assert result["object_core_mask"]["sha256"] == _sha256(core_path)
+
+
+def test_object_core_outside_admitted_support_is_rejected(tmp_path):
+    source = tmp_path / "source.png"
+    raw = tmp_path / "raw.png"
+    support_path = tmp_path / "support.png"
+    core_path = tmp_path / "core.png"
+    Image.new("RGB", (20, 20), "red").save(source)
+    Image.new("RGB", (20, 20), "green").save(raw)
+    support = Image.new("L", (20, 20), 0)
+    support.paste(255, (5, 5, 15, 15))
+    support.save(support_path)
+    Image.new("L", (20, 20), 255).save(core_path)
+    with pytest.raises(RuntimeError, match="core_outside_support"):
+        seal_semantic_teacher_frame(
+            source_path=source, mask_path=support_path, raw_teacher_path=raw,
+            mask_encoding="binary_white_edit_region_png", output_path=tmp_path / "sealed.png",
+            object_core_mask_path=core_path,
+        )
+    assert not (tmp_path / "sealed.png").exists()

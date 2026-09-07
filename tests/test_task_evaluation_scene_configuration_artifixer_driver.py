@@ -328,6 +328,7 @@ def test_diagnostic_driver_repairs_only_rejected_semantic_frame_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The retained render/semantic checkpoint feeds one bounded repair loop."""
+    monkeypatch.setattr(driver, "_review_semantic_targets_before_training", lambda **kwargs: None)
 
     checkpoint_root, _checkpoint, fixture = _materialize_diagnostic_checkpoint(
         tmp_path
@@ -568,7 +569,7 @@ def test_diagnostic_driver_repairs_only_rejected_semantic_frame_once(
     assert training_calls[1]["post_training_checkpoint_root"] is None
     assert len(review_calls) == 2
     assert [call["review_round"] for call in review_calls] == [0, 1]
-    assert review_calls[1]["max_cost_usd"] == pytest.approx(0.23)
+    assert review_calls[1]["max_cost_usd"] == pytest.approx(0.065)
     assert len(selective_calls) == 1
     assert selective_calls[0]["semantic_runtime_result"]["request_count"] == 8
     assert len(paid_semantic_calls) == 1
@@ -783,7 +784,7 @@ def test_generic_render_contract_feeds_released_artifixer_inputs(tmp_path: Path)
     assert candidate["receipt_digest"] == canonical_digest(candidate, digest_field="receipt_digest")
 
 
-def test_empty_support_views_remain_bound_outside_repair_inputs(tmp_path: Path) -> None:
+def test_empty_support_view_cannot_silently_become_preservation(tmp_path: Path) -> None:
     envelope, configuration = _inputs(tmp_path)
     render = envelope["render_inputs_result"]
     frame = Path(render["derived_frames"][0]["path"])
@@ -804,22 +805,15 @@ def test_empty_support_views_remain_bound_outside_repair_inputs(tmp_path: Path) 
         envelope=envelope, configuration=configuration, destination=authority_path
     )
     preflight_path = tmp_path / "preflight.json"
-    preflight, _ = _materialize_preflight(
-        envelope=envelope, configuration=configuration, authority=authority,
-        authority_path=authority_path, output_path=preflight_path,
-    )
-    candidate = materialize_artifixer3d_candidate_inputs(
-        calibrated_residual_preflight_path=preflight_path, output_root=tmp_path / "candidate"
-    )
-    assert [r["camera_id"] for r in preflight["camera_inputs"]] == ["context-camera", "camera-0"]
-    assert preflight["camera_inputs"][0]["frame_role"] == "source_preservation"
-    preserved = preflight["no_repair_support_camera_inputs"]
-    assert [r["camera_id"] for r in preserved] == ["context-camera"]
-    assert preserved[0]["exact_residual_mask"]["sha256"] == before[1]
-    assert preserved[0]["exact_residual_mask"]["pixel_count"] == 0
-    assert preflight["camera_input_selection"]["source_camera_count"] == 2
-    assert preflight["preflight_digest"] == canonical_digest(preflight, digest_field="preflight_digest")
-    assert candidate["tasks"][0]["camera_count"] == 2
+    with pytest.raises(
+        driver.TaskEvaluationSceneConfigurationArtifixerError,
+        match="repair_support_missing:context-camera",
+    ):
+        _materialize_preflight(
+            envelope=envelope, configuration=configuration, authority=authority,
+            authority_path=authority_path, output_path=preflight_path,
+        )
+    assert not preflight_path.exists()
     assert (_sha256(frame), _sha256(empty_mask)) == before
     assert len(render["derived_frames"]) == 2
 
@@ -1109,3 +1103,31 @@ def test_successful_artifixer_runtime_emits_no_diagnostics(
 
     assert capsys.readouterr().err == ""
     assert not (tmp_path / "artifixer_runtime_stderr.log").exists()
+
+
+@pytest.mark.parametrize("decision", ["rejected", "accepted"])
+def test_semantic_target_review_checks_composited_frames_before_training(tmp_path, monkeypatch, decision):
+    captured = []
+    def review(**kwargs):
+        captured.append(kwargs)
+        return {"review": {"decision": decision,
+                           "review_receipt": {"path": "retained-review.json"} if decision == "accepted" else None}}
+    monkeypatch.setattr(driver, "_run_artifixer_visual_review_round", review)
+    seal = {"receipt_path": str(tmp_path / "seal" / "receipt.json"),
+            "receipt": {"receipt_digest": "sha256:" + "a" * 64, "frames": [{
+                "camera_id": "source-01", "source_frame": {"path": "source.png"},
+                "exact_edit_mask": {"path": "support.png"},
+                "sealed_semantic_teacher": {"relative_path": "tasks/target.png"},
+            }]}}
+    arguments = dict(locality_seal=seal, round_root=tmp_path / "review", output_root=tmp_path,
+        publisher_scene_id="fixture", task_id="remove-object", rights_path=tmp_path / "rights.json",
+        configuration={}, stage_input={}, environment={}, max_cost_usd=0.375)
+    if decision == "rejected":
+        with pytest.raises(driver.TaskEvaluationSceneConfigurationArtifixerError,
+                           match="semantic_targets_rejected_before_training"):
+            driver._review_semantic_targets_before_training(**arguments)
+    else:
+        driver._review_semantic_targets_before_training(**arguments)
+    assert captured[0]["review_phase"] == "pre_training_semantic_targets"
+    assert captured[0]["review_frames"][0]["final_frame"]["path"] == str(tmp_path / "seal/tasks/target.png")
+    assert captured[0]["post_training_binding_digest"] == seal["receipt"]["receipt_digest"]

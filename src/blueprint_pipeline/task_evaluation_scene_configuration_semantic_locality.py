@@ -178,6 +178,7 @@ def seal_semantic_teacher_frame(
     raw_teacher_path: str | Path,
     mask_encoding: str,
     output_path: str | Path,
+    object_core_mask_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Write one teacher frame with exact source pixels outside the mask."""
 
@@ -214,6 +215,18 @@ def seal_semantic_teacher_frame(
         support=support,
     )
     inner_feather, feather_radius = _inner_feather_alpha(support)
+    core_record = None
+    if object_core_mask_path is not None:
+        core_path = Path(object_core_mask_path).expanduser().resolve()
+        core = _edit_support(mask_path=core_path, encoding="binary_white_edit_region_png")
+        if core.size != support.size or ImageChops.subtract(core, support).getbbox() is not None:
+            raise TaskEvaluationSceneConfigurationSemanticLocalityError(
+                "scene_configuration_artifixer_semantic_locality_core_outside_support"
+            )
+        # The whole object must use generated pixels at full opacity. Feather
+        # only the surrounding repair band; never restore source object pixels.
+        inner_feather = ImageChops.lighter(inner_feather, core)
+        core_record = _record(core_path)
     sealed = Image.composite(raw_teacher, source, inner_feather)
     if _outside_difference_present(
         source=source,
@@ -226,6 +239,8 @@ def seal_semantic_teacher_frame(
     destination.parent.mkdir(parents=True, exist_ok=True)
     sealed.save(destination, format="PNG")
     return {
+        "object_core_mask": core_record,
+        "object_core_generated_pixels_preserved_exactly": core_record is not None,
         "raw_teacher_changed_outside_exact_support": raw_changed_outside,
         "outside_exact_support_high_delta_pixel_fraction": high_delta_fraction,
         "deterministic_selective_repair_required": (
@@ -242,6 +257,7 @@ def materialize_semantic_locality_seal(
     semantic_runtime_result: Mapping[str, Any],
     semantic_output_root: str | Path,
     output_root: str | Path,
+    object_core_records_by_camera: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Preserve every source pixel outside every exact edit mask.
 
@@ -380,10 +396,20 @@ def materialize_semantic_locality_seal(
                     "outside_exact_support_preserved_after_inner_feather": True,
                 }
             else:
+                core_record = (object_core_records_by_camera or {}).get(camera_id)
+                core_path = None
+                if core_record is not None:
+                    core_path = Path(str(core_record.get("path") or ""))
+                    if (not core_path.is_file() or core_path.is_symlink()
+                            or core_path.stat().st_size != core_record.get("size_bytes")
+                            or _sha256(core_path) != core_record.get("digest", core_record.get("sha256"))):
+                        raise TaskEvaluationSceneConfigurationSemanticLocalityError(
+                            "scene_configuration_artifixer_semantic_locality_core_binding_invalid"
+                        )
                 frame_seal = seal_semantic_teacher_frame(
                     source_path=source_path, mask_path=mask_path,
                     raw_teacher_path=raw_teacher_path, mask_encoding=encoding,
-                    output_path=destination,
+                    output_path=destination, object_core_mask_path=core_path,
                 )
             raw_changed_outside = frame_seal[
                 "raw_teacher_changed_outside_exact_support"
@@ -400,6 +426,9 @@ def materialize_semantic_locality_seal(
                     "camera_id": camera_id,
                     "source_frame": _record(source_path),
                     "frame_role": frame_role,
+                    "object_core_mask": frame_seal.get("object_core_mask"),
+                    "object_core_generated_pixels_preserved_exactly": frame_seal.get(
+                        "object_core_generated_pixels_preserved_exactly", False),
                     "exact_edit_mask": _record(mask_path),
                     "raw_semantic_teacher": _record(raw_teacher_path),
                     "raw_teacher_changed_outside_exact_support": (
