@@ -68,3 +68,27 @@ did not reproduce provider hydration followed by the component working directory
 The correction must be replayed from the exact R13 ZIP through the image-request
 boundary in an isolated CPU process before another paid attempt. R13 failure and
 teardown evidence remain preserved; no new image candidates were produced.
+
+### Controls catalog reference after a budget-cap installation
+
+ADP-009, day-14 construction rehearsal: the R14 no-spend provisioner refused
+`public_scene_provision_immutable_conflict` after the controls phase cap was
+reduced from USD 2 to USD 1.75. The canonical installer changed the content
+catalog, while public-scene machinery retained its prior exact-byte reference.
+No R14 intent or provider resource was created by the refusal.
+
+Use `python -m blueprint_pipeline.task_evaluation_public_scene_machinery_refresh`
+with explicit machinery/catalog paths, source commit, and expected machinery
+digest. Preview is the default; `--apply` archives the exact previous machinery
+bytes and atomically refreshes only the catalog reference and machinery seal.
+It validates the new catalog and retained runtime/assets, refuses stale expected
+identity or concurrent changes, and preserves file ownership/mode. Existing
+intent and attempt snapshots are never rewritten. This operator command is a
+configuration maintenance action, not an execution launcher or a scientific claim.
+
+`tests/test_task_evaluation_public_scene_machinery_refresh.py` verifies exact
+archive preservation, idempotence, unchanged unrelated fields, and refusal of
+stale identity, corrupt catalog, changed runtime assets, and a different catalog
+path. The completion artifact is the refresh receipt plus resumed canonical
+provisioning; successful appearance or policy evaluation still requires its own
+execution evidence.
