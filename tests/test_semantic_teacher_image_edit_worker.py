@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from io import BytesIO
 import json
 from pathlib import Path
@@ -1367,3 +1368,33 @@ def test_selection_matches_exact_current_render_before_bundle_admission(tmp_path
         selected = load_retained_selection(selection_path=selection_path, render=render)
         assert len(selected) == 1
         assert Path(selected[0]["candidate"]["path"]).is_file()
+
+
+@pytest.mark.parametrize("change", ["none", "pixels", "unbound_bytes"])
+def test_retained_selection_reproduces_rgb_staging_after_source_verification(tmp_path, change):
+    from blueprint_pipeline.semantic_teacher_candidate_reuse import load_retained_selection
+    request_path, _, _, _ = _request_with_retained_candidate(tmp_path)
+    request = json.loads(request_path.read_text())
+    selection = {"schema_version": "semantic_teacher_retained_candidate_selection.v1",
+        "candidates": request["retained_candidates"]}
+    selection["selection_digest"] = canonical_digest(selection, digest_field="selection_digest")
+    selection_path = request_path.parent / "selection.json"
+    selection_path.write_text(json.dumps(selection))
+    staged = request["tasks"][0]["frames"][0]["input_rgb"]
+    with Image.open(request_path.parent / staged["relative_path"]) as image:
+        source = image.convert("RGBA")
+    if change == "pixels":
+        source.putpixel((0, 0), (123, 45, 67, 255))
+    path = tmp_path / "original-render.png"
+    source.save(path, compress_level=0)
+    record = {"camera_id": "camera_0", "path": str(path), "size_bytes": path.stat().st_size,
+        "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
+    assert record["digest"] != staged["sha256"]
+    if change == "unbound_bytes":
+        path.write_bytes(path.read_bytes() + b"tampered")
+    if change == "none":
+        assert len(load_retained_selection(selection_path=selection_path,
+            render={"derived_frames": [record]})) == 1
+    else:
+        with pytest.raises(ValueError, match="source_changed"):
+            load_retained_selection(selection_path=selection_path, render={"derived_frames": [record]})

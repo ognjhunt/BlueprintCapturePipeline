@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import shutil
 from pathlib import Path
@@ -71,8 +72,7 @@ def load_retained_selection(*, selection_path: Path, render: Mapping) -> list:
         matches = [f for t in original["tasks"] if t["task_id"] == row["task_id"]
                    for f in t["frames"] if f["camera_id"] == row["camera_id"]]
         current = by_camera[row["camera_id"]]
-        if (len(matches) != 1 or matches[0]["input_rgb"]["sha256"]
-                != current.get("digest", current.get("sha256"))):
+        if (len(matches) != 1 or not _matches_staged_rgb(current, matches[0]["input_rgb"]["sha256"])):
             raise ValueError("semantic_teacher_retained_selection_source_changed")
         # Validate the original request, result and output together before the
         # bundle is eligible for paid admission. The runtime checks again using
@@ -81,6 +81,23 @@ def load_retained_selection(*, selection_path: Path, render: Mapping) -> list:
         load_retained_candidates(request=validation_request, request_root=selection_path.parent)
         rows.append(copied)
     return rows
+
+
+def _matches_staged_rgb(current: Mapping, expected_digest: str) -> bool:
+    """Reproduce the canonical RGB PNG staging, after verifying source bytes."""
+    digest = current.get("digest", current.get("sha256"))
+    if digest == expected_digest:
+        return True
+    source = Path(str(current.get("path") or ""))
+    if (source.is_symlink() or not source.is_file()
+            or source.stat().st_size != current.get("size_bytes")
+            or "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest() != digest):
+        return False
+    from PIL import Image
+    encoded = io.BytesIO()
+    with Image.open(source) as original:
+        original.convert("RGB").save(encoded, format="PNG")
+    return "sha256:" + hashlib.sha256(encoded.getvalue()).hexdigest() == expected_digest
 
 
 def attach_retained_candidates(*, runtime_request_path: Path, candidates: list) -> None:
