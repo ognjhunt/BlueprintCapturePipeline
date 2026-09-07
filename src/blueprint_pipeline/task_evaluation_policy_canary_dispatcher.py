@@ -9,6 +9,8 @@ readback without ever invoking the allocator again.
 
 from __future__ import annotations
 
+from .policy_canary_billing_recovery import reconcile_posted_billing
+
 import argparse
 import contextlib
 import hashlib
@@ -87,7 +89,7 @@ from .task_evaluation_run_webapp_sync import (
 )
 from .task_evaluation_launch_webapp_sync import sync_launch_progress_to_webapp
 from .vast_official_billing_extractor import (
-    VastOfficialBillingExtractionError,
+    VastOfficialBillingExtractionError as VastOfficialBillingExtractionError,
     materialize_vast_official_same_goal_reconciliation,
     validate_vast_official_same_goal_reconciliation,
 )
@@ -1044,59 +1046,11 @@ def _recovered_complete_policy_canary_result(
     return result, aggregate_path
 
 
-def _materialize_official_billing_if_posted(
-    *,
-    billing_audit_root: str | Path,
-    adapter_result_path: Path,
-    adapter: Mapping[str, Any],
-    launch_label: str,
-    output_path: Path,
-) -> bool:
-    instance_ids = _adapter_instance_ids(adapter)
-    if len(instance_ids) != 1:
-        return False
-    instance_id = int(instance_ids[0])
-    recovery_path = output_path.parent / "official_billing_recovery.json"
-    if output_path.is_file():
-        value = validate_vast_official_same_goal_reconciliation(output_path)
-        matches = [entry for entry in value.get("entries", [])
-                   if entry.get("provider_instance_id") == instance_id and entry.get("launch_label") == launch_label]
-        if len(matches) != 1:
-            raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_existing_billing_identity_mismatch")
-        terminal = matches[0].get("terminal_execution_evidence", {}).get("terminal_result", {})
-        expected = _record(adapter_result_path)
-        if any(terminal.get(key) != expected[key] for key in ("path", "sha256", "size_bytes")):
-            raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_existing_billing_identity_mismatch")
-        return True
-    audit = Path(billing_audit_root).expanduser().resolve()
-    candidates = sorted(
-        audit.rglob("provider_billing_source_receipt.json"),
-        key=lambda path: path.stat().st_mtime_ns, reverse=True,
-    ) if audit.is_dir() and not audit.is_symlink() else []
-    failures = []
-    for source in candidates:
-        try:
-            materialize_vast_official_same_goal_reconciliation(
-                provider_billing_source_receipt_path=source,
-                expected_instances=[(instance_id, launch_label, adapter_result_path)],
-                output_path=output_path,
-            )
-        except (OSError, VastOfficialBillingExtractionError) as exc:
-            failures.append(str(exc) if isinstance(exc, VastOfficialBillingExtractionError) else type(exc).__name__)
-            continue
-        if recovery_path.exists():
-            write_json(recovery_path, {"status": "resolved", "provider_instance_id": instance_id,
-                "launch_label": launch_label, "reconciliation": _record(output_path)})
-        return True
-    write_json(recovery_path, {
-        "schema_version": "policy_canary_official_billing_recovery.v1", "status": "pending",
-        "provider_instance_id": instance_id, "launch_label": launch_label,
-        "official_charge_usd": None, "blockers": sorted(set(failures)) or ["official_billing_source_missing"],
-        "recovery_action": ("refresh_official_billing_with_declared_period"
-            if any("period" in failure for failure in failures) else "refresh_exact_instance_official_billing"),
-        "provider_mutation_performed": False,
-    })
-    return False
+def _materialize_official_billing_if_posted(**kwargs) -> bool:
+    return reconcile_posted_billing(**kwargs, instance_ids_from_adapter=_adapter_instance_ids,
+        validate_reconciliation=validate_vast_official_same_goal_reconciliation,
+        materialize_reconciliation=materialize_vast_official_same_goal_reconciliation,
+        record_file=_record, write_json=write_json, dispatch_error=TaskEvaluationPolicyCanaryDispatchError)
 
 
 def _projection(

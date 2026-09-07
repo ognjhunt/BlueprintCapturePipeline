@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
+from .vast_instance_inventory import instance_inventory_valid, active_instance_rows
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .vast_create_failure_diagnosis import diagnose_empty_create_400
@@ -5881,38 +5882,12 @@ def _sanitized_instance_row(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _instance_inventory_valid(payload: Any) -> bool:
-    """A successful HTTP response must contain a complete, typed inventory."""
-    if not isinstance(payload, Mapping) or payload.get("success") is False:
-        return False
-    value = next((payload[key] for key in ("instances", "results", "data", "response")
-                  if key in payload), payload)
-    if isinstance(value, list):
-        rows = value
-    elif isinstance(value, Mapping) and value:
-        rows = ([value] if any(key in value for key in ("id", "instance_id", "contract_id"))
-                else list(value.values()))
-    else:
-        return False
-    for row in rows:
-        if not isinstance(row, Mapping):
-            return False
-        identifier = row.get("id") or row.get("instance_id") or row.get("contract_id")
-        if (isinstance(identifier, bool) or not str(identifier or "").isdigit()
-                or int(identifier) <= 0 or not _string(_instance_status(row))):
-            return False
-    return True
+    return instance_inventory_valid(payload, status_reader=_instance_status)
 
 
 def _active_instance_rows_from_payload(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    if not _instance_inventory_valid(payload):
-        raise ValueError("vast_instance_inventory_invalid")
-    active_rows: list[dict[str, Any]] = []
-    for row in _instance_list_rows(payload):
-        sanitized = _sanitized_instance_row(row)
-        status = _string(sanitized.get("raw_status_normalized")).lower()
-        if status and status not in set(VAST_TERMINAL_INSTANCE_STATUSES):
-            active_rows.append(sanitized)
-    return active_rows
+    return active_instance_rows(payload, status_reader=_instance_status, row_reader=_instance_list_rows,
+                                sanitizer=_sanitized_instance_row, terminal_statuses=VAST_TERMINAL_INSTANCE_STATUSES)
 
 
 def _prelaunch_inventory_guard(

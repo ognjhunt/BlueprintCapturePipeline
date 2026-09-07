@@ -335,6 +335,7 @@ def _billing(tmp_path: Path) -> tuple[Path, Path]:
             "results": [
                 {
                     "source": f"instance-{INSTANCE_ID}",
+                    "start": 1786924800, "end": 1786924800,
                     "amount": 0.085,
                     "type": "instance",
                     "metadata": {"label": LAUNCH_LABEL},
@@ -351,6 +352,8 @@ def _billing(tmp_path: Path) -> tuple[Path, Path]:
     source = {
         "schema_version": BILLING_SOURCE_SCHEMA_VERSION,
         "status": "reconciled",
+        "cohort_start_at": "2026-07-01T00:00:00+00:00",
+        "cohort_end_at": "2026-09-07T00:00:00+00:00",
         "provider_totals_usd": {"vast": 0.085},
         "sources": [
             {

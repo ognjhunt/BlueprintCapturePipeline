@@ -41,6 +41,16 @@ BUCKET = "blueprint-production-inputs"
 RUN_ID = "scene-839873-policy-canary-owner-run"
 
 
+@pytest.fixture(autouse=True)
+def isolated_offload_disk(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(offload, "DEFAULT_RESERVATION_ROOT", tmp_path / "disk-reservations")
+    monkeypatch.setattr(offload, "reserve_control_plane_disk", functools.partial(
+        offload.reserve_control_plane_disk,
+        disk_usage=lambda _path: SimpleNamespace(total=512 * 2**30, used=128 * 2**30, free=384 * 2**30),
+    ))
+
+
 def _owner_launch_run(state_root: Path, env, *, run_id: str = RUN_ID, launch_id: str = "launch-owner-1") -> Path:
     """The launch dispatcher's retained run root for an owner-bound policy-canary
     launch: ``launch_request.json`` (task_evaluation_launch_request.v1),

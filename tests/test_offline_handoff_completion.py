@@ -296,3 +296,13 @@ def test_invalid_billing_source_leaves_durable_recovery_action(tmp_path):
     )
     assert output.read_bytes() == frozen
     assert fixture["receipt"].read_bytes() == invalid_source_bytes
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_legacy_teardown_identity_is_bound_without_accepting_conflicting_aliases(tmp_path, conflict):
+    record = guard.open_pending_teardown(provider="vast", lane="offline", run_id="legacy", instance_id="123", registry_dir=tmp_path)
+    receipt = {"status": "PASS", "provider": "vast", "instance_id": "123"}
+    if conflict:
+        receipt["allocation_id"] = "456"
+    result = guard.close_pending_teardown(record["path"], receipt)
+    assert result["status"] == ("open" if conflict else "closed")

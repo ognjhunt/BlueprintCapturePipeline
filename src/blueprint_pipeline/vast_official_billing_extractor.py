@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
-from datetime import datetime
 import hashlib
 import json
 import math
@@ -15,6 +14,7 @@ import re
 import tempfile
 from typing import Any
 
+from .vast_official_charge_period import VastOfficialBillingExtractionError, validate_charge_period as _validate_charge_period
 from .decision_evidence_contracts import canonical_digest
 from .provider_billing_reconciler import (
     BILLING_SOURCE_SCHEMA_VERSION,
@@ -64,10 +64,6 @@ _ARENA_RESULT_NAME = "adp_arena_vast_result.json"
 _ARENA_JOB_DIRS = frozenset(
     {"arena-construction-job", "arena-controls-job", "arena-policy-job"}
 )
-
-
-class VastOfficialBillingExtractionError(ValueError):
-    """The retained billing evidence was incomplete, ambiguous, or altered."""
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
@@ -1366,30 +1362,6 @@ def _terminal_evidence(
         }
     )
     return terminal_evidence
-
-
-def _validate_charge_period(row: Mapping[str, Any], source_receipt: Mapping[str, Any]) -> None:
-    """Reject reversed/future/out-of-query periods without repricing any row.
-
-    A source without a declared cohort must be refreshed before it can
-    authorize financial closure; historical bytes are never rewritten.
-    """
-    start, end = row.get("start"), row.get("end")
-    if any(isinstance(value, bool) or not isinstance(value, (int, float))
-           or not math.isfinite(value) for value in (start, end)) or not 0 <= start <= end:
-        raise VastOfficialBillingExtractionError("vast_official_charge_period_invalid")
-    if not {"cohort_start_at", "cohort_end_at"}.issubset(source_receipt):
-        raise VastOfficialBillingExtractionError("vast_official_charge_period_window_missing")
-    try:
-        lower = datetime.fromisoformat(str(source_receipt["cohort_start_at"]).replace("Z", "+00:00"))
-        upper = datetime.fromisoformat(str(source_receipt["cohort_end_at"]).replace("Z", "+00:00"))
-        if lower.tzinfo is None or upper.tzinfo is None:
-            raise ValueError("unbound timezone")
-        valid = lower.timestamp() <= start <= end <= upper.timestamp()
-    except (KeyError, ValueError, OverflowError):
-        valid = False
-    if not valid:
-        raise VastOfficialBillingExtractionError("vast_official_charge_period_invalid")
 
 
 def _entry(

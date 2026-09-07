@@ -413,10 +413,13 @@ def close_pending_teardown(
     path = Path(record_path)
     record = _read_record(path)
     proof = _mapping(teardown_proof)
+    proof_id = str(proof.get("allocation_id") or proof.get("instance_id") or "")
+    conflicting_ids = (proof.get("allocation_id") is not None and proof.get("instance_id") is not None
+                       and str(proof["allocation_id"]) != str(proof["instance_id"]))
     if record.get("status") != "open":
         if (record.get("status") == "closed" and proof.get("status") == "PASS"
                 and proof.get("provider") == record.get("provider")
-                and str(proof.get("allocation_id") or "") == str(record.get("instance_id") or "")):
+                and not conflicting_ids and proof_id == str(record.get("instance_id") or "")):
             return record
         raise ValueError("pending_teardown_record_terminal")
     if str(proof.get("status") or "").strip().upper() != "PASS":
@@ -424,8 +427,8 @@ def close_pending_teardown(
         record["last_refused_teardown_proof"] = proof or None
         write_json(path, record)
         return record
-    if (not record.get("instance_id")
-            or str(proof.get("allocation_id") or "") != str(record["instance_id"])
+    if (not record.get("instance_id") or conflicting_ids
+            or proof_id != str(record["instance_id"])
             or proof.get("provider") != record.get("provider")):
         record["close_refused_reason"] = "teardown_proof_identity_mismatch"
         record["last_refused_teardown_proof"] = proof
