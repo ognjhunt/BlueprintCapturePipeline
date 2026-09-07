@@ -175,15 +175,18 @@ def materialize_artifixer_post_training_checkpoint(
         raise ArtifixerPostTrainingCheckpointError(
             "scene_configuration_artifixer_warm_runtime_result_invalid"
         )
+    camera_count = source_diagnostic_checkpoint.get("camera_count", 8)
     if (
-        len(review_frames) != 8
+        isinstance(camera_count, bool) or not isinstance(camera_count, int)
+        or not 8 <= camera_count <= 16
+        or len(review_frames) != camera_count
         or any(not isinstance(row, Mapping) for row in review_frames)
     ):
         raise ArtifixerPostTrainingCheckpointError(
             "scene_configuration_artifixer_warm_review_frame_set_invalid"
         )
     camera_ids = [str(row.get("camera_id") or "") for row in review_frames]
-    if not all(camera_ids) or len(set(camera_ids)) != 8:
+    if not all(camera_ids) or len(set(camera_ids)) != camera_count:
         raise ArtifixerPostTrainingCheckpointError(
             "scene_configuration_artifixer_warm_review_frame_set_invalid"
         )
@@ -256,6 +259,7 @@ def materialize_artifixer_post_training_checkpoint(
             # carry that same byte digest into the portable checkpoint.
             "runtime_result_sha256": _sha256(runtime_path),
             "review_frames": portable_frames,
+            "camera_count": camera_count,
             "native_appearance_role": "native_appearance_usdz",
             "inventory": sorted(inventory, key=lambda row: row["relative_path"]),
             "visual_review_provider_call_started": False,
@@ -330,9 +334,12 @@ def validate_artifixer_post_training_checkpoint(
         or _DIGEST.fullmatch(str(checkpoint.get("runtime_result_sha256") or ""))
         is None
         or not isinstance(inventory, list)
-        or len(inventory) != 10
+        or isinstance(checkpoint.get("camera_count", 8), bool)
+        or not isinstance(checkpoint.get("camera_count", 8), int)
+        or not 8 <= checkpoint.get("camera_count", 8) <= 16
+        or len(inventory) != checkpoint.get("camera_count", 8) + 2
         or not isinstance(frames, list)
-        or len(frames) != 8
+        or len(frames) != checkpoint.get("camera_count", 8)
     ):
         raise ArtifixerPostTrainingCheckpointError(
             "scene_configuration_artifixer_warm_checkpoint_invalid"
@@ -381,8 +388,8 @@ def validate_artifixer_post_training_checkpoint(
     if (
         observed_paths != expected_paths
         or any(path.is_symlink() for path in root.rglob("*"))
-        or len(frame_roles) != 8
-        or len(set(frame_roles)) != 8
+        or len(frame_roles) != checkpoint.get("camera_count", 8)
+        or len(set(frame_roles)) != checkpoint.get("camera_count", 8)
         or any(role not in roles for role in frame_roles)
         or checkpoint.get("native_appearance_role") not in roles
         or "artifixer_runtime_result" not in roles

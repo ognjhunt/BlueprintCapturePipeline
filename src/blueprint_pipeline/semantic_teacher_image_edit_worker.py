@@ -652,19 +652,36 @@ def execute_semantic_teacher_image_edits(
                 raise SemanticTeacherImageEditWorkerError(
                     "semantic_teacher_runtime_frame_media_invalid"
                 ) from exc
+            frame_role = frame.get("frame_role", "semantic_edit")
+            with Image.open(BytesIO(mask_bytes)) as mask_image:
+                encoding = execution.get("mask_encoding", "rgba_alpha_zero_edit_region_png")
+                if encoding == "rgba_alpha_zero_edit_region_png":
+                    histogram = mask_image.convert("RGBA").getchannel("A").histogram()
+                    edit_pixels = histogram[0]
+                elif encoding in {"binary_white_edit_region_png", "binary_black_edit_region_png"}:
+                    histogram = mask_image.convert("L").histogram()
+                    edit_pixels = histogram[255 if encoding == "binary_white_edit_region_png" else 0]
+                else:
+                    raise SemanticTeacherImageEditWorkerError("semantic_teacher_runtime_frame_media_invalid")
             if (
                 image_format != "PNG"
                 or mask_format != "PNG"
                 or mask_size != expected_size
                 or expected_size[0] * expected_size[1] > MAX_IMAGE_PIXELS
-                or f"{expected_size[0]}x{expected_size[1]}"
-                not in execution["supported_output_sizes"]
+                or frame_role not in {"semantic_edit", "source_preservation"}
+                or any(histogram[1:255])
+                or bool(edit_pixels) != (frame_role == "semantic_edit")
+                or (frame_role == "semantic_edit" and f"{expected_size[0]}x{expected_size[1]}"
+                    not in execution["supported_output_sizes"])
             ):
                 raise SemanticTeacherImageEditWorkerError(
                     "semantic_teacher_runtime_frame_media_invalid"
                 )
             prepared_frames.append((frame, image_bytes, mask_bytes, expected_size))
         prepared_tasks.append((task_id, prepared_frames))
+    if any(not any(frame.get("frame_role", "semantic_edit") == "semantic_edit"
+                   for frame, *_rest in frames) for _task_id, frames in prepared_tasks):
+        raise SemanticTeacherImageEditWorkerError("semantic_teacher_runtime_edit_support_missing")
     output = Path(output_root).expanduser().resolve()
     if output.is_symlink() or (output.exists() and any(output.iterdir())):
         raise SemanticTeacherImageEditWorkerError(
@@ -673,11 +690,17 @@ def execute_semantic_teacher_image_edits(
     output.mkdir(parents=True, exist_ok=True)
     writer = progress_writer or (lambda line: print(line, flush=True))
     frame_jobs: list[dict[str, Any]] = []
+    preserved_frames: dict[tuple[int, int], Path] = {}
     for task_index, (task_id, frames) in enumerate(prepared_tasks):
         (output / "tasks" / task_id).mkdir(parents=True)
         for frame_index, (frame, image_bytes, mask_bytes, expected_size) in enumerate(
             frames
         ):
+            if frame.get("frame_role", "semantic_edit") == "source_preservation":
+                destination = output / "tasks" / task_id / f"preserved-{frame_index:05d}.png"
+                destination.write_bytes(image_bytes)
+                preserved_frames[(task_index, frame_index)] = destination
+                continue
             frame_jobs.append(
                 {
                     "global_frame_index": len(frame_jobs),
@@ -867,15 +890,26 @@ def execute_semantic_teacher_image_edits(
     for task_index, (task_id, frames) in enumerate(prepared_tasks):
         frame_rows: list[dict[str, Any]] = []
         for frame_index, (frame, _image, _mask, _size) in enumerate(frames):
-            global_frame_index = job_by_key[(task_index, frame_index)][
-                "global_frame_index"
-            ]
             common = {
                 "frame_index": frame_index,
                 "camera_id": str(frame.get("camera_id") or ""),
                 "source_rgb_sha256": frame["input_rgb"]["sha256"],
                 "edit_mask_sha256": frame["edit_mask"]["sha256"],
+                "frame_role": frame.get("frame_role", "semantic_edit"),
             }
+            preserved = preserved_frames.get((task_index, frame_index))
+            if preserved is not None:
+                frame_rows.append({
+                    **common, "terminal_state": "preserved_source", "provider_call_performed": False,
+                    "semantic_teacher_frame": {
+                        "relative_path": preserved.relative_to(output).as_posix(),
+                        "size_bytes": preserved.stat().st_size, "sha256": _sha256(preserved),
+                    },
+                    "source_pixels_preserved": True, "provider_usage": None,
+                    "computed_editor_cost_usd": 0.0, "visual_reviewed": False,
+                })
+                continue
+            global_frame_index = job_by_key[(task_index, frame_index)]["global_frame_index"]
             outcome = outcomes.get(global_frame_index)
             if outcome is None:
                 frame_rows.append(
@@ -1012,6 +1046,8 @@ def execute_semantic_teacher_image_edits(
         "adapter_id": execution["adapter_id"],
         "model_snapshot": execution["model_snapshot"],
         "task_count": len(task_rows),
+        "source_frame_count": sum(len(frames) for _task_id, frames in prepared_tasks),
+        "preserved_source_frame_count": len(preserved_frames),
         "request_count": request_count,
         "attempted_request_count": request_count,
         "successful_request_count": request_count,

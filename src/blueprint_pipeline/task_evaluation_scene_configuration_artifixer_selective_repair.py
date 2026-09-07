@@ -50,7 +50,7 @@ STRICT_LOCALITY_PROMPT = (
     "Do not add an object, silhouette, patch, panel, text, watermark, or robot."
 )
 MAX_REPAIR_ROUNDS = 1
-MAX_SELECTIVE_REPAIR_FRAMES = 8
+MAX_SELECTIVE_REPAIR_FRAMES = 16
 
 
 class TaskEvaluationArtifixerSelectiveRepairError(RuntimeError):

@@ -20,6 +20,8 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from PIL import Image
+
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_scene_configuration_disclosure import MATERIALIZED_STATUS
 from .task_evaluation_scene_configuration_render_inputs import (
@@ -34,6 +36,7 @@ from .task_evaluation_scene_configuration_render_handoff import (
 
 SCHEMA_VERSION = "task_evaluation_scene_configuration_diagnostic_checkpoint.v1"
 STATUS = "render_and_semantic_teacher_completed_diagnostic_checkpoint"
+MAX_CHECKPOINT_CAMERAS = 16
 _SEMANTIC_REQUEST_SCHEMA = "semantic_teacher_image_edit_runtime_request.v1"
 _SEMANTIC_RESULT_SCHEMA = "semantic_teacher_image_edit_runtime_result.v1"
 _SEMANTIC_RECEIPT_SCHEMA = "public_scene_whole_frame_semantic_teacher_candidates.v1"
@@ -202,9 +205,51 @@ def _portable_render_template(render_inputs: Mapping[str, Any]) -> dict[str, Any
         candidate.pop("path", None)
         candidate["checkpoint_role"] = None
     value["derived_gaussian_cutout"] = cutout
+    for name, row in (value.get("sam31_evidence_records") or {}).items():
+        row.pop("path", None)
+        row["checkpoint_role"] = f"sam31_evidence:{name}"
     value["source_checkpoint_render_result_digest"] = value.get("result_digest")
     value["result_digest"] = ""
     return value
+
+
+def _retained_render_provenance(render_inputs: Mapping[str, Any]) -> dict[str, Path]:
+    """Reopen admitted SAM/render provenance without requiring publisher bytes."""
+    if render_inputs.get("render_completed_on_provider") is True:
+        return {}
+    masks = render_inputs.get("source_object_masks") or {}
+    renderer = render_inputs.get("renderer_runtime") or {}
+    records = render_inputs.get("sam31_evidence_records") or {}
+    required = {"calibrated_mask_set", "segment_cutout_set", "selection_inputs",
+                "source_render_conversion", "source_render_receipt",
+                "standard_splat_conversion", "track_selection_review"}
+    if (render_inputs.get("render_execution_site") != "control_plane"
+            or render_inputs.get("provider_render_required") is not False
+            or render_inputs.get("raw_interiorgs_bytes_in_provider_packet") is not False
+            or render_inputs.get("full_source_scene_content_in_provider_packet") is not False
+            or render_inputs.get("source_splat_bytes_retained_on_control_plane") is not True
+            or masks.get("source") != "sam31_reviewed_calibrated_object_masks"
+            or masks.get("all_masks_digest_bound") is not True
+            or masks.get("count") != render_inputs.get("derived_frame_count")
+            or renderer.get("authorization_class") != "method_input"
+            or renderer.get("purpose_bound") is not True
+            or not isinstance(records, Mapping) or set(records) != required):
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_render_provenance_invalid"
+        )
+    runtime = Path(os.getenv("BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT") or Path(__file__).resolve().parents[1])
+    result = {}
+    for name, record in records.items():
+        value = dict(record)
+        path = Path(str(value.get("path") or ""))
+        if not path.is_absolute():
+            if ".." in path.parts:
+                raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+                    "scene_configuration_diagnostic_checkpoint_render_provenance_invalid"
+                )
+            value["path"] = str(runtime / path)
+        result[name] = _bound_file(value, code="scene_configuration_diagnostic_checkpoint_render_provenance_invalid")
+    return result
 
 
 def _scientific_bindings(
@@ -337,7 +382,9 @@ def _camera_rows(
             "scene_configuration_diagnostic_checkpoint_calibration_invalid"
         ) from exc
     frames = render_inputs.get("derived_frames")
-    if not isinstance(calibration, list) or not isinstance(frames, list) or len(frames) != 8:
+    if (not isinstance(calibration, list) or not isinstance(frames, list)
+            or not 8 <= len(frames) <= MAX_CHECKPOINT_CAMERAS
+            or len(calibration) != len(frames)):
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_camera_set_invalid"
         )
@@ -410,6 +457,12 @@ def materialize_scene_configuration_diagnostic_checkpoint(
         )
     envelope = stage_input.get("construction_envelope")
     source_commit = str(stage_input.get("source_commit") or "")
+    frame_count = render_inputs.get("derived_frame_count")
+    request_rows = [row for task in semantic_request.get("tasks") or [] if isinstance(task, Mapping)
+                    for row in task.get("frames") or [] if isinstance(row, Mapping)]
+    preservation_count = sum(row.get("frame_role", "semantic_edit") == "source_preservation" for row in request_rows)
+    model_count = len(request_rows) - preservation_count
+    minimum_count = ((stage_input.get("configuration") or {}).get("required_views") or {}).get("minimum", 8)
     if (
         stage_input.get("schema_version")
         != "task_evaluation_scene_configuration_stage_production_input.v1"
@@ -422,8 +475,11 @@ def materialize_scene_configuration_diagnostic_checkpoint(
         or render_inputs.get("status") != MATERIALIZED_STATUS
         or render_inputs.get("result_digest")
         != canonical_digest(render_inputs, digest_field="result_digest")
-        or render_inputs.get("derived_frame_count") != 8
-        or render_inputs.get("render_completed_on_provider") is not True
+        or isinstance(frame_count, bool) or not isinstance(frame_count, int)
+        or not 8 <= frame_count <= MAX_CHECKPOINT_CAMERAS
+        or isinstance(minimum_count, bool) or not isinstance(minimum_count, int)
+        or not 8 <= minimum_count <= frame_count
+        or len(request_rows) != frame_count or model_count < 1
         or semantic_request.get("schema_version") != _SEMANTIC_REQUEST_SCHEMA
         or semantic_request.get("request_digest")
         != canonical_digest(semantic_request, digest_field="request_digest")
@@ -434,8 +490,9 @@ def materialize_scene_configuration_diagnostic_checkpoint(
         != canonical_digest(semantic_result, digest_field="result_digest")
         or semantic_result.get("source_runtime_request_digest")
         != semantic_request.get("request_digest")
-        or semantic_result.get("request_count") != 8
-        or semantic_result.get("successful_request_count") != 8
+        or semantic_result.get("request_count") != model_count
+        or semantic_result.get("successful_request_count") != model_count
+        or semantic_result.get("preserved_source_frame_count", 0) != preservation_count
         or semantic_result.get("failed_request_count") != 0
         or semantic_result.get("raw_secret_values_recorded") is not False
         or teacher_receipt.get("schema_version") != _SEMANTIC_RECEIPT_SCHEMA
@@ -443,11 +500,12 @@ def materialize_scene_configuration_diagnostic_checkpoint(
         != "whole_frame_semantic_teacher_candidates_unreviewed"
         or teacher_receipt.get("receipt_digest")
         != canonical_digest(teacher_receipt, digest_field="receipt_digest")
-        or teacher_receipt.get("frame_count") != 8
+        or teacher_receipt.get("frame_count") != frame_count
     ):
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_prefix_incomplete"
         )
+    provenance_files = _retained_render_provenance(render_inputs)
     calibration = _bound_file(
         render_inputs.get("camera_calibration"),
         code="scene_configuration_diagnostic_checkpoint_calibration_invalid",
@@ -464,7 +522,7 @@ def materialize_scene_configuration_diagnostic_checkpoint(
         or not isinstance(result_tasks, list)
         or len(result_tasks) != 1
         or not isinstance(teacher_frames, list)
-        or len(teacher_frames) != 8
+        or len(teacher_frames) != frame_count
     ):
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_semantic_set_invalid"
@@ -496,6 +554,24 @@ def materialize_scene_configuration_diagnostic_checkpoint(
     teacher_by_camera = {
         str(row["camera_id"]): row for row in teacher_frames if isinstance(row, Mapping)
     }
+    request_by_camera = {row["camera_id"]: row for row in request_frames}
+    result_by_camera = {row["camera_id"]: row for row in result_frames}
+    for camera, frame in zip(cameras, frames, strict=True):
+        camera_id = camera["camera_id"]
+        role = request_by_camera[camera_id].get("frame_role", "semantic_edit")
+        mask_path = _bound_file(frame["source_object_mask"], code="scene_configuration_diagnostic_checkpoint_mask_invalid")
+        with Image.open(mask_path) as image:
+            histogram = image.convert("L").histogram()
+        preserved = role == "source_preservation"
+        if (role not in {"semantic_edit", "source_preservation"}
+                or any(histogram[1:255]) or bool(histogram[255]) == preserved
+                or teacher_by_camera[camera_id].get("frame_role", "semantic_edit") != role
+                or result_by_camera[camera_id].get("terminal_state")
+                != ("preserved_source" if preserved else "completed_unreviewed_candidate")
+                or (preserved and result_by_camera[camera_id].get("provider_call_performed") is not False)):
+            raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+                "scene_configuration_diagnostic_checkpoint_semantic_camera_mismatch"
+            )
 
     root = Path(output_root).expanduser().resolve()
     if root.is_symlink() or root.exists():
@@ -505,6 +581,9 @@ def materialize_scene_configuration_diagnostic_checkpoint(
     root.mkdir(parents=True, mode=0o750)
     inventory: list[dict[str, Any]] = []
     try:
+        for name, path in provenance_files.items():
+            inventory.append(_copy_inventory_file(source=path, root=root,
+                relative=f"render/provenance/{name}.json", role=f"sam31_evidence:{name}"))
         inventory.append(
             _copy_inventory_file(
                 source=calibration,
@@ -555,6 +634,13 @@ def materialize_scene_configuration_diagnostic_checkpoint(
                 code="scene_configuration_diagnostic_checkpoint_semantic_frame_invalid",
                 digest_key="sha256",
             )
+            frame_role = request_by_camera[camera["camera_id"]].get("frame_role", "semantic_edit")
+            if frame_role == "source_preservation":
+                with Image.open(raw) as raw_image, Image.open(edit) as edit_image:
+                    if raw_image.size != edit_image.size or raw_image.convert("RGB").tobytes() != edit_image.convert("RGB").tobytes():
+                        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+                            "scene_configuration_diagnostic_checkpoint_preserved_source_changed"
+                        )
             raw_row = _copy_inventory_file(
                 source=raw,
                 root=root,
@@ -577,6 +663,7 @@ def materialize_scene_configuration_diagnostic_checkpoint(
             checkpoint_frames.append(
                 {
                     **camera,
+                    "frame_role": frame_role,
                     "raw_frame_role": raw_row["role"],
                     "source_object_mask_role": mask_row["role"],
                     "semantic_teacher_frame_role": edit_row["role"],
@@ -635,7 +722,8 @@ def materialize_scene_configuration_diagnostic_checkpoint(
             "source_toolchain_digest_provenance": source_toolchain_digest,
             "scientific_bindings": bindings,
             "render_inputs_template": _portable_render_template(render_inputs),
-            "camera_count": 8,
+            "camera_count": frame_count,
+            "minimum_camera_count": minimum_count,
             "cameras": checkpoint_frames,
             "semantic_teacher": {
                 "backend_id": semantic_result.get("backend_id"),
@@ -648,10 +736,12 @@ def materialize_scene_configuration_diagnostic_checkpoint(
                 ),
                 "runtime_result_digest": semantic_result["result_digest"],
                 "teacher_receipt_digest": teacher_receipt["receipt_digest"],
-                "requested_frame_count": 8,
-                "completed_frame_count": 8,
+                "requested_frame_count": frame_count,
+                "completed_frame_count": frame_count,
+                "model_request_count": model_count,
+                "preserved_source_frame_count": preservation_count,
                 "failed_frame_count": 0,
-                "status": "completed_8_of_8_unreviewed_candidates",
+                "status": f"completed_{frame_count}_of_{frame_count}_unreviewed_candidates",
             },
             "inventory": sorted(inventory, key=lambda row: row["relative_path"]),
             "completed_stage_prefix_count": 0,
@@ -688,6 +778,8 @@ def validate_scene_configuration_diagnostic_checkpoint(
     inventory = value.get("inventory")
     cameras = value.get("cameras")
     completed_stage_results = value.get("completed_stage_results")
+    camera_count = value.get("camera_count")
+    minimum_count = value.get("minimum_camera_count", 8)
     if (
         unresolved_root.is_symlink()
         or not root.is_dir()
@@ -712,13 +804,16 @@ def validate_scene_configuration_diagnostic_checkpoint(
             and bindings.get("binding_digest") != expected_scientific_binding_digest
         )
         or not isinstance(semantic, Mapping)
-        or semantic.get("status") != "completed_8_of_8_unreviewed_candidates"
-        or semantic.get("requested_frame_count") != 8
-        or semantic.get("completed_frame_count") != 8
+        or isinstance(camera_count, bool) or not isinstance(camera_count, int)
+        or not 8 <= camera_count <= MAX_CHECKPOINT_CAMERAS
+        or isinstance(minimum_count, bool) or not isinstance(minimum_count, int)
+        or not 8 <= minimum_count <= camera_count
+        or semantic.get("status") != f"completed_{camera_count}_of_{camera_count}_unreviewed_candidates"
+        or semantic.get("requested_frame_count") != camera_count
+        or semantic.get("completed_frame_count") != camera_count
         or semantic.get("failed_frame_count") != 0
-        or value.get("camera_count") != 8
         or not isinstance(cameras, list)
-        or len(cameras) != 8
+        or len(cameras) != camera_count
         or not isinstance(inventory, list)
         or not inventory
         or not isinstance(completed_stage_results, list)
@@ -772,7 +867,7 @@ def validate_scene_configuration_diagnostic_checkpoint(
         )
     expected_camera_ids = [str(row.get("camera_id") or "") for row in cameras]
     if (
-        len(set(expected_camera_ids)) != 8
+        len(set(expected_camera_ids)) != camera_count
         or any(
             row.get("frame_index") != index
             or row.get("raw_frame_role") not in roles
@@ -785,6 +880,24 @@ def validate_scene_configuration_diagnostic_checkpoint(
         raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
             "scene_configuration_diagnostic_checkpoint_camera_set_invalid"
         )
+    preserved = sum(row.get("frame_role", "semantic_edit") == "source_preservation" for row in cameras)
+    if (any(row.get("frame_role", "semantic_edit") not in {"semantic_edit", "source_preservation"} for row in cameras)
+            or semantic.get("preserved_source_frame_count", 0) != preserved
+            or semantic.get("model_request_count", camera_count) != camera_count - preserved
+            or camera_count == preserved):
+        raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+            "scene_configuration_diagnostic_checkpoint_camera_set_invalid"
+        )
+    by_role = {row["role"]: row for row in inventory}
+    for name, record in (render_template.get("sam31_evidence_records") or {}).items():
+        expected_role = f"sam31_evidence:{name}"
+        bound = by_role.get(expected_role, {})
+        if (record.get("checkpoint_role") != expected_role
+                or record.get("digest") != bound.get("digest")
+                or record.get("size_bytes") != bound.get("size_bytes")):
+            raise TaskEvaluationSceneConfigurationDiagnosticCheckpointError(
+                "scene_configuration_diagnostic_checkpoint_render_provenance_invalid"
+            )
     return value
 
 
@@ -1221,6 +1334,8 @@ def hydrate_scene_configuration_diagnostic_render_inputs(
     candidate = cutout.get("source_object_candidate")
     if isinstance(candidate, dict):
         hydrate(candidate, required=False)
+    for record in (render.get("sam31_evidence_records") or {}).values():
+        hydrate(record)
     render["result_digest"] = canonical_digest(render, digest_field="result_digest")
     return render
 
@@ -1231,7 +1346,7 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
     current_semantic_runtime_request: Mapping[str, Any],
     output_root: str | Path,
 ) -> dict[str, Any]:
-    """Copy exactly eight sealed edits after checking the rebuilt request."""
+    """Copy every sealed source view after checking the rebuilt request."""
 
     checkpoint = validate_scene_configuration_diagnostic_checkpoint(
         checkpoint_root=checkpoint_root
@@ -1388,7 +1503,10 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
                 "camera_id": camera_id,
                 "source_rgb_sha256": request_frame["input_rgb"]["sha256"],
                 "edit_mask_sha256": request_frame["edit_mask"]["sha256"],
-                "terminal_state": "completed_unreviewed_candidate",
+                "frame_role": request_frame.get("frame_role", "semantic_edit"),
+                "terminal_state": ("preserved_source" if request_frame.get("frame_role") == "source_preservation"
+                                   else "completed_unreviewed_candidate"),
+                "provider_call_performed": False,
                 "semantic_teacher_frame": {
                     "relative_path": destination.relative_to(output).as_posix(),
                     "size_bytes": expected_size,
@@ -1416,14 +1534,16 @@ def hydrate_scene_configuration_diagnostic_semantic_outputs(
         "backend_entry_digest": semantic["backend_entry_digest"],
         "adapter_id": semantic["adapter_id"],
         "model_snapshot": semantic["model_snapshot"],
-        "request_count": 8,
-        "successful_request_count": 8,
+        "request_count": semantic.get("model_request_count", len(request_camera_ids)),
+        "successful_request_count": semantic.get("model_request_count", len(request_camera_ids)),
+        "source_frame_count": len(request_camera_ids),
+        "preserved_source_frame_count": semantic.get("preserved_source_frame_count", 0),
         "failed_request_count": 0,
         "computed_editor_cost_usd": float(computed_editor_cost_usd),
         "tasks": [
             {
                 "task_id": task_id,
-                "camera_count": 8,
+                "camera_count": len(request_camera_ids),
                 "frames": hydrated_frames,
             }
         ],

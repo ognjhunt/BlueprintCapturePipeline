@@ -811,14 +811,15 @@ def test_empty_support_views_remain_bound_outside_repair_inputs(tmp_path: Path) 
     candidate = materialize_artifixer3d_candidate_inputs(
         calibrated_residual_preflight_path=preflight_path, output_root=tmp_path / "candidate"
     )
-    assert [r["camera_id"] for r in preflight["camera_inputs"]] == ["camera-0"]
+    assert [r["camera_id"] for r in preflight["camera_inputs"]] == ["context-camera", "camera-0"]
+    assert preflight["camera_inputs"][0]["frame_role"] == "source_preservation"
     preserved = preflight["no_repair_support_camera_inputs"]
     assert [r["camera_id"] for r in preserved] == ["context-camera"]
     assert preserved[0]["exact_residual_mask"]["sha256"] == before[1]
     assert preserved[0]["exact_residual_mask"]["pixel_count"] == 0
     assert preflight["camera_input_selection"]["source_camera_count"] == 2
     assert preflight["preflight_digest"] == canonical_digest(preflight, digest_field="preflight_digest")
-    assert candidate["tasks"][0]["camera_count"] == 1
+    assert candidate["tasks"][0]["camera_count"] == 2
     assert (_sha256(frame), _sha256(empty_mask)) == before
     assert len(render["derived_frames"]) == 2
 

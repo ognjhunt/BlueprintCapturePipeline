@@ -235,7 +235,8 @@ def _validated_rights(
 
 
 def _write_edit_mask(
-    *, exact_mask: Path, destination: Path, encoding: str
+    *, exact_mask: Path, destination: Path, encoding: str,
+    frame_role: str = "semantic_edit",
 ) -> tuple[int, int]:
     try:
         with Image.open(exact_mask) as image:
@@ -244,7 +245,9 @@ def _write_edit_mask(
         raise SemanticTeacherImageEditError(
             ["semantic_teacher_exact_mask_unreadable"]
         ) from exc
-    if set(mask.tobytes()) - {0, 255} or not np.any(mask):
+    if (set(mask.tobytes()) - {0, 255}
+            or frame_role not in {"semantic_edit", "source_preservation"}
+            or bool(np.any(mask)) != (frame_role == "semantic_edit")):
         raise SemanticTeacherImageEditError(["semantic_teacher_exact_mask_invalid"])
     if encoding == "rgba_alpha_zero_edit_region_png":
         encoded = np.zeros((*mask.shape, 4), dtype=np.uint8)
@@ -388,11 +391,13 @@ def materialize_semantic_teacher_image_edit_packet(
                 exact_mask=exact_mask,
                 destination=staged_mask,
                 encoding=str(execution["mask_encoding"]),
+                frame_role=str(frame.get("frame_role", "semantic_edit")),
             )
             frame_rows.append(
                 {
                     "frame_index": expected_index,
                     "camera_id": str(frame["camera_id"]),
+                    "frame_role": frame.get("frame_role", "semantic_edit"),
                     "source_original": _record(source),
                     "exact_repair_mask": _record(exact_mask),
                     "staged_input_rgb": _record(staged_source, root=output),
@@ -405,7 +410,7 @@ def materialize_semantic_teacher_image_edit_packet(
                     "edit_mask_edit_pixels_equal_exact_repair_support": True,
                 }
             )
-            request_count += 1
+            request_count += int(frame.get("frame_role", "semantic_edit") == "semantic_edit")
         task_rows.append(
             {
                 "task_id": task_id,

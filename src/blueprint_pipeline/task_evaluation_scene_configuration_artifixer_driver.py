@@ -713,19 +713,19 @@ def _materialize_preflight(
             "calibration": calibration,
             "retained_scene_before": _record(frame),
             "exact_residual_mask": {**_record(mask), "pixel_count": pixel_count},
+            "frame_role": "semantic_edit" if pixel_count else "source_preservation",
         }
         # Full-room source views can have no exact repair support. Keep their
-        # original bytes bound as evidence, but never request inpainting of an
-        # empty mask or invent support to satisfy the repair-input contract.
-        if pixel_count:
-            camera_inputs.append(camera_input)
-        else:
+        # original bytes as training/review views. Their explicit preservation
+        # role must never result in an image-edit request.
+        camera_inputs.append(camera_input)
+        if not pixel_count:
             no_repair_support_camera_inputs.append(camera_input)
     retained_row = (render.get("derived_gaussian_cutout") or {}).get(
         "retained_scene_without_source_object"
     ) or {}
     retained = Path(str(retained_row.get("path") or "")).resolve()
-    if not camera_inputs:
+    if not camera_inputs or len(no_repair_support_camera_inputs) == len(camera_inputs):
         raise TaskEvaluationSceneConfigurationArtifixerError(
             "scene_configuration_artifixer_repair_support_missing"
         )
@@ -761,9 +761,9 @@ def _materialize_preflight(
         "camera_inputs": camera_inputs,
         "no_repair_support_camera_inputs": no_repair_support_camera_inputs,
         "camera_input_selection": {
-            "policy": "nonempty_exact_mask_repair_views_only",
-            "source_camera_count": len(camera_inputs) + len(no_repair_support_camera_inputs),
-            "repair_camera_count": len(camera_inputs),
+            "policy": "nonempty_exact_mask_edits_with_unchanged_source_preservation_views",
+            "source_camera_count": len(camera_inputs),
+            "repair_camera_count": len(camera_inputs) - len(no_repair_support_camera_inputs),
             "no_repair_support_camera_count": len(no_repair_support_camera_inputs),
             "source_frames_and_masks_modified": False,
             "unselected_views_retained_in_preflight": True,
@@ -952,7 +952,8 @@ def _semantic_runtime_request(
     supported_sizes = packet["backend"]["execution"]["supported_output_sizes"]
     for task in packet["tasks"]:
         for frame in task["frames"]:
-            if f"{frame.get('width')}x{frame.get('height')}" not in supported_sizes:
+            if (frame.get("frame_role", "semantic_edit") == "semantic_edit"
+                    and f"{frame.get('width')}x{frame.get('height')}" not in supported_sizes):
                 raise TaskEvaluationSceneConfigurationArtifixerError(
                     "scene_configuration_artifixer_semantic_frame_size_unsupported"
                 )
@@ -965,6 +966,7 @@ def _semantic_runtime_request(
                         "camera_id": frame["camera_id"],
                         "input_rgb": frame["staged_input_rgb"],
                         "edit_mask": frame["staged_edit_mask"],
+                        "frame_role": frame.get("frame_role", "semantic_edit"),
                     }
                     for frame in task["frames"]
                 ],

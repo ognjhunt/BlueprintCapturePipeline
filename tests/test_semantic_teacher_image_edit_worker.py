@@ -135,6 +135,44 @@ def _set_parallelism(request_path: Path, value: object) -> None:
     request_path.write_text(json.dumps(request, sort_keys=True) + "\n", encoding="utf-8")
 
 
+@pytest.mark.parametrize("invalid_preservation", [False, True])
+def test_source_preservation_never_calls_editor_and_requires_empty_support(
+    tmp_path: Path, invalid_preservation: bool
+) -> None:
+    request_path, sources = _runtime_request(tmp_path)
+    request = json.loads(request_path.read_text())
+    frame = request["tasks"][0]["frames"][0]
+    frame["frame_role"] = "source_preservation"
+    mask = request_path.parent / frame["edit_mask"]["relative_path"]
+    if not invalid_preservation:
+        mask.write_bytes(_png_bytes(size=(6, 4), color=(255, 255, 255, 255), mode="RGBA"))
+        frame["edit_mask"] = _record(mask, root=request_path.parent)
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request))
+    calls = []
+
+    def opener(http_request, *, timeout):
+        calls.append(http_request)
+        assert sources[0].read_bytes() not in http_request.data
+        return _Response(_inline_response(sources[1].read_bytes()))
+
+    if invalid_preservation:
+        with pytest.raises(SemanticTeacherImageEditWorkerError, match="frame_media_invalid"):
+            execute_semantic_teacher_image_edits(runtime_request_path=request_path,
+                output_root=tmp_path / "output", token="fixture-token", opener=opener)
+        assert not calls
+    else:
+        result = execute_semantic_teacher_image_edits(runtime_request_path=request_path,
+            output_root=tmp_path / "output", token="fixture-token", opener=opener)
+        assert len(calls) == result["request_count"] == 1
+        assert result["source_frame_count"] == 2
+        assert result["preserved_source_frame_count"] == 1
+        preserved = result["tasks"][0]["frames"][0]
+        assert preserved["terminal_state"] == "preserved_source"
+        assert preserved["provider_call_performed"] is False
+        assert (tmp_path / "output" / preserved["semantic_teacher_frame"]["relative_path"]).read_bytes() == sources[0].read_bytes()
+
+
 def _split_runtime_tasks(request_path: Path, *, split_at: int) -> None:
     request = json.loads(request_path.read_text(encoding="utf-8"))
     frames = request["tasks"][0]["frames"]

@@ -31,7 +31,7 @@ SEMANTIC_LOCALITY_SCHEMA_VERSION = (
 SEMANTIC_LOCALITY_POLICY = (
     "exact_edit_support_source_preservation_inner_feather_v2"
 )
-MAX_LOCALITY_SEAL_FRAMES = 8
+MAX_LOCALITY_SEAL_FRAMES = 16
 MAX_INNER_FEATHER_RADIUS_PIXELS = 16
 GROSS_OUTSIDE_CHANGE_CHANNEL_DELTA = 32
 GROSS_OUTSIDE_CHANGE_FRACTION = 0.25
@@ -94,7 +94,7 @@ def _record(path: Path, *, root: Path | None = None) -> dict[str, Any]:
     return value
 
 
-def _edit_support(*, mask_path: Path, encoding: str) -> Image.Image:
+def _edit_support(*, mask_path: Path, encoding: str, require_nonempty: bool = True) -> Image.Image:
     try:
         with Image.open(mask_path) as image:
             if encoding == "rgba_alpha_zero_edit_region_png":
@@ -112,7 +112,7 @@ def _edit_support(*, mask_path: Path, encoding: str) -> Image.Image:
         raise TaskEvaluationSceneConfigurationSemanticLocalityError(
             "scene_configuration_artifixer_semantic_locality_mask_invalid"
         ) from exc
-    if support.getbbox() is None:
+    if require_nonempty and support.getbbox() is None:
         raise TaskEvaluationSceneConfigurationSemanticLocalityError(
             "scene_configuration_artifixer_semantic_locality_mask_empty"
         )
@@ -327,13 +327,15 @@ def materialize_semantic_locality_seal(
                 )
             camera_id = str(request_frame.get("camera_id") or "")
             result_frame = result_by_camera.get(camera_id)
+            frame_role = request_frame.get("frame_role", "semantic_edit")
             if (
                 not camera_id
                 or camera_id in observed
                 or request_frame.get("frame_index") != expected_index
                 or not isinstance(result_frame, Mapping)
+                or frame_role not in {"semantic_edit", "source_preservation"}
                 or result_frame.get("terminal_state")
-                != "completed_unreviewed_candidate"
+                != ("preserved_source" if frame_role == "source_preservation" else "completed_unreviewed_candidate")
                 or result_frame.get("source_rgb_sha256")
                 != (request_frame.get("input_rgb") or {}).get("sha256")
                 or result_frame.get("edit_mask_sha256")
@@ -359,13 +361,30 @@ def materialize_semantic_locality_seal(
                 code="scene_configuration_artifixer_semantic_locality_teacher_invalid",
             )
             destination = frames_root / f"{expected_index:05d}.png"
-            frame_seal = seal_semantic_teacher_frame(
-                source_path=source_path,
-                mask_path=mask_path,
-                raw_teacher_path=raw_teacher_path,
-                mask_encoding=encoding,
-                output_path=destination,
-            )
+            if frame_role == "source_preservation":
+                support = _edit_support(mask_path=mask_path, encoding=encoding, require_nonempty=False)
+                with Image.open(source_path) as source_image:
+                    source_size = source_image.size
+                if (support.getbbox() is not None or support.size != source_size
+                        or raw_teacher_path.read_bytes() != source_path.read_bytes()
+                        or result_frame.get("provider_call_performed") is not False):
+                    raise TaskEvaluationSceneConfigurationSemanticLocalityError(
+                        "scene_configuration_artifixer_preserved_source_invalid"
+                    )
+                destination.write_bytes(source_path.read_bytes())
+                frame_seal = {
+                    "raw_teacher_changed_outside_exact_support": False,
+                    "outside_exact_support_high_delta_pixel_fraction": 0.0,
+                    "deterministic_selective_repair_required": False,
+                    "inner_feather_radius_pixels": 0,
+                    "outside_exact_support_preserved_after_inner_feather": True,
+                }
+            else:
+                frame_seal = seal_semantic_teacher_frame(
+                    source_path=source_path, mask_path=mask_path,
+                    raw_teacher_path=raw_teacher_path, mask_encoding=encoding,
+                    output_path=destination,
+                )
             raw_changed_outside = frame_seal[
                 "raw_teacher_changed_outside_exact_support"
             ]
@@ -380,6 +399,7 @@ def materialize_semantic_locality_seal(
                     "frame_index": expected_index,
                     "camera_id": camera_id,
                     "source_frame": _record(source_path),
+                    "frame_role": frame_role,
                     "exact_edit_mask": _record(mask_path),
                     "raw_semantic_teacher": _record(raw_teacher_path),
                     "raw_teacher_changed_outside_exact_support": (
