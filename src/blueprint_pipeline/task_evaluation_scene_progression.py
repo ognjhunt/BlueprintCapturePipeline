@@ -321,6 +321,8 @@ def _release_successor(*, directory, intent, state, config, release, now):
 
 def _recover(*, directory, intent, state, attempt, link, config, release, machinery, output, now):
     from .task_evaluation_scene_progression_recovery import retain_failure, reconcile_ownership
+    if intent["request"]["execution"]["max_retries"] == 0:
+        return False
     failure = retain_failure(attempt=attempt, link=link, child_queue_root=config["child_queue_root"],
         output_root=output / "recovery", now=now)
     if failure is None:

@@ -44,16 +44,25 @@ def record_identity(value):
 def task_science(task):
     """Only explicitly named release/namespace fields may differ on adoption."""
     value = deepcopy(task)
-    for name in ("expected_production_commit", "run_prefix", "output_identity", "request_digest"):
+    for name in ("expected_production_commit", "run_prefix", "output_identity", "request_digest",
+                 "team_namespace", "robot_binding_id", "episode_interpretation", "scene_intent_authority"):
         value.pop(name, None)
     value.get("configuration_provenance", {}).pop("execution_release_rebinding", None)
-    value.get("scene_intent_authority", {}).pop("attempt", None)
+    # Source-stage reuse does not reuse robot execution or owner authority.
+    # Current consent/disclosure is reopened independently below. Preserve all
+    # scientific task fields and permission flags while ignoring issuance metadata.
+    confirmation = value.get("success_contract_authority", {})
+    for name in ("authority_reference", "delegation_authority_reference", "confirmed_by_team_id"):
+        confirmation.pop(name, None)
     # These are independently reopened through the source and rights validators.
     references = value.get("source_input_references", {})
     for name in ("installation_receipt", "source_preparation_receipt", "standard_splat_conversion_receipt"):
         references.pop(name, None)
     authority = value.get("human_authority", {})
-    for name in ("full_source_provider_disclosure_authority", "full_source_provider_disclosure_authorities"):
+    for name in ("full_source_provider_disclosure_authority", "full_source_provider_disclosure_authorities",
+                 "accepted_on", "authority_reference", "max_task_parameter_proposal_cost_usd",
+                 "task_parameter_confirmation_delegated_to_sdk", "task_parameter_proposal_authorized",
+                 "task_success_contract_confirmed"):
         authority.pop(name, None)
     return record_identity(value)
 
