@@ -67,7 +67,19 @@ PERSISTED_PROJECTION_RELATIVE_PATH = "artifacts/result_delivery/policy_canary_re
 PERSISTED_WEBAPP_SYNC_RELATIVE_PATH = "artifacts/result_delivery/policy_canary_webapp_sync.json"
 CANARY_PROVIDER_ZERO_FILENAME = "post_teardown_global_provider_zero.json"
 CANARY_DISPATCH_RECEIPT_FILENAME = "dispatch_receipt.json"
+NONEXECUTION_FILENAME = "policy_canary_nonexecution.json"
+NONEXECUTION_STATE_FILENAME = "nonexecution_terminal_state.json"
+NONEXECUTION_STATE_SCHEMA = "task_evaluation_scene_nonexecution_terminal_state.v1"
 _RESULT_URI_PREFIX = "s3://"
+_NONEXECUTION_STATUSES = frozenset(
+    {
+        "prepared_no_execution",
+        "blocked_before_paid_dispatch",
+        "blocked_awaiting_website_notification",
+        "blocked_without_provider_allocation",
+        "blocked_without_provider_allocation_awaiting_notification",
+    }
+)
 
 
 class TerminalResultIndexError(ValueError):
@@ -292,6 +304,14 @@ def index_policy_canary_terminal(*, canary_run_root: str | Path,
     if (receipt.get("schema_version") != DISPATCH_RECEIPT_SCHEMA or not _sealed(receipt, "receipt_digest")
             or receipt.get("run_kind") != POLICY_CANARY_RUN_KIND or not isinstance(run_id, str) or not run_id):
         _fail("dispatch_receipt_invalid")
+    if receipt.get("status") in _NONEXECUTION_STATUSES:
+        return _index_nonexecution_record(
+            canary_run_root=run_root,
+            terminal_result_root=terminal_root,
+            record_path=receipt_path,
+            record=receipt,
+            digest_field="receipt_digest",
+        )
     directory = _bridge_directory_for_run(terminal_root, run_id) if terminal_root.is_dir() else None
     if directory is None:
         return {**base, "status": "launch_bridge_pending", "run_id": run_id}
@@ -343,6 +363,136 @@ def index_policy_canary_terminal(*, canary_run_root: str | Path,
     })
     return {**base, "status": "policy_canary_terminal_indexed", "run_id": run_id, "intent_id": directory.name,
             "directory": str(directory), "files": written}
+
+
+def _index_nonexecution_record(
+    *,
+    canary_run_root: Path,
+    terminal_result_root: Path,
+    record_path: Path,
+    record: dict[str, Any],
+    digest_field: str,
+) -> dict[str, Any]:
+    """File a typed preprovider/nonexecution record without inventing evidence.
+
+    Dry-run and preprovider outcomes do not have a policy projection, provider
+    allocation, or provider-zero observation.  They therefore use a separate
+    owner-scoped file and state schema.  The normal stage-B validator must never
+    be relaxed to accept those missing artifacts.
+    """
+
+    base = _base(
+        "nonexecution_terminal",
+        canary_run_root=str(canary_run_root),
+        record_path=str(record_path),
+    )
+    status = record.get("status")
+    run_id = record.get("run_id")
+    if (
+        status not in _NONEXECUTION_STATUSES
+        or record.get("schema_version") not in {DISPATCH_RECEIPT_SCHEMA, "task_evaluation_policy_canary_preprovider_blocked.v1"}
+        or not isinstance(run_id, str)
+        or not run_id
+        or record.get("run_kind") != POLICY_CANARY_RUN_KIND
+        or record.get("claim_ceiling") != "diagnostic_policy_execution"
+        or record.get("provider_mutation_performed") is not False
+        or record.get("provider_allocation_performed") is not False
+        or record.get("provider_zero_required") is not False
+        or record.get("provider_zero_not_applicable") is not True
+        or record.get("paid_execution_requested") is not False
+        or record.get("automatic_retry_authorized") is not False
+        or record.get("automatic_retry_performed") is not False
+        or record.get("retry_cap") != 0
+        or record.get("provider_call_reached") is not False
+        or not _sealed(record, digest_field)
+        or "provider_zero" in record
+        or "policy_canary_result_projection" in record
+        or "terminal_result_publication" in record
+    ):
+        _fail("nonexecution_record_invalid")
+    if digest_field == "receipt_digest":
+        allocator_result = record.get("allocator_result")
+        if allocator_result is not None:
+            if not _record(allocator_result):
+                _fail("nonexecution_allocator_result_invalid")
+            allocator_path = Path(str(allocator_result.get("path") or ""))
+            if (
+                not allocator_path.is_absolute()
+                or allocator_path.is_symlink()
+                or not allocator_path.is_file()
+                or not allocator_path.resolve().is_relative_to(canary_run_root)
+                or any(parent.is_symlink() for parent in (allocator_path, *allocator_path.parents))
+            ):
+                _fail("nonexecution_allocator_result_invalid")
+            if not _bound(allocator_result, allocator_path.read_bytes()):
+                _fail("nonexecution_allocator_result_invalid")
+    bridge = _bridge_directory_for_run(terminal_result_root, run_id) if terminal_result_root.is_dir() else None
+    if bridge is None:
+        return {**base, "status": "launch_bridge_pending", "run_id": run_id}
+    directory = _safe(terminal_result_root) / bridge.name
+    raw = _read_bytes(record_path, reason="nonexecution_record_absent")
+    state = {
+        "schema_version": NONEXECUTION_STATE_SCHEMA,
+        "run_id": run_id,
+        "canary_run_root": str(canary_run_root),
+        "record_digest": record[digest_field],
+        "status": status,
+        "state_digest": "",
+    }
+    state["state_digest"] = canonical_digest(state, digest_field="state_digest")
+    written = _publish(
+        directory,
+        {
+            NONEXECUTION_FILENAME: raw,
+            NONEXECUTION_STATE_FILENAME: _canonical(state),
+        },
+    )
+    return {
+        **base,
+        "status": "policy_canary_nonexecution_indexed",
+        "run_id": run_id,
+        "intent_id": directory.name,
+        "directory": str(directory),
+        "nonexecution_status": status,
+        "files": written,
+    }
+
+
+def index_policy_canary_nonexecution(
+    *,
+    canary_run_root: str | Path,
+    terminal_result_root: str | Path,
+) -> dict[str, Any]:
+    """Index a preprovider record emitted by the queue consumer.
+
+    ``preprovider_blocked.json`` and ``no_provider_allocation_blocked.json``
+    are producer outputs, not synthetic policy results.  The record is copied
+    byte-for-byte only after its own seal and explicit no-mutation fields are
+    checked.  A missing run identity cannot be joined to an owner bridge.
+    """
+
+    run_root = _safe(canary_run_root)
+    terminal_root = _safe(terminal_result_root)
+    for name, digest_field in (
+        ("preprovider_blocked.json", "blocked_result_digest"),
+        ("no_provider_allocation_blocked.json", "receipt_digest"),
+    ):
+        path = run_root / name
+        if not path.is_file():
+            continue
+        raw = _read_bytes(path, reason="nonexecution_record_absent")
+        value = _parse(raw, reason="nonexecution_record_invalid")
+        return _index_nonexecution_record(
+            canary_run_root=run_root,
+            terminal_result_root=terminal_root,
+            record_path=path,
+            record=value,
+            digest_field=digest_field,
+        )
+    return {
+        **_base("nonexecution_terminal", canary_run_root=str(run_root)),
+        "status": "nonexecution_record_pending",
+    }
 
 
 # --------------------------------------------------------- stage C: durable publication
@@ -421,12 +571,15 @@ def index_result_publication(*, terminal_directory: str | Path) -> dict[str, Any
 
 __all__ = [
     "INDEX_SCHEMA",
+    "NONEXECUTION_FILENAME",
+    "NONEXECUTION_STATE_FILENAME",
     "PERSISTED_PROJECTION_RELATIVE_PATH",
     "PERSISTED_WEBAPP_SYNC_RELATIVE_PATH",
     "STATE_FILENAME",
     "TerminalResultIndexError",
     "file_record",
     "index_launch_bridge",
+    "index_policy_canary_nonexecution",
     "index_policy_canary_terminal",
     "index_result_publication",
 ]

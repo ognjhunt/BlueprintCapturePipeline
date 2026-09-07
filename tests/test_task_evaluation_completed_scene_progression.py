@@ -47,6 +47,8 @@ def _owner(store, now, *, source_kind="gaussian_splat"):
     _, appearance = upload(store, bytes(data), "appearance1", "provided_scene_splat", "room.ply")
     submitted, collision = upload(store, MESH, "collision1", "provided_scene_mesh", "room.usda")
     owner = owner_request()
+    from blueprint_pipeline.task_evaluation_scene_policy_capability import supported_policy_candidates
+    owner["execution"]["policy_candidates"] = supported_policy_candidates()
     owner["owner"] = {"user_id": submitted["customer_id"], "organization_id": submitted["organization_id"]}
     owner["consent"].update(accepted_by=owner["owner"]["user_id"], accepted_at_epoch=now - 1,
                             rights_reference=appearance["envelope_digest"], provider_terms_reference="terms-v1")

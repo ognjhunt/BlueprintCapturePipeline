@@ -105,6 +105,8 @@ def context(tmp_path, monkeypatch, request):
         "accepted_by": "nijelhunt_1", "accepted_on": "2026-09-05", "human_authority_reference": "fixture-terms"}, "attestation_digest")
     now = time.time()
     owner = owner_request()
+    from blueprint_pipeline.task_evaluation_scene_policy_capability import supported_policy_candidates
+    owner["execution"]["policy_candidates"] = supported_policy_candidates()
     owner["source"] = {"kind": "public_scene", "binding_id": "public-scene-1",
         "content_digest": factory.public_source_content_digest(installation)}
     owner["task"] = task_contract_projection(seed)

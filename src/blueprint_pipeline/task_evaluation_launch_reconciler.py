@@ -859,6 +859,7 @@ def _index_terminal_results(
     from .task_evaluation_scene_terminal_result_index import (
         TerminalResultIndexError,
         index_launch_bridge,
+        index_policy_canary_nonexecution,
         index_policy_canary_terminal,
     )
 
@@ -902,6 +903,23 @@ def _index_terminal_results(
                 index_policy_canary_terminal,
                 location_key="canary_run_root",
                 location=receipt_path.parent,
+                terminal_result_root=terminal_result_root,
+            )
+        # Preprovider queue refusals intentionally have no dispatch receipt:
+        # the allocator was never entered, so no policy projection or
+        # provider-zero closure exists to bind.  File those typed producer
+        # records through their dedicated index path instead of treating the
+        # absence of the normal paid receipt as corruption.
+        for record_path in sorted(
+            {
+                *dispatch_root.rglob("preprovider_blocked.json"),
+                *dispatch_root.rglob("no_provider_allocation_blocked.json"),
+            }
+        ):
+            attempt(
+                index_policy_canary_nonexecution,
+                location_key="canary_run_root",
+                location=record_path.parent,
                 terminal_result_root=terminal_result_root,
             )
     return rows
