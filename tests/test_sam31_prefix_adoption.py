@@ -21,6 +21,30 @@ from tests.test_task_evaluation_launch_preparation_worker import production_requ
 OLD, NEW = "a" * 40, "b" * 40
 
 
+def test_retained_parent_lookup_accepts_old_budget_without_admitting_execution(tmp_path):
+    from blueprint_pipeline.task_evaluation_sam31_parent_evidence import _parent, retained_parent
+    from blueprint_pipeline.task_evaluation_launch_preparation_contract import TaskEvaluationLaunchPreparationContractError
+
+    request, _ = production_request_with_fetchable_bytes()
+    request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]["artifixer_visual_review"] = .64
+    digest = canonical_digest(request)
+    job = {"parent_preparation_id": request["preparation_id"], "parent_request_digest": digest}
+    filename = request["preparation_id"] + "-" + digest[7:] + ".json"
+    path = tmp_path / "blocked" / filename
+    write(path, {"request": request, "request_digest": digest}, "envelope_digest")
+    before = path.read_bytes()
+    observed, state, found = retained_parent(job, tmp_path)
+    assert observed == request and state == "blocked" and found == path
+    assert path.read_bytes() == before
+    with pytest.raises(TaskEvaluationLaunchPreparationContractError, match="external_spend_invalid"):
+        _parent(job, tmp_path)
+    # Even a correctly resealed envelope cannot change the child's parent identity.
+    request["run_id"] += "-changed"
+    write(path, {"request": request, "request_digest": digest}, "envelope_digest")
+    with pytest.raises(ValueError, match="parent_envelope_invalid"):
+        retained_parent(job, tmp_path)
+
+
 def test_automatic_selector_prefers_longest_compatible_and_keeps_rejections(monkeypatch):
     calls = []
     def materialize(**kwargs):

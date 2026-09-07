@@ -3,11 +3,24 @@ import re
 import os
 from pathlib import Path
 from .decision_evidence_contracts import canonical_digest
-from .task_evaluation_launch_preparation_contract import launch_preparation_request_digest, validate_launch_preparation_request
+from .task_evaluation_launch_preparation_contract import (
+    validate_launch_preparation_request,
+    validate_retained_preparation_request,
+)
 from .task_evaluation_launch_preparation_queue import QUEUE_STATES
 from .task_evaluation_sam31_phase_queue import _read, _require
 
 def _parent(job: dict, root: Path) -> tuple[dict, str, Path]:
+    """Resolve the parent of a child that may execute under current admission."""
+    return _read_parent(job, root, validator=validate_launch_preparation_request)
+
+
+def retained_parent(job: dict, root: Path) -> tuple[dict, str, Path]:
+    """Resolve historical parent evidence solely for completed-prefix adoption."""
+    return _read_parent(job, root, validator=validate_retained_preparation_request)
+
+
+def _read_parent(job: dict, root: Path, *, validator) -> tuple[dict, str, Path]:
     digest = job.get("parent_request_digest")
     identifier = job.get("parent_preparation_id")
     _require(isinstance(identifier, str) and identifier and "/" not in identifier
@@ -18,10 +31,10 @@ def _parent(job: dict, root: Path) -> tuple[dict, str, Path]:
     _require(len(matches) == 1, "parent_identity_ambiguous")
     state, path = matches[0]
     envelope = _read(path)
-    request = validate_launch_preparation_request(envelope["request"])
+    request = validator(envelope["request"])
     _require(envelope.get("envelope_digest") == canonical_digest(envelope, digest_field="envelope_digest")
              and envelope.get("request_digest") == digest
-             and launch_preparation_request_digest(request) == digest
+             and canonical_digest(request) == digest
              and request["preparation_id"] == identifier, "parent_envelope_invalid")
     return request, state, path
 

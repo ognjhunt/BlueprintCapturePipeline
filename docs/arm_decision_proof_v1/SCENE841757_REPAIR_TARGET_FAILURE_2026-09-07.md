@@ -162,3 +162,15 @@ chain checks. New launch validation and its digest API still require the current
 three-review floor. No old bytes or source artifacts are rewritten, and adopting
 evidence grants no execution authority. Focused regression checks prove that the
 same historical request passes evidence validation and fails new-launch admission.
+
+
+R16 exposed the second historical-parent reader in new adoption materialization:
+`task_evaluation_sam31_parent_evidence._parent` still applied current launch
+admission. Existing-adoption replay had passed but did not cover this call.
+Split the retained-parent lookup from the execution-parent lookup, preserving
+current admission for every executable child. A real on-disk parent regression
+checks old-budget reuse, new-execution refusal, byte preservation and refusal of
+a resealed parent whose contents no longer match the child's original digest.
+The already-started 95 focused tests passed before the owner instructed a direct
+GPU restart without further test/replay cycles. No GPU was allocated for R16; its
+future execution was revoked and its failure evidence retained.
