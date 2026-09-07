@@ -960,6 +960,15 @@ def _write_episode_failure_gap(
         action_rejection["rejection_digest"] = canonical_digest(
             action_rejection, digest_field="rejection_digest"
         )
+    if progress.get("media_integrity_failure"):
+        visual_evidence = {
+            **visual_evidence,
+            "status": "incomplete_after_first_observation",
+            "media_gap": {
+                "type": "after_first_observation_media_integrity_failed",
+                "reason": progress["media_integrity_failure"],
+            },
+        }
     evidence_artifacts: dict[str, Any] = {}
     media_root = output_root / "episodes"
     if media_artifacts:
@@ -1119,19 +1128,46 @@ def _bound_media_artifact(
     if not matches:
         return None
     row = matches[0]
-    path = (media_root / str(row.get("relative_path") or "")).resolve()
+    original_path = media_root / str(row.get("relative_path") or "")
+    if original_path.is_symlink():
+        return None
+    path = original_path.resolve()
     try:
         path.relative_to(output_root)
     except ValueError:
         return None
-    if path.is_symlink() or not path.is_file():
+    if not path.is_file():
+        return None
+    try:
+        observed_size = path.stat().st_size
+        observed_digest = _sha256(path)
+    except OSError:
+        return None
+    if (type(row.get("size_bytes")) is not int or row["size_bytes"] != observed_size
+            or row.get("sha256") != observed_digest):
         return None
     return {
         "role": role,
         "relative_path": path.relative_to(output_root).as_posix(),
-        "size_bytes": path.stat().st_size,
-        "sha256": _sha256(path),
+        "size_bytes": observed_size,
+        "sha256": observed_digest,
     }
+
+
+def _require_completed_episode_media(output_root: Path, episode: Mapping[str, Any]) -> None:
+    """Verify the producer's frozen bytes before the worker seals completion."""
+    artifacts = episode.get("media_artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise ValueError("policy_canary_episode_media_missing")
+    roles = [str(row.get("role") or "") for row in artifacts if isinstance(row, Mapping)]
+    if not any("frame_manifest" in role for role in roles) or not any("video" in role for role in roles):
+        raise ValueError("policy_canary_episode_media_missing")
+    for row in artifacts:
+        if not isinstance(row, Mapping) or _bound_media_artifact(
+            output_root, media_root=output_root / "episodes", artifacts=[row],
+            role=str(row.get("role") or ""), role_match=lambda _name: True,
+        ) is None:
+            raise ValueError("policy_canary_episode_media_identity_invalid")
 
 
 def _write_indexed_telemetry(
@@ -1766,6 +1802,11 @@ def _run_selected_cell(
                 },
                 progress=episode_progress,
             )
+            try:
+                _require_completed_episode_media(output_root, episode)
+            except (OSError, ValueError) as media_error:
+                episode_progress["media_integrity_failure"] = str(media_error)
+                raise
         except Exception as exc:
             failure_path = _write_episode_failure_gap(
                 output_root=output_root,

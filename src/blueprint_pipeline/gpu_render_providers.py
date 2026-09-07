@@ -2574,6 +2574,7 @@ class VastRenderProvider(GpuRenderProvider):
             _active_instance_rows_from_payload,
             _api_json,
             _instance_list_rows,
+            _instance_inventory_valid,
         )
 
         try:
@@ -2609,7 +2610,7 @@ class VastRenderProvider(GpuRenderProvider):
                 "error_type": type(exc).__name__,
                 "raw_provider_response_recorded": False,
             }
-        if status != 200:
+        if status != 200 or not _instance_inventory_valid(response):
             return {
                 "status": "blocked",
                 "provider": self.name,

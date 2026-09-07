@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import shlex
+
 
 EXPECTED_PROVIDER_UPLOAD_BYTES_ENV = (
     "BLUEPRINT_VAST_EXPECTED_PROVIDER_UPLOAD_BYTES"
 )
 
 
-def provider_output_upload_shell_fragment() -> str:
+def provider_output_upload_shell_fragment(*, scratch_root: str = "/tmp") -> str:
     """Return the bounded, fail-closed provider-output upload function.
 
     A provider output is an immutable object: retrying the same bytes to the
@@ -19,6 +21,7 @@ def provider_output_upload_shell_fragment() -> str:
 
     return (
         "blueprint_upload_put() { "
+        f"blueprint_upload_scratch={shlex.quote(scratch_root)}; "
         'blueprint_upload_url="$1"; blueprint_upload_path="$2"; '
         f'blueprint_upload_limit="${{{EXPECTED_PROVIDER_UPLOAD_BYTES_ENV}:-0}}"; '
         'if [ ! -f "$blueprint_upload_path" ]; then '
@@ -54,8 +57,8 @@ def provider_output_upload_shell_fragment() -> str:
         'if [ "$blueprint_parent_upload_deadline" -lt "$blueprint_upload_deadline" ]; then '
         'blueprint_upload_deadline="$blueprint_parent_upload_deadline"; fi; fi; '
         'blueprint_upload_attempt=1; blueprint_upload_max_attempts=3; blueprint_upload_last_rc=86; '
-        'blueprint_upload_status_file="/tmp/blueprint_provider_upload_http_status.$$"; '
-        'blueprint_upload_body_file="/tmp/blueprint_provider_upload_response_body.$$"; '
+        'blueprint_upload_status_file="${blueprint_upload_scratch}/blueprint_provider_upload_http_status.$$"; '
+        'blueprint_upload_body_file="${blueprint_upload_scratch}/blueprint_provider_upload_response_body.$$"; '
         'rm -f "$blueprint_upload_status_file" "$blueprint_upload_body_file"; '
         'while [ "$blueprint_upload_attempt" -le "$blueprint_upload_max_attempts" ]; do '
         'blueprint_upload_current_bytes=$(wc -c < "$blueprint_upload_path" | tr -d \'[:space:]\'); '
@@ -81,7 +84,13 @@ def provider_output_upload_shell_fragment() -> str:
         'blueprint_upload_http_status=$(tr -d \'[:space:]\' < "$blueprint_upload_status_file"); '
         'case "$blueprint_upload_http_status" in \'\'|*[!0-9]*) blueprint_upload_http_status=000;; esac; '
         'if [ "$blueprint_upload_rc" -eq 0 ]; then case "$blueprint_upload_http_status" in 2??) '
-        ': > /tmp/blueprint_provider_upload_response.json; '
+        'blueprint_upload_final_sha256=$(sha256sum "$blueprint_upload_path" | cut -d" " -f1); '
+        'if [ "$blueprint_upload_final_sha256" != "$blueprint_upload_sha256" ]; then '
+        'rm -f "$blueprint_upload_status_file" "$blueprint_upload_body_file"; '
+        'echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:provider_output_zip_changed_during_upload_retry; return 86; fi; '
+        'if ! : > "${blueprint_upload_scratch}/blueprint_provider_upload_response.json"; then '
+        'rm -f "$blueprint_upload_status_file" "$blueprint_upload_body_file"; '
+        'echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:provider_output_upload_completion_record_failed; return 86; fi; '
         'rm -f "$blueprint_upload_status_file" "$blueprint_upload_body_file"; return 0;; esac; fi; '
         'blueprint_upload_transient=0; '
         'case "$blueprint_upload_http_status" in 408|425|429|500|502|503|504) blueprint_upload_transient=1;; esac; '

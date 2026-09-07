@@ -169,6 +169,7 @@ def _vast_billable_inventory(
             VAST_TERMINAL_INSTANCE_STATUSES,
             _api_json,
             _instance_list_rows,
+            _instance_inventory_valid,
             _instance_status,
         )
 
@@ -190,7 +191,7 @@ def _vast_billable_inventory(
             "error_type": type(exc).__name__,
             "raw_provider_response_recorded": False,
         }
-    if not 200 <= int(http_status) < 300 or not isinstance(payload, Mapping):
+    if not 200 <= int(http_status) < 300 or not _instance_inventory_valid(payload):
         return {
             "status": "blocked",
             "provider": "vast",
@@ -912,6 +913,7 @@ def run_watchdog(
             receipt = {}
         if isinstance(receipt, Mapping) and receipt.get("pod_name_prefix") == pod_name_prefix:
             from .paid_lane_guard import (
+                bind_pending_teardown_instance,
                 cancel_pending_teardown,
                 close_pending_teardown,
             )
@@ -952,12 +954,15 @@ def run_watchdog(
             if pre_provider_absent and not pending_path:
                 pending_close = {"status": "cancelled_no_allocation"}
             elif pending_valid and effective_pod_id:
+                bind_pending_teardown_instance(pending_path, effective_pod_id)
                 pending_close = close_pending_teardown(
                     pending_path,
                     {
                         "status": "PASS",
                         "provider_absence_confirmed": True,
                         "instance_id": effective_pod_id,
+                        "allocation_id": effective_pod_id,
+                        "provider": resolved_provider,
                     },
                 )
             elif pending_valid:

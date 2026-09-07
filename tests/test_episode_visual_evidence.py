@@ -531,3 +531,53 @@ def test_multicamera_media_rejects_unsynchronized_or_changed_frame(tmp_path) -> 
         validate_multicamera_frame_manifest(
             manifest, output_dir=tmp_path, verify_files=True
         )
+
+
+def test_manifest_publication_failure_preserves_exact_frames_for_replay(tmp_path, monkeypatch):
+    import blueprint_pipeline.episode_visual_evidence as media
+    episode_id = "manifest-interrupted"
+    first = persist_observation_frame(np.full((8, 16, 3), 17, dtype=np.uint8),
+        output_dir=tmp_path, episode_id=episode_id, frame_index=0, kind="policy-input")
+    terminal = persist_observation_frame(np.full((8, 16, 3), 43, dtype=np.uint8),
+        output_dir=tmp_path, episode_id=episode_id, frame_index=1, kind="terminal-observation")
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    original = media._write_json_or_verify_identical
+    def interrupted(path, value):
+        if path.name == "frame_manifest.json":
+            raise OSError("offline_manifest_publication_interrupted")
+        return original(path, value)
+    monkeypatch.setattr(media, "_write_json_or_verify_identical", interrupted)
+    kwargs = dict(output_dir=tmp_path, episode_id=episode_id, identity={"policy_id": "fixture"},
+                  policy_input_frames=[first], terminal_observation=terminal)
+    with pytest.raises(OSError, match="publication_interrupted"):
+        finalize_visual_evidence(**kwargs)
+    assert {path: path.read_bytes() for path in before} == before
+    assert not list(tmp_path.rglob("*.mp4"))
+    monkeypatch.setattr(media, "_write_json_or_verify_identical", original)
+    visual, artifacts = finalize_visual_evidence(**kwargs)
+    assert visual["terminal_observation_frame_present"] is True
+    assert artifacts
+    assert {path: path.read_bytes() for path in before} == before
+
+
+@pytest.mark.parametrize("fault", ["missing_frame", "missing_terminal", "wrong_digest"])
+def test_multicamera_completion_refuses_missing_or_changed_evidence(tmp_path, fault):
+    episode_id = "incomplete-manifest"
+    first = _multicamera_observation(tmp_path, episode_id=episode_id, index=0, kind="policy-input")
+    terminal = _multicamera_observation(tmp_path, episode_id=episode_id, index=1, kind="terminal-observation")
+    visual, artifacts = finalize_multicamera_visual_evidence(output_dir=tmp_path,
+        episode_id=episode_id, identity={"policy_id": "fixture"},
+        policy_input_observations=[first], terminal_observation=terminal)
+    row = next(row for row in artifacts if row["role"] == "multicamera_observation_frame_manifest")
+    manifest = json.loads((tmp_path / row["relative_path"]).read_text())
+    frame = manifest["policy_input_observations"][0]["views"]["external"]
+    if fault == "missing_frame":
+        (tmp_path / frame["relative_path"]).unlink()
+    elif fault == "missing_terminal":
+        manifest["terminal_observation"] = None
+        manifest["frame_manifest_digest"] = canonical_digest(manifest, digest_field="frame_manifest_digest")
+    else:
+        frame["png_sha256"] = "sha256:" + "0" * 64
+        manifest["frame_manifest_digest"] = canonical_digest(manifest, digest_field="frame_manifest_digest")
+    with pytest.raises((ValueError, FileNotFoundError)):
+        validate_multicamera_frame_manifest(manifest, output_dir=tmp_path, verify_files=True)

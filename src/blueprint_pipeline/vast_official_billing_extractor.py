@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
+from datetime import datetime
 import hashlib
 import json
 import math
@@ -1367,6 +1368,30 @@ def _terminal_evidence(
     return terminal_evidence
 
 
+def _validate_charge_period(row: Mapping[str, Any], source_receipt: Mapping[str, Any]) -> None:
+    """Reject reversed/future/out-of-query periods without repricing any row.
+
+    Older retained receipts may omit the cohort window. In that case this
+    checks only the row's own interval, not an exact-run billing period.
+    """
+    start, end = row.get("start"), row.get("end")
+    if any(isinstance(value, bool) or not isinstance(value, (int, float))
+           or not math.isfinite(value) for value in (start, end)) or not 0 <= start <= end:
+        raise VastOfficialBillingExtractionError("vast_official_charge_period_invalid")
+    if not {"cohort_start_at", "cohort_end_at"}.intersection(source_receipt):
+        return
+    try:
+        lower = datetime.fromisoformat(str(source_receipt["cohort_start_at"]).replace("Z", "+00:00"))
+        upper = datetime.fromisoformat(str(source_receipt["cohort_end_at"]).replace("Z", "+00:00"))
+        if lower.tzinfo is None or upper.tzinfo is None:
+            raise ValueError("unbound timezone")
+        valid = lower.timestamp() <= start <= end <= upper.timestamp()
+    except (KeyError, ValueError, OverflowError):
+        valid = False
+    if not valid:
+        raise VastOfficialBillingExtractionError("vast_official_charge_period_invalid")
+
+
 def _entry(
     *,
     instance_id: int,
@@ -1389,6 +1414,7 @@ def _entry(
         or metadata.get("label") != launch_label
     ):
         raise VastOfficialBillingExtractionError("vast_official_charge_identity_invalid")
+    _validate_charge_period(row, source_receipt)
     amount = _money(row.get("amount"), code="vast_official_charge_amount_invalid")
     items, bandwidth = _line_items(row)
     item_total = sum(
@@ -1557,6 +1583,7 @@ def _validate_entry(entry: Any) -> None:
     ):
         raise VastOfficialBillingExtractionError("vast_official_prior_entry_invalid")
     row = results[result_index]
+    _validate_charge_period(row, source_receipt)
     metadata = row.get("metadata")
     source_items, source_bandwidth = _line_items(row)
     if (
@@ -1759,6 +1786,7 @@ def extract_vast_official_instance_charge(
         or metadata.get("label") != launch_label
     ):
         raise VastOfficialBillingExtractionError("vast_official_charge_identity_invalid")
+    _validate_charge_period(row, source_receipt)
     amount = _money(row.get("amount"), code="vast_official_charge_amount_invalid")
     items, bandwidth = _line_items(row)
     item_total = sum((Decimal(str(value)) for value in items.values()), Decimal("0"))

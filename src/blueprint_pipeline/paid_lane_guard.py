@@ -21,6 +21,9 @@ Fail-closed rules:
 from __future__ import annotations
 
 import json
+import fcntl
+from functools import wraps
+from contextlib import contextmanager
 import os
 import re
 import stat
@@ -244,6 +247,26 @@ def _read_record(path: Path) -> dict[str, Any]:
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
+@contextmanager
+def _pending_registry_lock(registry: Path):
+    """Serialize read/modify/write without locking replaceable JSON inodes."""
+    descriptor = os.open(registry, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                         | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _serialized_pending_update(function):
+    @wraps(function)
+    def update(record_path, *args, **kwargs):
+        with _pending_registry_lock(Path(record_path).parent):
+            return function(record_path, *args, **kwargs)
+    return update
+
+
 def open_pending_teardown(
     *,
     provider: str,
@@ -284,20 +307,35 @@ def open_pending_teardown(
         "teardown_proof": None,
         "path": str(path),
     }
-    write_json(path, record)
-    return record
+    with _pending_registry_lock(registry):
+        if path.exists():
+            retained = _read_record(path)
+            immutable = ("schema_version", "provider", "lane", "run_id", "resource_kind",
+                         "resource_name", "provider_location", "job_dir", "max_age_seconds")
+            if (any(retained.get(key) != record[key] for key in immutable)
+                    or (record["instance_id"] and record["instance_id"] != retained.get("instance_id"))):
+                raise ValueError("pending_teardown_open_identity_conflict")
+            return retained
+        write_json(path, record)
+        return record
 
 
+@_serialized_pending_update
 def bind_pending_teardown_instance(
     record_path: str | Path, instance_id: str
 ) -> dict[str, Any]:
     path = Path(record_path)
     record = _read_record(path)
-    record["instance_id"] = str(instance_id or "").strip() or None
+    requested = str(instance_id or "").strip()
+    existing = str(record.get("instance_id") or "").strip()
+    if not requested or (existing and existing != requested):
+        raise ValueError("pending_teardown_instance_identity_conflict")
+    record["instance_id"] = requested
     write_json(path, record)
     return record
 
 
+@_serialized_pending_update
 def extend_pending_teardown_max_age(
     record_path: str | Path,
     *,
@@ -332,6 +370,7 @@ def extend_pending_teardown_max_age(
     return record
 
 
+@_serialized_pending_update
 def mark_pending_teardown_ambiguous(
     record_path: str | Path,
     *,
@@ -356,6 +395,7 @@ def mark_pending_teardown_ambiguous(
     return record
 
 
+@_serialized_pending_update
 def close_pending_teardown(
     record_path: str | Path, teardown_proof: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -368,6 +408,13 @@ def close_pending_teardown(
         record["last_refused_teardown_proof"] = proof or None
         write_json(path, record)
         return record
+    if (not record.get("instance_id")
+            or str(proof.get("allocation_id") or "") != str(record["instance_id"])
+            or proof.get("provider") != record.get("provider")):
+        record["close_refused_reason"] = "teardown_proof_identity_mismatch"
+        record["last_refused_teardown_proof"] = proof
+        write_json(path, record)
+        return record
     record["status"] = "closed"
     record["closed_at"] = utc_now_iso()
     record["teardown_proof"] = proof
@@ -376,6 +423,7 @@ def close_pending_teardown(
     return record
 
 
+@_serialized_pending_update
 def cancel_pending_teardown(
     record_path: str | Path, *, reason: str, evidence: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -390,6 +438,10 @@ def cancel_pending_teardown(
     record = _read_record(path)
     if str(record.get("instance_id") or "").strip():
         record["cancel_refused_reason"] = "instance_id_bound_requires_teardown_proof"
+        write_json(path, record)
+        return record
+    if record.get("allocation_outcome_ambiguous") is True:
+        record["cancel_refused_reason"] = "ambiguous_allocation_requires_teardown_proof"
         write_json(path, record)
         return record
     record["status"] = "cancelled_no_allocation"

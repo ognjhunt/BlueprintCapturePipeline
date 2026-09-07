@@ -1468,6 +1468,8 @@ def run_finetune_job(
             pending["path"],
             {
                 "status": "PASS" if absence else "FAIL",
+                "provider": resolved_provider,
+                "allocation_id": launch["instance_id"],
                 "provider_absence_confirmed": absence,
                 "teardown": teardown,
                 "final_inventory": final_inventory,

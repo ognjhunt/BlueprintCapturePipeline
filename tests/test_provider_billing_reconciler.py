@@ -554,3 +554,27 @@ def test_aws_billing_loads_only_the_named_canonical_profile(tmp_path: Path) -> N
     receipt = Path(result["source_receipt_path"]).read_text(encoding="utf-8")
     assert "aws_secret_access_key" not in receipt
     assert "test-secret" not in receipt
+
+
+def test_repeated_page_cursor_is_bounded_and_preserves_prior_accounting(tmp_path):
+    secrets = _secrets(tmp_path)
+    export = tmp_path / "export.json"
+    kwargs = dict(secrets_dir=secrets, billing_export_path=export, audit_root=tmp_path / "audit",
+                  start_at="2026-01-01T00:00:00Z", now=NOW, required_providers=("vast",), **_aws_kwargs(secrets))
+    reconcile_provider_billing(**kwargs, transport=_Transport())
+    prior = export.read_bytes()
+    class Loop(_Transport):
+        vast_reads = 0
+        def __call__(self, request, timeout):
+            data = super().__call__(request, timeout)
+            if urlsplit(request.full_url).netloc == "console.vast.ai":
+                self.vast_reads += 1
+                value = json.loads(data)
+                value["next_token"] = "page-two"
+                return json.dumps(value).encode()
+            return data
+    transport = Loop()
+    with pytest.raises(ProviderBillingReconciliationError, match="vast_billing_cursor_invalid"):
+        reconcile_provider_billing(**kwargs, transport=transport)
+    assert transport.vast_reads == 2
+    assert export.read_bytes() == prior

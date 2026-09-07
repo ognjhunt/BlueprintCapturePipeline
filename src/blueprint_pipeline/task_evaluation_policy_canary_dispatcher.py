@@ -578,7 +578,9 @@ def collect_policy_canary_vast_provider_zero() -> dict[str, Any]:
         "provider": "vast",
         "inventory_scope": "global_billable_resources",
         "api_confirmed": api_confirmed,
-        "live_instance_count": len(resources) if isinstance(resources, list) else None,
+        "live_instance_count": (len(resources) if api_confirmed
+                                and inventory.get("status") == "observed"
+                                and isinstance(resources, list) else None),
         "provider_zero_verified": verified,
         "global_gpu_guard_snapshot": guard_record,
         "blockers": [] if verified else blockers or ["vast_provider_zero_unproven"],
@@ -1660,7 +1662,24 @@ def dispatch_policy_canary_activation(
         hard_ttl_seconds=int(resource["hard_ttl_seconds"]),
         execution_release=execution_release,
     )
+    legacy_authority = dict(authority)
+    if "scene_attempt_binding" in setup:
+        authority["scene_execution_owner"] = {
+            key: setup[key] for key in (
+                "scene_intent_digest", "scene_attempt_id", "scene_attempt_binding", "source_commit",
+                "scene_policy_candidates",
+            ) if key in setup
+        }
+        authority["authority_digest"] = canonical_digest(authority, digest_field="authority_digest")
     authority_path = root / "policy_canary_session_authority.json"
+    if authority_path.is_file() and any((root / name).is_file() for name in (
+        "allocator_result.json", "allocator_invocation_started.json",
+    )):
+        retained_authority = _read(authority_path, code="policy_canary_retained_authority_invalid")
+        if retained_authority == legacy_authority:
+            # Delivery of an already started legacy attempt is not new authority.
+            # Preserve every original byte/digest; no other identity drift is accepted.
+            authority = retained_authority
     _write_exclusive(authority_path, authority)
     records = setup["records"]
     _event_and_sync(
@@ -1759,6 +1778,10 @@ def dispatch_policy_canary_activation(
             runner=progress_sync_runner,
         )
         if execute:
+            # Progress delivery can block long enough for owner authority to end.
+            # Reopen it before recording or invoking any allocator attempt.
+            require_scene_execution_authority(setup, source_commit=implementation_commit,
+                                             maximum_spend_usd=float(resource["hard_cap_usd"]), provider="vast")
             argv.append("--execute")
         invocation_started = {
             "schema_version": "task_evaluation_policy_canary_allocator_invocation.v1",

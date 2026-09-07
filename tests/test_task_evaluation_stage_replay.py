@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from functools import partial
+from types import SimpleNamespace
+
 import hashlib
 import json
 import os
@@ -21,7 +24,15 @@ COMMIT = "c" * 40
 
 @pytest.fixture(autouse=True)
 def isolated_disk_ledger(tmp_path, monkeypatch):
-    monkeypatch.setattr(replay, "DEFAULT_RESERVATION_ROOT", tmp_path / "disk-reservations")
+    ledger = tmp_path / "disk-reservations"
+    monkeypatch.setattr(replay, "DEFAULT_RESERVATION_ROOT", ledger)
+    # Inject only device observations; reservation, floor and release stay real.
+    monkeypatch.setattr(replay, "reserve_control_plane_disk", partial(
+        replay.reserve_control_plane_disk,
+        disk_usage=lambda _path: SimpleNamespace(total=512 * 2**30, used=128 * 2**30, free=384 * 2**30),
+    ))
+    yield
+    assert not list(ledger.glob("*.json")), "replay leaked a disk reservation"
 
 
 def test_disk_refusal_precedes_any_replay_scratch_or_handler(tmp_path, monkeypatch):
@@ -446,3 +457,17 @@ def test_unit_environment_is_read_from_systemd_and_execute_gates_are_left_behind
     assert not any("LAUNCH_EXECUTE" in item for item in command)
     assert replay.default_unit_for(parent=True) == "blueprint-task-evaluation-launch-preparation.service"
     assert replay.default_unit_for(parent=False) == "blueprint-task-evaluation-sam31-preparation-execution.service"
+
+
+def test_real_low_space_probe_refuses_without_scratch_or_leaked_reservation(tmp_path, monkeypatch):
+    from blueprint_pipeline.control_plane_disk_budget import (
+        reserve_control_plane_disk, ControlPlaneDiskBudgetError,
+    )
+    monkeypatch.setattr(replay, "reserve_control_plane_disk", partial(
+        reserve_control_plane_disk,
+        disk_usage=lambda _path: SimpleNamespace(total=512 * 2**30, used=504 * 2**30, free=8 * 2**30),
+    ))
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_exceeded"):
+        replay.replay_child(replay_root=tmp_path / "scratch")
+    assert not (tmp_path / "scratch").exists()
+    assert not list((tmp_path / "disk-reservations").glob("*.json"))

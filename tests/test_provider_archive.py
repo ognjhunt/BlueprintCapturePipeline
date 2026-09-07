@@ -83,3 +83,30 @@ def test_exact_bundle_rehearsal_is_bound_to_bundle_and_entrypoint() -> None:
         bundle_sha256="sha256:" + "1" * 64,
         entrypoint_relative_path="provider_runtime/run.sh",
     ) == ["exact_bundle_entrypoint_rehearsal_missing"]
+
+
+@pytest.mark.parametrize("fault", ["truncated", "crc", "beneath_symlink", "duplicate"])
+def test_tiny_corrupt_archive_never_returns_success_and_preserves_source(tmp_path, fault):
+    archive = tmp_path / "fault.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as stream:
+        stream.writestr("first.bin", b"first immutable bytes")
+        if fault == "beneath_symlink":
+            link = zipfile.ZipInfo("link")
+            link.create_system = 3
+            link.external_attr = (stat.S_IFLNK | 0o777) << 16
+            stream.writestr(link, "directory")
+            stream.writestr("link/child", b"x")
+        elif fault == "duplicate":
+            stream.writestr("first.bin", b"different")
+        else:
+            stream.writestr("second.bin", b"unique-corrupt-target")
+    data = archive.read_bytes()
+    if fault == "truncated":
+        data = data[:-24]
+    elif fault == "crc":
+        data = data.replace(b"unique-corrupt-target", b"unique-corrupt-TARGET")
+    archive.write_bytes(data)
+    with pytest.raises(ProviderArchiveError):
+        extract_provider_archive(archive, tmp_path / "expanded")
+    assert archive.read_bytes() == data
+    assert not (tmp_path / "child").exists()
