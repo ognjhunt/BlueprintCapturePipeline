@@ -175,6 +175,13 @@ def install_scene_preparation(*, bootstrap_path):
             directory.mkdir(parents=True, mode=0o750)
             if os.geteuid() == 0:
                 os.chown(directory, account.pw_uid, account.pw_gid)
+    # The project-spend monitor writes its current pointer and output snapshots
+    # as the scene service account. Repair only this installer-managed directory
+    # when an activation seed is configured; unrelated roots remain untouched.
+    if project_spend_seed is not None:
+        if os.geteuid() == 0:
+            os.chown(project_spend_root, account.pw_uid, account.pw_gid)
+        project_spend_root.chmod(0o750)
     from .task_evaluation_launch_preparation_queue import ensure_launch_preparation_queue_root
     ensure_launch_preparation_queue_root(owner_queue)
     for directory in owner_queue.iterdir():
