@@ -1202,6 +1202,7 @@ def run_scene_configuration_vast(
             preflight_scene_construction_finalization(
                 queue_root=scene_construction_queue_root,
                 envelope=_portable_construction_envelope(receipt),
+                require_writable=execute,
             )
         except (OSError, ValueError) as exc:
             blocked = {
@@ -1220,6 +1221,8 @@ def run_scene_configuration_vast(
                     + redacted_failure_detail(exc)
                 ],
             }
+            if not execute:
+                return _seal_terminal_result(job, blocked)
             return _seal_live_terminal_result(
                 job,
                 blocked,

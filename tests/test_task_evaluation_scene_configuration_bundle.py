@@ -628,6 +628,61 @@ def test_scene_construction_finalization_preflight_binds_exact_writable_queue_it
             envelope=envelope,
         )
 
+    read_only = preflight_scene_construction_finalization(
+        queue_root=queue_root, envelope=envelope, require_writable=False
+    )
+    assert read_only["status"] == "validated_read_only"
+    assert read_only["write_access_validated"] is False
+
+
+@pytest.mark.parametrize("invalid_binding", [False, True])
+def test_dry_run_preserves_read_only_construction_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_binding: bool
+) -> None:
+    _build(tmp_path, "bundle")
+    receipt_path = tmp_path / "bundle" / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    queue_root = _construction_queue(tmp_path)
+    if invalid_binding:
+        queued = next((queue_root / "pending").glob("*.json"))
+        value = json.loads(queued.read_text())
+        value["run_id"] = "wrong-run"
+        queued.chmod(0o600)
+        queued.write_text(json.dumps(value))
+    before = {p.relative_to(queue_root): p.read_bytes()
+              for p in queue_root.rglob("*") if p.is_file()}
+    authority_path = tmp_path / "authority.json"
+    authority_path.write_text("{}")
+    monkeypatch.setattr(
+        scene_vast, "validate_scene_configuration_paid_authority",
+        lambda *_args, **_kwargs: {
+            "authority_digest": "sha256:" + "e" * 64,
+            "provider_compute_spend_cap_usd": MAX_PROVIDER_COMPUTE_SPEND_USD,
+            "maximum_hourly_rate_usd": MAX_HOURLY_RATE_USD,
+            "maximum_single_resource_ttl_seconds": REQUIRED_PARENT_TTL_SECONDS,
+        },
+    )
+    monkeypatch.setattr(scene_queue.os, "access", lambda *_args: False)
+    monkeypatch.setattr(scene_vast, "_provider_runtime_inputs", lambda *_args: ({}, {}))
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("dry run reached queue finalization or provider mutation")
+
+    monkeypatch.setattr(scene_vast, "finalize_scene_construction", forbidden)
+    monkeypatch.setattr(scene_vast, "stage_wam_provider_bundle_object_store", forbidden)
+    result = scene_vast.run_scene_configuration_vast(
+        job_dir=tmp_path / "dry-run", bundle_receipt_path=receipt_path,
+        paid_attempt_authority_path=authority_path,
+        paid_resource_admission_grant=None, execute=False,
+        scene_construction_queue_root=queue_root,
+    )
+    assert result["status"] == ("blocked" if invalid_binding else "dry_run_ready")
+    assert result["provider_mutations_performed"] == 0
+    assert "scene_construction_queue_finalization" not in result
+    assert {p.relative_to(queue_root): p.read_bytes()
+            for p in queue_root.rglob("*") if p.is_file()} == before
+    if invalid_binding:
+        assert "finalization_binding_invalid" in result["blockers"][0]
+
 
 def _build_provider_render_bundle(
     tmp_path: Path, name: str, monkeypatch: pytest.MonkeyPatch
