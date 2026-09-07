@@ -182,8 +182,13 @@ def _phase_chain(value, roots):
             inputs["standard_splat_conversion"] = artifacts["standard_splat_conversion_receipt"]
             artifacts["standard_splat_conversion"] = inputs["standard_splat_conversion"]
         outcomes[phase] = receipt["outcome"]
-    tracking_origin = (inherited["tracking_origin"] if inherited else
-                       {"profile": profile, "commit": old_commit})
+    # A render-only adoption carries no tracking evidence. If this release
+    # first ran SAM, its profile/commit owns tracking even though rendering
+    # came from an earlier release. Preserve a prior tracking producer only
+    # when the inherited prefix actually includes that completed stage.
+    tracking_origin = (inherited["tracking_origin"]
+                       if inherited and inherited["phase_count"] >= PREFIX_LENGTHS["sam31_tracking"]
+                       else {"profile": profile, "commit": old_commit})
     return plan, profile, artifacts, outcomes, tracking_origin
 
 
