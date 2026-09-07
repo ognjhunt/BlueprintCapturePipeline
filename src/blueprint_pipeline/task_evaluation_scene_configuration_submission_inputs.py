@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -13,6 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .decision_evidence_contracts import canonical_digest
+from .validation_file_digests import sha256_file
 
 
 class SceneConfigurationSubmissionError(ValueError):
@@ -31,11 +31,7 @@ def _no_symlinks(path: Path) -> None:
 
 def sha(path: Path) -> str:
     _no_symlinks(path)
-    value = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            value.update(chunk)
-    return "sha256:" + value.hexdigest()
+    return sha256_file(path)
 
 
 def read(path: str | Path, *, digest_field: str | None = None) -> dict[str, Any]:

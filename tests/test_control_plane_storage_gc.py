@@ -26,6 +26,12 @@ from blueprint_pipeline.control_plane_storage_pins import write_storage_pin
 from tests.test_task_evaluation_configured_scene_object_store import _ContentAddressedClient
 
 
+@pytest.fixture(autouse=True)
+def isolated_disk_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr("blueprint_pipeline.control_plane_evidence_offload.DEFAULT_RESERVATION_ROOT",
+                        tmp_path / "disk-reservations")
+
+
 def _blob(root, payload: bytes):
     digest = hashlib.sha256(payload).hexdigest()
     path = root / digest

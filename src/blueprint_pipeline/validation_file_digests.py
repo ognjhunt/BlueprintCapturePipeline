@@ -1,0 +1,83 @@
+"""Transaction-local hashing reuse for sealed large inputs, never validation verdicts.
+
+Each outer operation starts empty. Every first read hashes all bytes. Only
+read-only regular files qualify; every hit reopens the file without following
+symlinks and checks inode, ownership, mode, size and nanosecond change times.
+Authority documents and mutable files are deliberately not cached.
+"""
+from __future__ import annotations
+
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
+import hashlib
+import os
+from pathlib import Path
+import stat
+
+_CACHE: ContextVar[dict | None] = ContextVar("validation_file_digests", default=None)
+MINIMUM_BYTES = 1024 * 1024
+
+
+def scoped_measurement(key, compute):
+    """Reuse a pure measurement keyed by current input digests and parameters.
+
+    Callers must reopen all input bytes before constructing the key. No disk
+    cache survives code changes, dependency changes or the outer operation.
+    Values are copied so caller mutation cannot alter subsequent validation.
+    """
+    cache = _CACHE.get()
+    if cache is None:
+        return compute()
+    key = ("measurement", key)
+    if key not in cache:
+        cache[key] = deepcopy(compute())
+    return deepcopy(cache[key])
+
+
+@contextmanager
+def file_digest_scope():
+    """Share hashes across nested validators only for this synchronous operation."""
+    if _CACHE.get() is not None:
+        yield
+        return
+    token = _CACHE.set({})
+    try:
+        yield
+    finally:
+        _CACHE.reset(token)
+
+
+def _identity(value):
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns,
+            value.st_ctime_ns, value.st_mode, value.st_uid, value.st_gid,
+            value.st_nlink)
+
+
+def sha256_file(path: Path) -> str:
+    """Hash a stable regular file; reuse only unchanged sealed bytes in scope."""
+    path = Path(path)
+    if any(item.is_symlink() for item in (path, *path.parents)):
+        raise ValueError("validation_file_digest_symlink_forbidden")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("validation_file_digest_regular_file_required")
+        identity = _identity(before)
+        cache = _CACHE.get()
+        eligible = (cache is not None and before.st_size >= MINIMUM_BYTES
+                    and not before.st_mode & 0o222)
+        digest = cache.get(identity) if eligible else None
+        if digest is None:
+            value = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                value.update(chunk)
+            digest = "sha256:" + value.hexdigest()
+        if (identity != _identity(os.fstat(stream.fileno()))
+                or identity != _identity(path.lstat())
+                or any(item.is_symlink() for item in path.parents)):
+            raise ValueError("validation_file_digest_changed_during_read")
+        if eligible:
+            cache[identity] = digest
+        return digest
