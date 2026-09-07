@@ -106,14 +106,17 @@ def _hydrate_envelope(runtime: Path, portable: dict) -> dict:
             size_bytes=row.get("size_bytes"),
         )
         row["path"] = str(path)
-        mask = row.get("source_object_mask") or {}
-        mask_path = _runtime_file(
-            runtime,
-            mask.get("path"),
-            digest=mask.get("digest"),
-            size_bytes=mask.get("size_bytes"),
-        )
-        mask["path"] = str(mask_path)
+        for field in ("source_object_mask", "repair_support_mask", "repair_object_core"):
+            if field != "source_object_mask" and field not in row:
+                continue
+            mask = row.get(field) or {}
+            mask["path"] = str(_runtime_file(runtime, mask.get("path"),
+                digest=mask.get("digest"), size_bytes=mask.get("size_bytes")))
+    for candidate in render.get("retained_semantic_candidates") or []:
+        for field in ("source_runtime_request", "source_runtime_result", "candidate"):
+            record = candidate[field]
+            record["path"] = str(_runtime_file(runtime, record.get("path"),
+                digest=record.get("digest"), size_bytes=record.get("size_bytes")))
     cutout = render.get("derived_gaussian_cutout") or {}
     # A production semantic-reuse checkpoint deliberately omits the removed
     # source-object candidate when that optional inventory role was not

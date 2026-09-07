@@ -54,3 +54,17 @@ admission now verifies the retained render bytes and reproduces the existing
 RGB staging before comparing the original request hash. Changed pixels or
 unbound source bytes still refuse. A service-user replay admitted all six
 selected R11 candidates against the retained render inputs without a model call.
+
+R13 reached the allocated worker, then refused before image generation or
+training because the provider envelope hydrator did not rebase the newly added
+repair-support and object-core paths. Those files were present in the sealed
+bundle, but the component runs with the toolchain directory as its working
+directory. Retained candidate records had the same missing handoff. Both
+provider runners now verify and rebase all five added file roles. Tests exercise
+the component working directory and corruption of each role.
+
+This was a process defect: the previous CPU replay used host-absolute paths and
+did not reproduce provider hydration followed by the component working directory.
+The correction must be replayed from the exact R13 ZIP through the image-request
+boundary in an isolated CPU process before another paid attempt. R13 failure and
+teardown evidence remain preserved; no new image candidates were produced.
