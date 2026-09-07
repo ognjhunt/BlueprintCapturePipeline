@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline import task_evaluation_scene_terminal_reconciler as terminal_reconciler
 from blueprint_pipeline import task_evaluation_scene_terminal_result_index as terminal_index
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -323,4 +325,37 @@ def test_launch_reconciler_tick_consumes_preprovider_record_without_provider_zer
     ]
     assert report.get("terminal_provider_zero") == []
     assert report["allocator_invoked"] is False
+    assert not envelope_path.exists()
+
+
+def test_nonexecution_index_rejects_two_conflicting_producer_records(tmp_path, monkeypatch) -> None:
+    activation_result, _setup_path, _activation = _inputs(tmp_path)
+    queue = tmp_path / "queue"
+    for name in ("pending", "processing", "completed", "blocked"):
+        (queue / name).mkdir(parents=True, exist_ok=True)
+    envelope_path = _write(queue / "pending" / "activation-1.json", _envelope(activation_result))
+    setups = tmp_path / "setups"
+    setups.mkdir()
+    template = _write(tmp_path / "invalid-template.json", {})
+    process_policy_canary_dispatch_queue(
+        dispatch_queue_root=queue,
+        execution_setup_root=setups,
+        execution_setup_template_path=template,
+        dispatch_root=tmp_path / "dispatches",
+        implementation_commit=COMMIT,
+        execute=True,
+        blocked_sync_runner=lambda **_kwargs: {
+            "status": "succeeded",
+            "notification_delivery": {"status": "accepted", "terminal_state": "blocked"},
+        },
+    )
+    producer_root = tmp_path / "dispatches" / "activation-1"
+    blocked = producer_root / "preprovider_blocked.json"
+    (producer_root / "no_provider_allocation_blocked.json").write_bytes(blocked.read_bytes())
+    with pytest.raises(terminal_index.TerminalResultIndexError, match="nonexecution_record_ambiguous"):
+        terminal_index.index_policy_canary_nonexecution(
+            canary_run_root=producer_root,
+            terminal_result_root=tmp_path / "terminal",
+        )
+    assert not (tmp_path / "terminal").exists()
     assert not envelope_path.exists()

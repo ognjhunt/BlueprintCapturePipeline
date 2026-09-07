@@ -473,13 +473,14 @@ def index_policy_canary_nonexecution(
 
     run_root = _safe(canary_run_root)
     terminal_root = _safe(terminal_result_root)
-    for name, digest_field in (
-        ("preprovider_blocked.json", "blocked_result_digest"),
-        ("no_provider_allocation_blocked.json", "receipt_digest"),
-    ):
-        path = run_root / name
-        if not path.is_file():
-            continue
+    candidates = [
+        (run_root / "preprovider_blocked.json", "blocked_result_digest"),
+        (run_root / "no_provider_allocation_blocked.json", "receipt_digest"),
+    ]
+    present = [(path, digest_field) for path, digest_field in candidates if path.is_file()]
+    if len(present) > 1:
+        _fail("nonexecution_record_ambiguous")
+    for path, digest_field in present:
         raw = _read_bytes(path, reason="nonexecution_record_absent")
         value = _parse(raw, reason="nonexecution_record_invalid")
         return _index_nonexecution_record(
