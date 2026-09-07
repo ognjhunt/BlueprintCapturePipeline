@@ -792,12 +792,15 @@ def preflight_scene_construction_finalization(
     *,
     queue_root: str | Path,
     envelope: Mapping[str, Any],
+    require_writable: bool = True,
 ) -> dict[str, Any]:
     """Prove the exact live queue item can reach either terminal state.
 
     This check is intentionally read-only.  Preparation owns provisioning the
     queue tree; the paid caller must not discover a missing, ambiguous, or
-    unwritable finalization target only after renting a provider.
+    unwritable finalization target only after renting a provider. A preparation
+    dry run may validate identity from a read-only sandbox; the live caller
+    must retain the default write-access requirement.
     """
 
     orchestration_id = str(envelope.get("orchestration_id") or "")
@@ -890,7 +893,9 @@ def preflight_scene_construction_finalization(
         state_roots["blocked"],
         results_root if results_root.exists() else root,
     ]
-    if any(not os.access(path, os.W_OK | os.X_OK) for path in writable_roots):
+    if require_writable and any(
+        not os.access(path, os.W_OK | os.X_OK) for path in writable_roots
+    ):
         raise TaskEvaluationSceneConstructionQueueError(
             "scene_construction_queue_finalization_destination_unwritable"
         )
@@ -899,7 +904,8 @@ def preflight_scene_construction_finalization(
             "scene_construction_queue_finalization_result_conflict"
         )
     return {
-        "status": "ready",
+        "status": "ready" if require_writable else "validated_read_only",
+        "write_access_validated": require_writable,
         "run_id": run_id,
         "source_commit": source_commit,
         "construction_envelope_digest": envelope_digest,
