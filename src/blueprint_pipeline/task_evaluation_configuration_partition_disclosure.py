@@ -54,6 +54,11 @@ def prepare_partition_disclosure(*, task_authority: Mapping[str, Any], conversio
 def require_partition_disclosure(*, render: Mapping[str, Any], configuration: Mapping[str, Any],
         expected_source_commit: str) -> dict[str, Any]:
     """Reopen admission and both actual payload files before bundle staging."""
+    source_scene_id = configuration.get("source_object", {}).get("scene_id")
+    publisher_scene_id = configuration.get("scene_id", source_scene_id)
+    _require(isinstance(publisher_scene_id, str) and bool(publisher_scene_id)
+             and (source_scene_id is None or source_scene_id == publisher_scene_id),
+             "scene_identity_invalid")
     proof = render.get("full_source_scene_content_disclosure")
     _require(isinstance(proof, Mapping) and proof.get("schema_version") == SCHEMA
              and proof.get("disclosure_digest") == canonical_digest(proof, digest_field="disclosure_digest"),
@@ -71,7 +76,7 @@ def require_partition_disclosure(*, render: Mapping[str, Any], configuration: Ma
         conversion_path=paths["conversion"], standard_splat_path=paths["standard"], original_source_path=paths["original"],
         deleted_path=partition_paths["source_object_candidate"],
         retained_path=partition_paths["retained_scene_without_source_object"],
-        expected_source_commit=expected_source_commit, publisher_scene_id=configuration["source_object"]["scene_id"])
+        expected_source_commit=expected_source_commit, publisher_scene_id=publisher_scene_id)
     _require(reopened == proof and render.get("full_source_scene_content_in_provider_packet") is True,
              "proof_binding_changed")
     return reopened
