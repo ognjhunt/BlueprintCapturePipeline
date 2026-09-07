@@ -129,7 +129,7 @@ def publish_current_scene_project_spend(**kwargs: Any) -> dict[str, Any]:
         return _publish_current_scene_project_spend_locked(**kwargs)
 
 
-def refresh_configured_scene_project_spend() -> dict[str, Any] | None:
+def refresh_configured_scene_project_spend(*, now: float | None = None) -> dict[str, Any] | None:
     configured = os.getenv("BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG", "")
     if not configured:
         return None
@@ -158,5 +158,9 @@ def refresh_configured_scene_project_spend() -> dict[str, Any] | None:
                 raise ValueError("scene_spend_monitor_seed_reference_invalid")
         except (OSError, TypeError, ValueError):
             raise ValueError("scene_spend_monitor_seed_reference_invalid") from None
-    return publish_current_scene_project_spend(**{k: value[k] for k in (
+    # Stamp the pointer with the caller's ``now`` (the activation tick captures one
+    # ``now`` for the whole pass, then gates on ``0 <= now - observed_at_epoch <= 900``;
+    # defaulting to ``time.time()`` here stamps a moment LATER than that ``now`` and the
+    # gate inverts to a permanent ``project_spend_stale`` on every tick).
+    return publish_current_scene_project_spend(now=now, **{k: value[k] for k in (
         "scene_root", "seed_reconciliation_path", "output_root", "current_path")})

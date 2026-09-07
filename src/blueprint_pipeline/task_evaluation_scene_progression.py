@@ -231,7 +231,11 @@ def _activation(*, intent, link, config, output, now, provisioner):
         return record(path)
     if provisioner is None:
         from .task_evaluation_scene_spend import refresh_configured_scene_project_spend
-        refresh_configured_scene_project_spend()
+        # Stamp the fresh project-spend pointer with THIS tick's ``now`` so the
+        # freshness gate below (``0 <= now - observed_at_epoch <= 900``) holds; a
+        # bare refresh stamps ``time.time()`` (later than ``now``) and the gate
+        # inverts to a permanent ``project_spend_stale`` -- activation never completes.
+        refresh_configured_scene_project_spend(now=now)
     inputs_path = output / "activation_inputs.json"
     if inputs_path.exists():
         inputs = intake._read(inputs_path, "receipt_digest")
