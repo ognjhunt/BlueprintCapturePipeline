@@ -227,3 +227,22 @@ def test_repeated_child_progress_still_gets_distinct_resume_bound_checkpoints(jo
         assert progress["sequence"] == sequence
         assert progress["status"] == "waiting_for_child"
     assert not list((job[2] / "results").glob("*.json"))
+
+
+def test_default_driver_receives_parent_approved_billing_evidence_root(job, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_configuration_sam31_preparation_driver as driver
+    root, _, _, kwargs = job
+    billing_root = root / "control-plane" / "billing-audit"
+    billing_root.mkdir(parents=True)
+    billing = billing_root / "source.json"
+    billing.write_text('{"official_billing":"retained"}')
+    monkeypatch.setattr(precursor, "CONTROL_PLANE_ROOT", billing_root.parent)
+    seen = []
+    def advance(context, *, approved_roots=driver.HOST_ROOTS):
+        seen.append(approved_roots)
+        ref = driver._reference(_record(billing), tuple(approved_roots))
+        return {"status": "waiting_for_child", "evidence_refs": [ref]}
+    monkeypatch.setattr(driver, "advance_sam31_preparation", advance)
+    result = worker.process_launch_preparation_queue(**kwargs)
+    assert result["results"][0]["status"] == "waiting_for_child", result
+    assert billing_root.parent in seen[0]
