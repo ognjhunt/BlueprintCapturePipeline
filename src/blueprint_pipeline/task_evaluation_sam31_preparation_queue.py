@@ -270,7 +270,8 @@ def advance_sam31_for_preparation(
     resume = _resume_context(queue_root, prior)
     if advancer is None:
         from .task_evaluation_scene_configuration_sam31_preparation_driver import advance_sam31_preparation
-        advancer = advance_sam31_preparation
+        from functools import partial
+        advancer = partial(advance_sam31_preparation, approved_roots=tuple(approved_roots))
     if resume is not None:
         verify_evidence_reference(resume["evidence_ref"], approved_roots)
     context = {**envelope_context, "queue_root": str(queue_root),
