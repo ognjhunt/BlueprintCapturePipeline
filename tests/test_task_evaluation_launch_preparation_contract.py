@@ -9,6 +9,7 @@ from blueprint_pipeline.task_evaluation_launch_preparation_contract import (
     TaskEvaluationLaunchPreparationContractError,
     launch_preparation_request_digest,
     validate_launch_preparation_request,
+    validate_retained_preparation_request,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
     MAX_ATTEMPT_SPEND_USD,
@@ -250,6 +251,38 @@ def test_configuration_external_service_caps_fit_total_authority() -> None:
         match="launch_preparation_scene_configuration_external_spend_invalid",
     ):
         validate_launch_preparation_request(value)
+
+
+def test_retained_parent_keeps_original_budget_and_bytes_but_cannot_launch() -> None:
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    value = test_configuration_request()
+    value["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"][
+        "artifixer_visual_review"
+    ] = 0.64
+    original = copy.deepcopy(value)
+    observed = validate_retained_preparation_request(value)
+    assert observed == original == value
+    assert canonical_digest(observed) == canonical_digest(original)
+    with pytest.raises(TaskEvaluationLaunchPreparationContractError, match="external_spend_invalid"):
+        validate_launch_preparation_request(value)
+    with pytest.raises(TaskEvaluationLaunchPreparationContractError, match="external_spend_invalid"):
+        launch_preparation_request_digest(value)
+
+
+@pytest.mark.parametrize("fault", ["old_floor", "total", "rights"])
+def test_retained_parent_preserves_budget_and_rights_constraints(fault) -> None:
+    value = test_configuration_request()
+    stage = value["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]
+    stage["artifixer_visual_review"] = 0.64
+    if fault == "old_floor":
+        stage["artifixer_visual_review"] = 0.63
+    elif fault == "total":
+        value["spend"]["hard_cap_usd"] = 7.0
+    else:
+        value["scene"]["rights"]["provider_disclosure_scope"] = "raw_allowed"
+    with pytest.raises(TaskEvaluationLaunchPreparationContractError):
+        validate_retained_preparation_request(value)
 
 
 def test_pick_and_place_requires_a_distinct_qualified_destination_asset() -> None:

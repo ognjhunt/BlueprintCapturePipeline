@@ -95,6 +95,26 @@ def preparation_request_schema() -> dict[str, Any]:
 
 
 def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a request for NEW execution under the current budget contract."""
+    return _validate_launch_preparation_request(
+        value, minimum_visual_review_spend=MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
+    )
+
+
+def validate_retained_preparation_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Read historical parent evidence; this never authorizes successor execution.
+
+    Completed render/SAM/cutout work predates the third appearance-review call.
+    Retain its original bytes and original two-call floor when verifying its
+    parent, while preserving every other request validation. New submissions
+    must continue through validate_launch_preparation_request.
+    """
+    return _validate_launch_preparation_request(value, minimum_visual_review_spend=0.64)
+
+
+def _validate_launch_preparation_request(
+    value: Mapping[str, Any], *, minimum_visual_review_spend: float
+) -> dict[str, Any]:
     """Validate and copy one customer-facing preparation request.
 
     JSON Schema closes the external surface.  These semantic checks protect
@@ -240,7 +260,7 @@ def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, A
             "artifixer_semantic_teacher": (
                 MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
             ),
-            "artifixer_visual_review": MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
+            "artifixer_visual_review": minimum_visual_review_spend,
             "content_agents": MIN_CONTENT_AGENTS_SPEND_USD,
         }
         if spend["hard_ttl_seconds"] != REQUIRED_PARENT_TTL_SECONDS:
