@@ -54,9 +54,9 @@ def test_automatic_selector_prefers_longest_compatible_and_keeps_rejections(monk
         return {"through_phase": kwargs["through_phase"]}
     monkeypatch.setattr(adoption, "materialize_completed_prefix_adoption", materialize)
     result = adoption.select_completed_prefix_adoption(output_path="selected.json")
-    assert result["through_phase"] == "sam31_tracking"
+    assert result["through_phase"] == "contribution_sweep"
     assert result["rejected_candidates"][0]["blocker"] == "sam31_adoption_producer_code_changed"
-    assert calls == [("segment_cutout", None), ("sam31_tracking", None), ("sam31_tracking", "selected.json")]
+    assert calls == [("segment_cutout", None), ("contribution_sweep", None), ("contribution_sweep", "selected.json")]
 
 
 def test_automatic_selector_reports_no_compatible_prefix_without_publishing(monkeypatch):
@@ -66,7 +66,7 @@ def test_automatic_selector_reports_no_compatible_prefix_without_publishing(monk
     monkeypatch.setattr(adoption, "materialize_completed_prefix_adoption", materialize)
     result = adoption.select_completed_prefix_adoption(output_path="must-not-exist.json")
     assert result["status"] == "no_reusable_prefix"
-    assert len(result["rejected_candidates"]) == 3
+    assert len(result["rejected_candidates"]) == len(adoption.PREFIX_LENGTHS)
 
 
 def write(path, value, field=None):

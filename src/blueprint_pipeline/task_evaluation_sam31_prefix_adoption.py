@@ -22,7 +22,10 @@ from .task_evaluation_sam31_prefix_evidence import (
 )
 
 SCHEMA = "task_evaluation_sam31_completed_prefix_adoption.v1"
-PREFIX_LENGTHS = {"calibrated_views": 3, "sam31_tracking": 5, "segment_cutout": len(PHASES)}
+# Every completed phase after the first expensive render is a reuse boundary.
+# Later boundaries additionally reopen the same scientific evidence as their
+# downstream consumers; a status string alone never makes a phase reusable.
+PREFIX_LENGTHS = {phase: index + 1 for index, phase in enumerate(PHASES) if index >= 2}
 # A prefix adoption is gated by a live account observation, but that observation
 # is deliberately not part of the static release binding.  The observer keeps
 # this small seal on the retained file so the adoption code can distinguish a
@@ -182,8 +185,13 @@ def _phase_chain(value, roots):
             inputs["standard_splat_conversion"] = artifacts["standard_splat_conversion_receipt"]
             artifacts["standard_splat_conversion"] = inputs["standard_splat_conversion"]
         outcomes[phase] = receipt["outcome"]
-    tracking_origin = (inherited["tracking_origin"] if inherited else
-                       {"profile": profile, "commit": old_commit})
+    # A render-only adoption carries no tracking evidence. If this release
+    # first ran SAM, its profile/commit owns tracking even though rendering
+    # came from an earlier release. Preserve a prior tracking producer only
+    # when the inherited prefix actually includes that completed stage.
+    tracking_origin = (inherited["tracking_origin"]
+                       if inherited and inherited["phase_count"] >= PREFIX_LENGTHS["sam31_tracking"]
+                       else {"profile": profile, "commit": old_commit})
     return plan, profile, artifacts, outcomes, tracking_origin
 
 
@@ -223,17 +231,19 @@ def validate_completed_prefix_adoption(path, *, expected_source_commit, approved
     from .public_scene_inpainting_inputs import _git_identity
     current_repo = Path(value["current_release_root"])
     require(_git_identity(current_repo)["commit"] == expected_source_commit, "sam31_adoption_current_release_changed")
-    tracking_phase = "sam31_tracking" if PREFIX_LENGTHS[value["through_phase"]] >= 5 else "calibrated_views"
+    tracking_phase = "sam31_tracking" if PREFIX_LENGTHS[value["through_phase"]] >= 4 else "calibrated_views"
     release = validate_render(outcomes["calibrated_views"], _render_artifacts(artifacts, old_profile), old_plan, current_repo, tracking_phase)
     require(release == value["retained_release_pin"], "sam31_adoption_retained_release_changed")
     provider_path = _ref(value["current_sam31_provider_profile"], roots)
     if current_provider_profile_path is not None:
         require(record(current_provider_profile_path) == value["current_sam31_provider_profile"], "sam31_adoption_current_model_changed")
+    if PREFIX_LENGTHS[value["through_phase"]] == 4:
+        evidence.validate_sam_inputs(artifacts, old_profile, provider_path, value["original_execution_commit"])
     if PREFIX_LENGTHS[value["through_phase"]] >= 5:
         tracking = validate_tracking(outcomes["sam31_tracking"], artifacts, tracking_origin["profile"], provider_path,
                                      tracking_origin["commit"], _ref(value["sam31_billing_source"], roots))
         require(tracking == value["tracking_identity"], "sam31_adoption_tracking_identity_changed")
-    if value["through_phase"] == "segment_cutout":
+    if PREFIX_LENGTHS[value["through_phase"]] >= 9:
         from .task_evaluation_sam31_retained_evidence import validate_retained_paid_stage
         validate_retained_paid_stage(outcomes["contribution_sweep"], stage_id="contribution_sweep")
         # Content identity, not commit identity (piece 1): the segment_cutout retained outputs
@@ -247,10 +257,16 @@ def validate_completed_prefix_adoption(path, *, expected_source_commit, approved
             "src/blueprint_pipeline/task_evaluation_sam31_preparation_review_stages.py",
             "src/blueprint_pipeline/task_evaluation_sam31_preparation_profile.py",
         ), old_profile["repo_root"], current_repo)
+    from .task_evaluation_sam31_prefix_late_evidence import validate_late_prefix
+    validate_late_prefix(artifacts, phase_count=PREFIX_LENGTHS[value["through_phase"]])
     # A canonical parent envelope must still join the old immutable plan and child chain.
     from .task_evaluation_launch_preparation_contract import validate_retained_preparation_request
     envelope = read(_ref(value["original_parent_envelope"], roots), digest_field="envelope_digest")
     parent = validate_retained_preparation_request(envelope["request"])
+    from .task_evaluation_retained_preparation_contract import retained_contract_identity
+    if "historical_parent_contract" in value:
+        require(value["historical_parent_contract"] == retained_contract_identity(parent),
+                "sam31_adoption_parent_contract_changed")
     require(canonical_digest(parent) == envelope["request_digest"] == value["original_parent_request_digest"]
             and parent["expected_production_commit"] == value["original_execution_commit"]
             and parent["scene"]["identity"] == old_plan["scene_identity"]
@@ -375,9 +391,11 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
         if phase == "standard_splat_conversion":
             old_inputs["standard_splat_conversion"] = old_inputs["standard_splat_conversion_receipt"]
     from .task_evaluation_sam31_parent_evidence import retained_parent
-    _, state, parent_path = retained_parent(job, Path(parent_queue_root))
+    parent, state, parent_path = retained_parent(job, Path(parent_queue_root))
     require(state in {"blocked", "completed", "materialized"}, "sam31_adoption_parent_not_terminal")
+    from .task_evaluation_retained_preparation_contract import retained_contract_identity
     value = {"schema_version": SCHEMA, "status": "verified_completed_prefix", "created_at_epoch": at,
+             "historical_parent_contract": retained_contract_identity(parent),
              "source_commit": expected_source_commit, "current_release_root": str(current_repo_root),
              "original_execution_commit": old_plan["source_commit"], "original_parent_request_digest": parent_request_digest,
              "original_parent_envelope": record(parent_path), "source_plan": record(source_plan_path),
@@ -387,7 +405,7 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
              "paid_execution_performed": False, "candidate_policy_queried": False}
     roots = tuple(Path(root) for root in approved_roots)
     _, _, artifacts, outcomes, tracking_origin = _phase_chain(value, roots)
-    tracking_phase = "sam31_tracking" if PREFIX_LENGTHS[through_phase] >= 5 else "calibrated_views"
+    tracking_phase = "sam31_tracking" if PREFIX_LENGTHS[through_phase] >= 4 else "calibrated_views"
     value["retained_release_pin"] = validate_render(outcomes["calibrated_views"], _render_artifacts(artifacts, old_profile), old_plan, Path(current_repo_root), tracking_phase)
     if PREFIX_LENGTHS[through_phase] >= 5:
         require(sam31_billing_source_path is not None, "sam31_adoption_official_billing_required")

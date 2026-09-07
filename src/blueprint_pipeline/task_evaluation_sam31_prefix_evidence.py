@@ -168,16 +168,22 @@ def provider_science(value):
     return record_identity(value)
 
 
-def validate_tracking(outcome, artifacts, old_profile, current_profile_path, old_commit, billing_source_path):
-    from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
-    from .public_scene_calibrated_object_masks import _verified_source_tracks
+def validate_model_sources(old_profile, current_profile_path, old_commit):
+    """Prove model/rights identity before reusing prepared SAM inputs or tracks."""
     from .sam31_provider_launch_packet import validate_sam31_provider_profile_sources
-    _load("task_evaluation_sam31_preparation_paid_stages").validate_retained_paid_stage(outcome, stage_id="sam31_tracking")
     old_provider = read(old_profile["artifact_references"]["sam31_provider_profile"]["path"])
     current_provider = read(current_profile_path)
     validate_sam31_provider_profile_sources(old_provider, source_commit_sha=old_commit)
     validate_sam31_provider_profile_sources(current_provider, source_commit_sha=current_provider["source_commit_sha"])
     require(provider_science(old_provider) == provider_science(current_provider), "sam31_adoption_model_changed")
+    return old_provider
+
+
+def validate_tracking(outcome, artifacts, old_profile, current_profile_path, old_commit, billing_source_path):
+    from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
+    from .public_scene_calibrated_object_masks import _verified_source_tracks
+    _load("task_evaluation_sam31_preparation_paid_stages").validate_retained_paid_stage(outcome, stage_id="sam31_tracking")
+    old_provider = validate_model_sources(old_profile, current_profile_path, old_commit)
     execution_path = Path(artifacts["sam31_allocator_result"]["path"])
     execution = read(execution_path, digest_field="execution_result_digest")
     root = execution_path.parent
@@ -250,3 +256,63 @@ def validate_tracking(outcome, artifacts, old_profile, current_profile_path, old
     return {"raw_runtime_result": {"path": str(runtime_path), "sha256": sha(runtime_path), "size_bytes": runtime_path.stat().st_size},
             "provider_instance_id": execution["instance_id"], "checkpoint_digest": execution["checkpoint_digest"],
             "official_charge": charge}
+
+
+def validate_sam_inputs(artifacts, old_profile, current_profile_path, old_commit):
+    """Reopen a completed request packet without encoding frames or running SAM."""
+    import json
+    from .scene_placement.sam31_source_track_provider import _validate_request
+    from .public_scene_calibrated_object_masks import _camera_rows
+    from .task_evaluation_scene_configuration_submission_inputs import beneath
+    from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
+
+    packet_ref = artifacts["sam31_task_input_packet"]
+    packet_path = checked_file(packet_ref["path"], packet_ref)
+    packet = read(packet_path, digest_field="receipt_digest")
+    require(packet.get("schema_version") == "public_scene_sam31_task_input_packet.v1"
+            and packet.get("status") == "prepared_no_upload_no_execution"
+            and packet.get("paid_execution_started") is False
+            and packet.get("provider_mutations_performed") == 0,
+            "sam31_adoption_sam_inputs_invalid")
+    for field, artifact in (("task_freeze", "task_selection"),
+                            ("calibrated_view_receipt", "calibrated_view_receipt")):
+        require(all(packet[field][key] == artifacts[artifact][key]
+                    for key in ("path", "sha256", "size_bytes")), "sam31_adoption_sam_inputs_changed")
+        checked_file(packet[field]["path"], packet[field])
+    request_ref = artifacts["sam31_run_request"]
+    request_path = checked_file(request_ref["path"], request_ref)
+    require(checked_file(beneath(packet_path.parent, packet["run_request"]["relative_path"]),
+                         packet["run_request"]) == request_path,
+            "sam31_adoption_sam_request_changed")
+    request = read(request_path)
+    require(canonical_json_digest(request) == packet["run_request"]["request_digest"]
+            and request["prompts"] == packet["prompts"], "sam31_adoption_sam_request_changed")
+    old_provider = validate_model_sources(old_profile, current_profile_path, old_commit)
+    require(request["provider_profile"] == old_provider, "sam31_adoption_model_changed")
+    frames = request["frame_artifacts"]
+    require(bool(frames), "sam31_adoption_sam_frames_missing")
+    _, registry, _, blockers = _validate_request(request, Path(frames[0]["path"]).parent)
+    require(not blockers, "sam31_adoption_sam_request_invalid")
+    rendered_path = Path(artifacts["calibrated_view_receipt"]["path"])
+    rendered = read(rendered_path, digest_field="receipt_digest")
+    camera_ref = rendered["derived_artifacts"]["cameras"]
+    camera_path = checked_file(beneath(rendered_path.parent, camera_ref["relative_path"]), camera_ref)
+    cameras = _camera_rows(camera_path)
+    camera_ids = sorted(cameras)
+    images = {row["camera_id"]: row for row in rendered["derived_artifacts"]["images"]}
+    sequence = checked_file(beneath(packet_path.parent, packet["retained_sequence"]["relative_path"]),
+                            packet["retained_sequence"])
+    require(len(registry) == len(frames) == packet["camera_count"] == len(cameras)
+            and request["bindings"]["capture_digest"] == rendered["receipt_digest"]
+            and request["bindings"]["camera_solution_digest"] == canonical_json_digest(json.loads(camera_path.read_text()))
+            and request["bindings"]["retained_video_digest"] == sha(sequence),
+            "sam31_adoption_sam_bindings_changed")
+    for index, (frame, entry, camera_id) in enumerate(zip(frames, registry, camera_ids, strict=True)):
+        jpeg = checked_file(frame["path"], frame)
+        png = beneath(packet_path.parent, f"lossless_frames/{index:06d}.png")
+        original = checked_file(beneath(rendered_path.parent, images[camera_id]["relative_path"]), images[camera_id])
+        require(frame["source_frame_id"] == entry["source_frame_id"] == packet["camera_frame_map"][camera_id]
+                and sha(jpeg) == entry["analysis_jpeg_digest"]
+                and sha(png) == sha(original) == entry["source_frame_digest"]
+                and canonical_json_digest(cameras[camera_id]) == entry["camera_record_digest"],
+                "sam31_adoption_sam_frame_changed")
