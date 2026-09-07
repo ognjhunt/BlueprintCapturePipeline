@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
-from blueprint_pipeline.task_evaluation_scene_configuration_adapters import (
-    ADMITTED_STAGE_ADAPTER_IDENTITIES,
+from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import (
+    stage_sequence,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_checkpoint import (
     hydrate_scene_configuration_diagnostic_completed_stages,
@@ -73,18 +73,7 @@ def _recovery_fixture(tmp_path: Path) -> dict[str, Path]:
         "output_requirements": {"generated_pixels_labeled": True},
     }
     configuration_path = _write(source / "configuration.json", configuration)
-    stages = [
-        {
-            "stage_id": f"stage-{index}",
-            "capability": identity.capability,
-            "adapter": {"id": identity.adapter_id, "version": identity.version},
-            "execution_class": identity.execution_class,
-            "depends_on": [] if index == 1 else [f"stage-{index - 1}"],
-        }
-        for index, identity in enumerate(
-            ADMITTED_STAGE_ADAPTER_IDENTITIES, start=1
-        )
-    ]
+    stages = stage_sequence()
     render = dict(fixture["render_result"])
     decision = resolve_scene_configuration_disclosure(
         stage_one_configuration=configuration,

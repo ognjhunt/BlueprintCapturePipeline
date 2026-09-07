@@ -94,12 +94,16 @@ def _image(path: Path, *, mode: str, code: str) -> np.ndarray:
         raise ArtiFixer3DFinalCompositeError(code) from exc
 
 
-def _alpha(exact: np.ndarray, radius: int) -> tuple[np.ndarray, np.ndarray]:
+def _alpha(exact: np.ndarray, radius: int, *, frame_role: str = "semantic_edit") -> tuple[np.ndarray, np.ndarray]:
     """Return exact-core alpha plus a linear, declared exterior transition."""
 
     core = exact > 0
-    if not np.any(core) or set(exact.tobytes()) - {0, 255}:
+    if (set(exact.tobytes()) - {0, 255}
+            or frame_role not in {"semantic_edit", "source_preservation"}
+            or bool(np.any(core)) != (frame_role == "semantic_edit")):
         raise ArtiFixer3DFinalCompositeError("artifixer3d_final_exact_mask_invalid")
+    if frame_role == "source_preservation":
+        return np.zeros(core.shape, dtype=np.float32), core
     if radius == 0:
         return core.astype(np.float32), core
     distance = distance_transform_edt(~core)
@@ -252,7 +256,8 @@ def materialize_artifixer3d_final_composite(
             exact = _image(exact_path, mode="L", code="artifixer3d_final_exact_mask_invalid")
             if original.shape != generated.shape or original.shape[:2] != exact.shape:
                 raise ArtiFixer3DFinalCompositeError("artifixer3d_final_frame_shape_invalid")
-            alpha, support = _alpha(exact, radius)
+            frame_role = frame.get("frame_role", "semantic_edit")
+            alpha, support = _alpha(exact, radius, frame_role=frame_role)
             blended = np.rint(
                 generated.astype(np.float32) * alpha[:, :, None]
                 + original.astype(np.float32) * (1.0 - alpha[:, :, None])
@@ -272,6 +277,7 @@ def materialize_artifixer3d_final_composite(
                 {
                     "frame_index": index,
                     "camera_id": frame["camera_id"],
+                    "frame_role": frame_role,
                     "path": str(destination),
                     "size_bytes": final_record["size_bytes"],
                     "sha256": final_record["sha256"],

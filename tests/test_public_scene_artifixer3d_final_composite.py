@@ -133,6 +133,31 @@ def test_rejects_camera_mismatch_and_digest_tamper(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("case", ["preserve", "empty_untyped", "nonempty_preserve"])
+def test_preservation_view_copies_source_only_for_explicit_empty_support(tmp_path: Path, case: str) -> None:
+    dual, raw = _packet(tmp_path / "packet", "task_a")
+    value = json.loads(dual.read_text())
+    frame = value["tasks"][0]["frames"][0]
+    if case != "nonempty_preserve":
+        mask_path = Path(frame["source_exact_repair_mask"]["path"])
+        Image.new("L", (9, 9), color=0).save(mask_path)
+        frame["source_exact_repair_mask"] = _record(mask_path)
+    if case != "empty_untyped":
+        frame["frame_role"] = "source_preservation"
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    _write_json(dual, value)
+    if case != "preserve":
+        with pytest.raises(ArtiFixer3DFinalCompositeError, match="exact_mask_invalid"):
+            materialize_artifixer3d_final_composite(dual_input_receipt_paths=[dual], raw_result_paths=[raw], output_root=tmp_path / "output")
+        return
+    result = materialize_artifixer3d_final_composite(dual_input_receipt_paths=[dual], raw_result_paths=[raw], output_root=tmp_path / "output")
+    output_frame = result["tasks"][0]["frames"][0]
+    assert output_frame["frame_role"] == "source_preservation"
+    assert output_frame["outside_support_changed_pixels"] == 0
+    assert output_frame["exact_repair_pixel_count"] == 0
+    assert np.all(np.asarray(Image.open(output_frame["path"])) == 20)
+
+
 def test_rejects_more_than_five_tasks(tmp_path: Path) -> None:
     duals, raws = zip(
         *[_packet(tmp_path / f"packet_{index}", f"task_{index}") for index in range(6)],

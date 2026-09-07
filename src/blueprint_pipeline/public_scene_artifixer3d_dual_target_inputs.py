@@ -214,7 +214,8 @@ def _source_task_frames(task: Mapping[str, Any]) -> list[dict[str, Any]]:
         if (
             rgb.shape[:2] != mask.shape
             or set(mask.tobytes()) - {0, 255}
-            or not np.any(mask)
+            or frame.get("frame_role", "semantic_edit") not in {"semantic_edit", "source_preservation"}
+            or bool(np.any(mask)) != (frame.get("frame_role", "semantic_edit") == "semantic_edit")
             or frame.get("repair_pixel_count") != int(np.count_nonzero(mask))
         ):
             raise DualTargetInputError(["dual_target_source_shape_or_mask_invalid"])
@@ -223,6 +224,7 @@ def _source_task_frames(task: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "frame_index": expected_index,
                 "camera_id": camera_id,
                 "original_path": original,
+                "frame_role": frame.get("frame_role", "semantic_edit"),
                 "mask_path": exact_mask,
                 "rgb": rgb,
                 "mask": mask,
@@ -440,11 +442,14 @@ def materialize_whole_frame_semantic_teacher_receipt(
             raise DualTargetInputError(["dual_target_semantic_teacher_shape_invalid"])
         support = frame["mask"] > 0
         changed = np.any(teacher != frame["rgb"], axis=2)
+        if frame["frame_role"] == "source_preservation" and np.any(changed):
+            raise DualTargetInputError(["dual_target_preserved_source_changed"])
         rows.append(
             {
                 "frame_index": index,
                 "camera_id": frame["camera_id"],
                 "source_original_frame": _absolute_record(frame["original_path"]),
+                "frame_role": frame["frame_role"],
                 "exact_repair_mask": _absolute_record(frame["mask_path"]),
                 "whole_frame_semantic_teacher": _absolute_record(teacher_path),
                 "width": int(teacher.shape[1]),
@@ -1100,6 +1105,7 @@ def materialize_dual_target_artifixer3d_inputs(
                 {
                     "physical_camera_index": physical_index,
                     "camera_id": source_frame["camera_id"],
+                    "frame_role": source_frame["frame_role"],
                     "anchor_training_index": anchor_index,
                     "semantic_teacher_training_index": teacher_index,
                     "source_original_frame": _absolute_record(source_frame["original_path"]),

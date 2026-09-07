@@ -811,14 +811,15 @@ def test_empty_support_views_remain_bound_outside_repair_inputs(tmp_path: Path) 
     candidate = materialize_artifixer3d_candidate_inputs(
         calibrated_residual_preflight_path=preflight_path, output_root=tmp_path / "candidate"
     )
-    assert [r["camera_id"] for r in preflight["camera_inputs"]] == ["camera-0"]
+    assert [r["camera_id"] for r in preflight["camera_inputs"]] == ["context-camera", "camera-0"]
+    assert preflight["camera_inputs"][0]["frame_role"] == "source_preservation"
     preserved = preflight["no_repair_support_camera_inputs"]
     assert [r["camera_id"] for r in preserved] == ["context-camera"]
     assert preserved[0]["exact_residual_mask"]["sha256"] == before[1]
     assert preserved[0]["exact_residual_mask"]["pixel_count"] == 0
     assert preflight["camera_input_selection"]["source_camera_count"] == 2
     assert preflight["preflight_digest"] == canonical_digest(preflight, digest_field="preflight_digest")
-    assert candidate["tasks"][0]["camera_count"] == 1
+    assert candidate["tasks"][0]["camera_count"] == 2
     assert (_sha256(frame), _sha256(empty_mask)) == before
     assert len(render["derived_frames"]) == 2
 
@@ -843,8 +844,19 @@ def test_repair_view_selection_does_not_admit_invalid_support(
         )
 
 
-def test_generic_candidate_feeds_existing_semantic_teacher_packet(tmp_path: Path) -> None:
+@pytest.mark.parametrize("image_size", [1024, 1280])
+def test_generic_candidate_feeds_existing_semantic_teacher_packet(tmp_path: Path, image_size: int) -> None:
     envelope, configuration = _inputs(tmp_path)
+    render = envelope["render_inputs_result"]
+    Image.new("RGB", (image_size, image_size), color=(90, 80, 70)).save(render["derived_frames"][0]["path"])
+    Image.new("L", (image_size, image_size), color=255).save(render["derived_frames"][0]["source_object_mask"]["path"])
+    calibration_path = Path(render["camera_calibration"]["path"])
+    calibrations = json.loads(calibration_path.read_text())
+    intrinsics = calibrations[0]["spec"]["intrinsics"]
+    for field in ("fx", "fy", "cx", "cy"):
+        intrinsics[field] *= image_size / 1024
+    intrinsics.update(width=image_size, height=image_size)
+    calibration_path.write_text(json.dumps(calibrations))
     authority_path = tmp_path / "authority.json"
     authority, _rights_path, scene_id = _write_execution_authority(
         envelope=envelope,
@@ -885,7 +897,7 @@ def test_generic_candidate_feeds_existing_semantic_teacher_packet(tmp_path: Path
         packet_root=packet_root,
         source_commit="a" * 40,
         maximum_cost_usd=2.4,
-        expected_request_cost_usd=0.22,
+        expected_request_cost_usd=driver._default_semantic_frame_cost(candidate),
     )
     runtime_request = json.loads(runtime_request_path.read_text(encoding="utf-8"))
 
@@ -895,7 +907,35 @@ def test_generic_candidate_feeds_existing_semantic_teacher_packet(tmp_path: Path
     assert packet["raw_nonredistributable_source_bytes_included"] is False
     assert runtime_request["max_parallel_requests"] == 4
     assert runtime_request["maximum_cost_usd"] == 2.4
-    assert runtime_request["expected_request_cost_usd"] == 0.22
+    assert runtime_request["expected_request_cost_usd"] == pytest.approx(0.22 * (image_size / 1024) ** 2)
+
+    from blueprint_pipeline.semantic_teacher_image_edit_worker import execute_semantic_teacher_image_edits
+    from tests.test_semantic_teacher_image_edit_worker import _Response, _inline_response
+
+    source = packet_root / runtime_request["tasks"][0]["frames"][0]["input_rgb"]["relative_path"]
+    calls = []
+
+    def opener(request, *, timeout):
+        calls.append(request)
+        assert f'name="size"\r\n\r\n{image_size}x{image_size}\r\n'.encode() in request.data
+        assert source.read_bytes() in request.data
+        return _Response(_inline_response(source.read_bytes(), usage={
+            "input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
+            "input_tokens_details": {"text_tokens": 0, "image_tokens": 1},
+            "output_tokens_details": {"text_tokens": 0, "image_tokens": 1},
+        }), url=request.full_url)
+
+    result = execute_semantic_teacher_image_edits(
+        runtime_request_path=runtime_request_path, output_root=tmp_path / "mock-teacher-output",
+        token="test-only-no-network", opener=opener,
+    )
+    assert result["status"] == "completed_unreviewed_semantic_teacher_candidates"
+    assert len(calls) == 1
+
+    packet["tasks"][0]["frames"][0]["width"] = 1281
+    (packet_root / "fresh_scene_semantic_teacher_image_edit_packet.v1.json").write_text(json.dumps(packet))
+    with pytest.raises(driver.TaskEvaluationSceneConfigurationArtifixerError, match="semantic_frame_size_unsupported"):
+        driver._semantic_runtime_request(packet_root=packet_root, source_commit="a" * 40)
 
 
 def test_visual_review_uses_the_scene_lanes_exclusive_cost_scope() -> None:

@@ -39,10 +39,11 @@ def _bound(path: Path, *, digest_key: str = "digest") -> dict:
     }
 
 
-def _fixture(tmp_path: Path) -> dict[str, Path | dict]:
+def _fixture(tmp_path: Path, *, camera_count: int = 8, preservation_count: int = 0,
+             retained_control_plane: bool = False) -> dict[str, Path | dict]:
     source = tmp_path / "source"
     source.mkdir()
-    camera_ids = [f"camera-{index}" for index in range(8)]
+    camera_ids = [f"camera-{index}" for index in range(camera_count)]
     calibration_rows = [
         {
             "id": camera_id,
@@ -84,8 +85,10 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict]:
         mask = source / f"mask-{index}.png"
         edit = source / f"edit-{index}.png"
         Image.new("RGB", (8, 8), color=(index, 20, 30)).save(frame)
-        Image.new("L", (8, 8), color=255).save(mask)
-        Image.new("RGB", (8, 8), color=(40, index, 60)).save(edit)
+        preserved = index < preservation_count
+        role = "source_preservation" if preserved else "semantic_edit"
+        Image.new("L", (8, 8), color=0 if preserved else 255).save(mask)
+        Image.new("RGB", (8, 8), color=(index, 20, 30) if preserved else (40, index, 60)).save(edit)
         frames.append(
             {
                 "camera_id": camera_id,
@@ -98,6 +101,7 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict]:
                 "frame_index": index,
                 "camera_id": camera_id,
                 "input_rgb": _bound(frame, digest_key="sha256"),
+                "frame_role": role,
                 "edit_mask": _bound(mask, digest_key="sha256"),
             }
         )
@@ -105,7 +109,9 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict]:
             {
                 "frame_index": index,
                 "camera_id": camera_id,
-                "terminal_state": "completed_unreviewed_candidate",
+                "terminal_state": "preserved_source" if preserved else "completed_unreviewed_candidate",
+                "provider_call_performed": not preserved,
+                "frame_role": role,
                 "semantic_teacher_frame": _bound(edit, digest_key="sha256"),
             }
         )
@@ -114,6 +120,7 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict]:
                 "frame_index": index,
                 "camera_id": camera_id,
                 "source_original_frame": _bound(frame, digest_key="sha256"),
+                "frame_role": role,
                 "exact_repair_mask": _bound(mask, digest_key="sha256"),
                 "whole_frame_semantic_teacher": _bound(edit, digest_key="sha256"),
             }
@@ -143,7 +150,7 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict]:
         "camera_calibration": _bound(calibration),
         "render_manifest": _bound(render_manifest),
         "derived_frames": frames,
-        "derived_frame_count": 8,
+        "derived_frame_count": camera_count,
         "derived_gaussian_cutout": {
             "retained_count": 100,
             "retained_scene_without_source_object": _bound(retained),
@@ -151,6 +158,18 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict]:
         "render_completed_on_provider": True,
         "result_digest": "",
     }
+    if retained_control_plane:
+        names = ("calibrated_mask_set", "segment_cutout_set", "selection_inputs",
+                 "source_render_conversion", "source_render_receipt",
+                 "standard_splat_conversion", "track_selection_review")
+        render_result.update(render_completed_on_provider=False, render_execution_site="control_plane",
+            provider_render_required=False,
+            raw_interiorgs_bytes_in_provider_packet=False, full_source_scene_content_in_provider_packet=True,
+            source_splat_bytes_retained_on_control_plane=True,
+            source_object_masks={"source": "sam31_reviewed_calibrated_object_masks",
+                                 "all_masks_digest_bound": True, "count": camera_count},
+            sam31_evidence_records={name: _bound(_write(source / f"{name}.json", {"fixture_evidence": name})) for name in names})
+        renderer_runtime.update(authorization_class="method_input", purpose_bound=True)
     render_result["result_digest"] = canonical_digest(
         render_result, digest_field="result_digest"
     )
@@ -160,6 +179,7 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict]:
         "schema_version": "observed_appearance_object_removal_configuration.v1",
         "source_object": {"publisher_instance_id": "104"},
         "random_seed": 839873,
+        "required_views": {"minimum": camera_count},
     }
     # Production configuration files retain publisher formatting.  The exact
     # byte digest therefore need not equal a digest of canonical reserialization.
@@ -229,8 +249,9 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict]:
         "backend_entry_digest": "sha256:" + "7" * 64,
         "adapter_id": "openai_images_edits_v1",
         "model_snapshot": "gpt-image-2-2026-04-21",
-        "request_count": 8,
-        "successful_request_count": 8,
+        "request_count": camera_count - preservation_count,
+        "successful_request_count": camera_count - preservation_count,
+        "preserved_source_frame_count": preservation_count,
         "failed_request_count": 0,
         "computed_editor_cost_usd": 1.754256,
         "tasks": [{"task_id": "remove-source-object-104", "frames": result_frames}],
@@ -250,7 +271,7 @@ def _fixture(tmp_path: Path) -> dict[str, Path | dict]:
             "model_snapshot": semantic_result["model_snapshot"],
             "result_digest": semantic_result["result_digest"],
         },
-        "frame_count": 8,
+        "frame_count": camera_count,
         "frames": teacher_frames,
         "receipt_digest": "",
     }
@@ -281,6 +302,41 @@ def _materialize(tmp_path: Path) -> tuple[Path, dict, dict[str, Path | dict]]:
         output_root=root,
     )
     return root, result, fixture
+
+
+@pytest.mark.parametrize("tamper", [None, "preserved_pixels", "provenance"])
+def test_sixteen_retained_views_preserve_source_and_bind_provenance(tmp_path: Path, tamper: str | None) -> None:
+    fixture = _fixture(tmp_path, camera_count=16, preservation_count=7, retained_control_plane=True)
+    if tamper == "preserved_pixels":
+        teacher = json.loads(fixture["receipt_path"].read_text())
+        image = Path(teacher["frames"][0]["whole_frame_semantic_teacher"]["path"])
+        Image.new("RGB", (8, 8), color=(255, 255, 255)).save(image)
+        teacher["frames"][0]["whole_frame_semantic_teacher"] = _bound(image, digest_key="sha256")
+        teacher["receipt_digest"] = canonical_digest(teacher, digest_field="receipt_digest")
+        _write(fixture["receipt_path"], teacher)
+    elif tamper == "provenance":
+        record = fixture["render_result"]["sam31_evidence_records"]["calibrated_mask_set"]
+        Path(record["path"]).write_text("changed")
+    kwargs = dict(stage_production_input_path=fixture["stage_path"], render_inputs_result_path=fixture["render_path"],
+        semantic_runtime_request_path=fixture["request_path"], semantic_runtime_result_path=fixture["result_path"],
+        semantic_teacher_receipt_path=fixture["receipt_path"], output_root=tmp_path / "checkpoint")
+    if tamper:
+        with pytest.raises(TaskEvaluationSceneConfigurationDiagnosticCheckpointError,
+                           match="preserved_source_changed" if tamper == "preserved_pixels" else "render_provenance_invalid"):
+            materialize_scene_configuration_diagnostic_checkpoint(**kwargs)
+        return
+    value = materialize_scene_configuration_diagnostic_checkpoint(**kwargs)
+    reopened = validate_scene_configuration_diagnostic_checkpoint(checkpoint_root=tmp_path / "checkpoint")
+    assert reopened["camera_count"] == 16
+    assert reopened["minimum_camera_count"] == 16
+    assert reopened["semantic_teacher"]["model_request_count"] == 9
+    assert reopened["semantic_teacher"]["preserved_source_frame_count"] == 7
+    hydrated = hydrate_scene_configuration_diagnostic_render_inputs(
+        checkpoint_root=tmp_path / "checkpoint", expected_scientific_binding_digest=value["scientific_bindings"]["binding_digest"])
+    assert len(hydrated["derived_frames"]) == 16
+    assert len(hydrated["sam31_evidence_records"]) == 7
+    assert hydrated["full_source_scene_content_in_provider_packet"] is True
+    assert "path" not in hydrated["source_appearance"]
 
 
 def test_checkpoint_seals_exact_eight_frame_prefix_as_diagnostic_only(
