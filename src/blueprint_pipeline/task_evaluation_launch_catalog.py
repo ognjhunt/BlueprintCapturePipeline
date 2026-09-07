@@ -94,6 +94,7 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
                 f"published_profile_invalid:{path.name}:" + ",".join(sorted(set(blockers)))
             )
         unavailable = verify_profile_immutable_inputs(profile)
+        inactive_authority: list[str] = []
         if unavailable:
             descriptor = catalog_launch_profile_descriptor(profile)
         else:
@@ -101,19 +102,26 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
             # existing fail-closed cross-document validation. An inconsistent
             # or tampered lineage is malformed evidence, not host unavailability.
             blockers = validate_launch_profile(profile)
-            if blockers:
+            if blockers and set(blockers) != {"scene_execution_owner_revoked"}:
                 raise LaunchCatalogError(
                     f"published_profile_invalid:{path.name}:"
                     + ",".join(sorted(set(blockers)))
                 )
-            descriptor = public_launch_profile_descriptor(profile)
+            if blockers:
+                # Revoking a real owner is a normal lifecycle transition, not
+                # corrupted published evidence. Keep the immutable profile in
+                # history and explicitly disable its catalog projection.
+                inactive_authority = blockers
+                descriptor = catalog_launch_profile_descriptor(profile)
+            else:
+                descriptor = public_launch_profile_descriptor(profile)
         # A profile whose inputs are not on this host cannot start a run here,
         # so serving it as live is the lie. Demote it in the projection rather
         # than refusing the whole catalog: the published bytes stay immutable
         # evidence, and one stale profile must not make every other profile
         # unreachable -- the catalog reconciler is an ExecStartPre for intake,
         # so raising here would take the website path down with it.
-        unrunnable = [*unavailable, *launch_profile_residency_blockers(profile)]
+        unrunnable = [*unavailable, *inactive_authority, *launch_profile_residency_blockers(profile)]
         if unrunnable:
             admission = dict(descriptor.get("execution_admission") or {})
             admission["live_enabled"] = False
