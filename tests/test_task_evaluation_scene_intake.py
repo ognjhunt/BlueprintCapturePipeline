@@ -1,6 +1,7 @@
 """ADP-009D: persistent owner authority does not reset on deploy or retry."""
 
 import copy
+import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -9,6 +10,7 @@ from blueprint_pipeline.task_evaluation_scene_intake import (
     REQUEST_SCHEMA, SceneIntakeError, reserve_scene_attempt, stage_scene_intent, scene_intent_status,
     revoke_scene_intent,
 )
+from blueprint_pipeline.task_evaluation_scene_progression_state import advance
 
 
 def request():
@@ -144,7 +146,9 @@ def test_status_is_read_only_and_does_not_expose_paths(tmp_path):
     assert str(tmp_path) not in str(result)
     after = {str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     assert before == after
-    assert scene_intent_status(queue_root=tmp_path, intent_id=intent["intent_id"], now=1001)["status"] == "expired"
+    late = scene_intent_status(queue_root=tmp_path, intent_id=intent["intent_id"], now=1001)
+    assert late["status"] == "accepted"
+    assert late["blockers"] == ["scene_intake_authority_expired"]
 
 
 def test_owner_revocation_is_idempotent_and_stops_future_reservation(tmp_path):
@@ -159,6 +163,56 @@ def test_owner_revocation_is_idempotent_and_stops_future_reservation(tmp_path):
     assert scene_intent_status(queue_root=tmp_path, intent_id=intent["intent_id"], now=104)["status"] == "revoked"
     with pytest.raises(SceneIntakeError, match="authority_revoked"):
         attempt(tmp_path, intent)
+
+
+@pytest.mark.parametrize("authority", ["expiry", "revocation"])
+def test_late_terminal_failure_preserves_attempt_status_after_authority_ends(tmp_path, authority):
+    """Authority ends future execution; it must not hide a retained failure."""
+    receipt = stage(tmp_path)
+    intent = (tmp_path / receipt["intent_id"] / "intent.json")
+    intent_value = json.loads(intent.read_text())
+    attempt(tmp_path, receipt, now=101)
+    directory = intent.parent
+    advance(directory, intent_value, None, status="blocked", phase="provider",
+            state={"attempt_id": "a1"}, blockers=["provider_capacity_unavailable"], now=102)
+    if authority == "revocation":
+        revoke_scene_intent(queue_root=tmp_path, intent_id=receipt["intent_id"],
+                            intent_digest=receipt["intent_digest"], owner=request()["owner"], now=103)
+        observed_at = 104
+        expected_authority_blocker = "scene_intake_authority_revoked"
+    else:
+        observed_at = 1001
+        expected_authority_blocker = "scene_intake_authority_expired"
+
+    result = scene_intent_status(queue_root=tmp_path, intent_id=receipt["intent_id"], now=observed_at)
+    assert result["status"] == "blocked"
+    assert "provider_capacity_unavailable" in result["blockers"]
+    assert expected_authority_blocker in result["blockers"]
+    assert result["attempts"][0]["attempt_id"] == "a1"
+
+
+@pytest.mark.parametrize("authority", ["expiry", "revocation"])
+def test_late_success_remains_completed_after_authority_ends(tmp_path, authority):
+    """A terminal result already bound to a reserved attempt remains readable."""
+    receipt = stage(tmp_path)
+    intent_path = tmp_path / receipt["intent_id"] / "intent.json"
+    intent_value = json.loads(intent_path.read_text())
+    attempt(tmp_path, receipt, now=101)
+    directory = intent_path.parent
+    result_reference = {"uri": "s3://example/result.tar", "digest": "sha256:" + "f" * 64,
+                        "size_bytes": 1}
+    advance(directory, intent_value, None, status="completed", phase="terminal",
+            state={"attempt_id": "a1"}, result_reference=result_reference, now=102)
+    if authority == "revocation":
+        revoke_scene_intent(queue_root=tmp_path, intent_id=receipt["intent_id"],
+                            intent_digest=receipt["intent_digest"], owner=request()["owner"], now=103)
+        observed_at = 104
+    else:
+        observed_at = 1001
+    result = scene_intent_status(queue_root=tmp_path, intent_id=receipt["intent_id"], now=observed_at)
+    assert result["status"] == "completed"
+    assert result["result_reference"] == result_reference
+    assert result["blockers"] == []
 
 
 @pytest.mark.parametrize("field,value", [("max_total_spend_usd", float("nan")),

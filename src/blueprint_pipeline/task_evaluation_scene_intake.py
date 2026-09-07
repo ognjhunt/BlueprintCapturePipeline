@@ -317,11 +317,25 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
         attempts.append({key: row[key] for key in (
             "attempt_id", "source_commit", "runtime_digest", "input_digest", "provider",
             "maximum_spend_usd", "status")})
-    if status != "completed":
-        if (directory / "revoked.json").exists():
-            status, blockers = "revoked", ["scene_intake_authority_revoked"]
-        elif moment >= intent["request"]["execution"]["expires_at_epoch"]:
-            status, blockers = "expired", ["scene_intake_authority_expired"]
+    # Expiry and revocation close the authority to admit *new* execution. They
+    # do not erase the status of an attempt that was already reserved while the
+    # authority was valid. Keep that attempt's running or terminal failure
+    # visible so the owner and Website can continue a read-only closeout. The
+    # paid attempt records live under ``attempts``; preparation-only records use
+    # the separate ``preparation-attempts`` namespace and therefore cannot keep
+    # an unexecuted intent alive after its authority ends.
+    execution_attempt_reserved = bool(attempts)
+    authority_blocker = None
+    if (directory / "revoked.json").exists():
+        authority_blocker = "scene_intake_authority_revoked"
+    elif moment >= intent["request"]["execution"]["expires_at_epoch"]:
+        authority_blocker = "scene_intake_authority_expired"
+    if status != "completed" and authority_blocker is not None:
+        if execution_attempt_reserved:
+            if authority_blocker not in blockers:
+                blockers = [*blockers, authority_blocker]
+        else:
+            status, blockers = ("revoked" if authority_blocker.endswith("revoked") else "expired"), [authority_blocker]
     return _seal({"schema_version": "task_evaluation_scene_intent_status.v1", "intent_id": intent_id,
         "intent_digest": intent["intent_digest"], "request_digest": canonical_digest(intent["request"]),
         "owner": intent["request"]["owner"], "status": status, "phase": phase, "blockers": blockers,
