@@ -18,6 +18,8 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_intake import _read as read_scene, _lock
 
+MONITOR_MANAGED_BY = "blueprint_pipeline.task_evaluation_scene_preparation_installation"
+
 
 def _record(path: Path) -> dict[str, Any]:
     if not path.is_file() or any(p.is_symlink() for p in (path, *path.parents)):
@@ -134,10 +136,27 @@ def refresh_configured_scene_project_spend() -> dict[str, Any] | None:
     path = Path(configured)
     _record(path)
     value = json.loads(path.read_text())
+    base_keys = {"schema_version", "scene_root", "seed_reconciliation_path", "output_root",
+                 "current_path", "config_digest"}
+    managed_keys = base_keys | {"managed_by"}
+    reference_keys = {"seed_reconciliation_reference"}
+    actual_keys = set(value)
     if (value.get("schema_version") != "task_evaluation_scene_project_spend_monitor.v1"
             or value.get("config_digest") != canonical_digest(value, digest_field="config_digest")
-            or set(value) != {"schema_version", "scene_root", "seed_reconciliation_path", "output_root",
-                              "current_path", "config_digest"}):
+            or actual_keys not in (base_keys, managed_keys, base_keys | reference_keys,
+                                   managed_keys | reference_keys)
+            or ("managed_by" in value and value["managed_by"] != MONITOR_MANAGED_BY)):
         raise ValueError("scene_spend_monitor_config_invalid")
+    reference = value.get("seed_reconciliation_reference")
+    if reference is not None:
+        if (not isinstance(reference, dict)
+                or set(reference) != {"path", "sha256", "size_bytes"}
+                or reference.get("path") != value.get("seed_reconciliation_path")):
+            raise ValueError("scene_spend_monitor_seed_reference_invalid")
+        try:
+            if _record(Path(reference["path"])) != reference:
+                raise ValueError("scene_spend_monitor_seed_reference_invalid")
+        except (OSError, TypeError, ValueError):
+            raise ValueError("scene_spend_monitor_seed_reference_invalid") from None
     return publish_current_scene_project_spend(**{k: value[k] for k in (
         "scene_root", "seed_reconciliation_path", "output_root", "current_path")})

@@ -103,6 +103,15 @@ SETUP_SCHEMA_VERSION = "task_evaluation_policy_canary_execution_setup.v1"
 ACTIVATION_SCHEMA_VERSION = "task_evaluation_launch_activation_result.v1"
 ACTIVATION_FILENAME = "task_evaluation_policy_campaign_activation.v1.json"
 ALLOCATOR_MODULE = "blueprint_pipeline.paid_resource_allocator"
+PREPROVIDER_BLOCKED_SCHEMA_VERSION = "task_evaluation_policy_canary_preprovider_blocked.v1"
+NONEXECUTION_TERMINAL_STATUSES = frozenset(
+    {
+        "prepared_no_execution",
+        "blocked_before_paid_dispatch",
+        "blocked_without_provider_allocation",
+        "blocked_without_provider_allocation_awaiting_notification",
+    }
+)
 
 
 class TaskEvaluationPolicyCanaryDispatchError(ValueError):
@@ -316,6 +325,111 @@ def _persist_until_sealed(root: Path, path: Path, value: Mapping[str, Any]) -> N
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
+
+
+def _activation_run_id(
+    *, envelope: Mapping[str, Any], activation_payload: Mapping[str, Any] | None = None
+) -> str | None:
+    """Resolve the policy run identity without manufacturing one.
+
+    Activation envelopes historically carried only an activation id; the
+    actual run id lives in the sealed runtime-input manifest.  Preprovider
+    closeout must carry that identity when it is available so the retention
+    index can join the refusal to the owner's launch bridge.  Missing or
+    malformed identity stays ``None`` and is never replaced with the
+    activation id.
+    """
+
+    for value in (
+        envelope.get("run_id"),
+        (activation_payload or {}).get("run_id"),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raw_runtime = (activation_payload or {}).get("policy_canary_runtime_inputs_path")
+    if not isinstance(raw_runtime, str) or not raw_runtime.strip():
+        return None
+    path = Path(raw_runtime).expanduser()
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    run_id = value.get("run_id") if isinstance(value, Mapping) else None
+    return run_id.strip() if isinstance(run_id, str) and run_id.strip() else None
+
+
+def _terminal_sync_observation(value: Any) -> dict[str, Any]:
+    """Retain only the notification observation for a no-execution record.
+
+    A preprovider refusal has no policy projection, publication or provider-zero
+    receipt.  Restricting the nested sync shape prevents a permissive injected
+    callback from smuggling one of those evidence classes into the record.
+    """
+
+    sync = value if isinstance(value, Mapping) else {}
+    return {
+        key: sync[key]
+        for key in ("status", "reason", "payload_digest", "notification_delivery")
+        if key in sync
+    }
+
+
+def _seal_nonexecution_terminal(
+    *,
+    status: str,
+    envelope: Mapping[str, Any] | None,
+    activation_id: str,
+    activation_payload: Mapping[str, Any] | None = None,
+    blockers: Sequence[str] = (),
+    allocator_invoked: bool = False,
+    provider_allocation_performed: bool = False,
+    provider_mutation_performed: bool = False,
+    provider_call_reached: bool = False,
+    terminal_sync: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a sealed typed terminal record before policy/provider evidence.
+
+    This is intentionally a separate record family from the normal canary
+    dispatch receipt.  The terminal index may file it for owner visibility,
+    but it must never be mistaken for a policy projection or a provider-zero
+    closure.  ``retry_cap=0`` describes paid execution; notification retries
+    remain a separate delivery concern.
+    """
+
+    source = envelope or {}
+    value: dict[str, Any] = {
+        "schema_version": PREPROVIDER_BLOCKED_SCHEMA_VERSION,
+        "status": status,
+        "activation_id": activation_id,
+        "run_id": _activation_run_id(
+            envelope=source, activation_payload=activation_payload
+        ),
+        "run_kind": RUN_KIND,
+        "claim_ceiling": CLAIM_CEILING,
+        "capture_session_id": source.get("capture_session_id"),
+        "intake_id": source.get("intake_id"),
+        "request_digest": source.get("request_digest"),
+        "envelope_digest": source.get("envelope_digest"),
+        "allocator_invoked": allocator_invoked,
+        "provider_call_reached": provider_call_reached,
+        "provider_allocation_performed": provider_allocation_performed,
+        "provider_mutation_performed": provider_mutation_performed,
+        "provider_zero_required": False,
+        "provider_zero_not_applicable": True,
+        "paid_execution_requested": False,
+        "automatic_retry_authorized": False,
+        "automatic_retry_performed": False,
+        "retry_cap": 0,
+        "blockers": sorted(set(str(item) for item in blockers if str(item))),
+        "terminal_sync": _terminal_sync_observation(terminal_sync),
+        "blocked_result_digest": "",
+    }
+    value["blocked_result_digest"] = canonical_digest(
+        value, digest_field="blocked_result_digest"
+    )
+    return value
 
 
 def _event(root: Path, *, stage: str, status: str, **details: Any) -> dict[str, Any]:
@@ -1686,6 +1800,10 @@ def dispatch_policy_canary_activation(
             )
     adapter = _read(adapter_path, code="policy_canary_allocator_result_invalid")
     if not execute:
+        if not _proves_no_provider_allocation(adapter):
+            raise TaskEvaluationPolicyCanaryDispatchError(
+                "policy_canary_nonexecution_provider_state_invalid"
+            )
         receipt = {
             "schema_version": SCHEMA_VERSION,
             "status": "prepared_no_execution",
@@ -1696,7 +1814,16 @@ def dispatch_policy_canary_activation(
             "bundle_sha256": bundle["bundle_sha256"],
             "allocator_argv": argv,
             "allocator_invoked": allocator_invoked,
+            "allocator_result": _record(adapter_path),
+            "provider_call_reached": False,
+            "provider_allocation_performed": False,
             "provider_mutation_performed": False,
+            "provider_zero_required": False,
+            "provider_zero_not_applicable": True,
+            "paid_execution_requested": False,
+            "automatic_retry_authorized": False,
+            "automatic_retry_performed": False,
+            "terminal_result_kind": "prepared_no_execution",
             "retry_cap": 0,
             "receipt_digest": "",
         }
@@ -1719,15 +1846,18 @@ def dispatch_policy_canary_activation(
 
     if _proves_no_provider_allocation(adapter):
         blockers = list(adapter.get("blockers") or ["policy_canary_provider_not_allocated"])
-        terminal_sync = dict(
-            blocked_sync_runner(
-                activation_id=activation_result["activation_id"],
-                capture_session_id=setup["capture_session_id"],
-                intake_id=setup["intake_id"],
-                request_digest=setup["request_digest"],
-                blockers=blockers,
+        try:
+            terminal_sync = dict(
+                blocked_sync_runner(
+                    activation_id=activation_result["activation_id"],
+                    capture_session_id=setup["capture_session_id"],
+                    intake_id=setup["intake_id"],
+                    request_digest=setup["request_digest"],
+                    blockers=blockers,
+                )
             )
-        )
+        except Exception as exc:  # noqa: BLE001 - notification is observational
+            terminal_sync = {"status": "failed", "reason": type(exc).__name__}
         blocked = {
             "schema_version": SCHEMA_VERSION,
             "status": (
@@ -1738,12 +1868,23 @@ def dispatch_policy_canary_activation(
             "run_id": activation["run_id"],
             "run_kind": RUN_KIND,
             "claim_ceiling": CLAIM_CEILING,
+            "capture_session_id": setup["capture_session_id"],
+            "intake_id": setup["intake_id"],
+            "request_digest": setup["request_digest"],
             "allocator_invoked": allocator_invoked,
+            "provider_call_reached": False,
             "provider_allocation_performed": False,
             "provider_mutation_performed": False,
+            "provider_zero_required": False,
+            "provider_zero_not_applicable": True,
+            "paid_execution_requested": False,
+            "automatic_retry_authorized": False,
             "automatic_retry_performed": False,
+            "retry_cap": 0,
+            "terminal_result_kind": "allocator_no_provider_allocation",
+            "allocator_result": _record(adapter_path),
             "blockers": blockers,
-            "terminal_sync": terminal_sync,
+            "terminal_sync": _terminal_sync_observation(terminal_sync),
             "receipt_digest": "",
         }
         blocked["receipt_digest"] = canonical_digest(
@@ -2145,22 +2286,37 @@ def process_policy_canary_dispatch_queue(
         envelope_path: Path,
         envelope: Mapping[str, Any],
         activation_id: str,
+        activation_payload: Mapping[str, Any] | None = None,
         blockers: Sequence[str],
     ) -> dict[str, Any]:
-        blocked: dict[str, Any] = {
-            "schema_version": "task_evaluation_policy_canary_preprovider_blocked.v1",
-            "status": "blocked_before_paid_dispatch",
-            "activation_id": activation_id,
-            "run_kind": RUN_KIND,
-            "claim_ceiling": CLAIM_CEILING,
-            "allocator_invoked": False,
-            "provider_mutation_performed": False,
-            "automatic_retry_performed": False,
-            "blockers": list(blockers),
-            "blocked_result_digest": "",
-        }
-        blocked["blocked_result_digest"] = canonical_digest(
-            blocked, digest_field="blocked_result_digest"
+        # The notification is part of the retained observation.  Seal only
+        # after it is known, otherwise the bytes on disk do not match the
+        # returned digest and a later reader cannot distinguish a complete
+        # preprovider closeout from a crash between the two writes.
+        try:
+            sync = dict(
+                blocked_sync_runner(
+                    activation_id=activation_id,
+                    capture_session_id=envelope["capture_session_id"],
+                    intake_id=envelope["intake_id"],
+                    request_digest=envelope["request_digest"],
+                    blockers=list(blockers),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - notification is observational
+            sync = {"status": "failed", "reason": type(exc).__name__}
+        blocked_status = (
+            "blocked_before_paid_dispatch"
+            if sync.get("status") == "succeeded"
+            else "blocked_awaiting_website_notification"
+        )
+        blocked = _seal_nonexecution_terminal(
+            status=blocked_status,
+            envelope=envelope,
+            activation_id=activation_id,
+            activation_payload=activation_payload,
+            blockers=blockers,
+            terminal_sync=sync,
         )
         blocked_root = outputs / activation_id
         try:
@@ -2173,20 +2329,8 @@ def process_policy_canary_dispatch_queue(
             blocked_root = outputs / "unwritable-runs" / activation_id
             blocked_root.mkdir(parents=True, exist_ok=True)
             write_json(blocked_root / "preprovider_blocked.json", blocked)
-        sync = dict(
-            blocked_sync_runner(
-                activation_id=activation_id,
-                capture_session_id=envelope["capture_session_id"],
-                intake_id=envelope["intake_id"],
-                request_digest=envelope["request_digest"],
-                blockers=list(blockers),
-            )
-        )
-        blocked["terminal_sync"] = sync
         if sync.get("status") == "succeeded":
             os.replace(envelope_path, queue / "blocked" / envelope_path.name)
-        else:
-            blocked["status"] = "blocked_awaiting_website_notification"
         processed.append(blocked)
         return blocked
 
@@ -2287,6 +2431,7 @@ def process_policy_canary_dispatch_queue(
                     envelope_path=envelope_path,
                     envelope=envelope,
                     activation_id=activation_id,
+                    activation_payload=activation_payload,
                     blockers=exc.blockers,
                 )
                 continue
@@ -2379,6 +2524,7 @@ def process_policy_canary_dispatch_queue(
                 envelope_path=envelope_path,
                 envelope=envelope,
                 activation_id=activation_id,
+                activation_payload=activation_payload,
                 blockers=[str(exc)],
             )
             continue
@@ -2480,6 +2626,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
+    "NONEXECUTION_TERMINAL_STATUSES",
+    "PREPROVIDER_BLOCKED_SCHEMA_VERSION",
     "SCHEMA_VERSION",
     "SETUP_SCHEMA_VERSION",
     "TaskEvaluationPolicyCanaryDispatchError",

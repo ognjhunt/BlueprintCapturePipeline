@@ -6,6 +6,7 @@ changes historical evidence. It emits a separately sealed provenance record.
 from __future__ import annotations
 
 import argparse
+import math
 from copy import deepcopy
 from pathlib import Path
 import time
@@ -21,6 +22,13 @@ from .task_evaluation_sam31_prefix_evidence import (
 
 SCHEMA = "task_evaluation_sam31_completed_prefix_adoption.v1"
 PREFIX_LENGTHS = {"calibrated_views": 3, "sam31_tracking": 5, "segment_cutout": len(PHASES)}
+# A prefix adoption is gated by a live account observation, but that observation
+# is deliberately not part of the static release binding.  The observer keeps
+# this small seal on the retained file so the adoption code can distinguish a
+# canonical observation from a caller-authored JSON object while preserving
+# compatibility with older, already-retained provider-zero fixtures.
+PREFIX_ZERO_SCHEMA = "task_evaluation_sam31_prefix_provider_zero_observation.v1"
+PREFIX_ZERO_DIGEST_FIELD = "observation_digest"
 DEFAULT_QUEUE = Path("/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions")
 DEFAULT_PARENT_QUEUE = Path("/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations")
 DEFAULT_EXECUTION = Path("/var/lib/blueprint/task-evaluation-inputs/sam31-preparations")
@@ -50,12 +58,44 @@ def _profile(path, commit):
 
 def _zero(path, *, at):
     value = read(path)
+    if "schema_version" in value:
+        require(value.get("schema_version") == PREFIX_ZERO_SCHEMA
+                and value.get(PREFIX_ZERO_DIGEST_FIELD) == canonical_digest(
+                    value, digest_field=PREFIX_ZERO_DIGEST_FIELD),
+                "sam31_adoption_provider_zero_observation_invalid")
     require(value.get("provider") == "vast" and value.get("status") == "observed"
             and value.get("api_confirmed") is True and value.get("name_prefix") == ""
-            and value.get("live_resource_count") == 0 and value.get("resources") == []
-            and value.get("http") == 200 and isinstance(value.get("observed_at_epoch"), (int, float))
+            and type(value.get("live_resource_count")) is int and value["live_resource_count"] == 0
+            and value.get("resources") == [] and not value.get("blockers")
+            and value.get("http") == 200 and type(value.get("observed_at_epoch")) in (int, float)
+            and type(at) in (int, float) and math.isfinite(at)
+            and math.isfinite(value["observed_at_epoch"])
             and 0 <= at - value["observed_at_epoch"] <= 900,
             "sam31_adoption_fresh_global_zero_required")
+
+
+def _require_unique_completed_job(job_path: Path, child_id: str) -> None:
+    """Reject a child whose immutable identity appears in two queue states.
+
+    A provider create or worker retry that leaves both ``completed`` and
+    ``processing`` (or ``failed``) records is an ownership ambiguity.  Reading
+    the completed copy alone could adopt evidence while another worker still
+    owns the same child.  The queue writer normally prevents this, but adoption
+    is a separate read-only trust boundary and must defend itself as well.
+    """
+    from .task_evaluation_sam31_phase_queue import STATES
+
+    job_path = Path(job_path)
+    require(job_path.name == child_id + ".json" and job_path.parent.name == "completed",
+            "sam31_adoption_job_location_invalid")
+    queue = job_path.parent.parent
+    matches = []
+    for state in STATES:
+        candidate = queue / state / job_path.name
+        if candidate.exists() or candidate.is_symlink():
+            matches.append(candidate)
+    require(len(matches) == 1 and matches[0] == job_path,
+            "sam31_adoption_job_identity_ambiguous")
 
 
 def _seed(plan, profile, roots):
@@ -102,14 +142,21 @@ def _phase_chain(value, roots):
     outcomes = dict(inherited["outcomes"]) if inherited else {}
     for row in rows:
         phase = row["phase"]
-        job = read(_ref(row["job"], roots), digest_field="job_digest")
-        result = read(_ref(row["result"], roots), digest_field="result_digest")
+        job_ref = row["job"]
+        job_path = _ref(job_ref, roots)
         receipt = read(_ref(row["execution_receipt"], roots), digest_field="receipt_digest")
         identities = {k: {key: ref[key] for key in ("sha256", "size_bytes")} for k, ref in inputs.items()}
         key = {"parent_request_digest": value["original_parent_request_digest"],
                "plan_digest": value["source_plan"]["sha256"], "phase": phase,
                "inputs_digest": canonical_digest(identities)}
         child_id = "sam31-" + canonical_digest(key).removeprefix("sha256:")
+        _require_unique_completed_job(job_path, child_id)
+        job = read(job_path, digest_field="job_digest")
+        result_path = _ref(row["result"], roots)
+        expected_result = job_path.parent.parent / "results" / (child_id + ".json")
+        require(result_path == expected_result,
+                "sam31_adoption_result_location_invalid")
+        result = read(result_path, digest_field="result_digest")
         require(job.get("schema_version") == "task_evaluation_sam31_preparation_execution_job.v1"
                 and job.get("child_id") == child_id and job.get("expected_source_commit") == old_commit
                 and job.get("inputs") == inputs and all(job.get(k) == v for k, v in key.items())
@@ -267,12 +314,40 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
                                current_repo_root, provider_zero_path))
     require(through_phase in PREFIX_LENGTHS, "sam31_adoption_prefix_invalid")
     at = time.time() if now_epoch is None else now_epoch
+    roots = tuple(Path(root) for root in approved_roots)
+    # A retry must still prove a current account-wide zero before it can reuse
+    # the adoption.  Once that read-only gate passes, an existing byte-identical
+    # adoption is returned as-is; rebuilding it with a new timestamp would
+    # change its digest and tempt callers to overwrite immutable evidence.
     _zero(provider_zero_path, at=at)
+    if output_path is not None and Path(output_path).exists():
+        output = Path(output_path)
+        existing = read(output, digest_field="adoption_digest")
+        expected_billing = (
+            record(sam31_billing_source_path)
+            if sam31_billing_source_path is not None
+            else None
+        )
+        require(existing.get("through_phase") == through_phase
+                and existing.get("source_commit") == expected_source_commit
+                and existing.get("original_parent_request_digest") == parent_request_digest
+                and existing.get("current_release_root") == str(current_repo_root)
+                and existing.get("current_sam31_provider_profile") == record(current_provider_profile_path)
+                and existing.get("current_host_inputs") == current_host_inputs
+                and existing.get("source_plan") == record(source_plan_path)
+                and existing.get("source_profile") == record(source_profile_path)
+                and existing.get("sam31_billing_source") == expected_billing,
+                "sam31_adoption_output_identity_conflict")
+        validate_completed_prefix_adoption(existing, expected_source_commit=expected_source_commit,
+                                           approved_roots=roots,
+                                           current_provider_profile_path=current_provider_profile_path)
+        if release_binding_root is not None:
+            publish_adoption_release_binding(output, binding_root=release_binding_root)
+        return existing
     old_plan = read(source_plan_path, digest_field="plan_digest")
     old_profile = _profile(source_profile_path, old_plan["source_commit"])
     queue = Path(queue_root)
     rows = []
-    roots = tuple(Path(root) for root in approved_roots)
     old_inputs, inherited = _seed(old_plan, old_profile, roots)
     start = inherited["phase_count"] if inherited else 0
     require(start < PREFIX_LENGTHS[through_phase], "sam31_adoption_prefix_not_extended")
@@ -286,8 +361,10 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
         child_id = "sam31-" + canonical_digest(identity).removeprefix("sha256:")
         result_path = queue / "results" / (child_id + ".json")
         result = read(result_path, digest_field="result_digest")
-        require(result.get("status") == "completed", "sam31_adoption_prefix_not_terminal")
-        job_path = queue / "completed" / (result["child_id"] + ".json")
+        require(result.get("status") == "completed" and result.get("child_id") == child_id,
+                "sam31_adoption_prefix_not_terminal")
+        job_path = queue / "completed" / (child_id + ".json")
+        _require_unique_completed_job(job_path, child_id)
         job = read(job_path, digest_field="job_digest")
         phase_receipt = Path(execution_root) / parent_request_digest.removeprefix("sha256:") / result["child_id"] / "phase_execution_receipt.v1.json"
         rows.append({"phase": phase, "job": record(job_path), "result": record(result_path), "execution_receipt": record(phase_receipt)})
