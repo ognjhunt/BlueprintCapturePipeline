@@ -688,6 +688,35 @@ def test_activation_consumes_scene_construction_envelope_without_codex_handoff(
     assert "construction.recipe.stage_sequence.0.configuration" in references
 
 
+def test_activation_consumes_operator_bound_owned_preparation_store(tmp_path, monkeypatch):
+    (_, _, queue, inputs, construction_queue, result, activation) = (
+        _stage_scene_configuration_preparation(tmp_path)
+    )
+    config = {"schema_version": "task_evaluation_scene_progression_config.v1",
+              "preparation_queue_root": str(queue),
+              "preparation_worker": {"input_root": str(inputs)}}
+    config["config_digest"] = canonical_digest(config, digest_field="config_digest")
+    config_path = tmp_path / "scene-config.json"
+    config_path.write_text(json.dumps(config))
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_PROGRESSION_CONFIG", str(config_path))
+    legacy = tmp_path / "legacy-preparations"
+    _, observed, _, refs = worker._load_verified_preparation(
+        activation_request=activation, preparation_queue_root=legacy,
+        preparation_input_root=tmp_path / "legacy-inputs",
+        scene_construction_queue_root=construction_queue,
+    )
+    assert observed["result_digest"] == result["result_digest"]
+    assert all(path.is_relative_to(inputs) for path in refs.values())
+    # An operator-configured owned store does not authorize duplicate parents.
+    shutil.copytree(queue, legacy)
+    with pytest.raises(ValueError, match="parent_identity_ambiguous"):
+        worker._load_verified_preparation(
+            activation_request=activation, preparation_queue_root=legacy,
+            preparation_input_root=tmp_path / "legacy-inputs",
+            scene_construction_queue_root=construction_queue,
+        )
+
+
 @pytest.mark.parametrize("terminal_state", ["blocked", "completed"])
 def test_activation_refuses_terminal_scene_construction_before_side_effects(
     tmp_path: Path,

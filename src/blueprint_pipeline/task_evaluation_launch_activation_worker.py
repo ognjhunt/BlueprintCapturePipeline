@@ -295,6 +295,13 @@ def _load_verified_preparation(
 ]:
     binding = activation_request["preparation"]
     preparation_id = str(binding["preparation_id"])
+    if os.environ.get("BLUEPRINT_TASK_EVALUATION_SCENE_PROGRESSION_CONFIG"):
+        from .task_evaluation_sam31_parent_evidence import configured_parent_route
+        preparation_queue_root, preparation_input_root = configured_parent_route(
+            {"parent_preparation_id": preparation_id,
+             "parent_request_digest": binding["request_digest"]},
+            preparation_queue_root, preparation_input_root,
+        )
     filename = (
         f"{preparation_id}-{str(binding['request_digest']).removeprefix('sha256:')}.json"
     )
