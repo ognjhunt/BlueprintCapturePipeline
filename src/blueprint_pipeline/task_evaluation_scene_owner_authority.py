@@ -137,9 +137,14 @@ def validate_task_scene_owner(task, *, provider_terms_path=None, now=None):
         require("attempt" in binding, "scene_owner_description_attempt_missing")
         attempt_ref = binding["attempt"]
         attempt_path = checked_file(attempt_ref["path"], attempt_ref)
-        require(attempt_path.parent == Path(binding["intent"]["path"]).parent / "attempts",
-                "scene_owner_attempt_path_invalid")
         attempt = _read(attempt_path, "attempt_digest")
+        parent = Path(binding["intent"]["path"]).parent
+        preparation_only = (attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"
+                            and attempt.get("maximum_spend_usd") == 0
+                            and attempt.get("provider_allocation_permitted") is False
+                            and attempt.get("paid_authority_granted") is False)
+        require(attempt_path.parent == parent / ("preparation-attempts" if preparation_only else "attempts"),
+                "scene_owner_attempt_path_invalid")
         source_ref = description["source_binding"]
         source_binding = read(checked_file(source_ref["path"], source_ref), digest_field="binding_digest")
         seed_ref = source_binding["accepted_task_seed"]

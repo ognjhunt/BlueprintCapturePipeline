@@ -317,13 +317,23 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
             "public_factory_preparation_cap_insufficient")
     require(isinstance(attempt_id, str) and attempt_id and "/" not in attempt_id and "\\" not in attempt_id,
             "public_factory_attempt_id_invalid")
-    attempt_path = Path(intent_path).parent / "attempts" / (attempt_id + ".json")
+    retained_bindings = machinery.get("retained_prefix_only_binding_ids", [])
+    require(isinstance(retained_bindings, list) and all(isinstance(item, str) for item in retained_bindings),
+            "public_factory_preparation_mode_invalid")
+    retained_only = binding["binding_id"] in retained_bindings
+    attempt_path = Path(intent_path).parent / ("preparation-attempts" if retained_only else "attempts") / (attempt_id + ".json")
     attempt = read_intake(attempt_path, "attempt_digest")
     commit = release["source_commit"]
     require(attempt.get("intent_digest") == intent["intent_digest"]
             and attempt.get("source_commit") == commit and attempt.get("runtime_digest") == release["runtime_digest"]
             and attempt.get("input_digest") == binding["binding_digest"]
-            and attempt.get("provider") == "vast" and attempt.get("maximum_spend_usd") == maximum,
+            and ((not retained_only and attempt.get("provider") == "vast"
+                  and attempt.get("maximum_spend_usd") == maximum)
+                 or (retained_only and attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"
+                     and attempt.get("provider") == "control_plane" and attempt.get("maximum_spend_usd") == 0
+                     and attempt.get("status") == "preparation_only"
+                     and attempt.get("paid_authority_granted") is False
+                     and attempt.get("provider_allocation_permitted") is False)),
             "public_factory_attempt_binding_mismatch")
     if "robot_binding_id" in request["task"]:
         from .task_evaluation_controls_autoprovision import CATALOG_SCHEMA, _asset, payload_digest, resolve_robot_catalog
@@ -516,6 +526,10 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
                     "public_factory_selection_changed")
         else:
             _write(selection_path, selection)
+        if retained_only:
+            require(selection.get("status") == "reusable_prefix_selected"
+                    and selection.get("through_phase") == "segment_cutout" and adopted_path is not None,
+                    "public_factory_retained_only_complete_prefix_required")
         preparation = dict(machinery["preparation"])
         preparation.update(source_commit=commit, repo_root=release["repo_root"], sam31_provider_profile_path=provider_path,
             sam31_review_rights_attestation_path=review_path, completed_prefix_adoption_path=adopted_path)

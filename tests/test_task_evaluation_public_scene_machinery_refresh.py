@@ -72,3 +72,12 @@ def test_bad_reference_cannot_change_machinery(tmp_path, failure):
     with pytest.raises(ValueError):
         subject.refresh(**args, apply=True)
     assert args['machinery_path'].read_bytes() == old
+
+
+def test_scoped_retained_only_restriction_preserves_old_configuration(tmp_path):
+    args,old=_setup(tmp_path)
+    result=subject.refresh(**args,apply=True,retained_prefix_only_binding_id='existing-source')
+    value=json.loads(args['machinery_path'].read_text())
+    assert value['retained_prefix_only_binding_ids']==['existing-source']
+    from pathlib import Path
+    assert Path(result['archive']['path']).read_bytes()==old

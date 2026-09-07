@@ -43,20 +43,19 @@ REQUIRED_PARENT_TTL_SECONDS = (
 
 MAX_HOURLY_RATE_USD = 0.80
 MAX_PROVIDER_COMPUTE_SPEND_USD = 6.0
-# One first pass plus one bounded repair pass can send at most sixteen frames
-# through the selected semantic-teacher backend. Its registry binds a
-# fail-closed maximum of $0.30 per request, so the caller must reserve $4.80
-# before a paid run instead of discovering an unreachable repair after rent.
+# Sixteen fresh initial frames require $4.80 at the registry's $0.30/request
+# bound. A selective correction uses only the remaining allowance after actual
+# initial usage (or retained-image reuse); it never resets this stage ceiling.
 MAX_EXTERNAL_SERVICE_SPEND_USD = 6.0
 MAX_ATTEMPT_SPEND_USD = 12.0
 MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD = 4.8
 # The fixed visual reviewer declares an 80k-token multimodal input ceiling and
 # an 8k-token output ceiling.  The canonical Agents SDK reservation rates are
 # $2.50/M input and $15/M output, so each round needs $0.32. One bounded
-# repair must be independently reviewed again, requiring $0.64 total.
-MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD = 0.64
+# target review and one bounded repair review precede strict final review: $0.96 total.
+MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD = 0.96
 MIN_CONTENT_AGENTS_SPEND_USD = 0.2
-MIN_EXTERNAL_SERVICE_SPEND_USD = 5.64
+MIN_EXTERNAL_SERVICE_SPEND_USD = 5.96
 
 PARENT_DEADLINE_EPOCH_ENV = "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH"
 OUTPUT_CLOSURE_RESERVE_SECONDS_ENV = (

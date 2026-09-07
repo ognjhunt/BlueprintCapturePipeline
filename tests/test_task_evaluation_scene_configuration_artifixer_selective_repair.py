@@ -676,8 +676,36 @@ def test_object_core_outside_admitted_support_is_rejected(tmp_path):
     Image.new("L", (20, 20), 255).save(core_path)
     with pytest.raises(RuntimeError, match="core_outside_support"):
         seal_semantic_teacher_frame(
-            source_path=source, mask_path=support_path, raw_teacher_path=raw,
-            mask_encoding="binary_white_edit_region_png", output_path=tmp_path / "sealed.png",
+            source_path=source,
+            mask_path=support_path,
+            raw_teacher_path=raw,
+            mask_encoding="binary_white_edit_region_png",
+            output_path=tmp_path / "sealed.png",
             object_core_mask_path=core_path,
         )
     assert not (tmp_path / "sealed.png").exists()
+
+
+def test_pretraining_preserves_accepted_sealed_views_even_if_raw_outside_changed(tmp_path):
+    fixture = _fixture(tmp_path)
+    review = json.loads(Path(fixture["review_path"]).read_text())
+    review["review_phase"] = "pre_training_semantic_targets"
+    review["receipt_digest"] = canonical_digest(review, digest_field="receipt_digest")
+    Path(fixture["review_path"]).write_text(json.dumps(review))
+    execution = json.loads(Path(fixture["execution_path"]).read_text())
+    execution["review_phase"] = "pre_training_semantic_targets"
+    execution["final_composite_receipt_digest"] = review["receipt_digest"]
+    execution["execution_digest"] = canonical_digest(execution, digest_field="execution_digest")
+    Path(fixture["execution_path"]).write_text(json.dumps(execution))
+    staged = materialize_selective_repair_request(
+        review_input_path=fixture["review_path"],
+        review_execution_path=fixture["execution_path"],
+        semantic_runtime_request_path=fixture["request_path"],
+        semantic_runtime_result=fixture["source_result"],
+        semantic_locality_receipt_path=fixture["locality"]["receipt_path"],
+        expected_request_cost_usd=0.22,
+        maximum_stage_cost_usd=2.4,
+        output_root=tmp_path / "pre-repair",
+    )
+    assert staged["plan"]["selected_frame_count"] == 1
+    assert "Failed-candidate feedback:" in staged["repair_request"]["prompt"]

@@ -49,10 +49,10 @@ def test_parent_runtime_policy_covers_serialized_stages_and_named_reserves() -> 
         * reviewer_costs.output_cost_per_million_tokens_usd
     ) / 1_000_000
     assert MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD == (
-        2 * fixed_reviewer_reservation
-    ) == 0.64
+        3 * fixed_reviewer_reservation
+    ) == 0.96
     assert MIN_CONTENT_AGENTS_SPEND_USD == 0.2
-    assert MIN_EXTERNAL_SERVICE_SPEND_USD == 5.64
+    assert MIN_EXTERNAL_SERVICE_SPEND_USD == 5.96
     assert MAX_EXTERNAL_SERVICE_SPEND_USD == 6.0
     assert MAX_ATTEMPT_SPEND_USD == 12.0
     assert (

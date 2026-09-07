@@ -18,7 +18,7 @@ from .task_evaluation_scene_configuration_submission_inputs import read
 from .task_evaluation_scene_progression_state import safe_path
 
 
-def refresh(*, machinery_path, catalog_path, expected_machinery_digest, source_commit, apply=False):
+def refresh(*, machinery_path, catalog_path, expected_machinery_digest, source_commit, apply=False, retained_prefix_only_binding_id=None):
     path, catalog = safe_path(machinery_path), safe_path(catalog_path)
     lock_path = safe_path(path.parent / (path.name + '.refresh.lock'))
     lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -35,6 +35,12 @@ def refresh(*, machinery_path, catalog_path, expected_machinery_digest, source_c
         catalog_bytes = catalog.read_bytes()
         resolve_robot_catalog(read(catalog, digest_field='catalog_digest'), source_commit=source_commit)
         new = {**old, 'robot_catalog': record(catalog)}
+        if retained_prefix_only_binding_id is not None:
+            from .task_evaluation_scene_intake import _identifier
+            if not _identifier(retained_prefix_only_binding_id):
+                raise ValueError('public_scene_retained_only_binding_invalid')
+            new['retained_prefix_only_binding_ids'] = sorted(set(
+                old.get('retained_prefix_only_binding_ids', []) + [retained_prefix_only_binding_id]))
         new['machinery_digest'] = canonical_digest(new, digest_field='machinery_digest')
         changed = new != old
         archive = path.parent / (path.name + '.history') / (expected_machinery_digest.removeprefix('sha256:') + '.json')
@@ -87,6 +93,8 @@ def main(argv=None):
     parser.add_argument('--expected-machinery-digest', required=True)
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--retained-prefix-only-binding-id',
+                        help='Require complete prefix adoption; prohibit fresh source GPU work.')
     print(json.dumps(refresh(**vars(parser.parse_args(argv))), sort_keys=True))
 
 

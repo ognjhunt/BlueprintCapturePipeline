@@ -443,7 +443,8 @@ def materialize_selective_repair_request(
             raise TaskEvaluationArtifixerSelectiveRepairError(
                 "scene_configuration_artifixer_selective_repair_locality_invalid"
             )
-        if locality_row.get("deterministic_selective_repair_required") is True:
+        if (review.get("review_phase") != "pre_training_semantic_targets"
+                and locality_row.get("deterministic_selective_repair_required") is True):
             selected = selected_by_camera.setdefault(
                 camera_id,
                 {

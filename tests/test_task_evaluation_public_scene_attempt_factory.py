@@ -385,3 +385,35 @@ def test_discovered_prefix_uses_live_account_observation_without_static_release_
     third = factory.materialize_public_scene_attempt(**{**args, "machinery_path": updated, "output_root": output})
     assert third == second
     assert (output / "prefix_selection.json").read_bytes() == selection_bytes
+
+
+def test_retained_only_source_has_zero_authority_and_refuses_cold_work(context):
+    from blueprint_pipeline.task_evaluation_scene_preparation_attempts import create_preparation_attempt
+    args, _ = context
+    machinery = json.loads(args['machinery_path'].read_text())
+    binding = json.loads(args['source_binding_path'].read_text())
+    release = json.loads(args['release_binding_path'].read_text())
+    machinery['retained_prefix_only_binding_ids'] = [binding['binding_id']]
+    write(args['machinery_path'],machinery,'machinery_digest')
+    attempt = create_preparation_attempt(directory=args['intent_path'].parent,attempt_id='retained-only',
+        source_commit=release['source_commit'],runtime_digest=release['runtime_digest'],input_digest=binding['binding_digest'])
+    assert attempt['maximum_spend_usd']==0
+    assert attempt['provider_allocation_permitted'] is False
+    with pytest.raises(ValueError,match='retained_only_complete_prefix_required'):
+        factory.materialize_public_scene_attempt(**{**args,'attempt_id':'retained-only'})
+    assert not (args['output_root']/'sam31_preparation_profile.json').exists()
+    assert not (args['output_root']/'submission').exists()
+    from blueprint_pipeline.task_evaluation_scene_owner_attempt_profiles import require_fresh_task_owner
+    task=json.loads((args['output_root']/'task_request.json').read_text())
+    with pytest.raises(ValueError,match='task_attempt_path_invalid'):
+        require_fresh_task_owner(task,source_commit=release['source_commit'],maximum_spend_usd=4.5)
+
+
+
+def test_retained_only_policy_does_not_change_other_source_bindings(context):
+    args, _ = context
+    machinery=json.loads(args['machinery_path'].read_text())
+    machinery['retained_prefix_only_binding_ids']=['different-binding']
+    write(args['machinery_path'],machinery,'machinery_digest')
+    result=factory.materialize_public_scene_attempt(**args)
+    assert result['status']=='publication_ready'

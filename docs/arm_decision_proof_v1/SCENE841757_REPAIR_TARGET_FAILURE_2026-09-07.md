@@ -92,3 +92,55 @@ stale identity, corrupt catalog, changed runtime assets, and a different catalog
 path. The completion artifact is the refresh receipt plus resumed canonical
 provisioning; successful appearance or policy evaluation still requires its own
 execution evidence.
+
+### R14: phase-appropriate target review and bounded recovery
+
+ADP-009 / day-14 construction rehearsal. R14 passed the repaired provider handoff,
+reused six edits and produced ten new ones. Independent review found the source
+book absent in all 16 views, but rejected 15: mostly seams/texture differences,
+plus an incorrect floor-like replacement in source-07. The GPU was destroyed and
+provider-zero confirmed. No training or appearance qualification occurred.
+
+The pre-training path had reused the final-appearance prompt (reject any visible
+seam) and immediately aborted on any rejection. It now uses a distinct training
+admission standard: reject object remnants, wrong materials/geometry, collateral
+changes, orientation errors and major inconsistency; retain minor seams as
+warnings in the rationale. A training acceptance has its own receipt type and
+cannot seal final appearance. The final rendered-image criterion is unchanged.
+
+One exact-mask corrective image-edit round can run before training, with the
+reviewer's camera-specific feedback, preserving accepted sealed images exactly.
+If a view remains rejected, a development-only selection may exclude its teacher:
+at least eight and 75 percent of the original views must remain approved, with
+distinct calibrated poses and two approved axes within 30 degrees of each omitted
+view. This is an explicit training coverage heuristic, not a geometry or fidelity
+proof. The full original final-review trajectory remains required.
+
+The rejected teacher slot becomes a byte-exact original observation with its
+outside-support anchor loss mask; the rejected generated pixels never enter
+teacher staging. Keeping that masked observation slot preserves the released
+training loader's camera indexing. Bundle and provider validators check the
+partition, original bytes, masks, poses and review-bound selection. Final review
+still includes every camera. Only one semantic correction round is allowed in the
+whole stage; an exclusion cannot later be undone by merging the old teacher set.
+
+Three reviewer reservations now fit inside the unchanged USD 6 external-services
+cap: USD 4.80 semantic edits + USD 0.96 review + USD 0.20 content = USD 5.96. Each
+image transport retains retry_count=0; the single corrective operation is bound
+to a new feedback-bearing request and the remaining stage allowance.
+
+The continuation also supports a binding-scoped `retained_prefix_only` preparation
+mode. It creates the existing zero-cost, non-allocating preparation identity and
+requires a verified prefix through segment_cutout before any preparation profile
+or submission can be published. Missing/partial reuse cannot fall back to fresh
+GPU source work. Other source bindings keep their paid-source behavior. This
+avoids reserving USD 4.50 for already-completed source GPU stages while preserving
+the original owner budget and all fresh admission checks.
+
+Focused verification covers per-view repair/exclusion, insufficient or uncovered
+views, rejected pixels absent from the real teacher staging path, anchor masks
+excluding the original object, all final-review cameras retained, separate final
+appearance authority, scoped no-spend source preparation, and cold-source refusal.
+Provider import closure and the policy lifecycle rehearsal remain required before
+paid continuation. The new live model decision and final 3D outcome remain unproven
+until their execution receipts are produced.

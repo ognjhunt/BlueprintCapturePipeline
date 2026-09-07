@@ -423,7 +423,9 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     # CONSTRUCTION exposure is reserved separately (scene_configuration_attempt in
     # _link) only when activation is authorized. Paid-preparation sources (e.g. the
     # public-scene SAM machinery) keep their real reserve_scene_attempt path.
-    preparation_only = (machinery.get("schema_version") == "task_evaluation_completed_scene_machinery.v1")
+    preparation_only = (machinery.get("schema_version") == "task_evaluation_completed_scene_machinery.v1"
+                        or (machinery.get("schema_version") == "task_evaluation_public_scene_machinery.v1"
+                            and binding["binding_id"] in machinery.get("retained_prefix_only_binding_ids", [])))
     attempt_args = {"source_commit": release["source_commit"], "runtime_digest": release["runtime_digest"],
         "input_digest": binding["binding_digest"], "provider": machinery.get("provider", "vast"),
         "maximum_spend_usd": machinery["maximum_preparation_spend_usd"]}

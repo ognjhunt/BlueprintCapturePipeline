@@ -314,3 +314,113 @@ def test_rejects_shape_camera_digest_radius_and_nonempty_output(
             transition_radius_pixels=1,
         )
     assert (occupied / "preserve.txt").read_text(encoding="utf-8") == "user owned"
+
+
+def test_excluded_teacher_never_reaches_training_and_all_review_cameras_remain(tmp_path):
+    from copy import deepcopy
+    from blueprint_pipeline.semantic_target_training_selection import (
+        build_selection,
+        validate_training_partition,
+    )
+    from tests.test_public_scene_artifixer3d_dual_target_runner import _runner_module
+
+    preflight = _preflight(tmp_path / "fixture", count=1)
+    data = json.loads(preflight.read_text())
+    base = data["camera_inputs"][0]
+    data["camera_inputs"] = []
+    for i in range(16):
+        row = deepcopy(base)
+        row["camera_id"] = f"camera-{i:02d}"
+        row["calibration"]["spec"]["pose"]["T_world_camera_opencv"][0][3] += i * 0.1
+        data["camera_inputs"].append(row)
+    data["preflight_digest"] = canonical_digest(data, digest_field="preflight_digest")
+    preflight.write_text(canonical_json(data))
+    source_root = tmp_path / "source"
+    source = materialize_artifixer3d_candidate_inputs(
+        calibrated_residual_preflight_path=preflight, output_root=source_root
+    )
+    paths = _semantic_receipts(tmp_path, source_root=source_root, source=source)
+    teacher = json.loads(paths[0].read_text())
+    task = source["tasks"][0]
+    transforms = json.loads(Path(task["transforms"]["path"]).read_text())
+    review = {
+        "review_phase": "pre_training_semantic_targets",
+        "tasks": [
+            {
+                "frames": [
+                    {"camera_id": f["camera_id"], "final_frame": f["whole_frame_semantic_teacher"]}
+                    for f in teacher["frames"]
+                ]
+            }
+        ],
+    }
+    review["receipt_digest"] = canonical_digest(review, digest_field="receipt_digest")
+    execution = {
+        "review_phase": "pre_training_semantic_targets",
+        "provider_called": True,
+            "schema_version": "task_evaluation_artifixer_ai_visual_review_execution.v1",
+            "status": "completed", "all_frames_upright": True, "decision": "rejected",
+            "response_store": False, "tracing_disabled": True, "raw_secret_values_recorded": False,
+        "final_composite_receipt_digest": review["receipt_digest"],
+        "frames": [
+            {
+                "camera_id": f["camera_id"],
+                "frame_sha256": f["whole_frame_semantic_teacher"]["sha256"],
+                "decision": "rejected" if i == 7 else "accepted",
+                "orientation_is_upright": True,
+                "source_object_absent": True,
+                "repair_is_locally_plausible": i != 7,
+                "preserves_non_target_content": True,
+                "rationale": "wrong surface" if i == 7 else "usable",
+            }
+            for i, f in enumerate(teacher["frames"])
+        ],
+    }
+    execution["execution_digest"] = canonical_digest(execution, digest_field="execution_digest")
+    selection = build_selection(
+        review_input=review, review_execution=execution, transforms=transforms, minimum_views=8
+    )
+    teacher["editor_identity"]["training_view_selection"] = selection
+    teacher["receipt_digest"] = canonical_digest(teacher, digest_field="receipt_digest")
+    paths[0].write_text(canonical_json(teacher))
+    root = tmp_path / "filtered"
+    dual = materialize_dual_target_artifixer3d_inputs(
+        source_candidate_inputs_receipt_path=source_root
+        / "public_scene_artifixer3d_candidate_inputs.v3.json",
+        semantic_teacher_receipt_paths=paths,
+        output_root=root,
+        transition_radius_pixels=1,
+    )
+    task = dual["tasks"][0]
+    validate_training_partition(task)
+    staged = Path(task["scene_directory"])
+    assert (
+        len(task["semantic_teacher_indices"]) == 15 and len(task["selected_anchor_indices"]) == 17
+    )
+    bad = task["frames"][7]
+    assert bad["semantic_teacher_rgb"]["sha256"] == bad["anchor_rgb"]["sha256"]
+    assert (
+        bad["source_whole_frame_semantic_teacher"]["sha256"]
+        != bad["semantic_teacher_rgb"]["sha256"]
+    )
+    runner = _runner_module()
+    assert runner._dual_target_candidate_is_bound(dual)
+    teachers, rows = runner._prepare_dual_target_teacher_frames(
+        task=task, staged_task=staged, task_output=tmp_path / "runtime"
+    )
+    assert len(rows) == 15 and not (teachers / "00015.png").exists()
+    trajectory = json.loads((staged / task["review_trajectory"]["relative_path"]).read_text())
+    assert len(trajectory["frames"]) == 16
+    # Drive the same mask staging that the released training preparation invokes.
+    distill = tmp_path / "distill"
+    images = distill / "images"
+    images.mkdir(parents=True)
+    for index in task["selected_anchor_indices"]:
+        (images / f"frame_{index:05d}.png").symlink_to(staged / "images" / f"{index:05d}.png")
+    masks = runner._stage_dual_target_anchor_masks(
+        task=task, staged_task=staged, distillation_input_dir=distill
+    )
+    assert len(masks) == 17
+    mask = np.asarray(Image.open(images / "frame_00015_mask.png"))
+    support = np.asarray(Image.open(staged / bad["exact_repair_mask"]["relative_path"])) > 0
+    assert not np.any(mask[support])

@@ -387,3 +387,21 @@ def test_paired_target_review_binds_source_mask_and_generated_frame(
     assert "exact_repair_mask" in labels
     assert "generated_candidate" in labels
     assert reopened["outside_support_invariance_claimed"] is False
+
+
+def test_training_target_acceptance_cannot_seal_final_appearance(tmp_path):
+    final, execution = _inputs(tmp_path)
+    value = json.loads(final.read_text())
+    value["review_phase"] = "pre_training_semantic_targets"
+    value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
+    final.write_text(json.dumps(value))
+    with pytest.raises(
+        TaskEvaluationArtifixerAIVisualReviewError, match="training_review_not_final_appearance"
+    ):
+        seal_artifixer_ai_visual_review(
+            final_composite_receipt_path=final,
+            review_execution_receipt_path=execution,
+            publisher_instance_id="104",
+            minimum_review_frames=2,
+            output_path=tmp_path / "invalid-final.json",
+        )

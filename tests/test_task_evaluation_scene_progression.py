@@ -97,3 +97,22 @@ def test_transport_timeout_reconciles_exact_local_queue_without_second_post(cont
     # construction reservation lives on the separate activation link, minted only
     # at the activation transition (not reached in this mid-preparation timeout).
     assert "scene_configuration_attempt" not in link
+
+
+def test_retained_only_preparation_does_not_reserve_source_gpu_spend(context,monkeypatch):
+    args,_=context
+    machinery=json.loads(args['machinery_path'].read_text())
+    binding=json.loads(args['source_binding_path'].read_text())
+    machinery['retained_prefix_only_binding_ids']=[binding['binding_id']]
+    write(args['machinery_path'],machinery,'machinery_digest')
+    config=configuration(context,monkeypatch)
+    directory=args['intent_path'].parent
+    before=list((directory/'attempts').glob('*.json'))
+    result=engine.process_scene_intents(config_path=config)
+    assert list((directory/'attempts').glob('*.json'))==before
+    preparations=list((directory/'preparation-attempts').glob('*.json'))
+    assert len(preparations)==1
+    value=json.loads(preparations[0].read_text())
+    assert value['maximum_spend_usd']==0 and value['paid_authority_granted'] is False
+    assert result['results'][0]['status']=='blocked'
+    assert 'retained_only_complete_prefix_required' in str(result['results'][0]['blockers'])

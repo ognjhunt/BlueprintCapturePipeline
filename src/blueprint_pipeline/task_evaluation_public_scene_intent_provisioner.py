@@ -166,7 +166,7 @@ def _binding(*, retained: Mapping[str, Any], seed: Mapping[str, Any], installati
 
 
 def _machinery(*, retained: Mapping[str, Any], profile_registry_root: str | Path,
-               maximum_preparation_spend_usd: float) -> dict[str, Any]:
+               maximum_preparation_spend_usd: float, binding_id: str | None = None) -> dict[str, Any]:
     """Assemble the release/provider-bound machinery from the retained SAM profile."""
     provider = _load(retained["sam_provider_profile"], reason="public_scene_provider_machinery_absent")
     try:
@@ -211,6 +211,13 @@ def _machinery(*, retained: Mapping[str, Any], profile_registry_root: str | Path
                  "execution_root": str(DEFAULT_EXECUTION),
                  "release_retention_binding_root": str(DEFAULT_EVIDENCE_BINDING_ROOT),
                  "profile_registry_root": str(profile_registry_root)}
+    mode = retained.get("preparation_execution_mode", "paid_source_preparation")
+    if mode not in {"paid_source_preparation", "retained_prefix_only"}:
+        _fail("public_scene_preparation_execution_mode_invalid")
+    if mode == "retained_prefix_only":
+        if not binding_id or not intake._identifier(binding_id):
+            _fail("public_scene_retained_only_binding_invalid")
+        machinery["retained_prefix_only_binding_ids"] = [binding_id]
     machinery["machinery_digest"] = canonical_digest(machinery, digest_field="machinery_digest")
     return machinery
 
@@ -370,7 +377,7 @@ def provision_public_scene_intent(*, retained: Mapping[str, Any], owner_authorit
                        content_digest=content_digest, binding_id=binding_id, owner=owner,
                        rights_reference=rights_reference, source_preparation_path=source_preparation_path)
     machinery = _machinery(retained=retained, profile_registry_root=profile_registry_root,
-                           maximum_preparation_spend_usd=maximum_preparation_spend_usd)
+                           maximum_preparation_spend_usd=maximum_preparation_spend_usd, binding_id=binding_id)
 
     task = task_contract_projection(seed)
     if (robot_binding_id is None) != (robot_catalog_path is None):

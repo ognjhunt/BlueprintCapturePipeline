@@ -1325,7 +1325,7 @@ def _run_artifixer_visual_review_round(
         else f"artifixer_visual_review_provider_call_started_round_{review_round}.v1.json"
     )
     if review_phase == "pre_training_semantic_targets":
-        marker_name = "artifixer_semantic_target_review_provider_call_started.v1.json"
+        marker_name = f"artifixer_semantic_target_review_provider_call_started_round_{review_round}.v1.json"
     visual_review_call_marker = output_root / marker_name
     visual_review_call = {
         "schema_version": "artifixer_visual_review_provider_call_started.v1",
@@ -1373,12 +1373,95 @@ def _run_artifixer_visual_review_round(
     }
 
 
+
+def _execute_bounded_semantic_target_repair(*, reviewed, semantic_request, semantic_result,
+        locality_seal, expected_frame_cost, semantic_cap, work, values, stage_input, token):
+    """Use the existing exact-mask, cost-bound repair mechanism at either phase."""
+    review = reviewed["review"]
+    staged_repair = materialize_selective_repair_request(
+        review_input_path=reviewed["review_input_path"],
+        review_execution_path=review["execution_receipt"]["path"],
+        semantic_runtime_request_path=semantic_request,
+        semantic_runtime_result=semantic_result,
+        semantic_locality_receipt_path=locality_seal["receipt_path"],
+        expected_request_cost_usd=expected_frame_cost,
+        maximum_stage_cost_usd=float(semantic_cap or 0),
+        output_root=work / "selective_semantic_repair_request",
+    )
+    selected_frame_count = int(
+        staged_repair["plan"]["selected_frame_count"]
+    )
+    try:
+        maximum_openai_requests = int(
+            values.get("BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS")
+            or 0
+        )
+    except (TypeError, ValueError) as exc:
+        raise TaskEvaluationArtifixerSelectiveRepairError(
+            "scene_configuration_artifixer_selective_repair_request_cap_invalid"
+        ) from exc
+    base_request_count = int(semantic_result.get("request_count") or 0)
+    if maximum_openai_requests < base_request_count + selected_frame_count + 3:
+        raise TaskEvaluationArtifixerSelectiveRepairError(
+            "scene_configuration_artifixer_selective_repair_request_cap_insufficient"
+        )
+    if not token:
+        token = _stage_openai_token(
+            values, stage="artifixer_semantic_teacher"
+        )
+    repair_request_path = Path(staged_repair["repair_request_path"])
+    repair_output = work / "selective_semantic_repair_output"
+    repair_cost_gate = scene_configuration_openai_stage_gate(
+        environment=values,
+        stage="artifixer_semantic_teacher",
+        run_id=(
+            f"{stage_input['run_id']}-artifixer-semantic-teacher-selective-repair-1"
+        ),
+        request_digest=_sha256(repair_request_path),
+        candidate_digest=staged_repair["plan"]["plan_digest"],
+        output_root=work / "selective_semantic_repair_official_openai_cost",
+        max_cost_usd=staged_repair["plan"]["remaining_stage_cost_usd"],
+    )
+    repair_cost_gate.reserve()
+    try:
+        repair_result = execute_semantic_teacher_image_edits(
+            runtime_request_path=repair_request_path,
+            output_root=repair_output,
+            token=token,
+        )
+    except Exception as exc:
+        repair_cost_gate.complete(
+            provider_call_performed=True,
+            runtime_result_digest=None,
+            runtime_exception_type=type(exc).__name__,
+        )
+        raise
+    repair_cost_gate.complete(
+        provider_call_performed=True,
+        runtime_result_digest=str(repair_result.get("result_digest") or "")
+        or None,
+        runtime_exception_type=None,
+    )
+    merged = merge_selective_repair_outputs(
+        plan_path=staged_repair["plan_path"],
+        semantic_runtime_request_path=semantic_request,
+        semantic_locality_receipt_path=locality_seal["receipt_path"],
+        source_semantic_output_root=Path(
+            locality_seal["semantic_teacher_frames_root"]
+        ).parents[1],
+        source_semantic_result=semantic_result,
+        repair_output_root=repair_output,
+        output_root=work / "selective_semantic_repair_merged",
+    )
+    return staged_repair, repair_result, merged
+
 def _review_semantic_targets_before_training(
     *, locality_seal: Mapping[str, Any], round_root: Path,
     output_root: Path, publisher_scene_id: str, task_id: str, rights_path: Path,
     configuration: Mapping[str, Any], stage_input: Mapping[str, Any],
     environment: Mapping[str, str], max_cost_usd: float,
-) -> None:
+    return_rejected: bool = False, review_round: int = 0,
+) -> dict[str, Any]:
     """Review the actual composited training targets before invoking training."""
     rows = locality_seal["receipt"].get("frames") or []
     if not rows:
@@ -1395,18 +1478,89 @@ def _review_semantic_targets_before_training(
     } for index, row in enumerate(rows)]
     round_root.mkdir(parents=True)
     reviewed = _run_artifixer_visual_review_round(
-        review_round=0, review_phase="pre_training_semantic_targets",
+        review_round=review_round, review_phase="pre_training_semantic_targets",
         round_root=round_root, output_root=output_root, review_frames=frames,
         publisher_scene_id=publisher_scene_id, task_id=task_id, rights_path=rights_path,
         configuration=configuration, stage_input=stage_input, environment=environment,
         post_training_binding_digest=locality_seal["receipt"]["receipt_digest"],
         max_cost_usd=max_cost_usd,
     )
-    if (reviewed["review"].get("decision") != "accepted"
+    if not return_rejected and (reviewed["review"].get("decision") != "accepted"
             or not reviewed["review"].get("review_receipt")):
         raise TaskEvaluationSceneConfigurationArtifixerError(
             "scene_configuration_artifixer_semantic_targets_rejected_before_training"
         )
+    return reviewed
+
+
+def _admit_semantic_training_targets(*, locality_seal, work, output_root,
+        publisher_scene_id, task_id, rights_path, configuration, stage_input, values,
+        visual_review_cap, semantic_request, semantic_result, expected_frame_cost,
+        semantic_cap, token, candidate, candidate_path, teacher_receipt_path):
+    """Review, correct once, or admit a coverage-checked subset for training."""
+    from .public_scene_artifixer3d_dual_target_inputs import _source_task_frames, _validated_transforms
+    from .semantic_target_training_selection import build_selection
+
+    per_review_cap = visual_review_cap / 3
+    common = dict(output_root=output_root, publisher_scene_id=publisher_scene_id,
+        task_id=task_id, rights_path=rights_path, configuration=configuration,
+        stage_input=stage_input, environment=values, max_cost_usd=per_review_cap,
+        return_rejected=True)
+    reviewed = _review_semantic_targets_before_training(locality_seal=locality_seal,
+        round_root=work / "semantic_target_review", **common)
+    remaining = visual_review_cap - per_review_cap
+    if reviewed["review"].get("decision") == "accepted" and reviewed["review"].get("review_receipt"):
+        return {"teacher_receipt_path": teacher_receipt_path,
+                "remaining_visual_review_cap": remaining, "semantic_repair_used": False}
+    recovery = work / "semantic_target_recovery"
+    recovery.mkdir()
+    repaired = False
+    teacher_root = locality_seal["semantic_teacher_frames_root"]
+    teacher_identity = {"source_semantic_result_digest": semantic_result["result_digest"]}
+    try:
+        staged, repair_result, merged = _execute_bounded_semantic_target_repair(
+            reviewed=reviewed, semantic_request=semantic_request, semantic_result=semantic_result,
+            locality_seal=locality_seal, expected_frame_cost=expected_frame_cost,
+            semantic_cap=semantic_cap, work=recovery, values=values, stage_input=stage_input, token=token)
+    except TaskEvaluationArtifixerSelectiveRepairError as exc:
+        # Insufficient *additional edit* authority may still leave enough approved
+        # views. Invalid bindings, orientations, and failed provider calls do not.
+        if not any(code in str(exc) for code in ("_cost_insufficient", "_cap_insufficient")):
+            raise
+        (recovery / "repair_not_funded.json").write_text(canonical_json({
+            "status": "additional_edit_not_admitted", "reason": str(exc),
+            "provider_mutation_performed": False}) + "\n")
+    else:
+        repaired = True
+        teacher_root = merged["semantic_teacher_frames_root"]
+        teacher_identity.update({"repair_result_digest": repair_result["result_digest"],
+                                 "repair_merge_digest": merged["receipt"]["merge_digest"]})
+        by_camera = {r["camera_id"]: r for r in merged["receipt"]["frame_inventory"]}
+        revised_seal = {"receipt_path": merged["receipt_path"], "receipt": {
+            "receipt_digest": merged["receipt"]["merge_digest"], "frames": [
+                {**row, "sealed_semantic_teacher": by_camera[row["camera_id"]]}
+                for row in locality_seal["receipt"]["frames"]]}}
+        reviewed = _review_semantic_targets_before_training(locality_seal=revised_seal,
+            round_root=recovery / "semantic_target_review_after_repair", review_round=1, **common)
+        remaining -= per_review_cap
+    selection = None
+    if reviewed["review"].get("decision") != "accepted" or not reviewed["review"].get("review_receipt"):
+        source_frames = _source_task_frames(candidate["tasks"][0])
+        transforms, _ = _validated_transforms(candidate["tasks"][0], source_frames)
+        execution = _read(Path(reviewed["review"]["execution_receipt"]["path"]),
+                          code="scene_configuration_artifixer_target_review_invalid")
+        selection = build_selection(review_input=reviewed["review_input"], review_execution=execution,
+            transforms=transforms, minimum_views=configuration["required_views"]["minimum"])
+        (recovery / "training_view_selection.json").write_text(canonical_json(selection) + "\n")
+    admitted_teacher = recovery / "admitted_whole_frame_semantic_teacher.v1.json"
+    materialize_whole_frame_semantic_teacher_receipt(
+        source_candidate_inputs_receipt_path=candidate_path, task_id=task_id,
+        semantic_teacher_frames_root=teacher_root, editor_identity=teacher_identity,
+        prompt_policy=STRICT_LOCALITY_PROMPT_POLICY, output_path=admitted_teacher,
+        training_view_selection=selection)
+    return {"teacher_receipt_path": admitted_teacher, "remaining_visual_review_cap": remaining,
+            # An exclusion must not be undone by a later merge against the old set.
+            "semantic_repair_used": repaired or selection is not None}
 
 
 def execute_artifixer_component(
@@ -1677,17 +1831,19 @@ def execute_artifixer_component(
         )
         or 0
     )
+    semantic_repair_used = False
     if review_mode == REQUIRED_MODE:
-        # Reserve half the existing visual-review allowance for input QA. This
-        # does not increase the stage's model-spend authority.
-        target_review_cap = visual_review_cap / 2
-        _review_semantic_targets_before_training(
-            locality_seal=locality_seal, round_root=work / "semantic_target_review",
-            output_root=output_root, publisher_scene_id=publisher_scene_id,
-            task_id=task_id, rights_path=rights_path, configuration=configuration,
-            stage_input=stage_input, environment=values, max_cost_usd=target_review_cap,
-        )
-        visual_review_cap -= target_review_cap
+        admission = _admit_semantic_training_targets(
+            locality_seal=locality_seal, work=work, output_root=output_root,
+            publisher_scene_id=publisher_scene_id, task_id=task_id, rights_path=rights_path,
+            configuration=configuration, stage_input=stage_input, values=values,
+            visual_review_cap=visual_review_cap, semantic_request=semantic_request,
+            semantic_result=semantic_result, expected_frame_cost=expected_frame_cost,
+            semantic_cap=semantic_cap, token=token, candidate=candidate, candidate_path=candidate_path,
+            teacher_receipt_path=teacher_receipt_path)
+        teacher_receipt_path = admission["teacher_receipt_path"]
+        visual_review_cap = admission["remaining_visual_review_cap"]
+        semantic_repair_used = admission["semantic_repair_used"]
     first_round_root = work / "artifixer_candidate_round_0"
     training = _run_artifixer_training_round(
         round_root=first_round_root,
@@ -1803,104 +1959,29 @@ def execute_artifixer_component(
         stage_input=stage_input,
         environment=values,
         post_training_binding_digest=training["post_training_binding_digest"],
-        max_cost_usd=visual_review_cap,
+        max_cost_usd=(visual_review_cap if semantic_repair_used else visual_review_cap / 2),
     )
     review = reviewed["review"]
     review_frames = training["review_frames"]
     native_appearance_source = training["native_appearance_source"]
     if review.get("decision") != "accepted" or not review.get("review_receipt"):
         try:
-            initial_execution = _read(
+            if semantic_repair_used:
+                raise TaskEvaluationArtifixerSelectiveRepairError(
+                    "scene_configuration_artifixer_semantic_repair_round_exhausted")
+            _read(
                 Path(review["execution_receipt"]["path"]),
                 code="scene_configuration_artifixer_selective_repair_review_invalid",
             )
-            initial_projected_review_cost = float(
-                (initial_execution.get("usage") or {}).get(
-                    "projected_max_cost_usd"
-                )
-            )
-            remaining_visual_review_cost = (
-                visual_review_cap - initial_projected_review_cost
-            )
+            remaining_visual_review_cost = visual_review_cap / 2
             if remaining_visual_review_cost <= 0:
                 raise TaskEvaluationArtifixerSelectiveRepairError(
                     "scene_configuration_artifixer_selective_repair_review_cost_insufficient"
                 )
-            staged_repair = materialize_selective_repair_request(
-                review_input_path=reviewed["review_input_path"],
-                review_execution_path=review["execution_receipt"]["path"],
-                semantic_runtime_request_path=semantic_request,
-                semantic_runtime_result=semantic_result,
-                semantic_locality_receipt_path=locality_seal["receipt_path"],
-                expected_request_cost_usd=expected_frame_cost,
-                maximum_stage_cost_usd=float(semantic_cap or 0),
-                output_root=work / "selective_semantic_repair_request",
-            )
-            selected_frame_count = int(
-                staged_repair["plan"]["selected_frame_count"]
-            )
-            try:
-                maximum_openai_requests = int(
-                    values.get("BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS")
-                    or 0
-                )
-            except (TypeError, ValueError) as exc:
-                raise TaskEvaluationArtifixerSelectiveRepairError(
-                    "scene_configuration_artifixer_selective_repair_request_cap_invalid"
-                ) from exc
-            base_request_count = int(semantic_result.get("request_count") or 0)
-            if maximum_openai_requests < base_request_count + selected_frame_count + 3:
-                raise TaskEvaluationArtifixerSelectiveRepairError(
-                    "scene_configuration_artifixer_selective_repair_request_cap_insufficient"
-                )
-            if not token:
-                token = _stage_openai_token(
-                    values, stage="artifixer_semantic_teacher"
-                )
-            repair_request_path = Path(staged_repair["repair_request_path"])
-            repair_output = work / "selective_semantic_repair_output"
-            repair_cost_gate = scene_configuration_openai_stage_gate(
-                environment=values,
-                stage="artifixer_semantic_teacher",
-                run_id=(
-                    f"{stage_input['run_id']}-artifixer-semantic-teacher-selective-repair-1"
-                ),
-                request_digest=_sha256(repair_request_path),
-                candidate_digest=staged_repair["plan"]["plan_digest"],
-                output_root=work / "selective_semantic_repair_official_openai_cost",
-                max_cost_usd=staged_repair["plan"]["remaining_stage_cost_usd"],
-            )
-            repair_cost_gate.reserve()
-            try:
-                repair_result = execute_semantic_teacher_image_edits(
-                    runtime_request_path=repair_request_path,
-                    output_root=repair_output,
-                    token=token,
-                )
-            except Exception as exc:
-                repair_cost_gate.complete(
-                    provider_call_performed=True,
-                    runtime_result_digest=None,
-                    runtime_exception_type=type(exc).__name__,
-                )
-                raise
-            repair_cost_gate.complete(
-                provider_call_performed=True,
-                runtime_result_digest=str(repair_result.get("result_digest") or "")
-                or None,
-                runtime_exception_type=None,
-            )
-            merged = merge_selective_repair_outputs(
-                plan_path=staged_repair["plan_path"],
-                semantic_runtime_request_path=semantic_request,
-                semantic_locality_receipt_path=locality_seal["receipt_path"],
-                source_semantic_output_root=Path(
-                    locality_seal["semantic_teacher_frames_root"]
-                ).parents[1],
-                source_semantic_result=semantic_result,
-                repair_output_root=repair_output,
-                output_root=work / "selective_semantic_repair_merged",
-            )
+            staged_repair, repair_result, merged = _execute_bounded_semantic_target_repair(
+                reviewed=reviewed, semantic_request=semantic_request, semantic_result=semantic_result,
+                locality_seal=locality_seal, expected_frame_cost=expected_frame_cost,
+                semantic_cap=semantic_cap, work=work, values=values, stage_input=stage_input, token=token)
             repaired_teacher_receipt_path = (
                 work / "whole_frame_semantic_teacher_selective_repair_1.v1.json"
             )
