@@ -31,6 +31,7 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     validate_public_launch_profile_descriptor,
 )
 from blueprint_pipeline.task_evaluation_launch_reconciler import (
+    _guard_provider_zero,
     reconcile_launches,
     validated_succeeded_webapp_sync_row,
 )
@@ -1911,8 +1912,9 @@ def test_reconciler_closes_stale_processing_only_after_fresh_provider_zero(
 
 
 @pytest.mark.parametrize("cross_runtime_receipt", [False, True])
+@pytest.mark.parametrize("unrelated_inventory_failure", [False, True])
 def test_reconciler_retains_post_teardown_provider_zero_for_paid_terminal(
-    tmp_path: Path, cross_runtime_receipt: bool,
+    tmp_path: Path, cross_runtime_receipt: bool, unrelated_inventory_failure: bool,
 ) -> None:
     profile = _profile(tmp_path)
     request = _request(profile)
@@ -1947,7 +1949,15 @@ def test_reconciler_retains_post_teardown_provider_zero_for_paid_terminal(
     _write(run_root / "webapp_sync_succeeded.json", _webapp_sync_succeeded(receipt))
     guard_path = tmp_path / "gpu-spend-guard.json"
     observed_at = datetime.now(timezone.utc)
-    _write(guard_path, _zero_guard(generated_at=observed_at - timedelta(seconds=1)))
+    guard = _zero_guard(generated_at=observed_at - timedelta(seconds=1))
+    if unrelated_inventory_failure:
+        guard["provider_zero_verified"] = False
+        guard["provider_zero"]["status"] = "unverified"
+        guard["provider_zero"]["required_provider_ids"].append("runpod")
+        guard["inventory_results"].append({
+            "provider": "runpod", "status": "failed", "required": True,
+        })
+    _write(guard_path, guard)
 
     first = reconcile_launches(
         queue_root=tmp_path / "queue",
@@ -1976,9 +1986,37 @@ def test_reconciler_retains_post_teardown_provider_zero_for_paid_terminal(
     )
     snapshot_path = Path(closure["independent_guard_snapshot"]["path"])
     snapshot = json.loads(snapshot_path.read_text())
-    assert snapshot["guard"]["provider_zero_verified"] is True
+    assert snapshot["guard"]["provider_zero_verified"] is not unrelated_inventory_failure
+    assert closure["required_providers"] == ["vast"]
     assert snapshot["source_guard_report_sha256"] == _path_digest(guard_path)
     assert len(list((run_root / "provider_zero_guard_snapshots").glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize("refusal", ["full_scope", "required_failed", "required_missing", "nonzero", "stale"])
+def test_scoped_zero_still_requires_fresh_empty_required_inventory(refusal: str) -> None:
+    now = datetime.now(timezone.utc)
+    guard = _zero_guard(generated_at=now)
+    guard["provider_zero_verified"] = False
+    guard["provider_zero"]["status"] = "unverified"
+    guard["provider_zero"]["required_provider_ids"].append("runpod")
+    guard["inventory_results"].append({"provider": "runpod", "status": "failed", "required": True})
+    required = ["vast"]
+    if refusal == "full_scope":
+        required.append("runpod")
+    elif refusal == "required_failed":
+        guard["inventory_results"][0]["status"] = "failed"
+    elif refusal == "required_missing":
+        guard["inventory_results"].pop(0)
+    elif refusal == "nonzero":
+        guard["inventory_results"][0]["row_count"] = 1
+    elif refusal == "stale":
+        guard["generated_at"] = (now - timedelta(minutes=10)).isoformat()
+    accepted, blockers = _guard_provider_zero(
+        guard=guard, required_providers=required, max_age_seconds=300,
+        now=now, not_before=now - timedelta(minutes=20),
+    )
+    assert accepted is False
+    assert blockers
 
 
 def test_reconciler_never_retains_provider_zero_before_teardown_or_while_nonzero(

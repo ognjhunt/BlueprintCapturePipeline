@@ -213,12 +213,20 @@ def _guard_provider_zero(
             blockers.append(f"gpu_spend_guard_predates_{not_before_subject}")
     if guard.get("reap_mode") is not True:
         blockers.append("gpu_spend_guard_reap_mode_missing")
-    if guard.get("provider_zero_verified") is not True:
-        blockers.append("gpu_provider_zero_not_verified")
     provider_zero = guard.get("provider_zero")
     provider_zero = provider_zero if isinstance(provider_zero, Mapping) else {}
-    if provider_zero.get("status") != "verified":
-        blockers.append("gpu_provider_zero_status_unverified")
+    guard_scope = {
+        str(provider) for provider in provider_zero.get("required_provider_ids") or []
+    }
+    # The profile binds this launch's provider scope. A wider guard can be
+    # globally unverified because a different provider's inventory failed;
+    # its confirmed empty inventory still proves this narrower scope. Retain
+    # the full-scope flags when claiming the guard's entire provider set.
+    if not set(required_providers) < guard_scope:
+        if guard.get("provider_zero_verified") is not True:
+            blockers.append("gpu_provider_zero_not_verified")
+        if provider_zero.get("status") != "verified":
+            blockers.append("gpu_provider_zero_status_unverified")
     if guard.get("live_instance_count") != 0:
         blockers.append("gpu_provider_nonzero")
     if guard.get("total_burn_per_hour_usd") not in (0, 0.0):
@@ -248,9 +256,7 @@ def _guard_provider_zero(
             blockers.append(f"gpu_inventory_nonzero:{provider}")
         elif inventory.get("required") is not True:
             blockers.append(f"gpu_inventory_scope_not_required:{provider}")
-        elif provider not in {
-            str(item) for item in provider_zero.get("required_provider_ids") or []
-        }:
+        elif provider not in guard_scope:
             blockers.append(f"gpu_provider_zero_scope_missing:{provider}")
     return not blockers, sorted(set(blockers))
 
