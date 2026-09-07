@@ -397,6 +397,7 @@ def test_sam_partition_authority_is_required_before_bundle_directory(tmp_path):
     row = envelope["stage_configuration_references"][0]
     config_path = Path(row["materialized_path"])
     configuration = json.loads(config_path.read_text())
+    configuration["scene_id"] = "839873"
     configuration["required_views"] = {"mask_source": "sam31_reviewed_calibrated_object_masks"}
     config_path.write_text(json.dumps(configuration))
     row.update(digest=_sha256(config_path), size_bytes=config_path.stat().st_size)
