@@ -363,3 +363,17 @@ def test_duplicate_parent_across_owned_and_legacy_stores_refuses(setup, monkeypa
         phase_executor=lambda _: pytest.fail("ambiguous parent must never execute"))
     result = json.loads(Path(queued["result_path"]).read_text())
     assert result["blocker"] == "sam31_phase_parent_identity_ambiguous"
+
+
+def test_retained_parent_wake_survives_deployment_without_reexecution(setup, monkeypatch):
+    root, args, process = setup
+    queued = execution.enqueue_sam31_phase(**args)
+    execution.process_sam31_phase_queue(**process, phase_executor=_complete)
+    queue = Path(args["queue_root"])
+    marker = queue / "wake-completed" / (queued["child_id"] + ".json")
+    os.replace(marker, queue / "wake-pending" / marker.name)
+    monkeypatch.setattr(execution, "_verified_checkout_head", lambda: "f" * 40)
+    result = execution.process_sam31_phase_queue(**process,
+        phase_executor=lambda _: pytest.fail("delivery must never execute old work"))
+    assert result["parent_wakeups"] == [queued["child_id"]]
+    assert not (queue / "wake-pending" / marker.name).exists()

@@ -271,8 +271,11 @@ def process_sam31_phase_queue(
                 continue
             try:
                 job = _read(jobs[0])
+                # Delivery reopens a retained result at its original release; it
+                # cannot execute a phase. Otherwise one old pending wake starves
+                # every later owned parent after a production deployment.
                 _validated_job(job, parent_queue=parent_queue, input_root=input_root,
-                               source_commit=observed_commit, approved_roots=approved_roots)
+                               source_commit=job["expected_source_commit"], approved_roots=approved_roots)
                 if _wake_parent(root, job, parent_queue, approved_roots):
                     wakes.append(job["child_id"])
             except (OSError, ValueError):
