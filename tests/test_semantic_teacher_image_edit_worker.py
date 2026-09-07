@@ -1317,6 +1317,20 @@ def test_corrupt_retained_candidate_refuses_before_any_new_call(tmp_path):
     assert not (tmp_path / "new-output").exists()
 
 
+def test_all_reused_candidates_make_zero_requests_and_record_zero_new_cost(tmp_path):
+    request_path, _, _, _ = _request_with_retained_candidate(tmp_path)
+    request = json.loads(request_path.read_text())
+    request["retained_candidates"].append({**request["retained_candidates"][0], "camera_id": "camera_1"})
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request))
+    result = execute_semantic_teacher_image_edits(runtime_request_path=request_path,
+        output_root=tmp_path / "all-reused", token="fixture-secret",
+        opener=lambda *_args, **_kwargs: pytest.fail("all candidates were retained"))
+    assert result["request_count"] == result["computed_editor_cost_usd"] == 0
+    assert result["retained_candidate_frame_count"] == result["source_frame_count"] == 2
+    assert result["billing_qualified"] is True
+
+
 def test_attach_retained_candidates_preserves_signed_original_evidence(tmp_path):
     from blueprint_pipeline.semantic_teacher_candidate_reuse import attach_retained_candidates, load_retained_candidates
     request_path, original, _, _ = _request_with_retained_candidate(tmp_path)

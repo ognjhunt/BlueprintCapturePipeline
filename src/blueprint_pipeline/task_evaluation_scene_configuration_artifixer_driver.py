@@ -1612,7 +1612,7 @@ def execute_artifixer_component(
             )
             raise
         semantic_cost_gate.complete(
-            provider_call_performed=True,
+            provider_call_performed=bool(semantic_result.get("request_count")),
             runtime_result_digest=(
                 str(semantic_result.get("result_digest") or "") or None
             ),
