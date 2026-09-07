@@ -1,6 +1,7 @@
 """Project freshness comes from reopening evidence, not manually restamping totals."""
 
 import json
+import time
 
 import pytest
 
@@ -77,3 +78,55 @@ def test_activation_preflight_requires_the_configured_monitor(tmp_path, monkeypa
     }
     findings = preflight.project_spend_checks(units, (0, 0))
     assert [row["code"] for row in findings] == ["scene_project_spend_config_unset"]
+
+
+def test_refresh_honours_the_activation_tick_now_so_the_freshness_gate_never_inverts(tmp_path, monkeypatch):
+    """R6 regression. ``_activation`` captures ONE ``now`` for the whole progression
+    tick, calls ``refresh_configured_scene_project_spend()``, then gates activation on
+    ``0 <= now - pointer.observed_at_epoch <= 900``. If the refresh stamps
+    ``time.time()`` (which is necessarily LATER than the tick's ``now``), that delta is
+    negative and activation fails ``project_spend_stale`` on every tick forever, so the
+    hands-off chain stalls permanently at activation. The refresh must stamp the
+    caller's ``now`` so the same-``now`` gate holds."""
+    from blueprint_pipeline.task_evaluation_scene_spend import refresh_configured_scene_project_spend
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root = tmp_path / "intents"
+    intent = stage(root)
+    attempt(root, intent)
+    prior = seed(tmp_path)
+    monitor = {"schema_version": "task_evaluation_scene_project_spend_monitor.v1",
+               "scene_root": str(root), "seed_reconciliation_path": str(prior),
+               "output_root": str(tmp_path / "spend"), "current_path": str(tmp_path / "current.json"),
+               "config_digest": ""}
+    monitor["config_digest"] = canonical_digest(monitor, digest_field="config_digest")
+    config_path = tmp_path / "monitor.json"
+    config_path.write_text(json.dumps(monitor))
+    monkeypatch.setenv("BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG", str(config_path))
+    # The tick's ``now`` is captured a moment BEFORE the refresh actually runs.
+    tick_now = time.time() - 1.0
+    result = refresh_configured_scene_project_spend(now=tick_now)
+    observed = result["pointer"]["observed_at_epoch"]
+    assert observed == tick_now, "refresh must stamp the caller's now, not time.time()"
+    assert 0 <= tick_now - observed <= 900  # the exact _activation freshness gate now holds
+
+
+def test_refresh_without_now_still_stamps_wall_clock(tmp_path, monkeypatch):
+    """The capacity controller and installer call refresh with no ``now`` and rely on
+    real wall-clock freshness; that default must be unchanged."""
+    from blueprint_pipeline.task_evaluation_scene_spend import refresh_configured_scene_project_spend
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root = tmp_path / "intents"
+    intent = stage(root)
+    attempt(root, intent)
+    prior = seed(tmp_path)
+    monitor = {"schema_version": "task_evaluation_scene_project_spend_monitor.v1",
+               "scene_root": str(root), "seed_reconciliation_path": str(prior),
+               "output_root": str(tmp_path / "spend"), "current_path": str(tmp_path / "current.json"),
+               "config_digest": ""}
+    monitor["config_digest"] = canonical_digest(monitor, digest_field="config_digest")
+    config_path = tmp_path / "monitor.json"
+    config_path.write_text(json.dumps(monitor))
+    monkeypatch.setenv("BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG", str(config_path))
+    before = time.time()
+    observed = refresh_configured_scene_project_spend()["pointer"]["observed_at_epoch"]
+    assert before <= observed <= time.time()
