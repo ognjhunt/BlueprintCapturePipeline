@@ -772,6 +772,7 @@ def test_worker_blocks_unapproved_storage_prefix_before_fetch(tmp_path) -> None:
     assert run["results"][0]["blockers"] == [
         "launch_preparation_reference_prefix_not_allowed"
     ]
+    assert run["results"][0]["source_commit"] == value["expected_production_commit"]
     assert run["results"][0]["preparation_id"] == value["preparation_id"]
     assert launch_preparation_status(
         preparation_id=value["preparation_id"], queue_root=queue

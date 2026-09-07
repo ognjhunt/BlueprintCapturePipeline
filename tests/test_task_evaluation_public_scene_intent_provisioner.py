@@ -442,3 +442,22 @@ def test_robot_binding_refusal_leaves_no_visible_intent(retained, tmp_path, kwar
         _provision(tmp_path, retained_paths, authority, now=extras["now"], **kwargs)
     assert not list((tmp_path / "intents").glob("scene-*/intent.json"))
     assert not (tmp_path / "public-source-bindings" / "public-scene-841757.json").exists()
+
+
+def test_owned_service_resolves_retained_public_source_without_legacy_unit_environment(retained, tmp_path, monkeypatch):
+    import os
+    import pwd
+    from blueprint_pipeline.task_evaluation_scene_preparation_service import installed_source_environment
+    from blueprint_pipeline.task_evaluation_installed_source_bindings import BINDINGS_ENV, load_installed_source_bindings
+    retained_paths, authority, extras = retained
+    result, intents, bindings, _ = _provision(tmp_path, retained_paths, authority, now=extras["now"])
+    monkeypatch.delenv(BINDINGS_ENV, raising=False)
+    environment = installed_source_environment({"intent_root": str(intents),
+        "public_source_binding_root": str(bindings)}, [{"intent_id": result["intent_id"]}])
+    publisher = json.loads(Path(retained_paths["publisher_intake"]).read_text())
+    raw = publisher["artifacts"][0]
+    resolved = load_installed_source_bindings(expected_source_commit=extras["commit"],
+        service_account=pwd.getpwuid(os.geteuid()).pw_name, environment=environment,
+        approved_roots=(tmp_path,), requested_uris=[raw["publisher_url"]])
+    assert resolved.resolve(raw["publisher_url"], raw["sha256"], raw["size_bytes"]) is not None
+    assert BINDINGS_ENV not in os.environ
