@@ -48,6 +48,8 @@ def configured_parent_route(job: dict, root: Path, input_root: Path) -> tuple[Pa
                      for p in (owned, inputs)), "parent_routing_path_invalid")
         if owned != root:
             routes.append((owned, inputs))
+        else:
+            routes[0] = (owned, inputs)
     identifier, digest = job.get("parent_preparation_id"), job.get("parent_request_digest")
     _require(isinstance(identifier, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", identifier)
              and isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest),
