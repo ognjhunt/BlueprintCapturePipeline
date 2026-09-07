@@ -89,18 +89,9 @@ def _copy(path, destination):
             "size_bytes": destination.stat().st_size}
 
 
-def _cutout(candidate_path, candidate, source, task, camera_ids, mask_paths):
-    _require(candidate.get("schema_version") == CUTOUT_SET_SCHEMA
-             and candidate.get("selection", {}).get("rule") == SELECTION_RULE
-             and candidate.get("selection", {}).get("learned_policy_or_simulator_output_used") is False
-             and candidate.get("claim_boundary", {}).get("canonical_source_altered") is False,
-             "cutout_invalid")
-    rows = candidate.get("task_candidates")
-    _require(isinstance(rows, list) and len(rows) == 1, "task_count_invalid")
-    row = rows[0]
-    _require(row.get("task_id") == task["task_id"]
-             and row.get("task_freeze_digest") == task["task_freeze_digest"], "task_join_invalid")
-    sweep_path = _file(row["sweep_freeze"])
+def validate_retained_sweep(*, sweep_reference, source, task, camera_ids, mask_paths):
+    """Validate the frozen mask/camera/source joins before contribution or cutout."""
+    sweep_path = _file(sweep_reference)
     sweep = _read(sweep_path, "freeze_digest")
     meta = sweep.get("segment_contribution_sweep", {})
     split = sweep.get("camera_split", {})
@@ -145,7 +136,12 @@ def _cutout(candidate_path, candidate, source, task, camera_ids, mask_paths):
                  and np.all(~semantic_pixels | safety_pixels), "excision_safety_envelope_invalid")
         for zone in CONTRIBUTION_CLASS_ORDER:
             _file(mask_rows[camera_id]["zones"][zone], sweep_path.parent)
-    manifest_path = _file(row["contribution_manifest"])
+    return sweep, original
+
+
+def validate_retained_contribution(*, manifest_reference, sweep, original, source, camera_ids):
+    """Rehash numeric contribution arrays and derive the deterministic selection."""
+    manifest_path = _file(manifest_reference)
     manifest = _read(manifest_path, "manifest_digest")
     _require(manifest.get("schema_version") == CONTRIBUTION_EVIDENCE_SCHEMA
              and manifest.get("freeze_digest") == sweep["freeze_digest"]
@@ -177,6 +173,25 @@ def _cutout(candidate_path, candidate, source, task, camera_ids, mask_paths):
     ])
     deleted_indices, retained_indices = np.flatnonzero(selected), np.flatnonzero(~selected)
     _require(deleted_indices.size > 0 and retained_indices.size > 0, "cutout_empty")
+    return deleted_indices, retained_indices, count
+
+
+def _cutout(candidate_path, candidate, source, task, camera_ids, mask_paths):
+    _require(candidate.get("schema_version") == CUTOUT_SET_SCHEMA
+             and candidate.get("selection", {}).get("rule") == SELECTION_RULE
+             and candidate.get("selection", {}).get("learned_policy_or_simulator_output_used") is False
+             and candidate.get("claim_boundary", {}).get("canonical_source_altered") is False,
+             "cutout_invalid")
+    rows = candidate.get("task_candidates")
+    _require(isinstance(rows, list) and len(rows) == 1, "task_count_invalid")
+    row = rows[0]
+    _require(row.get("task_id") == task["task_id"]
+             and row.get("task_freeze_digest") == task["task_freeze_digest"], "task_join_invalid")
+    sweep, original = validate_retained_sweep(sweep_reference=row["sweep_freeze"],
+        source=source, task=task, camera_ids=camera_ids, mask_paths=mask_paths)
+    deleted_indices, retained_indices, count = validate_retained_contribution(
+        manifest_reference=row["contribution_manifest"], sweep=sweep, original=original,
+        source=source, camera_ids=camera_ids)
     shared = candidate["shared_scene_union"]
     outputs = shared["outputs"]
     for key, expected in (("deleted_source_indices", deleted_indices),
@@ -226,6 +241,53 @@ def _source_render_conversion(prepared, conversion_path, expected_digest, expect
         current, expected_commit = original, profile["source_commit"]
         adoption_ref = profile.get("completed_prefix_adoption")
     _require(False, "renderer_source_join_invalid")
+
+
+def validate_reviewed_mask_inputs(*, mask_set_path, review, review_kind, task, inputs,
+                                 selected, source_object, minimum_views):
+    """Reopen exact reviewed masks without copying frames or creating output."""
+    task_id = task["task_id"]
+    mask_set = _read(mask_set_path, "receipt_digest")
+    selection = mask_set.get("selection_authority", {})
+    _require(mask_set.get("schema_version") == "public_scene_calibrated_object_mask_set.v1"
+             and len(mask_set.get("tasks", [])) == 1
+             and selection.get("review_receipt_digest") == review["receipt_digest"]
+             and selection.get("reviewer_kind") == review_kind
+             and selection.get("all_selected_tracks_" + ("human_review" if review_kind == "human" else "ai_visual_review") + "_accepted") is True
+             and selection.get("mask_dilation_pixels") == 0, "mask_set_invalid")
+    masks = mask_set["tasks"][0]
+    _require(masks["task_id"] == task_id and masks["selected_track_ids"] == selected[task_id]
+             and masks["source_object_instance_id"] == source_object["publisher_instance_id"],
+             "mask_task_join_invalid")
+    camera_file = _file(masks["camera_contract"], Path(mask_set_path).parent)
+    _require(_sha(camera_file) == _sha(Path(inputs[task_id]["camera_contract_path"])),
+             "camera_contract_changed")
+    calibrations = _camera_rows(camera_file)
+    camera_ids = sorted(calibrations)
+    _require(minimum_views <= len(camera_ids) <= 16,
+             "camera_count_invalid")
+    _require(masks["camera_frame_map"] == inputs[task_id]["camera_frame_map"],
+             "camera_frame_map_changed")
+    tracks = _verified_source_tracks(Path(inputs[task_id]["source_track_result_path"]))
+    frames = _frame_map(tracks, task_input_packet_path=inputs[task_id]["task_input_packet_path"])
+    frame_rows = {row["camera_id"]: row for row in masks["source_images"]}
+    mask_rows = {row["camera_id"]: row for row in masks["masks"]}
+    _require(set(frame_rows) == set(mask_rows) == set(camera_ids), "frame_camera_join_invalid")
+    frame_paths, mask_paths = {}, {}
+    for camera_id in camera_ids:
+        frame = frames[masks["camera_frame_map"][camera_id]]
+        frame_paths[camera_id] = _file(frame_rows[camera_id]["image"], Path(mask_set_path).parent)
+        mask_paths[camera_id] = _file(mask_rows[camera_id]["mask"], Path(mask_set_path).parent)
+        _require(_sha(frame_paths[camera_id]) == frame["source_frame_digest"], "source_frame_changed")
+        expected = _decode_union(frame, selected_track_ids=set(selected[task_id]),
+                                 code="exact_mask_decode_invalid", allow_empty_selected_tracks=True)
+        with Image.open(mask_paths[camera_id]) as image:
+            actual = np.asarray(image.convert("L"))
+        with Image.open(frame_paths[camera_id]) as image:
+            image_size = image.size
+        _require(np.array_equal(actual, expected) and image_size == (actual.shape[1], actual.shape[0]),
+                 "exact_mask_changed")
+    return camera_file, calibrations, camera_ids, frame_paths, mask_paths
 
 
 def _materialize_sam31_exact_mask_render_inputs(
@@ -297,46 +359,10 @@ def _materialize_sam31_exact_mask_render_inputs(
         original_source = scene_selection["source_components"]["interiorgs"]
     else:
         original_source = None
-    mask_set = receipts["calibrated_mask_set"]
-    selection = mask_set.get("selection_authority", {})
-    _require(mask_set.get("schema_version") == "public_scene_calibrated_object_mask_set.v1"
-             and len(mask_set.get("tasks", [])) == 1
-             and selection.get("review_receipt_digest") == review["receipt_digest"]
-             and selection.get("reviewer_kind") == review_kind
-             and selection.get("all_selected_tracks_" + ("human_review" if review_kind == "human" else "ai_visual_review") + "_accepted") is True
-             and selection.get("mask_dilation_pixels") == 0, "mask_set_invalid")
-    masks = mask_set["tasks"][0]
-    _require(masks["task_id"] == task_id and masks["selected_track_ids"] == selected[task_id]
-             and masks["source_object_instance_id"] == source_object["publisher_instance_id"],
-             "mask_task_join_invalid")
-    camera_file = _file(masks["camera_contract"], paths["calibrated_mask_set"].parent)
-    _require(_sha(camera_file) == _sha(Path(inputs[task_id]["camera_contract_path"])),
-             "camera_contract_changed")
-    calibrations = _camera_rows(camera_file)
-    camera_ids = sorted(calibrations)
-    _require(config["required_views"]["minimum"] <= len(camera_ids) <= 16,
-             "camera_count_invalid")
-    _require(masks["camera_frame_map"] == inputs[task_id]["camera_frame_map"],
-             "camera_frame_map_changed")
-    tracks = _verified_source_tracks(Path(inputs[task_id]["source_track_result_path"]))
-    frames = _frame_map(tracks, task_input_packet_path=inputs[task_id]["task_input_packet_path"])
-    frame_rows = {row["camera_id"]: row for row in masks["source_images"]}
-    mask_rows = {row["camera_id"]: row for row in masks["masks"]}
-    _require(set(frame_rows) == set(mask_rows) == set(camera_ids), "frame_camera_join_invalid")
-    frame_paths, mask_paths = {}, {}
-    for camera_id in camera_ids:
-        frame = frames[masks["camera_frame_map"][camera_id]]
-        frame_paths[camera_id] = _file(frame_rows[camera_id]["image"], paths["calibrated_mask_set"].parent)
-        mask_paths[camera_id] = _file(mask_rows[camera_id]["mask"], paths["calibrated_mask_set"].parent)
-        _require(_sha(frame_paths[camera_id]) == frame["source_frame_digest"], "source_frame_changed")
-        expected = _decode_union(frame, selected_track_ids=set(selected[task_id]),
-                                 code="exact_mask_decode_invalid", allow_empty_selected_tracks=True)
-        with Image.open(mask_paths[camera_id]) as image:
-            actual = np.asarray(image.convert("L"))
-        with Image.open(frame_paths[camera_id]) as image:
-            image_size = image.size
-        _require(np.array_equal(actual, expected) and image_size == (actual.shape[1], actual.shape[0]),
-                 "exact_mask_changed")
+    camera_file, calibrations, camera_ids, frame_paths, mask_paths = validate_reviewed_mask_inputs(
+        mask_set_path=paths["calibrated_mask_set"], review=review, review_kind=review_kind,
+        task=task, inputs=inputs, selected=selected, source_object=source_object,
+        minimum_views=config["required_views"]["minimum"])
     source_rows = [row for row in envelope["materialized_references"]
                    if row.get("contract_path") == "scene.appearance.representation"]
     _require(len(source_rows) == 1, "source_reference_missing")
