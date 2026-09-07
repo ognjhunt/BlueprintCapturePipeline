@@ -414,6 +414,7 @@ def materialize_preparation_references(
     service_account: str,
     source_commit: str,
     fetcher: ReferenceFetcher = default_reference_fetcher,
+    installed_source_environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Materialize and read back every immutable input, content-addressed."""
 
@@ -456,6 +457,7 @@ def materialize_preparation_references(
             expected_source_commit=validated["expected_production_commit"],
             service_account=service_account,
             requested_uris=[reference["uri"] for reference in references],
+            environment=installed_source_environment,
         )
     except (InstalledSourceBindingError, OSError, ValueError) as exc:
         raise TaskEvaluationLaunchPreparationWorkerError(str(exc)) from exc
@@ -1028,6 +1030,7 @@ def process_launch_preparation_queue(
     episode_compilation_queue_root: str | Path | None = None,
     disk_reservation_root: str | Path | None = None,
     storage_pins_root: str | Path | None = None,
+    installed_source_environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Claim and materialize bounded queue items without any paid mutation."""
 
@@ -1090,6 +1093,7 @@ def process_launch_preparation_queue(
                 service_account=service_account,
                 source_commit=observed_source_commit,
                 fetcher=fetcher,
+                installed_source_environment=installed_source_environment,
             )
             references_by_path = {
                 row["contract_path"]: row for row in result["references"]
@@ -1531,6 +1535,7 @@ def process_launch_preparation_queue(
             result = {
                 "schema_version": RESULT_SCHEMA_VERSION,
                 "status": "blocked",
+                "source_commit": observed_source_commit,
                 "preparation_id": re.sub(
                     r"-[0-9a-f]{64}\.json$", "", source.name
                 ),
