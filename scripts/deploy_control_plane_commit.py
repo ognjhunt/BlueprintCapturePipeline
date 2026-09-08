@@ -180,6 +180,10 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
 #: commit named anywhere here is never retired by the deploy that supersedes it.
 DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS = (
     "/etc/blueprint/task-evaluation-launch-profiles",
+    # Preparation can still use an older renderer after launch queues empty.
+    # Protect the configured dependency itself, before a new attempt exists.
+    "/etc/blueprint/task-evaluation-public-scene-machinery.json",
+    "/etc/blueprint/task-evaluation-scene-preparation-bootstrap.json",
     # Terminal evidence can still require an older renderer after its queues empty.
     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-release-retention-bindings",
     "/var/lib/blueprint/pipeline-control-plane/standing-authorizations",

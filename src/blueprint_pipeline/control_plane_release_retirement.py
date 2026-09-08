@@ -57,25 +57,28 @@ def _active_commit(active_link: Path, release_root: Path) -> str:
 
 
 def _commits_named_under(roots: Sequence[Path]) -> tuple[set[str], list[str]]:
-    """Every 40-hex token in every JSON file under the protected reference roots."""
+    """Every 40-hex token in protected JSON files or their directory trees."""
 
     commits: set[str] = set()
     blockers: list[str] = []
     for root in roots:
-        if not root.is_dir():
+        if root.is_file() and root.suffix == ".json":
+            paths = [root]
+        elif root.is_dir():
+            paths = [Path(directory) / name
+                     for directory, _subdirectories, files in os.walk(root)
+                     for name in files if name.endswith(".json")]
+        else:
             blockers.append(f"release_retirement_protected_reference_root_missing:{root.name}")
             continue
-        for directory, _subdirectories, files in os.walk(root):
-            for name in files:
-                if not name.endswith(".json"):
+        for path in paths:
+            try:
+                if path.is_symlink() or path.stat().st_size > _MAX_REFERENCE_BYTES:
+                    blockers.append(f"release_retirement_protected_reference_unsafe:{path.name}")
                     continue
-                path = Path(directory) / name
-                try:
-                    if path.is_symlink() or path.stat().st_size > _MAX_REFERENCE_BYTES:
-                        continue
-                    commits.update(_COMMIT_SEARCH_RE.findall(path.read_text(encoding="utf-8")))
-                except (OSError, UnicodeDecodeError):
-                    blockers.append(f"release_retirement_protected_reference_unreadable:{name}")
+                commits.update(_COMMIT_SEARCH_RE.findall(path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError):
+                blockers.append(f"release_retirement_protected_reference_unreadable:{path.name}")
     return commits, blockers
 
 
