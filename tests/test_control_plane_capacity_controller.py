@@ -191,3 +191,19 @@ def test_controller_blocks_resize_without_acknowledgement_and_records_the_plan(t
     assert len(resized) == 1
     healthy = cap.run_controller(**common, ack=cap.RESIZE_ACK, token="tok", resizer=resizer, disk_usage=_usage(80.0), now=3.0)
     assert healthy["volume_resize"] == {"status": "not_needed"} and len(resized) == 1
+
+
+def test_whole_chain_admission_rejects_space_that_fits_only_one_stage(tmp_path, monkeypatch):
+    original = cap.measure_mount
+    monkeypatch.setattr(cap, "measure_mount", lambda mount, **kwargs:
+        original(mount, disk_usage=_usage(12.0), **kwargs))
+    result = cap.whole_chain_admission(tmp_path, reservation_root=tmp_path/"ledger", now=1000)
+    assert result["status"] == "waiting_for_capacity"
+    assert result["measurement"]["refused_roles"] == []
+    assert result["required_workspace_bytes"] == 10 * GIB
+    assert result["reservation_granted"] is False
+    monkeypatch.setattr(cap, "measure_mount", lambda mount, **kwargs:
+        original(mount, disk_usage=_usage(20.0), **kwargs))
+    assert cap.whole_chain_admission(tmp_path, reservation_root=tmp_path/"ledger", now=1000)["status"] == "admitted"
+    _reservation(tmp_path/"ledger", "another-run", expected_bytes=3*GIB, expires_at=2000)
+    assert cap.whole_chain_admission(tmp_path, reservation_root=tmp_path/"ledger", now=1000)["status"] == "waiting_for_capacity"

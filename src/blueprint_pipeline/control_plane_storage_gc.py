@@ -850,6 +850,9 @@ def run_storage_gc(
     report["skipped_roots"].extend(absent)
     if evidence_present:
         def evidence_protected(directory: Path) -> bool:
+            from .completed_replay_cache_retention import active_reference
+            if active_reference(directory):
+                return True
             pinned = live_pinned_paths(pins_root, now=clock)
             if any(Path(p) == directory or directory in Path(p).parents or Path(p) in directory.parents for p in pinned):
                 return True

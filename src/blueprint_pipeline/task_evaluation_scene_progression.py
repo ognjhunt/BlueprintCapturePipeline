@@ -385,6 +385,16 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     from .task_evaluation_scene_policy_capability import policy_capability_blockers
     if capability_blockers := policy_capability_blockers(intent["request"]):
         return emit("needs_input", "policy_capability", capability_blockers)
+    if config.get("require_whole_chain_capacity", False) and not state.get("attempt_id"):
+        from .control_plane_capacity_controller import whole_chain_admission
+        admission = whole_chain_admission(
+            config["factory_output_root"],
+            reservation_root=(config.get("preparation_worker") or {}).get(
+                "disk_reservation_root", "/var/lib/blueprint/pipeline-control-plane/disk-reservations"),
+            now=now)
+        state["capacity_admission"] = admission
+        if admission["status"] != "admitted":
+            return emit("awaiting_execution", "capacity", ["scene_whole_chain_capacity_insufficient"])
     resolution = _source(intent, config, release, resolver)
     if resolution.analysis_reference is not None:
         _reference(resolution.analysis_reference)
@@ -540,6 +550,7 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
     require(config.get("schema_version") == CONFIG_SCHEMA, "config_schema_invalid")
     root = safe_path(config["intent_root"])
     require(root.is_dir(), "intent_root_missing")
+    require(type(config.get("require_whole_chain_capacity", False)) is bool, "capacity_admission_mode_invalid")
     require(type(config.get("maximum_intents_per_pass", 16)) is int
             and 1 <= config.get("maximum_intents_per_pass", 16) <= 64, "pass_bound_invalid")
     require(type(config.get("maximum_http_submission_attempts", 2)) is int

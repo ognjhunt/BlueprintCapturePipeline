@@ -28,6 +28,7 @@ from tests.test_task_evaluation_configured_scene_object_store import _ContentAdd
 
 @pytest.fixture(autouse=True)
 def isolated_disk_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.active_reference", lambda _: False)
     monkeypatch.setattr("blueprint_pipeline.control_plane_evidence_offload.DEFAULT_RESERVATION_ROOT",
                         tmp_path / "disk-reservations")
 
@@ -300,7 +301,7 @@ def test_run_retires_directories_before_reaping_the_blobs_they_linked(tmp_path) 
     }
 
 
-def test_run_offloads_sealed_evidence_only_when_enabled(tmp_path) -> None:
+def test_run_offloads_sealed_evidence_only_when_enabled(tmp_path, monkeypatch) -> None:
     evidence = tmp_path / "launch-runs"
     run = evidence / "run-1"
     run.mkdir(parents=True)
@@ -327,6 +328,12 @@ def test_run_offloads_sealed_evidence_only_when_enabled(tmp_path) -> None:
     assert disabled["evidence_offload"]["status"] == "dry_run"
     assert disabled["evidence_offload"]["candidate_count"] == 1
     assert disabled["evidence_offload_enabled"] is False
+
+    monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.active_reference", lambda _: True)
+    active = run_storage_gc(**common, apply=True, ack=RUN_ACK, offload_enabled=True)
+    assert active["evidence_offload"]["offloaded_count"] == 0
+    assert run.is_dir()
+    monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.active_reference", lambda _: False)
     assert run.is_dir()
 
     client = _ContentAddressedClient()

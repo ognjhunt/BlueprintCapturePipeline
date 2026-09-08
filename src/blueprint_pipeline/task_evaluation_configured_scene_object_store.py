@@ -329,19 +329,52 @@ def publish_configured_scene_artifact(
         raise TaskEvaluationConfiguredSceneObjectStoreError(
             "configured_scene_artifact_source_invalid"
         )
+    digest, size = _sha256_and_size(source)
+    def upload(resolved_client, resolved_bucket, key, metadata):
+        resolved_client.upload_file(str(source), resolved_bucket, key, ExtraArgs=metadata)
+    return _publish_configured_scene_data(digest=digest, size=size, filename=source.name,
+        artifact_kind=artifact_kind, upload=upload, client=client, bucket=bucket)
+
+
+def publish_configured_scene_stream(
+    *, write_stream: Callable, digest: str, size_bytes: int, filename: str,
+    artifact_kind: str, client: Any | None = None, bucket: str | None = None,
+) -> dict[str, Any]:
+    """Upload a repeatable stream without a local archive, then read back every byte."""
+    if (re.fullmatch(r"sha256:[0-9a-f]{64}", str(digest)) is None
+            or type(size_bytes) is not int or size_bytes < 1
+            or _SAFE_KEY_COMPONENT.fullmatch(filename) is None):
+        raise TaskEvaluationConfiguredSceneObjectStoreError('configured_scene_artifact_stream_invalid')
+    from .object_store_multipart_stream import MultipartStream
+    def upload(resolved_client, resolved_bucket, key, metadata):
+        sink = MultipartStream(client=resolved_client, bucket=resolved_bucket, key=key,
+            metadata=metadata, expected_digest=digest, expected_size=size_bytes)
+        try:
+            write_stream(sink)
+            sink.finish()
+        except BaseException:
+            try:
+                sink.abort()
+            except Exception:
+                pass  # Preserve the publication failure; no local evidence is evicted.
+            raise
+    return _publish_configured_scene_data(digest=digest, size=size_bytes, filename=filename,
+        artifact_kind=artifact_kind, upload=upload, client=client, bucket=bucket)
+
+
+def _publish_configured_scene_data(*, digest, size, filename, artifact_kind, upload, client, bucket):
     kind = _safe_object_name(artifact_kind)
     if len(kind.parts) != 1:
         raise TaskEvaluationConfiguredSceneObjectStoreError(
             "configured_scene_artifact_kind_invalid"
         )
-    digest, size = _sha256_and_size(source)
     digest_hex = digest.removeprefix("sha256:")
     key = str(
         PurePosixPath(LARGE_ARTIFACT_KEY_PREFIX)
         / kind
         / "sha256"
         / digest_hex
-        / source.name
+        / filename
     )
     resolved_client, resolved_bucket = (
         _artifact_object_store_client()
@@ -357,15 +390,10 @@ def publish_configured_scene_artifact(
         except Exception as exc:  # noqa: BLE001 - provider exception shapes vary
             if not _object_missing(exc):
                 raise
-            resolved_client.upload_file(
-                str(source),
-                resolved_bucket,
-                key,
-                ExtraArgs={
-                    "Metadata": {"sha256": digest_hex},
-                    "ContentType": "application/octet-stream",
-                },
-            )
+            upload(resolved_client, resolved_bucket, key, {
+                "Metadata": {"sha256": digest_hex},
+                "ContentType": "application/octet-stream",
+            })
             upload_performed = True
             head = resolved_client.head_object(Bucket=resolved_bucket, Key=key)
         metadata = head.get("Metadata", {})
