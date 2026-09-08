@@ -586,10 +586,7 @@ def execute_artifixer3d_observed_object_removal(
                 lambda: render_reference.get("control_plane_render_result_digest")
                 == (
                     input_render.get("control_plane_result_digest")
-                    if renders_on_provider(
-                        input_render.get("disclosure_decision") or {}
-                    )
-                    else input_render.get("result_digest")
+                    or input_render.get("result_digest")
                 ),
             ),
             (
@@ -920,10 +917,7 @@ def execute_artifixer3d_diagnostic_object_removal(
             lambda: render_reference.get("control_plane_render_result_digest")
             == (
                 input_render.get("control_plane_result_digest")
-                if renders_on_provider(
-                    input_render.get("disclosure_decision") or {}
-                )
-                else input_render.get("result_digest")
+                or input_render.get("result_digest")
             ),
         ),
         (

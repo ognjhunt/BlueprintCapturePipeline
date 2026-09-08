@@ -38,3 +38,9 @@ Training identity excludes refreshed consent timestamps, authorization reference
 and SAM-plan transport references. Permission flags, operation names and all
 scientific settings remain bound. Both full configuration hashes are retained in
 provenance, and current rights and SAM admission still run before reuse.
+
+## Render handoff after CPU preparation
+
+A materialized render result receives a new digest when its local frame paths move from the control plane to the provider. Its preserved `control_plane_result_digest` remains the source identity. Both production and diagnostic appearance adapters compare that preserved identity when present. For capsule continuation, reissue the frame handoff from the current worker render record only after the original render identity and every camera/frame digest/size match the prepared record; retain the completed capsule record for deferred provider renders. This lets downstream Content Agents check the current render digest without weakening frame or source identity.
+
+R25 reached a completed, accepted appearance producer but failed at its adapter's `handoff_control_plane_digest` predicate. The prelaunch replay had stopped inside the producer and missed that consumer boundary. The regression now carries relocated capsule frames through the real downstream reference consumer, and the saved R25 output is replayed through both the appearance adapter and that consumer before another paid launch. No original failure or review receipt is rewritten.

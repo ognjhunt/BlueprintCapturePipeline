@@ -97,7 +97,15 @@ def test_real_builtin_chain_accepts_checkpoint_hydration_and_skips_paid_prefix(
     render_inputs["result_digest"] = canonical_digest(
         render_inputs, digest_field="result_digest"
     )
-    identities = list(builtin_scene_configuration_adapter_handlers())
+    # The registry also contains provided-mesh compatibility adapters. This
+    # rehearsal exercises the six-stage ArtiFixer construction recipe.
+    installed = {identity.adapter_id: identity
+                 for identity in builtin_scene_configuration_adapter_handlers()}
+    identities = [installed[name] for name in (
+        "artifixer3d_observed_object_removal", "sage_exact_prim_excision",
+        "content_agents_rigid_replacement", "simready_static_rigid_qualification",
+        "simready_native_import_qualification", "native_task_scene_assembly",
+    )]
     stages = []
     for index, (capability, identity) in enumerate(
         zip(CAPABILITY_ORDER, identities, strict=True), start=1

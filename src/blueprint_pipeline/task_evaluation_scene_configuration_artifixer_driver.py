@@ -107,6 +107,7 @@ from .task_evaluation_scene_configuration_openai_gate import (
 )
 from .task_evaluation_scene_configuration_render_handoff import (
     materialize_provider_render_handoff,
+    materialize_capsule_render_handoff,
 )
 from .task_evaluation_scene_configuration_stage_tool import (
     COMPONENT_RESULT_SCHEMA_VERSION,
@@ -1977,8 +1978,9 @@ def execute_artifixer_component(
     expected_frame_cost = prepared["expected_frame_cost"]
     visual_review_cap = prepared["visual_review_cap"]
     semantic_repair_used = prepared["semantic_repair_used"]
-    render_handoff = (materialize_provider_render_handoff(
-        render_inputs=prepared["render_inputs"], output_root=output_root)
+    render_handoff = (materialize_capsule_render_handoff(
+        prepared_render_inputs=prepared["render_inputs"],
+        current_render_inputs=envelope["render_inputs_result"], output_root=output_root)
         if from_capsule else prepared["render_handoff"])
     first_round_root = work / "artifixer_candidate_round_0"
     training = _run_artifixer_training_round(

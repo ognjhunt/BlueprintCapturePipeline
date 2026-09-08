@@ -126,6 +126,44 @@ def materialize_provider_render_handoff(
     }
 
 
+def materialize_capsule_render_handoff(
+    *, prepared_render_inputs: Mapping[str, Any],
+    current_render_inputs: Mapping[str, Any], output_root: str | Path,
+) -> dict[str, Any]:
+    """Carry exact capsule frames using this worker's relocated render identity.
+
+    CPU preparation and provider hydration use different local paths. Preserve
+    the original control-plane identity and require identical camera/frame bytes
+    before issuing a handoff bound to the current materialized render record.
+    A deferred provider render still uses the completed record in the capsule.
+    """
+    prepared_digest = (prepared_render_inputs.get("control_plane_result_digest")
+                       or prepared_render_inputs.get("result_digest"))
+    current_digest = (current_render_inputs.get("control_plane_result_digest")
+                      or current_render_inputs.get("result_digest"))
+    if prepared_digest != current_digest:
+        raise TaskEvaluationSceneConfigurationRenderHandoffError(
+            "scene_configuration_capsule_render_control_plane_changed")
+    selected = prepared_render_inputs
+    if current_render_inputs.get("status") == MATERIALIZED_STATUS:
+        def frames(value):
+            rows = value.get("derived_frames")
+            if not isinstance(rows, list) or not rows:
+                raise TaskEvaluationSceneConfigurationRenderHandoffError(
+                    "scene_configuration_capsule_render_frames_invalid")
+            identities = [(r.get("camera_id"), r.get("digest"), r.get("size_bytes"))
+                          for r in rows if isinstance(r, Mapping)]
+            if len(identities) != len(rows) or len({r[0] for r in identities}) != len(rows):
+                raise TaskEvaluationSceneConfigurationRenderHandoffError(
+                    "scene_configuration_capsule_render_frames_invalid")
+            return sorted(identities, key=lambda r: str(r[0]))
+        if frames(prepared_render_inputs) != frames(current_render_inputs):
+            raise TaskEvaluationSceneConfigurationRenderHandoffError(
+                "scene_configuration_capsule_render_frames_changed")
+        selected = current_render_inputs
+    return materialize_provider_render_handoff(render_inputs=selected, output_root=output_root)
+
+
 def validate_provider_render_handoff(
     path: str | Path,
 ) -> tuple[dict[str, Any], tuple[Path, ...]]:
