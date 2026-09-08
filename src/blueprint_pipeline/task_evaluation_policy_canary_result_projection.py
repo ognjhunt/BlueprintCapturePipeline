@@ -63,6 +63,9 @@ def build_policy_canary_result_projection(
     """Project evidence-bound result fields without exposing provider internals."""
 
     episodes = list(result.get("episodes") or [])
+    candidate_ids = list(result.get("candidate_ids") or CANDIDATE_IDS)
+    if len(candidate_ids) != 2 or len(set(candidate_ids)) != 2:
+        raise error_factory("policy_canary_candidate_pair_invalid")
     task_success_contract = delivery.get("task_success_contract")
     task_success_contract_digest = delivery.get("task_success_contract_digest")
     if (
@@ -237,7 +240,7 @@ def build_policy_canary_result_projection(
     delivered_candidate_results = {
         row["candidate_id"]: row for row in delivery.get("candidate_results") or []
     }
-    for candidate in CANDIDATE_IDS:
+    for candidate in candidate_ids:
         rows = [row for row in projected_episodes if row["candidate_id"] == candidate]
         failures: dict[str, int] = {}
         for row in rows:
@@ -271,7 +274,7 @@ def build_policy_canary_result_projection(
             for row in projected_episodes
             if row["candidate_id"] == candidate
         }
-        for candidate in CANDIDATE_IDS
+        for candidate in candidate_ids
     ]
     result_status = str(delivery["result_status"])
     blockers = [str(item) for item in result.get("blockers") or [] if str(item)]
@@ -317,7 +320,7 @@ def build_policy_canary_result_projection(
         "episode_interpretation": deepcopy(
             dict(delivery.get("episode_interpretation") or {})
         ),
-        "candidate_ids": list(CANDIDATE_IDS),
+        "candidate_ids": candidate_ids,
         "candidate_results": candidate_results,
         "episodes": projected_episodes,
         "comparison": {

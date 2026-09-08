@@ -258,7 +258,20 @@ class GrootN17WirePolicyClient:
         if self.api_token:
             request["api_token"] = self.api_token
         try:
-            self._socket.send(encode_wire_message(request))
+            encoded = encode_wire_message(request)
+            if endpoint == "get_action" and getattr(self, "request_evidence_sink", None) is not None:
+                try:
+                    from policy_request_evidence import capture_request
+                except ModuleNotFoundError:
+                    from .policy_request_evidence import capture_request
+                decoded = decode_wire_message(encoded)
+                # Credentials are transport authority, never policy input evidence.
+                scientific = dict(request["data"]["observation"])
+                evidence = capture_request(scientific, transport="groot_zmq_msgpack_numpy",
+                    scientific_wire_bytes=encode_wire_message(scientific),
+                    decoded_wire_request=decoded["data"]["observation"])
+                self.request_evidence_sink(evidence)
+            self._socket.send(encoded)
             message = self._socket.recv()
         except zmq.error.Again:
             self._replace_invalid_socket()
@@ -269,6 +282,9 @@ class GrootN17WirePolicyClient:
         if isinstance(response, Mapping) and "error" in response:
             raise RuntimeError(f"groot_wire_server_error:{response['error']}")
         return response
+
+    def bind_request_evidence_sink(self, sink) -> None:
+        self.request_evidence_sink = sink
 
     def ping(self) -> bool:
         try:

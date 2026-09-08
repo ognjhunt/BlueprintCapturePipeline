@@ -85,7 +85,7 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
         or counts["completed_diagnostic_control_rollout_count"]
         > counts["diagnostic_control_rollout_count"]
         or [row["candidate_id"] for row in result["candidate_results"]]
-        != ["pi05_droid", "groot_n17_droid"]
+        != result["candidate_ids"]
     ):
         raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_episode_counts_invalid")
     if result["result_status"] == "completed_unqualified":
@@ -93,7 +93,12 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
             raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_completion_invalid")
     elif not result["blockers"]:
         raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_terminal_blocker_missing")
+    observed_episode_keys = set()
     for episode in result["episodes"]:
+        key = (episode["candidate_id"], episode["cell_id"], episode["seed"])
+        if episode["candidate_id"] not in result["candidate_ids"] or key in observed_episode_keys:
+            raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_episode_membership_invalid")
+        observed_episode_keys.add(key)
         if episode["terminal_state"] == "completed" and not (
             episode["candidate_policy_queried"] and episode["actions_reached_robot"]
         ):

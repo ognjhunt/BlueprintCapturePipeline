@@ -1,0 +1,78 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_ test_dirty_rigid_scorer_cannot_reuse_clean_correction_identity[adp_rigid_task_scoring.py] _
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4833/test_dirty_rigid_scorer_cannot0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1033f77d0>
+changed = 'adp_rigid_task_scoring.py'
+
+    @pytest.mark.parametrize("changed", ["adp_rigid_task_scoring.py", "adp_rigid_retreat_scoring.py"])
+    def test_dirty_rigid_scorer_cannot_reuse_clean_correction_identity(tmp_path, monkeypatch, changed):
+        root = Path(rescore.__file__).resolve().parents[2]
+        sources = [
+            "adp_task_scoring.py", "adp009d_task_scoring.py",
+            "articulation_graph_contract.py", "decision_evidence_contracts.py",
+            "adp_rigid_task_scoring.py", "adp_rigid_retreat_scoring.py",
+        ]
+        package = tmp_path / "src/blueprint_pipeline"
+        package.mkdir(parents=True)
+        for name in sources:
+            (package / name).write_bytes((root / "src/blueprint_pipeline" / name).read_bytes())
+    
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(tmp_path), *args], text=True).strip()
+    
+        git("init", "--quiet")
+        git("add", "src")
+        git("-c", "user.name=Offline Audit", "-c", "user.email=audit@example.invalid",
+            "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Synthetic scorer identity")
+        commit = git("rev-parse", "HEAD")
+        monkeypatch.setattr(rescore, "__file__", str(package / "task_evaluation_policy_canary_rescore.py"))
+        clean = rescore.resolve_scorer_identity(expected_commit=commit)
+        with (package / changed).open("a") as stream:
+            stream.write("\n# Changed deterministic scoring implementation\n")
+>       with pytest.raises(rescore.PolicyCanaryRescoreError, match="sources_dirty"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE PolicyCanaryRescoreError
+
+tests/test_policy_comparison_rescore_identity_audit.py:35: Failed
+_ test_dirty_rigid_scorer_cannot_reuse_clean_correction_identity[adp_rigid_retreat_scoring.py] _
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4833/test_dirty_rigid_scorer_cannot1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x103417170>
+changed = 'adp_rigid_retreat_scoring.py'
+
+    @pytest.mark.parametrize("changed", ["adp_rigid_task_scoring.py", "adp_rigid_retreat_scoring.py"])
+    def test_dirty_rigid_scorer_cannot_reuse_clean_correction_identity(tmp_path, monkeypatch, changed):
+        root = Path(rescore.__file__).resolve().parents[2]
+        sources = [
+            "adp_task_scoring.py", "adp009d_task_scoring.py",
+            "articulation_graph_contract.py", "decision_evidence_contracts.py",
+            "adp_rigid_task_scoring.py", "adp_rigid_retreat_scoring.py",
+        ]
+        package = tmp_path / "src/blueprint_pipeline"
+        package.mkdir(parents=True)
+        for name in sources:
+            (package / name).write_bytes((root / "src/blueprint_pipeline" / name).read_bytes())
+    
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(tmp_path), *args], text=True).strip()
+    
+        git("init", "--quiet")
+        git("add", "src")
+        git("-c", "user.name=Offline Audit", "-c", "user.email=audit@example.invalid",
+            "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Synthetic scorer identity")
+        commit = git("rev-parse", "HEAD")
+        monkeypatch.setattr(rescore, "__file__", str(package / "task_evaluation_policy_canary_rescore.py"))
+        clean = rescore.resolve_scorer_identity(expected_commit=commit)
+        with (package / changed).open("a") as stream:
+            stream.write("\n# Changed deterministic scoring implementation\n")
+>       with pytest.raises(rescore.PolicyCanaryRescoreError, match="sources_dirty"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE PolicyCanaryRescoreError
+
+tests/test_policy_comparison_rescore_identity_audit.py:35: Failed
+=========================== short test summary info ============================
+FAILED tests/test_policy_comparison_rescore_identity_audit.py::test_dirty_rigid_scorer_cannot_reuse_clean_correction_identity[adp_rigid_task_scoring.py]
+FAILED tests/test_policy_comparison_rescore_identity_audit.py::test_dirty_rigid_scorer_cannot_reuse_clean_correction_identity[adp_rigid_retreat_scoring.py]
+2 failed in 0.81s

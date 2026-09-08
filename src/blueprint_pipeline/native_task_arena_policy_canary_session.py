@@ -611,6 +611,8 @@ def validate_session_result(
     by_candidate: dict[str, list[tuple[str, int]]] = {
         candidate: [] for candidate in candidate_ids
     }
+    candidate_identities: dict[str, tuple[str, str]] = {}
+    cell_scenarios: dict[tuple[str, int], tuple[Any, Any]] = {}
     for episode in episodes:
         row = _mapping(episode)
         candidate = str(row.get("candidate_id") or "")
@@ -629,6 +631,20 @@ def validate_session_result(
             or not _episode_evidence_valid(row)
         ):
             raise PolicyCanarySessionError("policy_canary_session_episode_invalid")
+        identity = (row["checkpoint_digest"], row["runtime_identity_digest"])
+        if candidate_identities.setdefault(candidate, identity) != identity:
+            raise PolicyCanarySessionError("policy_canary_session_candidate_identity_drift")
+        # Older retained results may have only the cell/seed labels. When a
+        # resolved scenario is retained, validate its bytes and compare the
+        # scientific binding, not candidate-specific reset-artifact hashes.
+        scenario = row.get("resolved_scenario")
+        scenario_digest = row.get("resolved_scenario_digest")
+        if scenario is not None or scenario_digest is not None:
+            if not isinstance(scenario, Mapping) or scenario_digest != canonical_digest(scenario):
+                raise PolicyCanarySessionError("policy_canary_session_scenario_digest_invalid")
+        scientific_binding = (row.get("cell_spec_digest"), scenario_digest)
+        if cell_scenarios.setdefault((cell_id, seed), scientific_binding) != scientific_binding:
+            raise PolicyCanarySessionError("policy_canary_session_scenario_pairing_invalid")
         observed.add(key)
         by_candidate[candidate].append((cell_id, seed))
     if (
@@ -790,6 +806,7 @@ def execute_paired_session(
                             ),
                         )
                     observed.update(context)
+                    episode_score = _mapping(_mapping(observed.get("episode")).get("score"))
                     observed["policy_outcome_interpretable"] = bool(
                         observed.get("candidate_policy_queried") is True
                         and observed.get("actions_reached_robot") is True
@@ -798,6 +815,13 @@ def execute_paired_session(
                         is True
                         and observed.get("scoring_authority")
                         == "deterministic_simulator_state"
+                        and (
+                            "episode" not in observed
+                            or (
+                                episode_score.get("status") == "scored"
+                                and isinstance(episode_score.get("task_succeeded"), bool)
+                            )
+                        )
                     )
                     observed["ranking_eligible"] = False
                     episodes.append(observed)

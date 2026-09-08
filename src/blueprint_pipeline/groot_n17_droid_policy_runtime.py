@@ -416,8 +416,35 @@ class GrootN17DroidPolicyClient:
                     pass
             raise
         self._client = client
+        self._modality_signature = {name: {"keys": list(_modality_keys(modality[name])),
+            "indices": list(_delta_indices(modality[name]))} for name in ("video", "state", "action", "language")}
         self._last_inference_evidence: dict[str, Any] | None = None
+        self._request_evidence: dict[str, Any] | None = None
+        self._request_evidence_sink = None
         self.candidate_policy_queried = False
+        self._reset_evidence = None
+
+    def _verify_live_modality(self) -> None:
+        modality = self._client.get_modality_config()
+        if not isinstance(modality, Mapping) or any(name not in modality for name in self._modality_signature):
+            raise ValueError("groot_live_modality_identity_changed")
+        actual = {name: {"keys": list(_modality_keys(modality[name])), "indices": list(_delta_indices(modality[name]))}
+                  for name in self._modality_signature}
+        if actual != self._modality_signature:
+            raise ValueError("groot_live_modality_identity_changed")
+
+    def bind_request_evidence_sink(self, sink) -> None:
+        self._request_evidence_sink = sink
+
+    def _retain_request(self, evidence: Mapping[str, Any]) -> None:
+        self._request_evidence = dict(evidence)
+        if self._request_evidence_sink is not None:
+            self._request_evidence_sink(evidence)
+
+    def last_request_evidence(self) -> dict[str, Any]:
+        if self._request_evidence is None:
+            raise ValueError("groot_policy_request_evidence_missing")
+        return json.loads(json.dumps(self._request_evidence))
 
     def infer(self, observation: Mapping[str, Any]) -> Any:
         import numpy as np
@@ -425,6 +452,8 @@ class GrootN17DroidPolicyClient:
         # Never let a refused observation inherit a prior episode's successful
         # response receipt when the warm client is reused.
         self._last_inference_evidence = None
+        self._request_evidence = None
+        self._verify_live_modality()
         exterior = _resize_with_pad(observation.get("observation/exterior_image_1_left"))
         wrist = _resize_with_pad(observation.get("observation/wrist_image_left"))
         joints = np.asarray(observation.get("observation/joint_position"), dtype=np.float32)
@@ -475,6 +504,15 @@ class GrootN17DroidPolicyClient:
             },
             "language": {LANGUAGE_KEY: [[prompt]]},
         }
+        try:
+            from policy_request_evidence import capture_request
+        except ModuleNotFoundError:
+            from .policy_request_evidence import capture_request
+        bind_wire_sink = getattr(self._client, "bind_request_evidence_sink", None)
+        if callable(bind_wire_sink):
+            bind_wire_sink(self._retain_request)
+        else:
+            self._retain_request(capture_request(request, transport="groot_injected_transport"))
         response = self._client.get_action(request)
         retained_response = _json_safe_vendor_response(response)
         self._last_inference_evidence.update({
@@ -554,8 +592,10 @@ class GrootN17DroidPolicyClient:
         """Reset the remote policy without carrying state across episodes."""
 
         response = self._client.reset()
-        if not isinstance(response, Mapping):
+        if not isinstance(response, Mapping) or response.get("error") or response.get("status") in {"failed", "error", "blocked"}:
             raise ValueError("groot_policy_reset_response_invalid")
+        self._reset_evidence = {"response": dict(response), "response_digest": "sha256:" + _canonical_sha256(response),
+            "reset_endpoint_called": True, "remote_internal_cache_readback": "not_exposed_by_frozen_interface"}
 
     def preflight_readiness(self) -> dict[str, Any]:
         """Reconfirm live transport/identity for the next warm-session episode."""
@@ -566,6 +606,10 @@ class GrootN17DroidPolicyClient:
         if self._client.ping() is not True:
             raise ValueError("groot_policy_server_unreachable")
         self.reset()
+        self._verify_live_modality()
+        self.candidate_policy_queried = False
+        self._last_inference_evidence = None
+        self._request_evidence = None
         return {
             "identity_verified": True,
             "transport": "nvidia_groot_zmq_msgpack",
@@ -579,6 +623,7 @@ class GrootN17DroidPolicyClient:
             "worker_identity_receipt_digest": self._worker_receipt.get(
                 "receipt_digest"
             ),
+            "policy_reset_evidence": self._reset_evidence,
         }
 
     def close(self) -> None:

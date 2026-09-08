@@ -1,0 +1,70 @@
+.....................F.................................................. [ 84%]
+.............                                                            [100%]
+=================================== FAILURES ===================================
+________ test_multicamera_media_rejects_unsynchronized_or_changed_frame ________
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4830/test_multicamera_media_rejects0')
+
+    def test_multicamera_media_rejects_unsynchronized_or_changed_frame(tmp_path) -> None:
+        with pytest.raises(ValueError, match="host_bytes_not_synchronized"):
+            persist_multicamera_observation(
+                {"external": np.zeros((32, 64, 3), dtype=np.uint8)},
+                output_dir=tmp_path,
+                episode_id="bad-sync",
+                observation_index=0,
+                kind="policy-input",
+                timestamp_ns=1,
+                simulation_time_s=0.0,
+                calibrations={"external": _calibration()},
+                source_devices={"external": "cuda:0"},
+                synchronizations={"external": {"host_bytes_ready": False}},
+            )
+    
+        episode_id = "episode-multicamera-tamper"
+        policy_input = _multicamera_observation(
+            tmp_path, episode_id=episode_id, index=0, kind="policy-input"
+        )
+        terminal = _multicamera_observation(
+            tmp_path,
+            episode_id=episode_id,
+            index=1,
+            kind="terminal-observation",
+        )
+        _, artifacts = finalize_multicamera_visual_evidence(
+            output_dir=tmp_path,
+            episode_id=episode_id,
+            identity={"policy_id": "groot_n17_droid"},
+            policy_input_observations=[policy_input],
+            terminal_observation=terminal,
+        )
+        manifest_artifact = next(
+            row
+            for row in artifacts
+            if row["role"] == "multicamera_observation_frame_manifest"
+        )
+        manifest = json.loads(
+            (tmp_path / manifest_artifact["relative_path"]).read_text(encoding="utf-8")
+        )
+        external_path = (
+            tmp_path
+            / manifest["policy_input_observations"][0]["views"]["external"][
+                "relative_path"
+            ]
+        )
+        from PIL import Image
+    
+        changed = np.full((32, 64, 3), 99, dtype=np.uint8)
+        Image.fromarray(changed, mode="RGB").save(external_path, format="PNG")
+    
+>       with pytest.raises(
+            ValueError,
+            match="multicamera_frame_manifest_(png|raw)_digest_mismatch",
+        ):
+E       AssertionError: Regex pattern did not match.
+E         Expected regex: 'multicamera_frame_manifest_(png|raw)_digest_mismatch'
+E         Actual message: 'multicamera_frame_manifest_retained_policy_frame_png_digest_mismatch'
+
+tests/test_episode_visual_evidence.py:527: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_episode_visual_evidence.py::test_multicamera_media_rejects_unsynchronized_or_changed_frame
+1 failed, 84 passed in 4.66s

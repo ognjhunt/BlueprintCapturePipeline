@@ -28,6 +28,11 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
+try:
+    from policy_scientific_reset import compare_reset_readbacks
+except ModuleNotFoundError:
+    from .policy_scientific_reset import compare_reset_readbacks
+
 try:  # flat provider-bundle layout
     from adp009d_droid_action_execution import (
         ACTION_SPACE_JOINT_VELOCITY,
@@ -132,6 +137,13 @@ except ModuleNotFoundError:  # repository package
     )
 try:  # flat provider-bundle layout
     from adp009d_policy_episode_evidence import (
+        measured_source_hw,
+        policy_view_composite,
+        persist_evaluation_camera_observation,
+        read_arm_joint_positions,
+        policy_prestart_evidence,
+        request_storage_bytes,
+        project_media_reserve_bytes,
         ARM_MOTION_EPSILON_RAD,
         BLOCKER_CLIENT_RETURNED_NOTHING,
         PolicyEpisodeEvidenceError,
@@ -144,6 +156,13 @@ try:  # flat provider-bundle layout
     )
 except ModuleNotFoundError:  # repository package
     from .adp009d_policy_episode_evidence import (
+        measured_source_hw,
+        policy_view_composite,
+        persist_evaluation_camera_observation,
+        read_arm_joint_positions,
+        policy_prestart_evidence,
+        request_storage_bytes,
+        project_media_reserve_bytes,
         ARM_MOTION_EPSILON_RAD,
         BLOCKER_CLIENT_RETURNED_NOTHING,
         PolicyEpisodeEvidenceError,
@@ -159,7 +178,6 @@ try:  # flat provider-bundle layout
         finalize_failed_policy_visual_evidence,
         finalize_manipulation_evaluation_visual_evidence,
         finalize_visual_evidence,
-        persist_multicamera_observation,
         persist_observation_frame,
     )
 except ModuleNotFoundError:  # repository package
@@ -167,7 +185,6 @@ except ModuleNotFoundError:  # repository package
         finalize_failed_policy_visual_evidence,
         finalize_manipulation_evaluation_visual_evidence,
         finalize_visual_evidence,
-        persist_multicamera_observation,
         persist_observation_frame,
     )
 try:  # flat provider-bundle layout
@@ -206,12 +223,8 @@ class PolicyEpisodeError(ValueError):
         super().__init__(";".join(self.errors))
 
 
-def _measured_source_hw(observed: set[tuple[int, int]]) -> tuple[int, int]:
-    """Return the unique measured input size; refuse absent or mixed sizes."""
-
-    if len(observed) != 1:
-        raise PolicyEpisodeError([BLOCKER_SOURCE_RESOLUTION_UNMEASURED])
-    return next(iter(observed))
+def _measured_source_hw(observed):
+    return _evidence(measured_source_hw, observed=observed)
 
 
 class EpisodeEnvironment(Protocol):
@@ -361,169 +374,80 @@ def _read_task_sample(
     return sample
 
 
-def _policy_view_composite(
-    observation: Mapping[str, Any], *, candidate_id: str
-) -> Any:
-    """One lossless RGB canvas containing every exact image shown to a policy."""
-
-    import numpy as np
-
-    view_order = list(CANDIDATE_REQUIRED_VIEWS[candidate_id])
-    views = [np.asarray(observation[name]) for name in view_order]
-    if not views or any(
-        view.dtype != np.uint8 or view.ndim != 3 or view.shape[2] != 3
-        for view in views
-    ):
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_view_invalid"]
-        )
-    if len({view.shape[0] for view in views}) != 1:
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_view_height_mismatch"]
-        )
-    return np.ascontiguousarray(np.concatenate(views, axis=1))
+def _policy_view_composite(observation, *, candidate_id):
+    return _evidence(policy_view_composite, observation=observation, candidate_id=candidate_id)
 
 
-def _persist_evaluation_camera_observation(
-    environment: EpisodeEnvironment,
-    *,
-    output_dir: Path,
-    episode_id: str,
-    observation_index: int,
-    kind: str,
-    exact_policy_input_camera_rgb: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    image_reader = getattr(environment, "read_evaluation_camera_inputs", None)
-    metadata_reader = getattr(environment, "read_control_observation_metadata", None)
-    if not callable(image_reader) or not callable(metadata_reader):
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:overview_camera_contract_missing"]
-        )
-    images = dict(image_reader())
-    if exact_policy_input_camera_rgb is not None:
-        if kind != "policy-input":
-            raise PolicyEpisodeError(
-                [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_camera_override_kind_invalid"]
-            )
-        exact_policy_inputs = dict(exact_policy_input_camera_rgb)
-        if set(exact_policy_inputs) != {"external", "wrist"}:
-            raise PolicyEpisodeError(
-                [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_camera_override_invalid"]
-            )
-        # These are the exact raw arrays used to build the observation passed
-        # to the policy.  The independent evaluation-camera read is retained
-        # only for the overview stream; it must not silently substitute a
-        # second external/wrist read for the policy's actual input bytes.
-        images.update(exact_policy_inputs)
-    missing = {"external", "wrist", "overview"} - set(images)
-    if missing:
-        raise PolicyEpisodeError(
-            [
-                f"{BLOCKER_ENVIRONMENT_CONTRACT}:evaluation_camera_missing:{camera_id}"
-                for camera_id in missing
-            ]
-        )
-    metadata = dict(metadata_reader())
-    return persist_multicamera_observation(
-        images,
-        output_dir=output_dir,
-        episode_id=episode_id,
-        observation_index=observation_index,
-        kind=kind,
-        timestamp_ns=int(metadata["timestamp_ns"]),
-        simulation_time_s=float(metadata["simulation_time_s"]),
-        calibrations=metadata["calibrations"],
-        source_devices=metadata["source_devices"],
-        synchronizations=metadata["synchronizations"],
-    )
+def _persist_evaluation_camera_observation(environment, **kwargs):
+    return _evidence(persist_evaluation_camera_observation, environment=environment, **kwargs)
 
 
-def _read_arm_joint_positions(environment: EpisodeEnvironment) -> list[float]:
-    reader = getattr(environment, "read_arm_joint_positions", None)
-    if not callable(reader):
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:read_arm_joint_positions_missing"]
-        )
-    raw = reader()
-    try:
-        values = [float(value) for value in raw]
-    except (TypeError, ValueError) as exc:
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:arm_joint_positions_invalid"]
-        ) from exc
-    if len(values) != ARM_JOINT_COUNT or not all(math.isfinite(value) for value in values):
-        raise PolicyEpisodeError(
-            [
-                f"{BLOCKER_ENVIRONMENT_CONTRACT}:"
-                f"arm_joint_positions_invalid:{len(values)}"
-            ]
-        )
-    return values
+def _read_arm_joint_positions(environment):
+    return _evidence(read_arm_joint_positions, environment=environment)
 
 
-def _policy_prestart_evidence(policy: DroidPolicyClient) -> dict[str, Any]:
-    """Reconfirm the live control plane without performing inference."""
-
-    preflight = getattr(policy, "preflight_readiness", None)
-    if callable(preflight):
-        raw = preflight()
-    else:
-        summary = getattr(policy, "evidence_summary", None)
-        if not callable(summary):
-            raise PolicyEpisodeError(
-                [f"{BLOCKER_PRESTART_READINESS}:policy_readiness_method_missing"]
-            )
-        raw = summary()
-    if not isinstance(raw, Mapping):
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_PRESTART_READINESS}:policy_readiness_invalid"]
-        )
-    evidence = json.loads(json.dumps(dict(raw), allow_nan=False))
-    if (
-        evidence.get("identity_verified") is not True
-        or evidence.get("candidate_policy_queried") not in {None, False}
-        or evidence.get("candidate_inference_performed") not in {None, False}
-        or evidence.get("policy_state_advanced") not in {None, False}
-        or evidence.get("last_inference_evidence") is not None
-    ):
-        raise PolicyEpisodeError(
-            [f"{BLOCKER_PRESTART_READINESS}:policy_control_plane_unready"]
-        )
-    return evidence
+def _policy_prestart_evidence(policy):
+    return _evidence(policy_prestart_evidence, policy=policy)
 
 
-def _project_media_reserve_bytes(
-    *,
-    camera_rgb: Mapping[str, Any],
-    evaluation_images: Mapping[str, Any],
-    max_policy_queries: int,
-    open_loop_horizon: int,
-    settle_window_samples: int,
-) -> int:
-    """Conservatively reserve lossless-frame, review-video, and atomic-write space."""
+_request_storage_bytes = request_storage_bytes
 
-    import numpy as np
 
-    policy_raw = sum(int(np.asarray(frame).nbytes) for frame in camera_rgb.values())
-    evaluation_raw = sum(
-        int(np.asarray(frame).nbytes) for frame in evaluation_images.values()
-    )
-    action_steps = int(max_policy_queries) * int(open_loop_horizon)
-    review_observations = (
-        action_steps + int(settle_window_samples)
-    ) // EVALUATION_REVIEW_FRAME_STRIDE_STEPS
-    # Each query retains the exact composite plus native external/wrist PNGs.
-    # Review/terminal observations retain all three cameras.  Multiplying the
-    # raw projection covers lossless codec overhead, derived videos, manifests,
-    # and the temporary bytes used by atomic writes/encoders.
-    projected_raw = (
-        2 * policy_raw * int(max_policy_queries)
-        + evaluation_raw * (review_observations + 1)
-    )
-    return max(
-        PRESTART_MEDIA_RESERVE_FLOOR_BYTES,
-        PRESTART_MEDIA_RESERVE_MULTIPLIER * projected_raw,
-    )
+def _project_media_reserve_bytes(**kwargs):
+    return project_media_reserve_bytes(**kwargs, frame_stride=EVALUATION_REVIEW_FRAME_STRIDE_STEPS, reserve_floor=PRESTART_MEDIA_RESERVE_FLOOR_BYTES, reserve_multiplier=PRESTART_MEDIA_RESERVE_MULTIPLIER)
+
+
+def _validate_task_reset_restoration(
+    initial: Mapping[str, Any], restored: Mapping[str, Any], task_spec: Mapping[str, Any]
+) -> None:
+    """Compare measured task reset fields, excluding episode bookkeeping.
+
+    Only frozen reset tolerances permit numerical differences. This is a task
+    readback check, not a claim that camera/physics configuration was measured.
+    """
+    fields = {
+        "can_pose_world", "task_object_pose_world", "destination_pose_world",
+        "joint_positions_rad", "joint_velocities_rad_s", "gripper_width_m",
+        "task_contact_active", "support_contact_active", "finger_contact_forces_n",
+        "robot_collision_failure", "scene_collision_failure", "containment_violation",
+        "forbidden_robot_task_collision_failure", "locked_joint_containment_violation",
+    }
+    for field in fields & (set(initial) | set(restored)):
+        left, right = initial.get(field), restored.get(field)
+        matches = field in initial and field in restored and left == right
+        if field.endswith("pose_world") and isinstance(left, list) and isinstance(right, list):
+            if len(left) == len(right) == 7:
+                prefix = "destination_" if field == "destination_pose_world" else ""
+                translation_tolerance = float(task_spec.get(prefix + "reset_translation_tolerance_m", 0.0))
+                rotation_key = "destination_reset_rotation_tolerance_rad" if prefix else "reset_orientation_tolerance_rad"
+                rotation_tolerance = float(task_spec.get(rotation_key, 0.0))
+                finite = all(math.isfinite(float(v)) for v in [*left, *right])
+                # q and -q represent the same physical rotation.
+                dot = abs(sum(float(a) * float(b) for a, b in zip(left[3:], right[3:], strict=True)))
+                matches = finite and math.dist(left[:3], right[:3]) <= translation_tolerance and (
+                    left[3:] == right[3:] or 2 * math.acos(min(1.0, dot)) <= rotation_tolerance
+                )
+        if not matches:
+            raise PolicyEpisodeError([f"{BLOCKER_PRESTART_READINESS}:task_reset_state_mismatch:{field}"])
+
+
+def _validate_initial_task_reset(sample: Mapping[str, Any], spec: Mapping[str, Any]) -> None:
+    """Validate the measured first task pose against the frozen owner spec."""
+    if spec.get("schema_version") == TASK_SPEC_GRAPH_SCHEMA_VERSION and spec.get("task_kind") == TASK_KIND_RIGID_PICK_PLACE:
+        pose = sample.get("task_object_pose_world")
+        expected = spec.get("start_pose_world")
+        if not isinstance(pose, list) or not isinstance(expected, list) or len(pose) != 7 or len(expected) != 7:
+            raise PolicyEpisodeError([f"{BLOCKER_PRESTART_READINESS}:task_reset_owner_pose_missing"])
+        _validate_task_reset_restoration({**sample, "task_object_pose_world": expected}, sample, spec)
+    elif (spec.get("schema_version") == TASK_SPEC_SCHEMA_VERSION
+          and spec.get("task_kind") == TASK_KIND_RIGID_PICK_PLACE
+          and spec.get("require_sealed_start_pose", True)):
+        # Reuse the legacy scorer's frozen CAN_START/HOLD tolerances. The
+        # one-sample outcome is ignored; this only validates the reset contract.
+        try:
+            score_task_episode_from_spec(task_spec=spec, samples=[dict(sample, step_index=0)])
+        except TaskNeutralScoringError as exc:
+            raise PolicyEpisodeError([f"{BLOCKER_PRESTART_READINESS}:task_reset_owner_contract_mismatch:{exc}"]) from exc
 
 
 def _prestart_episode_readiness(
@@ -539,7 +463,9 @@ def _prestart_episode_readiness(
     max_policy_queries: int,
     open_loop_horizon: int,
     settle_window_samples: int,
+    task_spec: Mapping[str, Any],
     observation_integrity: Mapping[str, Any] | None = None,
+    scientific_reset_reader: Callable[[], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Exercise every predictable runtime seam, then restore canonical reset.
 
@@ -581,6 +507,8 @@ def _prestart_episode_readiness(
         else "joint_positions_rad"
     )
     initial_task_sample = dict(_read_task_sample(environment, task_kind=task_kind))
+    _validate_initial_task_reset(initial_task_sample, task_spec)
+    initial_scientific_reset = scientific_reset_reader() if scientific_reset_reader is not None else None
     if required_task_field not in initial_task_sample:
         raise PolicyEpisodeError(
             [f"{BLOCKER_PRESTART_READINESS}:task_state_invalid"]
@@ -616,6 +544,7 @@ def _prestart_episode_readiness(
         max_policy_queries=max_policy_queries,
         open_loop_horizon=open_loop_horizon,
         settle_window_samples=settle_window_samples,
+        policy_request_bytes=_request_storage_bytes(observation),
     )
     media_root.mkdir(parents=True, exist_ok=True)
     free_bytes = int(shutil.disk_usage(media_root).free)
@@ -711,6 +640,12 @@ def _prestart_episode_readiness(
         raise PolicyEpisodeError(
             [f"{BLOCKER_PRESTART_READINESS}:canonical_reset_state_mismatch"]
         )
+    _validate_task_reset_restoration(initial_task_sample, restored_task_sample, task_spec)
+    restored_scientific_reset = scientific_reset_reader() if scientific_reset_reader is not None else None
+    if initial_scientific_reset is not None:
+        parity = compare_reset_readbacks(initial_scientific_reset, restored_scientific_reset)
+        if parity["status"] == "mismatch":
+            raise PolicyEpisodeError([f"{BLOCKER_PRESTART_READINESS}:scientific_reset_mismatch:" + ",".join(parity["mismatches"])])
     queried = bool(getattr(policy, "candidate_policy_queried", False))
     readiness = seal_prestart_readiness(
         {
@@ -748,6 +683,10 @@ def _prestart_episode_readiness(
             "reset_joint_positions_rad": reset_joints,
             "probe_joint_positions_rad": probe_joints,
             "restored_joint_positions_rad": restored_joints,
+            "initial_task_sample": initial_task_sample,
+            "restored_task_sample": restored_task_sample,
+            "initial_scientific_reset": initial_scientific_reset,
+            "restored_scientific_reset": restored_scientific_reset,
             "initial_task_sample_digest": canonical_digest(initial_task_sample),
             "probe_task_sample_digest": canonical_digest(probe_task_sample),
             "restored_task_sample_digest": canonical_digest(restored_task_sample),
@@ -787,6 +726,7 @@ def run_policy_episode(
     observation_integrity: Mapping[str, Any] | None = None,
     progress: dict[str, Any] | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    scientific_reset_reader: Callable[[], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run one episode end to end and return a digest-bound receipt.
 
@@ -877,6 +817,9 @@ def run_policy_episode(
             "episode_terminal_class": None,
         }
     )
+    policy_request_artifacts: list[dict[str, Any]] = []
+    sensor_freshness: list[dict[str, Any]] = []
+    episode_progress["policy_request_artifacts"] = policy_request_artifacts
 
     def _emit_progress(phase: str) -> None:
         episode_progress["phase"] = phase
@@ -937,15 +880,14 @@ def run_policy_episode(
             max_policy_queries=int(max_policy_queries),
             open_loop_horizon=int(open_loop_horizon),
             settle_window_samples=int(settle_window_samples),
+            task_spec=resolved_task_spec,
+            scientific_reset_reader=scientific_reset_reader,
             observation_integrity=observation_integrity,
         )
         episode_progress["prestart_readiness"] = prestart_readiness
         episode_progress["episode_readiness_verified"] = True
         _emit_progress("episode_readiness_verified")
     episode_started_monotonic = time.monotonic()
-    if require_prestart_readiness:
-        episode_progress["episode_started"] = True
-        _emit_progress("episode_started")
     timings_seconds = {
         "reset_and_initial_state": 0.0,
         "policy_input_read": 0.0,
@@ -980,6 +922,23 @@ def run_policy_episode(
         )
     )
     previous_index = step_index
+    _validate_initial_task_reset(samples[0], resolved_task_spec)
+    scientific_reset = scientific_reset_reader() if scientific_reset_reader is not None else None
+    episode_progress["scientific_reset"] = scientific_reset
+    if require_prestart_readiness:
+        _validate_task_reset_restoration(
+            prestart_readiness["restored_task_sample"], samples[0], resolved_task_spec
+        )
+        if any(abs(left - right) > ARM_MOTION_EPSILON_RAD for left, right in zip(
+            prestart_readiness["restored_joint_positions_rad"], joint_trace[0], strict=True
+        )):
+            raise PolicyEpisodeError([f"{BLOCKER_PRESTART_READINESS}:canonical_reset_state_mismatch"])
+        if scientific_reset is not None:
+            parity = compare_reset_readbacks(prestart_readiness["restored_scientific_reset"], scientific_reset)
+            if parity["status"] == "mismatch":
+                raise PolicyEpisodeError([f"{BLOCKER_PRESTART_READINESS}:scientific_reset_mismatch:" + ",".join(parity["mismatches"])])
+        episode_progress["episode_started"] = True
+        _emit_progress("episode_started")
     timings_seconds["reset_and_initial_state"] += time.monotonic() - phase_started
 
     queries: list[dict[str, Any]] = []
@@ -1156,6 +1115,7 @@ def run_policy_episode(
         if failure_reason:
             visual_evidence["episode_failure_reason"] = str(failure_reason)
         timings_seconds["media_persistence"] += time.monotonic() - phase_started
+        media_artifacts = [*media_artifacts, *policy_request_artifacts]
         sealed_visual_evidence = visual_evidence
         sealed_media_artifacts = media_artifacts
         # A typed derived-video gap is a durable failure result, but the
@@ -1271,6 +1231,13 @@ def run_policy_episode(
             "task_kind": task_kind,
             "task_spec": resolved_task_spec,
             "task_spec_digest": canonical_digest(resolved_task_spec),
+            "scientific_reset": scientific_reset,
+            "policy_request_artifacts": policy_request_artifacts,
+            "policy_request_gaps": [{"query_index": index, "reason": "no_serialized_request_before_terminal"}
+                for index in range(len(retained_policy_frames))
+                if index not in {row["query_index"] for row in policy_request_artifacts}],
+            "sensor_freshness": sensor_freshness,
+            "policy_request_evidence_complete": bool(policy_request_artifacts) and all(row["serialization_verified"] for row in policy_request_artifacts),
             "prompt": str(prompt),
             "policy_queries": len(candidate_policy_action_queries),
             "policy_observations_retained": len(retained_policy_frames),
@@ -1346,6 +1313,10 @@ def run_policy_episode(
     for query_index in range(int(max_policy_queries)):
         phase_started = time.monotonic()
         inputs = environment.read_policy_inputs()
+        sensor_freshness.append({"query_index": query_index,
+            "cameras": dict(inputs.get("sensor_freshness") or {}),
+            "verified": set(inputs.get("sensor_freshness") or {}) == {"external", "wrist"}
+                and all(row.get("status") == "observed" for row in (inputs.get("sensor_freshness") or {}).values())})
         timings_seconds["policy_input_read"] += time.monotonic() - phase_started
         camera_rgb = {
             view: inputs[view] for view in CANDIDATE_REQUIRED_VIEWS[candidate_id] if view in inputs
@@ -1442,6 +1413,23 @@ def run_policy_episode(
         phase_started = time.monotonic()
         episode_progress["candidate_policy_query_attempted"] = True
         _emit_progress("policy_query_started")
+        try:
+            from policy_request_evidence import capture_request, persist_request_evidence
+        except ModuleNotFoundError:
+            from .policy_request_evidence import capture_request, persist_request_evidence
+
+        def retain_request(evidence, index=query_index):
+            if media_root is not None and episode_id is not None:
+                policy_request_artifacts.append(persist_request_evidence(evidence,
+                    root=media_root, episode_id=episode_id, query_index=index,
+                    binding={**dict((scientific_reset or {}).get("binding") or {}),
+                             "candidate_id": candidate_id, "task_spec_digest": canonical_digest(resolved_task_spec)}))
+
+        bind_request_sink = getattr(policy, "bind_request_evidence_sink", None)
+        if callable(bind_request_sink):
+            bind_request_sink(retain_request)
+        else:
+            retain_request(capture_request(observation, transport="injected_policy_client"))
         try:
             chunk = policy.infer(observation)
         except BaseException as exc:
@@ -1920,6 +1908,10 @@ def run_policy_episode(
         "task_kind": task_kind,
         "task_spec": resolved_task_spec,
         "task_spec_digest": canonical_digest(resolved_task_spec),
+        "scientific_reset": scientific_reset,
+        "policy_request_artifacts": policy_request_artifacts,
+        "sensor_freshness": sensor_freshness,
+        "policy_request_evidence_complete": len(policy_request_artifacts) == int(max_policy_queries) and all(row["serialization_verified"] for row in policy_request_artifacts),
         "prompt": str(prompt),
         "policy_queries": len(queries),
         "policy_observations_retained": len(retained_policy_frames),
@@ -1972,6 +1964,8 @@ def run_policy_episode(
     }
     if prestart_readiness is not None:
         receipt["prestart_readiness"] = prestart_readiness
+    if media_root is not None and len(policy_request_artifacts) != int(max_policy_queries):
+        raise PolicyEpisodeError([f"{BLOCKER_POST_START_INFRASTRUCTURE}:policy_request_evidence_missing"])
     if lifecycle is not None:
         receipt["lifecycle"] = lifecycle
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")

@@ -369,6 +369,8 @@ def test_isolated_cell_results_aggregate_to_twenty_paired_episodes(
             }
         )
 
+    for child in children:
+        child["result_digest"] = canonical_digest(child, digest_field="result_digest")
     result = worker._aggregate_isolated_cell_results(
         authority={},
         inputs={

@@ -989,12 +989,13 @@ def test_forbidden_robot_object_collision_emits_specific_safety_event() -> None:
     samples = [
         _rigid_v2_sample(0, [1.0, 2.0, 0.8]),
         _rigid_v2_sample(1, [1.0, 2.0, 0.83]),
+        *[_rigid_v2_sample(step, [1.0, 2.0, 0.83]) for step in range(2, 72)],
         _rigid_v2_sample(72, [1.15, 2.0, 0.83]),
         _rigid_v2_sample(73, [1.15, 2.0, 0.8]),
         _rigid_v2_sample(74, [1.15, 2.0, 0.8]),
         _rigid_v2_sample(75, [1.15, 2.0, 0.8]),
     ]
-    samples[2].update(
+    samples[72].update(
         robot_collision_failure=True,
         forbidden_robot_task_collision_failure=True,
         robot_task_forbidden_collision_peak_force_n=4.519003553,

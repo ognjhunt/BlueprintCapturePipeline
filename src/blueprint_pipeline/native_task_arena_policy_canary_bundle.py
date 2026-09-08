@@ -28,7 +28,6 @@ from .native_task_arena_bundle import (
 from .native_task_arena_execution_contract import POLICY_RUNTIME_MODULE_NAMES
 from .provider_runtime_import_closure import assert_provider_runtime_import_closure
 from .native_task_arena_policy_canary_session import (
-    CANDIDATE_IDS,
     CLAIM_CEILING,
     EPISODES_PER_POLICY,
     LEARNED_ROLLOUT_COUNT,
@@ -244,6 +243,8 @@ def build_policy_canary_session_bundle(
             _read(groot_execution_spec_path), candidate="groot_n17_droid"
         ),
     }
+    if set(specs) != set(inputs["candidate_ids"]) or set(specs) != set(authority["candidate_ids"]):
+        raise ValueError("policy_canary_provider_candidate_interfaces_not_admitted")
     if any(
         spec.get("task_success_contract") != inputs["task_success_contract"]
         or spec.get("task_success_contract_digest")
@@ -296,7 +297,7 @@ def build_policy_canary_session_bundle(
         with zipfile.ZipFile(base["bundle_path"]) as archive:
             archive.extractall(root)
         runtime = root / "provider_runtime"
-        for candidate in CANDIDATE_IDS:
+        for candidate in inputs["candidate_ids"]:
             script = runtime / f"adp009d_policy_provisioning.{candidate}.sh"
             script.write_text(build_provisioning_script(candidate), encoding="utf-8")
             script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
@@ -325,7 +326,7 @@ def build_policy_canary_session_bundle(
                 "execution_mode": "internal_policy_canary_paired_session",
                 "run_kind": RUN_KIND,
                 "claim_ceiling": CLAIM_CEILING,
-                "candidate_ids": list(CANDIDATE_IDS),
+                "candidate_ids": list(inputs["candidate_ids"]),
                 "episodes_per_policy": EPISODES_PER_POLICY,
                 "learned_policy_rollout_count": LEARNED_ROLLOUT_COUNT,
                 "maximum_provider_allocations": 1,
