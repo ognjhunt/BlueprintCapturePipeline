@@ -3605,6 +3605,11 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
         "_portable_construction_envelope",
         lambda _receipt: publication_envelope,
     )
+    monkeypatch.setattr(
+        scene_vast,
+        "_publication_envelope",
+        lambda _receipt, **_kwargs: publication_envelope,
+    )
 
     roles = {
         "configured_appearance_without_source_object": "appearance.usdc",
@@ -5149,3 +5154,57 @@ def test_scene_configuration_onstart_provisions_the_bundled_browser_libraries() 
         script.split(" install -y ", 1)[1].split(" >", 1)[0].split()
     )
     assert required_browser_packages <= installed
+
+
+def test_publication_restores_only_bound_metadata_from_portable_bundle(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_configuration_vast import _publication_envelope, TaskEvaluationSceneConfigurationVastError
+    payload = b'{"task":"book"}'
+    row = {'contract_path':'task.definition','provider_relative_path':'input/references/0001',
+           'digest':'sha256:'+hashlib.sha256(payload).hexdigest(),'size_bytes':len(payload),
+           'full_byte_service_account_readback_passed':True}
+    envelope = {'schema_version':'task_evaluation_scene_construction_envelope.v1',
+                'expected_production_commit':'a'*40,'run_id':'run','materialized_references':[row]}
+    envelope['envelope_digest']=canonical_digest(envelope,digest_field='envelope_digest')
+    path=tmp_path/'bundle.zip'
+    with zipfile.ZipFile(path,'w') as archive:
+        archive.writestr('provider_runtime/input/portable_construction_envelope.v1.json',json.dumps(envelope))
+        archive.writestr('provider_runtime/input/references/0001',payload)
+        archive.writestr('provider_runtime/unneeded.bin',b'not required for publication')
+    receipt={'bundle_path':str(path),'portable_construction_envelope_digest':envelope['envelope_digest'],
+             'source_commit':'a'*40,'run_id':'run'}
+    restored=_publication_envelope(receipt,output_root=tmp_path/'publication')
+    local=Path(restored['materialized_references'][0]['materialized_path'])
+    assert local.read_bytes()==payload
+    assert len(list((tmp_path/'publication').rglob('*.*')))==1
+    assert 'materialized_path' not in row
+    assert restored['publication_source_envelope_digest']==envelope['envelope_digest']
+    assert restored['envelope_digest']==canonical_digest(restored,digest_field='envelope_digest')
+    assert _publication_envelope(receipt,output_root=tmp_path/'publication')==restored
+    local.chmod(0o640)
+    local.write_bytes(b'changed')
+    with pytest.raises(TaskEvaluationSceneConfigurationVastError,match='publication_input_destination_changed'):
+        _publication_envelope(receipt,output_root=tmp_path/'publication')
+
+
+@pytest.mark.parametrize('bad', ['path','size','digest'])
+def test_publication_metadata_restore_rejects_wrong_bundle_members(tmp_path,bad):
+    from blueprint_pipeline.task_evaluation_scene_configuration_vast import _publication_envelope, TaskEvaluationSceneConfigurationVastError
+    payload=b'{}'
+    row={'contract_path':'task.definition','provider_relative_path':'input/references/0001',
+         'digest':'sha256:'+hashlib.sha256(payload).hexdigest(),'size_bytes':len(payload)}
+    if bad=='path':
+        row['provider_relative_path']='../outside'
+    elif bad=='size':
+        row['size_bytes']+=1
+    else:
+        row['digest']='sha256:'+'0'*64
+    envelope={'schema_version':'task_evaluation_scene_construction_envelope.v1','expected_production_commit':'a'*40,
+              'run_id':'run','materialized_references':[row]}
+    envelope['envelope_digest']=canonical_digest(envelope,digest_field='envelope_digest')
+    path=tmp_path/'bundle.zip'
+    with zipfile.ZipFile(path,'w') as archive:
+        archive.writestr('provider_runtime/input/portable_construction_envelope.v1.json',json.dumps(envelope))
+        archive.writestr('provider_runtime/input/references/0001',payload)
+    with pytest.raises(TaskEvaluationSceneConfigurationVastError,match='publication_input_'):
+        _publication_envelope({'bundle_path':str(path),'portable_construction_envelope_digest':envelope['envelope_digest'],
+                              'source_commit':'a'*40,'run_id':'run'},output_root=tmp_path/'publication')

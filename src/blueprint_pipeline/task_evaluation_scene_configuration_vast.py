@@ -814,6 +814,54 @@ def _portable_construction_envelope(
     return envelope
 
 
+def _publication_envelope(receipt: Mapping[str, Any], *, output_root: Path) -> dict[str, Any]:
+    """Restore only the small, byte-bound inputs the publisher must reopen."""
+    envelope = _portable_construction_envelope(receipt)
+    original_digest = envelope["envelope_digest"]
+    needed = {"task.definition", "construction.recipe.supplemental_destination.simready_result"}
+    root = output_root / "publication_inputs"
+    with zipfile.ZipFile(Path(str(receipt["bundle_path"]))) as archive:
+        names = archive.namelist()
+        if len(names) != len(set(names)):
+            raise TaskEvaluationSceneConfigurationVastError("publication_input_duplicate_archive_member")
+        for index, row in enumerate(envelope.get("materialized_references") or []):
+            if row.get("contract_path") not in needed:
+                continue
+            existing = Path(str(row.get("materialized_path") or ""))
+            if row.get("materialized_path") and existing.is_file() and not existing.is_symlink():
+                if existing.stat().st_size != row["size_bytes"] or _sha256(existing) != row["digest"]:
+                    raise TaskEvaluationSceneConfigurationVastError("publication_input_existing_bytes_changed")
+                continue
+            relative = Path(str(row.get("provider_relative_path") or ""))
+            size = row.get("size_bytes")
+            if (relative.is_absolute() or ".." in relative.parts
+                    or not str(relative).startswith("input/references/")
+                    or type(size) is not int or not 0 < size <= 16 * 1024**2):
+                raise TaskEvaluationSceneConfigurationVastError("publication_input_reference_invalid")
+            info = archive.getinfo("provider_runtime/" + relative.as_posix())
+            if info.file_size != size:
+                raise TaskEvaluationSceneConfigurationVastError("publication_input_member_size_invalid")
+            data = archive.read(info)
+            if "sha256:" + hashlib.sha256(data).hexdigest() != row["digest"]:
+                raise TaskEvaluationSceneConfigurationVastError("publication_input_member_digest_invalid")
+            root.mkdir(mode=0o750, parents=True, exist_ok=True)
+            if any(path.is_symlink() for path in (root, *root.parents)):
+                raise TaskEvaluationSceneConfigurationVastError("publication_input_root_unsafe")
+            target = root / f"{index:04d}.json"
+            if target.exists():
+                if target.is_symlink() or target.read_bytes() != data:
+                    raise TaskEvaluationSceneConfigurationVastError("publication_input_destination_changed")
+            else:
+                with target.open("xb") as stream:
+                    stream.write(data)
+                target.chmod(0o440)
+            row["materialized_path"] = str(target.resolve())
+            row["full_byte_service_account_readback_passed"] = True
+    envelope["publication_source_envelope_digest"] = original_digest
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    return envelope
+
+
 def _publication_stage_results(
     execution: Mapping[str, Any], *, extraction_root: Path
 ) -> list[dict[str, Any]]:
@@ -879,7 +927,7 @@ def _publish_completed_configuration(
 ) -> dict[str, Any]:
     output_root.mkdir(mode=0o750)
     publication = publish_configured_scene_revision(
-        envelope=_portable_construction_envelope(receipt),
+        envelope=_publication_envelope(receipt, output_root=output_root),
         stage_results=_publication_stage_results(
             execution, extraction_root=extraction_root
         ),
