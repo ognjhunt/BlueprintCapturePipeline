@@ -1035,10 +1035,13 @@ def _stage_openai_token(environment: Mapping[str, str], *, stage: str) -> str:
 @contextmanager
 def _temporary_openai_key(token: str):
     previous = os.environ.get("OPENAI_API_KEY")
+    previous_file = os.environ.pop("OPENAI_API_KEY_FILE", None)
     os.environ["OPENAI_API_KEY"] = token
     try:
         yield
     finally:
+        if previous_file is not None:
+            os.environ["OPENAI_API_KEY_FILE"] = previous_file
         if previous is None:
             os.environ.pop("OPENAI_API_KEY", None)
         else:
@@ -1297,6 +1300,16 @@ def _run_artifixer_visual_review_round(
     review_input_path.write_text(
         canonical_json(review_input) + "\n", encoding="utf-8"
     )
+    if review_phase == "pre_training_semantic_targets" and review_round == 0:
+        from .task_evaluation_artifixer_pretraining import (
+            CPU_PREPARATION_ENV, REVIEW_CACHE_ENV, reuse_real_pretraining_review,
+        )
+        if environment.get(CPU_PREPARATION_ENV) == "1" and environment.get(REVIEW_CACHE_ENV):
+            cached = reuse_real_pretraining_review(
+                cache_path=environment[REVIEW_CACHE_ENV], current_input_path=review_input_path,
+                output_root=round_root)
+            if cached is not None:
+                return cached
     rights_digest = _sha256(rights_path)
     review_rights_path = round_root / "artifixer_ai_visual_review_rights.v1.json"
     human = _human_authority(configuration)
@@ -1563,53 +1576,10 @@ def _admit_semantic_training_targets(*, locality_seal, work, output_root,
             "semantic_repair_used": repaired or selection is not None}
 
 
-def execute_artifixer_component(
-    *,
-    environment: Mapping[str, str] | None = None,
-    runner: Any = subprocess.run,
-) -> dict[str, Any]:
-    """Run the released production chain once inside its parent GPU."""
-
-    values = dict(os.environ if environment is None else environment)
-    stage_input_path = _required_path(values, _INPUT_ENV)
-    stage_input = _read(
-        stage_input_path,
-        code="scene_configuration_artifixer_input_invalid",
-    )
-    dependencies = json.loads(_required_path(values, _DEPENDENCIES_ENV).read_text(encoding="utf-8"))
-    stage = stage_input.get("stage") or {}
-    configuration = stage_input.get("configuration") or {}
-    envelope = stage_input.get("construction_envelope") or {}
-    request = envelope.get("request")
-    try:
-        review_mode = (
-            appearance_review_mode(request)
-            if isinstance(request, Mapping)
-            else REQUIRED_MODE
-        )
-    except AppearanceReviewContractError as exc:
-        raise TaskEvaluationSceneConfigurationArtifixerError(str(exc)) from exc
-    if (
-        stage.get("adapter", {}).get("id") != _ADAPTER_ID
-        or configuration.get("schema_version")
-        != "observed_appearance_object_removal_configuration.v1"
-        or review_mode is None
-        or dependencies != []
-    ):
-        raise TaskEvaluationSceneConfigurationArtifixerError(
-            "scene_configuration_artifixer_input_invalid"
-        )
-    tuning = _artifixer_tuning(configuration)
-    output_root = _required_path(values, _OUTPUT_ENV)
-    package_root = _required_path(values, _PACKAGE_ENV)
-    component_result_path = _required_path(values, _RESULT_ENV)
-    work = output_root / "released_artifixer_runtime"
-    work.mkdir(mode=0o700)
-    authority, rights_path, publisher_scene_id = _write_execution_authority(
-        envelope=envelope,
-        configuration=configuration,
-        destination=work / "execution_authority.v1.json",
-    )
+def _prepare_semantic_prefix(*, values, stage_input_path, stage_input, envelope, configuration,
+        authority, authority_path, rights_path, publisher_scene_id, output_root, work, package_root,
+        review_mode):
+    """CPU and bounded API work only; no ArtiFixer training is invoked here."""
     # A rights-admitted scene arrives with its render still owed. Finish it
     # here, on the GPU this stage already occupies, before anything reads
     # the frames.
@@ -1650,6 +1620,9 @@ def execute_artifixer_component(
         isinstance(render_inputs, Mapping)
         and render_inputs.get("status") == PENDING_PROVIDER_RENDER_STATUS
     ):
+        if values.get("BLUEPRINT_ARTIFIXER_CPU_PRETRAINING_ONLY") == "1":
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_pretraining_source_frames_required")
         # The bundle records these paths relative to the provider *runtime*
         # root ("input/render/source_appearance.ply"), not to this component's
         # package directory. Joining them to package_root looks under
@@ -1673,9 +1646,7 @@ def execute_artifixer_component(
             ),
         }
     render_handoff = materialize_provider_render_handoff(
-        render_inputs=envelope["render_inputs_result"],
-        output_root=output_root,
-    )
+        render_inputs=envelope["render_inputs_result"], output_root=output_root)
     _preflight, task_id = _materialize_preflight(
         envelope=envelope,
         configuration=configuration,
@@ -1844,6 +1815,111 @@ def execute_artifixer_component(
         teacher_receipt_path = admission["teacher_receipt_path"]
         visual_review_cap = admission["remaining_visual_review_cap"]
         semantic_repair_used = admission["semantic_repair_used"]
+    return ({
+        "render_handoff": render_handoff,
+        "render_inputs": envelope["render_inputs_result"],
+        "task_id": task_id,
+        "candidate": candidate,
+        "candidate_path": candidate_path,
+        "teacher_receipt_path": teacher_receipt_path,
+        "semantic_request": semantic_request,
+        "semantic_result": semantic_result,
+        "locality_seal": locality_seal,
+        "semantic_checkpoint": semantic_checkpoint,
+        "checkpoint_root": checkpoint_root,
+        "post_training_checkpoint_root": post_training_checkpoint_root,
+        "semantic_cap": semantic_cap,
+        "expected_frame_cost": expected_frame_cost,
+        "visual_review_cap": visual_review_cap,
+        "semantic_repair_used": semantic_repair_used,
+    }, token)
+
+
+def execute_artifixer_component(
+    *,
+    environment: Mapping[str, str] | None = None,
+    runner: Any = subprocess.run,
+) -> dict[str, Any]:
+    """Run the released production chain once inside its parent GPU."""
+
+    values = dict(os.environ if environment is None else environment)
+    stage_input_path = _required_path(values, _INPUT_ENV)
+    stage_input = _read(
+        stage_input_path,
+        code="scene_configuration_artifixer_input_invalid",
+    )
+    dependencies = json.loads(_required_path(values, _DEPENDENCIES_ENV).read_text(encoding="utf-8"))
+    stage = stage_input.get("stage") or {}
+    configuration = stage_input.get("configuration") or {}
+    envelope = stage_input.get("construction_envelope") or {}
+    request = envelope.get("request")
+    try:
+        review_mode = (
+            appearance_review_mode(request)
+            if isinstance(request, Mapping)
+            else REQUIRED_MODE
+        )
+    except AppearanceReviewContractError as exc:
+        raise TaskEvaluationSceneConfigurationArtifixerError(str(exc)) from exc
+    if (
+        stage.get("adapter", {}).get("id") != _ADAPTER_ID
+        or configuration.get("schema_version")
+        != "observed_appearance_object_removal_configuration.v1"
+        or review_mode is None
+        or dependencies != []
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_input_invalid"
+        )
+    tuning = _artifixer_tuning(configuration)
+    output_root = _required_path(values, _OUTPUT_ENV)
+    package_root = _required_path(values, _PACKAGE_ENV)
+    component_result_path = _required_path(values, _RESULT_ENV)
+    work = output_root / "released_artifixer_runtime"
+    work.mkdir(mode=0o700)
+    authority, rights_path, publisher_scene_id = _write_execution_authority(
+        envelope=envelope,
+        configuration=configuration,
+        destination=work / "execution_authority.v1.json",
+    )
+    from .task_evaluation_artifixer_pretraining import (
+        CPU_PREPARATION_ENV, GPU_PREPARATION_REQUIRED_ENV,
+        consume_pretraining_capsule, write_pretraining_state,
+    )
+    prepared = consume_pretraining_capsule(environment=values, stage_input=stage_input)
+    from_capsule = prepared is not None
+    if prepared is None:
+        if values.get(GPU_PREPARATION_REQUIRED_ENV) == "1" and values.get(CPU_PREPARATION_ENV) != "1":
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_pretraining_admission_missing")
+        prepared, token = _prepare_semantic_prefix(
+            values=values, stage_input_path=stage_input_path, stage_input=stage_input,
+            envelope=envelope, configuration=configuration, authority=authority,
+            authority_path=work / "execution_authority.v1.json", rights_path=rights_path,
+            publisher_scene_id=publisher_scene_id, output_root=output_root, work=work,
+            package_root=package_root, review_mode=review_mode)
+    else:
+        token = _stage_openai_token(values, stage="artifixer_semantic_teacher")
+    if values.get(CPU_PREPARATION_ENV) == "1":
+        return write_pretraining_state(state=prepared, stage_input=stage_input,
+            output_path=component_result_path)
+    task_id = prepared["task_id"]
+    candidate = prepared["candidate"]
+    candidate_path = Path(prepared["candidate_path"])
+    teacher_receipt_path = Path(prepared["teacher_receipt_path"])
+    semantic_request = Path(prepared["semantic_request"])
+    semantic_result = prepared["semantic_result"]
+    locality_seal = prepared["locality_seal"]
+    semantic_checkpoint = prepared["semantic_checkpoint"]
+    post_training_checkpoint_root = (Path(prepared["post_training_checkpoint_root"])
+        if prepared.get("post_training_checkpoint_root") else None)
+    semantic_cap = prepared["semantic_cap"]
+    expected_frame_cost = prepared["expected_frame_cost"]
+    visual_review_cap = prepared["visual_review_cap"]
+    semantic_repair_used = prepared["semantic_repair_used"]
+    render_handoff = (materialize_provider_render_handoff(
+        render_inputs=prepared["render_inputs"], output_root=output_root)
+        if from_capsule else prepared["render_handoff"])
     first_round_root = work / "artifixer_candidate_round_0"
     training = _run_artifixer_training_round(
         round_root=first_round_root,

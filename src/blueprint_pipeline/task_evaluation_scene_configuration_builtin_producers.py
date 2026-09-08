@@ -318,6 +318,9 @@ def validate_scene_configuration_toolchain(
 
 def _secret_values(environment: Mapping[str, str]) -> list[str]:
     values: list[str] = []
+    capsule_url = str(environment.get("BLUEPRINT_ARTIFIXER_PRETRAINING_CAPSULE_URL") or "")
+    if capsule_url:
+        values.append(capsule_url)
     for name in _SECRET_ENVIRONMENT_FILES:
         unresolved = str(environment.get(name) or "").strip()
         if not unresolved:

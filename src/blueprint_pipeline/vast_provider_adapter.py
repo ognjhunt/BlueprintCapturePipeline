@@ -8455,6 +8455,8 @@ def run_vast_provider_adapter(
             provider_output_put_url,
             provider_output_get_url,
             runtime_dependency_url,
+            *(value for name, value in (provider_runtime_environment or {}).items()
+              if name.endswith("_URL")),
         ),
         _string(inline_bundle_transport.get("inline_provider_bundle_base64")),
         *runtime_secret_values.values(),
