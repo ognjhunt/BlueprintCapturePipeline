@@ -153,7 +153,10 @@ def _thumbnail_selection(
         or receipt.get("schema_version")
         != "task_evaluation_artifixer_ai_visual_review.v1"
         or receipt.get("status") != "accepted"
-        or receipt.get("review_frame_count") != 8
+        or type(minimum_frame_count) is not int
+        or minimum_frame_count < 1
+        or type(receipt.get("review_frame_count")) is not int
+        or receipt["review_frame_count"] < minimum_frame_count
         or receipt.get("task_thumbnail_is_exact_review_frame") is not True
         or receipt.get("receipt_digest")
         != canonical_digest(receipt, digest_field="receipt_digest")
