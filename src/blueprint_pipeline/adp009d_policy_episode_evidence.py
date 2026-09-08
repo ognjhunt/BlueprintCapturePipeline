@@ -8,6 +8,8 @@ digest-bound evidence without querying a policy or mutating an environment.
 from __future__ import annotations
 
 import math
+import json
+from pathlib import Path
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -479,7 +481,214 @@ def motion_and_command_evidence(
     return motion_evidence, action_summary
 
 
+try:
+    from adp009d_droid_observation import CANDIDATE_REQUIRED_VIEWS
+except ModuleNotFoundError:
+    from .adp009d_droid_observation import CANDIDATE_REQUIRED_VIEWS
+
+BLOCKER_ENVIRONMENT_CONTRACT = "policy_episode_environment_contract_violated"
+BLOCKER_SOURCE_RESOLUTION_UNMEASURED = "policy_episode_source_resolution_unmeasured_or_mixed"
+BLOCKER_PRESTART_READINESS = PRESTART_READINESS_BLOCKER
+
+def measured_source_hw(observed: set[tuple[int, int]]) -> tuple[int, int]:
+    """Return the unique measured input size; refuse absent or mixed sizes."""
+
+    if len(observed) != 1:
+        raise PolicyEpisodeEvidenceError([BLOCKER_SOURCE_RESOLUTION_UNMEASURED])
+    return next(iter(observed))
+
+
+def policy_view_composite(
+    observation: Mapping[str, Any], *, candidate_id: str
+) -> Any:
+    """One lossless RGB canvas containing every exact image shown to a policy."""
+
+    import numpy as np
+
+    view_order = list(CANDIDATE_REQUIRED_VIEWS[candidate_id])
+    views = [np.asarray(observation[name]) for name in view_order]
+    if not views or any(
+        view.dtype != np.uint8 or view.ndim != 3 or view.shape[2] != 3
+        for view in views
+    ):
+        raise PolicyEpisodeEvidenceError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_view_invalid"]
+        )
+    if len({view.shape[0] for view in views}) != 1:
+        raise PolicyEpisodeEvidenceError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_media_view_height_mismatch"]
+        )
+    return np.ascontiguousarray(np.concatenate(views, axis=1))
+
+
+def persist_evaluation_camera_observation(
+    environment: Any,
+    *,
+    output_dir: Path,
+    episode_id: str,
+    observation_index: int,
+    kind: str,
+    exact_policy_input_camera_rgb: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        from episode_visual_evidence import persist_multicamera_observation
+    except ModuleNotFoundError:
+        from .episode_visual_evidence import persist_multicamera_observation
+
+    image_reader = getattr(environment, "read_evaluation_camera_inputs", None)
+    metadata_reader = getattr(environment, "read_control_observation_metadata", None)
+    if not callable(image_reader) or not callable(metadata_reader):
+        raise PolicyEpisodeEvidenceError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:overview_camera_contract_missing"]
+        )
+    images = dict(image_reader())
+    if exact_policy_input_camera_rgb is not None:
+        if kind != "policy-input":
+            raise PolicyEpisodeEvidenceError(
+                [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_camera_override_kind_invalid"]
+            )
+        exact_policy_inputs = dict(exact_policy_input_camera_rgb)
+        if set(exact_policy_inputs) != {"external", "wrist"}:
+            raise PolicyEpisodeEvidenceError(
+                [f"{BLOCKER_ENVIRONMENT_CONTRACT}:policy_camera_override_invalid"]
+            )
+        # These are the exact raw arrays used to build the observation passed
+        # to the policy.  The independent evaluation-camera read is retained
+        # only for the overview stream; it must not silently substitute a
+        # second external/wrist read for the policy's actual input bytes.
+        images.update(exact_policy_inputs)
+    missing = {"external", "wrist", "overview"} - set(images)
+    if missing:
+        raise PolicyEpisodeEvidenceError(
+            [
+                f"{BLOCKER_ENVIRONMENT_CONTRACT}:evaluation_camera_missing:{camera_id}"
+                for camera_id in missing
+            ]
+        )
+    metadata = dict(metadata_reader())
+    return persist_multicamera_observation(
+        images,
+        output_dir=output_dir,
+        episode_id=episode_id,
+        observation_index=observation_index,
+        kind=kind,
+        timestamp_ns=int(metadata["timestamp_ns"]),
+        simulation_time_s=float(metadata["simulation_time_s"]),
+        calibrations=metadata["calibrations"],
+        source_devices=metadata["source_devices"],
+        synchronizations=metadata["synchronizations"],
+    )
+
+
+def read_arm_joint_positions(environment: Any) -> list[float]:
+    reader = getattr(environment, "read_arm_joint_positions", None)
+    if not callable(reader):
+        raise PolicyEpisodeEvidenceError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:read_arm_joint_positions_missing"]
+        )
+    raw = reader()
+    try:
+        values = [float(value) for value in raw]
+    except (TypeError, ValueError) as exc:
+        raise PolicyEpisodeEvidenceError(
+            [f"{BLOCKER_ENVIRONMENT_CONTRACT}:arm_joint_positions_invalid"]
+        ) from exc
+    if len(values) != ARM_JOINT_COUNT or not all(math.isfinite(value) for value in values):
+        raise PolicyEpisodeEvidenceError(
+            [
+                f"{BLOCKER_ENVIRONMENT_CONTRACT}:"
+                f"arm_joint_positions_invalid:{len(values)}"
+            ]
+        )
+    return values
+
+
+def policy_prestart_evidence(policy: Any) -> dict[str, Any]:
+    """Reconfirm the live control plane without performing inference."""
+
+    preflight = getattr(policy, "preflight_readiness", None)
+    if callable(preflight):
+        raw = preflight()
+    else:
+        summary = getattr(policy, "evidence_summary", None)
+        if not callable(summary):
+            raise PolicyEpisodeEvidenceError(
+                [f"{BLOCKER_PRESTART_READINESS}:policy_readiness_method_missing"]
+            )
+        raw = summary()
+    if not isinstance(raw, Mapping):
+        raise PolicyEpisodeEvidenceError(
+            [f"{BLOCKER_PRESTART_READINESS}:policy_readiness_invalid"]
+        )
+    evidence = json.loads(json.dumps(dict(raw), allow_nan=False))
+    if (
+        evidence.get("identity_verified") is not True
+        or evidence.get("candidate_policy_queried") not in {None, False}
+        or evidence.get("candidate_inference_performed") not in {None, False}
+        or evidence.get("policy_state_advanced") not in {None, False}
+        or evidence.get("last_inference_evidence") is not None
+    ):
+        raise PolicyEpisodeEvidenceError(
+            [f"{BLOCKER_PRESTART_READINESS}:policy_control_plane_unready"]
+        )
+    return evidence
+
+
+def request_storage_bytes(observation: Mapping[str, Any]) -> int:
+    try:
+        from policy_request_evidence import snapshot_request
+    except ModuleNotFoundError:
+        from .policy_request_evidence import snapshot_request
+    return len(json.dumps(snapshot_request(observation), sort_keys=True).encode("utf-8")) + 4096
+
+
+def project_media_reserve_bytes(
+    *,
+    camera_rgb: Mapping[str, Any],
+    evaluation_images: Mapping[str, Any],
+    max_policy_queries: int,
+    open_loop_horizon: int,
+    settle_window_samples: int,
+    frame_stride: int,
+    reserve_floor: int,
+    reserve_multiplier: int,
+    policy_request_bytes: int = 0,
+) -> int:
+    """Conservatively reserve lossless-frame, review-video, and atomic-write space."""
+
+    import numpy as np
+
+    policy_raw = sum(int(np.asarray(frame).nbytes) for frame in camera_rgb.values())
+    evaluation_raw = sum(
+        int(np.asarray(frame).nbytes) for frame in evaluation_images.values()
+    )
+    action_steps = int(max_policy_queries) * int(open_loop_horizon)
+    review_observations = (
+        action_steps + int(settle_window_samples)
+    ) // frame_stride
+    # Each query retains the exact composite plus native external/wrist PNGs.
+    # Review/terminal observations retain all three cameras.  Multiplying the
+    # raw projection covers lossless codec overhead, derived videos, manifests,
+    # and the temporary bytes used by atomic writes/encoders.
+    projected_raw = (
+        (2 * policy_raw + 2 * int(policy_request_bytes)) * int(max_policy_queries)
+        + evaluation_raw * (review_observations + 1)
+    )
+    return max(
+        reserve_floor,
+        reserve_multiplier * projected_raw,
+    )
+
+
 __all__ = [
+    "measured_source_hw",
+    "policy_view_composite",
+    "persist_evaluation_camera_observation",
+    "read_arm_joint_positions",
+    "policy_prestart_evidence",
+    "request_storage_bytes",
+    "project_media_reserve_bytes",
+
     "BLOCKER_POLICY_INPUT_SATURATION_GATE_UNAVAILABLE",
     "PRESTART_READINESS_BLOCKER",
     "policy_input_saturation_evidence",
