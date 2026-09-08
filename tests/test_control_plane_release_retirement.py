@@ -183,3 +183,44 @@ def test_apply_removes_only_planned_trees_and_re_proves_the_active_release(tmp_p
     for kept in (A, C, D, F):
         assert (host["releases"] / kept).is_dir()
     assert (host["releases"] / "README.txt").is_file()
+
+
+def test_configured_preparation_runtime_is_retained_after_queues_empty(tmp_path):
+    from scripts.deploy_control_plane_commit import DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS
+    machinery_name = "/etc/blueprint/task-evaluation-public-scene-machinery.json"
+    assert machinery_name in DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS
+    assert "/etc/blueprint/task-evaluation-scene-preparation-bootstrap.json" in DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS
+    now = 5_000_000.0
+    host = _host(tmp_path, now=now)
+    machinery = tmp_path / "task-evaluation-public-scene-machinery.json"
+    renderer = host["runtimes"] / "splat-render" / E
+    machinery.write_text(json.dumps({"preparation": {"runtime_root": str(renderer)}}))
+    plan = build_release_retirement_plan(
+        release_root=host["releases"], runtime_root=host["runtimes"],
+        active_link=host["active"], current_commit=A,
+        protected_reference_roots=[host["profiles"], machinery, host["queue"]],
+        keep_last=1, now=lambda: now,
+    )
+    assert plan["status"] == "dry_run"
+    assert plan["protected_commits"][E] == ["named_by_protected_reference"]
+    result = apply_release_retirement_plan(
+        plan, ack=EXECUTE_ACK, active_link=host["active"], release_root=host["releases"]
+    )
+    assert E not in {row["commit"] for row in result["removed"]}
+    assert (renderer / "payload.bin").read_bytes() == b"x" * 128
+
+
+def test_unreadable_protected_config_cannot_silently_allow_retirement(tmp_path):
+    now = 5_000_000.0
+    host = _host(tmp_path, now=now)
+    config = tmp_path / "active-machinery.json"
+    actual = tmp_path / "actual.json"
+    actual.write_text(json.dumps({"runtime_root": str(host["runtimes"] / E)}))
+    config.symlink_to(actual)
+    plan = build_release_retirement_plan(
+        release_root=host["releases"], runtime_root=host["runtimes"],
+        active_link=host["active"], current_commit=A,
+        protected_reference_roots=[host["profiles"], config], keep_last=1, now=lambda: now,
+    )
+    assert plan["status"] != "dry_run"
+    assert "release_retirement_protected_reference_unsafe:active-machinery.json" in plan["blockers"]
