@@ -429,6 +429,7 @@ def test_default_factory_uses_wire_only_client_for_real_loopback_round_trip() ->
         probe.bind(("127.0.0.1", 0))
         port = int(probe.getsockname()[1])
     ready = threading.Event()
+    endpoints: list[str] = []
 
     def server() -> None:
         context = zmq.Context()
@@ -436,8 +437,9 @@ def test_default_factory_uses_wire_only_client_for_real_loopback_round_trip() ->
         reply.bind(f"tcp://127.0.0.1:{port}")
         ready.set()
         try:
-            for _ in range(3):
+            for _ in range(4):
                 request = decode_wire_message(reply.recv())
+                endpoints.append(request["endpoint"])
                 if request["endpoint"] == "ping":
                     response = {"status": "ok"}
                 elif request["endpoint"] == "get_modality_config":
@@ -505,11 +507,13 @@ def test_default_factory_uses_wire_only_client_for_real_loopback_round_trip() ->
         worker_identity_receipt=_receipt(),
         host="127.0.0.1",
         port=port,
+        timeout_ms=2000,
     )
     assert client.infer(_observation()).shape == (40, 8)
     client.close()
     thread.join(timeout=2.0)
     assert not thread.is_alive()
+    assert endpoints == ["ping", "get_modality_config", "get_modality_config", "get_action"]
 
 
 def test_client_rejects_unverified_or_mismatched_worker_identity() -> None:
