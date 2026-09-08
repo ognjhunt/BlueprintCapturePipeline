@@ -1085,7 +1085,11 @@ def _run_artifixer_training_round(
     post_training_checkpoint_root: Path | None,
     post_training_checkpoint_output: Path | None,
 ) -> dict[str, Any]:
-    """Train or hydrate one candidate and bind its exact eight review frames."""
+    """Train or hydrate one candidate and bind its exact review frames."""
+
+    if not isinstance(candidate.get("appearance_initialization"), Mapping):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_preserved_source_appearance_required")
 
     round_root.mkdir(parents=True, mode=0o700)
     dual_root = round_root / "dual_target_inputs"
@@ -1815,22 +1819,22 @@ def _prepare_semantic_prefix(*, values, stage_input_path, stage_input, envelope,
         teacher_receipt_path = admission["teacher_receipt_path"]
         visual_review_cap = admission["remaining_visual_review_cap"]
         semantic_repair_used = admission["semantic_repair_used"]
-    background_policy = configuration.get("background_support_initialization")
-    if background_policy is not None:
-        if background_policy != {
-            "policy": "registered_local_subset_of_immutable_segment_contribution_candidate",
-            "preserve_source_appearance": True,
-            "require_registered_mesh_support": True,
-            "require_independent_post_training_review": True,
-        } or review_mode != REQUIRED_MODE:
-            raise TaskEvaluationSceneConfigurationArtifixerError(
-                "scene_configuration_artifixer_background_policy_invalid")
-        from .artifixer_background_initialization import prepare_background_supported_inputs
-        candidate, candidate_path, teacher_receipt_path = prepare_background_supported_inputs(
-            envelope=envelope, configuration=configuration, candidate=candidate,
-            teacher_receipt_path=teacher_receipt_path,
-            preflight_path=work / "calibrated_preflight.v1.json",
-            output_root=work / "registered_background_repair")
+    required_background_policy = {
+        "policy": "registered_local_subset_of_immutable_segment_contribution_candidate",
+        "preserve_source_appearance": True,
+        "require_registered_mesh_support": True,
+        "require_independent_post_training_review": True,
+    }
+    background_policy = configuration.get("background_support_initialization", required_background_policy)
+    if background_policy != required_background_policy or review_mode != REQUIRED_MODE:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_background_policy_invalid")
+    from .artifixer_background_initialization import prepare_background_supported_inputs
+    candidate, candidate_path, teacher_receipt_path = prepare_background_supported_inputs(
+        envelope=envelope, configuration=configuration, candidate=candidate,
+        teacher_receipt_path=teacher_receipt_path,
+        preflight_path=work / "calibrated_preflight.v1.json",
+        output_root=work / "registered_background_repair")
     return ({
         "render_handoff": render_handoff,
         "render_inputs": envelope["render_inputs_result"],

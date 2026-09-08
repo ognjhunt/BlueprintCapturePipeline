@@ -405,3 +405,33 @@ def test_training_target_acceptance_cannot_seal_final_appearance(tmp_path):
             minimum_review_frames=2,
             output_path=tmp_path / "invalid-final.json",
         )
+
+
+def test_cosmetic_seams_do_not_override_hard_review_gates(tmp_path: Path) -> None:
+    final, execution = _inputs(tmp_path)
+    value = json.loads(execution.read_text())
+    for row in value["frames"]:
+        row["cosmetic_warnings"] = ["Minor wood grain and brightness boundary."]
+        row["repair_priority"] = 0
+    value["execution_digest"] = canonical_digest(value, digest_field="execution_digest")
+    execution.write_text(json.dumps(value))
+    assert seal_artifixer_ai_visual_review(
+        final_composite_receipt_path=final, review_execution_receipt_path=execution,
+        publisher_instance_id="104", minimum_review_frames=2,
+        output_path=tmp_path / "accepted.json")["status"] == "accepted"
+    value["frames"][0]["source_object_absent"] = False
+    value["execution_digest"] = canonical_digest(value, digest_field="execution_digest")
+    execution.write_text(json.dumps(value))
+    with pytest.raises(TaskEvaluationArtifixerAIVisualReviewError):
+        seal_artifixer_ai_visual_review(
+            final_composite_receipt_path=final, review_execution_receipt_path=execution,
+            publisher_instance_id="104", minimum_review_frames=2,
+            output_path=tmp_path / "rejected.json")
+
+
+def test_final_review_policy_distinguishes_cosmetics_from_blocking_defects() -> None:
+    assert "cosmetic warnings, not rejection reasons" in module._PROMPT
+    assert "missing support surfaces or large black/blank holes" in module._PROMPT
+    assert "surviving covers, pages" in module._PROMPT
+    assert "major cross-view" in module._PROMPT
+    assert "reject any such remnant or visible repair seam" not in module._PROMPT

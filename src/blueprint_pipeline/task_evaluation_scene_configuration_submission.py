@@ -347,13 +347,13 @@ def materialize_scene_configuration_submission(
         records.stage_six_configuration(scene_identity=task["scene_identity"], support_plane=support,
                                        start_center=start, bottom_z=lower[2]),
     ]
-    if sam_plan_ref is not None:
-        configs[0]["background_support_initialization"] = {
+    configs[0]["background_support_initialization"] = {
             "policy": "registered_local_subset_of_immutable_segment_contribution_candidate",
             "preserve_source_appearance": True,
             "require_registered_mesh_support": True,
             "require_independent_post_training_review": True,
-        }
+    }
+    if sam_plan_ref is not None:
         configs[0]["gaussian_cutout"] = {
             "selection_rule": SAM31_SELECTION_RULE, "retained_rows_must_remain_byte_exact": True}
         configs[0]["required_views"]["minimum"] = 16

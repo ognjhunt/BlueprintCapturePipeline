@@ -502,9 +502,24 @@ def materialize_selective_repair_request(
         raise TaskEvaluationArtifixerSelectiveRepairError(
             "scene_configuration_artifixer_selective_repair_cost_invalid"
         )
-    projected_repair_cost = float(expected_request_cost_usd) * len(rejected)
     remaining_cost = float(maximum_stage_cost_usd) - float(base_cost)
-    if remaining_cost + 1e-9 < projected_repair_cost:
+    affordable_count = max(0, math.floor((remaining_cost + 1e-9) / float(expected_request_cost_usd)))
+    for selected in rejected:
+        priority = selected["review_row"].get("repair_priority", 0)
+        if isinstance(priority, bool) or not isinstance(priority, int) or not 0 <= priority <= 3:
+            raise TaskEvaluationArtifixerSelectiveRepairError(
+                "scene_configuration_artifixer_selective_repair_priority_invalid")
+    # Spend the one correction round on the worst admitted views. Unselected
+    # failures remain visible and the complete rerendered set must pass review.
+    rejected.sort(key=lambda item: (
+        -int(item["review_row"].get("repair_priority", 0)),
+        -int(item["review_row"].get("source_object_absent") is False),
+        -int(item["review_row"].get("preserves_non_target_content") is False),
+        str(item["review_row"]["camera_id"])))
+    all_rejected_camera_ids = [str(item["review_row"]["camera_id"]) for item in rejected]
+    rejected = rejected[:min(MAX_SELECTIVE_REPAIR_FRAMES, affordable_count)]
+    projected_repair_cost = float(expected_request_cost_usd) * len(rejected)
+    if not rejected:
         raise TaskEvaluationArtifixerSelectiveRepairError(
             "scene_configuration_artifixer_selective_repair_cost_insufficient"
         )
@@ -599,6 +614,10 @@ def materialize_selective_repair_request(
         "task_id": task_id,
         "selected_frames": selected_rows,
         "selected_frame_count": len(selected_rows),
+        "selection_policy": "highest_priority_failures_within_remaining_stage_budget",
+        "all_rejected_camera_ids": all_rejected_camera_ids,
+        "deferred_rejected_camera_ids": all_rejected_camera_ids[len(selected_rows):],
+        "full_set_review_required_after_retraining": True,
         "review_input_digest": review["receipt_digest"],
         "review_execution_digest": execution["execution_digest"],
         "semantic_locality_receipt_digest": locality["receipt_digest"],

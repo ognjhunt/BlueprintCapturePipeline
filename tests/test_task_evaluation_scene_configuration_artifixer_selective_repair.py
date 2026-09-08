@@ -737,3 +737,28 @@ def test_pretraining_preserves_accepted_sealed_views_even_if_raw_outside_changed
     )
     assert staged["plan"]["selected_frame_count"] == 1
     assert "Failed-candidate feedback:" in staged["repair_request"]["prompt"]
+
+
+def test_budget_selects_worst_views_and_preserves_unselected_failures(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path / "all-sixteen", rejected_count=16, frame_count=16,
+                       implausible_repair=True)
+    execution = json.loads(Path(fixture["execution_path"]).read_text())
+    for row in execution["frames"]:
+        row["repair_priority"] = 3 if row["camera_id"] == "camera-15" else 1
+    execution["execution_digest"] = canonical_digest(execution, digest_field="execution_digest")
+    Path(fixture["execution_path"]).write_text(json.dumps(execution))
+    base = fixture["source_result"]["computed_editor_cost_usd"]
+    staged = materialize_selective_repair_request(
+        review_input_path=fixture["review_path"], review_execution_path=fixture["execution_path"],
+        semantic_runtime_request_path=fixture["request_path"],
+        semantic_runtime_result=fixture["source_result"],
+        semantic_locality_receipt_path=fixture["locality"]["receipt_path"],
+        expected_request_cost_usd=.22, maximum_stage_cost_usd=float(base) + .45,
+        output_root=tmp_path / "bounded")
+    plan = staged["plan"]
+    assert plan["selected_frame_count"] == 2
+    assert plan["selected_frames"][0]["camera_id"] == "camera-15"
+    assert len(plan["deferred_rejected_camera_ids"]) == 14
+    assert plan["full_set_review_required_after_retraining"] is True
+    assert plan["maximum_repair_rounds"] == 1
+    assert plan["additional_provider_request_cap"] == 2

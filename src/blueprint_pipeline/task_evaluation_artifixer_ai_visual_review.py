@@ -45,25 +45,30 @@ AI_REVIEW_MAX_COST_USD = 0.75
 AI_REVIEW_MAX_INPUT_TOKENS = 80_000
 AI_REVIEW_MAX_OUTPUT_TOKENS = 8_000
 AI_REVIEW_MAX_FRAMES = 32
+FINAL_REVIEW_POLICY = "task_fit_object_free_appearance_v2"
 _PROMPT = (
-    "Independently review every digest-identified candidate frame, whether a composited "
-    "semantic training target or a rendered ArtiFixer output. Inspect the entire source "
-    "object footprint for surviving covers, pages, rims, fragments, outlines or shadows; "
-    "reject any such remnant or visible repair seam. The "
-    "source anchor and generated candidate must both be right-side-up; reject "
-    "any upside-down or incorrectly rolled frame. The "
-    "target source object must be absent, the locally generated replacement "
-    "surface must be visually plausible, and all non-target content must remain "
-    "unchanged. Then decide whether the set is mutually consistent across "
-    "cameras. If a camera is inconsistent with the set, mark that camera "
-    "rejected and identify the visible inconsistency in its rationale so a "
-    "bounded new image edit can target only that camera's exact repair mask. "
-    "Return every task/camera exactly once. Also choose exactly one "
-    "accepted, upright final frame as the task thumbnail: prefer a clear "
-    "wide-enough view that communicates the task surface and configured scene, "
-    "and bind the choice to its camera id and exact frame digest. Reject "
-    "uncertainty. This is "
-    "appearance review only, never collision, physics, or physical-world proof."
+    "Independently review every digest-identified rendered ArtiFixer frame for a "
+    "development-only fixed-arm task rehearsal. This is a task-fit appearance gate, "
+    "not a requirement for an invisible photorealistic edit. Inspect the entire source "
+    "object footprint. Reject surviving covers, pages, rims, fragments or object-shaped "
+    "remnants; missing support surfaces or large black/blank holes; wrong material or "
+    "surface geometry; major hallucinations; damaged non-target content; incorrect "
+    "orientation (both frames must be right-side-up); and major cross-view material or geometric inconsistency. "
+    "Minor repair seams, bounded wood-grain differences, modest brightness changes "
+    "and small blending artifacts are cosmetic warnings, not rejection reasons, when "
+    "the object is absent and the underlying task surface remains plausible. "
+    "A visible patch boundary alone does not make the surface implausible. Record "
+    "cosmetic_warnings and rationale honestly; do not claim the seams are invisible. "
+    "Set repair_is_locally_plausible true in that case. Reject a seam only when it "
+    "creates a substantial false edge, object-like obstacle or misleading surface "
+    "discontinuity, and explain that concrete failure. Preserve source reconstruction "
+    "imperfections already present in the anchor rather than blaming them on the edit. "
+    "Assign repair_priority 3 to object remnants, missing surfaces or damaged unrelated "
+    "content; 2 to major material/geometry defects; 1 to other blocking appearance "
+    "defects; and 0 to accepted frames including cosmetic warnings. Return every "
+    "task/camera exactly once. Choose one accepted upright frame as the task thumbnail, "
+    "bound to its camera id and digest. Unresolved uncertainty about a blocking defect "
+    "must fail closed. This review grants no collision, physics or physical-world proof."
 )
 
 
@@ -102,6 +107,8 @@ class ArtifixerFrameReviewDecision(BaseModel):
     preserves_non_target_content: bool
     decision: Literal["accepted", "rejected"]
     rationale: str = Field(min_length=1, max_length=1_000)
+    cosmetic_warnings: list[str] = Field(default_factory=list, max_length=16)
+    repair_priority: int = Field(default=0, ge=0, le=3)
 
 
 class ArtifixerThumbnailSelection(BaseModel):
@@ -658,6 +665,8 @@ def run_artifixer_ai_visual_review(
         "final_composite_receipt_digest": final["receipt_digest"],
         "review_frame_inventory_digest": canonical_digest({"frames": inventory}),
         "review_frame_count": len(inventory),
+        "review_policy": ("semantic_training_target_v1" if final.get("review_phase") == "pre_training_semantic_targets" else FINAL_REVIEW_POLICY),
+        "review_prompt_sha256": "sha256:" + hashlib.sha256(spec.instructions.encode()).hexdigest(),
         "reviewer": {
             "kind": "ai",
             "identity": AI_REVIEWER_ID,
@@ -808,6 +817,8 @@ def seal_artifixer_ai_visual_review(
         "semantic_object_absence_review_passed": True,
         "multiview_consistency_review_passed": True,
         "review_frame_count": len(inventory),
+        "review_policy": execution.get("review_policy", "legacy_review_policy_unrecorded"),
+        "review_prompt_sha256": execution.get("review_prompt_sha256"),
         "review_frame_inventory_digest": canonical_digest({"frames": inventory}),
         "all_review_frames_digest_bound": True,
         "task_thumbnail_selection": thumbnail,
