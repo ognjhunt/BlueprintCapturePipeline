@@ -128,6 +128,9 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-terminal-resource-release.path",
     "blueprint-gpu-spend-guard.service",
     "blueprint-gpu-spend-guard.timer",
+    "blueprint-completed-replay-cache-gc.service",
+    "blueprint-completed-replay-cache-gc.timer",
+    "blueprint-scene-project-spend-refresh.service",
     "blueprint-control-plane-storage-gc.service",
     "blueprint-control-plane-storage-gc.timer",
     "blueprint-control-plane-capacity.service",
@@ -173,6 +176,7 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # The storage reaper is no-spend housekeeping: it only ever removes
     # unpinned cache bytes and offloads sealed evidence behind pointers.
     "blueprint-control-plane-storage-gc.timer",
+    "blueprint-completed-replay-cache-gc.timer",
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.timer",
 )

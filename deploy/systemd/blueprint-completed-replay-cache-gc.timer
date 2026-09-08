@@ -1,0 +1,11 @@
+[Unit]
+Description=Clean completed offline replay caches every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=15s
+Unit=blueprint-completed-replay-cache-gc.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh retained scene spend exposure from local receipts
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+PrivateDevices=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+TimeoutStartSec=180
+Environment=PYTHONPATH=/opt/blueprint/task-evaluation-control-plane/src
+EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
+ExecStart=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python -c "from blueprint_pipeline.task_evaluation_scene_spend import refresh_configured_scene_project_spend; refresh_configured_scene_project_spend()"
