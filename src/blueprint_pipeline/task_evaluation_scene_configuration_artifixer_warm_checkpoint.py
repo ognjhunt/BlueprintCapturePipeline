@@ -579,6 +579,7 @@ def hydrate_artifixer_post_training_checkpoint(
                 "final_frame": {
                     "path": str(by_role[row["checkpoint_role"]].resolve()),
                     "sha256": _sha256(by_role[row["checkpoint_role"]]),
+                    "size_bytes": by_role[row["checkpoint_role"]].stat().st_size,
                 },
             }
             for row in checkpoint["review_frames"]

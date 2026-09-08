@@ -1084,6 +1084,7 @@ def _run_artifixer_training_round(
     source_semantic_checkpoint: Mapping[str, Any],
     post_training_checkpoint_root: Path | None,
     post_training_checkpoint_output: Path | None,
+    completed_training_reuse: dict | None = None,
 ) -> dict[str, Any]:
     """Train or hydrate one candidate and bind its exact review frames."""
 
@@ -1091,6 +1092,26 @@ def _run_artifixer_training_round(
         raise TaskEvaluationSceneConfigurationArtifixerError(
             "scene_configuration_artifixer_preserved_source_appearance_required")
 
+    if completed_training_reuse is not None:
+        from .artifixer_completed_training_reuse import hydrate_completed_training
+        reused = hydrate_completed_training(
+            reference=completed_training_reuse, candidate=dict(candidate),
+            teacher_receipt_path=teacher_receipt_path, tuning=dict(tuning),
+            configuration_sha256=stage_input["configuration_sha256"])
+        by_camera = {row["camera_id"]: row for row in reused["review_frames"]}
+        round_root.mkdir(parents=True, mode=0o700)
+        (round_root / "completed_training_reuse.json").write_text(
+            canonical_json(reused["reuse_receipt"]) + "\n")
+        return {
+            "review_frames": [{"frame_index": row["frame_index"], "camera_id": row["camera_id"],
+                "source_frame": row["input_retained_frame"],
+                "exact_repair_mask": row["input_exact_repair_mask"],
+                "final_frame": by_camera[row["camera_id"]]["final_frame"]}
+                for row in candidate["tasks"][0]["frames"]],
+            "native_appearance_source": Path(reused["native_appearance_path"]),
+            "post_training_binding_digest": reused["reuse_receipt"]["training_identity_digest"],
+            "runtime_result": reused["runtime_result"], "completed_training_reused": True,
+        }
     round_root.mkdir(parents=True, mode=0o700)
     dual_root = round_root / "dual_target_inputs"
     materialize_dual_target_artifixer3d_inputs(
@@ -1273,6 +1294,7 @@ def _run_artifixer_visual_review_round(
     post_training_binding_digest: str,
     max_cost_usd: float,
     review_phase: str = "post_training",
+    completed_review: dict | None = None,
 ) -> dict[str, Any]:
     """Call the unchanged independent gate for one exact candidate inventory."""
 
@@ -1304,6 +1326,11 @@ def _run_artifixer_visual_review_round(
     review_input_path.write_text(
         canonical_json(review_input) + "\n", encoding="utf-8"
     )
+    if completed_review is not None and review_phase == "post_training" and review_round == 0:
+        from .artifixer_completed_training_reuse import reuse_completed_review
+        return reuse_completed_review(reference=completed_review, current_input_path=review_input_path,
+            output_root=round_root, publisher_instance_id=str(configuration["source_object"]["publisher_instance_id"]),
+            minimum_frame_count=len(review_frames))
     if review_phase == "pre_training_semantic_targets" and review_round == 0:
         from .task_evaluation_artifixer_pretraining import (
             CPU_PREPARATION_ENV, REVIEW_CACHE_ENV, reuse_real_pretraining_review,
@@ -1921,6 +1948,18 @@ def execute_artifixer_component(
     else:
         token = _stage_openai_token(values, stage="artifixer_semantic_teacher")
     if values.get(CPU_PREPARATION_ENV) == "1":
+        from .artifixer_completed_training_reuse import SOURCE_ENV, stage_completed_training
+        if values.get(SOURCE_ENV):
+            prepared["completed_training_reuse"] = stage_completed_training(
+                source_launch_root=Path(values[SOURCE_ENV]), prepared=prepared,
+                stage_input=stage_input, tuning=tuning,
+                output_root=output_root / "completed_training_reuse")
+        from .artifixer_completed_training_reuse import REVIEW_ENV, stage_completed_review
+        if values.get(REVIEW_ENV):
+            if not prepared.get("completed_training_reuse"):
+                raise TaskEvaluationSceneConfigurationArtifixerError("completed_review_requires_retained_training")
+            prepared["completed_review"] = stage_completed_review(
+                source_root=Path(values[REVIEW_ENV]), output_root=output_root / "completed_review")
         return write_pretraining_state(state=prepared, stage_input=stage_input,
             output_path=component_result_path)
     task_id = prepared["task_id"]
@@ -1955,6 +1994,7 @@ def execute_artifixer_component(
         semantic_token=token,
         source_semantic_checkpoint=semantic_checkpoint,
         post_training_checkpoint_root=post_training_checkpoint_root,
+        completed_training_reuse=prepared.get("completed_training_reuse"),
         post_training_checkpoint_output=(
             output_root / "artifixer_post_training_checkpoint"
             if post_training_checkpoint_root is None
@@ -2056,6 +2096,7 @@ def execute_artifixer_component(
         environment=values,
         post_training_binding_digest=training["post_training_binding_digest"],
         max_cost_usd=(visual_review_cap if semantic_repair_used else visual_review_cap / 2),
+        completed_review=prepared.get("completed_review"),
     )
     review = reviewed["review"]
     review_frames = training["review_frames"]
