@@ -328,6 +328,11 @@ def test_diagnostic_driver_repairs_only_rejected_semantic_frame_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The retained render/semantic checkpoint feeds one bounded repair loop."""
+    # This orchestration fixture mocks training; real background initialization
+    # and exact source preservation are covered by their source-tensor tests.
+    monkeypatch.setattr(
+        "blueprint_pipeline.artifixer_background_initialization.prepare_background_supported_inputs",
+        lambda **kwargs: (kwargs["candidate"], Path("candidate.json"), kwargs["teacher_receipt_path"]))
     monkeypatch.setattr(driver, "_review_semantic_targets_before_training",
                         lambda **kwargs: {"review": {"decision": "accepted", "review_receipt": {"path": "fixture"}}})
 
@@ -1132,3 +1137,16 @@ def test_semantic_target_review_checks_composited_frames_before_training(tmp_pat
     assert captured[0]["review_phase"] == "pre_training_semantic_targets"
     assert captured[0]["review_frames"][0]["final_frame"]["path"] == str(tmp_path / "seal/tasks/target.png")
     assert captured[0]["post_training_binding_digest"] == seal["receipt"]["receipt_digest"]
+
+
+def test_training_refuses_a_legacy_appearance_candidate_before_any_runtime(tmp_path):
+    with pytest.raises(driver.TaskEvaluationSceneConfigurationArtifixerError,
+                       match="preserved_source_appearance_required"):
+        driver._run_artifixer_training_round(
+            round_root=tmp_path / "run", teacher_receipt_path=tmp_path / "teacher",
+            candidate={}, candidate_path=tmp_path / "candidate", package_root=tmp_path,
+            stage_input={}, tuning={}, configuration={}, environment={},
+            runner=lambda *args, **kwargs: pytest.fail("runtime must not start"),
+            semantic_token="", source_semantic_checkpoint={},
+            post_training_checkpoint_root=None, post_training_checkpoint_output=None)
+    assert not (tmp_path / "run").exists()
