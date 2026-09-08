@@ -160,7 +160,7 @@ def _provision_validated_link(*, link: Mapping[str, Any], scene_root: Path,
              intent.get("authenticated_issuer") in trusted_clients, "owner_intent_invalid")
     request = intake.validate_request(intent["request"], now=intent["accepted_at_epoch"])
     _require(not (directory / "revoked.json").exists(), "authority_revoked")
-    _require(moment < request["execution"]["expires_at_epoch"], "authority_expired")
+    _require(moment < intake.effective_execution_expiry(directory, intent), "authority_expired")
     _require(link["expected_production_commit"] == expected_production_commit, "release_mismatch")
     _require(link["task_id"] == request["task"]["task_id"], "task_mismatch")
     _require(catalog.get("schema_version") == CATALOG_SCHEMA and catalog.get("catalog_digest") ==
@@ -255,7 +255,7 @@ def _provision_validated_link(*, link: Mapping[str, Any], scene_root: Path,
             openai_project_id=binding["openai_project_id"], openai_api_key_id=binding["openai_api_key_id"],
             phase_hard_cap_usd=cap, phase_ttl_seconds=min(producer.DEFAULT_PHASE_TTL_SECONDS,
                 int(cap * 3600 / producer.DEFAULT_HOURLY_RATE_USD)),
-            authority_valid_seconds=int(request["execution"]["expires_at_epoch"] - issued),
+            authority_valid_seconds=int(intake.effective_execution_expiry(directory, intent) - issued),
             now=datetime.fromtimestamp(issued, timezone.utc),
             external_layer_bucket=binding.get("external_layer_bucket"),
             scene_phase_attempts=scene_phase_attempts, scene_intake_root=scene_root))
@@ -263,7 +263,7 @@ def _provision_validated_link(*, link: Mapping[str, Any], scene_root: Path,
                  result.get("status") == "configured_controls_continuation_provisioned", "producer_result_invalid")
         # Check live authority again immediately before registry installation.
         _require(not (directory / "revoked.json").exists(), "authority_revoked")
-        _require((time.time() if now is None else moment) < request["execution"]["expires_at_epoch"], "authority_expired")
+        _require((time.time() if now is None else moment) < intake.effective_execution_expiry(directory, intent), "authority_expired")
         installed = dict((installer or producer.install_intent_into_registry)(
             intent_path=result["intent_path"], intent_root=intent_root,
             expected_production_commit=expected_production_commit, service_group=service_group))
@@ -588,9 +588,9 @@ def owner_authority_blocker(config_path: str | Path, *, scene_intent_digest: str
             if intent["intent_digest"] != scene_intent_digest:
                 continue
             _require(intent.get("authenticated_issuer") in config["trusted_clients"], "owner_intent_invalid")
-            request = intake.validate_request(intent["request"], now=intent["accepted_at_epoch"])
+            intake.validate_request(intent["request"], now=intent["accepted_at_epoch"])
             _require(not (path.parent / "revoked.json").exists(), "authority_revoked")
-            _require(moment < request["execution"]["expires_at_epoch"], "authority_expired")
+            _require(moment < intake.effective_execution_expiry(path.parent, intent), "authority_expired")
             return None
         return "controls_autoprovision_owner_intent_missing"
     except (ValueError, OSError, KeyError, TypeError) as exc:

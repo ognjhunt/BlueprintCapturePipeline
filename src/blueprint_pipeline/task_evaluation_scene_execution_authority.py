@@ -102,7 +102,11 @@ def scene_execution_authority_blockers(
     if actual_provider != attempt.get("provider"):
         return ["scene_execution_owner_provider_mismatch"]
     moment = time.time() if now is None else now
-    expiry = execution.get("expires_at_epoch")
+    from .task_evaluation_scene_execution_window import effective_execution_expiry
+    try:
+        expiry = effective_execution_expiry(directory, intent)
+    except (ValueError, OSError, TypeError):
+        return ["scene_execution_owner_window_invalid"]
     if not _positive(expiry) or moment >= expiry:
         return ["scene_execution_owner_expired"]
     if (consent.get("spend_authorized") is not True or consent.get("task_confirmed") is not True
