@@ -19,6 +19,7 @@ from blueprint_pipeline.task_evaluation_artifixer_ai_visual_review import (
 from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_selective_repair import (
     STRICT_LOCALITY_PROMPT_POLICY,
     TaskEvaluationArtifixerSelectiveRepairError,
+    _validate_exact_mask_binding,
     materialize_selective_repair_request,
     merge_selective_repair_outputs,
 )
@@ -251,6 +252,33 @@ def _fixture(
         "source_result": source_result,
         "locality": locality,
     }
+
+
+@pytest.mark.parametrize("encoded_review", [False, True])
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_repair_mask_binding_preserves_support_for_pre_and_post_training(
+    tmp_path: Path, encoded_review: bool, mismatch: bool,
+) -> None:
+    fixture = _fixture(tmp_path)
+    review = json.loads(Path(fixture["review_path"]).read_text())
+    request = json.loads(Path(fixture["request_path"]).read_text())
+    frame = review["tasks"][0]["frames"][0]
+    request_frame = request["tasks"][0]["frames"][0]
+    root = Path(fixture["request_path"]).parent
+    if encoded_review:
+        frame["exact_repair_mask"] = _record(root / request_frame["edit_mask"]["relative_path"])
+    if mismatch:
+        path = tmp_path / "different-mask.png"
+        Image.new("L", (8, 8), color=255).save(path)
+        frame["exact_repair_mask"] = _record(path)
+    kwargs = dict(review_input_path=Path(fixture["review_path"]), review_frame=frame,
+        request_root=root, request_frame=request_frame,
+        mask_encoding="rgba_alpha_zero_edit_region_png")
+    if mismatch:
+        with pytest.raises(TaskEvaluationArtifixerSelectiveRepairError, match="mask_invalid"):
+            _validate_exact_mask_binding(**kwargs)
+    else:
+        _validate_exact_mask_binding(**kwargs)
 
 
 def test_semantic_locality_seal_restores_false_accepted_non_target_pixels(

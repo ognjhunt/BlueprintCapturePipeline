@@ -146,9 +146,17 @@ def _validate_exact_mask_binding(
             staged_source_bytes = staged_rgb.tobytes()
             staged_source_size = staged_rgb.size
         with Image.open(exact_mask) as image:
-            original_mask = image.convert("L")
-            original_values = original_mask.tobytes()
-            original_size = original_mask.size
+            original_size = image.size
+            # Pretraining reviews bind the already encoded request mask;
+            # post-training reviews bind the original white-edit SAM mask.
+            # Only use the request encoding when the exact bytes agree.
+            same_encoded_mask = _sha256(exact_mask) == _sha256(staged_mask)
+            if same_encoded_mask and mask_encoding == "rgba_alpha_zero_edit_region_png":
+                original_edit = bytes(value == 0 for value in image.convert("RGBA").getchannel("A").tobytes())
+            elif same_encoded_mask and mask_encoding == "binary_black_edit_region_png":
+                original_edit = bytes(value == 0 for value in image.convert("L").tobytes())
+            else:
+                original_edit = bytes(value > 0 for value in image.convert("L").tobytes())
         with Image.open(staged_mask) as image:
             if mask_encoding == "rgba_alpha_zero_edit_region_png":
                 staged_values = image.convert("RGBA").getchannel("A").tobytes()
@@ -166,7 +174,6 @@ def _validate_exact_mask_binding(
         raise TaskEvaluationArtifixerSelectiveRepairError(
             "scene_configuration_artifixer_selective_repair_mask_invalid"
         ) from exc
-    original_edit = bytes(value > 0 for value in original_values)
     if (
         source_size != staged_source_size
         or source_bytes != staged_source_bytes
