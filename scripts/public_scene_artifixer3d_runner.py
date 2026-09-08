@@ -929,10 +929,12 @@ class _CheckpointExportModel:
             ) from exc
         self.gaussian_field_drift_quality = quality
         if quality.get("status") != "qualified" or quality.get("blockers"):
-            raise ValueError(
+            error = ValueError(
                 "artifixer3d_native_export_gaussian_field_drift_invalid:"
                 + ",".join(str(value) for value in quality.get("blockers") or ())
             )
+            error.geometry_quality = quality
+            raise error
 
     def get_positions(self):
         return self.positions
@@ -1602,12 +1604,27 @@ def _dual_target_task_runtime(
     checkpoint = artifixer3d.artifixer3d_checkpoint(scene, paths, steps)
     if not checkpoint.is_file():
         raise ValueError("artifixer3d_checkpoint_missing_or_ambiguous")
-    native_appearance = _export_checkpoint_native_appearance(
-        checkpoint=checkpoint,
-        task_output=task_output,
-        reference_gaussian_ply=_retained_reference_gaussian_ply(input_root),
-        geometry_policy=geometry_policy,
+    from blueprint_pipeline.artifixer_training_recovery import (
+        retain_export_outcome,
+        retain_training_checkpoint,
     )
+
+    recovery_root = retain_training_checkpoint(
+        checkpoint=checkpoint, reference=_retained_reference_gaussian_ply(input_root),
+        log=log, request=dict(request),
+        destination=output_root.parent / "retained_training_evidence" / task_id,
+    )
+    try:
+        native_appearance = _export_checkpoint_native_appearance(
+            checkpoint=checkpoint,
+            task_output=task_output,
+            reference_gaussian_ply=_retained_reference_gaussian_ply(input_root),
+            geometry_policy=geometry_policy,
+        )
+    except Exception as exc:
+        retain_export_outcome(recovery_root, exception=exc)
+        raise
+    retain_export_outcome(recovery_root)
     with log.open("a", encoding="utf-8") as stream:
         with redirect_stdout(stream), redirect_stderr(stream):
             review_dir = artifixer3d.render_artifixer3d(
@@ -2203,6 +2220,9 @@ def main() -> int:
             rehearsal=args.rehearsal,
         )
     except Exception as exc:  # preserve the typed terminal runtime failure
+        from blueprint_pipeline.artifixer_training_recovery import retained_training_progress
+
+        retained_training = retained_training_progress(output)
         progress = _read_task_progress(output / TASK_PROGRESS_FILENAME)
         completed_tasks = list(progress["tasks"]) if progress is not None else []
         result = {
@@ -2211,7 +2231,9 @@ def main() -> int:
             "tasks": completed_tasks,
             "completed_task_count": len(completed_tasks),
             "completed_task_ids": [task["task_id"] for task in completed_tasks],
-            "partial_task_evidence_preserved": bool(completed_tasks),
+            "partial_task_evidence_preserved": bool(completed_tasks or retained_training),
+            "retained_training_progress": retained_training,
+            "optimization_complete_task_count": len(retained_training),
             "task_progress_digest": (progress["progress_digest"] if progress is not None else None),
             "model_loaded": False,
             "artifixer_direct_inference_executed": False,

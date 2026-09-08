@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from .artifixer_source_geometry_admission import admit_source_geometry
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
 from .gaussian_splat_decode import read_standard_3dgs_ply
@@ -630,6 +631,16 @@ def materialize_artifixer3d_candidate_inputs(
     output.mkdir(parents=True, exist_ok=True)
     shared_seed_root = output / "shared_initialization"
     shared_seed_root.mkdir()
+    original_retained_splat_path = retained_splat_path
+    try:
+        retained_splat_path, geometry_admission = admit_source_geometry(
+            source=retained_splat_path, cameras=normalized,
+            output_root=shared_seed_root / "source_geometry_admission",
+        )
+    except ValueError as exc:
+        raise ArtiFixer3DCandidateInputError([str(exc)]) from exc
+    if retained_splat_path != original_retained_splat_path:
+        retained_splat = read_standard_3dgs_ply(retained_splat_path)
     shared_points = shared_seed_root / "points3D.bin"
     _write_colmap_points3d(shared_points, retained_splat)
     task_receipts: list[dict[str, Any]] = []
@@ -892,6 +903,8 @@ def materialize_artifixer3d_candidate_inputs(
             **_record(retained_splat_path),
             "retained_gaussian_count": retained_splat.count,
         },
+        "original_shared_retained_scene": _record(original_retained_splat_path),
+        "source_geometry_admission": geometry_admission,
         "shared_colmap_initialization_points3D": _record(shared_points),
         "execution_authority": execution_authority,
         "replacement_object_count": len(task_ids),
