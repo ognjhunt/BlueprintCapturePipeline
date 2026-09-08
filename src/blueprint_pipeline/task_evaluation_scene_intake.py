@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest as canonical_digest
+from .task_evaluation_scene_execution_window import effective_execution_expiry
 from .task_evaluation_launch_preparation_queue import (
     _write_launch_preparation_record_exclusive_locked as write_exclusive,
 )
@@ -220,7 +221,7 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         intent = _read(directory / "intent.json", "intent_digest")
         execution = intent["request"]["execution"]
         _require(not (directory / "revoked.json").exists(), "authority_revoked")
-        _require(moment < execution["expires_at_epoch"], "authority_expired")
+        _require(moment < effective_execution_expiry(directory, intent), "authority_expired")
         _require(provider in execution["allowed_providers"], "provider_not_authorized")
         attempts = directory / "attempts"
         _require(not attempts.is_symlink(), "record_unsafe")
@@ -337,7 +338,7 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
     authority_blocker = None
     if (directory / "revoked.json").exists():
         authority_blocker = "scene_intake_authority_revoked"
-    elif moment >= intent["request"]["execution"]["expires_at_epoch"]:
+    elif moment >= effective_execution_expiry(directory, intent):
         authority_blocker = "scene_intake_authority_expired"
     if status != "completed" and authority_blocker is not None:
         if execution_attempt_reserved:

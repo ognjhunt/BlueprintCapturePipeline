@@ -252,7 +252,7 @@ def _activation(*, intent, link, config, output, now, provisioner):
         _put(inputs_path, inputs)
     require(inputs["link_digest"] == link["link_digest"], "activation_inputs_changed")
     owner = intent["request"]["owner"]["user_id"]
-    seconds = min(86400, int(intent["request"]["execution"]["expires_at_epoch"] - inputs["issued_at_epoch"]))
+    seconds = min(86400, int(intake.effective_execution_expiry(Path(config["intent_root"])/intent["intent_id"], intent) - inputs["issued_at_epoch"]))
     require(seconds >= 300, "activation_authority_window_too_short")
     main = intake._read(_reference(link["scene_configuration_attempt"]), "attempt_digest")
     result = (provisioner or provision_scene_configuration_activation_intent)(
@@ -375,7 +375,7 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
             state.update(terminal.get("state", {}))
             return emit(terminal["status"], terminal["phase"], terminal.get("blockers", ()),
                         terminal.get("result_reference"))
-    if (directory / "revoked.json").exists() or now >= intent["request"]["execution"]["expires_at_epoch"]:
+    if (directory / "revoked.json").exists() or now >= intake.effective_execution_expiry(directory, intent):
         return emit("blocked", "authority", ["scene_intake_authority_revoked" if (directory / "revoked.json").exists()
                                               else "scene_intake_authority_expired"])
     if intent["intent_id"] in config.get("paused_intent_ids", []):
