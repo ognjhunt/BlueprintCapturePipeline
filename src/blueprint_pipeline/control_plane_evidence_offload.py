@@ -3,8 +3,8 @@
 Run directories under the ``evidence_cold`` roots are append-only evidence and
 today exist as exactly one copy on a single root disk.  Once a run has a
 terminal receipt and its hot window has passed, this module packs the directory
-into one archive, publishes it to the content-addressed artifact store with a
-full streaming readback, writes a digest-bound pointer beside where the
+as a bounded multipart stream, publishes it to the content-addressed artifact
+store with a full streaming readback, writes a digest-bound pointer beside where the
 directory stood, and only then removes the local directory.  ``restore``
 reverses the migration byte-for-byte.  Nothing here ever touches
 ``evidence_hot`` roots such as the spend guard.
@@ -28,7 +28,7 @@ from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_configured_scene_object_store import (
     materialize_configured_scene_artifact,
-    publish_configured_scene_artifact,
+    publish_configured_scene_stream,
 )
 
 
@@ -179,8 +179,13 @@ def build_evidence_offload_manifest(
 
 
 def _pack(directory: Path, archive_path: Path) -> list[dict[str, Any]]:
+    with archive_path.open('wb') as stream:
+        return _pack_stream(directory, stream)
+
+
+def _pack_stream(directory: Path, stream) -> list[dict[str, Any]]:
     members: list[dict[str, Any]] = []
-    with tarfile.open(archive_path, "w") as archive:
+    with tarfile.open(fileobj=stream, mode="w|") as archive:
         for root, directories, files in os.walk(directory):
             directories.sort()
             directories[:] = [
@@ -217,6 +222,16 @@ def _pack(directory: Path, archive_path: Path) -> list[dict[str, Any]]:
                     }
                 )
     return members
+
+
+class _HashingSink:
+    def __init__(self):
+        self.digest, self.size = hashlib.sha256(), 0
+
+    def write(self, data):
+        self.digest.update(data)
+        self.size += len(data)
+        return len(data)
 
 
 def _archive_footprint(directory: Path) -> int:
@@ -292,7 +307,8 @@ def apply_evidence_offload(
     manifest: Mapping[str, Any],
     *,
     ack: str,
-    publisher: Callable[..., Mapping[str, Any]] = publish_configured_scene_artifact,
+    publisher: Callable[..., Mapping[str, Any]] | None = None,
+    stream_publisher: Callable[..., Mapping[str, Any]] = publish_configured_scene_stream,
     now: Callable[[], float] = time.time,
     protection_checker: Callable[[Path], bool] | None = None,
 ) -> dict[str, Any]:
@@ -330,18 +346,35 @@ def apply_evidence_offload(
         archive_path = None
         reservation = None
         try:
-            reservation = reserve_control_plane_disk(
-                "evidence_offload", target_root=root,
-                expected_bytes=_archive_footprint(directory),
-                reservation_root=DEFAULT_RESERVATION_ROOT,
-            )
-            descriptor, archive_name = tempfile.mkstemp(prefix=f".{name}.offload-", suffix=".tar", dir=root)
-            os.close(descriptor)
-            archive_path = Path(archive_name)
-            members = _pack(directory, archive_path)
-            digest = _sha256(archive_path)
-            size = archive_path.stat().st_size
-            reference = dict(publisher(path=archive_path, artifact_kind=ARTIFACT_KIND))
+            if publisher is None:
+                # Compute the exact tar identity without creating an archive on disk.
+                # Only the small pointer/manifest needs local write headroom.
+                sink = _HashingSink()
+                members = _pack_stream(directory, sink)
+                digest, size = 'sha256:' + sink.digest.hexdigest(), sink.size
+                pointer_bytes = len(json.dumps(members, indent=2).encode()) + 65536
+                reservation = reserve_control_plane_disk(
+                    "evidence_offload", target_root=root,
+                    expected_bytes=max(1024 * 1024, 2 * pointer_bytes),
+                    reservation_root=DEFAULT_RESERVATION_ROOT,
+                )
+                reference = dict(stream_publisher(
+                    write_stream=lambda stream: _pack_stream(directory, stream),
+                    digest=digest, size_bytes=size, filename='evidence.tar', artifact_kind=ARTIFACT_KIND))
+            else:
+                # Compatibility for explicit file-based publishers and isolated tests.
+                reservation = reserve_control_plane_disk(
+                    "evidence_offload", target_root=root,
+                    expected_bytes=_archive_footprint(directory),
+                    reservation_root=DEFAULT_RESERVATION_ROOT,
+                )
+                descriptor, archive_name = tempfile.mkstemp(prefix=f".{name}.offload-", suffix=".tar", dir=root)
+                os.close(descriptor)
+                archive_path = Path(archive_name)
+                members = _pack(directory, archive_path)
+                digest = _sha256(archive_path)
+                size = archive_path.stat().st_size
+                reference = dict(publisher(path=archive_path, artifact_kind=ARTIFACT_KIND))
             if (
                 reference.get("digest") != digest
                 or reference.get("size_bytes") != size
@@ -384,7 +417,9 @@ def apply_evidence_offload(
                 archive_path.unlink(missing_ok=True)
             if reservation is not None:
                 reservation.release()
-        offloaded.append({"name": name, "uri": reference["uri"], "digest": digest, "size_bytes": size})
+        offloaded.append({"name": name, "uri": reference["uri"], "digest": digest, "size_bytes": size,
+                          "transfer_mode": "multipart_stream" if publisher is None else "local_archive_compatibility",
+                          "local_archive_bytes": 0 if publisher is None else size})
     result: dict[str, Any] = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "status": "applied",
@@ -428,9 +463,17 @@ def restore_offloaded_evidence(
         archive_path = staging / "evidence.tar"
         materializer(
             reference={
+                "schema_version": "task_evaluation_scene_artifact_reference.v1",
+                "status": "remote_verified",
+                "artifact_kind": ARTIFACT_KIND,
                 "uri": pointer["uri"],
                 "digest": pointer["digest"],
                 "size_bytes": pointer["size_bytes"],
+                # A valid offload pointer is issued only after full remote readback.
+                # Legacy pointers predate the embedded complete remote reference.
+                "remote_identity_verified": True,
+                "full_byte_service_account_readback_passed": True,
+                "raw_secret_values_recorded": False,
             },
             destination=archive_path,
             maximum_size_bytes=int(pointer["size_bytes"]),

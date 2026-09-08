@@ -144,6 +144,22 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
         "CPUQuota=200%",
     )
     for unit in SYSTEMD_DIR.glob("*.service"):
+        if unit.name in {"blueprint-completed-replay-cache-gc.service", "blueprint-scene-project-spend-refresh.service"}:
+            text = unit.read_text(encoding="utf-8")
+            for control in ("NoNewPrivileges=true", "PrivateDevices=true", "PrivateNetwork=true",
+                            "ProtectSystem=strict", "ProtectHome=true", "TasksMax=32", "MemoryMax=512M",
+                            "SystemCallFilter=~ptrace process_vm_readv process_vm_writev"):
+                assert control in text, (unit.name, control)
+            assert "ReadWritePaths=/var/lib/blueprint " not in text
+            if unit.name == "blueprint-completed-replay-cache-gc.service":
+                assert "User=root" in text
+                assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_PTRACE" in text
+                assert "ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/stage-replays " in text
+            else:
+                assert "User=blueprint" in text and "Group=blueprint" in text
+                assert "CapabilityBoundingSet=\n" in text and "AmbientCapabilities=\n" in text
+                assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/scene-project-spend" in text
+            continue
         if unit.name == "blueprint-control-plane-storage-gc.service":
             text = unit.read_text(encoding="utf-8")
             assert "User=root" in text

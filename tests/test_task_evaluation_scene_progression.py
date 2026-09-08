@@ -116,3 +116,26 @@ def test_retained_only_preparation_does_not_reserve_source_gpu_spend(context,mon
     assert value['maximum_spend_usd']==0 and value['paid_authority_granted'] is False
     assert result['results'][0]['status']=='blocked'
     assert 'retained_only_complete_prefix_required' in str(result['results'][0]['blockers'])
+
+
+def test_capacity_wait_does_not_start_factory_and_resumes_when_whole_chain_fits(context, monkeypatch):
+    from blueprint_pipeline import control_plane_capacity_controller as capacity
+    config = configuration(context, monkeypatch)
+    value = json.loads(config.read_text())
+    value['require_whole_chain_capacity'] = True
+    write(config, value, 'config_digest')
+    monkeypatch.setattr(capacity, 'whole_chain_admission', lambda *a, **kw:
+        {'status': 'waiting_for_capacity', 'required_workspace_bytes': 10 * 1024**3})
+    waiting = engine.process_scene_intents(config_path=config)
+    assert waiting['results'][0]['phase'] == 'capacity'
+    assert waiting['results'][0]['blockers'] == ['scene_whole_chain_capacity_insufficient']
+    assert not Path(value['factory_output_root']).exists()
+    monkeypatch.setattr(capacity, 'whole_chain_admission', lambda *a, **kw:
+        {'status': 'admitted', 'required_workspace_bytes': 10 * 1024**3})
+    resumed = engine.process_scene_intents(config_path=config)
+    assert resumed['results'][0]['phase'] == 'publication_ready'
+    # Existing attempts keep their per-stage reservations and can finish even
+    # if another workload later reduces the room available for NEW chains.
+    monkeypatch.setattr(capacity, 'whole_chain_admission', lambda *a, **kw:
+        pytest.fail('an existing attempt must not be stopped by the new-chain gate'))
+    assert engine.process_scene_intents(config_path=config) == resumed

@@ -8,7 +8,7 @@ import pwd
 
 import pytest
 
-from blueprint_pipeline import task_evaluation_scene_preparation_installation as installation
+import blueprint_pipeline.task_evaluation_scene_preparation_installation as installation
 from blueprint_pipeline import task_evaluation_scene_configuration_submission_publication as publication
 from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
 from blueprint_pipeline.task_evaluation_scene_preparation_service import run_preparation_service
@@ -38,6 +38,11 @@ def _installed(tmp_path, monkeypatch):
     receipt = installation.install_scene_preparation(bootstrap_path=path)
     config_path = Path(receipt["config"]["path"])
     config = json.loads(config_path.read_text())
+    # The fixture exercises admission with a known roomy workspace rather than
+    # depending on the CI runner's unrelated filesystem occupancy.
+    from blueprint_pipeline import control_plane_capacity_controller as capacity
+    monkeypatch.setattr(capacity, "measure_mount", lambda *a, **kw:
+        {"status": "measured", "available_bytes": 64 * 1024**3})
     for line in Path(receipt["environment"]["path"]).read_text().splitlines():
         if line and not line.startswith("#"):
             key, value = line.split("=", 1)
@@ -58,6 +63,7 @@ def test_installer_is_idempotent_and_refuses_unmanaged_configuration(tmp_path, m
     path, receipt, config, _ = _installed(tmp_path, monkeypatch)
     assert installation.install_scene_preparation(bootstrap_path=path) == receipt
     assert config["activation_enabled"] is False
+    assert config["require_whole_chain_capacity"] is True
     assert config["submission_transport"] == "local_owned_queue"
     assert "source_commit" not in config and "release_binding_path" not in config
     config_path = Path(receipt["config"]["path"])
@@ -115,7 +121,8 @@ def test_public_scene_mode_config_enables_the_public_source_path(tmp_path, monke
         service_account=ACCOUNT, public_scene_enabled=True)
     assert bootstrap["supported_source_kinds"] == ["mesh", "gaussian_splat", "public_scene"]
     path = tmp_path / "bootstrap.json"
-    path.write_text(json.dumps(bootstrap)); path.chmod(0o640)
+    path.write_text(json.dumps(bootstrap))
+    path.chmod(0o640)
     receipt = installation.install_scene_preparation(bootstrap_path=path)
     config = json.loads(Path(receipt["config"]["path"]).read_text())
     assert "public_scene" in config["supported_source_kinds"]
@@ -152,7 +159,8 @@ def test_cli_public_scene_enabled_flag_builds_a_public_scene_bootstrap(tmp_path,
     monkeypatch.setattr(installation, "read", lambda *a, **k: {"destination_identity": {"id": "tray", "version": "v1"}})
     monkeypatch.setattr(installation, "record", lambda p: {"path": str(p), "sha256": "sha256:" + "0" * 64, "size_bytes": 1})
     monkeypatch.setattr(installation, "_managed_json", lambda *a, **k: None)
-    sim = tmp_path / "sim.json"; sim.write_text("{}")
+    sim = tmp_path / "sim.json"
+    sim.write_text("{}")
     installation.main(["--bootstrap", str(tmp_path / "bootstrap.json"),
                        "--destination-simready", str(sim), "--public-scene-enabled"])
     assert captured.get("public_scene_enabled") is True

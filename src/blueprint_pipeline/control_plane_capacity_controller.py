@@ -154,6 +154,25 @@ def measure_mount(
     }
 
 
+def whole_chain_admission(mount, *, reservation_root=DEFAULT_RESERVATION_ROOT, now=None):
+    """Check the complete declared workspace before a new scene attempt starts.
+
+    Per-stage reservations remain authoritative during execution. This earlier
+    gate prevents starting a chain that already exceeds available headroom.
+    """
+    measured = measure_mount(mount, reservation_root=reservation_root, now=now)
+    required = sum(ROLE_FOOTPRINT_BYTES[role] for role in CHAIN_ROLES)
+    passed = measured.get('status') == 'measured' and measured['available_bytes'] >= required
+    return {
+        'schema_version': 'control_plane_whole_chain_admission.v1',
+        'status': 'admitted' if passed else 'waiting_for_capacity',
+        'required_workspace_bytes': required,
+        'measurement': measured,
+        'provider_mutation_performed': False,
+        'reservation_granted': False,
+    }
+
+
 def forecast(history: Sequence[Mapping[str, Any]], current: Mapping[str, Any], *, now: float) -> dict[str, Any]:
     """Growth per day and days until the floor, from the oldest row inside the window."""
 

@@ -206,6 +206,7 @@ def install_scene_preparation(*, bootstrap_path):
         "running_repo_root": bootstrap["running_repo_root"], "runtime_publication_root": str(inputs / "system-runtimes"),
         "trusted_clients": ["blueprint-webapp"], "supported_source_kinds": bootstrap["supported_source_kinds"],
         "maximum_intents_per_pass": 16, "maximum_http_submission_attempts": 2,
+        "require_whole_chain_capacity": True,
         "submission_enabled": True, "submission_transport": "local_owned_queue", "activation_enabled": False,
         "service_account": bootstrap["service_account"], "preparation_queue_root": str(owner_queue),
         "publication_lock_root": str(state / "submission-publication-locks"),
