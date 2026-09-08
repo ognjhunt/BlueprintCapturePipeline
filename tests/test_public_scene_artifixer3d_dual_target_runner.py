@@ -391,10 +391,13 @@ def test_render_only_task_reuses_exact_checkpoint_and_normalizes_eight_cameras(
         "_prepare_dual_target_distillation_replay",
         prepared_replay,
     )
+    native = {"status": "test-native-appearance"}
+    for key, name in (("standard_gaussian_ply", "native.ply"), ("isaac_nurec_usdz", "native.usdz")):
+        path = tmp_path / name
+        path.write_bytes(b"bound-native-export")
+        native[key] = runner._file_record(path)
     monkeypatch.setattr(
-        runner,
-        "_export_checkpoint_native_appearance",
-        lambda **_kwargs: {"status": "test-native-appearance"},
+        runner, "_export_checkpoint_native_appearance", lambda **_kwargs: native,
     )
     request = {
         "artifixer3d": {
@@ -431,7 +434,7 @@ def test_render_only_task_reuses_exact_checkpoint_and_normalizes_eight_cameras(
     assert result["artifixer3d_plus_executed"] is False
     assert result["checkpoint_reused"] is True
     assert result["artifixer3d_checkpoint"]["sha256"] == checkpoint_record["sha256"]
-    assert result["native_appearance"] == {"status": "test-native-appearance"}
+    assert result["native_appearance"] == native
     assert [row["camera_id"] for row in result["artifixer3d_review_frames"]] == [
         frame["camera_id"] for frame in frames
     ]

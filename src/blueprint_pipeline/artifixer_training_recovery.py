@@ -94,3 +94,78 @@ def retained_training_progress(output_root: Path) -> list[dict[str, Any]]:
         except (ValueError, OSError, TypeError):
             continue
     return rows
+
+
+def _retain_bound_file(record: dict[str, Any], destination: Path) -> dict[str, Any]:
+    source = Path(record["path"])
+    if source.is_symlink() or destination.exists() or destination.is_symlink():
+        raise ValueError("artifixer_derivative_recovery_path_invalid")
+    actual = _record(source)
+    if any(actual[k] != record[k] for k in ("size_bytes", "sha256")):
+        raise ValueError("artifixer_derivative_recovery_source_mismatch")
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copyfile(source, destination)
+    retained = _record(destination)
+    if any(retained[k] != actual[k] for k in ("size_bytes", "sha256")):
+        raise ValueError("artifixer_derivative_recovery_copy_mismatch")
+    return retained
+
+
+def _derivative_root(destination: Path, name: str) -> Path:
+    if not {"artifixer_output", "artifixer_execution", "artifixer_bundle"}.isdisjoint(
+        destination.parts
+    ):
+        raise ValueError("artifixer_training_recovery_archive_path_invalid")
+    root = destination / name
+    if any(p.is_symlink() for p in (root, *root.parents)):
+        raise ValueError("artifixer_derivative_recovery_path_invalid")
+    root.mkdir(parents=True, exist_ok=False)
+    return root
+
+
+def retain_native_exports(destination: Path, native: dict[str, Any]) -> None:
+    """Keep completed exports even if rendering or later review refuses."""
+    root = _derivative_root(destination, "native_exports")
+    records = {}
+    for key, name in (
+        ("standard_gaussian_ply", "repaired_scene.ply"),
+        ("isaac_nurec_usdz", "repaired_scene.usdz"),
+    ):
+        records[key] = _retain_bound_file(native[key], root / name)
+    receipt = {
+        "schema_version": "artifixer_native_export_recovery.v1",
+        "status": "retained_native_exports_requires_independent_review",
+        "original_export": native,
+        "retained_files": records,
+        "physical_or_deployment_evidence": False,
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    (root / "native_export_recovery.json").write_text(canonical_json(receipt) + "\n")
+
+
+def retain_review_frames(destination: Path, frames: list[dict[str, Any]]) -> None:
+    """Preserve the exact PNG bytes that the independent reviewer will receive."""
+    if not frames or [row["frame_index"] for row in frames] != list(range(len(frames))):
+        raise ValueError("artifixer_review_recovery_frame_order_invalid")
+    root = _derivative_root(destination, "review_frames")
+    retained = []
+    for row in frames:
+        retained.append(
+            {
+                "camera_id": row["camera_id"],
+                "frame_index": row["frame_index"],
+                "original_frame": row,
+                "retained_frame": _retain_bound_file(row, root / f"{row['frame_index']:05d}.png"),
+            }
+        )
+    receipt = {
+        "schema_version": "artifixer_review_frame_recovery.v1",
+        "status": "retained_raw_frames_requires_independent_review",
+        "frames": retained,
+        "frame_count": len(retained),
+        "physical_or_deployment_evidence": False,
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    (root / "review_frame_recovery.json").write_text(canonical_json(receipt) + "\n")

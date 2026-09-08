@@ -107,3 +107,55 @@ def test_completed_training_export_refusal_survives_provider_archive(tmp_path, m
     assert result["completed_task_count"] == 0
     assert result["optimization_complete_task_count"] == 1
     assert result["partial_task_evidence_preserved"] is True
+
+
+def test_review_rejection_archive_keeps_exact_exports_and_review_pngs(tmp_path):
+    import ast
+    from blueprint_pipeline.artifixer_training_recovery import (
+        retain_native_exports,
+        retain_review_frames,
+    )
+    from blueprint_pipeline.artifixer_source_geometry_admission import _record
+
+    original = tmp_path / "round/artifixer_output"
+    original.mkdir(parents=True)
+    native = {"status": "export_completed_requires_review"}
+    for key, name in (
+        ("standard_gaussian_ply", "repaired_scene.ply"),
+        ("isaac_nurec_usdz", "repaired_scene.usdz"),
+    ):
+        path = original / name
+        path.write_bytes((name + "-exact-native-bytes").encode())
+        native[key] = _record(path)
+    frame = original / "00000.png"
+    frame.write_bytes(b"exact-review-image-bytes")
+    rows = [{"frame_index": 0, "camera_id": "source-01", **_record(frame)}]
+    recovery = original.parent / "retained_training_evidence/task"
+    retain_native_exports(recovery, native)
+    retain_review_frames(recovery, rows)
+    (original.parent / "review_rejection.json").write_text('{"decision":"rejected"}')
+    adapter = Path(__file__).parents[1] / "src/blueprint_pipeline/vast_provider_adapter.py"
+    strings = [
+        n.value
+        for n in ast.walk(ast.parse(adapter.read_text()))
+        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+    ]
+    line = next(
+        line
+        for text in strings
+        for line in text.splitlines()
+        if line.startswith("excluded_parts = {")
+    )
+    excluded = ast.literal_eval(line.partition(" = ")[2])
+    with zipfile.ZipFile(tmp_path / "returned.zip", "w") as bundle:
+        for path in original.parent.rglob("*"):
+            if path.is_file() and excluded.isdisjoint(path.relative_to(original.parent).parts):
+                bundle.write(path, path.relative_to(original.parent))
+    with zipfile.ZipFile(tmp_path / "returned.zip") as bundle:
+        prefix = "retained_training_evidence/task/"
+        for name in ("repaired_scene.ply", "repaired_scene.usdz"):
+            assert bundle.read(prefix + "native_exports/" + name) == (original / name).read_bytes()
+        assert bundle.read(prefix + "review_frames/00000.png") == frame.read_bytes()
+        receipt = json.loads(bundle.read(prefix + "review_frames/review_frame_recovery.json"))
+        assert receipt["frames"][0]["retained_frame"]["sha256"] == rows[0]["sha256"]
+        assert receipt["physical_or_deployment_evidence"] is False
