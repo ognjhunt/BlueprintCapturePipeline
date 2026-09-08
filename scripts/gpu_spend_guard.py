@@ -583,7 +583,11 @@ def _http_request(
     the API key redacted from any error text — never raised, never logged raw.
     """
     data = json.dumps(dict(body)).encode("utf-8") if body is not None else None
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "BlueprintGpuSpendGuard/1.0",
+    }
     if key:
         headers["Authorization"] = f"Bearer {key}"
     try:
