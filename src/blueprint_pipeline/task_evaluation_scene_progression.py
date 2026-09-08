@@ -391,6 +391,12 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
             if adopted is not None:
                 state["configured_scene_terminal_adoption"] = adopted
                 return emit("awaiting_execution", "configured_controls")
+            from .task_evaluation_controls_terminal_adoption import terminal_adoption_source
+            source = terminal_adoption_source(config=controls_config, intent_id=intent["intent_id"],
+                                              expected_production_commit=release["source_commit"])
+            if source is not None:
+                state["configured_scene_terminal_adoption"] = source["adoption"]
+                return emit("awaiting_execution", "configured_controls_adoption")
     if config.get("supported_source_kinds") is not None and intent["request"]["source"]["kind"] not in config["supported_source_kinds"]:
         return emit("needs_input", "source", ["source_kind_not_supported_by_progression"])
     from .task_evaluation_scene_policy_capability import policy_capability_blockers

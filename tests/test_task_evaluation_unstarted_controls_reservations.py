@@ -49,7 +49,7 @@ def reserved(tmp_path, monkeypatch):
         'immutable_inputs': [{'name': 'configured_controls_autostart_intent', 'path': str(auto_path), 'digest': auto_sha}]}
     profile['profile_digest'] = canonical_digest(profile, digest_field='profile_digest')
     put(run / 'launch_profile.json', profile)
-    launch = {'schema_version': 'task_evaluation_launch_receipt.v1', 'status': 'blocked', 'source_commit': 'd'*40,
+    launch = {'schema_version': 'task_evaluation_launch_receipt.v1', 'launch_id': 'launch', 'status': 'blocked', 'source_commit': 'd'*40,
         'launch_profile_digest': profile['profile_digest'], 'terminal_evidence': {'status': 'blocked'}}
     launch['receipt_digest'] = cross_runtime_canonical_digest(launch, digest_field='receipt_digest')
     put(run / 'launch_receipt.json', launch)
