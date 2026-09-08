@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import fcntl
 import json
 import os
 import re
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -329,7 +331,26 @@ def recover_completed_configuration_publication(
     }
 
 
-def activate_recovered_launch_receipt(
+@contextmanager
+def publication_projection_lock(run_root: Path):
+    """Serialize eligibility changes and cancellation of pre-eligibility holds."""
+    path = run_root / ".publication-recovery.lock"
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o640)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def activate_recovered_launch_receipt(**kwargs: Any) -> dict[str, Any]:
+    root = Path(kwargs["original_launch_receipt_path"]).parent
+    with publication_projection_lock(root):
+        return _activate_recovered_launch_receipt(**kwargs)
+
+
+def _activate_recovered_launch_receipt(
     *, original_launch_receipt_path: str | Path,
     recovered_launch_receipt_path: str | Path,
     syncer: Callable[..., Mapping[str, Any]] = sync_launch_receipt_to_webapp,

@@ -346,8 +346,9 @@ def test_expired_dynamic_window_creates_versioned_refresh(tmp_path: Path) -> Non
     assert len(list((tmp_path / "state/release-window-attempts").rglob("window-*.json"))) == 2
 
 
+@pytest.mark.parametrize("embedded_intent", [False, True])
 def test_one_shot_adoption_registry_targets_only_its_legacy_launch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, embedded_intent: bool
 ) -> None:
     launch_id = "scene-839873-2deff449-r1"
     launch_root = tmp_path / "launch-runs"
@@ -355,7 +356,7 @@ def test_one_shot_adoption_registry_targets_only_its_legacy_launch(
     _write(
         run_root / "launch_profile.json",
         {
-            "immutable_inputs": [],
+            "immutable_inputs": [{"name": "configured_controls_autostart_intent"}] if embedded_intent else [],
             "task_evaluation_run": {
                 "team_namespace": "blueprint-adp",
                 "scene_id": "interiorgs-839873",

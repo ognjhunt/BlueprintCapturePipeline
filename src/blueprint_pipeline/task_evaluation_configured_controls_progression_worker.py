@@ -1799,7 +1799,19 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
             for item in profile.get("immutable_inputs") or []
         )
         intent_path_override: Path | None = None
-        if not has_intent:
+        # A delivered configuration can be explicitly adopted by a successor
+        # release even when its original profile embedded an older intent.
+        registered_adoption = False
+        task_run_for_adoption = profile.get("task_evaluation_run")
+        if intent_root is not None and isinstance(task_run_for_adoption, Mapping):
+            from .task_evaluation_configured_controls_autostart import configured_controls_autostart_adoption_registry_name
+            registered_adoption = (intent_root / configured_controls_autostart_adoption_registry_name(
+                team_namespace=str(task_run_for_adoption.get("team_namespace") or ""),
+                scene_id=str(task_run_for_adoption.get("scene_id") or ""),
+                task_id=str(task_run_for_adoption.get("task_id") or ""),
+                source_launch_id=run_root.name,
+            )).is_file()
+        if not has_intent or registered_adoption:
             if (
                 intent_root is None
                 or not intent_root.is_absolute()
@@ -1847,6 +1859,7 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
                 not isinstance(adoption, Mapping)
                 or adoption.get("mode") != "explicit_terminal_adoption"
                 or adoption.get("source_launch_id") != run_root.name
+                or (release and registry_intent.get("expected_production_commit") != release)
             ):
                 continue
             intent_path_override = candidate

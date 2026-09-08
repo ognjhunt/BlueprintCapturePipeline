@@ -231,12 +231,17 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
                 "input_digest": input_digest, "provider": provider,
                 "maximum_spend_usd": maximum_spend_usd, "status": "reserved"}
         path = attempts / (attempt_id + ".json")
+        from .task_evaluation_unstarted_controls_reservations import validated_cancellation
+        if path.exists():
+            _require(validated_cancellation(directory, _read(path, "attempt_digest")) is None,
+                     "attempt_cancelled_before_execution")
         _require((recovery_from_attempt_id is None) == (recovery_evidence is None),
                  "recovery_lineage_required")
         if recovery_from_attempt_id is not None:
             _require(_identifier(recovery_from_attempt_id) and recovery_from_attempt_id != attempt_id,
                      "recovery_new_attempt_required")
             prior = _read(attempts / (recovery_from_attempt_id + ".json"), "attempt_digest")
+            _require(validated_cancellation(directory, prior) is None, "recovery_prior_attempt_cancelled")
             _require(prior["intent_digest"] == intent["intent_digest"] and prior["provider"] == provider,
                      "recovery_prior_attempt_mismatch")
             # An idempotent read must not require fresh inventory after the
@@ -262,6 +267,7 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
                      and ("recovery" in existing) == ("recovery" in body), "attempt_immutable_conflict")
             return existing
         rows = [_read(p, "attempt_digest") for p in attempts.glob("*.json")]
+        rows = [row for row in rows if validated_cancellation(directory, row) is None]
         _require(len(rows) < execution["max_paid_attempts"], "attempt_cap_exhausted")
         exposure = sum((Decimal(str(row["maximum_spend_usd"])) for row in rows), Decimal(0))
         _require(exposure + Decimal(str(maximum_spend_usd))
@@ -317,6 +323,9 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
         attempts.append({key: row[key] for key in (
             "attempt_id", "source_commit", "runtime_digest", "input_digest", "provider",
             "maximum_spend_usd", "status")})
+        from .task_evaluation_unstarted_controls_reservations import validated_cancellation
+        if validated_cancellation(directory, row) is not None:
+            attempts[-1]["status"] = "cancelled_before_execution"
     # Expiry and revocation close the authority to admit *new* execution. They
     # do not erase the status of an attempt that was already reserved while the
     # authority was valid. Keep that attempt's running or terminal failure
