@@ -63,3 +63,23 @@ def test_tampered_limits_in_window_fail_closed(tmp_path):
     path.write_text(json.dumps(value))
     with pytest.raises(ValueError):
         attempt(tmp_path, owner, now=1100)
+
+
+def test_review_and_policy_owner_readers_honor_the_same_verified_extension(tmp_path, monkeypatch):
+    import hashlib
+    from blueprint_pipeline.task_evaluation_scene_owner_authority import reopen_scene_intent
+    from blueprint_pipeline.task_evaluation_scene_policy_binding import owner_for_profile
+    owner = stage(tmp_path)
+    monkeypatch.setenv(intake.ROOT_ENV, str(tmp_path))
+    monkeypatch.setenv(intake.CLIENTS_ENV, 'webapp')
+    monkeypatch.delenv('BLUEPRINT_TASK_EVALUATION_CONTROLS_AUTOPROVISION_CONFIG', raising=False)
+    path = tmp_path/owner['intent_id']/'intent.json'
+    ref = {'path':str(path), 'sha256':'sha256:'+hashlib.sha256(path.read_bytes()).hexdigest(), 'size_bytes':path.stat().st_size}
+    profile = {'scene_intent_digest':owner['intent_digest'], 'task_evaluation_run':{'task_id':request()['task']['task_id']}}
+    with pytest.raises(ValueError, match='expired'):
+        reopen_scene_intent(ref, now=1100)
+    with pytest.raises(ValueError, match='expired'):
+        owner_for_profile(profile, now=1100)
+    extend(tmp_path, owner)
+    assert reopen_scene_intent(ref, now=1100)['intent_digest'] == owner['intent_digest']
+    assert owner_for_profile(profile, now=1100)['intent_digest'] == owner['intent_digest']

@@ -466,6 +466,10 @@ def process_config(config_path: str | Path, *, expected_production_commit: str) 
         try:
             adopted = _registered_terminal_adoption(config=config, intent_id=intent_id,
                 expected_production_commit=expected_production_commit)
+            if adopted is None:
+                from .task_evaluation_controls_terminal_adoption import provision_terminal_controls_adoption
+                adopted = provision_terminal_controls_adoption(config=config, catalog=catalog,
+                    intent_id=intent_id, expected_production_commit=expected_production_commit)
             if adopted is not None:
                 rows.append(adopted)
                 continue

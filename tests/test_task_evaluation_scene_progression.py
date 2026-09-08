@@ -141,7 +141,8 @@ def test_capacity_wait_does_not_start_factory_and_resumes_when_whole_chain_fits(
     assert engine.process_scene_intents(config_path=config) == resumed
 
 
-def test_registered_terminal_adoption_does_not_restart_completed_scene_factory(context, monkeypatch):
+@pytest.mark.parametrize("installed", [False, True])
+def test_registered_terminal_adoption_does_not_restart_completed_scene_factory(context, monkeypatch, installed):
     from blueprint_pipeline import task_evaluation_controls_autoprovision as controls
     config_path = configuration(context, monkeypatch)
     engine.process_scene_intents(config_path=config_path)
@@ -152,8 +153,10 @@ def test_registered_terminal_adoption_does_not_restart_completed_scene_factory(c
         state={**previous['state'], 'activation': {'path': 'retained-activation'}}, blockers=[], now=time.time())
     controls_config = write(config_path.parent/'controls-config.json', {'scene_root': str(directory.parent)})
     monkeypatch.setenv(controls.CONFIG_ENV, str(controls_config))
-    monkeypatch.setattr(controls, '_registered_terminal_adoption', lambda **kw: {'status': 'installed_terminal_adoption', 'source_launch_id': 'completed-scene'})
+    monkeypatch.setattr(controls, '_registered_terminal_adoption', lambda **kw: {'status': 'installed_terminal_adoption', 'source_launch_id': 'completed-scene'} if installed else None)
+    from blueprint_pipeline import task_evaluation_controls_terminal_adoption as adoption
+    monkeypatch.setattr(adoption, 'terminal_adoption_source', lambda **kw: {'adoption': {'source_launch_id': 'completed-scene'}})
     monkeypatch.setattr(engine, '_source', lambda *a, **kw: pytest.fail('completed scene must not be reconstructed'))
     result = engine.process_scene_intents(config_path=config_path)
-    assert result['results'][0]['phase'] == 'configured_controls'
+    assert result['results'][0]['phase'] == ('configured_controls' if installed else 'configured_controls_adoption')
     assert result['provider_allocation_performed'] is False

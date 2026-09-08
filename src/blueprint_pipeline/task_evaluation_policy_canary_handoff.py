@@ -740,7 +740,9 @@ def advance_policy_canary_handoff(
     if existing is None:
         authorization = dict(intent["authorization_template"])
         if owner is not None:
-            remaining = int(owner["request"]["execution"]["expires_at_epoch"] -
+            from .task_evaluation_scene_execution_window import effective_execution_expiry
+            owner_root, _ = scene_policy.scene_store()
+            remaining = int(effective_execution_expiry(owner_root / owner["intent_id"], owner) -
                 (now or datetime.now(timezone.utc)).timestamp())
             if remaining < 300:
                 raise PolicyCanaryHandoffError("scene_policy_owner_authority_window_too_short")
