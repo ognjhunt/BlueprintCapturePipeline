@@ -1,0 +1,82 @@
+..........F......................                                        [100%]
+=================================== FAILURES ===================================
+____________ test_publication_preserves_an_explicit_registered_pair ____________
+
+path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4853/test_publication_preserves_an_0/artifacts/result_delivery/episodes/episode-one.json')
+content = b'{"actions_reached_robot":true,"arm_moved":true,"candidate_id":"team_policy_beta","candidate_policy_queried":true,"ce...ry":{"completed_at_unix_ns":1700000001000000000,"started_at_unix_ns":1700000000000000000,"wall_time_ns":1000000000}}\n'
+
+    def _write_immutable(path: Path, content: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+>           with path.open("xb") as stream:
+                 ^^^^^^^^^^^^^^^
+
+src/blueprint_pipeline/task_evaluation_result_delivery.py:134: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4853/test_publication_preserves_an_0/artifacts/result_delivery/episodes/episode-one.json')
+mode = 'xb', buffering = -1, encoding = None, errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileExistsError: [Errno 17] File exists: '/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4853/test_publication_preserves_an_0/artifacts/result_delivery/episodes/episode-one.json'
+
+/opt/homebrew/Caskroom/miniforge/base/lib/python3.12/pathlib.py:1013: FileExistsError
+
+During handling of the above exception, another exception occurred:
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4853/test_publication_preserves_an_0')
+
+    def test_publication_preserves_an_explicit_registered_pair(tmp_path):
+        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+        from blueprint_pipeline.task_evaluation_result_delivery import materialize_policy_canary_result_delivery
+        from blueprint_pipeline.task_evaluation_policy_canary_result_projection import build_policy_canary_result_projection
+        from tests.test_task_evaluation_policy_canary_result_delivery import _result, _closure
+        evidence = tmp_path / "evidence"
+        evidence.mkdir()
+        result = _result(evidence)
+        pair = ["team_policy_alpha", "team_policy_beta"]
+        template = result["episodes"][0]
+        result["candidate_ids"] = pair
+        result["episodes"] = [dict(deepcopy(template), candidate_id=candidate) for candidate in pair]
+        result.update(run_id="registered-pair", configuration_digest="sha256:" + "9" * 64,
+            status="blocked", blockers=["remaining_cells_incomplete"])
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+        closure = {name: _closure(tmp_path / (name + ".json"), flag=flag) for name, flag in (
+            ("billing", "official_billing_sealed"), ("teardown", "teardown_completed"), ("provider_zero", "provider_zero_verified"))}
+>       delivery = materialize_policy_canary_result_delivery(run_root=tmp_path, run_id=result["run_id"],
+            result_status="blocked", session_result=result, evidence_root=evidence, closure_records=closure)
+
+tests/test_policy_comparison_completion.py:156: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/blueprint_pipeline/task_evaluation_result_delivery.py:1135: in materialize_policy_canary_result_delivery
+    _write_immutable(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4853/test_publication_preserves_an_0/artifacts/result_delivery/episodes/episode-one.json')
+content = b'{"actions_reached_robot":true,"arm_moved":true,"candidate_id":"team_policy_beta","candidate_policy_queried":true,"ce...ry":{"completed_at_unix_ns":1700000001000000000,"started_at_unix_ns":1700000000000000000,"wall_time_ns":1000000000}}\n'
+
+    def _write_immutable(path: Path, content: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("xb") as stream:
+                stream.write(content)
+        except FileExistsError:
+            if path.read_bytes() != content:
+>               raise TaskEvaluationResultDeliveryError(
+                    f"immutable_result_delivery_conflict:{path.name}"
+                )
+E               blueprint_pipeline.task_evaluation_result_delivery.TaskEvaluationResultDeliveryError: immutable_result_delivery_conflict:episode-one.json
+
+src/blueprint_pipeline/task_evaluation_result_delivery.py:138: TaskEvaluationResultDeliveryError
+=========================== short test summary info ============================
+FAILED tests/test_policy_comparison_completion.py::test_publication_preserves_an_explicit_registered_pair
+1 failed, 32 passed in 14.86s
