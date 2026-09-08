@@ -53,6 +53,7 @@ RUNTIME_BLUEPRINT_MODULES = (
     "gaussian_field_quality.py",
     "artifixer_source_geometry_admission.py",
     "artifixer_training_recovery.py",
+    "artifixer_appearance_freeze.py",
     "gaussian_splat_decode.py",
     "nurec_usdz_layer_transform.py",
     "aura_nurec_usdz.py",
@@ -823,17 +824,16 @@ def _checkpoint_reuse_source(
                     checkpoint.get("path") if isinstance(checkpoint, Mapping) else ""
                 ).replace("\\", "/")
                 marker = "/runtime_output/"
+                from .public_scene_artifixer3d_native_exports import geometry_protection_is_qualified
+                expected_geometry_mode = ("freeze_declared_appearance_initialization"
+                    if candidate.get("appearance_initialization") else RETAINED_GEOMETRY_POLICY["mode"])
                 if (
                     task.get("task_id") != task_id
                     or task.get("pipeline_mode") != DUAL_TARGET_PIPELINE_MODE
                     or not isinstance(geometry_protection, Mapping)
                     or geometry_protection.get("mode")
-                    != RETAINED_GEOMETRY_POLICY["mode"]
-                    or geometry_protection.get("status") != "qualified"
-                    or geometry_protection.get("blockers") != []
-                    or geometry_protection.get("exact_position_tensor_match") is not True
-                    or geometry_protection.get("exact_rotation_tensor_match") is not True
-                    or geometry_protection.get("exact_scale_tensor_match") is not True
+                    != expected_geometry_mode
+                    or not geometry_protection_is_qualified(geometry_protection)
                     or marker not in provider_path
                     or not isinstance(checkpoint, Mapping)
                 ):
@@ -1261,6 +1261,11 @@ def build_artifixer3d_bundle(
                 "artifixer3d_plus_bypassed": True,
             }
         )
+        if candidate.get("appearance_initialization") is not None:
+            from .artifixer_appearance_freeze import GEOMETRY_MODE
+            runtime_request["artifixer3d"]["geometry_policy"] = {
+                **RETAINED_GEOMETRY_POLICY, "mode": GEOMETRY_MODE}
+            runtime_request["artifixer3d"]["appearance_initialization"] = candidate["appearance_initialization"]
         if render_only:
             runtime_request.update(
                 {

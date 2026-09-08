@@ -62,7 +62,11 @@ def _digest(value: Any) -> bool:
 def geometry_protection_is_qualified(value: Any) -> bool:
     return (
         isinstance(value, Mapping)
-        and value.get("mode") == RETAINED_GEOMETRY_MODE
+        and (value.get("mode") == RETAINED_GEOMETRY_MODE or (
+            value.get("mode") == "freeze_declared_appearance_initialization"
+            and value.get("exact_source_appearance_prefix_match") is True
+            and value.get("exact_full_density_tensor_match") is True
+            and _digest(value.get("initialization_receipt_digest"))))
         and value.get("status") == "qualified"
         and value.get("exact_position_tensor_match") is True
         and value.get("exact_rotation_tensor_match") is True

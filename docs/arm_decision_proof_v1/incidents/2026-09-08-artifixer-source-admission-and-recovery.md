@@ -61,3 +61,55 @@ native exports immediately after export and normalized review PNGs before the
 caller can reject them, for both fresh-training and checkpoint-reuse paths.
 The original rejected PNG bytes have not been recovered; diagnostic renders of
 the recovered field must not be described as those consumed review images.
+
+## R22 missing background support
+
+The cutout removed 2,791 splats. The exact retained FlashSplat receipt marks
+2,518 of those as also contributing to protected background. The selection is
+an any-view contribution union, not object ownership: removing a large shared
+splat can remove the cabinet front or back panel along with book pixels.
+The cutout contract requires subsequent complete deleted-layer repair support,
+but the active preparation only supplied the book mask and a 32-pixel margin.
+Training then froze positions, rotations, scales, addition and relocation.
+This combination asked appearance-only optimization to fill missing geometry.
+
+A source-01 diagnostic with the original retained geometry and black/white
+backgrounds found 92.18% of repair-mask pixels fully uncovered at their original
+opacity. A counterfactual with every opacity forced to its maximum still left
+71.94% uncovered. These are diagnostics of one calibrated view, not the original
+review PNGs or a qualification of the other views. Keeping all background-coupled
+splats restored the cabinet but left most of the book visible in two inspected
+views, so simply switching to the existing conservative classifier was insufficient.
+
+The bounded correction preserves the immutable SAM/FlashSplat proposal and
+produces a separately labeled initialization candidate. It removes only proposal
+rows whose centers lie within the registered object box plus 5 cm and whose
+largest activated scale is at most 8 cm. Other proposal rows remain background
+candidates, not newly proven background ownership. Actual triangles of the
+registered support mesh supply appearance-only surface samples within the object
+XY box plus 10 cm. Their initial colors come from the accepted teacher images.
+This does not alter the collision scene or establish physical geometry.
+
+The real-input CPU replay removed 838 local candidates, preserved 1,953 remaining
+proposal rows and retained every reused source vertex byte. It produced 699,729
+frozen source rows and 224,250 generated surface rows at 1 mm spacing. Every new
+point had at least 15 color views. Publisher support bounds and matched SAGE mesh
+bounds differ by at most 3.877 mm; the receipt records both and enforces a 1 cm
+appearance-admission ceiling. Sampling follows the actual triangles and refuses
+incomplete mesh coverage instead of replacing the mesh with an AABB plane.
+
+The new geometry mode freezes the entire declared initialization, including new
+geometry and all opacity. Training may change only the generated rows' color/SH
+features; full source SH starts active. Scoped gradient hooks leave the released
+trainer and source files unchanged. Export independently requires exact original
+color tensors and exact full density, position, rotation and scale tensors.
+Initialization identity and the source/generated partition survive dual-target
+packaging and checkpoint recovery. Completed checkpoints and failures remain
+retained if the post-training appearance guard refuses the result.
+
+The initial 3 mm prototype was inspected at all 16 calibrated views on local Metal;
+the large void and visible book shape were absent, with remaining patch/texture
+differences. The 1 mm initializer is a subsequent untrained candidate. Neither
+prototype is an independently accepted appearance result, a native import, or a
+completed controls/policy run. The next paid attempt must use the normal immutable
+release, budget, watchdog and independent final-review gates.

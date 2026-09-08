@@ -1288,6 +1288,18 @@ def materialize_dual_target_artifixer3d_inputs(
         },
         "receipt_digest": "",
     }
+    if source.get("appearance_initialization") is not None:
+        initialization = source["appearance_initialization"]
+        original_receipt = _bound_record(initialization["receipt"],
+            code="dual_target_appearance_initialization_receipt_invalid")
+        initialization_receipt = provenance / "appearance_initialization.json"
+        _link_or_copy(original_receipt, initialization_receipt,
+            code="dual_target_appearance_initialization_receipt_copy_invalid")
+        receipt["appearance_initialization"] = {
+            **initialization,
+            "receipt": _relative_record(initialization_receipt, root=output),
+            "initialization_sha256": _absolute_record(source_retained)["sha256"],
+        }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     receipt_path = output / f"{SCHEMA_VERSION}.json"
     _write_json(receipt_path, receipt)
