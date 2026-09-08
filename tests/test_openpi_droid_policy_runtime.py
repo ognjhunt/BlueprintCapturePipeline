@@ -347,7 +347,7 @@ def test_openpi_preflight_reconfirms_identity_after_prior_episode(
     assert readiness["prior_candidate_policy_query_observed"] is True
     assert readiness["last_inference_evidence"] is None
     assert readiness["connection_generation"] == 2
-    assert client.candidate_policy_queried is True
+    assert client.candidate_policy_queried is False  # next episode; prior fact is retained above
     assert len(clients) == 2
     assert [item.inference_calls for item in clients] == [1, 0]
     assert [item.metadata_reads for item in clients] == [1, 1]

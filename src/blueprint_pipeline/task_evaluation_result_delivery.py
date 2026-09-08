@@ -1033,7 +1033,10 @@ def materialize_policy_canary_result_delivery(
     )
 
     candidate_rows: list[dict[str, Any]] = []
-    for candidate_id in ("pi05_droid", "groot_n17_droid"):
+    candidate_ids = list(result.get("candidate_ids") or ("pi05_droid", "groot_n17_droid"))
+    if len(candidate_ids) != 2 or len(set(candidate_ids)) != 2:
+        raise TaskEvaluationResultDeliveryError("policy_canary_candidate_pair_invalid")
+    for candidate_id in candidate_ids:
         rows = [row for row in episodes if row.get("candidate_id") == candidate_id]
         completed_rows = [row for row in rows if row.get("status") == "completed"]
         interpretable = [
@@ -1421,8 +1424,12 @@ def materialize_policy_canary_result_delivery(
     completed = sum(row.get("status") == "completed" for row in episodes)
     first_episode = episodes[0] if episodes else {}
     first_raw_episode = first_episode.get("episode") or {}
+    from .policy_paired_summary import paired_summary
+    paired = paired_summary(episodes, candidate_ids=candidate_ids,
+        planned_cells=result.get("frozen_cells"), source_digest=result["result_digest"])
     delivery: dict[str, Any] = {
         "schema_version": POLICY_CANARY_DELIVERY_SCHEMA_VERSION,
+        "paired_diagnostic_summary": paired,
         "run_id": run,
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",

@@ -790,6 +790,30 @@ class IsaacEpisodeAdapter:
         if self._scripted_pose_controller_reset_callback is not None:
             self._scripted_pose_controller_reset_callback()
         self._control_step_index = 0
+        self._camera_frame_history = {}
+        self._reset_generation = getattr(self, "_reset_generation", 0) + 1
+
+    def _camera_freshness(self, camera_name: str, camera: Any) -> dict[str, Any]:
+        """Read the sensor's own frame counter; never infer freshness from pixels."""
+        raw = getattr(camera, "frame", None)
+        if raw is None:
+            return {"status": "unverified", "gap": "native_sensor_frame_counter_missing"}
+        try:
+            values = _as_array(self._to_torch(raw)).reshape(-1)
+            generation = int(values[0])
+            if len(values) != 1 or generation < 0 or float(values[0]) != generation:
+                raise ValueError("invalid_frame_counter")
+        except (TypeError, ValueError, IndexError) as exc:
+            raise IsaacEpisodeAdapterError(["isaac_episode_sensor_frame_counter_invalid:" + camera_name]) from exc
+        history = getattr(self, "_camera_frame_history", {})
+        previous = history.get(camera_name)
+        if previous is not None and self._control_step_index > previous[0] and generation <= previous[1]:
+            raise IsaacEpisodeAdapterError(["isaac_episode_sensor_frame_stale:" + camera_name])
+        history[camera_name] = (self._control_step_index, generation)
+        self._camera_frame_history = history
+        return {"status": "observed", "source": "isaac_camera_frame_counter",
+                "frame_index": generation, "control_step_index": self._control_step_index,
+                "reset_generation": getattr(self, "_reset_generation", 0)}
 
     def reset_to_diagnostic_checkpoint(
         self,
@@ -834,6 +858,7 @@ class IsaacEpisodeAdapter:
 
     def read_policy_inputs(self) -> dict[str, Any]:
         inputs: dict[str, Any] = {}
+        freshness = {}
         for role, view in (
             ("external", DROID_EXTERIOR_VIEW_1),
             ("wrist", DROID_WRIST_VIEW),
@@ -845,11 +870,13 @@ class IsaacEpisodeAdapter:
                 raise IsaacEpisodeAdapterError([f"isaac_episode_camera_rgb_missing:{camera_name}"])
             frame = _as_array(self._to_torch(output["rgb"]))[0]
             inputs[view] = rgb_from_camera_output(frame)
+            freshness[role] = self._camera_freshness(camera_name, camera)
         inputs["joint_position"] = self.read_arm_joint_positions()
         inputs["gripper_position"] = self._droid_gripper_position()
         eef_9d, eef_frame_provenance = self._eef_9d_with_frame_provenance()
         inputs["eef_9d"] = eef_9d
         inputs["eef_9d_frame_provenance"] = eef_frame_provenance
+        inputs["sensor_freshness"] = freshness
         return inputs
 
     def read_evaluation_camera_inputs(self) -> dict[str, Any]:
@@ -1342,6 +1369,7 @@ class IsaacEpisodeAdapter:
             synchronizations[camera_id] = {
                 "host_bytes_ready": True,
                 "method": "environment_step_completed_before_read_only_host_copy",
+                "sensor_freshness": self._camera_freshness(camera_name, camera),
             }
         simulation_time_s = self._control_step_index * self._simulation_step_seconds
         return {

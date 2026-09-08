@@ -1105,6 +1105,91 @@ def _verified_exact_policy_input_frames(
         raise EpisodeEvidenceIndexError(
             f"episode_exact_policy_input_manifest_digest_invalid:{episode_id}"
         )
+    requests = receipt.get("policy_request_artifacts")
+    if requests is not None:
+        from .policy_request_evidence import restore_request, validate_request_evidence
+        import numpy as np
+        from PIL import Image
+        gap_indices = {row.get("query_index") for row in receipt.get("policy_request_gaps") or []
+                       if row.get("reason") == "no_serialized_request_before_terminal"}
+        request_indices = [row.get("query_index") for row in requests] if isinstance(requests, list) else []
+        terminal = (receipt.get("lifecycle") or {}).get("terminal_class")
+        if (not isinstance(requests, list) or len(set(request_indices)) != len(request_indices)
+                or any(type(index) is not int or index < 0 for index in [*request_indices, *gap_indices])
+                or set(request_indices) & gap_indices
+                or set(request_indices) | gap_indices != set(range(len(frames)))
+                or gap_indices and terminal not in {"policy_safety_terminal", "scientific_terminal"}):
+            raise EpisodeEvidenceIndexError("episode_exact_policy_request_count_invalid")
+        for artifact in requests:
+            index = artifact["query_index"]
+            verified = _verify_artifact(root, artifact, role="exact_policy_request")
+            evidence = validate_request_evidence(_load_json(_inside(root, verified["relative_path"], role="exact_policy_request")))
+            binding = evidence.get("episode_binding") or {}
+            if (binding.get("candidate_id") != candidate_id or binding.get("episode_id") != episode_id
+                    or binding.get("query_index") != index or artifact.get("query_index") != index
+                    or binding.get("task_spec_digest") != receipt.get("task_spec_digest")
+                    or artifact.get("request_digest") != evidence["request_digest"]
+                    or artifact.get("serialization_verified") is not evidence.get("serialization_verified")):
+                raise EpisodeEvidenceIndexError("episode_exact_policy_request_binding_invalid")
+            reset_binding = (receipt.get("scientific_reset") or {}).get("binding") or {}
+            if any(binding.get(key) != reset_binding.get(key) for key in ("cell_id", "seed", "resolved_scenario_digest") if key in reset_binding):
+                raise EpisodeEvidenceIndexError("episode_exact_policy_request_reset_binding_invalid")
+            request = restore_request(evidence["request"])
+            arrays = []
+            views = frames[index]["view_order"]
+            if "video" in request:
+                if (set(request) != {"video", "state", "language"}
+                        or set(request["video"]) != {view.removeprefix("observation/") for view in views}
+                        or set(request["state"]) != {"joint_position", "gripper_position", "eef_9d"}):
+                    raise EpisodeEvidenceIndexError("episode_policy_request_interface_invalid")
+                for key, size in (("joint_position", 7), ("gripper_position", 1), ("eef_9d", 9)):
+                    state = request["state"][key]
+                    if state.shape != (1, 1, size) or state.dtype != np.float32:
+                        raise EpisodeEvidenceIndexError("episode_policy_request_state_interface_invalid")
+                if request["language"] != {"annotation.language.language_instruction": [[str(receipt.get("prompt") or "").strip()]]}:
+                    raise EpisodeEvidenceIndexError("episode_policy_request_prompt_binding_invalid")
+            elif evidence.get("transport") == "openpi_websocket_msgpack_numpy":
+                if set(request) != set(views) | {"observation/joint_position", "observation/gripper_position", "prompt"}:
+                    raise EpisodeEvidenceIndexError("episode_policy_request_interface_invalid")
+                for key, size in (("observation/joint_position", 7), ("observation/gripper_position", 1)):
+                    if request[key].shape != (size,) or request[key].dtype != np.float64:
+                        raise EpisodeEvidenceIndexError("episode_policy_request_state_interface_invalid")
+                if request["prompt"] != receipt.get("prompt"):
+                    raise EpisodeEvidenceIndexError("episode_policy_request_prompt_binding_invalid")
+            for view in frames[index]["view_order"]:
+                if "video" in request:
+                    arrays.append(request["video"][view.removeprefix("observation/")][0, 0])
+                else:
+                    arrays.append(request[view])
+            if any(array.dtype != np.uint8 or list(array.shape) != frames[index]["view_shapes"][view]
+                   for array, view in zip(arrays, views, strict=True)):
+                raise EpisodeEvidenceIndexError("episode_policy_request_image_interface_invalid")
+            composite = np.concatenate(arrays, axis=1)
+            with Image.open(_inside(root, frames[index]["relative_path"], role="exact_policy_frame")) as image:
+                if not np.array_equal(composite, np.asarray(image)):
+                    raise EpisodeEvidenceIndexError("episode_exact_policy_request_pixel_mismatch")
+        if receipt.get("policy_request_evidence_complete") is True and (gap_indices or not requests or not all(row.get("serialization_verified") is True for row in requests)):
+            raise EpisodeEvidenceIndexError("episode_policy_request_completeness_invalid")
+    freshness = receipt.get("sensor_freshness")
+    if freshness is not None:
+        if not isinstance(freshness, list) or len(freshness) != len(frames):
+            raise EpisodeEvidenceIndexError("episode_sensor_freshness_count_invalid")
+        previous = {}
+        for index, row in enumerate(freshness):
+            if row.get("query_index") != index:
+                raise EpisodeEvidenceIndexError("episode_sensor_freshness_index_invalid")
+            if row.get("verified") is not True:
+                continue
+            if set(row.get("cameras") or {}) != {"external", "wrist"}:
+                raise EpisodeEvidenceIndexError("episode_sensor_freshness_cameras_invalid")
+            for camera_id, reading in row["cameras"].items():
+                retained = ((policy_observations[index]["views"][camera_id].get("synchronization") or {}).get("sensor_freshness"))
+                if (reading != retained or reading.get("source") != "isaac_camera_frame_counter"
+                        or type(reading.get("frame_index")) is not int
+                        or reading.get("control_step_index") != index * receipt.get("open_loop_horizon", 0)
+                        or camera_id in previous and reading["frame_index"] <= previous[camera_id]):
+                    raise EpisodeEvidenceIndexError("episode_sensor_freshness_readback_invalid")
+                previous[camera_id] = reading["frame_index"]
     return frames
 
 
