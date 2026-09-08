@@ -1,0 +1,18 @@
+[Unit]
+Description=Reclaim completed offline replay binary working copies
+ConditionPathIsDirectory=/var/lib/blueprint/task-evaluation-inputs/stage-replays
+Wants=blueprint-scene-project-spend-refresh.service
+After=blueprint-scene-project-spend-refresh.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+PrivateDevices=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/stage-replays /var/lib/blueprint/pipeline-control-plane/completed-replay-cache-retention
+TimeoutStartSec=180
+Environment=PYTHONPATH=/opt/blueprint/task-evaluation-control-plane/src
+ExecStart=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python -m blueprint_pipeline.completed_replay_cache_retention --replay-root /var/lib/blueprint/task-evaluation-inputs/stage-replays --report-root /var/lib/blueprint/pipeline-control-plane/completed-replay-cache-retention --apply --ack reclaim-completed-offline-replay-caches

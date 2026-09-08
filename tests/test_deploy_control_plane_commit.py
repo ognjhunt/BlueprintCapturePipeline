@@ -445,6 +445,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "blueprint-provider-billing-reconciler.service", "blueprint-provider-billing-reconciler.timer",
         "blueprint-task-evaluation-terminal-resource-release.service", "blueprint-task-evaluation-terminal-resource-release.path",
         "blueprint-gpu-spend-guard.service", "blueprint-gpu-spend-guard.timer",
+        "blueprint-completed-replay-cache-gc.service", "blueprint-completed-replay-cache-gc.timer",
+        "blueprint-scene-project-spend-refresh.service",
     ):
         extra = unit_dir / name
         extra.write_text("[Unit]\nDescription=Exact fixture " + name + "\n")
@@ -549,6 +551,9 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-terminal-resource-release.path",
         "blueprint-gpu-spend-guard.service",
         "blueprint-gpu-spend-guard.timer",
+        "blueprint-completed-replay-cache-gc.service",
+        "blueprint-completed-replay-cache-gc.timer",
+        "blueprint-scene-project-spend-refresh.service",
         "blueprint-control-plane-storage-gc.service",
         "blueprint-control-plane-storage-gc.timer",
         "blueprint-control-plane-capacity.service",
@@ -570,6 +575,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-control-plane-storage-gc.timer",
+        "blueprint-completed-replay-cache-gc.timer",
         "blueprint-control-plane-capacity.timer",
         "blueprint-control-plane-preflight.timer",
     )
