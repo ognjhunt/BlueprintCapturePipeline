@@ -2,4 +2,4 @@
 
 OPENAI_TEXT_MODEL = "gpt-5.6-luna"
 OPENAI_REASONING_EFFORT = "xhigh"
-OPENAI_IMAGE_MODEL = "gpt-image-2"
+OPENAI_IMAGE_MODEL = "gpt-image-2.5-sunburst"
