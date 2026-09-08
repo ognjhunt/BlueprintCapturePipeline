@@ -2273,3 +2273,34 @@ def test_main_valid_override_only_waives_total_hard_stop(
     assert admission["status"] == "override_open"
     assert admission["admission_allowed"] is True
     assert admission["override"]["override_id"] == "override-20260627-001"
+
+
+@pytest.mark.parametrize("status", [200, 403])
+def test_provider_inventory_identifies_client_without_weakening_refusal(monkeypatch, status):
+    import io
+
+    class Response(io.BytesIO):
+        status = 200
+
+    def open_request(request, *, timeout):
+        assert request.full_url == "https://rest.runpod.io/v1/pods"
+        assert request.get_header("User-agent") == "BlueprintGpuSpendGuard/1.0"
+        assert request.get_header("Accept") == "application/json"
+        assert request.get_header("Authorization") == "Bearer fixture-key"
+        if status == 403:
+            raise guard.urllib.error.HTTPError(
+                request.full_url, 403, "Forbidden", {}, io.BytesIO(b"error code: 1010")
+            )
+        return Response(b"[]")
+
+    def build_opener(handler):
+        assert handler is guard._RejectRedirects
+        return SimpleNamespace(open=open_request)
+
+    monkeypatch.setattr(guard.urllib.request, "build_opener", build_opener)
+    if status == 200:
+        assert guard.fetch_runpod_pods("fixture-key") == []
+    else:
+        with pytest.raises(guard.ProviderInventoryError) as failure:
+            guard.fetch_runpod_pods("fixture-key")
+        assert failure.value.status == 403
