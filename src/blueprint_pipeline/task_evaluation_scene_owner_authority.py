@@ -98,7 +98,7 @@ def descriptive_task_match(*, owner_task, seed, source_binding):
 
 def reopen_scene_intent(reference, *, now=None):
     """Only server-retained intake records may supply owner identity or permission."""
-    from .task_evaluation_scene_intake import _read, validate_request
+    from .task_evaluation_scene_intake import _read, validate_request, effective_execution_expiry
     path = Path(str((reference or {}).get("path", "")))
     root_text = os.getenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT", "")
     require(bool(root_text), "scene_owner_intake_root_missing")
@@ -116,7 +116,7 @@ def reopen_scene_intent(reference, *, now=None):
     request = validate_request(intent["request"], now=intent["accepted_at_epoch"])
     moment = time.time() if now is None else now
     require(not (path.parent / "revoked.json").exists(), "scene_owner_authority_revoked")
-    require(moment < request["execution"]["expires_at_epoch"], "scene_owner_authority_expired")
+    require(moment < effective_execution_expiry(path.parent, intent), "scene_owner_authority_expired")
     require(request["consent"]["accepted_by"] == request["owner"]["user_id"],
             "scene_owner_actor_mismatch")
     return intent

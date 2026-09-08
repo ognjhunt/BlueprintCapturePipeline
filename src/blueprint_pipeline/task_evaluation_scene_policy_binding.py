@@ -102,7 +102,7 @@ def owner_for_profile(profile: Mapping[str, Any], *, now: float | None = None) -
         owner = intake.validate_request(intent["request"], now=intent["accepted_at_epoch"])
         _require(not (path.parent / "revoked.json").exists(), "owner_revoked")
         moment = time.time() if now is None else now
-        _require(moment < owner["execution"]["expires_at_epoch"], "owner_expired")
+        _require(moment < intake.effective_execution_expiry(path.parent, intent), "owner_expired")
         if "scene_policy_candidates" in profile:
             _require(candidate_map(profile["scene_policy_candidates"]) ==
                      candidate_map(owner["execution"]["policy_candidates"]), "owner_pair_mismatch")
