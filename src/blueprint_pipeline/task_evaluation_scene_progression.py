@@ -380,6 +380,17 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                                               else "scene_intake_authority_expired"])
     if intent["intent_id"] in config.get("paused_intent_ids", []):
         return emit("awaiting_execution", "paused", ["scene_intent_paused"])
+    if state.get("activation"):
+        from .task_evaluation_controls_autoprovision import CONFIG_ENV as CONTROLS_CONFIG_ENV, _registered_terminal_adoption
+        controls_config_path = os.getenv(CONTROLS_CONFIG_ENV)
+        if controls_config_path:
+            controls_config = read(controls_config_path)
+            require(controls_config.get("scene_root") == config["intent_root"], "controls_adoption_owner_root_mismatch")
+            adopted = _registered_terminal_adoption(config=controls_config, intent_id=intent["intent_id"],
+                                                    expected_production_commit=release["source_commit"])
+            if adopted is not None:
+                state["configured_scene_terminal_adoption"] = adopted
+                return emit("awaiting_execution", "configured_controls")
     if config.get("supported_source_kinds") is not None and intent["request"]["source"]["kind"] not in config["supported_source_kinds"]:
         return emit("needs_input", "source", ["source_kind_not_supported_by_progression"])
     from .task_evaluation_scene_policy_capability import policy_capability_blockers

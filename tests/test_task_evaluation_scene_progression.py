@@ -139,3 +139,21 @@ def test_capacity_wait_does_not_start_factory_and_resumes_when_whole_chain_fits(
     monkeypatch.setattr(capacity, 'whole_chain_admission', lambda *a, **kw:
         pytest.fail('an existing attempt must not be stopped by the new-chain gate'))
     assert engine.process_scene_intents(config_path=config) == resumed
+
+
+def test_registered_terminal_adoption_does_not_restart_completed_scene_factory(context, monkeypatch):
+    from blueprint_pipeline import task_evaluation_controls_autoprovision as controls
+    config_path = configuration(context, monkeypatch)
+    engine.process_scene_intents(config_path=config_path)
+    directory = context[0]['intent_path'].parent
+    intent = json.loads((directory/'intent.json').read_text())
+    previous = state.load_progression(directory, intent)
+    state.advance(directory, intent, previous, status='running', phase='scene_configuration',
+        state={**previous['state'], 'activation': {'path': 'retained-activation'}}, blockers=[], now=time.time())
+    controls_config = write(config_path.parent/'controls-config.json', {'scene_root': str(directory.parent)})
+    monkeypatch.setenv(controls.CONFIG_ENV, str(controls_config))
+    monkeypatch.setattr(controls, '_registered_terminal_adoption', lambda **kw: {'status': 'installed_terminal_adoption', 'source_launch_id': 'completed-scene'})
+    monkeypatch.setattr(engine, '_source', lambda *a, **kw: pytest.fail('completed scene must not be reconstructed'))
+    result = engine.process_scene_intents(config_path=config_path)
+    assert result['results'][0]['phase'] == 'configured_controls'
+    assert result['provider_allocation_performed'] is False

@@ -446,7 +446,8 @@ def _registered_terminal_adoption(*, config: Mapping[str, Any], intent_id: str,
             source_commit=expected_production_commit, maximum_spend_usd=candidate["placement"]["max_inference_cost_usd"],
             provider="openai", queue_root=scene_root), "terminal_adoption_placement_authority_refused")
         matches.append({"status": "installed_terminal_adoption", "intent_id": intent_id,
-                        "intent_path": str(path), "intent_digest": candidate["intent_digest"]})
+                        "intent_path": str(path), "intent_digest": candidate["intent_digest"],
+                        "source_launch_id": candidate["configuration_adoption"].get("source_launch_id")})
     _require(len(matches) <= 1, "terminal_adoption_ambiguous")
     return matches[0] if matches else None
 
