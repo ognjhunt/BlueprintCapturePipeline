@@ -1,6 +1,7 @@
 import zipfile
 
 import pytest
+import blueprint_pipeline.verified_archive_cache_reclamation as subject
 
 from blueprint_pipeline.verified_archive_cache_reclamation import (
     apply_archive_cache_reclamation,
@@ -25,7 +26,10 @@ def fixture(tmp_path):
     return root, archive
 
 
-def test_only_verified_unprotected_cache_is_removed(tmp_path):
+def test_only_verified_unprotected_cache_is_removed(tmp_path, monkeypatch):
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    monkeypatch.setattr(subject, "_process_root", lambda: proc)
     root, archive = fixture(tmp_path)
     before = archive.read_bytes()
     plan = plan_archive_cache_reclamation(
@@ -64,3 +68,16 @@ def test_changed_archive_cannot_authorize_cache_removal(tmp_path):
     with pytest.raises(ValueError, match="archive_changed"):
         apply_archive_cache_reclamation(plan, ack="reclaim-byte-verified-extraction-cache")
     assert (root / "a.ply").exists()
+
+
+def test_live_reader_refuses_whole_apply(tmp_path, monkeypatch):
+    root, archive = fixture(tmp_path)
+    proc = tmp_path / "proc"
+    descriptors = proc / "123" / "fd"
+    descriptors.mkdir(parents=True)
+    (descriptors / "4").symlink_to(root / "b.ply")
+    monkeypatch.setattr(subject, "_process_root", lambda: proc)
+    plan = plan_archive_cache_reclamation(archive_path=archive, extraction_root=root, minimum_size_bytes=1)
+    with pytest.raises(ValueError, match="active_reader"):
+        apply_archive_cache_reclamation(plan, ack="reclaim-byte-verified-extraction-cache")
+    assert (root / "a.ply").exists() and (root / "b.ply").exists()

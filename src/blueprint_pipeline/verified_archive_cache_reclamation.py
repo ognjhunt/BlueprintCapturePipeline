@@ -26,6 +26,10 @@ def _member_sha(archive, name):
         return "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def _process_root():
+    return Path("/proc")
+
+
 def plan_archive_cache_reclamation(
     *, archive_path: Path, extraction_root: Path, protected_paths=(), minimum_size_bytes=1024 * 1024
 ):
@@ -133,7 +137,7 @@ def apply_archive_cache_reclamation(plan, *, ack):
         targets.append(path)
     # On the production Linux host, a descriptor or cwd under the extraction
     # root refuses the entire mutation. No partial deletion precedes this check.
-    proc = Path("/proc")
+    proc = _process_root()
     if proc.is_dir():
         for process in proc.iterdir():
             if not process.name.isdecimal():
