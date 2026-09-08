@@ -1479,6 +1479,8 @@ def run_scene_configuration_vast(
     adapter: dict[str, Any] = {}
     staged_secret_root: Path | None = None
     runtime_secret_cleanup_blockers: list[str] = []
+    api_pretraining: dict[str, Any] = {}
+    api_pretraining_staging_dir = job / "api_pretraining_object_store"
     try:
         runtime_secret_paths, staged_secret_root = (
             _stage_owner_only_runtime_secrets(
@@ -1493,6 +1495,38 @@ def run_scene_configuration_vast(
             else "scene_configuration_openai_runtime_secret_configuration_invalid"
         ) from exc
     try:
+        # API image preparation and preliminary grading happen BEFORE the
+        # first Vast allocation. A failed admission retains its images/review
+        # on the control plane and cannot rent a GPU.
+        if not int(receipt.get("carried_completed_stage_count") or 0):
+            from .task_evaluation_artifixer_pretraining import (
+                CAPSULE_BYTES_ENV, CAPSULE_SHA_ENV, CAPSULE_URL_ENV,
+                GPU_PREPARATION_REQUIRED_ENV, prepare_semantics_before_gpu,
+            )
+            api_pretraining = prepare_semantics_before_gpu(
+                bundle_receipt=receipt, authority=authority, job_dir=job,
+                environment={**dict(os.environ), **runtime_environment, **runtime_secret_paths},
+            )
+            prepared_staging = stage_wam_provider_bundle_object_store(
+                job_dir=api_pretraining_staging_dir,
+                bundle_path=Path(api_pretraining["capsule_path"]),
+                key_prefix="blueprint/arm-decision-proof-v1/semantic-pretraining",
+                expiration_seconds=ttl + 1_800, retain_content_addressed_bundle=True,
+            )
+            prepared_reference = prepared_staging.get("provider_bundle_remote_reference") or {}
+            if (prepared_staging.get("status") != "completed"
+                    or prepared_reference.get("digest") != api_pretraining["capsule_sha256"]
+                    or prepared_reference.get("size_bytes") != api_pretraining["capsule_bytes"]
+                    or prepared_reference.get("full_byte_service_account_readback_passed") is not True):
+                raise TaskEvaluationSceneConfigurationVastError(
+                    "scene_configuration_api_pretraining_staging_failed")
+            runtime_environment.update({
+                CAPSULE_URL_ENV: (api_pretraining_staging_dir / "provider_bundle_url.txt").read_text().strip(),
+                CAPSULE_SHA_ENV: api_pretraining["capsule_sha256"],
+                CAPSULE_BYTES_ENV: str(api_pretraining["capsule_bytes"]),
+                GPU_PREPARATION_REQUIRED_ENV: "1",
+            })
+            expected_download_bytes += int(api_pretraining["capsule_bytes"])
         with _authority_environment():
             adapter = run_vast_provider_adapter(
                 job_dir=provider_run,
@@ -1564,6 +1598,13 @@ def run_scene_configuration_vast(
                 ),
             )
     except (OSError, RuntimeError, ValueError) as exc:
+        if not api_pretraining and not int(receipt.get("carried_completed_stage_count") or 0):
+            write_json(job / "api_pretraining_failure.json", {
+                "status": "blocked_before_gpu_allocation", "phase": "api_pretraining",
+                "run_id": receipt["run_id"], "source_commit": receipt["source_commit"],
+                "failure": redacted_failure_detail(exc), "gpu_allocation_attempted": False,
+                "raw_secret_values_recorded": False,
+            })
         adapter, provider_allocation_may_have_occurred = (
             _recover_escaped_adapter_failure(
                 provider_run=provider_run,
@@ -1583,6 +1624,14 @@ def run_scene_configuration_vast(
             adapter=adapter, staging_dir=staging_dir,
             cleanup=cleanup_staged_wam_provider_objects,
         )
+        if api_pretraining_staging_dir.exists():
+            pretraining_cleanup = cleanup_scene_staging(
+                adapter=adapter, staging_dir=api_pretraining_staging_dir,
+                cleanup=cleanup_staged_wam_provider_objects,
+            )
+            write_json(job / "api_pretraining_object_store_cleanup.json", pretraining_cleanup)
+            if pretraining_cleanup.get("all_objects_absent") is not True:
+                runtime_secret_cleanup_blockers.append("api_pretraining_staging_cleanup_unproven")
 
     if retain_warm_session and adapter.get("retained_owned") is True:
         from .task_evaluation_scene_configuration_warm_bootstrap import (  # noqa: PLC0415
@@ -1799,6 +1848,10 @@ def run_scene_configuration_vast(
         "bundle_sha256": receipt["bundle_sha256"],
         "authority_digest": authority["authority_digest"],
         "authorization_consumption": consumption,
+        "api_pretraining": api_pretraining or None,
+        "api_pretraining_failure_path": (
+            str(job / "api_pretraining_failure.json")
+            if (job / "api_pretraining_failure.json").is_file() else None),
         "provider_adapter_result_path": str(
             provider_run / "vast_provider_adapter_result.json"
         ),

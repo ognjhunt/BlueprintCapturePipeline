@@ -192,3 +192,29 @@ protect resources. The eight-minute orphan threshold and paid/deadline limits
 remain unchanged. A focused ownership regression is included for hosted CI; no
 additional local test or replay cycle is started under the owner's direct-restart
 instruction. R17 startup failure, billing and teardown evidence remain retained.
+
+## API preparation before GPU allocation
+
+A real control-plane grading call on the retained 16-view set accepted 15 and
+rejected only source-07's glassy gray material substitution. The execution digest
+is `sha256:10b012ca6647e55d210136277bfbf2edfd0c81cfeab87e65a9bb2f64465f4a0a`;
+usage was 94,417 input and 3,118 output tokens, one request, with a USD 0.22625
+pricing estimate (not settled official billing). Minor seams were warnings.
+
+The production scene allocator now prepares semantic images, applies the
+pre-training reviewer and bounded recovery/coverage policy on the control plane,
+and retains a digest-bound capsule before invoking Vast allocation. CPU
+preparation cannot enter ArtiFixer training or invoke a pending GPU renderer.
+The provider restores and validates the capsule's exact files, run, release and
+scientific inputs, then starts training without repeating preliminary API work.
+All final camera angles and the strict post-training review remain unchanged.
+
+An explicitly configured real-review cache can reuse that earlier model decision
+only when the complete current multimodal input digest matches. It preserves the
+original execution unchanged and records that no new review call occurred.
+Mismatched inputs cause a fresh review. Secrets are staged through the existing
+owner-only secret mechanism and are excluded from the capsule. The generic key
+file cannot override a stage's explicit review key. Capsule URLs stay in private
+startup state and are redacted from retained logs. The shared disk floor remains
+unchanged; semantic preparation reserves a footprint derived from the input
+archive, and retains its immutable archive while releasing its expanded cache.

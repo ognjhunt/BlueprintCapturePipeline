@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_live_profile import file_digest
 from blueprint_pipeline.task_evaluation_configured_controls_autostart import (
@@ -71,6 +73,21 @@ from scripts.build_task_evaluation_scene_configuration_toolchain import (
 from tests.test_build_task_evaluation_scene_configuration_toolchain import (
     _component_packages,
 )
+
+
+
+@pytest.fixture(autouse=True)
+def _stub_api_preparation_for_bundle_contracts(monkeypatch):
+    """These tests exercise bundle/provider contracts; API ordering is covered separately."""
+    from blueprint_pipeline import task_evaluation_artifixer_pretraining as prep
+
+    def prepare(**kwargs):
+        path = Path(kwargs["job_dir"]) / "fixture_pretraining.zip"
+        path.write_bytes(b"prepared")
+        return {"capsule_path": str(path), "capsule_sha256": prep._sha(path),
+                "capsule_bytes": path.stat().st_size}
+
+    monkeypatch.setattr(prep, "prepare_semantics_before_gpu", prepare)
 
 
 def _sha256(path: Path) -> str:
@@ -3512,6 +3529,11 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
             (staging / name).write_text(
                 f"https://objects.example.test/{name}", encoding="utf-8"
             )
+        if staging.name == "api_pretraining_object_store":
+            bundle = Path(_kwargs["bundle_path"])
+            return {"status": "completed", "provider_bundle_remote_reference": {
+                "digest": _sha256(bundle), "size_bytes": bundle.stat().st_size,
+                "full_byte_service_account_readback_passed": True}}
         return {"status": "completed"}
 
     monkeypatch.setattr(scene_vast, "stage_wam_provider_bundle_object_store", stage)
@@ -4562,6 +4584,7 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
     expected_download = (
         receipt["bundle_size_bytes"]
         + provider_artifacts.PROVISIONING_DOWNLOAD_OVERHEAD_BYTES
+        + len(b"prepared")
     )
     expected_upload = max(
         2 * receipt["bundle_size_bytes"],

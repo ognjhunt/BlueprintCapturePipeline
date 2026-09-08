@@ -22,12 +22,26 @@ from tests.test_task_evaluation_scene_configuration_bundle import (
 )
 
 
+@pytest.mark.parametrize("preparation_rejected", [False, True])
 def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preparation_rejected: bool
 ) -> None:
     """A finalization error cannot turn a rented instance into "unallocated"."""
 
     receipt = _build(tmp_path, "bundle")
+    from blueprint_pipeline import task_evaluation_artifixer_pretraining as prep
+    events = []
+
+    def prepare(**kwargs):
+        events.append("api_preparation")
+        if preparation_rejected:
+            raise ValueError("pretraining_review_rejected")
+        capsule = Path(kwargs["job_dir"]) / "prepared.zip"
+        capsule.write_bytes(b"prepared")
+        return {"capsule_path": str(capsule), "capsule_sha256": prep._sha(capsule),
+                "capsule_bytes": capsule.stat().st_size}
+
+    monkeypatch.setattr(prep, "prepare_semantics_before_gpu", prepare)
     receipt_path = tmp_path / "bundle" / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
     authority_path = tmp_path / "authority.json"
     authority_path.write_text("{}", encoding="utf-8")
@@ -73,7 +87,7 @@ def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(
                 "status": "remote_verified",
                 "artifact_kind": "provider-bundle",
                 "uri": "s3://scene-artifacts/provider-bundle.zip",
-                "digest": receipt["bundle_sha256"],
+                "digest": prep._sha(bundle),
                 "size_bytes": bundle.stat().st_size,
                 "content_addressed_key": True,
                 "remote_identity_verified": True,
@@ -123,6 +137,8 @@ def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(
     )
 
     def adapter(**kwargs):
+        events.append("gpu_allocation")
+        assert events == ["api_preparation", "gpu_allocation"]
         started = Path(kwargs["started_instance_id_path"])
         started.parent.mkdir(parents=True, exist_ok=True)
         started.write_text("918273\n", encoding="utf-8")
@@ -133,9 +149,11 @@ def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(
     def false_unallocated(*_args, **_kwargs):
         raise AssertionError("post-create failure was mislabeled unallocated")
 
-    monkeypatch.setattr(
-        scene_vast, "seal_unallocated_provider_teardown", false_unallocated
-    )
+    if not preparation_rejected:
+        monkeypatch.setattr(scene_vast, "seal_unallocated_provider_teardown", false_unallocated)
+    else:
+        monkeypatch.setattr(scene_vast, "close_independent_vast_watchdog_without_allocation",
+                            lambda **_k: {"status": "provider_terminal", "provider_absence_confirmed": True})
     _download, upload = scene_vast._provider_transfer_byte_budget(receipt)
     required_free = scene_vast._provider_output_disk_requirements(upload)[
         "required_free_bytes_before_download"
@@ -153,6 +171,10 @@ def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(
     )
 
     assert watchdog_handle is not None
+    if preparation_rejected:
+        assert events == ["api_preparation"]
+        assert result["provider_mutations_performed"] == 0
+        return
     assert close_call["instance_ids"] == [918273]
     assert close_call["provider_teardown_completed"] is False
     assert close_call["provider_allocation_impossible"] is False

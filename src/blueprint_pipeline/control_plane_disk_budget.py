@@ -43,6 +43,7 @@ ROLE_FOOTPRINT_BYTES: Mapping[str, int] = {
     "policy_canary_dispatch": 2 * GIB,
     "evidence_offload": 2 * GIB,
     "stage_replay": 4 * GIB,
+    "semantic_pretraining": 3 * GIB,
 }
 _ROLE_RE = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
 
