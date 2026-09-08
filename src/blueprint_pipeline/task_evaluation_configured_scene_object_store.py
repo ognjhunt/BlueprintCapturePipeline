@@ -10,6 +10,7 @@ import re
 import stat
 import tempfile
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -21,6 +22,9 @@ LARGE_ARTIFACT_KEY_PREFIX = f"{DEFAULT_KEY_PREFIX}/artifacts"
 # Runtime-source wrapper layers are published under this artifact kind; the
 # wrapper builder embeds the resulting URI, so the two must agree exactly.
 EXTERNAL_LAYER_ARTIFACT_KIND = "native-runtime-source-layer"
+_RANGE_READBACK_THRESHOLD_BYTES = 32 * 1024 * 1024
+_RANGE_READBACK_CHUNK_BYTES = 8 * 1024 * 1024
+_RANGE_READBACK_CONCURRENCY = 4
 _SAFE_KEY_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,191}")
 
 _ARTIFACT_STORE_FILE_ENV = {
@@ -236,6 +240,70 @@ def _streaming_readback(
     return "sha256:" + digest.hexdigest(), size
 
 
+def _ranged_readback(
+    *, client: Any, bucket: str, key: str, size: int, etag: str
+) -> tuple[str, int]:
+    """Hash every byte in order using bounded, object-pinned range requests.
+
+    Some S3-compatible stores stall a single multipart-object GET even when
+    ranges are fast. At most four 8-MiB responses are retained at once. A
+    changed object, ignored range, short body, or oversized body fails closed.
+    """
+    if not etag or size <= 0:
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_range_identity_missing"
+        )
+
+    def read_range(start: int) -> bytes:
+        end = min(start + _RANGE_READBACK_CHUNK_BYTES, size) - 1
+        response = client.get_object(
+            Bucket=bucket, Key=key, Range=f"bytes={start}-{end}", IfMatch=etag
+        )
+        body = response["Body"]
+        try:
+            expected_size = end - start + 1
+            if (
+                response.get("ETag") != etag
+                or response.get("ContentRange") != f"bytes {start}-{end}/{size}"
+                or response.get("ContentLength") != expected_size
+                or response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 206
+            ):
+                raise TaskEvaluationConfiguredSceneObjectStoreError(
+                    "configured_scene_artifact_range_identity_mismatch"
+                )
+            payload = body.read(expected_size + 1)
+            if len(payload) != expected_size:
+                raise TaskEvaluationConfiguredSceneObjectStoreError(
+                    "configured_scene_artifact_range_size_mismatch"
+                )
+            return payload
+        finally:
+            body.close()
+
+    digest = hashlib.sha256()
+    read_size = 0
+    batch_bytes = _RANGE_READBACK_CHUNK_BYTES * _RANGE_READBACK_CONCURRENCY
+    try:
+        with ThreadPoolExecutor(max_workers=_RANGE_READBACK_CONCURRENCY) as executor:
+            for batch_start in range(0, size, batch_bytes):
+                starts = range(
+                    batch_start, min(batch_start + batch_bytes, size),
+                    _RANGE_READBACK_CHUNK_BYTES,
+                )
+                # map preserves byte order; batching bounds completed responses
+                # even if the first request in a batch finishes last.
+                for payload in executor.map(read_range, starts):
+                    digest.update(payload)
+                    read_size += len(payload)
+    except TaskEvaluationConfiguredSceneObjectStoreError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - S3-compatible clients vary
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_readback_failed"
+        ) from exc
+    return "sha256:" + digest.hexdigest(), read_size
+
+
 def publish_configured_scene_artifact(
     *,
     path: str | Path,
@@ -309,12 +377,18 @@ def publish_configured_scene_artifact(
             raise TaskEvaluationConfiguredSceneObjectStoreError(
                 "configured_scene_artifact_existing_identity_mismatch"
             )
-        readback_digest, readback_size = _streaming_readback(
-            client=resolved_client,
-            bucket=resolved_bucket,
-            key=key,
-            maximum_size_bytes=size,
-        )
+        if size >= _RANGE_READBACK_THRESHOLD_BYTES:
+            readback_digest, readback_size = _ranged_readback(
+                client=resolved_client, bucket=resolved_bucket, key=key,
+                size=size, etag=str(head.get("ETag") or ""),
+            )
+        else:
+            readback_digest, readback_size = _streaming_readback(
+                client=resolved_client,
+                bucket=resolved_bucket,
+                key=key,
+                maximum_size_bytes=size,
+            )
     except TaskEvaluationConfiguredSceneObjectStoreError:
         raise
     except Exception as exc:  # noqa: BLE001 - S3-compatible clients vary
