@@ -256,8 +256,9 @@ def test_static_gate_keeps_external_asset_identifier_fail_closed(
     )
 
 
+@pytest.mark.parametrize("provider_render", [True, False])
 def test_artifixer_handler_admits_only_qualified_generated_appearance(
-    tmp_path: Path,
+    tmp_path: Path, provider_render: bool,
 ) -> None:
     runtime = tmp_path / "runtime"
     runtime.mkdir()
@@ -285,10 +286,10 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
     control_plane_result_digest = render_inputs["result_digest"]
     disclosure_decision = {
         "schema_version": "task_evaluation_scene_configuration_disclosure_decision.v1",
-        "render_execution_site": "provider_gpu",
-        "source_appearance_bytes_to_provider": True,
-        "rights_admission_permits_upload": True,
-        "stage_configuration_requests_upload": True,
+        "render_execution_site": "provider_gpu" if provider_render else "control_plane",
+        "source_appearance_bytes_to_provider": provider_render,
+        "rights_admission_permits_upload": provider_render,
+        "stage_configuration_requests_upload": provider_render,
         "human_authority_accepts_provider_terms": True,
         "refusals": [],
         "provider_training_authorized": False,
@@ -302,7 +303,7 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
         {
             "control_plane_result_digest": control_plane_result_digest,
             "disclosure_decision": disclosure_decision,
-            "render_completed_on_provider": True,
+            "render_completed_on_provider": provider_render,
         }
     )
     render_inputs["result_digest"] = canonical_digest(
@@ -368,7 +369,7 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
         "production_render_required": True,
         "required_views": {"minimum": 8},
         "provider_disclosure": {
-            "raw_interiorgs_bytes": True,
+            "raw_interiorgs_bytes": provider_render,
             "provider_training": False,
             "public_redistribution": False,
         },
