@@ -44,3 +44,20 @@ preservation, the real export adapter's refusal/pass boundary, completed-trainin
 failure archive recovery, candidate and dual-target contracts, runtime bundle
 imports, and the policy lifecycle rehearsal. No GPU or model call is part of
 these regression checks.
+
+## R22 follow-up
+
+R22 completed 30,000 steps and native export. Its independent post-training
+review rejected all 16 views: the book was absent, but the repair was dark and
+smeared and surrounding content changed. No configured revision or downstream
+controls/policy result was produced. The GPU closed with provider-zero.
+
+The new recovery path preserved the 438,231,861-byte checkpoint, verified at
+`sha256:592ed2928f69d6409b2f6f4fcc58d70a17d895aeb9238b7dacd5dc7df8c4c177`.
+A CPU re-export using the pinned released exporter reproduced both the original
+PLY and USDZ hashes exactly. However, the archive still excluded the original
+export files and the exact PNGs consumed by the reviewer. The follow-up retains
+native exports immediately after export and normalized review PNGs before the
+caller can reject them, for both fresh-training and checkpoint-reuse paths.
+The original rejected PNG bytes have not been recovered; diagnostic renders of
+the recovered field must not be described as those consumed review images.

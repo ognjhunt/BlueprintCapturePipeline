@@ -1606,6 +1606,8 @@ def _dual_target_task_runtime(
         raise ValueError("artifixer3d_checkpoint_missing_or_ambiguous")
     from blueprint_pipeline.artifixer_training_recovery import (
         retain_export_outcome,
+        retain_native_exports,
+        retain_review_frames,
         retain_training_checkpoint,
     )
 
@@ -1624,6 +1626,7 @@ def _dual_target_task_runtime(
     except Exception as exc:
         retain_export_outcome(recovery_root, exception=exc)
         raise
+    retain_native_exports(recovery_root, native_appearance)
     retain_export_outcome(recovery_root)
     with log.open("a", encoding="utf-8") as stream:
         with redirect_stdout(stream), redirect_stderr(stream):
@@ -1643,6 +1646,7 @@ def _dual_target_task_runtime(
     )
     if len(review_rows) != task["physical_camera_count"]:
         raise ValueError("artifixer3d_dual_target_review_coverage_invalid")
+    retain_review_frames(recovery_root, review_rows)
     return {
         "task_id": task_id,
         "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
@@ -1681,7 +1685,12 @@ def _dual_target_render_only_task_runtime(
 
     from data_processing import artifixer3d
 
+    from blueprint_pipeline.artifixer_training_recovery import (
+        retain_native_exports, retain_review_frames,
+    )
+
     task_id = str(task["task_id"])
+    recovery_root = output_root.parent / "retained_training_evidence" / task_id
     task_output = output_root / "tasks" / task_id
     log = task_output / "logs" / "artifixer3d_render_only.log"
     prepared = _prepare_dual_target_distillation_replay(
@@ -1706,6 +1715,7 @@ def _dual_target_render_only_task_runtime(
         reference_gaussian_ply=_retained_reference_gaussian_ply(input_root),
         geometry_policy=request["artifixer3d"]["geometry_policy"],
     )
+    retain_native_exports(recovery_root, native_appearance)
     with log.open("a", encoding="utf-8") as stream:
         with redirect_stdout(stream), redirect_stderr(stream):
             review_dir = artifixer3d.render_artifixer3d(
@@ -1724,6 +1734,7 @@ def _dual_target_render_only_task_runtime(
     )
     if len(review_rows) != task["physical_camera_count"]:
         raise ValueError("artifixer3d_dual_target_review_coverage_invalid")
+    retain_review_frames(recovery_root, review_rows)
     return {
         "task_id": task_id,
         "pipeline_mode": DUAL_TARGET_RENDER_ONLY_PIPELINE_MODE,
