@@ -8,7 +8,7 @@ import pwd
 
 import pytest
 
-from blueprint_pipeline import task_evaluation_scene_preparation_installation as installation
+import blueprint_pipeline.task_evaluation_scene_preparation_installation as installation
 from blueprint_pipeline import task_evaluation_scene_configuration_submission_publication as publication
 from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
 from blueprint_pipeline.task_evaluation_scene_preparation_service import run_preparation_service

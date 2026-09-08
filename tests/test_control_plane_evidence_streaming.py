@@ -5,6 +5,7 @@ import hashlib
 
 import pytest
 
+from blueprint_pipeline.object_store_multipart_stream import MultipartStream
 from blueprint_pipeline import control_plane_evidence_offload as offload
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from tests.test_control_plane_evidence_offload import _run, _unclassified, BUCKET
@@ -149,3 +150,27 @@ def test_stream_cache_hit_does_not_upload_or_invoke_writer():
         write_stream=lambda _: pytest.fail("cache should be reused"), **kwargs
     )
     assert first["digest"] == second["digest"] and second["cache_hit"] and client.upload_count == 1
+
+
+def test_declared_large_stream_keeps_bounded_parts_and_rejects_unbounded_size():
+    client = MultipartClient()
+    sink = MultipartStream(
+        client=client,
+        bucket=BUCKET,
+        key="bounded",
+        metadata={"Metadata": {}, "ContentType": "application/octet-stream"},
+        expected_digest="sha256:" + "0" * 64,
+        expected_size=64 * 1024**3,
+    )
+    assert 8 * 1024**2 <= sink.part_size <= 64 * 1024**2
+    sink.abort()
+    with pytest.raises(ValueError, match="bounded_multipart_limit"):
+        MultipartStream(
+            client=client,
+            bucket=BUCKET,
+            key="too-large",
+            metadata={},
+            expected_digest="sha256:" + "0" * 64,
+            expected_size=10 * 1024**4,
+        )
+    assert client.pending == {}
