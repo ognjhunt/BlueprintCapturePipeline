@@ -27,7 +27,7 @@ def terminal_adoption_source(*, config: Mapping[str, Any], intent_id: str,
     for path in (directory/'attempts').glob('*.json'):
         attempt = intake._read(path, 'attempt_digest')
         cancellation = validated_cancellation(directory, attempt)
-        if cancellation is not None:
+        if cancellation is not None and cancellation.get('status') == 'cancelled_before_controls_eligibility':
             retired.append((attempt, cancellation))
     if not retired:
         return None
@@ -53,6 +53,30 @@ def terminal_adoption_source(*, config: Mapping[str, Any], intent_id: str,
             'retired_attempts': [a for a, _ in retired], 'launch_id': launch_id}
 
 
+def validate_embedded_intent_replacement(*, run_root: Path, original_path: Path,
+                                        replacement_path: Path) -> None:
+    from .task_evaluation_configured_controls_autostart import validate_configured_controls_autostart_intent
+    from .task_evaluation_controls_autoprovision import _json, _require
+    from .task_evaluation_scene_intake import ROOT_ENV
+
+    original = validate_configured_controls_autostart_intent(_json(original_path))
+    replacement = validate_configured_controls_autostart_intent(_json(replacement_path))
+    authorization = _json(Path(replacement['phases']['construction']['authorization_path']))
+    owner = authorization['scene_owner_attempt']['scene_attempt_binding']
+    source = terminal_adoption_source(config={'scene_root': os.environ[ROOT_ENV],
+        'launch_state_root': str(run_root.parent)}, intent_id=owner['intent_id'],
+        expected_production_commit=replacement['expected_production_commit'])
+    _require(source is not None and source['launch_id'] == run_root.name
+        and source['adoption'] == replacement['configuration_adoption']
+        and source['source_commit'] == original['expected_production_commit']
+        and original['configuration_adoption'] == {'mode': 'same_commit_automatic'},
+        'terminal_adoption_embedded_replacement_invalid')
+    original_owner = _json(Path(original['phases']['construction']['authorization_path']))['scene_owner_attempt']['scene_attempt_binding']
+    _require(all(original_owner[k] == owner[k] for k in ('intent_id', 'intent_digest'))
+        and all(original.get(k) == replacement.get(k) for k in ('team_namespace', 'scene_id', 'task_id')),
+        'terminal_adoption_embedded_owner_mismatch')
+
+
 def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: Mapping[str, Any],
         intent_id: str, expected_production_commit: str, now: float | None = None) -> dict[str, Any] | None:
     from . import task_evaluation_controls_autoprovision as worker
@@ -71,6 +95,9 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
     worker._require(not (directory/'revoked.json').exists(), 'authority_revoked')
     expiry = intake.effective_execution_expiry(directory, intent)
     worker._require(moment < expiry, 'authority_expired')
+    from .task_evaluation_terminal_adoption_retirement import retire_unmaterialized_adoptions
+    retire_unmaterialized_adoptions(config=config, intent_id=intent_id,
+        source=source, expected_production_commit=expected_production_commit)
     request = intake.validate_request(intent['request'], now=intent['accepted_at_epoch'])
     binding = catalog['bindings'].get(request['task'].get('robot_binding_id'))
     worker._require(isinstance(binding, dict) and binding.get('expected_production_commit') == expected_production_commit, 'runtime_release_mismatch')
