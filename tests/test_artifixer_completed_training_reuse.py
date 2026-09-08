@@ -57,6 +57,11 @@ def setup_source(tmp_path):
             "blockers": [],
         }
     }
+    identity = {"sha256": "sha256:" + "2" * 64, "size_bytes": 10}
+    runtime["tasks"][0]["retained_geometry_initialization"] = {"source": identity}
+    runtime["tasks"][0]["semantic_teacher_frames"] = [
+        {"camera_id": f"camera-{i}", "source": identity} for i in range(8)
+    ]
     f["runtime_path"].write_text(json.dumps(runtime))
     checkpoint_root = tmp_path / "checkpoint"
     materialize_artifixer_post_training_checkpoint(
@@ -97,7 +102,9 @@ def setup_source(tmp_path):
     }
     teacher = {
         "task_id": task["task_id"],
-        "frames": [{"camera_id": f"camera-{i}", "teacher": record} for i in range(8)],
+        "frames": [
+            {"camera_id": f"camera-{i}", "whole_frame_semantic_teacher": record} for i in range(8)
+        ],
     }
     teacher_path = tmp_path / "teacher.json"
     teacher_path.write_text(json.dumps(teacher))
@@ -163,7 +170,7 @@ def test_training_reuse_refuses_any_changed_training_input(tmp_path, changed):
     else:
         p = Path(args["prepared"]["teacher_receipt_path"])
         d = json.loads(p.read_text())
-        d["frames"][0]["teacher"]["sha256"] = digest
+        d["frames"][0]["whole_frame_semantic_teacher"]["sha256"] = digest
         p.write_text(json.dumps(d))
     with pytest.raises(ValueError, match="training_inputs_changed"):
         reuse.stage_completed_training(**args)

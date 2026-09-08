@@ -199,6 +199,18 @@ def stage_completed_training(
     checked = validate_artifixer_post_training_checkpoint(checkpoint_root=checkpoint_root)
     runtime = _read(checkpoint_root / "runtime/runtime_result.json")
     protection = runtime["tasks"][0]["native_appearance"]["geometry_protection"]
+    runtime_task = runtime["tasks"][0]
+    _require(
+        checked["bindings"]["configuration_sha256"] == original_stage["configuration_sha256"]
+        and _file_identity(runtime_task["retained_geometry_initialization"]["source"])
+        == expected["shared_initialization"]
+        and {r["camera_id"]: r["source"]["sha256"] for r in runtime_task["semantic_teacher_frames"]}
+        == {
+            r["camera_id"]: r["whole_frame_semantic_teacher"]["sha256"]
+            for r in old_teacher["frames"]
+        },
+        "runtime_training_lineage_changed",
+    )
     _require(
         geometry_protection_is_qualified(protection)
         and protection.get("mode") == "freeze_declared_appearance_initialization"
@@ -285,7 +297,9 @@ def stage_completed_review(*, source_root: Path, output_root: Path) -> dict:
     execution_path = source_root / "review-live" / (EXECUTION_SCHEMA_VERSION + ".json")
     execution = _read(execution_path)
     _require(
-        execution.get("execution_digest")
+        execution.get("schema_version") == EXECUTION_SCHEMA_VERSION
+        and execution.get("tracing_disabled") is True
+        and execution.get("execution_digest")
         == canonical_digest(execution, digest_field="execution_digest")
         and original_input.get("receipt_digest")
         == canonical_digest(original_input, digest_field="receipt_digest")
