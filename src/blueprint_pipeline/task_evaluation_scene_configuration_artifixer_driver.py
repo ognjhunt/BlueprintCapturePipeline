@@ -133,7 +133,7 @@ _DIAGNOSTIC_ONLY_ENV = "BLUEPRINT_SCENE_CONFIGURATION_DIAGNOSTIC_ONLY"
 _DIAGNOSTIC_REJECTED_APPEARANCE_STATUS = (
     "diagnostic_generated_appearance_edit_visual_review_rejected"
 )
-_SEMANTIC_BACKEND_ID = "openai_gpt_image_2_2026_04_21_semantic_teacher"
+_SEMANTIC_BACKEND_ID = "openai_gpt_image_2_5_sunburst_2026_09_08_semantic_teacher"
 
 
 def _diagnostic_rejection_permitted(
@@ -936,14 +936,14 @@ def _emit_artifixer_runtime_diagnostics(
 
 
 def _default_semantic_frame_cost(candidate: Mapping[str, Any]) -> float:
-    """Scale the observed 1024-square planning estimate for larger source views."""
+    """Scale the conservative Sunburst planning estimate for larger source views."""
     largest_pixels = max(
         (int(frame["image_pixel_count"])
          for task in candidate.get("tasks") or []
          for frame in task.get("frames") or []),
         default=1024 * 1024,
     )
-    return round(0.22 * max(1.0, largest_pixels / (1024 * 1024)), 6)
+    return round(0.3 * max(1.0, largest_pixels / (1024 * 1024)), 6)
 
 
 def _semantic_runtime_request(
@@ -1716,10 +1716,8 @@ def _prepare_semantic_prefix(*, values, stage_input_path, stage_input, envelope,
     expected_frame_cost = (
         float(expected_frame_cost_raw)
         if expected_frame_cost_raw
-        # gpt-image-2-2026-04-21 billed a constant $0.219282 per 1024x1024
-        # edited frame across every observed request. Scale the planning
-        # estimate for larger source frames; official returned usage remains
-        # the cost evidence and the stage's hard cap does not increase.
+# Sunburst usage is not measured here yet. Scale the conservative
+        # planning estimate for source size; actual usage remains cost evidence.
         else _default_semantic_frame_cost(candidate)
     )
     semantic_request = _semantic_runtime_request(

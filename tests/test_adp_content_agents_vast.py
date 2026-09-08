@@ -2243,7 +2243,7 @@ def test_bundle_rejects_changed_reference_bytes(
     ("filename", "before", "after"),
     [
         ("material_agent.yaml", "on_failure: warn", "on_failure: fail"),
-        ("texture_agent.yaml", "model: gpt-image-2", "model: unavailable-image"),
+        ("texture_agent.yaml", "model: gpt-image-2.5-sunburst", "model: unavailable-image"),
         (
             "physics_agent.yaml",
             "    enabled: false\n    vlm:\n      backend: openai",

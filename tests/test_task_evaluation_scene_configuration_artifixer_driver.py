@@ -907,7 +907,7 @@ def test_generic_candidate_feeds_existing_semantic_teacher_packet(tmp_path: Path
     assert packet["raw_nonredistributable_source_bytes_included"] is False
     assert runtime_request["max_parallel_requests"] == 4
     assert runtime_request["maximum_cost_usd"] == 2.4
-    assert runtime_request["expected_request_cost_usd"] == pytest.approx(0.22 * (image_size / 1024) ** 2)
+    assert runtime_request["expected_request_cost_usd"] == pytest.approx(0.3 * (image_size / 1024) ** 2)
 
     from blueprint_pipeline.semantic_teacher_image_edit_worker import execute_semantic_teacher_image_edits
     from tests.test_semantic_teacher_image_edit_worker import _Response, _inline_response

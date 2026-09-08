@@ -74,7 +74,7 @@ def test_luna_overlay_normalizes_every_released_openai_temperature_seam(
     plan_path = tmp_path / "plan.json"
     receipt_path = tmp_path / "receipt.json"
     materialize_content_agents_model_compatibility_plan(
-        model_ids=("gpt-5.6-luna", "gpt-image-2"), destination=plan_path
+        model_ids=("gpt-5.6-luna", "gpt-image-2.5-sunburst"), destination=plan_path
     )
 
     receipt = apply_content_agents_model_compatibility(
