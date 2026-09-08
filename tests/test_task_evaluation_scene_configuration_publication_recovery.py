@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+import pytest
 from pathlib import Path
 
 from blueprint_pipeline.decision_evidence_contracts import (
@@ -212,3 +214,19 @@ def test_recovers_completed_provider_output_without_repeating_provider(
     )
     assert original_result_path.read_text(encoding="utf-8")
     assert original_launch_path.read_text(encoding="utf-8")
+
+    original_bytes = original_launch_path.read_bytes()
+    def syncer(*, receipt):
+        fields = {k: receipt[k] for k in ("launch_id", "run_id", "request_digest", "receipt_digest")}
+        offering = receipt["terminal_evidence"]["scene_configuration"]["configured_scene_offering"]
+        fields.update(configured_scene_offering_digest=offering["offering_digest"], configured_scene_offering_status=offering["status"])
+        return {"schema_version": "task_evaluation_launch_webapp_sync_result.v1", **fields, "status": "succeeded", "response": {"schema_version": "task_evaluation_launch_web_sync_receipt.v1", **fields, "status": "completed", "already_exists": False}}
+    with pytest.raises(ValueError, match="webapp_sync_failed"):
+        recovery.activate_recovered_launch_receipt(original_launch_receipt_path=original_launch_path, recovered_launch_receipt_path=result["recovered_launch_receipt"]["path"], syncer=lambda **kw: {"status": "failed"})
+    assert original_launch_path.read_bytes() == original_bytes
+    activated = recovery.activate_recovered_launch_receipt(original_launch_receipt_path=original_launch_path, recovered_launch_receipt_path=result["recovered_launch_receipt"]["path"], syncer=syncer)
+    assert activated["status"] == "activated"
+    assert Path(activated["original_launch_receipt"]["path"]).read_bytes() == original_bytes
+    assert json.loads(original_launch_path.read_text()) == recovered_launch
+    assert (tmp_path / "webapp_sync_succeeded.json").is_file()
+    assert recovery.activate_recovered_launch_receipt(original_launch_receipt_path=original_launch_path, recovered_launch_receipt_path=result["recovered_launch_receipt"]["path"], syncer=syncer)["status"] == "already_activated"

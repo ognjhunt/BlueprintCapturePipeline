@@ -731,7 +731,13 @@ def recover_scene_construction_publication(
             "scene_construction_publication_recovery_results_unsafe"
         )
     recoveries_root.mkdir(mode=0o750, exist_ok=True)
-    recovery_path = recoveries_root / filename
+    # A corrected publication may follow an earlier recovery whose Website
+    # delivery failed. Preserve every finalization by publication identity.
+    recovery_path = recoveries_root / (
+        filename.removesuffix(".json") + "-"
+        + str(terminal_result["publication_result_digest"]).removeprefix("sha256:")
+        + ".json"
+    )
     finalization: dict[str, Any] = {
         "schema_version": FINALIZATION_SCHEMA_VERSION,
         "status": "completed",

@@ -230,7 +230,7 @@
           }
         },
         "appearance_review_status": {"enum": ["accepted", "paused_ungraded"]},
-        "selected_from_exact_reviewed_frame_count": {"enum": [0, 8]},
+        "selected_from_exact_reviewed_frame_count": {"type": "integer", "minimum": 0},
         "warning_label": {"const": "Visual review paused - appearance ungraded"},
         "derived_appearance_evidence": {"const": true},
         "capture_or_physical_evidence": {"const": false},

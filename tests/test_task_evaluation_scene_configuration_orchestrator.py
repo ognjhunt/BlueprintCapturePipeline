@@ -374,6 +374,15 @@ def test_publication_only_recovery_preserves_blocked_result_and_promotes_queue(
     assert len(list((queue / "completed").glob("*.json"))) == 1
     assert len(list((queue / "results").glob("*.json"))) == 1
     assert len(list((queue / "publication-recoveries").glob("*.json"))) == 1
+    recovered_bytes = Path(recovered["result_path"]).read_bytes()
+    corrected = recover_scene_construction_publication(
+        queue_root=queue, envelope=portable,
+        terminal_result={**completed_terminal, "publication_result_digest": "sha256:" + "c" * 64},
+        prior_finalization=prior,
+    )
+    assert corrected["result_path"] != recovered["result_path"]
+    assert Path(recovered["result_path"]).read_bytes() == recovered_bytes
+    assert original_path.read_bytes() == original_bytes
 
 
 def test_publication_recovery_refuses_non_publication_blocked_result(

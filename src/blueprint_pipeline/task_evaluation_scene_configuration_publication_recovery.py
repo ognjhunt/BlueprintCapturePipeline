@@ -13,7 +13,7 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -329,6 +329,88 @@ def recover_completed_configuration_publication(
     }
 
 
+def activate_recovered_launch_receipt(
+    *, original_launch_receipt_path: str | Path,
+    recovered_launch_receipt_path: str | Path,
+    syncer: Callable[..., Mapping[str, Any]] = sync_launch_receipt_to_webapp,
+) -> dict[str, Any]:
+    """Install a delivered recovery as the mutable launch projection.
+
+    Keep the original bytes and old digest-bound sync/zero receipts alongside the
+    recovery. The standard reconciler then records fresh sync and provider-zero
+    evidence for the new digest before the controls worker can advance.
+    """
+    current_path, current = _read(original_launch_receipt_path, code="publication_recovery_current_invalid")
+    recovered_path, recovered = _read(recovered_launch_receipt_path, code="publication_recovery_candidate_invalid")
+    archive = recovered_path.parent / "launch_receipt.original_blocked.v1.json"
+    if not recovered_path.is_relative_to(current_path.parent) or current_path.name != "launch_receipt.json":
+        raise ValueError("publication_recovery_activation_path_invalid")
+    original = _read(archive, code="publication_recovery_archive_invalid")[1] if archive.exists() else current
+    recovery = recovered.get("publication_recovery") or {}
+    terminal = recovered.get("terminal_evidence") or {}
+    result_artifact = terminal.get("result") or {}
+    result_path, result = _read(result_artifact.get("path", ""), code="publication_recovery_result_invalid")
+    projection, projection_blockers = _scene_configuration_terminal_projection(result)
+    if (
+        original.get("status") != "blocked"
+        or original.get("receipt_digest") != cross_runtime_canonical_digest(original, digest_field="receipt_digest")
+        or recovered.get("status") != "completed" or recovered.get("blockers") != []
+        or recovered.get("receipt_digest") != cross_runtime_canonical_digest(recovered, digest_field="receipt_digest")
+        or recovery.get("original_terminal_receipt_digest") != original.get("receipt_digest")
+        or recovery.get("recovery_digest") != canonical_digest(recovery, digest_field="recovery_digest")
+        or recovery.get("provider_execution_repeated") is not False
+        or recovery.get("paid_execution_requested") is not False
+        or recovery.get("provider_mutation_performed") is not False
+        or terminal.get("publication_recovery") != recovery
+        or terminal.get("status") != "passed"
+        or projection_blockers or projection is None
+        or terminal.get("scene_configuration") != projection
+        or result_artifact.get("digest") != _sha256(result_path)
+        or result.get("result_digest") != canonical_digest(result, digest_field="result_digest")
+        or recovery.get("recovered_configuration_result_digest") != result.get("result_digest")
+        or any(recovered.get(k) != original.get(k) for k in (
+            "launch_id", "run_id", "request_digest", "launch_profile_digest", "source_commit", "binding_digest"
+        ))
+        or current.get("receipt_digest") not in {original.get("receipt_digest"), recovered.get("receipt_digest")}
+    ):
+        raise ValueError("publication_recovery_activation_binding_invalid")
+    if current == recovered:
+        return {"status": "already_activated", "original_launch_receipt": _artifact(archive)}
+    sync = dict(syncer(receipt=recovered))
+    if sync.get("status") != "succeeded" or any(
+        sync.get(k) != recovered.get(k) for k in ("launch_id", "run_id", "request_digest", "receipt_digest")
+    ):
+        raise ValueError("scene_configuration_publication_recovery_webapp_sync_failed:" + str(sync.get("reason") or sync.get("status")))
+    from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_row
+
+    sync.update({"attempt_number": 1, "attempted_at": utc_now_iso(),
+                 "provider_mutation_performed": False})
+    sync["sync_result_digest"] = canonical_digest(sync, digest_field="sync_result_digest")
+    validated_succeeded_webapp_sync_row(receipt=recovered, attempt=sync)
+    if not archive.exists():
+        os.link(current_path, archive, follow_symlinks=False)
+    for name in ("webapp_sync_succeeded.json", "post_teardown_provider_zero_receipt.json"):
+        old = current_path.parent / name
+        retained = recovered_path.parent / ("original_" + name)
+        if old.exists():
+            _, evidence = _read(old, code="publication_recovery_old_evidence_invalid")
+            if evidence.get("receipt_digest") != original.get("receipt_digest"):
+                raise ValueError("publication_recovery_old_evidence_binding_invalid")
+            if retained.exists():
+                if retained.read_bytes() != old.read_bytes():
+                    raise ValueError("publication_recovery_old_evidence_conflict")
+                old.unlink()
+            else:
+                os.replace(old, retained)
+    staged = recovered_path.parent / "launch_receipt.activation_staged.json"
+    _write_exclusive(staged, recovered)
+    if current_path.read_bytes() != archive.read_bytes():
+        raise ValueError("publication_recovery_activation_race")
+    _write_exclusive(current_path.parent / "webapp_sync_succeeded.json", sync)
+    os.replace(staged, current_path)
+    return {"status": "activated", "webapp_sync": sync, "original_launch_receipt": _artifact(archive), "active_launch_receipt": _artifact(current_path)}
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle-receipt", required=True)
@@ -354,17 +436,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         recovery_source_commit=args.recovery_source_commit,
     )
     if args.sync_webapp:
-        _, receipt = _read(
-            result["recovered_launch_receipt"]["path"],
-            code="scene_configuration_publication_recovery_launch_receipt_invalid",
+        result["activation"] = activate_recovered_launch_receipt(
+            original_launch_receipt_path=args.original_launch_receipt,
+            recovered_launch_receipt_path=result["recovered_launch_receipt"]["path"],
         )
-        sync = sync_launch_receipt_to_webapp(receipt=receipt)
-        if sync.get("status") != "succeeded":
-            raise ValueError(
-                "scene_configuration_publication_recovery_webapp_sync_failed:"
-                + str(sync.get("reason") or sync.get("status") or "unknown")
-            )
-        result["webapp_sync"] = sync
+        result["original_launch_receipt"] = result["activation"]["original_launch_receipt"]
     print(json.dumps(result, sort_keys=True))
     return 0
 

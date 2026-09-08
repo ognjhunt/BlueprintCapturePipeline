@@ -815,10 +815,20 @@ def _destination_publication_case(
     }
 
 
+@pytest.mark.parametrize("review_count", [8, 16])
 def test_publication_qualifies_the_supplemental_destination_and_completes_the_revision(
-    tmp_path: Path,
+    tmp_path: Path, review_count: int,
 ) -> None:
     envelope, stage_results, output, publish, object_store, refs = _destination_publication_case(tmp_path)
+    for stage in stage_results:
+        for row in stage.get("output_artifacts", []):
+            if row["role"] == "appearance_visual_review_receipt":
+                review_path = Path(row["path"])
+                review = json.loads(review_path.read_text())
+                review["review_frame_count"] = review_count
+                review["receipt_digest"] = canonical_digest(review, digest_field="receipt_digest")
+                review_path.write_text(json.dumps(review))
+                row.update(_artifact(row["role"], review_path))
     result = publish_configured_scene_revision(
         envelope=envelope, stage_results=stage_results, output_root=output, publisher=publish
     )
@@ -843,6 +853,9 @@ def test_publication_qualifies_the_supplemental_destination_and_completes_the_re
     assert geometry["pose_world"] == envelope["request"]["task"]["destination"]["pose_world"]
     assert geometry["intended_support_prim_paths"] == ["/Asset"]
     offering = result["configured_scene_offering"]
+    assert offering["presentation"]["selected_from_exact_reviewed_frame_count"] == review_count
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+    assert offering["offering_digest"] == cross_runtime_canonical_digest(offering, digest_field="offering_digest")
     assert offering["task"]["destination"]["geometry"] == destination["geometry"]
     assert offering["task"]["destination"]["native_import_qualification"] == destination[
         "native_import_qualification"
