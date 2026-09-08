@@ -109,7 +109,30 @@ def setup_source(tmp_path):
     teacher_path = tmp_path / "teacher.json"
     teacher_path.write_text(json.dumps(teacher))
     prepared = {"candidate": candidate, "teacher_receipt_path": str(teacher_path)}
-    stage = {"configuration_sha256": f["bindings"]["configuration_sha256"]}
+    stage = {
+        "configuration_sha256": f["bindings"]["configuration_sha256"],
+        "configuration": {
+            "source_object": {"id": "book"},
+            "human_authority": {
+                "accepted_by": "owner",
+                "accepted_on": "old-date",
+                "authority_reference": "old-intent",
+                "raw_disclosure_allowed": True,
+                "full_source_provider_disclosure_authorities": {
+                    "render": {
+                        "path": "/old/authority.json",
+                        "sha256": "old-digest",
+                        "size_bytes": 100,
+                    }
+                },
+            },
+            "sam31_preparation_plan": {
+                "uri": "old-plan",
+                "digest": "old-digest",
+                "size_bytes": 200,
+            },
+        },
+    }
     state = {"state": prepared, "source_commit": "a" * 40}
     state["state_digest"] = canonical_digest(state, digest_field="state_digest")
     cap = {"logical_root": str(tmp_path), "state_path": "output/pretraining_state.json"}
@@ -145,6 +168,7 @@ def test_closed_training_reuses_exact_frames_and_native_bytes_without_qualificat
         teacher_receipt_path=Path(args["prepared"]["teacher_receipt_path"]),
         tuning=args["tuning"],
         configuration_sha256=args["stage_input"]["configuration_sha256"],
+        configuration=args["stage_input"]["configuration"],
     )
     assert len(result["review_frames"]) == 8
     assert Path(result["native_appearance_path"]).read_bytes() == b"native-usdz"
@@ -200,6 +224,7 @@ def test_changed_copied_frame_is_refused_at_consumption(tmp_path):
             teacher_receipt_path=Path(args["prepared"]["teacher_receipt_path"]),
             tuning=args["tuning"],
             configuration_sha256=args["stage_input"]["configuration_sha256"],
+            configuration=args["stage_input"]["configuration"],
         )
 
 
@@ -278,7 +303,7 @@ def test_reused_training_round_bypasses_runtime_and_keeps_complete_frame_records
         package_root=tmp_path,
         stage_input=args["stage_input"],
         tuning=args["tuning"],
-        configuration={},
+        configuration=args["stage_input"]["configuration"],
         environment={},
         runner=lambda *a, **k: pytest.fail("must not execute training"),
         semantic_token="",
@@ -292,3 +317,42 @@ def test_reused_training_round_bypasses_runtime_and_keeps_complete_frame_records
     for frame in result["review_frames"]:
         record = frame["final_frame"]
         assert record["size_bytes"] == Path(record["path"]).stat().st_size
+
+
+def test_renewed_authority_and_plan_references_do_not_retrain_identical_inputs(tmp_path):
+    args = setup_source(tmp_path)
+    config = args["stage_input"]["configuration"]
+    config["human_authority"]["accepted_on"] = "new-date"
+    config["human_authority"]["authority_reference"] = "new-intent"
+    config["human_authority"]["full_source_provider_disclosure_authorities"]["render"] = {
+        "path": "/new/authority.json",
+        "sha256": "new-digest",
+        "size_bytes": 101,
+    }
+    config["sam31_preparation_plan"] = {
+        "uri": "new-plan",
+        "digest": "new-digest",
+        "size_bytes": 201,
+    }
+    args["stage_input"]["configuration_sha256"] = "sha256:" + "b" * 64
+    ref = reuse.stage_completed_training(**args)
+    receipt = json.loads(Path(ref["receipt_path"]).read_text())
+    assert receipt["source_configuration_sha256"] != receipt["current_configuration_sha256"]
+    assert receipt["training_identity"]["identity_version"] == 2
+    assert receipt["new_training_executed"] is False
+
+
+@pytest.mark.parametrize("change", ["object", "owner", "permission", "operation"])
+def test_scientific_and_permission_configuration_changes_still_refuse(tmp_path, change):
+    args = setup_source(tmp_path)
+    config = args["stage_input"]["configuration"]
+    if change == "object":
+        config["source_object"]["id"] = "other-object"
+    elif change == "owner":
+        config["human_authority"]["accepted_by"] = "other-owner"
+    elif change == "permission":
+        config["human_authority"]["raw_disclosure_allowed"] = False
+    else:
+        config["human_authority"]["full_source_provider_disclosure_authorities"].pop("render")
+    with pytest.raises(ValueError, match="training_inputs_changed"):
+        reuse.stage_completed_training(**args)

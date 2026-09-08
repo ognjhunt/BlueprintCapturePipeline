@@ -1097,7 +1097,8 @@ def _run_artifixer_training_round(
         reused = hydrate_completed_training(
             reference=completed_training_reuse, candidate=dict(candidate),
             teacher_receipt_path=teacher_receipt_path, tuning=dict(tuning),
-            configuration_sha256=stage_input["configuration_sha256"])
+            configuration_sha256=stage_input["configuration_sha256"],
+            configuration=configuration)
         by_camera = {row["camera_id"]: row for row in reused["review_frames"]}
         round_root.mkdir(parents=True, mode=0o700)
         (round_root / "completed_training_reuse.json").write_text(
