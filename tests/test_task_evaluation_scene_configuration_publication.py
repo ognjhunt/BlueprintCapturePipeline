@@ -978,3 +978,21 @@ def test_publication_refuses_a_subject_static_receipt_without_a_centre_of_mass(
         publish_configured_scene_revision(
             envelope=envelope, stage_results=stage_results, output_root=output, publisher=publish
         )
+
+
+@pytest.mark.parametrize('count,minimum,accepted', [(8,8,True),(16,8,True),(16,16,True),(8,16,False),(7,8,False),(True,1,False),(16.0,8,False)])
+def test_thumbnail_selection_obeys_required_view_count(tmp_path, count, minimum, accepted):
+    artifacts = _thumbnail_artifacts(tmp_path)
+    review_path = Path(artifacts[0]['path'])
+    thumbnail = Path(artifacts[1]['path'])
+    review = json.loads(review_path.read_text())
+    review['review_frame_count'] = count
+    review['receipt_digest'] = canonical_digest(review, digest_field='receipt_digest')
+    review_path.write_text(json.dumps(review))
+    if accepted:
+        assert _thumbnail_selection(review_receipt_path=review_path, thumbnail_path=thumbnail,
+                                    minimum_frame_count=minimum)['frame_digest'] == _sha256(thumbnail)
+    else:
+        with pytest.raises(TaskEvaluationSceneConfigurationPublicationError, match='thumbnail_selection_invalid'):
+            _thumbnail_selection(review_receipt_path=review_path, thumbnail_path=thumbnail,
+                                 minimum_frame_count=minimum)
