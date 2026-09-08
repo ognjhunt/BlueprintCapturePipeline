@@ -51,6 +51,8 @@ RUNTIME_BLUEPRINT_MODULES = (
     "decision_evidence_contracts.py",
     "semantic_target_training_selection.py",
     "gaussian_field_quality.py",
+    "artifixer_source_geometry_admission.py",
+    "artifixer_training_recovery.py",
     "gaussian_splat_decode.py",
     "nurec_usdz_layer_transform.py",
     "aura_nurec_usdz.py",
