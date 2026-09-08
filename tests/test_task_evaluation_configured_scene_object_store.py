@@ -506,3 +506,91 @@ def test_reads_only_an_exact_digest_bound_object_from_the_configured_bucket(
                 "size_bytes": len(payload),
             }
         )
+
+
+class _RangedClient(_ContentAddressedClient):
+    def __init__(self, *, fault: str = "", reorder: bool = False):
+        super().__init__()
+        import threading
+        self.fault = fault
+        self.reorder = reorder
+        self.second_started = threading.Event()
+        self.ranges: list[tuple[int, int]] = []
+        self.bodies: list[io.BytesIO] = []
+
+    def head_object(self, **kwargs):
+        result = super().head_object(**kwargs)
+        result["ETag"] = "" if self.fault == "missing_etag" else '"immutable-version"'
+        return result
+
+    def get_object(self, *, Bucket, Key, Range, IfMatch):
+        assert IfMatch == '"immutable-version"'
+        start, end = map(int, Range.removeprefix("bytes=").split("-"))
+        self.ranges.append((start, end))
+        if self.reorder and start == 0:
+            assert self.second_started.wait(2)
+        if start == 4:
+            self.second_started.set()
+        if self.fault == "network":
+            raise OSError("read unavailable")
+        original = self.objects[(Bucket, Key)]
+        payload = original[start:end + 1]
+        if self.fault == "short":
+            payload = payload[:-1]
+        elif self.fault == "overflow":
+            payload += b"x"
+        elif self.fault == "corrupt":
+            payload = b"x" * len(payload)
+        body = io.BytesIO(payload)
+        self.bodies.append(body)
+        return {
+            "Body": body,
+            "ETag": '"changed"' if self.fault == "etag" else IfMatch,
+            "ContentRange": "bytes 0-0/1" if self.fault == "range" else f"bytes {start}-{end}/{len(original)}",
+            "ContentLength": 1 if self.fault == "length" else end - start + 1,
+            "ResponseMetadata": {"HTTPStatusCode": 200 if self.fault == "status" else 206},
+        }
+
+
+def _small_range_limits(monkeypatch):
+    monkeypatch.setattr(store, "_RANGE_READBACK_THRESHOLD_BYTES", 1)
+    monkeypatch.setattr(store, "_RANGE_READBACK_CHUNK_BYTES", 4)
+    monkeypatch.setattr(store, "_RANGE_READBACK_CONCURRENCY", 2)
+
+
+def test_large_readback_hashes_pinned_ranges_in_order_without_full_get(tmp_path, monkeypatch):
+    _small_range_limits(monkeypatch)
+    source = tmp_path / "capsule.zip"
+    source.write_bytes(b"abcdefghijk")
+    client = _RangedClient(reorder=True)
+    result = store.publish_configured_scene_artifact(
+        path=source, artifact_kind="provider-bundle", client=client, bucket="inputs"
+    )
+    assert result["readback_digest"] == "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+    assert result["readback_size_bytes"] == 11
+    assert result["full_byte_service_account_readback_passed"] is True
+    assert sorted(client.ranges) == [(0, 3), (4, 7), (8, 10)]
+    assert all(body.closed for body in client.bodies)
+
+
+@pytest.mark.parametrize("fault,reason", [
+    ("missing_etag", "range_identity_missing"),
+    ("etag", "range_identity_mismatch"),
+    ("range", "range_identity_mismatch"),
+    ("length", "range_identity_mismatch"),
+    ("status", "range_identity_mismatch"),
+    ("short", "range_size_mismatch"),
+    ("overflow", "range_size_mismatch"),
+    ("corrupt", "readback_mismatch"),
+    ("network", "readback_failed"),
+])
+def test_large_readback_refuses_incomplete_changed_or_unpinned_ranges(tmp_path, monkeypatch, fault, reason):
+    _small_range_limits(monkeypatch)
+    source = tmp_path / "capsule.zip"
+    source.write_bytes(b"abcdefghijk")
+    client = _RangedClient(fault=fault)
+    with pytest.raises(store.TaskEvaluationConfiguredSceneObjectStoreError, match=reason):
+        store.publish_configured_scene_artifact(
+            path=source, artifact_kind="provider-bundle", client=client, bucket="inputs"
+        )
+    assert all(body.closed for body in client.bodies)
