@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 import hashlib
 import json
 import os
@@ -74,6 +74,13 @@ RETAINED_GEOMETRY_POLICY = {
     "mcmc_perturbation_permitted": False,
     "post_training_exact_tensor_match_required": True,
 }
+DECLARED_GEOMETRY_POLICY = {**RETAINED_GEOMETRY_POLICY,
+                            "mode": "freeze_declared_appearance_initialization"}
+
+
+def _geometry_policy_valid(policy):
+    return policy == RETAINED_GEOMETRY_POLICY or policy == DECLARED_GEOMETRY_POLICY
+
 # Read from the registry rather than a second copy of the same literals: this
 # module and the bundle module each had their own set, so admitting a backend in
 # one and not the other was a silent disagreement waiting to happen.
@@ -238,7 +245,7 @@ def _dual_target_request_is_bound(request: Mapping[str, Any]) -> bool:
         and request.get("outside_support_invariance_gate") == "deferred_until_final_soft_composite"
         and isinstance(artifixer3d, Mapping)
         and artifixer3d.get("loss_overrides") == DUAL_TARGET_LOSS_OVERRIDES
-        and artifixer3d.get("geometry_policy") == RETAINED_GEOMETRY_POLICY
+        and _geometry_policy_valid(artifixer3d.get("geometry_policy"))
         and artifixer3d.get("anchor_mask_reduction") == "full_frame_mean"
         and isinstance(artifixer3d.get("steps"), int)
         and not isinstance(artifixer3d.get("steps"), bool)
@@ -279,7 +286,7 @@ def _render_only_request_is_bound(
         or request.get("outside_support_invariance_gate") != "deferred_until_final_soft_composite"
         or not isinstance(artifixer3d, Mapping)
         or artifixer3d.get("loss_overrides") != DUAL_TARGET_LOSS_OVERRIDES
-        or artifixer3d.get("geometry_policy") != RETAINED_GEOMETRY_POLICY
+        or not _geometry_policy_valid(artifixer3d.get("geometry_policy"))
         or artifixer3d.get("anchor_mask_reduction") != "full_frame_mean"
         or artifixer3d.get("training_permitted") is not False
         or artifixer3d.get("distillation_input_replay_only") is not True
@@ -607,6 +614,10 @@ def _validate_bundle(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[s
         raise ValueError("artifixer3d_semantic_editor_binding_invalid")
     for row in manifest.get("candidate_files") or []:
         _bound(runtime / "input", row, "artifixer3d_candidate_file_invalid")
+    if dual_target:
+        if candidate.get("appearance_initialization") != request["artifixer3d"].get("appearance_initialization"):
+            raise ValueError("artifixer3d_appearance_initialization_binding_mismatch")
+        _validated_appearance_initialization(runtime / "input", request)
     for row in manifest.get("source_files") or []:
         _bound(runtime / "ArtiFixer_official", row, "artifixer3d_source_file_invalid")
     if (
@@ -801,6 +812,7 @@ class _CheckpointExportModel:
         *,
         reference_splat: Any,
         geometry_policy: Mapping[str, Any],
+        appearance_initialization: Mapping[str, Any] | None = None,
     ) -> None:
         missing = [name for name in self._TENSOR_FIELDS if name not in checkpoint]
         if missing:
@@ -833,6 +845,14 @@ class _CheckpointExportModel:
         self._validate_representable_positions(count)
         self._validate_retained_geometry_exact(reference_splat, geometry_policy)
         self._validate_source_relative_geometry(reference_splat)
+        if geometry_policy == DECLARED_GEOMETRY_POLICY:
+            from blueprint_pipeline.artifixer_appearance_freeze import verify_frozen_appearance
+            if not appearance_initialization:
+                raise ValueError("artifixer3d_appearance_initialization_missing")
+            self.geometry_protection.update(verify_frozen_appearance(
+                model=self, reference=reference_splat,
+                partition=appearance_initialization["parameter_partition"]))
+            self.geometry_protection["initialization_receipt_digest"] = appearance_initialization["receipt_digest"]
 
     def _validate_retained_geometry_exact(
         self, reference_splat: Any, geometry_policy: Mapping[str, Any]
@@ -841,7 +861,7 @@ class _CheckpointExportModel:
 
         import numpy as np
 
-        if dict(geometry_policy) != RETAINED_GEOMETRY_POLICY:
+        if not _geometry_policy_valid(dict(geometry_policy)):
             raise ValueError("artifixer3d_native_export_geometry_policy_invalid")
         expected = {
             "positions": np.asarray(reference_splat.xyz, dtype=np.float32),
@@ -861,7 +881,7 @@ class _CheckpointExportModel:
             if not np.array_equal(learned, reference):
                 mismatches.append(name)
         self.geometry_protection = {
-            "mode": RETAINED_GEOMETRY_POLICY["mode"],
+            "mode": geometry_policy["mode"],
             "status": "qualified" if not mismatches else "blocked",
             "reference_gaussian_count": int(reference_splat.count),
             "checkpoint_gaussian_count": int(self.positions.shape[0]),
@@ -973,6 +993,7 @@ def _export_checkpoint_native_appearance(
     task_output: Path,
     reference_gaussian_ply: Path,
     geometry_policy: Mapping[str, Any],
+    appearance_initialization: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Serialize one bound checkpoint to standard PLY and Isaac-ready USDZ.
 
@@ -1026,6 +1047,7 @@ def _export_checkpoint_native_appearance(
         checkpoint_value,
         reference_splat=reference_splat,
         geometry_policy=geometry_policy,
+        appearance_initialization=appearance_initialization,
     )
     ply_path = output_root / "repaired_scene.ply"
     usdz_path = output_root / "repaired_scene.usdz"
@@ -1102,6 +1124,35 @@ def _retained_reference_gaussian_ply(input_root: Path) -> Path:
     if len(matches) != 1 or matches[0].is_symlink() or not matches[0].is_file():
         raise ValueError("artifixer3d_native_export_reference_gaussians_not_exact")
     return matches[0]
+
+
+def _validated_appearance_initialization(input_root: Path, request):
+    from blueprint_pipeline.artifixer_appearance_freeze import validate_partition
+    binding = request["artifixer3d"].get("appearance_initialization")
+    declared = request["artifixer3d"]["geometry_policy"] == DECLARED_GEOMETRY_POLICY
+    if not declared:
+        if binding is not None:
+            raise ValueError("artifixer3d_appearance_initialization_mode_mismatch")
+        return None
+    if not isinstance(binding, Mapping):
+        raise ValueError("artifixer3d_appearance_initialization_missing")
+    receipt_path = _bound(input_root, binding["receipt"], "artifixer3d_appearance_initialization_unbound")
+    receipt = _read(receipt_path, "artifixer3d_appearance_initialization_unreadable")
+    reference = _retained_reference_gaussian_ply(input_root)
+    expected_sha = _sha256(reference)
+    if (receipt.get("schema_version") != "artifixer_registered_background_initialization.v1"
+            or receipt.get("receipt_digest") != _canonical_digest(receipt, "receipt_digest")
+            or receipt["receipt_digest"] != binding.get("receipt_digest")
+            or receipt.get("geometry_mode") != DECLARED_GEOMETRY_POLICY["mode"]
+            or receipt.get("parameter_partition") != binding.get("parameter_partition")
+            or receipt.get("initialization", {}).get("sha256") != expected_sha
+            or binding.get("initialization_sha256") != expected_sha
+            or receipt.get("policy", {}).get("original_appearance_frozen") is not True
+            or receipt.get("policy", {}).get("generated_geometry_and_opacity_frozen") is not True):
+        raise ValueError("artifixer3d_appearance_initialization_receipt_invalid")
+    from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply
+    validate_partition(binding["parameter_partition"], read_standard_3dgs_ply(reference).count)
+    return binding
 
 
 def _align_and_validate_usdz(path: Path) -> list[dict[str, Any]]:
@@ -1187,10 +1238,10 @@ def _retained_geometry_training_overrides(
 ) -> list[str]:
     """Disable optimizer and MCMC geometry mutation for every retained splat."""
 
-    if geometry_policy != RETAINED_GEOMETRY_POLICY:
+    if not _geometry_policy_valid(geometry_policy):
         raise ValueError("artifixer3d_geometry_policy_invalid")
     disabled_strategy_iteration = steps + 1
-    return [
+    overrides = [
         # COLMAP points3D carries centers and colors only. Initializing from
         # it silently invents rotations and scales before an optimizer freeze
         # can help. The standard 3DGS PLY carries the complete retained field.
@@ -1206,6 +1257,10 @@ def _retained_geometry_training_overrides(
         f"strategy.perturb.end_iteration={disabled_strategy_iteration}",
         "strategy.perturb.noise_lr=0.0",
     ]
+    if geometry_policy == DECLARED_GEOMETRY_POLICY:
+        overrides += ["model.optimize_density=false",
+                      "model.progressive_training.init_n_features=3"]
+    return overrides
 
 
 def _stage_retained_geometry_initialization(
@@ -1594,15 +1649,30 @@ def _dual_target_task_runtime(
             geometry_policy=geometry_policy,
         )
     )
-    with log.open("a", encoding="utf-8") as stream:
-        with redirect_stdout(stream), redirect_stderr(stream):
-            threedgrut_training.train_3dgrut(
-                request["artifixer3d"]["config_name"],
-                overrides,
-                threedgrut_training.DEFAULT_THREEDGRUT_CONFIG_DIR,
-            )
+    appearance_initialization = _validated_appearance_initialization(input_root, request)
+    freeze_context = nullcontext()
+    if appearance_initialization is not None:
+        from threedgrut.model.model import MixtureOfGaussians
+        from blueprint_pipeline.artifixer_appearance_freeze import freeze_source_appearance
+        from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply
+        freeze_context = freeze_source_appearance(MixtureOfGaussians,
+            reference=read_standard_3dgs_ply(_retained_reference_gaussian_ply(input_root)),
+            partition=appearance_initialization["parameter_partition"])
+    training_exception = None
+    try:
+        with log.open("a", encoding="utf-8") as stream, freeze_context:
+            with redirect_stdout(stream), redirect_stderr(stream):
+                threedgrut_training.train_3dgrut(
+                    request["artifixer3d"]["config_name"],
+                    overrides,
+                    threedgrut_training.DEFAULT_THREEDGRUT_CONFIG_DIR,
+                )
+    except Exception as exc:
+        training_exception = exc
     checkpoint = artifixer3d.artifixer3d_checkpoint(scene, paths, steps)
     if not checkpoint.is_file():
+        if training_exception is not None:
+            raise training_exception
         raise ValueError("artifixer3d_checkpoint_missing_or_ambiguous")
     from blueprint_pipeline.artifixer_training_recovery import (
         retain_export_outcome,
@@ -1616,12 +1686,16 @@ def _dual_target_task_runtime(
         log=log, request=dict(request),
         destination=output_root.parent / "retained_training_evidence" / task_id,
     )
+    if training_exception is not None:
+        retain_export_outcome(recovery_root, exception=training_exception)
+        raise training_exception
     try:
         native_appearance = _export_checkpoint_native_appearance(
             checkpoint=checkpoint,
             task_output=task_output,
             reference_gaussian_ply=_retained_reference_gaussian_ply(input_root),
             geometry_policy=geometry_policy,
+            appearance_initialization=appearance_initialization,
         )
     except Exception as exc:
         retain_export_outcome(recovery_root, exception=exc)
@@ -1714,6 +1788,7 @@ def _dual_target_render_only_task_runtime(
         task_output=task_output,
         reference_gaussian_ply=_retained_reference_gaussian_ply(input_root),
         geometry_policy=request["artifixer3d"]["geometry_policy"],
+        appearance_initialization=_validated_appearance_initialization(input_root, request),
     )
     retain_native_exports(recovery_root, native_appearance)
     with log.open("a", encoding="utf-8") as stream:
