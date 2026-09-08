@@ -52,6 +52,7 @@ def test_minimal_request_reaches_worker_without_losing_required_controls_or_agen
         'intended_support_prim_paths': ['/Tray/Bottom'], 'insertion_withdrawal_unit_world': [0., 0., 1.],
         'target_position_world_m': target, 'destination_orientation_world_xyzw': [0., 0., 0., 1.],
         'support_height_interval_m': native['support_height_interval_m'],
+        'subject_collision_bounds_scoring_frame_m': {'minimum': [-.1, -.1, -.01], 'maximum': [.1, .1, .01]},
         'visible_label': 'blue document tray', 'relation': 'inside'})
     native.update(destination_relation='inside', destination_pose_world=[*target, 0., 0., 0., 1.],
                   destination_support_asset_id='document_tray',

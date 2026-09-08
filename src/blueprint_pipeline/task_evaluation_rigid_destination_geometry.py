@@ -316,6 +316,7 @@ def destination_trajectory_geometry(destination: Mapping[str, Any], geometry: Ma
     orientation = _unit_quaternion(pose.get("orientation_xyzw"), code=code)
     subject_orientation = _unit_quaternion(geometry.get("subject_orientation_destination_frame_xyzw"), code=code)
     lower, upper = _bounds(geometry.get("destination_position_bounds_destination_frame_m"), code=code)
+    subject_lower, subject_upper = _bounds(geometry.get("subject_collision_bounds_scoring_frame_m"), code=code)
     withdrawal = _finite_vector(geometry.get("insertion_withdrawal_unit_destination_frame"), length=3, code=code)
     support = _finite_vector(geometry.get("support_height_interval_m"), length=2, code=code)
     intended = geometry.get("intended_support_prim_paths")
@@ -333,6 +334,7 @@ def destination_trajectory_geometry(destination: Mapping[str, Any], geometry: Ma
             "destination_orientation_world_xyzw": _multiply_xyzw(orientation, subject_orientation),
             "insertion_withdrawal_unit_world": _rotate_xyzw(withdrawal, orientation),
             "support_height_interval_m": support, "intended_support_prim_paths": list(intended),
+            "subject_collision_bounds_scoring_frame_m": {"minimum": subject_lower, "maximum": subject_upper},
             "relation": destination["relation"], "visible_label": destination["visible_label"]}
 
 
@@ -344,6 +346,7 @@ def bind_destination_trajectory(task_spec: Mapping[str, Any], destination: Mappi
         affordance[name] = destination[name]
     affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
     result.update(target_position_world_m=destination["target_position_world_m"],
+                  subject_collision_bounds_scoring_frame_m=destination["subject_collision_bounds_scoring_frame_m"],
                   destination_orientation_xyzw=destination["destination_orientation_world_xyzw"],
                   support_height_interval_m=destination["support_height_interval_m"],
                   visible_target_label=destination["visible_label"], interaction_affordance=affordance)
