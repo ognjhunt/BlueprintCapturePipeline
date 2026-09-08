@@ -2,6 +2,8 @@
 
 This never calls a provider or infers a zero bill. Every unreconciled reservation
 stays charged at its full cap, including expired/revoked and failed attempts.
+The sole exception is a digest-bound cancellation proving that downstream
+controls never became eligible before their source publication failed.
 The retained official-source seed remains the opening accounting authority.
 """
 
@@ -62,7 +64,13 @@ def _publish_current_scene_project_spend_locked(*, scene_root: str | Path, seed_
     if not root.is_dir() or any(p.is_symlink() for p in (root, *root.parents)):
         raise ValueError("scene_spend_root_unsafe")
     records = []
+    cancelled = []
+    from .task_evaluation_unstarted_controls_reservations import validated_cancellation
     for path in sorted(root.glob("scene-*/attempts/*.json")):
+        cancellation = validated_cancellation(path.parent.parent, read_scene(path, "attempt_digest"))
+        if cancellation is not None:
+            cancelled.append({"attempt": _record(path), "cancellation_digest": cancellation["receipt_digest"]})
+            continue
         records.append(scene_reservation_spend_record(path)[1])
     # Recompute holds from the enrollment store, never add a prior snapshot's
     # same reservation a second time. Official seed increments are unchanged.
@@ -70,6 +78,7 @@ def _publish_current_scene_project_spend_locked(*, scene_root: str | Path, seed_
     coverage = sorted({str(row["attempt_id"]) for row in seed["posted_entries"]}
                       | {str(row["authorization_digest"]) for row in [*legacy, *records]})
     inventory = {"seed": seed_record, "scene_reservations": records, "legacy_unposted": legacy,
+                 "cancelled_before_controls_eligibility": cancelled,
                  "expected_coverage_ids": coverage}
     snapshot_digest = canonical_digest(inventory)
     destination = Path(output_root) / snapshot_digest[7:]

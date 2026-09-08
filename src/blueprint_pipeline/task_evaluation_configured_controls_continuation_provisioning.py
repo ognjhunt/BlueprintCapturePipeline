@@ -36,6 +36,7 @@ from .task_evaluation_configured_controls_autostart import (
     DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD,
     TaskEvaluationConfiguredControlsAutostartError,
     configured_controls_autostart_registry_name,
+    configured_controls_autostart_adoption_registry_name,
     materialize_configured_controls_autostart_intent,
     validate_configured_controls_autostart_intent,
 )
@@ -559,12 +560,20 @@ def provision_configured_controls_continuation(
     now: datetime | None = None,
     scene_phase_attempts: Mapping[str, Mapping[str, Any]] | None = None,
     scene_intake_root: str | Path | None = None,
+    configuration_source_commit: str | None = None,
+    configuration_adoption: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Author, publish, and seal every continuation input; return the intent path."""
 
     commit = str(expected_production_commit)
     if _COMMIT.fullmatch(commit) is None:
         raise ConfiguredControlsProvisioningError("configured_controls_provisioning_commit_invalid")
+    if configuration_source_commit is not None and (
+        _COMMIT.fullmatch(configuration_source_commit) is None
+        or (configuration_source_commit != commit and
+            (configuration_adoption or {}).get("mode") != "explicit_terminal_adoption")
+    ):
+        raise ConfiguredControlsProvisioningError("configured_controls_provisioning_configuration_adoption_required")
     if not str(authorization_reference or "").strip() or not str(authorized_by or "").strip():
         raise ConfiguredControlsProvisioningError(
             "configured_controls_provisioning_authority_text_missing"
@@ -590,7 +599,7 @@ def provision_configured_controls_continuation(
     context = _preparation_context(
         preparation_result_path=Path(preparation_result_path).expanduser(),
         preparation_queue_root=Path(preparation_queue_root).expanduser(),
-        expected_production_commit=commit,
+        expected_production_commit=configuration_source_commit or commit,
     )
     robot_asset = Path(robot_asset_usd_path).expanduser()
     if robot_asset.is_symlink() or not robot_asset.is_file():
@@ -804,6 +813,8 @@ def provision_configured_controls_continuation(
     )
     try:
         intent = materialize_configured_controls_autostart_intent(
+            configuration_source_commit=configuration_source_commit,
+            configuration_adoption=configuration_adoption,
             expected_production_commit=commit,
             submitted_by="configured-controls-continuation-provisioning",
             team_namespace=context["team_namespace"],
@@ -864,7 +875,8 @@ def install_intent_into_registry(
         raise ConfiguredControlsProvisioningError(
             "configured_controls_provisioning_intent_commit_mismatch"
         )
-    if intent["configuration_adoption"] != {"mode": "same_commit_automatic"}:
+    adoption = intent["configuration_adoption"]
+    if adoption.get("mode") not in {"same_commit_automatic", "explicit_terminal_adoption"}:
         raise ConfiguredControlsProvisioningError(
             "configured_controls_provisioning_intent_adoption_invalid"
         )
@@ -874,11 +886,17 @@ def install_intent_into_registry(
             "configured_controls_provisioning_intent_root_invalid"
         )
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
-    destination = root / configured_controls_autostart_registry_name(
+    registry_name = (
+        configured_controls_autostart_adoption_registry_name(
+            team_namespace=intent["team_namespace"], scene_id=intent["scene_id"],
+            task_id=intent["task_id"], source_launch_id=adoption["source_launch_id"],
+        ) if adoption["mode"] == "explicit_terminal_adoption" else configured_controls_autostart_registry_name(
         team_namespace=intent["team_namespace"],
         scene_id=intent["scene_id"],
         task_id=intent["task_id"],
+        )
     )
+    destination = root / registry_name
     payload = source.read_bytes()
     from .task_evaluation_intent_registry import IntentRegistryError, install_release_intent
     try:

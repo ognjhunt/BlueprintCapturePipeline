@@ -408,6 +408,50 @@ def _configured_scene_key(intent_path: Path, preparation_queue_root: Path) -> li
     return None
 
 
+def _registered_terminal_adoption(*, config: Mapping[str, Any], intent_id: str,
+                                  expected_production_commit: str) -> dict[str, Any] | None:
+    """Reopen exact owner holds before letting an adopted terminal bypass old preparation."""
+    from .task_evaluation_configured_controls_autostart import validate_configured_controls_autostart_intent
+    from .task_evaluation_scene_execution_authority import bind_scene_attempt, scene_execution_authority_blockers
+    scene_root = Path(config["scene_root"])
+    owner_intent = _scene_intent(scene_root / intent_id / "intent.json")
+    matches = []
+    for path in Path(config["intent_root"]).glob("adoption-*.json"):
+        candidate = _json(path)
+        if candidate.get("expected_production_commit") != expected_production_commit:
+            continue
+        phases = candidate.get("phases") or {}
+        constructor = phases.get("construction") or {}
+        authorization_path = constructor.get("authorization_path")
+        if not authorization_path:
+            continue
+        owner = _json(Path(authorization_path)).get("scene_owner_attempt") or {}
+        if owner.get("scene_intent_digest") != owner_intent["intent_digest"]:
+            continue
+        candidate = validate_configured_controls_autostart_intent(candidate)
+        _require(candidate["configuration_adoption"]["mode"] == "explicit_terminal_adoption",
+                 "terminal_adoption_mode_invalid")
+        for phase in ("construction", "controls"):
+            authorization = _json(Path(candidate["phases"][phase]["authorization_path"]))
+            phase_owner = authorization.get("scene_owner_attempt") or {}
+            cap = _json(Path(candidate["phases"][phase]["launch_authority_path"]))["max_spend_usd"]
+            _require(phase_owner.get("scene_intent_digest") == owner_intent["intent_digest"], "terminal_adoption_owner_mismatch")
+            blockers = scene_execution_authority_blockers(phase_owner, source_commit=expected_production_commit,
+                maximum_spend_usd=cap, provider="vast", queue_root=scene_root)
+            _require(not blockers, "terminal_adoption_owner_authority_refused")
+        binding = owner["scene_attempt_binding"]
+        placement_id = binding["attempt_id"].removesuffix("-construction") + "-placement"
+        placement = intake._read(scene_root / intent_id / "attempts" / (placement_id + ".json"), "attempt_digest")
+        _require(not scene_execution_authority_blockers(bind_scene_attempt(placement),
+            source_commit=expected_production_commit, maximum_spend_usd=candidate["placement"]["max_inference_cost_usd"],
+            provider="openai", queue_root=scene_root), "terminal_adoption_placement_authority_refused")
+        matches.append({"status": "installed_terminal_adoption", "intent_id": intent_id,
+                        "intent_path": str(path), "intent_digest": candidate["intent_digest"],
+                        "source_launch_id": candidate["configuration_adoption"].get("source_launch_id")})
+    _require(len(matches) <= 1, "terminal_adoption_ambiguous")
+    return matches[0] if matches else None
+
+
 def process_config(config_path: str | Path, *, expected_production_commit: str) -> list[dict[str, Any]]:
     config = _json(Path(config_path))
     catalog = resolve_robot_catalog(_sealed(Path(config["robot_catalog_path"]), "catalog_digest"),
@@ -420,6 +464,11 @@ def process_config(config_path: str | Path, *, expected_production_commit: str) 
             continue
         intent_id = intent_path.parent.name
         try:
+            adopted = _registered_terminal_adoption(config=config, intent_id=intent_id,
+                expected_production_commit=expected_production_commit)
+            if adopted is not None:
+                rows.append(adopted)
+                continue
             rows.append(provision_configured_scene_controls(intent_id=intent_id, scene_root=scene_root,
                 catalog=catalog, preparation_queue_root=preparation_queue_root,
                 controls_root=Path(config["controls_root"]), intent_root=Path(config["intent_root"]),

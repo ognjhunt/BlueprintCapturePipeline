@@ -346,8 +346,10 @@ def test_expired_dynamic_window_creates_versioned_refresh(tmp_path: Path) -> Non
     assert len(list((tmp_path / "state/release-window-attempts").rglob("window-*.json"))) == 2
 
 
+@pytest.mark.parametrize("embedded_intent", [False, True])
+@pytest.mark.parametrize("release_matches", [False, True])
 def test_one_shot_adoption_registry_targets_only_its_legacy_launch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, embedded_intent: bool, release_matches: bool
 ) -> None:
     launch_id = "scene-839873-2deff449-r1"
     launch_root = tmp_path / "launch-runs"
@@ -355,7 +357,7 @@ def test_one_shot_adoption_registry_targets_only_its_legacy_launch(
     _write(
         run_root / "launch_profile.json",
         {
-            "immutable_inputs": [],
+            "immutable_inputs": [{"name": "configured_controls_autostart_intent"}] if embedded_intent else [],
             "task_evaluation_run": {
                 "team_namespace": "blueprint-adp",
                 "scene_id": "interiorgs-839873",
@@ -383,7 +385,9 @@ def test_one_shot_adoption_registry_targets_only_its_legacy_launch(
         task_id="scene-839873-mug-planar-push",
     )
     _write(automatic_path, {"schema_version": "test.automatic.v1"})
+    monkeypatch.setattr(worker, "running_release_commit", lambda: ("e" if release_matches else "f") * 40)
     adoption = {
+        "expected_production_commit": "e" * 40,
         "configuration_adoption": {
             "mode": "explicit_terminal_adoption",
             "source_launch_id": launch_id,
@@ -417,6 +421,9 @@ def test_one_shot_adoption_registry_targets_only_its_legacy_launch(
     )
 
     assert report["status"] == "completed"
+    if not release_matches:
+        assert observed == {}
+        return
     assert observed["source_launch_id"] == launch_id
     assert observed["intent_path_override"] == adoption_path
     assert observed["intent_path_override"] != automatic_path

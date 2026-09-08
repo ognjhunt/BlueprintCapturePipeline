@@ -472,3 +472,19 @@ def test_registry_install_writes_the_exact_intent_bytes_read_only(tmp_path: Path
             expected_production_commit="2" * 40,
             service_group=None,
         )
+
+
+def test_terminal_adoption_keeps_configuration_provenance_and_moves_only_execution(tmp_path):
+    adoption = {"mode": "explicit_terminal_adoption", "source_launch_id": "original-config",
+        **{key: "sha256:" + "a"*64 for key in ["source_launch_receipt_digest", "terminal_result_digest",
+            "configured_scene_revision_digest", "publication_result_digest", "webapp_sync_result_digest", "provider_zero_receipt_digest"]}}
+    result, _publisher = _provision(tmp_path, expected_production_commit="e"*40,
+        configuration_source_commit=COMMIT, configuration_adoption=adoption)
+    intent = json.loads(Path(result["intent_path"]).read_text())
+    assert intent["expected_production_commit"] == "e"*40
+    assert intent["configuration_source_commit"] == COMMIT
+    assert intent["configuration_adoption"] == adoption
+    installed = provisioning.install_intent_into_registry(intent_path=result["intent_path"],
+        intent_root=tmp_path/"registry", expected_production_commit="e"*40, service_group=None)
+    assert installed["status"] == "installed"
+    assert len(list((tmp_path/"registry").glob("adoption-*.json"))) == 1

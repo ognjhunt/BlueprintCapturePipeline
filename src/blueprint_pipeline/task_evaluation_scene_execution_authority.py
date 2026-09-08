@@ -81,6 +81,12 @@ def scene_execution_authority_blockers(
     if (intent.get("intent_digest") != binding["intent_digest"]
             or any(attempt.get(k) != binding[k] for k in required - {"schema_version"})):
         return ["scene_execution_owner_record_mismatch"]
+    from .task_evaluation_unstarted_controls_reservations import validated_cancellation
+    try:
+        if validated_cancellation(directory, attempt) is not None:
+            return ["scene_execution_owner_attempt_cancelled_before_execution"]
+    except (ValueError, OSError):
+        return ["scene_execution_owner_cancellation_invalid"]
     trusted = {v.strip() for v in os.getenv(CLIENTS_ENV, "blueprint-webapp").split(",") if v.strip()}
     if intent.get("authenticated_issuer") not in trusted:
         return ["scene_execution_owner_issuer_not_authorized"]
