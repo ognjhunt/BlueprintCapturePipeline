@@ -217,3 +217,76 @@ def test_toolchain_publication_fails_closed_on_existing_or_bad_readback(
             component_packages=_component_packages(tmp_path / "bad"),
         )
     assert not failed.exists()
+
+
+@pytest.mark.parametrize("case,reuses_previous", [
+    ("identical", True), ("changed_bytes", False), ("writable_source", False),
+    ("writable_previous", False), ("different_mode", False), ("symlink", False),
+    ("retired_during_link", False),
+])
+def test_package_copy_only_reuses_identical_readonly_files(tmp_path, monkeypatch, case, reuses_previous):
+    from scripts import build_task_evaluation_scene_configuration_toolchain as builder
+    source_root = tmp_path / "new-package"
+    source_root.mkdir()
+    source = source_root / "source.zip"
+    source.write_bytes(b"a" * 65536)
+    source.chmod(0o644 if case == "writable_source" else 0o444)
+    prior_root = tmp_path / ("a" * 40)
+    package_relative = Path("components/example/package")
+    previous = prior_root / package_relative / "source.zip"
+    previous.parent.mkdir(parents=True)
+    previous.write_bytes((b"b" if case == "changed_bytes" else b"a") * 65536)
+    previous.chmod(0o644 if case == "writable_previous" else 0o555 if case == "different_mode" else 0o444)
+    if case == "symlink":
+        previous.unlink()
+        previous.symlink_to(source)
+    if case == "retired_during_link":
+        real_link = builder.os.link
+        def link(origin, target, **kwargs):
+            if Path(origin) == previous:
+                raise FileNotFoundError("old release retired")
+            return real_link(origin, target, **kwargs)
+        monkeypatch.setattr(builder.os, "link", link)
+    target = tmp_path / "installed.zip"
+    shared = {"file_count": 0, "bytes": 0}
+    builder._reuse_published_package_file(
+        str(source), str(target), package_source=source_root,
+        package_relative=package_relative, previous_roots=[prior_root], shared=shared,
+    )
+    assert target.read_bytes() == source.read_bytes() == b"a" * 65536
+    assert target.stat().st_mode == source.stat().st_mode
+    expected = previous if reuses_previous else source
+    assert target.stat().st_ino == expected.stat().st_ino
+    assert shared == {"file_count": int(reuses_previous), "bytes": 65536 if reuses_previous else 0}
+
+
+def test_new_release_shares_regenerated_immutable_payload_after_full_readback(tmp_path):
+    releases = tmp_path / "releases"
+    installed = []
+    for commit in ("a" * 40, "b" * 40):
+        packages = _component_packages(tmp_path / commit)
+        adapter, package = next(iter(packages.items()))
+        package.chmod(0o755)
+        payload = package / "retained-library.zip"
+        payload.write_bytes(b"immutable vendor source\n" * 4096)
+        payload.chmod(0o444)
+        manifest_path = package / f"{COMPONENT_PACKAGE_SCHEMA_VERSION}.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"].append({"relative_path": payload.name, "sha256": _sha256(payload),
+                                  "size_bytes": payload.stat().st_size, "executable": False})
+        manifest["package_digest"] = canonical_digest(manifest, digest_field="package_digest")
+        manifest_path.chmod(0o644)
+        manifest_path.write_text(json.dumps(manifest))
+        manifest_path.chmod(0o444)
+        package.chmod(0o555)
+        result = build_published_scene_configuration_toolchain(
+            source_commit=commit, output_root=releases / commit,
+            readback=lambda path: path.read_bytes(), readback_actor="test-service",
+            component_packages=packages,
+        )
+        installed.append(releases / commit / "components" / adapter / "package" / payload.name)
+        assert result["full_byte_service_account_readback_passed"] is True
+    assert installed[0].stat().st_ino == installed[1].stat().st_ino
+    assert result["shared_immutable_file_count"] == 1
+    assert result["shared_immutable_file_bytes"] == payload.stat().st_size
+    assert payload.stat().st_ino != installed[1].stat().st_ino

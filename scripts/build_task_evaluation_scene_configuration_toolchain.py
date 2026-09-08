@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping
@@ -66,6 +67,48 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _reuse_published_package_file(
+    source: str, destination: str, *, package_source: Path,
+    package_relative: Path, previous_roots: list[Path], shared: dict[str, int],
+) -> str:
+    """Share identical immutable payloads with a recent published release."""
+    original = Path(source)
+    metadata = original.lstat()
+    def identity(value: os.stat_result) -> tuple[int, ...]:
+        # Reads can change atime; data, permissions and inode identity may not.
+        return (value.st_dev, value.st_ino, value.st_size, value.st_mode,
+                value.st_uid, value.st_gid, value.st_mtime_ns, value.st_ctime_ns)
+    if (stat.S_ISREG(metadata.st_mode) and not metadata.st_mode & 0o222
+            and metadata.st_size >= 64 * 1024):
+        relative = original.relative_to(package_source)
+        original_digest = None
+        for root in previous_roots:
+            previous = root / package_relative / relative
+            try:
+                prior = previous.lstat()
+                if (prior.st_mode, prior.st_size, prior.st_uid, prior.st_gid) != (
+                    metadata.st_mode, metadata.st_size, metadata.st_uid, metadata.st_gid
+                ):
+                    continue
+                if (prior.st_dev, prior.st_ino) == (metadata.st_dev, metadata.st_ino):
+                    break  # Already shared by the existing immutable copy path.
+                original_digest = original_digest or _sha256(original)
+                if _sha256(previous) != original_digest:
+                    continue
+                if (identity(previous.lstat()) != identity(prior)
+                        or identity(original.lstat()) != identity(metadata)):
+                    continue
+                os.link(previous, destination, follow_symlinks=False)
+            except OSError:
+                # An old release can be retired concurrently; the verified new
+                # package remains the fallback, without altering either source.
+                continue
+            shared["file_count"] += 1
+            shared["bytes"] += metadata.st_size
+            return destination
+    return _link_or_copy_immutable(source, destination)
+
+
 def _entrypoint(adapter_id: str) -> bytes:
     return (
         "#!/bin/sh\n"
@@ -105,6 +148,13 @@ def build_published_scene_configuration_toolchain(
     }
     destination = Path(output_root).expanduser().absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
+    previous_roots = sorted(
+        (path for path in destination.parent.iterdir()
+         if _COMMIT.fullmatch(path.name) and path != destination
+         and not path.is_symlink() and path.is_dir()),
+        key=lambda path: path.stat().st_mtime_ns, reverse=True,
+    )[:3]
+    shared = {"file_count": 0, "bytes": 0}
     staging = Path(
         tempfile.mkdtemp(
             prefix=f".{destination.name}.",
@@ -138,7 +188,11 @@ def build_published_scene_configuration_toolchain(
                 package_source,
                 package_destination,
                 symlinks=False,
-                copy_function=_link_or_copy_immutable,
+                copy_function=lambda source, target: _reuse_published_package_file(
+                    source, target, package_source=package_source,
+                    package_relative=package_relative, previous_roots=previous_roots,
+                    shared=shared,
+                ),
             )
             for component_file in sorted(
                 path for path in package_destination.rglob("*") if path.is_file()
@@ -224,6 +278,8 @@ def build_published_scene_configuration_toolchain(
             "toolchain_root": str(destination),
             "toolchain_digest": manifest["toolchain_digest"],
             "file_count": len(files),
+            "shared_immutable_file_count": shared["file_count"],
+            "shared_immutable_file_bytes": shared["bytes"],
             "readback_actor": readback_actor,
             "full_byte_service_account_readback_passed": True,
             "provider_mutation_performed": False,
