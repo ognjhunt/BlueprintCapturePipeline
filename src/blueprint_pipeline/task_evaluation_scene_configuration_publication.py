@@ -12,7 +12,10 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .decision_evidence_contracts import canonical_digest, canonical_json
+from .decision_evidence_contracts import (
+    canonical_digest, canonical_json, cross_runtime_canonical_digest,
+    cross_runtime_canonical_json,
+)
 from .task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
@@ -822,7 +825,9 @@ def publish_configured_scene_revision(
                 "appearance_review_status"
             ],
             "selected_from_exact_reviewed_frame_count": (
-                0 if review_mode == PAUSED_UNGRADED_MODE else 8
+                0 if review_mode == PAUSED_UNGRADED_MODE else json.loads(
+                    artifacts["appearance_visual_review_receipt"].read_text()
+                )["review_frame_count"]
             ),
             **(
                 {"warning_label": PAUSED_UNGRADED_WARNING}
@@ -949,6 +954,17 @@ def publish_configured_scene_revision(
         },
         "offering_digest": "",
     }
+    # JSON has one numeric type. Preserve numeric values while avoiding Python's
+    # integral-float spelling (0.0) at the Website's JSON.stringify boundary.
+    # Existing Pipeline consumers still validate the Python-owned digest, so
+    # refuse values whose two canonical forms cannot yet agree.
+    offering = json.loads(cross_runtime_canonical_json(offering))
+    if canonical_digest(offering, digest_field="offering_digest") != (
+        cross_runtime_canonical_digest(offering, digest_field="offering_digest")
+    ):
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "scene_configuration_offering_number_canonicalization_invalid"
+        )
     source_offering_digest = canonical_digest(
         offering, digest_field="offering_digest"
     )

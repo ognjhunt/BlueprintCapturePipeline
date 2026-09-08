@@ -148,7 +148,7 @@ def validate_configured_scene_revision(
                 )
         elif (
             review_status != "accepted"
-            or presentation.get("selected_from_exact_reviewed_frame_count") != 8
+            or presentation.get("selected_from_exact_reviewed_frame_count", 0) < 8
             or reviewer.get("kind") != "ai"
         ):
             raise TaskEvaluationConfiguredSceneRevisionError(
