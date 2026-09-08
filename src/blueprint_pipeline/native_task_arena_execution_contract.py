@@ -89,6 +89,7 @@ DESTINATION_QUALIFICATION_RUNTIME_MODULE_NAMES = tuple(
 )
 
 CONTROLS_RUNTIME_MODULE_NAMES = (
+    "policy_scientific_reset.py",
     "adp009d_control_episode.py",
     "adp009d_contact_envelope.py",
     "adp009d_newton_gripper_drive.py",
@@ -165,6 +166,10 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "policy_canary_media_integrity.py",
+    "policy_scientific_reset.py",
+    "policy_request_evidence.py",
+    "policy_interface_binding.py",
+    "policy_paired_summary.py",
     "adp009d_policy_episode.py",
     "adp009d_policy_episode_evidence.py",
     "adp009d_droid_action_execution.py",

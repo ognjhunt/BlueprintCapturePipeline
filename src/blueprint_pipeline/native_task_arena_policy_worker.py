@@ -444,9 +444,11 @@ def _policy_client(
     *,
     groot_worker_identity_receipt: Mapping[str, Any] | None = None,
 ) -> Any:
+    from .policy_interface_binding import resolve_policy_interface
+    interface = resolve_policy_interface(spec)
     endpoint = spec["policy_endpoint"]
     secret = os.environ.get(str(endpoint["credential_env"]))
-    if spec["candidate_id"] == "pi05_droid":
+    if interface == "openpi_droid.v1":
         from blueprint_pipeline.openpi_droid_policy_runtime import (
             OpenPIDroidPolicySpec,
             OpenPIWebsocketDroidPolicyClient,

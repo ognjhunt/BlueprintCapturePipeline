@@ -1,0 +1,70 @@
+..........F............                                                  [100%]
+=================================== FAILURES ===================================
+____ test_real_clients_refuse_a_second_readiness_preflight_after_inference _____
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4846/test_real_clients_refuse_a_sec0')
+
+    def test_real_clients_refuse_a_second_readiness_preflight_after_inference(
+        tmp_path: Path,
+    ) -> None:
+        """Pins the invariant behind per-cell isolation: one client, one episode."""
+    
+        runtime_root, provider_output = _stage_runtime_root(tmp_path)
+        specs = {
+            candidate: json.loads(
+                (runtime_root / "runtime_inputs" / f"policy_execution_spec.{candidate}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            for candidate in CANDIDATE_IDS
+        }
+        groot_receipt, _evidence = _runtime_groot_worker_identity(
+            output_root=provider_output, spec=specs["groot_n17_droid"]
+        )
+        gripper = GripperConvention(closed_command=1.0, open_command=0.0, measured_by_probe=True)
+    
+        def episode(client: Any, candidate: str, label: str) -> dict[str, Any]:
+            return run_policy_episode(
+                environment=_LifecycleEnvironment(),
+                policy=client,
+                candidate_id=candidate,
+                prompt="push the mug across the table",
+                gripper=gripper,
+                task_spec=worker._resolved_scene_plan(
+                    _scene_plan(),
+                    {"cell_id": f"cell-{label}", "seed": 1, "resolved_scenario": {}},
+                    task_success_contract=public_setup()["task_success_contract"],
+                )["task_spec"],
+                max_policy_queries=1,
+                settle_window_samples=1,
+                open_loop_horizon=8,
+                media_output_dir=tmp_path / candidate / label,
+                episode_id=f"{candidate}-{label}",
+                require_complete_multicamera_media=True,
+                require_prestart_readiness=True,
+                observation_integrity={
+                    "authority": _observation_integrity_authority(),
+                    "appearance_render_backend_receipt_digest": (
+                        worker.appearance_render_backend_from_plan(_scene_plan())["receipt_digest"]
+                    ),
+                },
+            )
+    
+        for candidate, receipt in (("pi05_droid", None), ("groot_n17_droid", groot_receipt)):
+            client = _real_policy_client(specs[candidate], groot_worker_identity_receipt=receipt)
+            first = episode(client, candidate, "first")
+            assert first["candidate_policy_queried"] is True
+            # The client refuses the second readiness preflight outright, and the
+            # episode lifecycle refuses a readiness receipt from a queried client;
+            # whichever boundary fires first, a second episode on one client is
+            # a typed refusal, never a silent rollout.
+>           with pytest.raises(
+                ValueError,
+                match="preflight_after_inference_forbidden|policy_episode_readiness_queried_candidate",
+            ):
+E           Failed: DID NOT RAISE ValueError
+
+tests/test_native_task_arena_policy_canary_lifecycle_rehearsal.py:1546: Failed
+=========================== short test summary info ============================
+FAILED tests/test_native_task_arena_policy_canary_lifecycle_rehearsal.py::test_real_clients_refuse_a_second_readiness_preflight_after_inference
+1 failed, 22 passed in 67.81s (0:01:07)

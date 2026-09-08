@@ -2141,6 +2141,8 @@ def _run_task_control_episode(
     samples = [
         _task_neutral_sample(environment, task_kind=task_kind, step_index=0)
     ]
+    reset_reader = getattr(environment, "scientific_reset_readback", None)
+    scientific_reset = reset_reader(control_id) if callable(reset_reader) else None
     initial_state_blocker = (
         initial_sample_validator(samples[0])
         if initial_sample_validator is not None
@@ -2876,6 +2878,8 @@ def _run_task_control_episode(
         passed = False
     receipt: dict[str, Any] = {
         "schema_version": TASK_CONTROL_EPISODE_SCHEMA_VERSION,
+        "scientific_reset": scientific_reset,
+        "task_spec": dict(task_spec),
         "program_id": "arm-decision-proof-v1",
         "control_id": control_id,
         "episode_id": episode_id,

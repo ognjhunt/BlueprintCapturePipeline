@@ -646,6 +646,9 @@ def _stage_runtime_root(
         "runtime_inputs_digest": inputs["runtime_inputs_digest"],
         "task_success_contract_digest": inputs["task_success_contract_digest"],
         "authority_digest": authority["authority_digest"],
+        "execution_spec_digests": {candidate: _execution_spec(candidate,
+            port=8000 if candidate == "pi05_droid" else 5555,
+            task_success_contract=task_success_contract)["execution_spec_digest"] for candidate in CANDIDATE_IDS},
         "input_digest": "",
     }
     manifest["input_digest"] = canonical_digest(manifest, digest_field="input_digest")
@@ -1489,10 +1492,10 @@ def test_environment_rebuild_after_close_is_impossible_in_one_process(
         )
 
 
-def test_real_clients_refuse_a_second_readiness_preflight_after_inference(
+def test_real_clients_reset_episode_scoped_state_before_second_episode(
     tmp_path: Path,
 ) -> None:
-    """Pins the invariant behind per-cell isolation: one client, one episode."""
+    """A warm client must retain prior query truth without contaminating readiness."""
 
     runtime_root, provider_output = _stage_runtime_root(tmp_path)
     specs = {
@@ -1539,15 +1542,13 @@ def test_real_clients_refuse_a_second_readiness_preflight_after_inference(
         client = _real_policy_client(specs[candidate], groot_worker_identity_receipt=receipt)
         first = episode(client, candidate, "first")
         assert first["candidate_policy_queried"] is True
-        # The client refuses the second readiness preflight outright, and the
-        # episode lifecycle refuses a readiness receipt from a queried client;
-        # whichever boundary fires first, a second episode on one client is
-        # a typed refusal, never a silent rollout.
-        with pytest.raises(
-            ValueError,
-            match="preflight_after_inference_forbidden|policy_episode_readiness_queried_candidate",
-        ):
-            episode(client, candidate, "second")
+        second = episode(client, candidate, "second")
+        readiness = second["prestart_readiness"]
+        assert readiness["candidate_policy_queried"] is False
+        assert readiness["policy_control_plane"]["prior_candidate_policy_query_observed"] is True
+        assert second["candidate_policy_queried"] is True
+        assert second["episode_id"] != first["episode_id"]
+        client.close()
 
 
 def test_missing_observation_integrity_authority_blocks_before_any_policy_load(

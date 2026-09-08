@@ -1,0 +1,160 @@
+..........F............................................................. [ 98%]
+.                                                                        [100%]
+=================================== FAILURES ===================================
+____________ test_publication_preserves_an_explicit_registered_pair ____________
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4855/test_publication_preserves_an_0')
+
+    def test_publication_preserves_an_explicit_registered_pair(tmp_path):
+        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+        from blueprint_pipeline.task_evaluation_result_delivery import materialize_policy_canary_result_delivery
+        from blueprint_pipeline.task_evaluation_policy_canary_result_projection import build_policy_canary_result_projection
+        from tests.test_task_evaluation_policy_canary_result_delivery import _result, _closure
+        evidence = tmp_path / "evidence"
+        evidence.mkdir()
+        result = _result(evidence)
+        pair = ["team_policy_alpha", "team_policy_beta"]
+        template = result["episodes"][0]
+        result["candidate_ids"] = pair
+        result["episodes"] = [dict(deepcopy(template), candidate_id=candidate) for candidate in pair]
+        for row in result["episodes"]:
+            row["episode"]["episode_id"] = row["candidate_id"] + "-episode"
+        result.update(run_id="registered-pair", configuration_digest="sha256:" + "9" * 64,
+            status="blocked", blockers=["remaining_cells_incomplete"])
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+        closure = {name: _closure(tmp_path / (name + ".json"), flag=flag) for name, flag in (
+            ("billing", "official_billing_sealed"), ("teardown", "teardown_completed"), ("provider_zero", "provider_zero_verified"))}
+        delivery = materialize_policy_canary_result_delivery(run_root=tmp_path, run_id=result["run_id"],
+            result_status="blocked", session_result=result, evidence_root=evidence, closure_records=closure)
+>       projected = build_policy_canary_result_projection(setup={"scene_id": "fixture", "request_digest": "sha256:" + "a" * 64,
+            "task_success_contract": result["task_success_contract"], "task_success_contract_digest": result["task_success_contract_digest"]},
+            result=result, delivery=delivery)
+
+tests/test_policy_comparison_completion.py:161: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+setup = {'scene_id': 'fixture', 'request_digest': 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '... ...}, ...}, 'task_success_contract_digest': 'sha256:b1921cb11e235831ba0e765e5b04fb60b9952e1bb86519a776b08906ca566d03'}
+result = {'schema_version': 'native_task_arena_policy_canary_session_result.v1', 'status': 'blocked', 'run_kind': 'internal_policy_canary', 'claim_ceiling': 'diagnostic_policy_execution', ...}
+delivery = {'schema_version': 'task_evaluation_result_delivery.v2', 'paired_diagnostic_summary': {'schema_version': 'policy_paire...6fdcadbcb3ffad6a7f33aabd33c8a10ff905184', ...}, 'run_id': 'registered-pair', 'run_kind': 'internal_policy_canary', ...}
+error_factory = <class 'ValueError'>
+
+    def build_policy_canary_result_projection(
+        *,
+        setup: Mapping[str, Any],
+        result: Mapping[str, Any],
+        delivery: Mapping[str, Any],
+        error_factory: ErrorFactory = ValueError,
+    ) -> dict[str, Any]:
+        """Project evidence-bound result fields without exposing provider internals."""
+    
+        episodes = list(result.get("episodes") or [])
+        candidate_ids = list(result.get("candidate_ids") or CANDIDATE_IDS)
+        if len(candidate_ids) != 2 or len(set(candidate_ids)) != 2:
+            raise error_factory("policy_canary_candidate_pair_invalid")
+        task_success_contract = delivery.get("task_success_contract")
+        task_success_contract_digest = delivery.get("task_success_contract_digest")
+        if (
+            not isinstance(task_success_contract, Mapping)
+            or task_success_contract_digest
+            != task_success_contract.get("contract_digest")
+            or result.get("task_success_contract") != task_success_contract
+            or result.get("task_success_contract_digest")
+            != task_success_contract_digest
+            or setup.get("task_success_contract") != task_success_contract
+            or setup.get("task_success_contract_digest")
+            != task_success_contract_digest
+        ):
+            raise error_factory("policy_canary_task_success_contract_binding_mismatch")
+    
+        def compact_artifact(record: Mapping[str, Any]) -> dict[str, Any]:
+            return {key: record[key] for key in ("artifact_id", "digest", "size_bytes")}
+    
+        def compact_interpretation(record: Any) -> dict[str, Any] | None:
+            if not isinstance(record, Mapping):
+                return None
+            value = deepcopy(dict(record))
+            receipt = value.get("receipt")
+            if isinstance(receipt, Mapping):
+                value["receipt"] = compact_artifact(receipt)
+            return value
+    
+        report = {
+            "machine_readable_report": compact_artifact(
+                delivery["report"]["machine_readable_report"]
+            ),
+            "evidence_manifest": compact_artifact(delivery["report"]["evidence_manifest"]),
+        }
+        public_artifacts = delivery.get("artifacts") or []
+        delivered_episodes = {
+            str(row.get("episode_id")): row
+            for row in delivery.get("episodes") or []
+            if isinstance(row, Mapping)
+        }
+    
+        def bound_artifact(record: Any) -> dict[str, Any] | None:
+            if not isinstance(record, Mapping):
+                return None
+            relative_path = record.get("relative_path")
+            if not isinstance(relative_path, str) or not relative_path:
+                return None
+            matches = [
+                artifact
+                for artifact in public_artifacts
+                if artifact.get("role") == record.get("role")
+                and artifact.get("digest") == record.get("sha256")
+                and artifact.get("size_bytes") == record.get("size_bytes")
+                and artifact.get("relative_path") == relative_path
+            ]
+            if len(matches) != 1:
+                return None
+            return {
+                key: matches[0][key] for key in ("artifact_id", "digest", "size_bytes")
+            }
+    
+        projected_episodes: list[dict[str, Any]] = []
+        for row in episodes:
+            candidate = str(row.get("candidate_id") or "")
+            cell_id = str(row.get("cell_id") or "")
+            episode_id = f"{result.get('run_id') or setup['scene_id']}--{cell_id}--{candidate}"
+            if len(episode_id) > 192:
+                episode_id = (
+                    episode_id[:150]
+                    + "-"
+                    + hashlib.sha256(episode_id.encode()).hexdigest()[:32]
+                )
+            source_artifacts = row.get("evidence_artifacts")
+            source_artifacts = (
+                dict(source_artifacts) if isinstance(source_artifacts, Mapping) else {}
+            )
+            evidence_roles = {
+                "reset_state": "reset_state",
+                "frame_manifest": "frame_manifest",
+                "review_video": "review_video",
+                "policy_query_receipt": "policy_query_receipt",
+                "action_sequence": "action_sequence",
+                "action_delivery_readback": "action_delivery_readback",
+                "state_trace": "state_trace",
+                "contact_force_trace": "contact_force_trace",
+                "task_object_trajectory": "task_object_trajectory",
+                "score_receipt": "score_receipt",
+            }
+            bound = {
+                target: bound_artifact(source_artifacts.get(source))
+                for target, source in evidence_roles.items()
+            }
+            evidence_gaps = sorted(
+                target for target, artifact in bound.items() if artifact is None
+            )
+            if row.get("status") == "completed" and evidence_gaps:
+>               raise error_factory(
+                    "policy_canary_completed_episode_evidence_missing:"
+                    + episode_id
+                    + ":"
+                    + ",".join(evidence_gaps)
+                )
+E               ValueError: policy_canary_completed_episode_evidence_missing:registered-pair--quick-cell-0--team_policy_alpha:review_video
+
+src/blueprint_pipeline/task_evaluation_policy_canary_result_projection.py:164: ValueError
+=========================== short test summary info ============================
+FAILED tests/test_policy_comparison_completion.py::test_publication_preserves_an_explicit_registered_pair
+1 failed, 72 passed in 7.73s

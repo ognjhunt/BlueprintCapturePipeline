@@ -146,6 +146,8 @@ def _verified_retained_rgb_frame(
     if checked.get("size_bytes") != path.stat().st_size:
         raise ValueError("retained_policy_frame_size_mismatch")
     with Image.open(path) as image:
+        if image.format != "PNG":
+            raise ValueError("retained_policy_frame_format_not_lossless_png")
         if image.mode != "RGB":
             raise ValueError("retained_policy_frame_mode_invalid")
         rgb = np.asarray(image, dtype=np.uint8)
@@ -974,9 +976,6 @@ def validate_multicamera_frame_manifest(
 ) -> dict[str, Any]:
     """Validate and optionally rehash a sealed multi-camera frame manifest."""
 
-    from PIL import Image
-    import numpy as np
-
     checked = _json_mapping(
         manifest, error="multicamera_frame_manifest_not_json_mapping"
     )
@@ -995,8 +994,23 @@ def validate_multicamera_frame_manifest(
         errors.append("multicamera_frame_manifest_review_observations_invalid")
         review_observations = []
     terminal = checked.get("terminal_observation")
+    review_only = set(checked.get("review_only_camera_ids") or [])
+    if (
+        len(required_camera_ids) != len(checked.get("required_camera_ids") or [])
+        or not review_only.issubset(required_camera_ids)
+        or checked.get("policy_input_observation_count") != len(observations)
+        or checked.get("policy_input_frame_count") != len(observations) * len(required_camera_ids - review_only)
+        or checked.get("review_observation_count") != len(review_observations)
+        or checked.get("review_frame_count") != len(review_observations) * len(required_camera_ids)
+    ):
+        errors.append("multicamera_frame_manifest_counts_invalid")
+    for rows, kind in ((observations, "policy-input"), (review_observations, "review-sample")):
+        if any(row.get("kind") != kind for row in rows):
+            errors.append("multicamera_frame_manifest_observation_kind_invalid")
     all_observations = [*observations, *review_observations]
     if isinstance(terminal, Mapping):
+        if terminal.get("kind") != "terminal-observation" or terminal.get("observation_index") != len(all_observations):
+            errors.append("multicamera_frame_manifest_terminal_invalid")
         all_observations.append(dict(terminal))
     else:
         errors.append("multicamera_frame_manifest_terminal_missing")
@@ -1011,7 +1025,7 @@ def validate_multicamera_frame_manifest(
         expected_index += 1
         timestamp_ns = observation.get("timestamp_ns")
         simulation_time_s = observation.get("simulation_time_s")
-        if not isinstance(timestamp_ns, int) or timestamp_ns < previous_timestamp:
+        if isinstance(timestamp_ns, bool) or not isinstance(timestamp_ns, int) or timestamp_ns < 0 or timestamp_ns < previous_timestamp:
             errors.append("multicamera_frame_manifest_timestamp_not_monotonic")
         else:
             previous_timestamp = timestamp_ns
@@ -1019,7 +1033,7 @@ def validate_multicamera_frame_manifest(
             simulation_time = float(simulation_time_s)
         except (TypeError, ValueError):
             simulation_time = -1.0
-        if simulation_time < previous_simulation_time:
+        if not math.isfinite(simulation_time) or simulation_time < 0 or simulation_time < previous_simulation_time:
             errors.append("multicamera_frame_manifest_simulation_time_not_monotonic")
         else:
             previous_simulation_time = simulation_time
@@ -1037,6 +1051,13 @@ def validate_multicamera_frame_manifest(
             frame = dict(raw_frame) if isinstance(raw_frame, Mapping) else {}
             if frame.get("camera_id") != camera_id:
                 errors.append("multicamera_frame_manifest_camera_record_mismatch")
+            if (
+                frame.get("frame_index") != observation.get("observation_index")
+                or frame.get("kind") != observation.get("kind")
+                or frame.get("timestamp_ns") != timestamp_ns
+                or frame.get("simulation_time_s") != simulation_time_s
+            ):
+                errors.append("multicamera_frame_manifest_frame_observation_mismatch")
             if frame.get("frame_digest") != canonical_digest(
                 frame, digest_field="frame_digest"
             ):
@@ -1050,23 +1071,13 @@ def validate_multicamera_frame_manifest(
                 errors.append("multicamera_frame_manifest_calibration_digest_mismatch")
             if not verify_files:
                 continue
-            path = (output_dir / str(frame.get("relative_path") or "")).resolve()
-            root = output_dir.resolve()
-            if root != path and root not in path.parents:
-                errors.append("multicamera_frame_manifest_path_outside_output")
-                continue
-            if path.is_symlink() or not path.is_file():
-                errors.append("multicamera_frame_manifest_file_missing")
-                continue
-            if frame.get("png_sha256") != _file_sha256(path):
-                errors.append("multicamera_frame_manifest_png_digest_mismatch")
-            with Image.open(path) as image:
-                rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
-            raw_digest = "sha256:" + hashlib.sha256(
-                np.ascontiguousarray(rgb).tobytes()
-            ).hexdigest()
-            if frame.get("raw_rgb_sha256") != raw_digest:
-                errors.append("multicamera_frame_manifest_raw_digest_mismatch")
+            try:
+                _verified_retained_rgb_frame(frame, output_dir=output_dir)
+                _validate_camera_calibration(
+                    frame.get("calibration") or {}, width=frame["width"], height=frame["height"]
+                )
+            except (ValueError, OSError) as exc:
+                errors.append("multicamera_frame_manifest_" + str(exc).removeprefix("retained_policy_frame_"))
 
     if checked.get("frame_manifest_digest") != canonical_digest(
         checked, digest_field="frame_manifest_digest"

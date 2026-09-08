@@ -1,0 +1,78 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+__ test_child_aggregation_binds_resolved_values_to_the_frozen_input[scenario] __
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4834/test_child_aggregation_binds_r0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1064e35c0>
+mutation = 'scenario'
+
+    @pytest.mark.parametrize("mutation", ["scenario", "child_digest"])
+    def test_child_aggregation_binds_resolved_values_to_the_frozen_input(tmp_path, monkeypatch, mutation):
+        from blueprint_pipeline import native_task_arena_policy_canary_worker as worker
+        result = _result(tmp_path)
+        authority, inputs = _authority(tmp_path)
+        children = []
+        for index in range(10):
+            child = {
+                "selected_cell_index": index,
+                "status": "runtime_selected_cell_completed_pending_aggregation",
+                "task_success_contract": inputs["task_success_contract"],
+                "task_success_contract_digest": inputs["task_success_contract_digest"],
+                "episodes": deepcopy([result["episodes"][index], result["episodes"][index + 10]]),
+            }
+            children.append(_seal(child))
+        if mutation == "scenario":
+            # Both candidates agree on the same wrong cell: pair equality alone
+            # cannot substitute for equality to the frozen execution inputs.
+            for row in children[0]["episodes"]:
+                row["resolved_scenario"] = {"factor": "canonical", "index": 999}
+                row["resolved_scenario_digest"] = canonical_digest(row["resolved_scenario"])
+            _seal(children[0])
+        else:
+            children[0]["result_digest"] = "sha256:" + "0" * 64
+        monkeypatch.setattr(worker, "_write_indexed_telemetry", lambda *args: ({}, []))
+>       with pytest.raises(RuntimeError, match="isolated_cell"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE RuntimeError
+
+tests/test_policy_comparison_integrity_audit.py:182: Failed
+_ test_child_aggregation_binds_resolved_values_to_the_frozen_input[child_digest] _
+
+tmp_path = PosixPath('/private/var/folders/7w/c3s8_n4n7l305ywhp9hnlz740000gp/T/pytest-of-nijelhunt1/pytest-4834/test_child_aggregation_binds_r1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10658eff0>
+mutation = 'child_digest'
+
+    @pytest.mark.parametrize("mutation", ["scenario", "child_digest"])
+    def test_child_aggregation_binds_resolved_values_to_the_frozen_input(tmp_path, monkeypatch, mutation):
+        from blueprint_pipeline import native_task_arena_policy_canary_worker as worker
+        result = _result(tmp_path)
+        authority, inputs = _authority(tmp_path)
+        children = []
+        for index in range(10):
+            child = {
+                "selected_cell_index": index,
+                "status": "runtime_selected_cell_completed_pending_aggregation",
+                "task_success_contract": inputs["task_success_contract"],
+                "task_success_contract_digest": inputs["task_success_contract_digest"],
+                "episodes": deepcopy([result["episodes"][index], result["episodes"][index + 10]]),
+            }
+            children.append(_seal(child))
+        if mutation == "scenario":
+            # Both candidates agree on the same wrong cell: pair equality alone
+            # cannot substitute for equality to the frozen execution inputs.
+            for row in children[0]["episodes"]:
+                row["resolved_scenario"] = {"factor": "canonical", "index": 999}
+                row["resolved_scenario_digest"] = canonical_digest(row["resolved_scenario"])
+            _seal(children[0])
+        else:
+            children[0]["result_digest"] = "sha256:" + "0" * 64
+        monkeypatch.setattr(worker, "_write_indexed_telemetry", lambda *args: ({}, []))
+>       with pytest.raises(RuntimeError, match="isolated_cell"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE RuntimeError
+
+tests/test_policy_comparison_integrity_audit.py:182: Failed
+=========================== short test summary info ============================
+FAILED tests/test_policy_comparison_integrity_audit.py::test_child_aggregation_binds_resolved_values_to_the_frozen_input[scenario]
+FAILED tests/test_policy_comparison_integrity_audit.py::test_child_aggregation_binds_resolved_values_to_the_frozen_input[child_digest]
+2 failed, 16 deselected in 3.42s

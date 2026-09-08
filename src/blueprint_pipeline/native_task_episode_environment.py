@@ -1011,6 +1011,17 @@ def build_native_task_episode_environment(
             "open_finger_separation_m": open_separation,
         },
     }
+    def scientific_reset_readback(subject_id: str):
+        from .decision_evidence_contracts import canonical_digest
+        from .policy_scientific_reset import read_native_reset_channels, seal_reset_readback
+        scenario = plan["scenario"]
+        return seal_reset_readback(binding={"candidate_id": subject_id, "cell_id": scenario["cell_id"],
+            "seed": seed, "task_spec_digest": canonical_digest(plan["task_spec"]),
+            "resolved_scenario_digest": scenario.get("resolved_scenario_digest") or canonical_digest(scenario),
+            "matrix_cell_digest": scenario.get("cell_digest") or scenario.get("condition_digest"),
+            "matrix_reset_digest": scenario.get("reset_digest")},
+            **read_native_reset_channels(built, adapter))
+    adapter.scientific_reset_readback = scientific_reset_readback
     return adapter, receipt
 
 

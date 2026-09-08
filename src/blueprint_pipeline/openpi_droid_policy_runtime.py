@@ -428,6 +428,7 @@ class OpenPIWebsocketDroidPolicyClient:
         port: int,
         api_key: str | None = None,
         client_factory: Callable[..., Any] | None = None,
+        wire_decoder: Callable[[bytes], Any] | None = None,
     ) -> None:
         spec.validate()
         if not host.strip() or not 1 <= int(port) <= 65535:
@@ -435,9 +436,12 @@ class OpenPIWebsocketDroidPolicyClient:
         if client_factory is None:
             try:
                 from openpi_client import websocket_client_policy
+                from openpi_client import msgpack_numpy
             except ImportError as exc:  # pragma: no cover - exercised on GPU runtime
                 raise RuntimeError("openpi_client_not_installed") from exc
             client_factory = websocket_client_policy.WebsocketClientPolicy
+            wire_decoder = msgpack_numpy.unpackb
+        self._wire_decoder = wire_decoder
         self.policy_id = spec.policy_id
         self.action_space = spec.action_space
         self.action_chunk_rows = spec.action_chunk_rows
@@ -452,6 +456,21 @@ class OpenPIWebsocketDroidPolicyClient:
         self._connection_generation = 0
         self.candidate_policy_queried = False
         self._last_inference_evidence: dict[str, Any] | None = None
+        self._request_evidence: dict[str, Any] | None = None
+        self._request_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None
+
+    def bind_request_evidence_sink(self, sink: Callable[[Mapping[str, Any]], None] | None) -> None:
+        self._request_evidence_sink = sink
+
+    def _retain_request(self, evidence: Mapping[str, Any]) -> None:
+        self._request_evidence = dict(evidence)
+        if self._request_evidence_sink is not None:
+            self._request_evidence_sink(evidence)
+
+    def last_request_evidence(self) -> dict[str, Any]:
+        if self._request_evidence is None:
+            raise ValueError("openpi_policy_request_evidence_missing")
+        return json.loads(json.dumps(self._request_evidence))
 
     def _close_active_client(self) -> None:
         client = self._client
@@ -511,8 +530,20 @@ class OpenPIWebsocketDroidPolicyClient:
         # before receiving a response, callers must not mistake a prior query's
         # retained action for the failed attempt.
         self._last_inference_evidence = None
+        self._request_evidence = None
         client, _ = self._open_verified_client()
         try:
+            try:
+                from policy_request_evidence import ObservedWebsocket, capture_request
+            except ModuleNotFoundError:
+                from .policy_request_evidence import ObservedWebsocket, capture_request
+            websocket = getattr(client, "_ws", None)
+            if websocket is not None and self._wire_decoder is not None:
+                client._ws = ObservedWebsocket(websocket, request=observation,
+                    decoder=self._wire_decoder, sink=self._retain_request)
+            else:
+                # Injected transports must not impersonate a witnessed wire.
+                self._retain_request(capture_request(observation, transport="openpi_injected_transport"))
             raw_response = client.infer(dict(observation))
             retained_response = _json_safe_vendor_response(raw_response)
             response_keys = (
@@ -575,6 +606,9 @@ class OpenPIWebsocketDroidPolicyClient:
             _, metadata = self._open_verified_client()
         finally:
             self._close_active_client()
+        self.candidate_policy_queried = False
+        self._last_inference_evidence = None
+        self._request_evidence = None
         return {
             "identity_verified": True,
             "transport": "openpi_websocket_msgpack_numpy",

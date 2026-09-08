@@ -313,7 +313,8 @@ def score_rigid_task_episode(
         if (
             isinstance(step, bool)
             or not isinstance(step, int)
-            or (previous_step is not None and step <= previous_step)
+            or step < 0
+            or (previous_step is not None and step != previous_step + 1)
         ):
             raise TaskNeutralScoringError([f"rigid_task_sample_step_invalid:{index}"])
         previous_step = step
@@ -1097,5 +1098,4 @@ def score_rigid_task_episode(
     }
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     return report
-
 

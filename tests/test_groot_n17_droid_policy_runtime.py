@@ -264,7 +264,7 @@ def test_groot_preflight_resets_for_next_episode_after_prior_inference() -> None
     assert readiness["candidate_inference_performed"] is False
     assert readiness["prior_candidate_policy_query_observed"] is True
     assert readiness["last_inference_evidence"] is None
-    assert client.candidate_policy_queried is True
+    assert client.candidate_policy_queried is False  # next episode; prior fact is retained above
     assert fake.reset_calls == 1
     assert len(fake.requests) == 1
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -365,6 +366,197 @@ def validate_matrix_and_schedule(
         "exact_workcell_primary": True,
         "object_cousins_in_primary": False,
     }
+
+
+def apply_runtime_cell(*, matrix: Mapping[str, Any], request: Mapping[str, Any], cell_id: str,
+                       runtime_bindings: Mapping[str, Any], reset: Any) -> dict[str, Any]:
+    """Apply admitted EventManager terms and read each native value after reset.
+
+    Runtime bindings expose separate ``apply(value)`` and ``read()`` methods.
+    Apply return values are deliberately ignored. A missing backend binding
+    refuses before any mutation; this adapter never allocates or queries policy.
+    """
+    plan = compile_isaac_lab_event_plan(matrix, request=request)
+    matches = [cell for cell in plan["cells"] if cell["cell_id"] == cell_id]
+    if len(matches) != 1:
+        raise ExactWorkcellVariationError(["runtime_cell_not_in_frozen_matrix"])
+    cell = matches[0]
+    targets = [term["manager_target"] for term in cell["terms"]]
+    if len(set(targets)) != len(targets) or any(target not in runtime_bindings or
+        not callable(getattr(runtime_bindings[target], "apply", None)) or
+        not callable(getattr(runtime_bindings[target], "read", None)) for target in targets):
+        raise ExactWorkcellVariationError(["runtime_cell_native_bindings_missing_or_ambiguous"])
+    for term in cell["terms"]:
+        runtime_bindings[term["manager_target"]].apply(term["value"])
+    reset(seed=cell["seed"])
+    observations = []
+    blockers = []
+    for term in cell["terms"]:
+        observation = runtime_bindings[term["manager_target"]].read()
+        if not isinstance(observation, Mapping) or observation.get("unit") != term["unit"] or observation.get("source") != "native_readback":
+            blockers.append("runtime_cell_readback_identity_invalid:" + term["term_id"])
+            continue
+        actual, expected = observation.get("value"), term["value"]
+        if term["readback"]["comparison"] == "exact":
+            passed = type(actual) is type(expected) and actual == expected
+        else:
+            passed = (isinstance(actual, (int, float)) and not isinstance(actual, bool)
+                and math.isfinite(actual) and abs(actual - expected) <= term["readback"]["tolerance"])
+        observations.append({"term_digest": term["term_digest"], "observed": dict(observation), "passed": passed})
+        if not passed:
+            blockers.append("runtime_cell_native_value_mismatch:" + term["term_id"])
+    result = {"schema_version": "exact_workcell_reset_application.v1", "cell_id": cell_id,
+        "cell_digest": cell["cell_digest"], "reset_digest": cell["reset_digest"], "seed": cell["seed"],
+        "cell_plan_digest": cell["cell_plan_digest"], "observations": observations,
+        "status": "blocked" if blockers else "applied_and_readback_verified", "blockers": blockers,
+        "policy_query_performed": False, "scope": "parameter_application_not_full_reset_or_qualification"}
+    result["application_digest"] = canonical_digest(result, digest_field="application_digest")
+    return result
+
+
+def collect_evaluation_evidence(*, request: Mapping[str, Any], schedule_request: Mapping[str, Any],
+                                matrix: Mapping[str, Any], schedule: Mapping[str, Any],
+                                episode_records: Sequence[Mapping[str, Any]], evidence_root: Path,
+                                output_path: Path | None = None) -> dict[str, Any]:
+    """Join real retained episode bytes to the frozen full schedule, never Quick-10.
+
+    The independent episode index validates media and lifecycle. The paired
+    diagnostic summary remains separate from a claim of complete simulator
+    evidence; missing controls, native reset, wire or sensor evidence block it.
+    Resumes supply the union of immutable records; duplicates refuse.
+    """
+    from .adp_episode_evidence_index import _episode_row, _verify_artifact, EpisodeEvidenceIndexError
+    from .policy_scientific_reset import validate_reset_readback, compare_reset_readbacks
+    from .policy_paired_summary import paired_summary
+    from .adp_task_scoring import score_task_episode_from_spec, OUTCOME_NEVER_MOVED
+
+    validate_matrix_and_schedule(request=request, schedule_request=schedule_request, matrix=matrix, schedule=schedule)
+    frozen = {row["episode_id"]: row for row in schedule["rows"]}
+    cells = {row["cell_id"]: row for row in matrix["cells"]}
+    event_cells = {row["cell_id"]: row for row in compile_isaac_lab_event_plan(matrix, request=request)["cells"]}
+    retained = {}
+    policies = []
+    resets = {}
+    blockers = []
+    for record in episode_records:
+        episode_id = record.get("episode_id")
+        if episode_id not in frozen or episode_id in retained:
+            raise ExactWorkcellVariationError(["evaluation_episode_duplicate_or_unscheduled"])
+        binding = frozen[episode_id]
+        if record.get("episode_binding_digest") != binding["episode_binding_digest"]:
+            raise ExactWorkcellVariationError(["evaluation_episode_binding_mismatch"])
+        artifact = _verify_artifact(evidence_root, record["artifact"], role="evaluation_episode_receipt")
+        path = (evidence_root / artifact["relative_path"]).resolve()
+        raw = json.loads(path.read_text())
+        native_episode_id = raw.get("episode_id") or (raw.get("episode") or {}).get("episode_id")
+        if native_episode_id != episode_id:
+            raise ExactWorkcellVariationError(["evaluation_episode_id_mismatch"])
+        retained[episode_id] = artifact
+        index_root = (evidence_root / str(record.get("media_root_relative") or record["artifact"].get("media_root_relative") or ".")).resolve()
+        if index_root != evidence_root.resolve() and evidence_root.resolve() not in index_root.parents:
+            raise ExactWorkcellVariationError(["evaluation_episode_media_root_outside_evidence"])
+        try:
+            _episode_row(index_root, path)
+        except EpisodeEvidenceIndexError as exc:
+            blockers.append("episode_evidence_incomplete:" + episode_id + ":" + str(exc))
+            if binding["subject_type"] == "policy":
+                cell = cells[binding["cell_id"]]
+                policies.append({"candidate_id": binding["subject_id"], "cell_id": binding["cell_id"], "seed": binding["seed"],
+                    "family": "canonical_anchor" if cell["cell_id"] == matrix["canonical_anchor_cell_id"] else cell["phase"],
+                    "partition": cell["partition"], "status": "blocked", "episode": raw,
+                    "candidate_policy_queried": raw.get("candidate_policy_queried") is True,
+                    "candidate_policy_query_attempted": raw.get("candidate_policy_query_attempted") is True,
+                    "policy_outcome_interpretable": False})
+            continue
+        application = record.get("reset_application") or {}
+        event_cell = event_cells[binding["cell_id"]]
+        terms = {term["term_digest"]: term for term in event_cell["terms"]}
+        observed_terms = application.get("observations") or []
+        application_valid = (application.get("application_digest") == canonical_digest(application, digest_field="application_digest")
+            and application.get("cell_plan_digest") == event_cell["cell_plan_digest"]
+            and application.get("seed") == binding["seed"]
+            and application.get("status") == "applied_and_readback_verified"
+            and len(observed_terms) == len(terms) and {row.get("term_digest") for row in observed_terms} == set(terms))
+        for measured in observed_terms:
+            term = terms.get(measured.get("term_digest"))
+            observed = measured.get("observed") or {}
+            if term is None or observed.get("unit") != term["unit"] or observed.get("source") != "native_readback":
+                application_valid = False
+                continue
+            actual, expected = observed.get("value"), term["value"]
+            if term["readback"]["comparison"] == "exact":
+                application_valid = application_valid and type(actual) is type(expected) and actual == expected
+            else:
+                application_valid = application_valid and isinstance(actual, (int, float)) and not isinstance(actual, bool) and math.isfinite(actual) and abs(actual - expected) <= term["readback"]["tolerance"]
+        if not application_valid:
+            blockers.append("native_parameter_application_unproven:" + episode_id)
+        task_spec = raw.get("task_spec") or {}
+        if raw.get("task_spec_digest") != canonical_digest(task_spec) or (task_spec.get("task_success_contract") or {}).get("contract_digest") != request["task_binding"]["success_contract_digest"]:
+            blockers.append("task_success_contract_unproven:" + episode_id)
+        elif (raw.get("score") or {}).get("status") == "scored":
+            state = raw.get("state_trace") or []
+            samples = state.get("task_state_samples") if isinstance(state, Mapping) else state
+            recomputed = score_task_episode_from_spec(task_spec=task_spec, samples=samples)
+            if recomputed != raw.get("score"):
+                raise ExactWorkcellVariationError(["evaluation_deterministic_score_mismatch"])
+        else:
+            blockers.append("deterministic_outcome_unscorable:" + episode_id)
+        reset = raw.get("scientific_reset")
+        if not isinstance(reset, Mapping):
+            blockers.append("scientific_reset_missing:" + episode_id)
+        else:
+            reset = validate_reset_readback(reset)
+            identity = reset["binding"]
+            if identity["cell_id"] != binding["cell_id"] or identity["seed"] != binding["seed"] or identity["candidate_id"] != binding["subject_id"]:
+                raise ExactWorkcellVariationError(["evaluation_native_reset_binding_mismatch"])
+            if identity.get("matrix_cell_digest") != binding["cell_digest"] or identity.get("matrix_reset_digest") != binding["reset_digest"]:
+                raise ExactWorkcellVariationError(["evaluation_native_reset_matrix_mismatch"])
+            resets[episode_id] = reset
+            if not reset["complete"]:
+                blockers.append("scientific_reset_incomplete:" + episode_id)
+        if binding["subject_type"] == "control":
+            expected_success = binding["subject_id"] == "deterministic_scripted_positive"
+            score = raw.get("score") or {}
+            if (raw.get("control_id") != binding["subject_id"] or raw.get("control_passed") is not True
+                    or raw.get("candidate_policy_queried") is not False or raw.get("grader_authority") != "deterministic_simulator_state"
+                    or raw.get("phase_execution_blocker") is not None or score.get("status") != "scored"
+                    or score.get("task_succeeded") is not expected_success
+                    or not expected_success and score.get("outcome") != OUTCOME_NEVER_MOVED):
+                blockers.append("control_failed:" + episode_id)
+        else:
+            if raw.get("schema_version") != "adp009d_policy_episode.v4":
+                blockers.append("current_policy_lifecycle_missing:" + episode_id)
+            expected_identity = schedule_request["candidate_set"]["candidate_identity_digests"][binding["subject_id"]]
+            if record.get("candidate_identity_digest") != expected_identity or raw.get("candidate_id") != binding["subject_id"]:
+                raise ExactWorkcellVariationError(["evaluation_frozen_candidate_mismatch"])
+            if raw.get("policy_request_evidence_complete") is not True or not raw.get("sensor_freshness") or not all(row.get("verified") is True for row in raw["sensor_freshness"]):
+                blockers.append("policy_observation_evidence_incomplete:" + episode_id)
+            cell = cells[binding["cell_id"]]
+            policies.append({"candidate_id": binding["subject_id"], "cell_id": binding["cell_id"], "seed": binding["seed"],
+                "family": "canonical_anchor" if cell["cell_id"] == matrix["canonical_anchor_cell_id"] else cell["phase"],
+                "partition": cell["partition"], "status": "completed", "episode": raw,
+                "candidate_policy_queried": raw.get("candidate_policy_queried") is True,
+                "policy_outcome_interpretable": (raw.get("score") or {}).get("status") == "scored",
+                "scientific_reset": reset, "scoring_authority": "deterministic_simulator_state"})
+    for cell_id in cells:
+        cell_resets = [resets[row["episode_id"]] for row in schedule["rows"] if row["cell_id"] == cell_id and row["episode_id"] in resets]
+        for other in cell_resets[1:]:
+            if not compare_reset_readbacks(cell_resets[0], other)["comparison_eligible"]:
+                blockers.append("evaluation_reset_parity_unproven:" + cell_id)
+    missing = sorted(set(frozen) - set(retained))
+    if missing:
+        blockers.append("evaluation_scheduled_episodes_missing")
+    planned = [{"cell_id": cell["cell_id"], "seed": cell["seed"], "partition": cell["partition"],
+        "family": "canonical_anchor" if cell["cell_id"] == matrix["canonical_anchor_cell_id"] else cell["phase"]} for cell in matrix["cells"]]
+    result = {"schema_version": "exact_workcell_execution_evidence.v1", "matrix_digest": matrix["matrix_digest"],
+        "schedule_digest": schedule["schedule_digest"], "status": "blocked" if blockers else "complete_simulator_evidence",
+        "retained_episodes": dict(sorted(retained.items())), "missing_episode_ids": missing, "blockers": sorted(set(blockers)),
+        "comparison": paired_summary(policies, candidate_ids=schedule["candidate_ids"], planned_cells=planned),
+        "qualification_authorized": False, "physical_evidence_claimed": False}
+    result["evidence_digest"] = canonical_digest(result, digest_field="evidence_digest")
+    if output_path is not None:
+        _create_only(output_path, result)
+    return result
 
 
 def _create_only(path: Path, value: Mapping[str, Any]) -> dict[str, Any]:

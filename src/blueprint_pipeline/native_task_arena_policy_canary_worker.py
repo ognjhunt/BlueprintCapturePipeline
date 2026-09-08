@@ -689,6 +689,8 @@ def _resolved_scene_plan(
     scenario = deepcopy(dict(cell["resolved_scenario"]))
     scenario["cell_id"] = cell["cell_id"]
     scenario["seed"] = cell["seed"]
+    if cell.get("resolved_scenario_digest") is not None:
+        scenario["resolved_scenario_digest"] = cell["resolved_scenario_digest"]
     parameters = dict(scenario.get("parameters") or {})
     applications: list[dict[str, Any]] = []
     coverage_gaps: list[dict[str, Any]] = []
@@ -772,6 +774,14 @@ def _resolved_scene_plan(
             }
         )
     scenario["parameter_applications"] = applications
+    for application in applications:
+        key = application["parameter_id"]
+        application.setdefault("runtime_name", subject["name"])
+        application.setdefault("runtime_target", application["readback_kind"])
+        application.setdefault("unit", "degrees" if "degrees" in key else "m" if key.endswith("_m") else "ratio")
+        application.setdefault("resolved_value", parameters[key])
+        # No tolerance is invented for an unqualified diagnostic dimension.
+        application.setdefault("application_tolerance", 0.0)
     scenario["runtime_coverage_gaps"] = coverage_gaps
     plan["scenario"] = scenario
     # Both frozen DROID adapters emit actions at 15 Hz. Keep PhysX at 120 Hz
@@ -1025,6 +1035,7 @@ def _write_episode_failure_gap(
         "cell_id": context.get("cell_id"),
         "seed": context.get("seed"),
         "episode_failure_stage": failure_stage,
+        "scientific_reset": progress.get("scientific_reset"),
         "first_observation_retained": first_observation_retained,
         "reset_state_digest": canonical_digest(
             {
@@ -1072,6 +1083,8 @@ def _write_episode_failure_gap(
         "evidence_artifacts": evidence_artifacts,
         "episode": {
             "episode_id": episode_id,
+            "policy_request_artifacts": progress.get("policy_request_artifacts") or [],
+            "scientific_reset": progress.get("scientific_reset"),
             "candidate_policy_action_queries": raw_queries,
             "commanded_actions": commanded_actions,
             "visual_evidence": visual_evidence,
@@ -1238,6 +1251,7 @@ def _write_indexed_telemetry(
                     "contact_force_trace",
                     "task_object_trajectory",
                     "score_receipt",
+                    "episode_receipt",
                 )
                 if f".{evidence_role}.json" in lowered
             ),
@@ -1254,6 +1268,8 @@ def _write_indexed_telemetry(
             if path.suffix.lower() in {".mp4", ".mov", ".webm"}
             else "lossless_frame_manifest"
             if "frame" in lowered and "manifest" in lowered
+            else "exact_policy_request"
+            if "/policy-requests/" in lowered and path.suffix.lower() == ".json"
             else typed_evidence_role
             if typed_evidence_role is not None
             else "episode_evidence"
@@ -1287,6 +1303,8 @@ def _prefix_episode_evidence_paths(
                 rewritten[role] = {
                     **record,
                     "relative_path": f"{prefix}/{record['relative_path']}",
+                    **({"media_root_relative": f"{prefix}/{record['media_root_relative']}"}
+                       if isinstance(record.get("media_root_relative"), str) else {}),
                 }
             else:
                 rewritten[role] = record
@@ -1305,6 +1323,10 @@ def _aggregate_isolated_cell_results(
     candidate_ids = tuple(str(value) for value in inputs["candidate_ids"])
     if len(child_results) != len(inputs["cells"]):
         raise RuntimeError("policy_canary_isolated_cell_result_count_invalid")
+    indices = [child.get("selected_cell_index") for child in child_results]
+    if any(isinstance(index, bool) or not isinstance(index, int) for index in indices) or set(indices) != set(range(len(inputs["cells"]))):
+        raise RuntimeError("policy_canary_isolated_cell_indices_invalid")
+    child_results = sorted(child_results, key=lambda child: child["selected_cell_index"])
     episodes: list[dict[str, Any]] = []
     for index, child in enumerate(child_results):
         if (
@@ -1317,12 +1339,20 @@ def _aggregate_isolated_cell_results(
             != inputs.get("task_success_contract")
             or child.get("task_success_contract_digest")
             != inputs.get("task_success_contract_digest")
+            or child.get("result_digest") != canonical_digest(child, digest_field="result_digest")
         ):
             raise RuntimeError("policy_canary_isolated_cell_result_invalid")
+        cell = inputs["cells"][index]
+        for row in child["episodes"]:
+            if any(row.get(field) != cell.get(field) for field in (
+                "cell_id", "seed", "cell_spec_digest", "family",
+                "resolved_scenario", "resolved_scenario_digest",
+            )):
+                raise RuntimeError("policy_canary_isolated_cell_scenario_binding_invalid")
         prefix = f"cell_runs/{index:02d}"
         episodes.extend(
             _prefix_episode_evidence_paths(row, prefix=prefix)
-            for row in child["episodes"]
+            for row in sorted(child["episodes"], key=lambda row: str(row.get("candidate_id")))
         )
     expected = {
         (candidate, str(cell["cell_id"]), int(cell["seed"]))
@@ -1375,6 +1405,10 @@ def _aggregate_isolated_cell_results(
         output_root, result["episodes"]
     )
     result["telemetry"] = telemetry_index
+    from .policy_paired_summary import paired_summary
+    result["frozen_cells"] = [{key: cell[key] for key in ("cell_id", "seed", "family", "partition", "cell_spec_digest", "resolved_scenario_digest") if key in cell} for cell in inputs["cells"]]
+    result["paired_diagnostic_summary"] = paired_summary(result["episodes"], candidate_ids=candidate_ids,
+        planned_cells=result["frozen_cells"])
     if authority.get("execution_release") is not None:
         result["execution_release"] = authority["execution_release"]
     result["artifact_inventory"] = telemetry_artifacts
@@ -1554,6 +1588,14 @@ def _run_selected_cell(
         )
         for candidate in inputs["candidate_ids"]
     }
+    if set(provider_manifest.get("execution_spec_digests") or {}) != set(specs):
+        raise RuntimeError("policy_canary_execution_spec_bindings_missing")
+    for candidate, spec in specs.items():
+        if (spec.get("candidate_id") != candidate
+                or spec.get("execution_spec_digest") != canonical_digest(spec, digest_field="execution_spec_digest")
+                or spec.get("execution_spec_digest") != provider_manifest["execution_spec_digests"][candidate]
+                or spec.get("task_success_contract_digest") != inputs["task_success_contract_digest"]):
+            raise RuntimeError("policy_canary_frozen_execution_spec_mismatch:" + candidate)
     current_env: dict[str, Any] = {}
     current_session: dict[str, Any] = {}
 
@@ -1707,6 +1749,19 @@ def _run_selected_cell(
         tracker = _PolicyQueryTracker(policy["client"])
         spec = policy["spec"]
         episode_id = f"{authority['run_id']}--{context['cell_id']}--{context['candidate_id']}"
+        def scientific_reset_reader():
+            from .policy_scientific_reset import compare_reset_readbacks, read_native_reset_channels, seal_reset_readback
+            channels = read_native_reset_channels(built, episode_environment)
+            receipt = seal_reset_readback(binding={
+                "candidate_id": context["candidate_id"], "cell_id": context["cell_id"],
+                "seed": context["seed"], "resolved_scenario_digest": context["resolved_scenario_digest"],
+                "task_spec_digest": canonical_digest(scene_plan["task_spec"]),
+            }, **channels)
+            reference = current_env.setdefault("scientific_reset_reference", receipt)
+            parity = compare_reset_readbacks(reference, receipt)
+            if parity["status"] == "mismatch":
+                raise RuntimeError("policy_canary_scientific_reset_pair_mismatch:" + ",".join(parity["mismatches"]))
+            return receipt
         try:
             episode = bound_runtime.run_policy_episode(
                 environment=episode_environment,
@@ -1739,6 +1794,7 @@ def _run_selected_cell(
                     ),
                 },
                 progress=episode_progress,
+                scientific_reset_reader=scientific_reset_reader,
             )
             try:
                 _require_completed_episode_media(output_root, episode)
@@ -1817,6 +1873,8 @@ def _run_selected_cell(
         )
         episode["embodiment_parity_diagnostic"] = parity_diagnostic
         evidence_artifacts = {
+            "episode_receipt": {**_write_episode_json_artifact(output_root,
+                episode_id=episode_id, role="episode_receipt", value=episode), "media_root_relative": "episodes"},
             "frame_manifest": _bound_media_artifact(
                 output_root,
                 media_root=media_root,
@@ -1835,7 +1893,7 @@ def _run_selected_cell(
                 output_root,
                 episode_id=episode_id,
                 role="reset_state",
-                value=environment_receipt,
+                value={"adapter_binding": environment_receipt, "scientific_reset": episode.get("scientific_reset")},
             ),
             "policy_query_receipt": _write_episode_json_artifact(
                 output_root,
@@ -1843,6 +1901,9 @@ def _run_selected_cell(
                 role="policy_query_receipt",
                 value={
                     "candidate_policy_queried": tracker.candidate_policy_queried,
+                    "exact_policy_request_artifacts": episode.get("policy_request_artifacts") or [],
+                    "policy_request_evidence_complete": episode.get("policy_request_evidence_complete") is True,
+                    "sensor_freshness": episode.get("sensor_freshness") or [],
                     "policy_queries": episode.get("policy_queries"),
                     "policy_query_latency": episode.get("policy_query_latency"),
                     "queries": episode.get("queries"),
@@ -1906,6 +1967,7 @@ def _run_selected_cell(
             "embodiment_parity_diagnostic": parity_diagnostic,
             "checkpoint_digest": policy["checkpoint_digest"],
             "runtime_identity_digest": policy["runtime_identity_digest"],
+            "scientific_reset": episode.get("scientific_reset"),
             "lossless_frame_manifest_digest": _digest(visual),
             "review_video_digest": _digest(media),
             "returned_action_sequence_digest": _digest(
