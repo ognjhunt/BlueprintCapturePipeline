@@ -37,6 +37,7 @@ ReadOnlyPaths=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches
 ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 # Imported replay helpers name the shared ledger; advisory supervision only reads it.
 ReadOnlyPaths=/var/lib/blueprint/pipeline-control-plane/disk-reservations
+ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/storage-pins -/var/lib/blueprint/task-evaluation-inputs/prepared-references
 TasksMax=512
 LimitNOFILE=4096
 MemoryMax=8G
