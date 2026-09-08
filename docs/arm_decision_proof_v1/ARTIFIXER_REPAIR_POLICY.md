@@ -33,3 +33,8 @@ native export and retained output bytes. A real accepted review may also be
 reused only when the complete multimodal input and rubric match. The successor
 retains the original execution and an explicit derivative binding receipt;
 reusing evidence never claims a new model call or new training run.
+
+Training identity excludes refreshed consent timestamps, authorization references,
+and SAM-plan transport references. Permission flags, operation names and all
+scientific settings remain bound. Both full configuration hashes are retained in
+provenance, and current rights and SAM admission still run before reuse.

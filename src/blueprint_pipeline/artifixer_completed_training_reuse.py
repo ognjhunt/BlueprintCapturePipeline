@@ -68,12 +68,40 @@ def _portable(value: Any) -> Any:
     return value
 
 
+def scientific_configuration(configuration: Mapping[str, Any]) -> dict:
+    """Separate refreshed issuance/reference metadata from training semantics.
+
+    Current rights and SAM admission are validated by the normal producer before
+    reuse. Keep permission flags and operation names; only the named transport
+    references and consent issuance stamps are excluded here.
+    """
+    value = json.loads(json.dumps(dict(configuration)))
+    human = value.get("human_authority")
+    if isinstance(human, dict):
+        for key in ("accepted_on", "authority_reference"):
+            human.pop(key, None)
+        authorities = human.get("full_source_provider_disclosure_authorities")
+        if isinstance(authorities, dict):
+            for operation, reference in authorities.items():
+                _require(isinstance(reference, dict), "authority_reference_invalid")
+                authorities[operation] = {
+                    k: v for k, v in reference.items() if k not in {"path", "sha256", "size_bytes"}
+                }
+    plan = value.get("sam31_preparation_plan")
+    if isinstance(plan, dict):
+        value["sam31_preparation_plan"] = {
+            k: v for k, v in plan.items() if k not in {"uri", "path", "digest", "size_bytes"}
+        }
+    return value
+
+
 def training_identity(
     *,
     candidate: Mapping[str, Any],
     teacher: Mapping[str, Any],
     tuning: Mapping[str, Any],
     configuration_sha256: str,
+    configuration: Mapping[str, Any],
 ) -> dict:
     initialization = candidate.get("appearance_initialization")
     _require(
@@ -92,7 +120,8 @@ def training_identity(
         "teacher_invalid",
     )
     return {
-        "configuration_sha256": configuration_sha256,
+        "identity_version": 2,
+        "configuration_training_digest": canonical_digest(scientific_configuration(configuration)),
         "publisher_scene_id": candidate["publisher_scene_id"],
         "task_id": task["task_id"],
         "shared_initialization": _file_identity(candidate["shared_retained_scene"]),
@@ -165,12 +194,14 @@ def stage_completed_training(
             teacher=old_teacher,
             tuning=checkpoint["bindings"]["artifixer_tuning"],
             configuration_sha256=original_stage["configuration_sha256"],
+            configuration=original_stage["configuration"],
         )
         actual = training_identity(
             candidate=prepared["candidate"],
             teacher=_read(Path(prepared["teacher_receipt_path"])),
             tuning=tuning,
             configuration_sha256=stage_input["configuration_sha256"],
+            configuration=stage_input["configuration"],
         )
         _require(expected == actual, "training_inputs_changed")
         output = Path(output_root)
@@ -222,6 +253,8 @@ def stage_completed_training(
         "status": "exact_completed_training_admitted_for_new_review",
         "source_launch_id": source.name,
         "source_commit": original_state["source_commit"],
+        "source_configuration_sha256": original_stage["configuration_sha256"],
+        "current_configuration_sha256": stage_input["configuration_sha256"],
         "source_provider_output_sha256": archive_sha,
         "source_provider_zero_digest": zero["provider_zero_receipt_digest"],
         "source_checkpoint_digest": checked["checkpoint_digest"],
@@ -249,6 +282,7 @@ def hydrate_completed_training(
     teacher_receipt_path: Path,
     tuning: dict,
     configuration_sha256: str,
+    configuration: Mapping[str, Any],
 ) -> dict:
     receipt = _read(Path(reference["receipt_path"]))
     identity = training_identity(
@@ -256,6 +290,7 @@ def hydrate_completed_training(
         teacher=_read(teacher_receipt_path),
         tuning=tuning,
         configuration_sha256=configuration_sha256,
+        configuration=configuration,
     )
     _require(
         receipt.get("schema_version") == SCHEMA
@@ -263,6 +298,7 @@ def hydrate_completed_training(
         and receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
         and receipt.get("new_independent_review_required") is True
         and receipt.get("appearance_repair_qualified") is False
+        and receipt.get("current_configuration_sha256") == configuration_sha256
         and receipt.get("training_identity") == identity
         and receipt.get("training_identity_digest") == canonical_digest(identity),
         "receipt_invalid",
