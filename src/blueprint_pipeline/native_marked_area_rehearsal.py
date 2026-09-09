@@ -31,12 +31,15 @@ def marked_area_request(*, source_request: Mapping[str, Any], authority: Mapping
     for key in list(spec):
         if (key.startswith("destination_") and key not in retained_destination) or (key.startswith("configured_") and key != "configured_success_criteria"):
             spec.pop(key)
+    spec.pop("initial_source_support", None)
     goal = list(spec["target_position_world_m"])
     goal[2] = float(spec["start_pose_world"][2])
     tolerance = float(spec["destination_position_tolerance_m"])
     spec["target_position_world_m"] = goal
-    if isinstance(spec.get("configured_success_criteria"), dict):
-        criteria = spec["configured_success_criteria"]
+    for criteria_name in ("configured_success_criteria", "success_criteria"):
+        if not isinstance(spec.get(criteria_name), dict):
+            continue
+        criteria = spec[criteria_name]
         criteria.pop("whole_subject_containment_required", None)
         criteria.pop("object_must_rest_on_destination_support", None)
         criteria["target_center_xyz_m"] = list(goal)
@@ -71,7 +74,7 @@ def marked_area_request(*, source_request: Mapping[str, Any], authority: Mapping
     request.pop("configured_task_template_adapter", None)
     feedback = request.pop("native_construction_feedback", {})
     request["retained_placement_candidate_id"] = feedback.get("selected_placement_candidate_id")
-    request["task_change_authority"] = copy.deepcopy(dict(authority))
+    request["task_change_authority_digest"] = authority["authority_digest"]
     scenario = request["scenario"]
     instance = scenario["context_document"]
     instance.pop("configured_task_source_documents_digest", None)
