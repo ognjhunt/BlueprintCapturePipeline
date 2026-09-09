@@ -1654,3 +1654,33 @@ def test_continuing_native_lane_does_not_replace_terminal_provider_evidence():
     def no_query():
         pytest.fail("continuing lane must retain its terminal evidence")
     assert prep.refresh_native_initial_provider_zero(context, collector=no_query) == context
+
+
+def test_construction_recovery_requires_real_predecessor_without_destination():
+    import jsonschema
+    from scripts import prepare_paid_lane_launch as prepare
+
+    steps = prepare.LANES["native_task_arena_construction_recovery"]
+    authority = next(step for step in steps if step.step_id == "paid_authority")
+    for flag in ("--prior-authority", "--prior-result", "--prior-provider-zero",
+                 "--prior-spend-reconciliation"):
+        assert flag in authority.argv
+    assert "--initial-provider-zero" not in authority.argv
+    bundle = next(step for step in steps if step.step_id == "provider_bundle")
+    assert "blueprint_pipeline.native_task_arena_construction_bundle" in bundle.argv
+    assert all("destination" not in arg for arg in bundle.argv)
+    terminal = next(step for step in steps if step.step_id == "terminal_rehearsal")
+    assert terminal.argv[terminal.argv.index("--lane") + 1] == "native_task_arena_construction_recovery"
+    schema = json.loads((Path(prepare.__file__).resolve().parents[1] /
+        "docs/schemas/native_task_arena_launch_preparation_context.v2.schema.json").read_text())
+    jsonschema.Draft202012Validator.check_schema(schema)
+    assert "native_task_arena_construction_recovery" in schema["properties"]["lane"]["enum"]
+    errors = list(jsonschema.Draft202012Validator(schema).iter_errors({
+        "lane": "native_task_arena_construction_recovery", "operations": {},
+    }))
+    messages = [error.message for error in errors]
+    for required in ("prior_authority", "prior_result", "prior_provider_zero",
+                     "prior_spend_reconciliation", "prior_launch_receipt", "prior_webapp_sync"):
+        assert any(repr(required) + " is a required property" == message for message in messages)
+    assert not any("destination_qualification_result" in message or
+                   "construction_result" in message for message in messages)

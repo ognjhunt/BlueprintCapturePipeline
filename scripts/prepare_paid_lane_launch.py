@@ -259,6 +259,7 @@ def _native_task_arena_steps(
     *,
     control_selection: str = "control_pair",
     predecessor_lineage: bool = False,
+    preparation_lane: str | None = None,
 ) -> tuple[LaneStep, ...]:
     """Return the reusable destination, construction, or controls graph."""
 
@@ -559,7 +560,7 @@ def _native_task_arena_steps(
                 "--lane-module",
                 "adp_isaac_lab_arena_vast.py",
                 "--lane",
-                (
+                preparation_lane or (
                     "native_task_arena_destination_qualification"
                     if destination
                     else "native_task_arena_construction_after_destination"
@@ -911,6 +912,10 @@ LANES: dict[str, tuple[LaneStep, ...]] = {
     "native_task_arena_construction": _native_task_arena_steps("construction"),
     "native_task_arena_construction_after_destination": _native_task_arena_steps(
         "construction", predecessor_lineage=True
+    ),
+    "native_task_arena_construction_recovery": _native_task_arena_steps(
+        "construction", predecessor_lineage=True,
+        preparation_lane="native_task_arena_construction_recovery",
     ),
     "native_task_arena_controls": _native_task_arena_steps("controls"),
     "native_task_arena_zero_action": _native_task_arena_steps(
