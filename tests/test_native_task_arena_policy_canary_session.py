@@ -788,3 +788,21 @@ def test_direct_canary_accepts_real_compiled_packet_without_claiming_constructio
     inputs['run_kind'] = 'qualified_evaluation'
     with pytest.raises(RuntimeError, match='compiled_packet_lineage_invalid'):
         _construction_lineage_mode(inputs=inputs, base_scene_plan=plan, construction=packet)
+
+
+def test_native_initialization_preserves_only_safe_refusal_codes(tmp_path: Path) -> None:
+    from blueprint_pipeline.native_task_arena_runtime import NativeTaskArenaRuntimeError
+    calls = {"open": 0, "close": 0, "loads": []}
+    kwargs = _preload_gate_session_kwargs(tmp_path, calls)
+    def refuse(_inputs):
+        raise NativeTaskArenaRuntimeError([
+            "native_task_arena_camera_intrinsics_not_representable:overview",
+            "unexpected token=secret-value /private/provider/path",
+        ])
+    kwargs["open_session"] = refuse
+    result = execute_paired_session(**kwargs)
+    assert result["session_failure_codes"] == [
+        "native_task_arena_camera_intrinsics_not_representable:overview"
+    ]
+    assert "secret-value" not in json.dumps(result)
+    assert result["candidate_policy_queried"] is False
