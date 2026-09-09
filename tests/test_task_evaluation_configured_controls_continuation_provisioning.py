@@ -76,7 +76,8 @@ def _reference_row(path: Path, contract_path: str) -> dict:
 
 
 def _preparation(
-    tmp_path: Path, *, run_mode: str = "scene_configuration", commit: str = COMMIT
+    tmp_path: Path, *, run_mode: str = "scene_configuration", commit: str = COMMIT,
+    destination: dict | None = None,
 ) -> Path:
     prepared = tmp_path / "prepared-references" / PREPARATION_ID
     template = _write(
@@ -110,6 +111,9 @@ def _preparation(
         "task": {"identity": {"id": TASK_ID, "version": "v1"}},
     }
     request_digest = canonical_digest(request)
+    if destination is not None:
+        request['task']['destination'] = destination
+        request_digest = canonical_digest(request)
     queue = tmp_path / "preparations"
     envelope = {
         "schema_version": ENVELOPE_SCHEMA_VERSION,
@@ -488,3 +492,15 @@ def test_terminal_adoption_keeps_configuration_provenance_and_moves_only_executi
         intent_root=tmp_path/"registry", expected_production_commit="e"*40, service_group=None)
     assert installed["status"] == "installed"
     assert len(list((tmp_path/"registry").glob("adoption-*.json"))) == 1
+
+
+@pytest.mark.parametrize('asset_id',['sorting-bin','parts-rack','inspection-fixture'])
+def test_declared_destination_automatically_gets_native_probe_phase(tmp_path,asset_id):
+    prepared=_preparation(tmp_path,destination={'identity':{'id':asset_id,'version':'v1'},'relation':'inside'})
+    result,_=_provision(tmp_path,preparation_result_path=prepared)
+    intent=json.loads(Path(result['intent_path']).read_text())
+    assert intent['schema_version']=='task_evaluation_configured_controls_autostart_intent.v3'
+    assert set(intent['phases'])=={'destination','construction','controls'}
+    assert 'lineage_path' in intent['phases']['destination']
+    assert 'lineage_path' not in intent['phases']['construction']
+    assert autostart.validate_configured_controls_autostart_intent(intent)==intent

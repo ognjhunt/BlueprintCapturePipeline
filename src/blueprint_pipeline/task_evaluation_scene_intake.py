@@ -283,7 +283,23 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             _require(not any((row.get('visual_review_correction') or {}).get('authority_digest')
                 == visual_review_authority['authority_digest'] for row in rows), 'visual_review_correction_already_reserved')
         rows = [row for row in rows if validated_cancellation(directory, row) is None]
-        _require(len(rows) < execution["max_paid_attempts"], "attempt_cap_exhausted")
+        # The owner-approved single visual correction is an explicit additional
+        # review, never an extra GPU attempt. All ordinary attempts keep their
+        # original count limit; every hold still counts toward the spend cap.
+        ordinary = []
+        for row in rows:
+            correction = row.get('visual_review_correction')
+            if correction is None:
+                ordinary.append(row)
+                continue
+            from .task_evaluation_visual_review_authority import read_authority
+            grant = read_authority(directory=directory,source_attempt_id=correction['source_attempt_id'])
+            _require(grant is not None and correction.get('authority_digest') == grant['authority_digest']
+                and correction.get('scope') == 'placement_visual_review_only'
+                and row['provider'] == 'openai' and row['maximum_spend_usd'] <= grant['maximum_cost_usd'],
+                'stored_visual_review_correction_invalid')
+        if visual_review_authority is None:
+            _require(len(ordinary) < execution["max_paid_attempts"], "attempt_cap_exhausted")
         exposure = sum((Decimal(str(row["maximum_spend_usd"])) for row in rows), Decimal(0))
         _require(exposure + Decimal(str(maximum_spend_usd))
                  <= Decimal(str(execution["max_total_spend_usd"])), "spend_cap_exhausted")

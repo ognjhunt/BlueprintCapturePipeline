@@ -482,7 +482,14 @@ def validate_configured_controls_autostart_intent(
     )
     adoption = intent.get("configuration_adoption")
     review_continuation = intent.get('visual_review_continuation')
+    completed_adoption = intent.get('completed_placement_adoption')
     expected_inference_cap = DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD
+    if completed_adoption is not None:
+        from .task_evaluation_completed_placement_adoption import validate_adoption
+        validate_adoption(completed_adoption)
+        if completed_adoption.get('execution_commit') != intent.get('expected_production_commit') or review_continuation is not None:
+            raise TaskEvaluationConfiguredControlsAutostartError('configured_controls_completed_adoption_invalid')
+        expected_inference_cap = 0.0
     if review_continuation is not None:
         from . import task_evaluation_visual_review_continuation as visual
         visual.validate(review_continuation,expected_commit=intent.get('expected_production_commit'))
@@ -514,7 +521,8 @@ def validate_configured_controls_autostart_intent(
             "official_cost_authority",
         }
         or placement.get("robot_id") != "franka_panda"
-        or not 1 <= int(placement.get("max_rounds", 0)) <= 8
+        or not (int(placement.get('max_rounds', -1)) == 0 if completed_adoption is not None
+                else 1 <= int(placement.get('max_rounds', 0)) <= 8)
         or not 1 <= int(placement.get("candidate_inventory_cap", 0)) <= 128
         or not 1 <= int(placement.get("max_input_tokens", 0)) <= 1_000_000
         or float(placement.get("max_inference_cost_usd", -1.0))
@@ -656,6 +664,7 @@ def materialize_configured_controls_autostart_intent(
     configuration_source_commit: str | None = None,
     configuration_adoption: Mapping[str, Any] | None = None,
     visual_review_continuation: Mapping[str, Any] | None = None,
+    completed_placement_adoption: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seal all fixed downstream bytes before the configuration launch."""
 
@@ -712,6 +721,8 @@ def materialize_configured_controls_autostart_intent(
     }
     if visual_review_continuation is not None:
         draft['visual_review_continuation'] = dict(visual_review_continuation)
+    if completed_placement_adoption is not None:
+        draft['completed_placement_adoption'] = dict(completed_placement_adoption)
     flattened = _intent_paths(draft)
     draft["artifact_inventory"] = {
         name: _artifact(path) for name, path in sorted(flattened.items())
@@ -911,6 +922,11 @@ def _validate_result(
     expected_cpu_checkpoint_binding_digest: str,
 ) -> dict[str, Any]:
     result = json.loads(json.dumps(dict(value), allow_nan=False))
+    if result.get('completed_placement_adoption') is not None:
+        from .task_evaluation_completed_placement_adoption import validate_adoption
+        validate_adoption(result['completed_placement_adoption'])
+        if result.get('placement_calls_reexecuted') is not False:
+            raise TaskEvaluationConfiguredControlsAutostartError('configured_controls_completed_adoption_invalid')
     openai_evidence = result.get("official_openai_cost_evidence")
     native_universe = result.get("native_construction_candidate_universe")
     native_universe_path = (
@@ -1442,6 +1458,10 @@ def materialize_configured_controls_autostart(
         scene_binding_digest=scene_binding_digest,
         task_binding_digest=task_binding_digest,
     )
+    if intent.get('completed_placement_adoption') is not None:
+        from .task_evaluation_completed_placement_adoption import validate_adoption
+        adopted = validate_adoption(intent['completed_placement_adoption'])
+        cpu_checkpoint_binding_digest = adopted['result']['cpu_placement_checkpoint_binding_digest']
     result_path = _autostart_result_path(
         root=root, intent_digest=str(intent["intent_digest"])
     )
@@ -1461,6 +1481,13 @@ def materialize_configured_controls_autostart(
             ),
             **result_validation_kwargs,
         )
+    if intent.get('completed_placement_adoption') is not None:
+        from .task_evaluation_completed_placement_adoption import materialize
+        result = materialize(intent=intent,root=root,source_launch_id=source_launch_id,launch_root=launch_root,
+            paths=paths,revision=revision,scene_binding=scene_binding,task_binding=task_binding,
+            trajectory=trajectory,plan_root=plan_root,readiness_materializer=readiness_materializer,
+            plan_materializer=plan_materializer)
+        return _validate_result(result,**result_validation_kwargs)
     collision = _configured_collision(
         revision=revision, revision_path=revision_path, output_root=root
     )

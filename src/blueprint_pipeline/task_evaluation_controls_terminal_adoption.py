@@ -95,13 +95,19 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
     worker._require(not (directory/'revoked.json').exists(), 'authority_revoked')
     expiry = intake.effective_execution_expiry(directory, intent)
     worker._require(moment < expiry, 'authority_expired')
-    from . import task_evaluation_visual_review_continuation as visual
-    review_continuation = visual.discover(config=config,intent_id=intent_id,source=source,
+    from . import task_evaluation_completed_placement_adoption as completed
+    completed_placement = completed.discover(config=config,intent_id=intent_id,source=source,
         expected_commit=expected_production_commit)
+    from . import task_evaluation_visual_review_continuation as visual
+    review_continuation = (None if completed_placement is not None else visual.discover(
+        config=config,intent_id=intent_id,source=source,expected_commit=expected_production_commit))
     from .task_evaluation_terminal_adoption_retirement import retire_unmaterialized_adoptions
-    retire_unmaterialized_adoptions(config=config, intent_id=intent_id,
-        source=source, expected_production_commit=expected_production_commit,
-        visual_review_continuation=review_continuation)
+    if completed_placement is not None:
+        completed.retire_unused_native(config=config,intent_id=intent_id,packet=completed_placement)
+    else:
+        retire_unmaterialized_adoptions(config=config, intent_id=intent_id,
+            source=source, expected_production_commit=expected_production_commit,
+            visual_review_continuation=review_continuation)
     request = intake.validate_request(intent['request'], now=intent['accepted_at_epoch'])
     binding = catalog['bindings'].get(request['task'].get('robot_binding_id'))
     worker._require(isinstance(binding, dict) and binding.get('expected_production_commit') == expected_production_commit, 'runtime_release_mismatch')
@@ -119,10 +125,22 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
         inference_cap = visual.REVIEW_CAP
     link = worker._configured_scene_preparation_link(intent=intent, preparation_queue_root=Path(config['preparation_queue_root']), expected_production_commit=source['source_commit'])
     worker._require(link is not None, 'terminal_adoption_preparation_missing')
+    preparation_context = producer._preparation_context(
+        preparation_result_path=Path(config['preparation_queue_root'])/'results'/link['result_filename'],
+        preparation_queue_root=Path(config['preparation_queue_root']),expected_production_commit=source['source_commit'])
+    native_phases = producer.phase_names(preparation_context)
+    if completed_placement is not None:
+        import math
+        retained = completed.validate_adoption(completed_placement)
+        total = sum(worker._json(Path(p['launch_authority_path']))['max_spend_usd'] for p in retained['intent']['phases'].values())
+        cap = min(cap, math.floor(total / len(native_phases) * 1_000_000) / 1_000_000)
+        inference_cap = 0.0
     identity = {'owner_intent_digest': intent['intent_digest'], 'adoption': source['adoption'],
                 'execution_source_commit': expected_production_commit, 'catalog_binding_digest': canonical_digest({k:v for k,v in binding.items() if k not in {'project_spend_reconciliation', 'project_spend_observed_at_epoch'}})}
     if review_continuation is not None:
         identity['visual_review_continuation'] = review_continuation
+    if completed_placement is not None:
+        identity['completed_placement_adoption'] = completed_placement
     key = canonical_digest(identity).removeprefix('sha256:')
     root = Path(config['controls_root'])/'terminal-adoptions'/intent_id/key
     worker._require(root.is_absolute() and not any(p.is_symlink() for p in (root, *root.parents)), 'controls_root_unsafe')
@@ -137,7 +155,10 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
                 service_group=config.get('service_group', 'blueprint'))
             return retained_result
         phases = {}
-        for phase, provider, amount in [('construction','vast',cap), ('controls','vast',cap), ('placement','openai',inference_cap)]:
+        reservations = [(phase,'vast',cap) for phase in native_phases]
+        if completed_placement is None:
+            reservations.append(('placement','openai',inference_cap))
+        for phase, provider, amount in reservations:
             attempt = intake.reserve_scene_attempt(queue_root=config['scene_root'], intent_id=intent_id,
                 attempt_id='controls-'+key[:40]+'-'+phase, source_commit=expected_production_commit,
                 runtime_digest=binding['runtime_digest'], input_digest='sha256:'+key,
@@ -159,6 +180,7 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
         authority = 'scene-intent:'+intent['intent_digest']
         result = producer.provision_configured_controls_continuation(expected_production_commit=expected_production_commit,
             visual_review_continuation=review_continuation,
+            completed_placement_adoption=completed_placement,
             configuration_source_commit=source['source_commit'], configuration_adoption=source['adoption'],
             preparation_result_path=Path(config['preparation_queue_root'])/'results'/link['result_filename'],
             preparation_queue_root=config['preparation_queue_root'], robot_asset_usd_path=robot,

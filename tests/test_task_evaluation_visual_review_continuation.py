@@ -125,8 +125,8 @@ def test_only_unused_gpu_holds_move_and_spent_review_stays_reserved(failed_revie
     assert (
         visual.discover(**kwargs) == packet
     )  # restart after cancellation preserves the exact input key
-    for phase in ("construction", "controls"):
-        reserve("controls-corrected-" + phase, 0.40, commit="b")
+    for phase in ("destination", "construction", "controls"):
+        reserve("controls-corrected-" + phase, 0.266666, commit="b")
     review = intake.reserve_scene_attempt(
         queue_root=config["scene_root"],
         intent_id=owner["intent_id"],
@@ -152,7 +152,7 @@ def test_only_unused_gpu_holds_move_and_spent_review_stays_reserved(failed_revie
     reserve("policies", 4, commit="b")
     live = [intake._read(p, "attempt_digest") for p in (directory / "attempts").glob("*.json")]
     live = [a for a in live if cancellations.validated_cancellation(directory, a) is None]
-    assert len(live) == 6 and sum(a["maximum_spend_usd"] for a in live) == pytest.approx(19.51)
+    assert len(live) == 7 and sum(a["maximum_spend_usd"] for a in live) == pytest.approx(19.509998)
     assert (
         intake._read(directory / "intent.json", "intent_digest")["request"]["execution"][
             "max_retries"
