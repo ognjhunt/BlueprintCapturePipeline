@@ -88,3 +88,69 @@ def marked_area_request(*, source_request: Mapping[str, Any], authority: Mapping
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     validate_native_task_arena_packet_request(request)
     return request
+
+
+def marked_area_control_search_request(*, source_request: Mapping[str, Any], phase_plan: Mapping[str, Any], support_prim_path: str) -> dict[str, Any]:
+    """Declare 16 reset/yaw seeds for the existing 64-branch native search."""
+    from .native_franka_pose_servo import PINK_GLOBAL_REFERENCE_SEEDS
+    from .task_evaluation_native_construction_feedback_controller import (
+        CANDIDATE_SCHEMA_VERSION, build_next_native_construction_inventory,
+        validate_native_construction_candidate,
+    )
+    validate_native_task_arena_packet_request(source_request)
+    if not support_prim_path.startswith("/") or not phase_plan.get("phases"):
+        raise ValueError("marked_area_control_search_inputs_invalid")
+    request = copy.deepcopy(dict(source_request))
+    first = phase_plan["phases"][0]
+    def seal(value, field):
+        value[field] = canonical_digest(value, digest_field=field)
+        return value
+    entry = seal({"schema_version": "task_evaluation_native_entry_trajectory_variant.v1",
+        "joins_authored_phase_id": first["phase_id"], "waypoints": [{
+            "waypoint_id": "authored-entry", "position_world_m": first["position_world_m"],
+            "orientation_world_xyzw": first["orientation_world_xyzw"]}]}, "entry_trajectory_variant_digest")
+    camera = seal({"schema_version": "task_evaluation_native_camera_variant.v1",
+                   "cameras": request["cameras"]}, "camera_variant_digest")
+    names = [f"panda_joint{i}" for i in range(1, 8)]
+    reset = request["robot_joint_reset_positions_rad"]
+    seeds = [tuple(reset[name] for name in names), *PINK_GLOBAL_REFERENCE_SEEDS]
+    candidates = []
+    for seed_index, seed in enumerate(seeds):
+        for yaw_index, angle in enumerate((0.0, -math.pi/12, math.pi/12, math.pi/6)):
+            pose = copy.deepcopy(request["robot_base_pose_world"])
+            pose["position_world_m"] = [float(value) for value in pose["position_world_m"]]
+            x, y, z, w = pose["orientation_xyzw"]
+            s, c = math.sin(angle/2), math.cos(angle/2)
+            pose["orientation_xyzw"] = [c*x-s*y, c*y+s*x, c*z+s*w, c*w-s*z]
+            reset_variant = seal({"schema_version": "task_evaluation_native_robot_reset_variant.v1",
+                "robot_joint_reset_positions_rad": {**reset, **dict(zip(names, seed, strict=True))}}, "reset_variant_digest")
+            candidate = seal({"schema_version": CANDIDATE_SCHEMA_VERSION,
+                "candidate_id": f"marked-seed-{seed_index}-yaw-{yaw_index}",
+                "deterministic_rank": len(candidates), "robot_base_pose_world": pose,
+                "support_surface_id": support_prim_path, "reset_variant": reset_variant,
+                "entry_trajectory_variant": entry, "camera_variant": camera,
+                "maximum_incremental_cost_usd": 0.08, "maximum_runtime_seconds": 300.0,
+                "addressed_feedback_codes": []}, "candidate_digest")
+            candidates.append(validate_native_construction_candidate(candidate))
+    inventory = build_next_native_construction_inventory(
+        run_id=request["task_id"]+"-control-search", round_index=0,
+        source_native_feedback=None, prior_history=(), candidate_universe=candidates,
+        maximum_candidates=64,
+    )
+    search = seal({"schema_version": "task_evaluation_control_search_authority.v1",
+        "enabled": True, "claim_ceiling": "development_only_control_search",
+        "provider_allocations_performed": 0, "requested_vector_env_count": 256,
+        "maximum_vector_env_count": 1024, "seeds_per_candidate": 1, "shortlist_size": 16,
+        "appearance_mode": "omitted", "camera_mode": "disabled",
+        "full_fidelity_replay_required": True}, "authority_digest")
+    request["native_construction_feedback"] = {
+        "candidate_universe": inventory,
+        "candidate_generator_authority": {"generator": "remote_curobo_v2_motion_generation",
+            "package_version": "0.8.0", "source_revision": "4ea77366ca48ee453e7df139e39fa6532af49f3b",
+            "required_on_retained_gpu": True, "deterministic_cpu_prefilter_required": True,
+            "silent_fallback_permitted": False},
+        "allocator_retry_cap": 0, "maximum_rounds": 8, "native_gates_unchanged": True,
+        "control_search": search,
+    }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    return validate_native_task_arena_packet_request(request)
