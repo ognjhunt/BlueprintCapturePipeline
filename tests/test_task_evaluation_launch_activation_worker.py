@@ -1000,9 +1000,33 @@ def _sealed_claim(schema: str, status: str, scene_id: str, field: str) -> bytes:
 
 
 def _stage_verified_preparation(
-    tmp_path: Path, *, external_runtime_layer: bool = False
+    tmp_path: Path, *, external_runtime_layer: bool = False, destination_qualification: bool = False
 ):
     request = preparation_request()
+    if destination_qualification:
+        request["run_mode"] = "destination_qualification"
+        request["task"]["strategy"] = "pick_and_place"
+        reference = {"uri": "s3://blueprint-production-inputs/destination.json",
+                     "digest": "sha256:" + "d" * 64, "size_bytes": 123}
+        request["task"]["destination"] = {
+            "schema_version": "task_evaluation_rigid_destination_asset.v1",
+            "identity": {"id": "admitted-destination", "version": "v1"},
+            "relation": "inside", "visible_label": "Admitted destination",
+            **{key: dict(reference) for key in ("asset", "rights_admission", "static_qualification",
+                                               "native_import_qualification", "geometry")},
+            "pose_world": {"position_world_m": [0, 0, 0], "orientation_xyzw": [0, 0, 0, 1]},
+            "provider_disclosure_allowed": True,
+            "native_probe": {
+                "schema_version": "task_evaluation_rigid_destination_native_probe_configuration.v1",
+                "placement_support_scene_prim_paths": ["/Root/Support"],
+                "qualification_limits": {"maximum_penetration_m": 0.001,
+                    "minimum_support_contact_force_n": 0.01, "maximum_forbidden_contact_force_n": 0.1,
+                    "settle_translation_tolerance_m": 0.002, "settle_rotation_tolerance_rad": 0.01,
+                    "reset_translation_tolerance_m": 0.002, "reset_rotation_tolerance_rad": 0.01,
+                    "minimum_camera_pixels": {"external": 100, "wrist": 100, "overview": 100}},
+                "settle_sample_count": 3, "settle_steps_per_sample": 60,
+            },
+        }
     request["preparation_id"] = "preparation-scene-841007-v1"
     request["run_id"] = "run-scene-841007-v1"
     payloads: dict[str, bytes] = {}
@@ -1278,11 +1302,13 @@ def _stage_verified_preparation(
     return request, result, payloads, queue, input_root
 
 
+@pytest.mark.parametrize("destination_qualification", [False, True])
 def test_activation_accepts_every_layer_declared_by_runtime_source_wrapper(
-    tmp_path: Path,
+    tmp_path: Path, destination_qualification: bool,
 ) -> None:
     preparation, result, _payloads, queue, input_root = (
-        _stage_verified_preparation(tmp_path, external_runtime_layer=True)
+        _stage_verified_preparation(tmp_path, external_runtime_layer=True,
+                                    destination_qualification=destination_qualification)
     )
     activation = {
         "preparation": {
@@ -1318,11 +1344,13 @@ def test_activation_accepts_every_layer_declared_by_runtime_source_wrapper(
         ("extra", "launch_activation_preparation_reference_set_invalid"),
     ],
 )
+@pytest.mark.parametrize("destination_qualification", [False, True])
 def test_activation_refuses_external_layer_uri_mismatch_or_extra_reference(
-    tmp_path: Path, mutation: str, blocker: str
+    tmp_path: Path, mutation: str, blocker: str, destination_qualification: bool
 ) -> None:
     preparation, _result, _payloads, queue, input_root = (
-        _stage_verified_preparation(tmp_path, external_runtime_layer=True)
+        _stage_verified_preparation(tmp_path, external_runtime_layer=True,
+                                    destination_qualification=destination_qualification)
     )
     result_path = next((queue / "results").glob("*.json"))
     sealed = json.loads(result_path.read_text(encoding="utf-8"))
