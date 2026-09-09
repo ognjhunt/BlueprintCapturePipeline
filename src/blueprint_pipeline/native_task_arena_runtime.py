@@ -1158,7 +1158,8 @@ def build_native_task_arena_environment(
     droid_profile = plan.get("policy_canary_embodiment_profile")
     preserve_policy_cameras = bool(
         isinstance(droid_profile, Mapping)
-        and droid_profile.get("preserve_official_policy_camera_calibration") is True
+        and (droid_profile.get("preserve_official_policy_camera_calibration") is True
+             or droid_profile.get("preserve_official_policy_camera_intrinsics") is True)
     )
     policy_camera_roles = set(
         droid_profile.get("policy_camera_roles") or []
@@ -1448,6 +1449,15 @@ def build_native_task_arena_environment(
         ),
     )
     env, cfg = builder.make_registered_and_return_cfg(render_mode=render_mode)
+    direct_camera_aim = None
+    if enable_cameras and plan.get("operator_wrist_camera_aim") is not None:
+        from .native_task_direct_camera_aim import install_direct_wrist_camera_aim
+        direct_camera_aim = install_direct_wrist_camera_aim(
+            env=env, camera_name=camera_names["wrist"],
+            target=plan["task_spec"]["start_pose_world"][:3])
+        camera_configuration_readback["wrist"]["calibration_source"] = "operator_requested_target_facing_rigid_mount"
+        direct_camera_aim["operator_authority"] = dict(plan["operator_wrist_camera_aim"])
+        camera_configuration_readback["wrist"]["offset_rotation_xyzw"] = list(env.unwrapped.scene[camera_names["wrist"]].cfg.offset.rot)
     scenario_native_readback: dict[str, Any] = {}
     if light_application is not None or any(
         row.get("readback_kind") == "task_subject_link_dynamic_friction"
@@ -1504,6 +1514,7 @@ def build_native_task_arena_environment(
         preconstruction_device_binding=preconstruction,
         native_configuration_readback={
             "cameras": camera_configuration_readback,
+            "direct_wrist_camera_aim": direct_camera_aim,
             "camera_rerenders_on_reset": cfg.num_rerenders_on_reset,
             "control_search_runtime": {
                 "num_envs": num_envs,

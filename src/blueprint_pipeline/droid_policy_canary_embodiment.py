@@ -125,7 +125,8 @@ def apply_droid_policy_canary_profile(plan: Mapping[str, Any]) -> dict[str, Any]
                 "eef_head_retained_as_diagnostic_evidence"
             ),
         },
-        "preserve_official_policy_camera_calibration": True,
+        "preserve_official_policy_camera_calibration": value.get("operator_wrist_camera_aim") is None,
+        "preserve_official_policy_camera_intrinsics": True,
         "preserve_official_reset_joint_positions": start_binding is None,
         "visible_target_marker": marker,
         "policy_camera_roles": ["external", "wrist"],

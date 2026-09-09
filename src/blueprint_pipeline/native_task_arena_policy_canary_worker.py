@@ -606,7 +606,15 @@ def isaac_cell_runtime() -> CellRuntime:
         root = output_root / "prepolicy_observation_gate"
         root.mkdir(parents=True, exist_ok=True)
         droid_profile = plan.get("policy_canary_embodiment_profile")
-        if (
+        if plan.get("operator_wrist_camera_aim") is not None:
+            selected = dict(built.native_configuration_readback["direct_wrist_camera_aim"])
+            selected["admitted"] = True
+            selected["blockers"] = []
+            selection = {"schema_version": "policy_canary_wrist_camera_mount_selection.v1",
+                "status": "selected", "selected_candidate": selected,
+                "contact_sheet": None, "blockers": [],
+                "selection_digest": canonical_digest(selected)}
+        elif (
             isinstance(droid_profile, Mapping)
             and droid_profile.get("preserve_official_policy_camera_calibration")
             is True
@@ -656,8 +664,7 @@ def isaac_cell_runtime() -> CellRuntime:
             snapshot,
             preserve_official_droid_calibration=(
                 isinstance(droid_profile, Mapping)
-                and droid_profile.get("preserve_official_policy_camera_calibration")
-                is True
+                and droid_profile.get("policy_camera_roles") == ["external", "wrist"]
             ),
         )
         visibility = dict(visibility_contract["camera_visibility"])
@@ -855,6 +862,11 @@ def _resolved_scene_plan(
     task_success_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     plan = deepcopy(dict(base))
+    aim = cell.get("operator_wrist_camera_aim")
+    if aim is not None:
+        if not isinstance(aim, Mapping) or aim.get("mode") != "point_at_task_object_then_rigidly_follow_wrist" or not str(aim.get("authorized_by") or "").strip() or aim.get("authority_digest") != canonical_digest(aim, digest_field="authority_digest"):
+            raise RuntimeError("operator_wrist_camera_aim_authority_invalid")
+        plan["operator_wrist_camera_aim"] = dict(aim)
     task_success_contract = task_success_contract or cell.get(
         "task_success_contract"
     )
