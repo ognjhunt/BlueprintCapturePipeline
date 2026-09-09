@@ -833,6 +833,7 @@ def materialize_policy_canary_result_delivery(
     session_result: Mapping[str, Any],
     evidence_root: str | Path,
     closure_records: Mapping[str, Mapping[str, Any]],
+    control_omission_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seal a private, artifact-complete internal policy-canary delivery.
 
@@ -1404,6 +1405,12 @@ def materialize_policy_canary_result_delivery(
         public_artifacts=public_artifacts, add_artifact=add_artifact,
         write_immutable=_write_immutable, write_zip=_write_zip_immutable,
         error_factory=TaskEvaluationResultDeliveryError)
+    if control_omission_authority is not None:
+        from .policy_canary_control_result_delivery import materialize_control_omission
+        control_delivery = materialize_control_omission(
+            authority=control_omission_authority, contract=task_success_contract,
+            result=result, delivery_root=delivery_root, add_artifact=add_artifact,
+            write_immutable=_write_immutable, error_factory=TaskEvaluationResultDeliveryError)
 
     evidence_manifest = {
         "schema_version": "task_evaluation_policy_canary_evidence_manifest.v1",

@@ -156,8 +156,18 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
             raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_controls_status_invalid")
         if not verified and result["result_status"] == "completed_unqualified":
             raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_required_controls_unverified")
+    elif result["scene_controls_status"] == "controls_omitted_by_user":
+        omission = result.get("control_omission") or {}
+        from .native_policy_canary_control_gate import controls_required
+        if (omission.get("task_success_contract_digest") != task_success_contract["contract_digest"]
+                or controls_required(task_success_contract)
+                or counts["diagnostic_control_rollout_count"] != 0
+                or counts["completed_diagnostic_control_rollout_count"] != 0):
+            raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_control_omission_invalid")
     elif result["scene_controls_status"] != "configured_controls_pending":
         raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_controls_evidence_missing")
+    if result.get("control_omission") is not None and result["scene_controls_status"] != "controls_omitted_by_user":
+        raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_control_omission_conflict")
     notification = result["notification_delivery"]
     if notification["status"] == "pending":
         if (

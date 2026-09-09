@@ -314,7 +314,7 @@ def build_policy_canary_result_projection(
             "completed_learned_policy_rollout_count": sum(
                 row["terminal_state"] == "completed" for row in projected_episodes
             ),
-            "diagnostic_control_rollout_count": 20,
+            "diagnostic_control_rollout_count": 0 if delivery.get("control_omission") else 20,
             "completed_diagnostic_control_rollout_count": (delivery.get("controls_summary") or {}).get("completed_count", 0),
         },
         "episode_interpretation": deepcopy(
@@ -357,6 +357,8 @@ def build_policy_canary_result_projection(
         "blockers": sorted(set(blockers)),
         "projection_digest": "",
     }
+    if delivery.get("control_omission") is not None:
+        value["control_omission"] = deepcopy(delivery["control_omission"])
     if result.get("controls") is not None:
         controls = delivery.get("controls")
         originals = {(row.get("cell_id"), row.get("control_id"), row.get("seed")):
