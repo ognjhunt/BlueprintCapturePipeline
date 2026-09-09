@@ -33,3 +33,12 @@ GPU allocation: absent automatic cache creation and loss of the destination USD
 format suffix when reading content-addressed references. Format suffixes now come
 from the sealed USD bytes. This works for any admitted passive rigid destination;
 there is no object-name or tray-specific branch.
+
+The controls catalog's `runtime_source_payload_dir` must contain the verified
+`native_task_runtime_source_packet.v1.json` and its `native_task_runtime_sources.zip`,
+rather than expanded IsaacLab/Arena checkout directories. Provisioning verifies
+the same runtime packet contract the episode consumer reads before publishing a
+wrapper. Use `external_layer_bucket` for the canonical object-store bucket when
+binding large runtime packets; the existing external-layer store reuses immutable
+bytes by hardlink and publishes a small wrapper. Update the persistent operator
+bootstrap through `build_bootstrap` and the normal controls-autoprovision installer.

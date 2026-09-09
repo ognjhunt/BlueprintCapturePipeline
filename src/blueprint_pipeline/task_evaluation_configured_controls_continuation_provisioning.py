@@ -423,6 +423,20 @@ def _runtime_source_reference(
     external_layer_bucket: str | None,
     external_layer_min_bytes: int,
 ) -> dict[str, Any]:
+    # This consumer requires a sealed runtime packet and receipt, not an
+    # expanded source checkout. Verify that contract before publishing anything.
+    from .native_task_runtime_source_packet import verify_native_task_runtime_source_packet
+    try:
+        if payload_dir.is_symlink() or not payload_dir.is_dir():
+            raise ValueError("runtime_packet_root_missing")
+        verify_native_task_runtime_source_packet(
+            payload_dir / "native_task_runtime_source_packet.v1.json",
+            packet_path_override=payload_dir / "native_task_runtime_sources.zip",
+        )
+    except (OSError, ValueError) as exc:
+        raise ConfiguredControlsProvisioningError(
+            f"configured_controls_provisioning_runtime_packet_invalid:{exc}"
+        ) from exc
     wrapper = controls_root / "native_task_runtime_source_adapter_bundle.zip"
     receipt_path = controls_root / "native_task_runtime_source_build_receipt.v1.json"
     if wrapper.exists() and receipt_path.is_file():

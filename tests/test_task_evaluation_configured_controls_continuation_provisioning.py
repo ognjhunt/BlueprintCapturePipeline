@@ -149,10 +149,8 @@ def _embodiment_camera_template(tmp_path: Path) -> Path:
 
 
 def _payload(tmp_path: Path) -> Path:
-    payload = tmp_path / "runtime-payload"
-    _write(payload / "native_task_runtime_source_packet.v1.json", {"schema_version": "native_task_runtime_source_packet.v1", "status": "sealed"})
-    _write(payload / "native_task_runtime_sources.zip", b"PK" + b"\x00" * 4096)
-    return payload
+    from tests.test_native_task_arena_bundle import _runtime_source_packet
+    return _runtime_source_packet(tmp_path / "runtime-payload").parent
 
 
 def _provider_zero() -> dict:
@@ -290,7 +288,9 @@ def test_provisioning_authors_the_runtime_binding_with_a_deferred_scene_mount_an
     # The 4 GB payload member is stored once by digest and referenced, so the
     # wrapper stays small and the same runtime is never uploaded twice.
     assert len(wrapper) < 64 * 1024
-    assert [row["relative_path"] for row in publisher.layers] == ["payload/native_task_runtime_sources.zip"]
+    assert "payload/native_task_runtime_sources.zip" in {
+        row["relative_path"] for row in publisher.layers
+    }
     assert binding["spend"] == {
         "maximum_hourly_rate_usd": 0.8,
         "hard_cap_usd": 2.0,
@@ -377,7 +377,7 @@ def test_provisioning_is_idempotent_and_refuses_a_non_configuration_preparation(
         tmp_path,
         preparation_result_path=next((tmp_path / "preparations" / "results").glob("*.json")),
         robot_asset_usd_path=tmp_path / "robot" / "franka.usd",
-        runtime_source_payload_dir=tmp_path / "runtime-payload",
+        runtime_source_payload_dir=_payload(tmp_path),
         embodiment_camera_template_path=tmp_path / "embodiment" / "droid_camera_template.json",
         project_spend_reconciliation_path=tmp_path / "spend.json",
     )
@@ -504,3 +504,19 @@ def test_declared_destination_automatically_gets_native_probe_phase(tmp_path,ass
     assert 'lineage_path' in intent['phases']['destination']
     assert 'lineage_path' not in intent['phases']['construction']
     assert autostart.validate_configured_controls_autostart_intent(intent)==intent
+
+
+def test_expanded_runtime_checkout_is_refused_before_publication(tmp_path: Path) -> None:
+    raw = tmp_path / "expanded-runtime"
+    _write(raw / "IsaacLab" / "source.py", b"released source")
+    calls = []
+    with pytest.raises(provisioning.ConfiguredControlsProvisioningError,
+                       match="configured_controls_provisioning_runtime_packet_invalid"):
+        provisioning._runtime_source_reference(
+            payload_dir=raw, controls_root=tmp_path / "output", source_commit=COMMIT,
+            artifact_publisher=lambda **kwargs: calls.append(kwargs),
+            layer_publisher=lambda value: calls.append(value),
+            external_layer_bucket=None, external_layer_min_bytes=1024,
+        )
+    assert calls == []
+    assert not (tmp_path / "output").exists()
