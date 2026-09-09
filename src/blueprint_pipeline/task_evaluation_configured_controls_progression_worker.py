@@ -1246,6 +1246,8 @@ def _production_submitter(
                     "--request", str(request_path),
                     "--secret-file", str(secret_file),
                     "--receipt-out", str(receipt_path),
+                    # The immutable request may already be accepted after a lost response.
+                    "--allow-replay",
                     "--endpoint", endpoint,
                 ],
                 cwd=repo_root,

@@ -2138,3 +2138,39 @@ def test_activation_capacity_wait_uses_live_reserved_headroom(tmp_path, monkeypa
         return {'available_bytes': available}
     monkeypatch.setattr('blueprint_pipeline.control_plane_disk_budget.disk_headroom', headroom)
     assert worker._activation_capacity_ready(tmp_path) is expected
+
+
+def test_production_submitter_recovers_exact_accepted_request(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    request = {"launch_id": "marked-area-recovery", "run_id": "marked-area-recovery"}
+    attempts = []
+
+    def transport(argv, **kwargs):
+        attempts.append(argv)
+        assert "--allow-replay" in argv
+        request_path = Path(argv[argv.index("--request") + 1])
+        assert json.loads(request_path.read_text()) == request
+        if len(attempts) == 1:
+            return SimpleNamespace(returncode=1)
+        receipt = Path(argv[argv.index("--receipt-out") + 1])
+        receipt.write_text(json.dumps({
+            "status": "replayed", "launch_id": request["launch_id"],
+            "webapp_receipt": {"provider_mutation_performed_inside_web_request": False},
+        }))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(worker.subprocess, "run", transport)
+    submit = worker._production_submitter(
+        repo_root=tmp_path, secret_file=tmp_path / "secret",
+        endpoint="https://example.invalid/submit", state_root=tmp_path,
+    )
+    with pytest.raises(worker.TaskEvaluationConfiguredControlsProgressionWorkerError,
+                       match="webapp_submission_failed"):
+        submit(request)
+    assert submit(request)["status"] == "accepted"
+    assert submit(request)["status"] == "accepted"
+    assert len(attempts) == 2
+    with pytest.raises(worker.TaskEvaluationConfiguredControlsProgressionWorkerError):
+        submit({**request, "run_id": "different"})
+    assert len(attempts) == 2
