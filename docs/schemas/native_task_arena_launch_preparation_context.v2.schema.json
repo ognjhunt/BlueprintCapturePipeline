@@ -14,7 +14,9 @@
         "native_task_arena_controls",
         "native_task_arena_zero_action",
         "native_task_arena_scripted_positive",
-        "native_task_arena_policy_evaluation"
+        "native_task_arena_policy_evaluation",
+        "native_task_arena_destination_qualification",
+        "native_task_arena_construction_after_destination"
       ]
     },
     "team_namespace": {
@@ -198,6 +200,12 @@
         "retain_warm_control_search": {"type": "boolean", "const": true},
         "zero_action_result": {"type": "string", "minLength": 1},
         "controls_qualification_manifest": {"type": "string", "minLength": 1},
+        "destination_probe_request": {"type": "string", "minLength": 1},
+        "configured_scene_support_plane": {"type": "string", "minLength": 1},
+        "destination_static_qualification": {"type": "string", "minLength": 1},
+        "destination_native_import_qualification": {"type": "string", "minLength": 1},
+        "destination_geometry": {"type": "string", "minLength": 1},
+        "destination_qualification_result": {"type": "string", "minLength": 1},
         "machine_avoidlist": {"type": "string"},
         "scene_owner_attempt": {"type": "string", "minLength": 1},
         "python": {"type": "string", "minLength": 1},
@@ -213,7 +221,7 @@
   },
   "allOf": [
     {
-      "if": {"properties": {"lane": {"const": "native_task_arena_construction"}}},
+      "if": {"properties": {"lane": {"enum": ["native_task_arena_construction", "native_task_arena_destination_qualification"]}}},
       "then": {
         "properties": {
           "operations": {
@@ -230,8 +238,7 @@
               "prior_launch_receipt",
               "prior_webapp_sync",
               "prior_provider_zero",
-              "prior_spend_reconciliation",
-              "construction_result"
+              "prior_spend_reconciliation"
             ]
           }
         }
@@ -284,7 +291,10 @@
           }
         }
       }
-    }
+    },
+    {"if": {"properties": {"lane": {"const": "native_task_arena_destination_qualification"}}}, "then": {"properties": {"operations": {"required": ["destination_probe_request", "configured_scene_support_plane", "destination_static_qualification", "destination_native_import_qualification", "destination_geometry"]}}}},
+    {"if": {"properties": {"lane": {"const": "native_task_arena_construction_after_destination"}}}, "then": {"properties": {"operations": {"required": ["destination_qualification_result"]}}}},
+    {"if": {"not": {"properties": {"lane": {"enum": ["native_task_arena_construction", "native_task_arena_destination_qualification", "native_task_arena_construction_after_destination"]}}}}, "then": {"properties": {"operations": {"required": ["construction_result"]}}}}
   ],
   "additionalProperties": false,
   "$defs": {

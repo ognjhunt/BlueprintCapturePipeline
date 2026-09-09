@@ -1007,6 +1007,26 @@ def test_native_context_reopens_independent_versioned_references(
         row["role"] for row in context["reference_bindings"]["rights_evidence"]
     ] == ["publisher_terms", "human_authority_record"]
 
+    destination_value = json.loads(context_file.read_text())
+    destination_value["lane"] = "native_task_arena_destination_qualification"
+    destination_ops = destination_value["operations"]
+    for name in ("terminal_feedback_adoption", "terminal_feedback_adoption_digest", "retain_warm_control_search"):
+        destination_ops.pop(name)
+    destination_fields = ("destination_probe_request", "configured_scene_support_plane",
+                          "destination_static_qualification", "destination_native_import_qualification", "destination_geometry")
+    for name in destination_fields:
+        destination_ops[name] = str(tmp_path / (name + ".json"))
+    destination_path = tmp_path / "destination-context.json"
+    destination_path.write_text(json.dumps(destination_value))
+    loaded = prep._load_native_context(destination_path, expected_lane="native_task_arena_destination_qualification")
+    assert "prior_webapp_lineage" not in loaded["reference_bindings"]
+    for name in destination_fields:
+        assert loaded[name] == destination_ops[name]
+    destination_ops.pop("destination_probe_request")
+    destination_path.write_text(json.dumps(destination_value))
+    with pytest.raises(prep.PaidLaneLaunchPreparationError, match="context_schema_invalid"):
+        prep._load_native_context(destination_path, expected_lane="native_task_arena_destination_qualification")
+
     packet_request_path = packet / "native_task_arena_packet_request.v1.json"
     packet_request_value = json.loads(packet_request_path.read_text(encoding="utf-8"))
     packet_request_value["appearance_variant"] = {

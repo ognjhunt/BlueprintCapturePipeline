@@ -2190,7 +2190,7 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
             "native_task_arena_reference_binding_invalid"
         )
     prior_webapp_lineage = None
-    if expected_lane != "native_task_arena_construction":
+    if expected_lane not in {"native_task_arena_construction", "native_task_arena_destination_qualification"}:
         prior_webapp_lineage = _validate_prior_webapp_lineage(
             prior_result_path=operations.get("prior_result"),
             launch_receipt_path=operations.get("prior_launch_receipt"),
