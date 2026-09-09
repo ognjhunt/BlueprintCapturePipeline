@@ -1593,3 +1593,39 @@ def test_configured_runtime_rights_use_derived_scope_and_exact_destination(tmp_p
     path.write_text('{}')
     with pytest.raises(prep.PaidLaneLaunchPreparationError, match="destination_rights_invalid"):
         prep._validate_provider_packet_source_rights(**kwargs, destination=destination)
+
+
+def test_every_native_preparation_command_passes_its_real_cli_parser(monkeypatch):
+    """Exercise producer-to-consumer argv for the whole graph before any work."""
+    import argparse
+    import importlib
+
+    class ParsedWithoutExecution(Exception):
+        pass
+
+    original = argparse.ArgumentParser.parse_args
+    observed = []
+
+    def parse_only(parser, args=None, namespace=None):
+        parsed = original(parser, args, namespace)
+        assert getattr(parsed, "execute", False) is False
+        observed.append(parsed)
+        raise ParsedWithoutExecution
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", parse_only)
+    for lane, steps in prep.LANES.items():
+        if not lane.startswith("native_task_arena_"):
+            continue
+        for step in steps:
+            context = {name: "/tmp/preparation-parser/" + name for name in prep.step_placeholders(step)}
+            context.update(python="python", repository_root="/repo", provider="vast", machine_avoidlist=[], scene_owner_attempt=[], maximum_hourly_rate_usd=0.5, hard_total_spend_cap_usd=0.3, hard_ttl_seconds=1800, source_commit="a" * 40, profile_id="profile-1", revision="r1", authorized_on="2026-09-09T12:00:00+00:00", standing_authorization_expires_at="2026-09-09T17:00:00+00:00")
+            argv = prep._step_argv(step, context)
+            if argv[1] == "-m":
+                module = importlib.import_module(argv[2])
+                arguments = argv[3:]
+            else:
+                module = importlib.import_module("scripts." + Path(argv[1]).stem)
+                arguments = argv[2:]
+            with pytest.raises(ParsedWithoutExecution):
+                module.main(arguments)
+    assert len(observed) == sum(len(steps) for lane, steps in prep.LANES.items() if lane.startswith("native_task_arena_"))

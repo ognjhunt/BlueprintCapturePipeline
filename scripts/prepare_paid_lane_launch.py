@@ -282,7 +282,8 @@ def _native_task_arena_steps(
         "construction": "blueprint_pipeline.native_task_arena_construction_bundle",
         "controls": "blueprint_pipeline.native_task_arena_controls_bundle",
     }[link]
-    probe_kind = f"native-task-arena-{link}"
+    probe_kind = ("native-task-arena-destination-qualification" if destination
+                  else f"native-task-arena-{link}")
     bundle_argv = [
         "{python}",
         "-m",
