@@ -574,6 +574,7 @@ def isaac_cell_runtime() -> CellRuntime:
         from blueprint_pipeline.native_task_arena_construction_worker import (
             _body_pose_world,
             _camera_snapshot,
+            _jsonable,
         )
         from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
             _prepolicy_visual_gate_from_snapshot,
@@ -583,6 +584,17 @@ def isaac_cell_runtime() -> CellRuntime:
         env = built.env
         seed = int(plan["scenario"]["seed"])
         env.reset(seed=seed)
+        robot = env.unwrapped.scene["robot"]
+        positions = _jsonable(getattr(robot.data.joint_pos, "torch", robot.data.joint_pos))[0]
+        measured_joints = dict(zip(robot.joint_names, positions, strict=True))
+        reset_observation_readback = {
+            "camera_rerenders_on_reset": built.cfg.num_rerenders_on_reset,
+            "requested_joint_positions_rad": dict(plan["robot"]["joint_reset_positions_rad"]),
+            "observed_joint_positions_rad": {
+                name: float(measured_joints[name])
+                for name in plan["robot"]["joint_reset_positions_rad"]
+            },
+        }
         root = output_root / "prepolicy_observation_gate"
         root.mkdir(parents=True, exist_ok=True)
         droid_profile = plan.get("policy_canary_embodiment_profile")
@@ -688,6 +700,7 @@ def isaac_cell_runtime() -> CellRuntime:
                 else None
             ),
             "snapshot": snapshot,
+            "reset_observation_readback": reset_observation_readback,
             "visual_gate": visual,
             "human_visual_review_status": (
                 "not_required_for_internal_diagnostic_policy_execution"

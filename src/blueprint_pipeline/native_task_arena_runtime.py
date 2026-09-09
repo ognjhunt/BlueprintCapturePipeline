@@ -1397,6 +1397,10 @@ def build_native_task_arena_environment(
         cfg.sim.render_interval = cadence["control_decimation"]
         cfg.decimation = cadence["control_decimation"]
         cfg.episode_length_s = cadence["episode_length_seconds"]
+        # Isaac Lab defaults to zero reset rerenders, which leaves camera
+        # images at the previous pose even after the joint reset and forward.
+        # Refresh before reset() returns observations, without a physics step.
+        cfg.num_rerenders_on_reset = 1 if enable_cameras else 0
         cfg.sim.physics = PhysxCfg(
             solver_type=1,
             enable_enhanced_determinism=True,
@@ -1492,6 +1496,7 @@ def build_native_task_arena_environment(
         preconstruction_device_binding=preconstruction,
         native_configuration_readback={
             "cameras": camera_configuration_readback,
+            "camera_rerenders_on_reset": cfg.num_rerenders_on_reset,
             "control_search_runtime": {
                 "num_envs": num_envs,
                 "cameras_enabled": enable_cameras,

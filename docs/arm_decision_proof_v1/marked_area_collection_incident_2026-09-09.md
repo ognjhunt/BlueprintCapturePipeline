@@ -48,3 +48,17 @@ failures preserve only allowlisted typed codes. Corrected inputs use the
 adapter's existing review-camera convention; official policy-camera calibration
 and robot placement remain unchanged. The failed run was retained and torn down;
 no policy episode or native camera qualification was claimed.
+
+## Reset camera freshness
+
+The subsequent v13 attempt (instance 50432858) passed native initialization and
+both world-camera visibility checks, but returned exactly the predecessor's
+wrist-camera pose. The pinned Isaac Lab `ManagerBasedEnv.reset` defaults to
+`num_rerenders_on_reset = 0`, explicitly leaving sensor frames stale after a
+reset. Replaying that exact upstream reset method on CPU reproduces the old
+camera view after changing joint state; applying the actual Blueprint config
+callback with one reset rerender returns the new view without a physics step.
+Native environments with cameras now request that refresh. The gate also records
+requested and measured joints alongside its reset render count so configuration,
+state, and rendered-view failures can be distinguished. No native camera pass or
+policy execution is inferred from the CPU regression.
