@@ -370,7 +370,7 @@ def _native_task_arena_steps(
             repeated_argv=(
                 ("--terminal-feedback-adoption", "terminal_feedback_adoption"),
             )
-            if not controls and not destination and not predecessor_lineage
+            if not controls and not destination
             else (),
         ),
         LaneStep(
@@ -426,7 +426,7 @@ def _native_task_arena_steps(
                 ("--retain-warm-session", "terminal_feedback_adoption"),
                 ("--retain-warm-session", "retain_warm_control_search"),
             )
-            if not controls and not destination and not predecessor_lineage
+            if not controls and not destination
             else (),
         ),
         LaneStep(
@@ -479,7 +479,7 @@ def _native_task_arena_steps(
                             "terminal_feedback_adoption",
                         ),
                     )
-                    if not controls and not destination and not predecessor_lineage
+                    if not controls and not destination
                     else ()
                 ),
             ),
@@ -493,7 +493,7 @@ def _native_task_arena_steps(
                     "retain_warm_control_search",
                 ),
             )
-            if not controls and not destination and not predecessor_lineage
+            if not controls and not destination
             else (),
         ),
         LaneStep(
@@ -545,7 +545,7 @@ def _native_task_arena_steps(
                             "terminal_feedback_adoption",
                         ),
                     )
-                    if not controls and not destination and not predecessor_lineage
+                    if not controls and not destination
                     else ()
                 ),
             ),

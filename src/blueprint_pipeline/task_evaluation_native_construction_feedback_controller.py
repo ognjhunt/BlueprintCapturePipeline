@@ -1369,6 +1369,20 @@ def _validated_ledger_receipt(
     return receipt
 
 
+def _select_funnel_shortlist_candidate(*, inventory, feedback):
+    """Consume the verified physics shortlist in its measured order."""
+    candidate = validate_native_construction_candidate(inventory["candidates"][0])
+    return candidate, {
+        "inventory_digest": inventory["inventory_digest"],
+        "candidate_id": candidate["candidate_id"],
+        "candidate_digest": candidate["candidate_digest"],
+        "addressed_feedback_digest": feedback["feedback_digest"] if feedback else None,
+        "rationale": "First remaining member of the measured control-search shortlist.",
+        "provider": "deterministic_funnel_shortlist", "model": None,
+        "sdk_version": None, "usage": {}, "trace_id": None,
+    }
+
+
 def _select_candidate(
     *,
     invoker: AgentsSDKInvoker,
@@ -1527,9 +1541,12 @@ def run_native_construction_feedback_controller(
     initial_native_feedback: Mapping[str, Any] | None = None,
     prior_attempted_candidate_digests: Sequence[str] = (),
     clock: Callable[[], float] = time.time,
+    selection_strategy: str = "agents_sdk",
 ) -> dict[str, Any]:
     """Execute bounded native candidates on one worker and continue on pass."""
 
+    if selection_strategy not in {"agents_sdk", "funnel_shortlist_order"}:
+        raise NativeConstructionFeedbackControllerError("native_construction_selection_strategy_invalid")
     now = float(clock())
     admitted = _validate_authority(authority, now=now)
     maximum_rounds = int(admitted["maximum_rounds"])
@@ -1602,13 +1619,18 @@ def run_native_construction_feedback_controller(
                 round_index=round_index,
                 inventory_digest=str(active_inventory["inventory_digest"]),
             )
-        candidate, selection = _select_candidate(
-            invoker=invoker,
-            authority=admitted,
-            inventory=active_inventory,
-            feedback=final_feedback,
-            attempted_candidate_digests=attempted_digests,
-        )
+        if selection_strategy == "funnel_shortlist_order":
+            candidate, selection = _select_funnel_shortlist_candidate(
+                inventory=active_inventory, feedback=final_feedback,
+            )
+        else:
+            candidate, selection = _select_candidate(
+                invoker=invoker,
+                authority=admitted,
+                inventory=active_inventory,
+                feedback=final_feedback,
+                attempted_candidate_digests=attempted_digests,
+            )
         if candidate["candidate_digest"] in attempted_digests:
             raise NativeConstructionFeedbackControllerError(
                 "native_construction_candidate_repeated"

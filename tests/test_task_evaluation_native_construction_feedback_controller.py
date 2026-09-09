@@ -449,7 +449,8 @@ def test_feedback_scans_all_samples_and_maps_native_gate_objectives() -> None:
     )
 
 
-def test_one_allocation_runs_feedback_rounds_then_automatically_continues_controls() -> None:
+@pytest.mark.parametrize("selection_strategy", ["agents_sdk", "funnel_shortlist_order"])
+def test_one_allocation_runs_feedback_rounds_then_automatically_continues_controls(selection_strategy) -> None:
     run_id = "scene-839873-construction-feedback"
     first = _candidate("base-reset-a", 0, x=2.92)
     second = _candidate("entry-clearance-b", 0, x=3.04)
@@ -509,6 +510,7 @@ def test_one_allocation_runs_feedback_rounds_then_automatically_continues_contro
         execute_candidate=execute,
         continue_to_controls=controls,
         clock=lambda: 1_000.0,
+        selection_strategy=selection_strategy,
     )
 
     assert receipt["status"] == "controls_continuation_queued"
@@ -526,9 +528,12 @@ def test_one_allocation_runs_feedback_rounds_then_automatically_continues_contro
         for row in execution_calls
     )
     # The agent received measurements and digests, not authority to edit gates.
-    second_prompt = __import__("json").loads(invoker.inputs[1][1][0]["content"])
-    assert second_prompt["source_native_feedback"]["first_collision"]["phase_id"] == "precontact"
-    assert second_prompt["authority_boundary"]["model_may_not_change_gates_or_thresholds"] is True
+    if selection_strategy == "agents_sdk":
+        second_prompt = __import__("json").loads(invoker.inputs[1][1][0]["content"])
+        assert second_prompt["source_native_feedback"]["first_collision"]["phase_id"] == "precontact"
+        assert second_prompt["authority_boundary"]["model_may_not_change_gates_or_thresholds"] is True
+    else:
+        assert invoker.inputs == []
 
 
 def test_candidate_cannot_carry_a_gate_change() -> None:
@@ -1501,3 +1506,14 @@ def test_retained_production_callsite_requires_remote_curobo_by_default(
     assert observed["remote"]["remote_python_package_root"] == (
         "/workspace/adp_arena_provider_bundle/provider_runtime"
     )
+
+
+def test_measured_funnel_selection_keeps_shortlist_order_without_model():
+    from blueprint_pipeline.task_evaluation_native_construction_feedback_controller import _select_funnel_shortlist_candidate
+    better = _candidate("measured-best", 10, x=1.0)
+    earlier = _candidate("earlier-seed", 0, x=2.0)
+    inventory = {"inventory_digest": "sha256:"+"1"*64, "candidates": [better, earlier]}
+    candidate, selection = _select_funnel_shortlist_candidate(inventory=inventory, feedback=None)
+    assert candidate == better
+    assert selection["provider"] == "deterministic_funnel_shortlist"
+    assert selection["model"] is None and selection["usage"] == {}

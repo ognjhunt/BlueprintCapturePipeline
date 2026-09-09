@@ -57,3 +57,25 @@ def test_marked_area_reseals_the_confirmed_success_contract_for_the_new_task():
     assert contract["criteria"]["motion"] == original_contract["criteria"]["motion"]
     assert contract["criteria"]["support"]["height_interval_m"] == pytest.approx([0.795,0.805])
     assert spec["task_success_contract"] == original_contract
+
+
+def test_control_search_declares_many_options_without_rewriting_task():
+    from blueprint_pipeline.native_marked_area_rehearsal import marked_area_control_search_request
+    request = {"schema_version": "native_task_arena_packet_request.v1", "task_id": "book-to-area",
+        "task_spec": {"strict": "unchanged"}, "assets": [{"semantic_role": "task_object"}],
+        "robot_base_pose_world": {"position_world_m": [1,2,3], "orientation_xyzw": [0,0,0,1]},
+        "robot_joint_reset_positions_rad": {f"panda_joint{i}": 0.1*i for i in range(1,8)},
+        "cameras": [{"role": "external"}], "scenario": {"seed": 7}}
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    original = copy.deepcopy(request)
+    phase = {"phases": [{"phase_id": "pregrasp", "position_world_m": [1,2,4], "orientation_world_xyzw": [0,0,0,1]}]}
+    result = marked_area_control_search_request(source_request=request, phase_plan=phase, support_prim_path="/Table")
+    assert request == original
+    for key in ("task_spec", "assets", "scenario", "robot_base_pose_world", "cameras"):
+        assert result[key] == original[key]
+    feedback = result["native_construction_feedback"]
+    assert len(feedback["candidate_universe"]["candidates"]) == 16
+    assert len({row["candidate_digest"] for row in feedback["candidate_universe"]["candidates"]}) == 16
+    assert feedback["control_search"]["full_fidelity_replay_required"] is True
+    assert feedback["control_search"]["appearance_mode"] == "omitted"
+    assert feedback["allocator_retry_cap"] == 0
