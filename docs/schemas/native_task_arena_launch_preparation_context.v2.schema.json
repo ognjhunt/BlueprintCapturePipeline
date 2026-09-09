@@ -269,13 +269,16 @@
             "not": {
               "anyOf": [
                 {"required": ["terminal_feedback_adoption"]},
-                {"required": ["terminal_feedback_adoption_digest"]},
-                {"required": ["retain_warm_control_search"]}
+                {"required": ["terminal_feedback_adoption_digest"]}
               ]
             }
           }
         }
       }
+    },
+    {
+      "if": {"not": {"properties": {"lane": {"enum": ["native_task_arena_construction", "native_task_arena_construction_recovery"]}}, "required": ["lane"]}},
+      "then": {"properties": {"operations": {"not": {"required": ["retain_warm_control_search"]}}}}
     },
     {
       "if": {
