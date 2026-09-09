@@ -184,8 +184,13 @@ def native_submission_absent(*, config: Mapping[str, Any], plan: Mapping[str, An
         / f"franka-controls-{plan['expected_production_commit'][:12]}"
     )
     require(not any(p.is_symlink() for p in (root, *root.parents)), "state_unsafe")
-    if any(root.rglob("*activation_progression.json")) or any(
-        root.rglob("*launch_progression.json")
+    if any(root.rglob("*launch_progression.json")):
+        return False
+    from .task_evaluation_blocked_native_activation import terminal_blocked_activation
+
+    if any(
+        terminal_blocked_activation(marker_path=p, plan=plan, config=config) is None
+        for p in root.rglob("*activation_progression.json")
     ):
         return False
     launch_root = Path(
