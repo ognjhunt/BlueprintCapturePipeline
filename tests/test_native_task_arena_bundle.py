@@ -270,7 +270,11 @@ def _packet(
                 }
             ],
         },
-        "native_task_arena_scene_plan.v1.json": {"plan_digest": "sha256:" + "p" * 64},
+        "native_task_arena_scene_plan.v1.json": {
+            "plan_digest": "sha256:" + "p" * 64,
+            "appearance_frame_alignment": {"representation": "nurec_volume", "status": "aligned"},
+            "objects": [{"semantic_role": "scene_appearance", "sha256": _sha(assets / "scene_appearance.usd")}],
+        },
     }
     artifacts = []
     for role, (name, value) in zip(
