@@ -29,3 +29,22 @@ checks download-before-teardown with unreadable logs and a failed native result.
 Focused transport tests passed (27), adapter boundary examples passed (3), and
 policy lifecycle/import-closure rehearsals passed (18). No additional paid run
 was used to discover or validate the collection fix.
+
+## Camera representability refusal
+
+The 2026-09-09 v11 diagnostic attempt (Vast instance 50430972, source
+`2aa2c1c26dfd2cde93ba6d155df1ddd5fadd05a7`) stopped before the first policy
+query. Replaying the sealed plan through `camera_runtime_parameters` on CPU
+reproduced `native_task_arena_camera_intrinsics_not_representable:overview`:
+the review camera declared center `(640, 360)` while the existing camera
+adapter requires `(639.5, 359.5)` for a 1280 by 720 image. The native receipt
+retained the exception class but omitted its typed refusal code.
+
+This was a process defect: a pure adapter predicate was first reached after
+allocation, and the lifecycle fixtures used incomplete camera placeholders.
+The startup preflight now invokes the real camera adapter for every resolved
+cell, the lifecycle fixtures include complete cameras, and native initialization
+failures preserve only allowlisted typed codes. Corrected inputs use the
+adapter's existing review-camera convention; official policy-camera calibration
+and robot placement remain unchanged. The failed run was retained and torn down;
+no policy episode or native camera qualification was claimed.

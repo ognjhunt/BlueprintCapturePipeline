@@ -301,8 +301,18 @@ def _scene_plan() -> dict[str, Any]:
             ),
         },
         "cameras": [
-            {"role": "external", "frame_from_camera_matrix": [1.0] * 16},
-            {"role": "wrist", "frame_from_camera_matrix": [1.0] * 16},
+            {
+                "role": role,
+                "frame_from_camera_matrix": [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.],
+                "optical_convention": "opencv",
+                "pose_frame": "robot_body" if role == "wrist" else "world",
+                "parent_prim_path": "{ENV_REGEX_NS}/Robot/panda_hand" if role == "wrist" else "{ENV_REGEX_NS}",
+                "intrinsics": {"fx": 500., "fy": 500., "cx": 639.5, "cy": 359.5, "width": 1280, "height": 720},
+                "data_types": ["rgb", "semantic_segmentation"],
+                "policy_input": role != "overview",
+                "review_only": role == "overview",
+            }
+            for role in ("external", "wrist", "overview")
         ],
         # The compiled scene still carries the pre-canary 20 Hz cadence; the
         # worker must resolve it to the frozen DROID adapters' 15 Hz.
@@ -1441,8 +1451,12 @@ def test_unqualified_nurec_renderer_blocks_both_policies_before_query_and_seals_
     assert isaac.result_sealed_at_close is True
 
 
-def test_cadence_mismatch_is_refused_before_isaac_and_policies(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("fault,blocker", [
+    ("cadence", "policy_canary_control_frequency_invalid"),
+    ("camera", "native_task_arena_camera_intrinsics_not_representable:overview"),
+])
+def test_native_configuration_mismatch_is_refused_before_isaac_and_policies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str, blocker: str
 ) -> None:
     runtime_root, provider_output = _stage_runtime_root(tmp_path)
     child_root = provider_output / "cell_runs" / "00"
@@ -1452,13 +1466,17 @@ def test_cadence_mismatch_is_refused_before_isaac_and_policies(
 
     def stale_cadence(base: dict[str, Any], cell: dict[str, Any], **kwargs) -> dict[str, Any]:
         plan = resolved(base, cell, **kwargs)
-        plan["task_spec"]["control_frequency_hz"] = 20.0
+        if fault == "cadence":
+            plan["task_spec"]["control_frequency_hz"] = 20.0
+        else:
+            overview = next(camera for camera in plan["cameras"] if camera["role"] == "overview")
+            overview["intrinsics"]["cx"] = overview["intrinsics"]["width"] / 2.0
         plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
         return plan
 
     monkeypatch.setattr(worker, "_resolved_scene_plan", stale_cadence)
 
-    with pytest.raises(RuntimeError, match="policy_canary_control_frequency_invalid"):
+    with pytest.raises(RuntimeError, match=blocker):
         worker._run_selected_cell(
             0,
             runtime_root=runtime_root,
@@ -1469,7 +1487,7 @@ def test_cadence_mismatch_is_refused_before_isaac_and_policies(
 
     result = json.loads((child_root / "policy_canary_static_startup_preflight.v1.json").read_text())
     assert result["status"] == "blocked"
-    assert all("policy_canary_control_frequency_invalid" in blocker for blocker in result["blockers"])
+    assert all(blocker in observed for observed in result["blockers"])
     assert result["candidate_policy_queried"] is False
     assert isaac.launches == 0
 

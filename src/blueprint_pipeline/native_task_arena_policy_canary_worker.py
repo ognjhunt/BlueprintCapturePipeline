@@ -330,6 +330,11 @@ def preflight_policy_canary_static_inputs(
             base_scene_plan, cell, task_success_contract=inputs.get("task_success_contract")))
         if plan is None:
             continue
+        def validate_native_camera_parameters(plan=plan):
+            from blueprint_pipeline.native_task_arena_runtime import camera_runtime_parameters
+            for camera in plan["cameras"]:
+                camera_runtime_parameters(camera)
+        check(f"cell.{index}.native_camera_parameters", validate_native_camera_parameters)
         if (cell.get("control_diagnostic") or {}).get("mode") == "nonblocking_omitted_by_user":
             def validate_final_camera_start(plan=plan):
                 from blueprint_pipeline.native_task_camera_start_configuration import validate_camera_start_configuration
