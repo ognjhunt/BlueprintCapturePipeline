@@ -47,7 +47,7 @@ def _identity(path: Path) -> tuple[str, int]:
 
 def _git_output(source_root: Path, *args: str) -> str:
     completed = subprocess.run(
-        ["git", "-C", str(source_root), *args],
+        ["git", "-c", f"safe.directory={source_root}", "-C", str(source_root), *args],
         check=True,
         capture_output=True,
         text=True,

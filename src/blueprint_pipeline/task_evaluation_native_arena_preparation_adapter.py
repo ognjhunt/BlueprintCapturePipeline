@@ -445,7 +445,11 @@ def _manifest_from_archive(
                 "task_evaluation_adapter_bundle_member_set_invalid"
             )
         if (
-            declared_size <= 0
+            declared_size < 0
+            or (declared_size == 0 and (
+                expected_role != "runtime_source"
+                or row.get("sha256") != "sha256:" + hashlib.sha256(b"").hexdigest()
+            ))
             or declared_size != member_size
             or not isinstance(row.get("sha256"), str)
             or not str(row["sha256"]).startswith("sha256:")
