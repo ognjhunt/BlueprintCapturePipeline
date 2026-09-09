@@ -13,6 +13,8 @@ from collections.abc import Mapping
 
 
 CONSTRUCTION_RUNTIME_MODULE_NAMES = (
+    "native_task_camera_start_configuration.py",
+    "franka_kinematics.py",
     "articulation_graph_contract.py",
     "articulated_control_planner.py",
     "decision_evidence_contracts.py",
@@ -89,6 +91,8 @@ DESTINATION_QUALIFICATION_RUNTIME_MODULE_NAMES = tuple(
 )
 
 CONTROLS_RUNTIME_MODULE_NAMES = (
+    "native_task_camera_start_configuration.py",
+    "franka_kinematics.py",
     "policy_scientific_reset.py",
     "adp009d_control_episode.py",
     "adp009d_contact_envelope.py",
@@ -180,8 +184,6 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "adp009d_policy_rights.py",
     "droid_policy_bridge.py",
     "droid_policy_canary_embodiment.py",
-    "native_task_camera_start_configuration.py",
-    "franka_kinematics.py",
     "groot_n17_wire_client.py",
     "openpi_droid_policy_runtime.py",
     "policy_episode_trace_evidence.py",
