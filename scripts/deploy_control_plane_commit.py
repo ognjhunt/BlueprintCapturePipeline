@@ -1852,6 +1852,45 @@ def _required_restart_units(units: Sequence[str]) -> tuple[str, ...]:
     return tuple(required)
 
 
+def _prepare_terminal_controls_adoptions(*, release_path: str | Path, commit: str,
+                                        config_path: str | Path) -> dict[str, Any]:
+    """Use the registry's required quiescence before restoring its worker.
+
+    A worker cannot supersede its own live registration: doing this after the
+    timers restart either refuses or races an old materialization. This step
+    runs only under the deploy's provider locks and stopped automation triggers.
+    """
+    for suffix in ('service', 'path', 'timer'):
+        unit = 'blueprint-task-evaluation-configured-controls-progression.' + suffix
+        observed = subprocess.run(['systemctl', 'show', unit, '-p', 'LoadState', '-p', 'ActiveState', '-p', 'MainPID'],
+                                  check=True, capture_output=True, text=True, timeout=10)
+        fields = dict(line.split('=', 1) for line in observed.stdout.splitlines() if '=' in line)
+        if (fields.get('LoadState') != 'loaded' or fields.get('ActiveState') not in {'inactive', 'failed'}
+                or fields.get('MainPID', '0') != '0'):
+            raise ControlPlaneDeployError('deploy_terminal_controls_worker_not_quiescent')
+        if fields['ActiveState'] == 'failed':
+            subprocess.run(['systemctl', 'reset-failed', unit], check=True, capture_output=True, text=True, timeout=10)
+    release = Path(release_path)
+    argv = ['systemd-run', '--quiet', '--wait', '--pipe', '--collect',
+        '--property=Type=exec', '--property=User=blueprint', '--property=Group=blueprint',
+        '--property=EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env',
+        '--property=EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env',
+        '/usr/bin/env', f'PYTHONPATH={release / "src"}', 'PYTHONDONTWRITEBYTECODE=1',
+        'GIT_CONFIG_COUNT=1', 'GIT_CONFIG_KEY_0=safe.directory', f'GIT_CONFIG_VALUE_0={release}',
+        sys.executable, '-m', 'blueprint_pipeline.task_evaluation_terminal_controls_deploy',
+        '--config', str(config_path), '--expected-commit', commit]
+    result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=600)
+    try:
+        report = json.loads(result.stdout)
+    except ValueError as exc:
+        raise ControlPlaneDeployError('deploy_terminal_controls_report_invalid') from exc
+    if (report.get('status') != 'prepared' or report.get('source_commit') != commit
+            or report.get('provider_mutation_performed') is not False
+            or report.get('model_called') is not False or report.get('placement_materialized') is not False):
+        raise ControlPlaneDeployError('deploy_terminal_controls_report_invalid')
+    return report
+
+
 def _install_intake_runtime_identity_drop_in(
     drop_in: Path, *, source_repo: Path, source_commit: str
 ) -> dict[str, Any]:
@@ -2390,12 +2429,17 @@ def deploy_control_plane_commit(
             controls_autoprovision_installation = install_controls_autoprovision(
                 bootstrap_path=controls_autoprovision_bootstrap
             )
+            terminal_controls_adoptions = _prepare_terminal_controls_adoptions(
+                release_path=staged_release['release_path'], commit=commit,
+                config_path=controls_autoprovision_installation['config']['path'],
+            )
         else:
             controls_autoprovision_installation = {
                 "status": "not_configured",
                 "bootstrap_path": str(controls_autoprovision_bootstrap),
                 "provider_mutation_performed": False,
             }
+            terminal_controls_adoptions = {'status': 'not_configured', 'provider_mutation_performed': False}
 
         runtime_binding = _install_intake_runtime_identity_drop_in(
             Path(intake_runtime_drop_in).expanduser(),
@@ -2518,6 +2562,7 @@ def deploy_control_plane_commit(
         "scene_configuration_environment": scene_configuration_environment,
         "scene_preparation_installation": scene_preparation_installation,
         "controls_autoprovision_installation": controls_autoprovision_installation,
+        "terminal_controls_adoptions": terminal_controls_adoptions,
         # Every slot actually held, not the one base path the caller named.
         # The lock is an N-slot semaphore, so recording the input would
         # under-report what this deploy was exclusive with -- and a receipt
