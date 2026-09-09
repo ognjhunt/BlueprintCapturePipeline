@@ -1540,6 +1540,8 @@ def test_worker_cross_binds_preparation_window_and_no_execution_publication(
     assert run["results"][0]["provider_mutation_performed"] is False
     assert run["results"][0]["paid_execution_requested"] is False
     assert observed_context["lane"] == lane
+    assert observed_context["operations"]["authorization_recorded_on"] == request["authorization"]["authorized_on"]
+    assert datetime.fromisoformat(observed_context["operations"]["authorized_on"]) >= datetime.fromisoformat(request["authorization"]["authorized_on"])
     if lane == "native_task_arena_controls":
         assert request["lineage"]["kind"] == "predecessor"
         for name in (

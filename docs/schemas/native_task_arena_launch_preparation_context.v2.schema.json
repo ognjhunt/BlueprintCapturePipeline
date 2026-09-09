@@ -191,6 +191,7 @@
         "revision": {"type": "string", "minLength": 1},
         "authorization_reference": {"type": "string", "minLength": 1},
         "authorized_by": {"type": "string", "minLength": 1},
+        "authorization_recorded_on": {"type": "string", "format": "date-time"},
         "authorized_on": {"type": "string", "format": "date-time"},
         "maximum_hourly_rate_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.8},
         "hard_total_spend_cap_usd": {"type": "number", "exclusiveMinimum": 0},
