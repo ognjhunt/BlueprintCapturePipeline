@@ -854,9 +854,19 @@ def _profile_intent(
     ]
     if intent_path_override is not None:
         if matches:
-            raise TaskEvaluationConfiguredControlsAutostartError(
-                "configured_controls_autostart_adoption_profile_conflict"
-            )
+            # Preserve and verify the original embedded bytes. A separately
+            # sealed adoption may replace only the exact cancelled owner holds.
+            _, original_path = _profile_intent(run_root)
+            from .task_evaluation_controls_terminal_adoption import validate_embedded_intent_replacement
+            try:
+                validate_embedded_intent_replacement(
+                    run_root=run_root, original_path=original_path,
+                    replacement_path=Path(intent_path_override),
+                )
+            except (ValueError, OSError, KeyError, TypeError) as exc:
+                raise TaskEvaluationConfiguredControlsAutostartError(
+                    f"configured_controls_autostart_adoption_profile_conflict:{exc}"
+                ) from exc
         path = Path(intent_path_override).expanduser()
         if not path.is_absolute() or path.is_symlink() or not path.is_file():
             raise TaskEvaluationConfiguredControlsAutostartError(

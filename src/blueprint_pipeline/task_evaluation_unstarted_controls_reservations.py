@@ -36,6 +36,10 @@ def validated_cancellation(directory: Path, attempt: Mapping[str, Any]) -> dict[
     if not path.exists() and not path.is_symlink():
         return None
     receipt = _read(path)
+    if receipt.get('schema_version') == 'task_evaluation_unmaterialized_adoption_cancellation.v1':
+        from .task_evaluation_terminal_adoption_retirement import validate_retirement
+        validate_retirement(receipt=receipt, attempt=attempt)
+        return receipt
     original = receipt.get("original_blocked_launch_receipt") or {}
     if (
         receipt.get("schema_version") != SCHEMA

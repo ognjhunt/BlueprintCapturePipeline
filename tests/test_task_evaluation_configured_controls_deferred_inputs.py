@@ -345,10 +345,11 @@ def test_resolution_refuses_fetched_bytes_that_do_not_match_the_reference(tmp_pa
         )
 
 
-def test_deferred_book_to_tray_phases_match_native_destination_binding(tmp_path, monkeypatch):
+@pytest.mark.parametrize('retreat_clearance', [None, .05])
+def test_deferred_book_to_tray_phases_match_native_destination_binding(tmp_path, monkeypatch, retreat_clearance):
     import copy
     from tests.test_task_evaluation_rigid_relocation_native_adapter import (
-        DEFINITION, EXECUTION, STATIC, _rewrite,
+        DEFINITION, EXECUTION, STATIC, SUCCESS, _rewrite,
     )
     from tests.test_task_evaluation_native_arena_episode_compiler import _destination_case
     from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import _stage_destination_asset
@@ -365,6 +366,12 @@ def test_deferred_book_to_tray_phases_match_native_destination_binding(tmp_path,
     }
     execution = copy.deepcopy(docs[EXECUTION])
     execution["strategy"] = "pick_and_place"
+    if retreat_clearance is not None:
+        definition['success']['retreat_clearance_m'] = retreat_clearance
+        success = copy.deepcopy(docs[SUCCESS])
+        success['retreat_clearance_m'] = retreat_clearance
+        _rewrite(tmp_path=tmp_path, configured=revision, references=references,
+                 contract_path=SUCCESS, document=success)
     for contract, document in ((DEFINITION, definition), (EXECUTION, execution)):
         _rewrite(tmp_path=tmp_path, configured=revision, references=references,
                  contract_path=contract, document=document)
@@ -417,6 +424,7 @@ def test_deferred_book_to_tray_phases_match_native_destination_binding(tmp_path,
     native_scene_plan["plan_digest"] = canonical_digest(native_scene_plan, digest_field="plan_digest")
     native_plan = materialize(native_scene_plan)
     assert cpu_plan["phases"] == native_plan["phases"]
+    assert captured['scene_plan']['task_spec']['subject_collision_bounds_scoring_frame_m'] == admitted['subject_collision_bounds_scoring_frame_m']
     assert captured["scene_plan"]["task_spec"]["interaction_affordance"]["insertion_withdrawal_unit_world"] == [0., 0., 1.]
     assert native_scene_plan["task_spec"]["target_position_world_m"] != native_spec["target_position_world_m"]
 
