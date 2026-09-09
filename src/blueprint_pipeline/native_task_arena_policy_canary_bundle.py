@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
+from importlib.metadata import distribution
 import json
 from pathlib import Path
 import shutil
@@ -47,6 +48,31 @@ from .task_evaluation_canary_hotfix_overlay import (
 
 
 EXECUTION_AUTHORITY = "internal_policy_canary_unqualified"
+
+
+def stage_policy_contract_dependencies(runtime: Path) -> dict[str, Any]:
+    """Ship the pinned pure-Python owner-contract canonicalizer with its license.
+
+    The retained simulator archive predates this dependency. Bundling these small
+    files makes validation independent of the provider's site-packages and avoids
+    rebuilding or downloading an unchanged multi-gigabyte simulator archive.
+    """
+    dependency = distribution("rfc8785")
+    if dependency.version != "0.1.4":
+        raise ValueError("policy_canary_rfc8785_version_mismatch")
+    paths = ("rfc8785/__init__.py", "rfc8785/_impl.py", "rfc8785/py.typed",
+             "rfc8785-0.1.4.dist-info/LICENSE")
+    rows = []
+    for relative in paths:
+        source = Path(dependency.locate_file(relative))
+        if not source.is_file() or source.is_symlink():
+            raise ValueError("policy_canary_rfc8785_source_missing")
+        target = runtime / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        rows.append({"relative_path": relative, "sha256": _sha256(target),
+                     "size_bytes": target.stat().st_size})
+    return {"distribution": "rfc8785", "version": "0.1.4", "files": rows}
 
 
 def _read(path: str | Path) -> dict[str, Any]:
@@ -147,6 +173,21 @@ source_rc=$?
 if [ $source_rc -ne 0 ]; then
   write_fallback_result policy_canary_runtime_source_provision_failed "$source_rc"
   exit $source_rc
+fi
+
+# Validate the actual immutable input before downloading or starting either
+# policy. Lazy contract dependencies must be present at this boundary.
+/isaac-sim/python.sh - <<'PYINPUT'
+import json, os
+from pathlib import Path
+from blueprint_pipeline.native_task_arena_policy_canary_session import validate_runtime_input_manifest
+path = Path(os.environ["RUNTIME_DIR"]) / "runtime_inputs/policy_canary_runtime_inputs.json"
+validate_runtime_input_manifest(json.loads(path.read_text()))
+PYINPUT
+input_rc=$?
+if [ $input_rc -ne 0 ]; then
+  write_fallback_result policy_canary_input_preflight_failed "$input_rc"
+  exit $input_rc
 fi
 
 # Strict controls execute before either checkpoint is loaded. The second stage
@@ -297,6 +338,7 @@ def build_policy_canary_session_bundle(
         with zipfile.ZipFile(base["bundle_path"]) as archive:
             archive.extractall(root)
         runtime = root / "provider_runtime"
+        contract_dependency = stage_policy_contract_dependencies(runtime)
         for candidate in inputs["candidate_ids"]:
             script = runtime / f"adp009d_policy_provisioning.{candidate}.sh"
             script.write_text(build_provisioning_script(candidate), encoding="utf-8")
@@ -346,6 +388,7 @@ def build_policy_canary_session_bundle(
                     candidate: spec["execution_spec_digest"]
                     for candidate, spec in specs.items()
                 },
+                "contract_python_dependencies": [contract_dependency],
                 "input_digest": "",
             }
         )
