@@ -1684,3 +1684,16 @@ def test_construction_recovery_requires_real_predecessor_without_destination():
         assert any(repr(required) + " is a required property" == message for message in messages)
     assert not any("destination_qualification_result" in message or
                    "construction_result" in message for message in messages)
+
+
+def test_recovery_schema_admits_only_bound_warm_control_search():
+    import jsonschema
+    schema = json.loads((Path(prep.__file__).resolve().parents[1] /
+        "docs/schemas/native_task_arena_launch_preparation_context.v2.schema.json").read_text())
+    validator = jsonschema.Draft202012Validator(schema)
+    def conditional_errors(lane, operations):
+        return [e for e in validator.iter_errors({"lane": lane, "operations": operations})
+                if e.validator == "not"]
+    assert not conditional_errors("native_task_arena_construction_recovery", {"retain_warm_control_search": True})
+    assert conditional_errors("native_task_arena_controls", {"retain_warm_control_search": True})
+    assert conditional_errors("native_task_arena_construction_recovery", {"terminal_feedback_adoption": "/adoption.json"})
