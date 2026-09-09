@@ -545,6 +545,21 @@ def _extract_verified_bundle(
                     if row.get("external_layer") is not None
                     else None
                 )
+                # A verified immutable external layer can back the member CAS
+                # directly. Copying it again created another 4 GiB runtime
+                # archive even though preparation had already retained it.
+                if (layer_source is not None and cached != target
+                        and stat.S_IMODE(layer_source.stat().st_mode) & 0o222 == 0):
+                    if _sha256_file(layer_source) != row["sha256"]:
+                        raise TaskEvaluationNativeArenaAdapterError(
+                            "task_evaluation_adapter_bundle_member_readback_mismatch")
+                    try:
+                        os.link(layer_source, cached, follow_symlinks=False)
+                    except OSError:
+                        pass  # Cross-device/permission/race: retain verified copy path.
+                    else:
+                        os.link(cached, target, follow_symlinks=False)
+                        continue
                 temporary = (
                     cached.parent
                     / f".{cached.name}.partial-{os.getpid()}-{uuid.uuid4().hex}"

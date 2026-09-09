@@ -18,6 +18,7 @@ def seal(path, document, field):
         None,
         "pending",
         "processing",
+        "prepared",
         "completed",
         "paid",
         "provider",
@@ -83,7 +84,7 @@ def test_only_terminal_blocked_prelaunch_can_retire_native_hold(tmp_path, monkey
     if defect == "result_digest":
         result["result_digest"] = "sha256:" + "c" * 64
         (queue / "results" / filename).write_text(json.dumps(result))
-    if defect in ("pending", "processing", "completed"):
+    if defect in ("pending", "processing", "prepared", "completed"):
         seal(queue / defect / filename, envelope, "envelope_digest")
     launches = tmp_path / "launches"
     if defect == "launch":

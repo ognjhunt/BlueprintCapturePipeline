@@ -42,3 +42,16 @@ wrapper. Use `external_layer_bucket` for the canonical object-store bucket when
 binding large runtime packets; the existing external-layer store reuses immutable
 bytes by hardlink and publishes a small wrapper. Update the persistent operator
 bootstrap through `build_bootstrap` and the normal controls-autoprovision installer.
+
+Native activation now waits for its exact successful episode compilation and,
+when the production disk ledger is configured, sufficient unreserved activation
+capacity. Its release window is minted after those checks. This prevents the
+activation worker from racing compilation for disk space or consuming its window
+while the CPU packet is still being built. The worker's independent disk and
+paid-resource gates remain mandatory.
+
+The runtime adapter now hashes immutable external layers before linking them
+into its member cache. It reuses the existing inode when possible; writable
+inputs and unsupported link operations retain the verified copy path. This
+avoids another physical 4 GiB copy while preserving every content digest and
+retained path. A prepared activation also blocks unused-attempt retirement.
