@@ -123,6 +123,35 @@ def _proposal(surface_id, position=(0.0, 0.0, 0.0), yaw=0.0):
     }
 
 
+def test_room_clear_robot_is_rejected_when_task_object_or_goal_occupies_reset_envelope(tmp_path):
+    from blueprint_pipeline.task_evaluation_robot_placement_task_geometry import task_occupancy_from_native_plan
+    scene, robot = _assets(tmp_path)
+    plan = {"plan_digest": "sha256:" + "a"*64, "subject_asset_id": "book",
+        "task_occupancy_required": True,
+        "subject_collision_bounds_scoring_frame_m": {"minimum": [-.1,-.1,-.01], "maximum": [.1,.1,.01]},
+        "start_scoring_pose_world": [0.,0.,.3,0.,0.,0.,1.],
+        "destination_position_world_m": [.8,0.,.3], "destination_orientation_xyzw": [0.,0.,0.,1.]}
+    index = build_robot_placement_geometry_index(scene_collision_usd_path=scene,
+        robot_asset_usd_path=robot, task_occupancy=task_occupancy_from_native_plan(plan))
+    floor = next(s for s in index.support_surfaces if s.prim_path == "/Scene/Floor")
+    for x, region in [(0., "subject_start"), (.8, "subject_destination")]:
+        gate = validate_robot_placement_geometry_candidate(index=index,
+            proposal=_proposal(floor.surface_id, position=(x,0.,0.)), target_position_world_m=[.8,0.,.5])
+        assert gate["scene_overlap_triangle_count"] == 0
+        assert gate["task_overlap_region_ids"] == [region]
+        assert gate["collision_passed"] is False
+        assert "robot_reset_bounds_overlap_task_object_or_destination" in gate["blockers"]
+    clear = validate_robot_placement_geometry_candidate(index=index,
+        proposal=_proposal(floor.surface_id, position=(.4,.5,0.)), target_position_world_m=[.8,0.,.5])
+    assert clear["task_overlap_region_ids"] == []
+    summary = summarize_robot_placement_geometry(index, target_position_world_m=[.8,0.,.5])
+    assert summary["task_occupancy_status"] == "available"
+    assert summary["placement_qualification"] == "provisional_geometry_and_position_ik_only"
+    previews = render_robot_placement_geometry_previews(index=index,
+        proposal=_proposal(floor.surface_id, position=(.4,.5,0.)), target_position_world_m=[.8,0.,.5])
+    assert all(p["render_provenance"]["task_occupancy_digest"] == index.task_occupancy["occupancy_digest"] for p in previews)
+
+
 def test_geometry_gate_uses_batched_support_coverage(tmp_path, monkeypatch) -> None:
     import blueprint_pipeline.task_evaluation_robot_placement_geometry as module
 
