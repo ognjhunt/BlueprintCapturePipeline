@@ -330,6 +330,14 @@ def preflight_policy_canary_static_inputs(
             base_scene_plan, cell, task_success_contract=inputs.get("task_success_contract")))
         if plan is None:
             continue
+        if (cell.get("control_diagnostic") or {}).get("mode") == "nonblocking_omitted_by_user":
+            def validate_final_camera_start(plan=plan):
+                from .native_task_camera_start_configuration import validate_camera_start_configuration
+                binding = plan.get("policy_canary_camera_start_configuration")
+                if not isinstance(binding, Mapping):
+                    raise RuntimeError("policy_camera_final_start_configuration_missing")
+                validate_camera_start_configuration(plan, binding)
+            check(f"cell.{index}.final_camera_start", validate_final_camera_start)
         def validate_cadence(plan: Mapping[str, Any] = plan) -> None:
             if not (float(plan["task_spec"]["control_frequency_hz"])
                     == float(plan["cadence"]["control_frequency_hz"]) == 15.0):
@@ -2238,6 +2246,9 @@ def _run_selected_cell(
                     output_root=output_root,
                 )
             )
+            if gate.get("status") != "passed" or gate.get("policy_observation_integrity_passed") is not True:
+                current_session["policy_observation_runtime_gate"] = gate
+                return gate
             if bound_runtime.configure_post_gate_renderer is None:
                 raise RuntimeError(
                     "policy_canary_post_gate_renderer_guard_unavailable"
