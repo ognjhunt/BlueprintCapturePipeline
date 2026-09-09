@@ -1852,14 +1852,8 @@ def _required_restart_units(units: Sequence[str]) -> tuple[str, ...]:
     return tuple(required)
 
 
-def _prepare_terminal_controls_adoptions(*, release_path: str | Path, commit: str,
-                                        config_path: str | Path) -> dict[str, Any]:
-    """Use the registry's required quiescence before restoring its worker.
-
-    A worker cannot supersede its own live registration: doing this after the
-    timers restart either refuses or races an old materialization. This step
-    runs only under the deploy's provider locks and stopped automation triggers.
-    """
+def _require_terminal_controls_quiescence() -> None:
+    """Refuse a live materializer before moving any release surface."""
     for suffix in ('service', 'path', 'timer'):
         unit = 'blueprint-task-evaluation-configured-controls-progression.' + suffix
         observed = subprocess.run(['systemctl', 'show', unit, '-p', 'LoadState', '-p', 'ActiveState', '-p', 'MainPID'],
@@ -1870,6 +1864,17 @@ def _prepare_terminal_controls_adoptions(*, release_path: str | Path, commit: st
             raise ControlPlaneDeployError('deploy_terminal_controls_worker_not_quiescent')
         if fields['ActiveState'] == 'failed':
             subprocess.run(['systemctl', 'reset-failed', unit], check=True, capture_output=True, text=True, timeout=10)
+
+
+def _prepare_terminal_controls_adoptions(*, release_path: str | Path, commit: str,
+                                        config_path: str | Path) -> dict[str, Any]:
+    """Use the registry's required quiescence before restoring its worker.
+
+    A worker cannot supersede its own live registration: doing this after the
+    timers restart either refuses or races an old materialization. This step
+    runs only under the deploy's provider locks and stopped automation triggers.
+    """
+    _require_terminal_controls_quiescence()
     release = Path(release_path)
     argv = ['systemd-run', '--quiet', '--wait', '--pipe', '--collect',
         '--property=Type=exec', '--property=User=blueprint', '--property=Group=blueprint',
@@ -2294,6 +2299,8 @@ def deploy_control_plane_commit(
             quiesced_automation_units,
         ),
     ):
+        if Path(controls_autoprovision_bootstrap_file).expanduser().exists():
+            _require_terminal_controls_quiescence()
         installed_provenance = _install_release_provenance(
             payload=provenance_payload,
             state_root=state,
