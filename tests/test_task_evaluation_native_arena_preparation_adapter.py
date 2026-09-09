@@ -14,6 +14,7 @@ from blueprint_pipeline.task_evaluation_native_arena_preparation_adapter import 
     build_task_evaluation_adapter_bundle,
     build_task_evaluation_runtime_source_bundle,
     materialize_native_arena_adapter,
+    _manifest_from_archive,
 )
 from tests.test_native_task_arena_bundle import _packet, _runtime_source_packet
 from tests.test_task_evaluation_launch_preparation_contract import request
@@ -29,7 +30,7 @@ def _identity(path: Path) -> dict[str, object]:
 
 
 def _bundles(
-    tmp_path: Path,
+    tmp_path: Path, *, empty_runtime_marker: bool = False,
 ) -> tuple[dict[str, object], dict[str, object], Path, Path]:
     value = request()
     value["scene"]["identity"] = {"id": "public-scene-17", "version": "v1"}
@@ -59,6 +60,10 @@ def _bundles(
         "revision_digest"
     ]
     runtime_receipt = _runtime_source_packet(tmp_path)
+    if empty_runtime_marker:
+        marker = runtime_receipt.parent / "IsaacLab-Arena/.git/objects/pack/fixture.promisor"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_bytes(b"")
     construction_bundle = tmp_path / "construction-packet.zip"
     runtime_bundle = tmp_path / "runtime-source.zip"
     build_task_evaluation_adapter_bundle(
@@ -84,10 +89,12 @@ def _bundles(
     )
 
 
+@pytest.mark.parametrize("empty_runtime_marker", [False, True])
 def test_builds_and_materializes_scene_neutral_native_arena_bundles(
-    tmp_path: Path,
+    tmp_path: Path, empty_runtime_marker: bool,
 ) -> None:
-    value, configured, construction_bundle, runtime_bundle = _bundles(tmp_path)
+    value, configured, construction_bundle, runtime_bundle = _bundles(
+        tmp_path, empty_runtime_marker=empty_runtime_marker)
 
     result = materialize_native_arena_adapter(
         request=value,
@@ -105,6 +112,31 @@ def test_builds_and_materializes_scene_neutral_native_arena_bundles(
     assert result["paid_execution_requested"] is False
     assert Path(result["packet_root"]).is_dir()
     assert Path(result["runtime_source_receipt"]).is_file()
+    if empty_runtime_marker:
+        marker = Path(result["runtime_source_receipt"]).parent / "IsaacLab-Arena/.git/objects/pack/fixture.promisor"
+        assert marker.read_bytes() == b""
+
+
+@pytest.mark.parametrize("tamper", ["empty_digest", "negative_size"])
+def test_runtime_empty_metadata_still_requires_exact_size_and_digest(tmp_path: Path, tamper: str) -> None:
+    value, _, _, bundle = _bundles(tmp_path, empty_runtime_marker=True)
+    name = "task_evaluation_adapter_bundle_manifest.v1.json"
+    with zipfile.ZipFile(bundle) as archive:
+        payloads = {n: archive.read(n) for n in archive.namelist()}
+    manifest = json.loads(payloads[name])
+    marker = next(row for row in manifest["entries"] if row["relative_path"].endswith("fixture.promisor"))
+    if tamper == "empty_digest":
+        marker["sha256"] = "sha256:" + "f" * 64
+    else:
+        marker["size_bytes"] = -1
+    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
+    payloads[name] = json.dumps(manifest).encode()
+    changed = tmp_path / "changed-runtime.zip"
+    with zipfile.ZipFile(changed, "w") as archive:
+        for member, payload in payloads.items():
+            archive.writestr(member, payload)
+    with zipfile.ZipFile(changed) as archive, pytest.raises(TaskEvaluationNativeArenaAdapterError, match="member_identity_invalid"):
+        _manifest_from_archive(archive, request=value, expected_role="runtime_source")
 
 
 def test_adapter_hardlinks_verified_members_from_shared_content_store(
