@@ -148,6 +148,7 @@ def run_robot_placement_cli(
     index = build_robot_placement_geometry_index(
         scene_collision_usd_path=scene_collision_usd,
         robot_asset_usd_path=robot_asset_usd,
+        task_occupancy=(task_trajectory or {}).get("task_occupancy"),
     )
     summary = summarize_robot_placement_geometry(
         index,
@@ -322,6 +323,8 @@ def run_robot_placement_cli(
             "task_context_digest": canonical_digest({
                 "target_position_world_m": [float(value) for value in target_position_world_m],
                 "robot_id": robot_id,
+                "task_occupancy": (task_trajectory or {}).get("task_occupancy"),
+                "placement_qualification": "provisional_geometry_and_position_ik_only",
                 "native_trajectory": task_trajectory,
             }),
             "task_trajectory_digest": trajectory_digest,
@@ -417,6 +420,8 @@ def run_robot_placement_cli(
                 "candidate_pose_or_support_mutation_allowed": False,
             },
             task_context={
+                "task_occupancy": (task_trajectory or {}).get("task_occupancy"),
+                "placement_qualification": "provisional_geometry_and_position_ik_only",
                 "target_position_world_m": [
                     float(value) for value in target_position_world_m
                 ],

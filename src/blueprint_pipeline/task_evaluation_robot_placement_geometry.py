@@ -14,8 +14,9 @@ import numpy as np
 from pxr import Usd, UsdGeom
 
 from .decision_evidence_contracts import canonical_digest
-from .franka_kinematics import solve_world_position_ik
+from .franka_kinematics import FRANKA_JOINT_LIMITS_RAD, solve_world_position_ik
 from .scene_placement.robot_profile import get_robot_profile
+from .task_evaluation_robot_placement_task_geometry import validate_task_occupancy
 
 
 GEOMETRY_GATE_SCHEMA_VERSION = "task_evaluation_robot_placement_geometry_gate.v1"
@@ -69,6 +70,7 @@ class RobotPlacementGeometryIndex:
     support_surfaces: tuple[SupportSurface, ...]
     robot_local_bounds_minimum_m: tuple[float, float, float]
     robot_local_bounds_maximum_m: tuple[float, float, float]
+    task_occupancy: Mapping[str, Any] | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -224,8 +226,11 @@ def _watertight_prim_bounds(
 
 
 def build_robot_placement_geometry_index(
-    *, scene_collision_usd_path: str | Path, robot_asset_usd_path: str | Path
+    *, scene_collision_usd_path: str | Path, robot_asset_usd_path: str | Path,
+    task_occupancy: Mapping[str, Any] | None = None,
 ) -> RobotPlacementGeometryIndex:
+    if task_occupancy is not None:
+        task_occupancy = validate_task_occupancy(task_occupancy)
     scene_path = Path(scene_collision_usd_path).expanduser().resolve(strict=True)
     robot_path = Path(robot_asset_usd_path).expanduser().resolve(strict=True)
     scene_stage = Usd.Stage.Open(str(scene_path))
@@ -273,6 +278,7 @@ def build_robot_placement_geometry_index(
         support_surfaces=_support_surfaces(triangles, prim_paths),
         robot_local_bounds_minimum_m=robot_minimum,
         robot_local_bounds_maximum_m=robot_maximum,
+        task_occupancy=task_occupancy,
     )
 
 
@@ -309,6 +315,9 @@ def summarize_robot_placement_geometry(
         "maximum_facing_error_degrees": profile.max_facing_error_deg,
         "support_surfaces": [surface.to_mapping() for surface in index.support_surfaces[:40]],
         "watertight_scene_prim_count": len(index.watertight_prim_bounds),
+        "task_occupancy": index.task_occupancy,
+        "task_occupancy_status": (index.task_occupancy or {}).get("status", "not_supplied"),
+        "placement_qualification": "provisional_geometry_and_position_ik_only",
         "geometry_summary_digest": "",
     }
     result["geometry_summary_digest"] = canonical_digest(
@@ -463,6 +472,15 @@ def validate_robot_placement_geometry_candidate(
     if len(collision_indices) or containing_prim_paths:
         blockers.append("robot_reset_bounds_overlap_scene_geometry")
 
+    task_overlaps = []
+    for region in (index.task_occupancy or {}).get("regions", []):
+        bounds = region["bounds_world_m"]
+        if (np.all(robot_maximum >= np.asarray(bounds["minimum"]))
+                and np.all(robot_minimum <= np.asarray(bounds["maximum"]))):
+            task_overlaps.append(region["region_id"])
+    if task_overlaps:
+        blockers.append("robot_reset_bounds_overlap_task_object_or_destination")
+
     shoulder = position + np.asarray([0.0, 0.0, profile.shoulder_above_root_m])
     shoulder_distance = float(np.linalg.norm(target - shoulder))
     reach_limit = float(profile.max_shoulder_to_affordance_m())
@@ -514,7 +532,7 @@ def validate_robot_placement_geometry_candidate(
             and support_height_error_m <= support_height_tolerance_m
             and supported_count == len(samples)
         ),
-        "collision_passed": len(collision_indices) == 0 and not containing_prim_paths,
+        "collision_passed": len(collision_indices) == 0 and not containing_prim_paths and not task_overlaps,
         "reachability_passed": bool(
             shoulder_distance <= reach_limit
             and trajectory_gate["all_waypoints_position_ik_solved"]
@@ -529,6 +547,9 @@ def validate_robot_placement_geometry_candidate(
             "maximum": [float(value) for value in robot_maximum],
         },
         "scene_overlap_triangle_count": int(len(collision_indices)),
+        "task_overlap_region_ids": task_overlaps,
+        "task_occupancy_digest": (index.task_occupancy or {}).get("occupancy_digest"),
+        "task_occupancy_status": (index.task_occupancy or {}).get("status", "not_supplied"),
         "scene_overlap_prim_paths": sorted(
             {
                 *(index.triangle_prim_paths[int(value)] for value in collision_indices),
@@ -747,6 +768,10 @@ def validate_robot_placement_trajectory_position_ik(
                 "solved_joint_positions": [
                     float(value) for value in solved["joint_positions"]
                 ],
+                "minimum_joint_limit_margin_rad": min(
+                    min(float(q) - lower, upper - float(q))
+                    for q, (lower, upper) in zip(solved["joint_positions"], FRANKA_JOINT_LIMITS_RAD, strict=True)
+                ),
             }
         )
     all_solved = all(row["position_ik_solved"] for row in rows)
@@ -762,6 +787,11 @@ def validate_robot_placement_trajectory_position_ik(
         "minimum_manipulability": (
             min(row["manipulability"] for row in rows) if rows else None
         ),
+        "minimum_joint_limit_margin_rad": (
+            min(row["minimum_joint_limit_margin_rad"] for row in rows) if rows else None
+        ),
+        "joint_limit_margin_warning": any(row["minimum_joint_limit_margin_rad"] < .05 for row in rows),
+        "joint_limit_warning_margin_rad": .05,
         "maximum_position_error_m": (
             max(row["position_error_m"] for row in rows) if rows else None
         ),
@@ -892,10 +922,12 @@ def enumerate_robot_placement_geometry_candidates(
         if gate["status"] != "passed":
             continue
         score = (
+            float(gate["trajectory_position_ik_gate"].get("joint_limit_margin_warning", False)),
             -float(
                 gate["trajectory_position_ik_gate"]["minimum_manipulability"]
                 or 0.0
             ),
+            -float(gate["trajectory_position_ik_gate"].get("minimum_joint_limit_margin_rad") or 0.0),
             abs(surface.height_m + profile.shoulder_above_root_m - target[2]),
             abs(radius - 0.45),
             gate["shoulder_to_target_distance_m"],
@@ -914,6 +946,7 @@ def enumerate_robot_placement_geometry_candidates(
             "trajectory_minimum_manipulability": gate[
                 "trajectory_position_ik_gate"
             ]["minimum_manipulability"],
+            "trajectory_minimum_joint_limit_margin_rad": gate["trajectory_position_ik_gate"].get("minimum_joint_limit_margin_rad"),
             "trajectory_position_ik_gate": gate["trajectory_position_ik_gate"],
         }
         for _score, proposal, gate in candidates[: int(maximum_candidates)]
