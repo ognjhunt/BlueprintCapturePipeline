@@ -181,6 +181,36 @@ def test_backend_consumes_exact_configured_scene_compiler_provenance():
         appearance_render_backend_from_plan(plan, packet_request=request)
 
 
+def test_official_droid_camera_route_does_not_require_a_mount_sweep_registry():
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import policy_observation_gate_mode
+    from blueprint_pipeline.droid_policy_canary_embodiment import apply_droid_policy_canary_profile
+    from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import _scene_plan
+    plan = apply_droid_policy_canary_profile(_scene_plan())
+    assert policy_observation_gate_mode({}, plan) == "native_official_droid_camera"
+    plan["policy_canary_embodiment_profile"]["arena_source"]["revision"] = "wrong"
+    with pytest.raises(RuntimeError, match="official_camera_profile_invalid"):
+        policy_observation_gate_mode({}, plan)
+
+
+def test_static_preflight_reports_independent_errors_together(tmp_path):
+    import json
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import preflight_policy_canary_runtime_directory
+    from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import _stage_runtime_root
+    runtime, _ = _stage_runtime_root(tmp_path)
+    (runtime / "native_task_packet/native_task_arena_packet_request.v1.json").write_text("{}")
+    path = runtime / "runtime_inputs/policy_execution_spec.pi05_droid.json"
+    spec = json.loads(path.read_text())
+    spec["execution_spec_digest"] = "sha256:" + "f" * 64
+    path.write_text(json.dumps(spec))
+    (runtime / "runtime_inputs/native_task_arena_construction_result.v1.json").unlink()
+    report = preflight_policy_canary_runtime_directory(runtime)
+    assert report["status"] == "blocked"
+    assert any("execution_spec.pi05_droid" in blocker for blocker in report["blockers"])
+    assert any("construction" in blocker for blocker in report["blockers"])
+    assert len(report["cells"]) == 10
+    assert report["provider_mutation_performed"] is False
+
+
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [
