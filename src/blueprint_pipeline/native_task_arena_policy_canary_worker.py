@@ -595,6 +595,19 @@ def _construction_lineage_mode(
         != canonical_digest(base_scene_plan, digest_field="plan_digest")
     ):
         raise RuntimeError("policy_canary_scene_plan_invalid")
+    if construction.get("schema_version") == "native_task_arena_packet_receipt.v1":
+        if (inputs.get("run_kind") != "internal_policy_canary"
+                or inputs.get("claim_ceiling") != "diagnostic_policy_execution"
+                or inputs.get("construction_result") != inputs.get("base_native_packet")
+                or construction.get("status") != "construction_packet_completed"
+                or construction.get("arena_scene_plan_digest") != base_scene_plan.get("plan_digest")
+                or construction.get("scene_id") != base_scene_plan.get("scene_id")
+                or construction.get("task_id") != base_scene_plan.get("task_id")
+                or construction.get("native_application_claimed") is not False
+                or construction.get("policy_episode_claimed") is not False
+                or construction.get("receipt_digest") != canonical_digest(construction, digest_field="receipt_digest")):
+            raise RuntimeError("policy_canary_compiled_packet_lineage_invalid")
+        return "compiled_native_packet_diagnostic"
     if construction.get("schema_version") == "native_task_arena_construction_result.v1":
         if (
             construction.get("status") != "completed"

@@ -1,6 +1,6 @@
 import copy
 import pytest
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.native_marked_area_rehearsal import marked_area_request
 
 
@@ -79,3 +79,27 @@ def test_control_search_declares_many_options_without_rewriting_task():
     assert feedback["control_search"]["full_fidelity_replay_required"] is True
     assert feedback["control_search"]["appearance_mode"] == "omitted"
     assert feedback["allocator_retry_cap"] == 0
+
+
+def test_direct_policy_omission_preserves_all_task_scoring_criteria():
+    from tests.test_native_task_arena_policy_canary_session import _activation
+    from blueprint_pipeline.native_marked_area_rehearsal import direct_policy_request
+    original_contract = _activation()['task_success_contract']
+    contract = copy.deepcopy(original_contract)
+    contract['criteria']['controls'] = {'mode': 'required_per_cell',
+        'control_ids': ['zero_action_negative', 'deterministic_scripted_positive']}
+    contract['contract_digest'] = cross_runtime_canonical_digest(contract, digest_field='contract_digest')
+    request = {'schema_version': 'native_task_arena_packet_request.v1',
+        'task_spec': {'task_success_contract': contract,
+            'configured_success_criteria': {'per_cell_controls_required': True, 'minimum_lift_m': .1},
+            'success_criteria': {'per_cell_controls_required': True}},
+        'assets': [], 'native_construction_feedback': {'enabled': True}}
+    request['request_digest'] = canonical_digest(request, digest_field='request_digest')
+    original = copy.deepcopy(request)
+    result = direct_policy_request(source_request=request, authorized_by='owner', authorization_reference='user:skip-controls')
+    assert request == original
+    assert result['task_spec']['task_success_contract']['criteria'] == original_contract['criteria']
+    assert result['task_spec']['configured_success_criteria']['minimum_lift_m'] == .1
+    assert result['task_spec']['configured_success_criteria']['per_cell_controls_required'] is False
+    assert 'native_construction_feedback' not in result
+    assert result['diagnostic_control_omission_authority']['qualified_comparison_permitted'] is False
