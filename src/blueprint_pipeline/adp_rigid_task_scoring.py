@@ -292,6 +292,11 @@ def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
             retreat_errors = validate_retreat_binding(spec, validated_success_contract)
             if retreat_errors:
                 raise TaskNeutralScoringError(retreat_errors)
+            # Point destinations still need the subject envelope for measured
+            # retreat clearance, even without a containing destination body.
+            normalized["subject_collision_bounds_scoring_frame_m"] = spec[
+                "subject_collision_bounds_scoring_frame_m"
+            ]
         normalized["task_success_contract"] = validated_success_contract
     return normalized
 
@@ -1098,4 +1103,3 @@ def score_rigid_task_episode(
     }
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     return report
-
