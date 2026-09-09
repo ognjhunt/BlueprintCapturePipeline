@@ -1197,7 +1197,7 @@ def _runtime_discovery(
             "create_instance": "PUT /api/v0/asks/{id}/",
             "show_instance": "GET /api/v0/instances/{id}/",
             "execute_command": "PUT /api/v0/instances/command/{id}/",
-            "show_logs": "PUT /api/v0/instances/request_logs/{id}",
+            "show_logs": "PUT /api/v0/instances/request_logs/{id}/",
             "destroy_instance": "DELETE /api/v0/instances/{id}/",
         },
         "launch_mode_notes": {
@@ -6290,7 +6290,7 @@ def _request_logs_and_fetch(
         try:
             status_code, response = _api_json(
                 method="PUT",
-                path=f"/instances/request_logs/{instance_id}",
+                path=f"/instances/request_logs/{instance_id}/",
                 api_key=api_key,
                 payload={"tail": str(tail_lines), "daemon_logs": "false"},
                 timeout_seconds=30,
@@ -9070,6 +9070,28 @@ def run_vast_provider_adapter(
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
             output_probe=_provider_output_probe(_string(provider_output_get_url)),
         )
+        # Result and log transport are independent. Preserve an observed upload
+        # before any startup classification can raise and trigger teardown.
+        # A missing log marker must never erase the worker's diagnostic result.
+        preclassification_transfer = None
+        if enable_blueprint_bundle and onstart_logs.get("output_probe_observed"):
+            transfer = _download_provider_output_with_capacity_guard(
+                url=_string(provider_output_get_url),
+                output_path=output_zip_path,
+                minimum_free_bytes=provider_output_minimum_free_bytes,
+            )
+            preclassification_transfer = transfer
+            write_json(
+                resolved_job_dir / "vast_provider_output_preclassification_receipt.json",
+                {
+                    "schema_version": "vast_provider_output_preclassification.v1",
+                    "generated_at": utc_now_iso(),
+                    "output_probe_observed": True,
+                    "output_zip_path": str(output_zip_path),
+                    "transfer": transfer,
+                    "startup_or_scientific_success_claimed": False,
+                },
+            )
         heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
         observed_marker_text = "\n".join(
             _string_list(onstart_logs.get("observed_blueprint_marker_lines"))
@@ -9484,7 +9506,7 @@ def run_vast_provider_adapter(
             # been fetched. The object's presence is stronger evidence than a
             # line claiming it was written.
             if _string(provider_output_get_url):
-                transfer = _download_provider_output_with_capacity_guard(
+                transfer = preclassification_transfer or _download_provider_output_with_capacity_guard(
                     url=_string(provider_output_get_url),
                     output_path=output_zip_path,
                     minimum_free_bytes=provider_output_minimum_free_bytes,
