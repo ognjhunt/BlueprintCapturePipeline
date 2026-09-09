@@ -1,0 +1,794 @@
+{
+  "acquisition_by_cell": {
+    "fixture_workcell.object_acquisition.configuration_only.cell_000": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "visible",
+      "maximum_search_seconds": null,
+      "minimum_target_pixels": 8,
+      "mode": "baseline_visible"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_001": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "partially_occluded",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_002": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "initially_out_of_view",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_003": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "visible",
+      "maximum_search_seconds": null,
+      "minimum_target_pixels": 8,
+      "mode": "baseline_visible"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_004": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "visible",
+      "maximum_search_seconds": null,
+      "minimum_target_pixels": 8,
+      "mode": "baseline_visible"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_005": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "initially_out_of_view",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_006": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "initially_out_of_view",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_007": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "partially_occluded",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_008": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "partially_occluded",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_009": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "initially_out_of_view",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_010": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "partially_occluded",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_011": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "initially_out_of_view",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_012": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "partially_occluded",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_013": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "initially_out_of_view",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_014": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "visible",
+      "maximum_search_seconds": null,
+      "minimum_target_pixels": 8,
+      "mode": "baseline_visible"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_015": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "partially_occluded",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_016": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "initially_out_of_view",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_017": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "partially_occluded",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_018": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "partially_occluded",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_019": {
+      "camera_calibration_digests": {
+        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "initial_visibility": "initially_out_of_view",
+      "maximum_search_seconds": 5.0,
+      "minimum_target_pixels": 8,
+      "mode": "visual_search"
+    }
+  },
+  "development_only": true,
+  "information_by_cell": {
+    "fixture_workcell.object_acquisition.configuration_only.cell_000": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:9f63178967a8ba3d642a81a9528848b9b79ae3b60d2a6ef5959bab60f0650dd2",
+        "measurement_digest": "sha256:3ee54672f0f92dbf4236d407198f00ea9d105d3b050036499d65e534553f9a7e",
+        "object_id": "fixture_block",
+        "position_m": [
+          1.0,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_001": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:4733ac38f7c68cf391d07e9ac027ff45ef7a531b4c38101203d0eb25cc16d299",
+        "measurement_digest": "sha256:f042913db897577c9c1472e09af3ba3f84eb3b7467b698c896084cc2088b832a",
+        "object_id": "fixture_block",
+        "position_m": [
+          1.0,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_002": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:26c7c4e924b60e76df02b5774be0f4f466e6ab50137858e3b73af8970b2781fc",
+        "measurement_digest": "sha256:70aa81e9ebe38c54cb72810897a612ec62848ed4077c43af364ce9b74a18a7ee",
+        "object_id": "fixture_block",
+        "position_m": [
+          1.0,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_003": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:3caea2a599d4b9a8e6865e6fbb436e16f07ea9a8a48848b858b73d78194d36a9",
+        "measurement_digest": "sha256:5448e46d1b429dc1ab1e86a3274139df85b7ae487b82a9e214c0ade28553e2c7",
+        "object_id": "fixture_block",
+        "position_m": [
+          0.98,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_004": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:54b11a53f624b441ba40b8c996e80aa8f6ac66c00c1d314948bc9de6022113cb",
+        "measurement_digest": "sha256:d2d9da1cd94fae0317eb0c218bfcf4b9d371c0467fa39e0c44214fee24e8c3b5",
+        "object_id": "fixture_block",
+        "position_m": [
+          1.02,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_005": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:c2982efbaaef3b0240913e35b26cd80851271639807d2582d1f46dc136efc3e1",
+        "measurement_digest": "sha256:f34cd4d6e8a264c8d176de8d3c35ac1334a75bac6d1ab55d583bdd4fcb4a4150",
+        "object_id": "fixture_block",
+        "position_m": [
+          1.02,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_006": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:9027a41756fd59976e91469cb5fd8c374c3304760b11b0bd13d8816279828d79",
+        "measurement_digest": "sha256:c7822ee53f31a145e31a840d9f58ce32fe466f357ece99427b52b64d74c4a927",
+        "object_id": "fixture_block",
+        "position_m": [
+          0.98,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_007": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:859bd20e1fef9ed55687787b652766447c730d1b319de42e367aed3195730fbc",
+        "measurement_digest": "sha256:1baca7ec566f988d56e655f7a03a8166fbe415795e33b1ebcde8a53dc98ab5ff",
+        "object_id": "fixture_block",
+        "position_m": [
+          1.02,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_008": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:2eee167da3eeb3d71c44a65a65acf1c111f432629c37426b0b3415433cdb90b2",
+        "measurement_digest": "sha256:ffdb5f637671b20d77b87789602ff19a419e0f334ad8613e25b5119df592c23d",
+        "object_id": "fixture_block",
+        "position_m": [
+          0.98,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_009": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:11f16089bfda5db363db025d79d0a3cd514cb68c3fb3c40ec0502022fee72b07",
+        "measurement_digest": "sha256:98a97bf9c4987392c252e03be8bff34a44369389540372ad24d473f2aae5fb0a",
+        "object_id": "fixture_block",
+        "position_m": [
+          0.986764,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_010": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:f48fcc506d19f28c8a65a8d40a1dd2c9b5112a9dfa786c8d04a6bfbfdc569ab8",
+        "measurement_digest": "sha256:867c557c9c70c3e988a66f0c9e165fe714e98d389c7903c0f76382521738e9a6",
+        "object_id": "fixture_block",
+        "position_m": [
+          0.985403,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_011": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:5a4b905a84f474c43b12bd112e3f37603af692067813eb5e658dadb3073ad006",
+        "measurement_digest": "sha256:ba1436d12ce0154600ffd9aed5b67287f343b1dac51100d03c95c9f72a963494",
+        "object_id": "fixture_block",
+        "position_m": [
+          0.994196,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_012": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:aad5f64ab1bf9bf46095c41661204c3f840baebfc83e33cdcb28694384e58748",
+        "measurement_digest": "sha256:812b32338d227e33709201ef442f19c55094d4628f10f90bebe43b81acd201ce",
+        "object_id": "fixture_block",
+        "position_m": [
+          0.993068,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_013": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:0f54bfd6b2b7134361f87770fef60721b03d18e314d6fd2258a1a2f81666b6a9",
+        "measurement_digest": "sha256:c15a1c182e8b2ed29c6f7c46b4fa4802f9a095d2b301f767d9fea7a86b632ac4",
+        "object_id": "fixture_block",
+        "position_m": [
+          1.00206,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_014": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:2a0240884108e5f5e3acd881c6a20dbc1e39c5a4a4357e60d3bbf6ad1bdc475a",
+        "measurement_digest": "sha256:d95c5038c76eb7dc9d2f7b86f8a1e31744ea4537f6f1bf6dfe3d01b3539ecb3c",
+        "object_id": "fixture_block",
+        "position_m": [
+          0.99267,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_015": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:98757f35c66e6139852f3925a90dd8ed992b8374db30494f10ac6a43d0fa3bf3",
+        "measurement_digest": "sha256:9de2d41e4a9b58a5a6f50b95ca26bc2ee97a04e14df6bac7d018584af14792df",
+        "object_id": "fixture_block",
+        "position_m": [
+          1.007114,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_016": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:d0db242b351a88071a56343ee6f6653611db3110dbbaa18a10a1b272dd57c916",
+        "measurement_digest": "sha256:d787409beebe522aac206e9fb8e387c8883b2d940575f380ae85b6c585cf94bf",
+        "object_id": "fixture_block",
+        "position_m": [
+          1.014456,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_017": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:8714cb15d2ad36356561d2950b548d901aaa4c3a8c98aeeaad435cd325ab8120",
+        "measurement_digest": "sha256:1b885f3b90c627b5e8162a39908bdd656bc563510354670f46accca9bac504a2",
+        "object_id": "fixture_block",
+        "position_m": [
+          1.0164,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_018": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:947b10aebcfea93690db651fd049e18ad04f5d6a5d1f6c6165f15d952cc6b2ea",
+        "measurement_digest": "sha256:b2c3141e97c9afab2a6e85b6fc232211a8726876c8edc1aa09f0eee2687c485f",
+        "object_id": "fixture_block",
+        "position_m": [
+          0.986777,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    },
+    "fixture_workcell.object_acquisition.configuration_only.cell_019": {
+      "policy_object_coordinates": null,
+      "scene_id": "fixture_workcell",
+      "schema_version": "policy_observation_information.v1",
+      "setup_object_coordinates": {
+        "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "measured_at_s": 100.0,
+        "measurement_context_digest": "sha256:5a24ef9a8ca678ec65cf0998b14af10221a49846bc9fc8af362587a06e49c315",
+        "measurement_digest": "sha256:a9740ef4464e82a05626e7363ff22b5bc9d99b18f9cdf8f3602303a9554b2b61",
+        "object_id": "fixture_block",
+        "position_m": [
+          0.985964,
+          0.0,
+          0.5
+        ],
+        "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_id": "scene_setup",
+        "source_kind": "simulator_ground_truth"
+      },
+      "setup_position_dimensions": {
+        "x": "object_x_m"
+      },
+      "task_id": "place_fixture_block"
+    }
+  },
+  "matrix_request": {
+    "cell_count": 20,
+    "controls": {
+      "control_ids": [
+        "zero_action_negative",
+        "deterministic_scripted_positive"
+      ],
+      "run_on_every_cell": true,
+      "same_resolved_cell_required": true
+    },
+    "embodiment_binding": {
+      "camera_calibration_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "embodiment_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "embodiment_id": "franka",
+      "joint_limits_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    "implementation_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "matrix_id": "fixture_workcell.object_acquisition.configuration_only",
+    "matrix_kind": "exact_workcell_primary",
+    "object_cousins": [],
+    "program_id": "arm-decision-proof-v1",
+    "request_digest": "sha256:1f2166c852784972d6d1ff29863c517a21fdb17b17896af873191c63300c8924",
+    "scene_binding": {
+      "canonical_object_asset_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "canonical_object_asset_id": "fixture_block",
+      "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "scene_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "scene_id": "fixture_workcell"
+    },
+    "schema_version": "exact_workcell_variation_request.v1",
+    "seed_root": 2026082601,
+    "task_binding": {
+      "reset_contract_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "success_contract_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "task_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "task_id": "place_fixture_block"
+    },
+    "variation_dimensions": [
+      {
+        "application_target": "EventManager.reset.object_x_m",
+        "application_tolerance": 1e-06,
+        "authority_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "changes_object_or_task_identity": false,
+        "decimals": 6,
+        "dimension_id": "object_x_m",
+        "exact_workcell_invariant": true,
+        "family": "reset_state",
+        "maximum": 1.02,
+        "minimum": 0.98,
+        "nominal": 1.0,
+        "source_contract": "task",
+        "unit": "m",
+        "value_type": "continuous"
+      },
+      {
+        "application_target": "ObservationManager.object_acquisition.initial_visibility",
+        "application_tolerance": 0.0,
+        "authority_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "changes_object_or_task_identity": false,
+        "dimension_id": "initial_object_visibility",
+        "exact_workcell_invariant": true,
+        "family": "camera_sensor",
+        "nominal": "visible",
+        "source_contract": "embodiment",
+        "unit": "category",
+        "value_type": "categorical",
+        "values": [
+          "visible",
+          "partially_occluded",
+          "initially_out_of_view"
+        ]
+      }
+    ]
+  },
+  "schedule_request": {
+    "candidate_set": {
+      "candidate_identity_digests": {
+        "groot_n17_droid": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "pi05_droid": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "candidate_ids": [
+        "pi05_droid",
+        "groot_n17_droid"
+      ],
+      "frozen_before_schedule_generation": true
+    },
+    "controls": {
+      "control_ids": [
+        "zero_action_negative",
+        "deterministic_scripted_positive"
+      ],
+      "run_on_every_cell": true,
+      "same_resolved_cell_required": true
+    },
+    "decision_design": {
+      "minimum_decision_relevant_difference_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "planned_cells_per_candidate": 20,
+      "power_analysis_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "preregistered_before_policy_outcomes": true,
+      "preregistered_experiment_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "trial_count_justified_by_preregistered_power_analysis": true
+    },
+    "matrix_digest": "sha256:105a22864b61c31fa249198aaf238177900ce3b105c070888a881ab89a5c2724",
+    "schedule_request_digest": "sha256:cc1f1f42d61ed078eef014437b0abe463cdde71ee3b9c11fec5a4abc7d06576e",
+    "schema_version": "exact_workcell_evaluation_schedule_request.v1"
+  },
+  "schema_version": "policy_observation_staging_request.v1"
+}
