@@ -6,6 +6,7 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
+from .adp_task_scoring import seal_rigid_task_success_contract
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_packet import validate_native_task_arena_packet_request
 
@@ -49,6 +50,19 @@ def marked_area_request(*, source_request: Mapping[str, Any], authority: Mapping
         "non_colliding": True, "radius_m": 0.06,
         "surface_position_world_m": [goal[0], goal[1], float(surface_z_m)]}
     spec["task_change_authority_digest"] = authority["authority_digest"]
+    previous_contract = spec.get("task_success_contract")
+    if isinstance(previous_contract, Mapping):
+        criteria = copy.deepcopy(previous_contract["criteria"])
+        criteria["destination_containment"]["position_bounds_world_m"] = copy.deepcopy(spec["destination_position_bounds_world_m"])
+        criteria["support"]["height_interval_m"] = list(spec["support_height_interval_m"])
+        temporal = criteria.get("temporal_invariants", {})
+        temporal["forbidden_contact_classes"] = [name for name in temporal.get("forbidden_contact_classes", []) if name != "destination_background"]
+        confirmed = seal_rigid_task_success_contract(
+            task_spec=spec, site_id=previous_contract["scope"]["site_id"], task_id=request["task_id"],
+            author_source="task_owner", author_id=authority["authorized_by"], confirmation_status="confirmed",
+            confirmed_by_team_id=previous_contract["provenance"].get("confirmed_by_team_id") or authority["authorized_by"], criteria=criteria)
+        spec["task_success_contract"] = confirmed
+        spec["task_success_contract_digest"] = confirmed["contract_digest"]
     request.pop("configured_task_template_adapter", None)
     feedback = request.pop("native_construction_feedback", {})
     request["retained_placement_candidate_id"] = feedback.get("selected_placement_candidate_id")
