@@ -976,16 +976,28 @@ def _sealed_result(path: Path) -> dict[str, Any]:
     return value
 
 
+@pytest.mark.parametrize("standalone", [False, True])
 def test_selected_cell_queries_both_real_clients_and_seals_before_isaac_close(
     tmp_path: Path,
+    monkeypatch,
+    standalone: bool,
 ) -> None:
+    runner = worker
+    if standalone:
+        import importlib.util
+        import sys
+        spec = importlib.util.spec_from_file_location("adp_arena_provider_runner", worker.__file__)
+        runner = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, spec.name, runner)
+        spec.loader.exec_module(runner)
+        assert not runner.__package__
     runtime_root, provider_output = _stage_runtime_root(tmp_path)
     child_root = provider_output / "cell_runs" / "03"
     child_root.mkdir(parents=True)
     isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
 
     with pytest.raises(SystemExit) as exited:
-        worker._run_selected_cell(
+        runner._run_selected_cell(
             3,
             runtime_root=runtime_root,
             output_root=child_root,
