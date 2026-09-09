@@ -37,6 +37,39 @@ assert _SPEC.loader is not None
 _SPEC.loader.exec_module(deploy)
 
 
+def test_terminal_controls_are_prepared_as_service_user_before_workers_resume(monkeypatch, tmp_path):
+    calls = []
+    commit = 'a'*40
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[:2] == ['systemctl', 'show']:
+            return SimpleNamespace(stdout='LoadState=loaded\nActiveState=failed\nMainPID=0\n')
+        if argv[:2] == ['systemctl', 'reset-failed']:
+            return SimpleNamespace(stdout='')
+        assert argv[0] == 'systemd-run' and '--wait' in argv
+        assert '--property=User=blueprint' in argv
+        assert f'PYTHONPATH={tmp_path / "src"}' in argv
+        assert 'blueprint_pipeline.task_evaluation_terminal_controls_deploy' in argv
+        return SimpleNamespace(stdout=json.dumps({'status':'prepared','source_commit':commit,
+            'provider_mutation_performed':False,'model_called':False,'placement_materialized':False}))
+    monkeypatch.setattr(deploy.subprocess, 'run', run)
+    result = deploy._prepare_terminal_controls_adoptions(release_path=tmp_path, commit=commit, config_path=tmp_path/'config.json')
+    assert result['status'] == 'prepared'
+    assert sum(argv[:2] == ['systemctl','reset-failed'] for argv in calls) == 3
+
+
+@pytest.mark.parametrize('active,pid', [('active','0'), ('inactive','12'), ('activating','0')])
+def test_terminal_controls_deploy_refuses_a_worker_race(monkeypatch, tmp_path, active, pid):
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(stdout=f'LoadState=loaded\nActiveState={active}\nMainPID={pid}\n')
+    monkeypatch.setattr(deploy.subprocess, 'run', run)
+    with pytest.raises(deploy.ControlPlaneDeployError, match='worker_not_quiescent'):
+        deploy._prepare_terminal_controls_adoptions(release_path=tmp_path, commit='a'*40, config_path=tmp_path/'config.json')
+    assert len(calls) == 1
+
+
 def test_retention_reader_repair_preserves_owner_and_private_file_modes(tmp_path):
     root = tmp_path / "release-retention"
     root.mkdir(mode=0o700)
