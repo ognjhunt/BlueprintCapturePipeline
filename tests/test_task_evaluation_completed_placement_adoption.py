@@ -148,3 +148,66 @@ def test_native_submission_prevents_budget_retirement(tmp_path):
     marker.unlink()
     (tmp_path / "launches" / "activation-auto-launch").mkdir(parents=True)
     assert not adoption.native_submission_absent(config=config, plan=plan)
+
+
+def test_repeated_adoption_uses_original_checkpoint_without_new_model_file(tmp_path, monkeypatch):
+    original = tmp_path / "accepted-checkpoint.json"
+    original.write_text('{"original_intent": "first-model-call"}\n')
+    reference = adoption._file(original)
+    inherited = {"source_agent_checkpoint": reference}
+    validated = []
+    monkeypatch.setattr(adoption, "validate_adoption", lambda value: validated.append(value))
+    result = {"completed_placement_adoption": inherited, "placement_calls_reexecuted": False}
+    assert (
+        adoption.checkpoint_reference(result=result, binding=tmp_path, token="new-intent")
+        == reference
+    )
+    assert validated == [inherited]
+    assert not (tmp_path / "agent-placement-checkpoint-new-intent.v1.json").exists()
+    original.write_text('{"changed": true}')
+    with pytest.raises(ValueError, match="reference_changed"):
+        adoption.checkpoint_reference(result=result, binding=tmp_path, token="new-intent")
+
+
+def test_legacy_checkpoint_alias_is_byte_identical_idempotent_and_never_overwrites(
+    tmp_path, monkeypatch
+):
+    binding = tmp_path / "source-launch" / "cpu-robot-binding"
+    binding.mkdir(parents=True)
+    original = tmp_path / "accepted.json"
+    original.write_text('{ "original_intent": "accepted-model-call" }\n')
+    reference = adoption._file(original)
+    inherited = {"source_agent_checkpoint": reference, "source_launch_id": "source-launch"}
+    intent = {"intent_digest": "sha256:" + "a" * 64, "completed_placement_adoption": inherited}
+    intent_path = tmp_path / "intent.json"
+    intent_path.write_text(json.dumps(intent))
+    result = {
+        "completed_placement_adoption": inherited,
+        "placement_calls_reexecuted": False,
+        "scene_binding_digest": "scene",
+        "task_binding_digest": "task",
+        "cpu_placement_checkpoint_binding_digest": "cpu",
+    }
+    result_path = auto._autostart_result_path(root=binding, intent_digest=intent["intent_digest"])
+    result_path.write_text(json.dumps(result))
+    monkeypatch.setattr(auto, "validate_configured_controls_autostart_intent", lambda value: value)
+    monkeypatch.setattr(auto, "_validate_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(adoption, "validate_adoption", lambda value: None)
+    first = adoption.materialize_legacy_checkpoint_alias(
+        intent_path=intent_path, binding_root=binding
+    )
+    assert Path(first["target"]["path"]).read_bytes() == original.read_bytes()
+    assert first["target"]["digest"] == reference["digest"]
+    assert first["placement_calls_reexecuted"] is False
+    assert (
+        adoption.materialize_legacy_checkpoint_alias(intent_path=intent_path, binding_root=binding)[
+            "status"
+        ]
+        == "already_present"
+    )
+    target = Path(first["target"]["path"])
+    target.chmod(0o640)
+    target.write_text('{"unrelated": true}')
+    with pytest.raises(ValueError, match="checkpoint_alias_conflict"):
+        adoption.materialize_legacy_checkpoint_alias(intent_path=intent_path, binding_root=binding)
+    assert target.read_text() == '{"unrelated": true}'

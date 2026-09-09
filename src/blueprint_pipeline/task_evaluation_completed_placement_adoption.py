@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -22,6 +23,79 @@ def read_ref(ref: Mapping[str, Any]) -> dict[str, Any]:
     path = Path(ref["path"])
     require(_file(path) == dict(ref), "reference_changed")
     return _read(path)
+
+
+def checkpoint_reference(*, result: Mapping[str, Any], binding: Path, token: str) -> dict:
+    """An adopted placement keeps its original checkpoint, not a new model call."""
+    inherited = result.get("completed_placement_adoption")
+    if inherited is not None:
+        validate_adoption(inherited)
+        require(result.get("placement_calls_reexecuted") is False, "checkpoint_lineage_invalid")
+        reference = dict(inherited["source_agent_checkpoint"])
+        read_ref(reference)
+        return reference
+    return _file(binding / f"agent-placement-checkpoint-{token}.v1.json")
+
+
+def materialize_legacy_checkpoint_alias(*, intent_path: Path, binding_root: Path) -> dict:
+    """Backfill the byte-identical reference expected by pre-lineage readers.
+
+    This compatibility operation never invents a checkpoint or changes a model
+    receipt. New discovery follows the original reference directly.
+    """
+    from . import task_evaluation_configured_controls_autostart as auto
+
+    intent = auto.validate_configured_controls_autostart_intent(_read(intent_path))
+    result_path = auto._autostart_result_path(
+        root=binding_root, intent_digest=intent["intent_digest"]
+    )
+    result = _read(result_path)
+    auto._validate_result(
+        result,
+        expected_intent_digest=intent["intent_digest"],
+        expected_scene_binding_digest=result["scene_binding_digest"],
+        expected_task_binding_digest=result["task_binding_digest"],
+        expected_cpu_checkpoint_binding_digest=result["cpu_placement_checkpoint_binding_digest"],
+    )
+    inherited = result.get("completed_placement_adoption")
+    require(
+        inherited is not None and inherited == intent.get("completed_placement_adoption"),
+        "checkpoint_lineage_invalid",
+    )
+    require(
+        binding_root.name == "cpu-robot-binding"
+        and binding_root.parent.name == inherited["source_launch_id"],
+        "checkpoint_root_invalid",
+    )
+    token = intent["intent_digest"].removeprefix("sha256:")[:16]
+    reference = checkpoint_reference(result=result, binding=binding_root, token=token)
+    target = binding_root / f"agent-placement-checkpoint-{token}.v1.json"
+    raw = Path(reference["path"]).read_bytes()
+    require(
+        "sha256:" + hashlib.sha256(raw).hexdigest() == reference["digest"],
+        "checkpoint_source_changed",
+    )
+    created = False
+    try:
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o440)
+    except FileExistsError:
+        require(_file(target)["digest"] == reference["digest"], "checkpoint_alias_conflict")
+    else:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        created = True
+    require(_file(target)["digest"] == reference["digest"], "checkpoint_alias_changed")
+    return {
+        "schema_version": "completed_placement_checkpoint_alias.v1",
+        "status": "materialized" if created else "already_present",
+        "source": reference,
+        "target": _file(target),
+        "checkpoint_bytes_changed": False,
+        "placement_calls_reexecuted": False,
+        "provider_mutation_performed": False,
+    }
 
 
 def validate_adoption(
@@ -176,8 +250,8 @@ def discover(
             "source_intent": _file(old_path),
             "source_result": _file(result_path),
             "source_plan": _file(Path(result["plan_path"])),
-            "source_agent_checkpoint": _file(
-                binding / f"agent-placement-checkpoint-{token}.v1.json"
+            "source_agent_checkpoint": checkpoint_reference(
+                result=result, binding=binding, token=token
             ),
         }
         packet["adoption_digest"] = canonical_digest(packet, digest_field="adoption_digest")
