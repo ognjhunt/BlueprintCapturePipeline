@@ -11,7 +11,7 @@ from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_packet import validate_native_task_arena_packet_request
 
 
-def marked_area_request(*, source_request: Mapping[str, Any], authority: Mapping[str, Any], surface_z_m: float) -> dict[str, Any]:
+def marked_area_request(*, source_request: Mapping[str, Any], authority: Mapping[str, Any], surface_z_m: float, support_prim_path: str) -> dict[str, Any]:
     """Keep the scene, book, robot placement, and strict manipulation thresholds."""
     validate_native_task_arena_packet_request(source_request)
     if (authority.get("schema_version") != "task_evaluation_task_change_authority.v1"
@@ -20,7 +20,8 @@ def marked_area_request(*, source_request: Mapping[str, Any], authority: Mapping
             or authority.get("tray_required") is not False
             or authority.get("retain_sealed_scene_and_book") is not True
             or not authority.get("authorized_by")
-            or not math.isfinite(surface_z_m)):
+            or not math.isfinite(surface_z_m)
+            or not isinstance(support_prim_path, str) or not support_prim_path.startswith("/")):
         raise ValueError("marked_area_task_change_authority_invalid")
     request = copy.deepcopy(dict(source_request))
     request["task_id"] = authority["new_task_id"]
@@ -50,6 +51,10 @@ def marked_area_request(*, source_request: Mapping[str, Any], authority: Mapping
         "non_colliding": True, "radius_m": 0.06,
         "surface_position_world_m": [goal[0], goal[1], float(surface_z_m)]}
     spec["task_change_authority_digest"] = authority["authority_digest"]
+    affordance = spec.get("interaction_affordance")
+    if isinstance(affordance, dict):
+        affordance["intended_support_prim_paths"] = [support_prim_path]
+        affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
     previous_contract = spec.get("task_success_contract")
     if isinstance(previous_contract, Mapping):
         criteria = copy.deepcopy(previous_contract["criteria"])
