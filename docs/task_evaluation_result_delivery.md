@@ -40,3 +40,19 @@ not systems of record.
 The current ADP rehearsal is `development_only`. Its videos are derived review
 evidence, simulator results are not physical success, and successful execution
 does not establish policy superiority, deployment approval, or safety.
+# Operator diagnostic run delivery
+
+ADP-009D, day-28 public-scene rehearsal: an operator-authorized run may have a
+new task contract while retaining an earlier offering only as scene provenance.
+The Website registers its immutable run, owner, task, policies, and input
+digests without forwarding another launch. Its v4 publication carries both
+`plan_digest` and `operator_registration_digest`; either without the other is
+refused. The Website validates those values against the retained registration.
+
+For an explicitly authorized omission of controls, the delivery materializer
+accepts the original `control_omission_authority`, validates its task binding,
+and retains it as a downloadable artifact. Delivery and projection carry
+`controls_omitted_by_user`, zero planned/completed control rollouts, and the
+omission digest. Required-controls contracts cannot use this path. Results stay
+`diagnostic_policy_execution`; omission never authorizes policy ranking or
+physical-success claims. Source episode results remain unchanged.
