@@ -84,6 +84,14 @@ def _persist_images(
             raise ValueError("robot_placement_generated_preview_digest_mismatch")
         path = output_dir / f"{prefix}-{index:02d}-{str(image.get('label') or 'view')}.png"
         path.write_bytes(payload)
+        provenance_record = {}
+        if image.get('render_provenance') is not None:
+            provenance = dict(image['render_provenance'])
+            if provenance.get('image_digest') != digest or provenance.get('render_digest') != canonical_digest(provenance, digest_field='render_digest'):
+                raise ValueError('robot_placement_preview_provenance_invalid')
+            provenance_path = path.with_suffix('.render.json')
+            write_json(provenance_path, provenance)
+            provenance_record = {'render_provenance_path': str(provenance_path), 'render_provenance_digest': provenance['render_digest']}
         records.append(
             {
                 "label": str(image.get("label") or path.stem),
@@ -92,6 +100,7 @@ def _persist_images(
                 "path": str(path),
                 "image_url": image_url,
                 "detail": str(image.get("detail") or "high"),
+                **provenance_record,
             }
         )
     return records

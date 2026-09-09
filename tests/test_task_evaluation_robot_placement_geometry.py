@@ -207,7 +207,8 @@ def test_geometry_previews_are_digest_bound_multimodal_inputs(tmp_path) -> None:
         image_size=(320, 240),
     )
 
-    assert [image["label"] for image in images] == ["top_down_xy", "side_xz"]
+    assert [image["label"] for image in images] == ["top_down_xy", "side_task", "oblique"]
+    assert all(image['render_provenance']['depth_buffer_shared_by_scene_and_robot'] for image in images)
     assert all(image["digest"].startswith("sha256:") for image in images)
     assert all(image["image_url"].startswith("data:image/png;base64,") for image in images)
 
