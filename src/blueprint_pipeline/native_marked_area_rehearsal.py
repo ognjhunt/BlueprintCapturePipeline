@@ -6,8 +6,8 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
-from .adp_task_scoring import seal_rigid_task_success_contract
-from .decision_evidence_contracts import canonical_digest
+from .adp_task_scoring import seal_rigid_task_success_contract, validate_rigid_task_success_contract
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .native_task_arena_packet import validate_native_task_arena_packet_request
 
 
@@ -152,5 +152,35 @@ def marked_area_control_search_request(*, source_request: Mapping[str, Any], pha
         "allocator_retry_cap": 0, "maximum_rounds": 8, "native_gates_unchanged": True,
         "control_search": search,
     }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    return validate_native_task_arena_packet_request(request)
+
+
+def direct_policy_request(*, source_request: Mapping[str, Any], authorized_by: str, authorization_reference: str) -> dict[str, Any]:
+    """Record an explicit controls omission for diagnostic policy execution only."""
+    from .native_task_arena_policy_canary_session import validate_control_omission_authority
+    validate_native_task_arena_packet_request(source_request)
+    request = copy.deepcopy(dict(source_request))
+    spec = request["task_spec"]
+    previous = validate_rigid_task_success_contract(spec["task_success_contract"])
+    contract = copy.deepcopy(previous)
+    contract["criteria"].pop("controls", None)
+    contract["contract_digest"] = cross_runtime_canonical_digest(contract, digest_field="contract_digest")
+    for name in ("configured_success_criteria", "success_criteria"):
+        if isinstance(spec.get(name), dict):
+            spec[name]["per_cell_controls_required"] = False
+    validate_rigid_task_success_contract(contract)
+    spec["task_success_contract"] = contract
+    request.pop("native_construction_feedback", None)
+    authority = {"schema_version": "task_evaluation_diagnostic_control_omission_authority.v1",
+        "run_kind": "internal_policy_canary", "claim_ceiling": "diagnostic_policy_execution",
+        "authorized_by": authorized_by, "authorization_reference": authorization_reference,
+        "omitted_controls": ["zero_action_negative", "deterministic_scripted_positive"],
+        "source_task_success_contract_digest": previous["contract_digest"],
+        "result_task_success_contract_digest": contract["contract_digest"],
+        "task_scoring_criteria_changed": False, "qualified_comparison_permitted": False}
+    authority["authority_digest"] = canonical_digest(authority, digest_field="authority_digest")
+    validate_control_omission_authority(authority, contract_digest=contract["contract_digest"])
+    request["diagnostic_control_omission_authority"] = authority
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     return validate_native_task_arena_packet_request(request)
