@@ -186,8 +186,9 @@ def _provision_validated_link(*, link: Mapping[str, Any], scene_root: Path,
              result.get("team_namespace") == link["team_namespace"] and
              result.get("status") == "queued_for_production_scene_configuration", "preparation_result_invalid")
     # Reopen actual task/rights/camera references before reserving any exposure.
-    producer._preparation_context(preparation_result_path=result_path,
+    preparation_context = producer._preparation_context(preparation_result_path=result_path,
         preparation_queue_root=preparation_queue_root, expected_production_commit=expected_production_commit)
+    native_phases = producer.phase_names(preparation_context)
     robot = _asset(binding["robot_asset_usd"])
     cameras = _asset(binding["embodiment_camera_template"])
     runtime = Path(binding["runtime_source_payload_dir"])
@@ -234,13 +235,13 @@ def _provision_validated_link(*, link: Mapping[str, Any], scene_root: Path,
         # OpenAI placement call is a third hold, never hidden outside the cap.
         from .task_evaluation_scene_execution_authority import bind_scene_attempt
         scene_phase_attempts = {}
-        for phase, provider, amount in [(p, "vast", cap) for p in producer.PHASES] + [
+        for phase, provider, amount in [(p, "vast", cap) for p in native_phases] + [
                 ("placement", "openai", inference_cap)]:
             attempt = intake.reserve_scene_attempt(queue_root=scene_root, intent_id=link["intent_id"],
                 attempt_id="controls-" + key[:40] + "-" + phase,
                 source_commit=expected_production_commit, runtime_digest=binding["runtime_digest"],
                 input_digest=link["request_digest"], provider=provider, maximum_spend_usd=amount, now=moment)
-            if phase in producer.PHASES:
+            if phase in native_phases:
                 scene_phase_attempts[phase] = bind_scene_attempt(attempt)
         issued = retained["issued_at_epoch"]
         # Derive text authority from the persisted authenticated record only.
@@ -431,7 +432,7 @@ def _registered_terminal_adoption(*, config: Mapping[str, Any], intent_id: str,
         candidate = validate_configured_controls_autostart_intent(candidate)
         _require(candidate["configuration_adoption"]["mode"] == "explicit_terminal_adoption",
                  "terminal_adoption_mode_invalid")
-        for phase in ("construction", "controls"):
+        for phase in candidate['phases']:
             authorization = _json(Path(candidate["phases"][phase]["authorization_path"]))
             phase_owner = authorization.get("scene_owner_attempt") or {}
             cap = _json(Path(candidate["phases"][phase]["launch_authority_path"]))["max_spend_usd"]
@@ -439,6 +440,12 @@ def _registered_terminal_adoption(*, config: Mapping[str, Any], intent_id: str,
             blockers = scene_execution_authority_blockers(phase_owner, source_commit=expected_production_commit,
                 maximum_spend_usd=cap, provider="vast", queue_root=scene_root)
             _require(not blockers, "terminal_adoption_owner_authority_refused")
+        if candidate.get('completed_placement_adoption') is not None:
+            from .task_evaluation_completed_placement_adoption import validate_adoption
+            validate_adoption(candidate['completed_placement_adoption'], expected_owner_digest=owner_intent['intent_digest'])
+            matches.append({'status':'installed_terminal_adoption','intent_id':intent_id,'intent_path':str(path),
+                'intent_digest':candidate['intent_digest'],'source_launch_id':candidate['configuration_adoption'].get('source_launch_id')})
+            continue
         binding = owner["scene_attempt_binding"]
         placement_id = binding["attempt_id"].removesuffix("-construction") + "-placement"
         placement = intake._read(scene_root / intent_id / "attempts" / (placement_id + ".json"), "attempt_digest")

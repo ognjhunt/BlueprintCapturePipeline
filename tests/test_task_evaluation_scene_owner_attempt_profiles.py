@@ -54,3 +54,18 @@ def test_owner_reference_cannot_fall_back_to_legacy_profile():
         profiles.profile_owner_fields(path=None, authority={"reference": "scene-intent:abc"},
             phase="controls", source_commit="d" * 40, scene_id="scene1", task_id="pick-book",
             maximum_spend_usd=2)
+
+
+def test_destination_probe_keeps_exact_owner_scope_through_activation(bound,monkeypatch):
+    root,owner,original=bound
+    record=profiles.make_owner_attempt_record(owner_fields={k:original[k] for k in profiles.OWNER_FIELDS},
+        phase='destination',team_namespace='org1',scene_id='scene1',task_id='pick-book',
+        runtime_source_bundle_digest='sha256:'+'e'*64)
+    validate_record=profiles.validate_owner_attempt_record
+    monkeypatch.setattr(profiles,'validate_owner_attempt_record',lambda value,**kwargs:validate_record(value,**{**kwargs,'now':102}))
+    path=profiles.retain_native_owner_attempt(activation_request={'lane':'native_task_arena_destination_qualification',
+        'authorization':{'scene_owner_attempt':record},'expected_production_commit':'d'*40,'team_namespace':'org1'},
+        preparation_request={'scene':{'identity':{'id':'scene1'}},'task':{'identity':{'id':'pick-book'}},
+            'spend':{'hard_cap_usd':2,'selected_provider':'vast'},'scene_intent_digest':owner['intent_digest'],
+            'execution_adapter':{'runtime_source_bundle':{'digest':'sha256:'+'e'*64}}},output_path=root/'destination-owner.json')
+    assert profiles._read(path)['phase']=='destination'

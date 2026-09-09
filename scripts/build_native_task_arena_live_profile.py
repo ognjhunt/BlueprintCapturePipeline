@@ -983,7 +983,8 @@ def _native_policy_profile_fields(link: ArenaLink, *, expected_scene_id: str, ex
         authority = _read_mapping(context.extra_paths["attempt_authority"],
             error="native_task_arena_attempt_authority_invalid")
         owner_fields = profile_owner_fields(path=context.extra_paths.get("scene_owner_attempt"),
-            authority=authority, phase=link.probe_kind.removeprefix("native-task-arena-"),
+            authority=authority, phase=('destination' if link.probe_kind == 'native-task-arena-destination-qualification'
+                else link.probe_kind.removeprefix("native-task-arena-")),
             source_commit=context.source_commit, scene_id=expected_scene_id, task_id=expected_task_id,
             maximum_spend_usd=context.max_spend_usd, provider=provider)
         if "policy_execution_spec" not in link.predecessors:
