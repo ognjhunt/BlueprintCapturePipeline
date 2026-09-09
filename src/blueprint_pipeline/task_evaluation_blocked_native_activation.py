@@ -55,7 +55,7 @@ def terminal_blocked_activation(
         )
         pattern = activation_id + "-*.json"
         if any(
-            list((queue / state).glob(pattern)) for state in ("pending", "processing", "completed")
+            list((queue / state).glob(pattern)) for state in ("pending", "processing", "prepared", "completed")
         ):
             return None
         blocked = list((queue / "blocked").glob(pattern))

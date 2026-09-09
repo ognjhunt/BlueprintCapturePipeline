@@ -182,7 +182,8 @@ def test_materialize_resolves_external_layers_through_the_member_store(
         materialized = Path(result["runtime_source_receipt"]).parent / PACKET_NAME
         assert materialized.read_bytes() == packet.read_bytes()
         assert materialized.stat().st_ino == cached.stat().st_ino
-    assert cached.stat().st_nlink == 3
+    assert cached.stat().st_ino == next(iter(layers.values())).stat().st_ino
+    assert cached.stat().st_nlink >= 4
 
     # Without a member store the layer is copied into place and verified the
     # same way; nothing links back into the layer store.
@@ -200,8 +201,9 @@ def test_materialize_resolves_external_layers_through_the_member_store(
     assert materialized.stat().st_nlink == 1
 
 
+@pytest.mark.parametrize("immutable", [False, True])
 def test_missing_or_tampered_external_layer_is_refused_before_exposure(
-    tmp_path: Path,
+    tmp_path: Path, immutable: bool,
 ) -> None:
     value, configured, construction_bundle, _v1 = _bundles(tmp_path)
     built, wrapper, packet = _v2_wrapper(tmp_path, value, layer_store=tmp_path / "layers")
@@ -241,12 +243,15 @@ def test_missing_or_tampered_external_layer_is_refused_before_exposure(
     data = bytearray(packet.read_bytes())
     data[-1] ^= 0xFF
     tampered.write_bytes(bytes(data))
+    if immutable:
+        tampered.chmod(0o440)
     with pytest.raises(
         TaskEvaluationNativeArenaAdapterError,
         match="task_evaluation_adapter_bundle_member_readback_mismatch",
     ):
         attempt({digest: tampered}, tmp_path / "tampered-out")
     assert not (tmp_path / "tampered-out").exists()
+    assert not (member_store / digest.removeprefix("sha256:")).exists()
     assert not (member_store / digest.removeprefix("sha256:")).exists()
     assert not list(member_store.glob(".*.partial-*"))
 
@@ -724,3 +729,24 @@ def test_layer_prefix_is_derived_from_the_object_store_contract(tmp_path: Path) 
         ]
     )
     assert code == 0
+
+
+def test_writable_external_runtime_is_copied_instead_of_shared(tmp_path):
+    value, configured, construction_bundle, _ = _bundles(tmp_path)
+    built, wrapper, packet = _v2_wrapper(tmp_path, value, layer_store=tmp_path / 'layers')
+    value['execution_adapter']['runtime_source_bundle'] = _identity(wrapper)
+    writable = tmp_path / 'writable-runtime.zip'
+    writable.write_bytes(packet.read_bytes())
+    writable.chmod(0o640)
+    digest = built['external_layers'][0]['sha256']
+    result = materialize_native_arena_adapter(request=value,
+        compiled_episode_packet_path=construction_bundle,
+        compiled_episode_packet_reference=_identity(construction_bundle),
+        configured_revision=configured, runtime_source_bundle_path=wrapper,
+        output_root=tmp_path / 'adapter', content_store_root=tmp_path / 'members',
+        external_layers={digest: writable})
+    retained = Path(result['runtime_source_receipt']).parent / PACKET_NAME
+    original = retained.read_bytes()
+    assert retained.stat().st_ino != writable.stat().st_ino
+    writable.write_bytes(b'changed source')
+    assert retained.read_bytes() == original

@@ -478,7 +478,7 @@ def _load_verified_preparation(
                 expected_references[f"{SUPPLEMENTAL_DESTINATION_CONTRACT_PREFIX}.{field}"] = (
                     ref["digest"], ref["size_bytes"]
                 )
-    if request["run_mode"] == "episode_evaluation":
+    if request["run_mode"] in {"episode_evaluation", "destination_qualification"}:
         revision_path = materialized_references.get("scene.configured_revision")
         try:
             revision = validate_configured_scene_revision(
