@@ -62,6 +62,33 @@ class NativeTaskArenaRuntimeError(ValueError):
         super().__init__(";".join(self.errors))
 
 
+def visible_target_marker_parameters(plan: Mapping[str, Any]) -> tuple[tuple[float, float, float], float] | None:
+    """Resolve an explicit non-colliding tabletop cue without inventing support height."""
+    marker = (plan.get("task_spec") or {}).get("visible_target_marker")
+    explicit = marker is not None
+    if marker is None:
+        marker = (plan.get("policy_canary_embodiment_profile") or {}).get("visible_target_marker")
+    if marker is None:
+        return None
+    try:
+        if not isinstance(marker, Mapping) or marker.get("non_colliding") is not True or marker.get("shape") != "flat_green_disc":
+            raise ValueError("shape")
+        radius = float(marker["radius_m"])
+        if explicit:
+            if marker.get("schema_version") != "native_task_target_marker.v1":
+                raise ValueError("schema")
+            position = [float(v) for v in marker["surface_position_world_m"]]
+            position[2] += 0.001
+        else:
+            position = [float(v) for v in marker["position_world_m"]]
+            position[2] -= 0.063
+        if len(position) != 3 or not all(math.isfinite(v) for v in position) or not math.isfinite(radius) or not 0 < radius <= 0.5:
+            raise ValueError("geometry")
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise NativeTaskArenaRuntimeError(["native_task_target_marker_invalid"]) from exc
+    return (position[0], position[1], position[2]), radius
+
+
 def build_task_subject_link_dynamic_friction_override(
     source_usd: str | Path, *, task_link_id: str, value: float
 ) -> dict[str, Any]:
@@ -1261,18 +1288,14 @@ def build_native_task_arena_environment(
         assets.append(obj)
         scene_asset_names[runtime_name] = runtime_name
 
-    marker_contract = (
-        droid_profile.get("visible_target_marker")
-        if isinstance(droid_profile, Mapping)
-        else None
-    )
-    if isinstance(marker_contract, Mapping):
-        target = [float(value) for value in marker_contract["position_world_m"]]
+    marker_parameters = visible_target_marker_parameters(plan)
+    if marker_parameters is not None:
+        marker_position, marker_radius = marker_parameters
         marker = SpawnerObject(
             name="policy_target_marker",
             prim_path="{ENV_REGEX_NS}/policy_target_marker",
             spawner_cfg=sim_utils.CylinderCfg(
-                radius=float(marker_contract["radius_m"]),
+                radius=marker_radius,
                 height=0.002,
                 axis="Z",
                 collision_props=None,
@@ -1285,7 +1308,7 @@ def build_native_task_arena_environment(
             ),
         )
         marker.object_cfg.init_state = marker.object_cfg.init_state.replace(
-            pos=(target[0], target[1], target[2] - 0.063)
+            pos=marker_position
         )
         assets.append(marker)
         scene_asset_names["policy_target_marker"] = "policy_target_marker"
