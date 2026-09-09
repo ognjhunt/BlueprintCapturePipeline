@@ -814,6 +814,12 @@ def _build_native_context(
                 "rights_admission": str(rights_admission_path),
                 "rights_admission_digest": rights_admission_digest,
                 "rights_evidence": rights_evidence,
+                **({"destination": {
+                    "identity": preparation_request["task"]["destination"]["identity"],
+                    "asset": preparation_request["task"]["destination"]["asset"],
+                    "rights_admission": str(preparation_materialized["task.destination.rights_admission"]),
+                    "rights_admission_digest": preparation_request["task"]["destination"]["rights_admission"]["digest"],
+                }} if preparation_request.get("task", {}).get("destination") else {}),
                 **(
                     {
                         "configured_scene_revision": str(
