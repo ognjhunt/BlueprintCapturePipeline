@@ -158,6 +158,29 @@ def test_appearance_backend_is_sealed_from_the_plan_not_a_default() -> None:
     assert nurec["derived_asset_digest"] is None
 
 
+def test_backend_consumes_exact_configured_scene_compiler_provenance():
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import appearance_render_backend_from_plan
+    from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import _appearance_render_backend
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    plan = _plan_with_appearance()
+    source = plan["appearance_frame_alignment"].pop("source_asset_sha256")
+    derived = "sha256:" + plan["objects"][1]["sha256"]
+    receipt = _appearance_render_backend(kind="nvidia_3dgrut_direct_nurec_transcode",
+        source_digest=source, particlefield_digest=derived, authoring_receipt_digest="sha256:" + "a"*64,
+        upstream_converter={"module": "threedgrut.export.scripts.transcode", "source_identity_verified": True,
+            "source_revision": "a37ef721012dea0f29c0fcfff2d525023b4e854a"})
+    request = {"appearance_variant": {"representation": "particlefield_3d_gaussian_splat",
+        "source_configured_appearance_digest": source, "render_backend": receipt}}
+    backend = appearance_render_backend_from_plan(plan, packet_request=request)
+    assert backend["source_asset_digest"] == source
+    assert backend["derived_asset_digest"] == derived
+    assert backend["kind"] == "particlefield_3dgrut_transcode"
+    receipt["particlefield_digest"] = "sha256:" + "b"*64
+    receipt["backend_digest"] = canonical_digest(receipt, digest_field="backend_digest")
+    with pytest.raises(RuntimeError, match="configured_appearance_backend_binding_invalid"):
+        appearance_render_backend_from_plan(plan, packet_request=request)
+
+
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [

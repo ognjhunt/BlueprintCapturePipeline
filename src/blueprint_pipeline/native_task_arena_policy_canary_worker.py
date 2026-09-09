@@ -184,6 +184,29 @@ def appearance_render_backend_from_plan(
     alignment = dict(plan.get("appearance_frame_alignment") or {})
     variant = (packet_request or {}).get("appearance_variant")
     variant = dict(variant) if isinstance(variant, Mapping) else {}
+    # Configured-scene compilation seals the same provenance in a nested
+    # backend record. Join that producer's identity before adapting its fields.
+    if "render_backend" in variant:
+        configured = variant["render_backend"]
+        if (not isinstance(configured, Mapping)
+                or configured.get("schema_version") != "task_evaluation_appearance_render_backend.v1"
+                or configured.get("backend_digest") != canonical_digest(configured, digest_field="backend_digest")
+                or configured.get("particlefield_digest") != composed_digest
+                or configured.get("source_configured_appearance_digest") != variant.get("source_configured_appearance_digest")
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(configured.get("source_configured_appearance_digest") or ""))
+                or not str(configured.get("kind") or "").strip()):
+            raise RuntimeError("policy_canary_configured_appearance_backend_binding_invalid")
+        converter = configured.get("upstream_converter")
+        if configured["kind"] == OFFICIAL_TRANSCODE_IMPLEMENTATION and (
+            not isinstance(converter, Mapping)
+            or converter.get("module") != "threedgrut.export.scripts.transcode"
+            or converter.get("source_identity_verified") is not True
+            or not re.fullmatch(r"[0-9a-f]{40}", str(converter.get("source_revision") or ""))
+        ):
+            raise RuntimeError("policy_canary_configured_appearance_converter_invalid")
+        variant = {**variant, "source_gaussian_sha256": configured["source_configured_appearance_digest"],
+                   "particlefield_authoring_implementation": configured["kind"],
+                   "upstream_converter": converter}
     try:
         if render_path == "particlefield_3d_gaussian_splat":
             source_digest = str(

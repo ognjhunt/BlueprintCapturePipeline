@@ -183,6 +183,12 @@ from pathlib import Path
 from blueprint_pipeline.native_task_arena_policy_canary_session import validate_runtime_input_manifest
 path = Path(os.environ["RUNTIME_DIR"]) / "runtime_inputs/policy_canary_runtime_inputs.json"
 validate_runtime_input_manifest(json.loads(path.read_text()))
+from adp_arena_provider_runner import appearance_render_backend_from_plan
+packet = Path(os.environ["RUNTIME_DIR"]) / "native_task_packet"
+appearance_render_backend_from_plan(
+    json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text()),
+    packet_request=json.loads((packet / "native_task_arena_packet_request.v1.json").read_text()),
+)
 PYINPUT
 input_rc=$?
 if [ $input_rc -ne 0 ]; then
@@ -267,6 +273,11 @@ def build_policy_canary_session_bundle(
         inputs["base_native_packet"], code="policy_canary_base_packet_record_invalid"
     ) != packet_receipt_path:
         raise ValueError("policy_canary_base_packet_record_mismatch")
+    from .native_task_arena_policy_canary_worker import appearance_render_backend_from_plan
+    appearance_render_backend_from_plan(
+        _read(packet_receipt_path.parent / "native_task_arena_scene_plan.v1.json"),
+        packet_request=_read(packet_receipt_path.parent / "native_task_arena_packet_request.v1.json"),
+    )
     runtime_source_path = _bound_record_path(
         inputs["runtime_source"], code="policy_canary_runtime_source_record_invalid"
     )
