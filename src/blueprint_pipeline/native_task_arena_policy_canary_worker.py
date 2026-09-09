@@ -332,7 +332,7 @@ def preflight_policy_canary_static_inputs(
             continue
         if (cell.get("control_diagnostic") or {}).get("mode") == "nonblocking_omitted_by_user":
             def validate_final_camera_start(plan=plan):
-                from .native_task_camera_start_configuration import validate_camera_start_configuration
+                from blueprint_pipeline.native_task_camera_start_configuration import validate_camera_start_configuration
                 binding = plan.get("policy_canary_camera_start_configuration")
                 if not isinstance(binding, Mapping):
                     raise RuntimeError("policy_camera_final_start_configuration_missing")
@@ -895,7 +895,7 @@ def _resolved_scene_plan(
         delta = float(parameters["external_camera_x_delta_m"])
         camera = next(row for row in plan["cameras"] if row["role"] == "external")
         if plan.get("policy_canary_camera_start_configuration") is not None:
-            from .native_task_camera_start_configuration import external_camera_offset_position
+            from blueprint_pipeline.native_task_camera_start_configuration import external_camera_offset_position
             expected_camera_x = external_camera_offset_position({**plan, "scenario": scenario})[0]
         else:
             camera["frame_from_camera_matrix"][3] += delta
@@ -1568,7 +1568,7 @@ def _aggregate_isolated_cell_results(
         output_root, result["episodes"]
     )
     result["telemetry"] = telemetry_index
-    from .policy_paired_summary import paired_summary
+    from blueprint_pipeline.policy_paired_summary import paired_summary
     result["frozen_cells"] = [{key: cell[key] for key in ("cell_id", "seed", "family", "partition", "cell_spec_digest", "resolved_scenario_digest") if key in cell} for cell in inputs["cells"]]
     result["paired_diagnostic_summary"] = paired_summary(result["episodes"], candidate_ids=candidate_ids,
         planned_cells=result["frozen_cells"])
@@ -1922,7 +1922,7 @@ def _run_selected_cell(
         spec = policy["spec"]
         episode_id = f"{authority['run_id']}--{context['cell_id']}--{context['candidate_id']}"
         def scientific_reset_reader():
-            from .policy_scientific_reset import compare_reset_readbacks, read_native_reset_channels, seal_reset_readback
+            from blueprint_pipeline.policy_scientific_reset import compare_reset_readbacks, read_native_reset_channels, seal_reset_readback
             channels = read_native_reset_channels(built, episode_environment)
             receipt = seal_reset_readback(binding={
                 "candidate_id": context["candidate_id"], "cell_id": context["cell_id"],
