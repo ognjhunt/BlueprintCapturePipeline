@@ -589,6 +589,14 @@ def isaac_cell_runtime() -> CellRuntime:
         measured_joints = dict(zip(robot.joint_names, positions, strict=True))
         reset_observation_readback = {
             "camera_rerenders_on_reset": built.cfg.num_rerenders_on_reset,
+            "camera_pose_backends": {
+                role: {
+                    "view_class": type(env.unwrapped.scene[name]._view).__name__,
+                    "use_fabric": getattr(env.unwrapped.scene[name]._view, "_use_fabric", None),
+                    "update_latest_camera_pose": env.unwrapped.scene[name].cfg.update_latest_camera_pose,
+                }
+                for role, name in built.camera_scene_names.items()
+            },
             "requested_joint_positions_rad": dict(plan["robot"]["joint_reset_positions_rad"]),
             "observed_joint_positions_rad": {
                 name: float(measured_joints[name])
