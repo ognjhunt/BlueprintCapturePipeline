@@ -549,6 +549,21 @@ def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def bounded_native_phase_budget(hard_cap_usd: float) -> dict[str, Any]:
+    """Fit the shared minimum native runtime inside the owner's existing cap."""
+    from .native_task_arena_paid_authority import (
+        MIN_TTL_SECONDS, native_task_arena_attempt_budget_blockers,
+    )
+
+    if isinstance(hard_cap_usd, bool) or not isinstance(hard_cap_usd, (int, float)) or not math.isfinite(hard_cap_usd) or hard_cap_usd <= 0:
+        raise ConfiguredControlsProvisioningError("configured_controls_provisioning_phase_spend_invalid")
+    ttl = min(DEFAULT_PHASE_TTL_SECONDS, max(MIN_TTL_SECONDS, int(hard_cap_usd * 3600 / DEFAULT_HOURLY_RATE_USD)))
+    rate = math.floor(min(DEFAULT_HOURLY_RATE_USD, hard_cap_usd * 3600 / ttl) * 1_000_000) / 1_000_000
+    if native_task_arena_attempt_budget_blockers(max_hourly_rate_usd=rate, hard_cap_usd=hard_cap_usd, hard_ttl_seconds=ttl):
+        raise ConfiguredControlsProvisioningError("configured_controls_provisioning_phase_spend_invalid")
+    return {"phase_hard_cap_usd": hard_cap_usd, "phase_ttl_seconds": ttl, "maximum_hourly_rate_usd": rate}
+
+
 def provision_configured_controls_continuation(
     *,
     expected_production_commit: str,

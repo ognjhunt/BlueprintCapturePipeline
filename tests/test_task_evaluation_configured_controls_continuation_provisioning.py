@@ -520,3 +520,15 @@ def test_expanded_runtime_checkout_is_refused_before_publication(tmp_path: Path)
         )
     assert calls == []
     assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize("cap", [0.266666, 0.45, 0.75, 2.0])
+def test_phase_budget_passes_real_native_authority_without_increasing_cap(cap):
+    from blueprint_pipeline.task_evaluation_configured_controls_continuation_provisioning import bounded_native_phase_budget
+    from blueprint_pipeline.native_task_arena_paid_authority import MIN_TTL_SECONDS, native_task_arena_attempt_budget_blockers
+
+    budget = bounded_native_phase_budget(cap)
+    assert budget["phase_hard_cap_usd"] == cap
+    assert budget["maximum_hourly_rate_usd"] <= 0.8
+    assert budget["phase_ttl_seconds"] >= MIN_TTL_SECONDS
+    assert native_task_arena_attempt_budget_blockers(max_hourly_rate_usd=budget["maximum_hourly_rate_usd"], hard_cap_usd=cap, hard_ttl_seconds=budget["phase_ttl_seconds"]) == ()
