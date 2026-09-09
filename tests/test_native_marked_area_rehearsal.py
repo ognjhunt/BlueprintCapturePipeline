@@ -91,6 +91,8 @@ def test_direct_policy_omission_preserves_all_task_scoring_criteria():
     contract['contract_digest'] = cross_runtime_canonical_digest(contract, digest_field='contract_digest')
     request = {'schema_version': 'native_task_arena_packet_request.v1',
         'task_spec': {'task_success_contract': contract,
+            'target_position_world_m': [1.,2.,3.], 'destination_orientation_xyzw': [0.,0.,0.,1.],
+            'visible_target_marker': {'schema_version': 'native_task_target_marker.v1'},
             'configured_success_criteria': {'per_cell_controls_required': True, 'minimum_lift_m': .1},
             'success_criteria': {'per_cell_controls_required': True}},
         'assets': [], 'native_construction_feedback': {'enabled': True}}
@@ -99,6 +101,7 @@ def test_direct_policy_omission_preserves_all_task_scoring_criteria():
     result = direct_policy_request(source_request=request, authorized_by='owner', authorization_reference='user:skip-controls')
     assert request == original
     assert result['task_spec']['task_success_contract']['criteria'] == original_contract['criteria']
+    assert result['task_spec']['destination_pose_world'] == [1.,2.,3.,0.,0.,0.,1.]
     assert result['task_spec']['configured_success_criteria']['minimum_lift_m'] == .1
     assert result['task_spec']['configured_success_criteria']['per_cell_controls_required'] is False
     assert 'native_construction_feedback' not in result

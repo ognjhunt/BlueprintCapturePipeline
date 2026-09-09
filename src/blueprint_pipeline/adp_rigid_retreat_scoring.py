@@ -68,13 +68,28 @@ def validate_retreat_binding(task_spec: Mapping[str, Any], contract: Mapping[str
     pose = _vector(task_spec.get("destination_pose_world"), 7)
     affordance = task_spec.get("interaction_affordance") or {}
     qualified = _vector(affordance.get("insertion_withdrawal_unit_world"), 3)
+    marker = task_spec.get("visible_target_marker")
+    marker_position = _vector(marker.get("surface_position_world_m"), 3) if isinstance(marker, Mapping) else None
+    fixed_marker = (
+        isinstance(marker, Mapping)
+        and marker.get("schema_version") == "native_task_target_marker.v1"
+        and marker.get("non_colliding") is True
+        and marker.get("shape") == "flat_green_disc"
+        and marker_position is not None and pose is not None
+        and math.dist(marker_position[:2], pose[:2]) <= 1e-6
+        and math.dist(pose[3:], [0., 0., 0., 1.]) <= 1e-6
+    )
+    bounds = task_spec.get("subject_collision_bounds_scoring_frame_m")
+    lower = _vector(bounds.get("minimum"), 3) if isinstance(bounds, Mapping) else None
+    upper = _vector(bounds.get("maximum"), 3) if isinstance(bounds, Mapping) else None
     if (criteria.get("settling", {}).get("mode") != "required"
             or criteria.get("gripper_state", {}).get("mode") != "released"
             or criteria.get("terminal_task_contact", {}).get("mode") != "cleared"
-            or task_spec.get("destination_relation") not in {"inside", "on"}
+            or (task_spec.get("destination_relation") not in {"inside", "on"} and not fixed_marker)
             or pose is None or qualified is None
             or task_spec.get("retreat_clearance_m") != criterion["minimum_clearance_m"]
-            or not isinstance(task_spec.get("subject_collision_bounds_scoring_frame_m"), Mapping)
+            or lower is None or upper is None
+            or any(a >= b for a, b in zip(lower, upper, strict=True))
             or math.dist(_rotate(criterion["withdrawal_unit_destination_frame"], pose[3:]),
                          qualified) > 1e-6):
         errors.append("rigid_task_success_contract_retreat_binding_mismatch")

@@ -171,6 +171,11 @@ def direct_policy_request(*, source_request: Mapping[str, Any], authorized_by: s
             spec[name]["per_cell_controls_required"] = False
     validate_rigid_task_success_contract(contract)
     spec["task_success_contract"] = contract
+    if spec.get("visible_target_marker") is not None:
+        # A marked area has a fixed scoring frame even though it has no tray body.
+        spec["destination_pose_world"] = [
+            *spec["target_position_world_m"], *spec["destination_orientation_xyzw"],
+        ]
     request.pop("native_construction_feedback", None)
     authority = {"schema_version": "task_evaluation_diagnostic_control_omission_authority.v1",
         "run_kind": "internal_policy_canary", "claim_ceiling": "diagnostic_policy_execution",

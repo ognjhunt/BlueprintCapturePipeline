@@ -18,6 +18,25 @@ class NativeTaskArenaReadbackError(ValueError):
         super().__init__(";".join(self.errors))
 
 
+def _read_marker_pose_world(scene: Any) -> list[float]:
+    """Read the static rendered marker from live USD, never the requested pose."""
+    import omni.usd
+    from pxr import Usd, UsdGeom
+
+    paths = scene.env_prim_paths
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(paths[0] + "/policy_target_marker")
+    if not prim.IsValid():
+        raise NativeTaskArenaReadbackError(["native_task_arena_target_marker_missing"])
+    matrix = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    position = matrix.ExtractTranslation()
+    rotation = matrix.ExtractRotationQuat()
+    pose = [*position, *rotation.GetImaginary(), rotation.GetReal()]
+    if not all(math.isfinite(float(value)) for value in pose):
+        raise NativeTaskArenaReadbackError(["native_task_arena_target_marker_pose_invalid"])
+    return [float(value) for value in pose]
+
+
 def _native_list(value: Any, *, error: str) -> Any:
     if value is None:
         raise NativeTaskArenaReadbackError([error])
@@ -996,6 +1015,8 @@ class NativeRigidTaskArenaReadback:
                 *[float(value) for value in native_destination_pose[:3]],
                 *_native_xyzw_to_contract_xyzw(native_destination_pose[3:7]),
             ]
+        elif (self._built.plan.get("task_spec") or {}).get("visible_target_marker") is not None:
+            destination_pose = _read_marker_pose_world(scene)
         contact_peaks: dict[str, float] = {}
         for logical_sensor_id in (
             "task_robot_contact",
