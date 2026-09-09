@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import io
 import math
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
@@ -13,12 +11,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
-from PIL import Image, ImageDraw
 from pxr import Usd, UsdGeom
 
 from .decision_evidence_contracts import canonical_digest
-from .franka_kinematics import solve_world_position_ik
+from .franka_kinematics import FRANKA_JOINT_LIMITS_RAD, solve_world_position_ik
 from .scene_placement.robot_profile import get_robot_profile
+from .task_evaluation_robot_placement_task_geometry import validate_task_occupancy
 
 
 GEOMETRY_GATE_SCHEMA_VERSION = "task_evaluation_robot_placement_geometry_gate.v1"
@@ -72,6 +70,7 @@ class RobotPlacementGeometryIndex:
     support_surfaces: tuple[SupportSurface, ...]
     robot_local_bounds_minimum_m: tuple[float, float, float]
     robot_local_bounds_maximum_m: tuple[float, float, float]
+    task_occupancy: Mapping[str, Any] | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -93,10 +92,12 @@ def _triangulate(counts: Sequence[int], indices: Sequence[int]) -> np.ndarray:
     return np.asarray(faces, dtype=np.int64)
 
 
-def _stage_triangles(stage: Usd.Stage) -> tuple[np.ndarray, tuple[str, ...]]:
+def _stage_triangles(stage: Usd.Stage, *, root_prim: Usd.Prim | None = None) -> tuple[np.ndarray, tuple[str, ...]]:
     triangles: list[np.ndarray] = []
     prim_paths: list[str] = []
-    for prim in stage.Traverse():
+    prims = (Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies())
+             if root_prim is not None else stage.Traverse())
+    for prim in prims:
         if not prim.IsA(UsdGeom.Mesh):
             continue
         mesh = UsdGeom.Mesh(prim)
@@ -123,13 +124,18 @@ def _stage_triangles(stage: Usd.Stage) -> tuple[np.ndarray, tuple[str, ...]]:
     return np.concatenate(triangles, axis=0), tuple(prim_paths)
 
 
-def _robot_bounds(stage: Usd.Stage) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+def _robot_root(stage: Usd.Stage) -> Usd.Prim:
     default_prim = stage.GetDefaultPrim()
     if not default_prim.IsValid():
         roots = [prim for prim in stage.GetPseudoRoot().GetChildren() if prim.IsValid()]
         if len(roots) != 1:
             raise RobotPlacementGeometryError("robot_placement_robot_default_prim_missing")
         default_prim = roots[0]
+    return default_prim
+
+
+def _robot_bounds(stage: Usd.Stage) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    default_prim = _robot_root(stage)
     cache = UsdGeom.BBoxCache(
         Usd.TimeCode.Default(),
         [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
@@ -220,8 +226,11 @@ def _watertight_prim_bounds(
 
 
 def build_robot_placement_geometry_index(
-    *, scene_collision_usd_path: str | Path, robot_asset_usd_path: str | Path
+    *, scene_collision_usd_path: str | Path, robot_asset_usd_path: str | Path,
+    task_occupancy: Mapping[str, Any] | None = None,
 ) -> RobotPlacementGeometryIndex:
+    if task_occupancy is not None:
+        task_occupancy = validate_task_occupancy(task_occupancy)
     scene_path = Path(scene_collision_usd_path).expanduser().resolve(strict=True)
     robot_path = Path(robot_asset_usd_path).expanduser().resolve(strict=True)
     scene_stage = Usd.Stage.Open(str(scene_path))
@@ -241,7 +250,9 @@ def build_robot_placement_geometry_index(
     valid = norm > 1.0e-12
     normal_abs_z[valid] = np.abs(cross[valid, 2]) / norm[valid]
     robot_minimum, robot_maximum = _robot_bounds(robot_stage)
-    robot_triangles, _robot_prim_paths = _stage_triangles(robot_stage)
+    # Native asset references select the default robot prim. Publisher demo
+    # objects outside it are not robot links; instance proxies inside it are.
+    robot_triangles, _robot_prim_paths = _stage_triangles(robot_stage, root_prim=_robot_root(robot_stage))
     robot_bounds_minimum = np.asarray(robot_minimum, dtype=np.float64) - 1.0e-4
     robot_bounds_maximum = np.asarray(robot_maximum, dtype=np.float64) + 1.0e-4
     inside_robot_bounds = np.all(
@@ -267,6 +278,7 @@ def build_robot_placement_geometry_index(
         support_surfaces=_support_surfaces(triangles, prim_paths),
         robot_local_bounds_minimum_m=robot_minimum,
         robot_local_bounds_maximum_m=robot_maximum,
+        task_occupancy=task_occupancy,
     )
 
 
@@ -303,6 +315,9 @@ def summarize_robot_placement_geometry(
         "maximum_facing_error_degrees": profile.max_facing_error_deg,
         "support_surfaces": [surface.to_mapping() for surface in index.support_surfaces[:40]],
         "watertight_scene_prim_count": len(index.watertight_prim_bounds),
+        "task_occupancy": index.task_occupancy,
+        "task_occupancy_status": (index.task_occupancy or {}).get("status", "not_supplied"),
+        "placement_qualification": "provisional_geometry_and_position_ik_only",
         "geometry_summary_digest": "",
     }
     result["geometry_summary_digest"] = canonical_digest(
@@ -457,6 +472,15 @@ def validate_robot_placement_geometry_candidate(
     if len(collision_indices) or containing_prim_paths:
         blockers.append("robot_reset_bounds_overlap_scene_geometry")
 
+    task_overlaps = []
+    for region in (index.task_occupancy or {}).get("regions", []):
+        bounds = region["bounds_world_m"]
+        if (np.all(robot_maximum >= np.asarray(bounds["minimum"]))
+                and np.all(robot_minimum <= np.asarray(bounds["maximum"]))):
+            task_overlaps.append(region["region_id"])
+    if task_overlaps:
+        blockers.append("robot_reset_bounds_overlap_task_object_or_destination")
+
     shoulder = position + np.asarray([0.0, 0.0, profile.shoulder_above_root_m])
     shoulder_distance = float(np.linalg.norm(target - shoulder))
     reach_limit = float(profile.max_shoulder_to_affordance_m())
@@ -508,7 +532,7 @@ def validate_robot_placement_geometry_candidate(
             and support_height_error_m <= support_height_tolerance_m
             and supported_count == len(samples)
         ),
-        "collision_passed": len(collision_indices) == 0 and not containing_prim_paths,
+        "collision_passed": len(collision_indices) == 0 and not containing_prim_paths and not task_overlaps,
         "reachability_passed": bool(
             shoulder_distance <= reach_limit
             and trajectory_gate["all_waypoints_position_ik_solved"]
@@ -523,6 +547,9 @@ def validate_robot_placement_geometry_candidate(
             "maximum": [float(value) for value in robot_maximum],
         },
         "scene_overlap_triangle_count": int(len(collision_indices)),
+        "task_overlap_region_ids": task_overlaps,
+        "task_occupancy_digest": (index.task_occupancy or {}).get("occupancy_digest"),
+        "task_occupancy_status": (index.task_occupancy or {}).get("status", "not_supplied"),
         "scene_overlap_prim_paths": sorted(
             {
                 *(index.triangle_prim_paths[int(value)] for value in collision_indices),
@@ -741,6 +768,10 @@ def validate_robot_placement_trajectory_position_ik(
                 "solved_joint_positions": [
                     float(value) for value in solved["joint_positions"]
                 ],
+                "minimum_joint_limit_margin_rad": min(
+                    min(float(q) - lower, upper - float(q))
+                    for q, (lower, upper) in zip(solved["joint_positions"], FRANKA_JOINT_LIMITS_RAD, strict=True)
+                ),
             }
         )
     all_solved = all(row["position_ik_solved"] for row in rows)
@@ -756,6 +787,11 @@ def validate_robot_placement_trajectory_position_ik(
         "minimum_manipulability": (
             min(row["manipulability"] for row in rows) if rows else None
         ),
+        "minimum_joint_limit_margin_rad": (
+            min(row["minimum_joint_limit_margin_rad"] for row in rows) if rows else None
+        ),
+        "joint_limit_margin_warning": any(row["minimum_joint_limit_margin_rad"] < .05 for row in rows),
+        "joint_limit_warning_margin_rad": .05,
         "maximum_position_error_m": (
             max(row["position_error_m"] for row in rows) if rows else None
         ),
@@ -886,10 +922,12 @@ def enumerate_robot_placement_geometry_candidates(
         if gate["status"] != "passed":
             continue
         score = (
+            float(gate["trajectory_position_ik_gate"].get("joint_limit_margin_warning", False)),
             -float(
                 gate["trajectory_position_ik_gate"]["minimum_manipulability"]
                 or 0.0
             ),
+            -float(gate["trajectory_position_ik_gate"].get("minimum_joint_limit_margin_rad") or 0.0),
             abs(surface.height_m + profile.shoulder_above_root_m - target[2]),
             abs(radius - 0.45),
             gate["shoulder_to_target_distance_m"],
@@ -908,6 +946,7 @@ def enumerate_robot_placement_geometry_candidates(
             "trajectory_minimum_manipulability": gate[
                 "trajectory_position_ik_gate"
             ]["minimum_manipulability"],
+            "trajectory_minimum_joint_limit_margin_rad": gate["trajectory_position_ik_gate"].get("minimum_joint_limit_margin_rad"),
             "trajectory_position_ik_gate": gate["trajectory_position_ik_gate"],
         }
         for _score, proposal, gate in candidates[: int(maximum_candidates)]
@@ -922,170 +961,13 @@ def render_robot_placement_geometry_previews(
     trajectory_waypoints_world_m: Sequence[Sequence[float]] = (),
     image_size: tuple[int, int] = (1000, 720),
 ) -> list[dict[str, Any]]:
-    """Render digest-bound top and side geometry views without a paid GPU."""
+    """Render opaque, depth-tested local views without a paid GPU."""
+    from .robot_placement_preview_rasterizer import render
+    return render(index=index, proposal=proposal,
+                  target_position_world_m=target_position_world_m,
+                  trajectory_waypoints_world_m=trajectory_waypoints_world_m,
+                  image_size=image_size)
 
-    pose = proposal.get("pose") if isinstance(proposal.get("pose"), Mapping) else {}
-    position = np.asarray(pose.get("position_world_m"), dtype=np.float64)
-    quaternion = [float(value) for value in pose.get("orientation_xyzw")]
-    target = np.asarray(target_position_world_m, dtype=np.float64)
-    trajectory = np.asarray(trajectory_waypoints_world_m, dtype=np.float64)
-    if trajectory.size == 0:
-        trajectory = target.reshape(1, 3)
-    if (
-        position.shape != (3,)
-        or target.shape != (3,)
-        or trajectory.ndim != 2
-        or trajectory.shape[1] != 3
-        or not np.all(np.isfinite(trajectory))
-        or len(quaternion) != 4
-    ):
-        raise RobotPlacementGeometryError("robot_placement_preview_pose_invalid")
-    yaw, _ = _yaw_from_quaternion(quaternion)
-    rotation = np.asarray(
-        [
-            [math.cos(yaw), -math.sin(yaw), 0.0],
-            [math.sin(yaw), math.cos(yaw), 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=np.float64,
-    )
-    robot_world_triangles = index.robot_triangles @ rotation.T + position
-    robot_minimum, robot_maximum = _rotated_bounds(
-        index.robot_local_bounds_minimum_m,
-        index.robot_local_bounds_maximum_m,
-        position,
-        yaw,
-    )
-    def draw_projection(axes: tuple[int, int], label: str) -> dict[str, Any]:
-        width, height = image_size
-        margin = 55
-        low = np.minimum(
-            robot_world_triangles[:, :, list(axes)].min(axis=(0, 1)),
-            trajectory[:, list(axes)].min(axis=0),
-        )
-        high = np.maximum(
-            robot_world_triangles[:, :, list(axes)].max(axis=(0, 1)),
-            trajectory[:, list(axes)].max(axis=0),
-        )
-        padding = np.maximum((high - low) * 0.18, 0.18)
-        low -= padding
-        high += padding
-        span = np.maximum(high - low, 1.0e-6)
-
-        def point(value: Sequence[float]) -> tuple[int, int]:
-            normalized = (np.asarray(value, dtype=np.float64) - low) / span
-            return (
-                int(margin + normalized[0] * (width - 2 * margin)),
-                int(height - margin - normalized[1] * (height - 2 * margin)),
-            )
-
-        image = Image.new("RGB", image_size, "white")
-        draw = ImageDraw.Draw(image, "RGBA")
-        selected_surface_id = str(proposal.get("support_surface_id") or "")
-        selected_indices: set[int] = set()
-        surface = next(
-            (surface for surface in index.support_surfaces if surface.surface_id == selected_surface_id),
-            None,
-        )
-        if surface is not None:
-            selected_indices = set(surface.triangle_indices)
-        projected_minimum = index.triangles[:, :, list(axes)].min(axis=1)
-        projected_maximum = index.triangles[:, :, list(axes)].max(axis=1)
-        nearby = np.flatnonzero(
-            (projected_maximum[:, 0] >= low[0])
-            & (projected_minimum[:, 0] <= high[0])
-            & (projected_maximum[:, 1] >= low[1])
-            & (projected_minimum[:, 1] <= high[1])
-        )
-        stride = max(1, len(nearby) // 8_000)
-        for triangle_index in nearby[::stride]:
-            triangle = index.triangles[triangle_index][:, list(axes)]
-            colour = (
-                (55, 130, 230, 95)
-                if int(triangle_index) in selected_indices
-                else (105, 105, 105, 32)
-            )
-            draw.polygon(
-                [point(value) for value in triangle],
-                fill=colour,
-                outline=(95, 95, 95, 45),
-            )
-        robot_depth_axis = next(axis for axis in range(3) if axis not in axes)
-        robot_order = np.argsort(
-            robot_world_triangles[:, :, robot_depth_axis].mean(axis=1)
-        )
-        for triangle_index in robot_order:
-            triangle = robot_world_triangles[int(triangle_index)][:, list(axes)]
-            draw.polygon(
-                [point(value) for value in triangle],
-                fill=(220, 45, 45, 205),
-                outline=(105, 0, 0, 210),
-            )
-        rectangle_min = point(robot_minimum[list(axes)])
-        rectangle_max = point(robot_maximum[list(axes)])
-        draw.rectangle(
-            [
-                min(rectangle_min[0], rectangle_max[0]),
-                min(rectangle_min[1], rectangle_max[1]),
-                max(rectangle_min[0], rectangle_max[0]),
-                max(rectangle_min[1], rectangle_max[1]),
-            ],
-            fill=None,
-            outline=(120, 0, 0, 220),
-            width=2,
-        )
-        base_point = point(position[list(axes)])
-        draw.ellipse(
-            [base_point[0] - 6, base_point[1] - 6, base_point[0] + 6, base_point[1] + 6],
-            fill=(130, 0, 0, 255),
-        )
-        facing_world = position + np.asarray(
-            [0.30 * math.cos(yaw), 0.30 * math.sin(yaw), 0.0],
-            dtype=np.float64,
-        )
-        facing_point = point(facing_world[list(axes)])
-        draw.line([base_point, facing_point], fill=(255, 145, 0, 255), width=6)
-        target_point = point(target[list(axes)])
-        radius = 9
-        draw.ellipse(
-            [target_point[0] - radius, target_point[1] - radius, target_point[0] + radius, target_point[1] + radius],
-            fill=(0, 170, 70, 255),
-            outline=(0, 90, 40, 255),
-            width=2,
-        )
-        trajectory_points = [point(row[list(axes)]) for row in trajectory]
-        if len(trajectory_points) > 1:
-            draw.line(trajectory_points, fill=(0, 120, 210, 255), width=5)
-        for waypoint in trajectory_points:
-            draw.ellipse(
-                [
-                    waypoint[0] - 4,
-                    waypoint[1] - 4,
-                    waypoint[0] + 4,
-                    waypoint[1] + 4,
-                ],
-                fill=(0, 185, 235, 255),
-                outline=(0, 70, 130, 255),
-            )
-        draw.text(
-            (18, 15),
-            (
-                f"{label}: solid red=robot mesh, dark red=reset bounds, "
-                "orange=facing, green=task target, cyan=tool trajectory, blue=support"
-            ),
-            fill=(0, 0, 0, 255),
-        )
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG", optimize=True)
-        payload = buffer.getvalue()
-        return {
-            "label": label,
-            "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
-            "image_url": "data:image/png;base64," + base64.b64encode(payload).decode("ascii"),
-            "detail": "high",
-        }
-
-    return [draw_projection((0, 1), "top_down_xy"), draw_projection((0, 2), "side_xz")]
 
 
 __all__ = [

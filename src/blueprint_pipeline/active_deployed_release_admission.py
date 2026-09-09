@@ -51,13 +51,13 @@ def _provenance(binding: dict, commit: str) -> tuple[dict, str]:
     claim = value.get('claim_boundary', {})
     if not isinstance(claim, dict):
         raise ValueError('provenance_claim_invalid')
-    if value.get('status') == 'iteration':
+    if value.get('status') in {'iteration', 'canary'}:
         if not (set(value) == {'schema_version', 'status', 'git_sha', 'promotion_eligible', 'claim_boundary'}
                 and value.get('promotion_eligible') is False
                 and set(claim) == {'canonical_full_lane_verified', 'promotion_eligible', 'evidence_grade'}
                 and claim.get('canonical_full_lane_verified') is False
                 and claim.get('promotion_eligible') is False and claim.get('evidence_grade') == 'development_only'
-                and binding.get('provenance_status') == 'iteration'
+                and binding.get('provenance_status') == value['status']
                 and binding.get('promotion_eligible') is False
                 and binding.get('canonical_full_lane_verified') is False
                 and binding.get('run_id') is None and binding.get('run_url') is None):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Mapping
@@ -24,6 +25,22 @@ from .paid_resource_admission import (
     build_paid_lane_admission,
     require_paid_resource_admission,
 )
+from .paid_lane_guard import (
+    SPEND_ADMISSION_LOCK_PATH_ENV,
+    PreSpendPreflightBlocked,
+    image_contract_from_ref,
+    require_pre_spend_preflight,
+)
+from .vast_independent_watchdog_control import (
+    _caller_exit_survival_contract,
+    _caller_exit_survival_proven,
+    validate_independent_vast_watchdog_names,
+)
+from .adp_isaac_lab_arena_vast import (
+    _bounded_spend_gate_open,
+    _remaining_session_live_minutes,
+    _vast_credential_file_present,
+)
 
 
 def add_policy_canary_allocator_arguments(parser: Any) -> None:
@@ -36,6 +53,51 @@ def _load(path: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("policy_canary_allocator_input_invalid")
     return dict(value)
+
+
+def _launch_environment_blockers(args: Any, authority: Mapping[str, Any], bundle: Mapping[str, Any]) -> list[str]:
+    """Run deterministic live-launch gates before consuming the one-shot authority.
+
+    Dry and execute modes use the same checks. Provider offer selection and live
+    process arming still occur in the transport immediately before allocation.
+    """
+    blockers = []
+    try:
+        validate_independent_vast_watchdog_names(
+            pod_name_prefix="blueprint-native-task-policy-canary-",
+            resource_name_exact=str(authority.get("resource_name") or ""),
+        )
+    except ValueError as exc:
+        blockers.append(str(exc))
+    if not _caller_exit_survival_proven(_caller_exit_survival_contract()):
+        blockers.append("independent_vast_watchdog_caller_exit_survival_unproven")
+    if not math.isfinite(args.adp_max_hourly_rate_usd) or args.adp_max_hourly_rate_usd <= 0:
+        return [*blockers, "policy_canary_session_hourly_rate_invalid"]
+    minutes = _remaining_session_live_minutes(
+        job=Path(args.adp_job_dir), hard_cap_usd=args.adp_max_spend_usd,
+        hard_ttl_seconds=args.adp_hard_ttl_seconds, max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+    )
+    if minutes < 30:
+        blockers.append("adp_arena_cumulative_budget_below_minimum_live_window")
+    credential_present = _vast_credential_file_present()
+    try:
+        require_pre_spend_preflight(
+            lane="native_task_arena_policy_canary_session", provider="vast",
+            credential_present=credential_present,
+            capacity_evidence={"available": credential_present,
+                "detail": "credential_bound; provider adapter rechecks inventory and offers before allocation"},
+            image_contract=image_contract_from_ref(str(bundle.get("container_image") or "")),
+            runtime_contract={"startup_marker": "vast_instance_started_or_blocked",
+                "progress_marker": "vast_provider_bundle_progress",
+                "startup_timeout_seconds": minutes * 60, "no_progress_timeout_seconds": 1800},
+            spend_gate_open=_bounded_spend_gate_open(max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
+                hard_cap_usd=args.adp_max_spend_usd, remaining_live_minutes=minutes),
+            record_dir=Path(args.adp_job_dir) / "launch_preflight",
+            spend_admission_lock=None if str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip() else {},
+        )
+    except PreSpendPreflightBlocked as exc:
+        blockers.extend(str(value) for value in exc.preflight.get("blockers", []))
+    return sorted(set(blockers))
 
 
 def run_policy_canary_allocator_lane(
@@ -71,6 +133,12 @@ def run_policy_canary_allocator_lane(
                 blockers.append("policy_canary_session_resource_bounds_mismatch")
         except (OSError, ValueError, json.JSONDecodeError):
             blockers.append("policy_canary_session_contract_invalid")
+    if not blockers and authority is not None and prepared_bundle is not None:
+        blockers.extend(_launch_environment_blockers(args, authority, prepared_bundle))
+        from .native_task_arena_policy_canary_bundle import preflight_sealed_policy_canary_bundle
+        static_preflight = preflight_sealed_policy_canary_bundle(prepared_bundle)
+        write_json(Path(args.adp_job_dir) / "launch_preflight" / "sealed_bundle_static_preflight.json", static_preflight)
+        blockers.extend(static_preflight.get("blockers") or [])
     binding = {
         "program_id": "arm-decision-proof-v1",
         "probe_kind": PROBE_KIND,
@@ -124,13 +192,13 @@ def run_policy_canary_allocator_lane(
         except PaidResourceAdmissionBlocked as exc:
             result = {
                 "status": "blocked",
-                "blockers": exc.blockers,
+                "blockers": sorted(set([*blockers, *exc.blockers])),
                 "provider_mutations_performed": 0,
             }
             write_json(Path(args.adapter_output), result)
             print(json.dumps({"success": False}, sort_keys=True))
             return 2
-    if prepared_bundle is None or authority is None:
+    if prepared_bundle is None or authority is None or blockers:
         result = {
             "status": "blocked",
             "blockers": sorted(set(blockers)),

@@ -39,6 +39,7 @@ import subprocess
 import sys
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -258,6 +259,7 @@ def _native_task_arena_steps(
     *,
     control_selection: str = "control_pair",
     predecessor_lineage: bool = False,
+    preparation_lane: str | None = None,
 ) -> tuple[LaneStep, ...]:
     """Return the reusable destination, construction, or controls graph."""
 
@@ -282,7 +284,8 @@ def _native_task_arena_steps(
         "construction": "blueprint_pipeline.native_task_arena_construction_bundle",
         "controls": "blueprint_pipeline.native_task_arena_controls_bundle",
     }[link]
-    probe_kind = f"native-task-arena-{link}"
+    probe_kind = ("native-task-arena-destination-qualification" if destination
+                  else f"native-task-arena-{link}")
     bundle_argv = [
         "{python}",
         "-m",
@@ -367,7 +370,7 @@ def _native_task_arena_steps(
             repeated_argv=(
                 ("--terminal-feedback-adoption", "terminal_feedback_adoption"),
             )
-            if not controls and not destination and not predecessor_lineage
+            if not controls and not destination
             else (),
         ),
         LaneStep(
@@ -423,7 +426,7 @@ def _native_task_arena_steps(
                 ("--retain-warm-session", "terminal_feedback_adoption"),
                 ("--retain-warm-session", "retain_warm_control_search"),
             )
-            if not controls and not destination and not predecessor_lineage
+            if not controls and not destination
             else (),
         ),
         LaneStep(
@@ -476,7 +479,7 @@ def _native_task_arena_steps(
                             "terminal_feedback_adoption",
                         ),
                     )
-                    if not controls and not destination and not predecessor_lineage
+                    if not controls and not destination
                     else ()
                 ),
             ),
@@ -490,7 +493,7 @@ def _native_task_arena_steps(
                     "retain_warm_control_search",
                 ),
             )
-            if not controls and not destination and not predecessor_lineage
+            if not controls and not destination
             else (),
         ),
         LaneStep(
@@ -542,7 +545,7 @@ def _native_task_arena_steps(
                             "terminal_feedback_adoption",
                         ),
                     )
-                    if not controls and not destination and not predecessor_lineage
+                    if not controls and not destination
                     else ()
                 ),
             ),
@@ -557,7 +560,7 @@ def _native_task_arena_steps(
                 "--lane-module",
                 "adp_isaac_lab_arena_vast.py",
                 "--lane",
-                (
+                preparation_lane or (
                     "native_task_arena_destination_qualification"
                     if destination
                     else "native_task_arena_construction_after_destination"
@@ -909,6 +912,10 @@ LANES: dict[str, tuple[LaneStep, ...]] = {
     "native_task_arena_construction": _native_task_arena_steps("construction"),
     "native_task_arena_construction_after_destination": _native_task_arena_steps(
         "construction", predecessor_lineage=True
+    ),
+    "native_task_arena_construction_recovery": _native_task_arena_steps(
+        "construction", predecessor_lineage=True,
+        preparation_lane="native_task_arena_construction_recovery",
     ),
     "native_task_arena_controls": _native_task_arena_steps("controls"),
     "native_task_arena_zero_action": _native_task_arena_steps(
@@ -1683,6 +1690,7 @@ def _validate_provider_packet_source_rights(
     source_manifest: Mapping[str, Any],
     configured_scene_revision: Mapping[str, Any] | None = None,
     rights_admission: Mapping[str, Any] | None = None,
+    destination: Mapping[str, Any] | None = None,
 ) -> None:
     """Require every provider-staged source binding to be upload-admitted."""
 
@@ -1713,7 +1721,7 @@ def _validate_provider_packet_source_rights(
         if (
             not isinstance(rights_admission, Mapping)
             or rights_admission.get("private_provider_processing_allowed") is not True
-            or disclosure.get("rights_admission_permits_upload") is not True
+            or disclosure.get("human_authority_accepts_provider_terms") is not True
         ):
             raise PaidLaneLaunchPreparationError(
                 "native_task_arena_provider_source_rights_invalid"
@@ -1737,6 +1745,31 @@ def _validate_provider_packet_source_rights(
             size = raw.get("size_bytes")
             if raw.get("provider_upload_allowed") is True and isinstance(size, int):
                 admitted.add((digest, size))
+    runtime_disclosure = (rights_admission or {}).get("provider_disclosure") or {}
+    role_permissions = {
+        "scene_appearance": "minimum_digest_bound_derived_appearance_runtime_bytes_may_be_privately_processed",
+        "scene_collision": "sage_collision_runtime_bytes_may_be_privately_processed",
+        "task_object": "qualified_replacement_usd_may_be_privately_processed",
+    }
+    destination_pair = None
+    if destination is not None:
+        rights_path, destination_rights = _load_unlinked_json(
+            destination.get("rights_admission"),
+            error="native_task_arena_destination_rights_invalid",
+        )
+        asset = destination.get("asset") or {}
+        if (
+            _sha256_file(rights_path) != destination.get("rights_admission_digest")
+            or destination_rights.get("schema_version") != "task_evaluation_rigid_destination_rights_admission.v1"
+            or destination_rights.get("rights_admission_digest") != _canonical_artifact_digest(destination_rights, digest_field="rights_admission_digest")
+            or destination_rights.get("status") != "admitted"
+            or destination_rights.get("destination_identity") != destination.get("identity")
+            or destination_rights.get("private_provider_processing_allowed") is not True
+            or destination_rights.get("provider_training_allowed") is not False
+            or destination_rights.get("public_redistribution_allowed") is not False
+        ):
+            raise PaidLaneLaunchPreparationError("native_task_arena_destination_rights_invalid")
+        destination_pair = (asset.get("digest"), asset.get("size_bytes"))
     for raw in bindings:
         if not isinstance(raw, Mapping):
             raise PaidLaneLaunchPreparationError(
@@ -1784,6 +1817,24 @@ def _validate_provider_packet_source_rights(
             and source_pair == staged_pair
         )
         source_is_admitted = source_pair in admitted or staged_is_bound_particlefield
+        if configured_scene_revision is not None:
+            role = raw.get("semantic_role")
+            derived_permission = (
+                runtime_disclosure.get(role_permissions.get(role, "")) is True
+                and runtime_disclosure.get("provider_training_allowed") is False
+                and runtime_disclosure.get("public_redistribution_allowed") is False
+                and bool(runtime_disclosure.get("provider_retention_rule"))
+            )
+            source_is_admitted = source_is_admitted and (
+                disclosure.get("rights_admission_permits_upload") is True or derived_permission
+            )
+            if role == "task_support":
+                source_is_admitted = (
+                    request_digest_valid
+                    and destination_pair is not None
+                    and source_pair == destination_pair
+                    and raw.get("asset_id") == (destination.get("identity") or {}).get("id")
+                )
         if not source_is_admitted or not (
             staged_matches_source
             or staged_is_bound_adaptation
@@ -2164,6 +2215,7 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
         source_manifest=source_manifest,
         configured_scene_revision=configured_scene_revision,
         rights_admission=rights_admission,
+        destination=scene.get("destination"),
     )
     if (
         reference_symlink_present
@@ -2190,7 +2242,7 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
             "native_task_arena_reference_binding_invalid"
         )
     prior_webapp_lineage = None
-    if expected_lane != "native_task_arena_construction":
+    if expected_lane not in {"native_task_arena_construction", "native_task_arena_destination_qualification"}:
         prior_webapp_lineage = _validate_prior_webapp_lineage(
             prior_result_path=operations.get("prior_result"),
             launch_receipt_path=operations.get("prior_launch_receipt"),
@@ -2402,6 +2454,32 @@ def _load_scene_configuration_context(
     return operations
 
 
+def refresh_native_initial_provider_zero(context: Mapping[str, Any], *, collector=None) -> dict[str, Any]:
+    """Observe genesis inventory at preparation time, after any deployment delay."""
+    if not context.get("initial_provider_zero"):
+        return dict(context)
+    from blueprint_pipeline.adp_task_evaluation_abstention import collect_vast_provider_zero_receipt
+
+    zero = (collector or collect_vast_provider_zero_receipt)()
+    if (zero.get("schema_version") != "adp_paid_provider_zero.v1"
+            or zero.get("api_confirmed") is not True
+            or zero.get("provider_zero") is not True
+            or zero.get("global_live_resource_count") != 0
+            or zero.get("provider_zero_digest") != _canonical_artifact_digest(zero, digest_field="provider_zero_digest")):
+        raise PaidLaneLaunchPreparationError("native_task_arena_initial_provider_zero_refresh_invalid")
+    root = _prepare_set_root_for_service(str(context["set_root"]), service_account=str(context["service_account"]), service_group=str(context["service_group"]))
+    target, descriptor = _reserve_receipt_output(root / ("initial-provider-zero-" + uuid.uuid4().hex + ".json"))
+    _write_reserved_receipt(target, descriptor, zero, service_account=str(context["service_account"]), service_group=str(context["service_group"]))
+    issued = datetime.now(timezone.utc).isoformat()
+    old = Path(str(context["initial_provider_zero"]))
+    return {**context, "initial_provider_zero": str(target), "authorized_on": issued,
+            "reference_bindings": {**dict(context.get("reference_bindings") or {}), "initial_provider_zero_refresh": {
+                "prior_path": str(old), "prior_sha256": _sha256_file(old),
+                "path": str(target), "sha256": _sha256_file(target),
+                "observed_at_utc": zero["observed_at_utc"], "authority_issued_at": issued,
+                "provider_mutation_performed": False}}}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lane", required=True, choices=sorted(LANES))
@@ -2511,6 +2589,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise PaidLaneLaunchPreparationError(
                     "paid_lane_resume_receipt_invalid"
                 )
+        if (not args.validate_only and args.lane.startswith("native_task_arena_")
+                and not any(row.get("step_id") == "paid_authority" for row in (resume_receipt or {}).get("completed_steps", []))):
+            context = refresh_native_initial_provider_zero(context)
         receipt = (
             validate_paid_lane_launch(args.lane, context)
             if args.validate_only

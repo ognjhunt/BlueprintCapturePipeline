@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -102,8 +103,28 @@ def _spec(candidate: str) -> dict[str, object]:
 def _build_real_canary_bundle(tmp_path: Path) -> dict[str, object]:
     public = public_setup()
     packet = _packet(tmp_path, scene_id="839873")
+    from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import _scene_plan
+    plan = _scene_plan()
+    appearance = json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text())
+    plan["appearance_frame_alignment"] = appearance["appearance_frame_alignment"]
+    plan["objects"] = [row for row in plan["objects"] if row.get("semantic_role") != "scene_appearance"] + appearance["objects"]
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    _write(packet / "native_task_arena_scene_plan.v1.json", plan)
+    packet_receipt_path = packet / "native_task_arena_packet_receipt.v1.json"
+    packet_receipt = json.loads(packet_receipt_path.read_text())
+    plan_bytes = (packet / "native_task_arena_scene_plan.v1.json").read_bytes()
+    for artifact in packet_receipt["artifacts"]:
+        if artifact["relative_path"] == "native_task_arena_scene_plan.v1.json":
+            artifact.update(size_bytes=len(plan_bytes), sha256="sha256:" + hashlib.sha256(plan_bytes).hexdigest())
+    packet_receipt["arena_scene_plan_digest"] = plan["plan_digest"]
+    packet_receipt["receipt_digest"] = canonical_digest(packet_receipt, digest_field="receipt_digest")
+    _write(packet_receipt_path, packet_receipt)
     runtime_receipt = _runtime_source_packet(tmp_path)
-    construction = _write(tmp_path / "construction.json", {"status": "completed"})
+    construction_value = {"schema_version": "native_task_arena_construction_result.v1",
+                          "status": "completed", "construction_gate_qualified": True,
+                          "scene_plan_digest": plan["plan_digest"], "result_digest": ""}
+    construction_value["result_digest"] = canonical_digest(construction_value, digest_field="result_digest")
+    construction = _write(tmp_path / "construction.json", construction_value)
     run_id = "scene-839873-canary-closure"
     activation: dict[str, object] = {
         "schema_version": "task_evaluation_policy_campaign_activation.v1",
@@ -288,6 +309,9 @@ def test_real_canary_bundle_passes_vast_preflight_and_imports_in_isolation(
 ) -> None:
     receipt = _build_real_canary_bundle(tmp_path)
     assert receipt["status"] == "ready"
+    static = bundle.preflight_sealed_policy_canary_bundle(receipt)
+    assert static["status"] == "passed", static
+    assert len(static["cells"]) == 10
     bundle_path = Path(str(receipt["bundle_path"]))
 
     preflight = vast_provider_adapter._blueprint_bundle_preflight(
@@ -356,6 +380,45 @@ def test_real_canary_bundle_passes_vast_preflight_and_imports_in_isolation(
     )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.startswith("IMPORTS_OK")
+
+    # Import-only probes do not exercise the lazy canonicalizer. This exact
+    # input-validation entrypoint failed after both models were provisioned.
+    validate_inputs = textwrap.dedent(
+        """
+        import importlib.abc, importlib.machinery, json, pathlib, sys
+        runtime = pathlib.Path(sys.argv[1])
+        sys.path.insert(0, str(runtime))
+        # NumPy is supplied by the sealed Isaac runtime. Admit only that installed
+        # dependency; never add the host site-packages directory to sys.path.
+        class IsaacDependency(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == 'numpy':
+                    return importlib.machinery.PathFinder.find_spec(fullname, [sys.argv[2]])
+        sys.meta_path.insert(0, IsaacDependency())
+        from blueprint_pipeline.native_task_arena_policy_canary_session import validate_runtime_input_manifest
+        source = runtime / 'runtime_inputs/policy_canary_runtime_inputs.json'
+        result = validate_runtime_input_manifest(json.loads(source.read_text()))
+        import rfc8785
+        assert pathlib.Path(rfc8785.__file__).is_relative_to(runtime)
+        assert result['task_success_contract_digest'].startswith('sha256:')
+        print('EXACT_INPUT_VALIDATED_WITH_BUNDLED_DEPENDENCIES')
+        """
+    )
+    import numpy
+    numpy_parent = str(Path(numpy.__file__).resolve().parent.parent)
+    isolated = subprocess.run([sys.executable, "-I", "-S", "-c", validate_inputs, str(runtime), numpy_parent],
+        check=False, capture_output=True, text=True)
+    assert isolated.returncode == 0, isolated.stderr
+    assert "EXACT_INPUT_VALIDATED" in isolated.stdout
+    manifest = receipt["contract_python_dependencies"][0]
+    assert manifest["version"] == "0.1.4"
+    assert any(row["relative_path"].endswith("/LICENSE") for row in manifest["files"])
+    for row in manifest["files"]:
+        assert _sha(runtime / row["relative_path"]) == row["sha256"]
+    shutil.rmtree(runtime / "rfc8785")
+    missing = subprocess.run([sys.executable, "-I", "-S", "-c", validate_inputs, str(runtime), numpy_parent],
+        check=False, capture_output=True, text=True)
+    assert missing.returncode != 0 and "No module named 'rfc8785'" in missing.stderr
 
 
 def test_bundle_builder_refuses_an_unclosed_shipped_package(

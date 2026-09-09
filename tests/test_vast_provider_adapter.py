@@ -2297,7 +2297,7 @@ def test_vast_adapter_mocked_live_heartbeat_gpu_and_teardown(
             return 200, {"success": True, "new_contract": 555}
         if method == "GET" and path == "/instances/555/":
             return 200, _created_instance_detail(dph_total=0.42)
-        if method == "PUT" and path == "/instances/request_logs/555":
+        if method == "PUT" and path == "/instances/request_logs/555/":
             return 200, {"success": True, "result_url": f"https://logs.example/{len(calls)}"}
         if method == "DELETE" and path == "/instances/555/":
             return 200, {"success": True, "msg": "Instance destroyed successfully"}
@@ -2411,7 +2411,7 @@ def test_vast_adapter_honors_min_gpu_ram_env_in_offer_selection(
             raise AssertionError("24GB offer should be excluded by min GPU RAM")
         if method == "GET" and path == "/instances/2020/":
             return 200, _created_instance_detail(dph_total=0.42)
-        if method == "PUT" and path == "/instances/request_logs/2020":
+        if method == "PUT" and path == "/instances/request_logs/2020/":
             return 200, {"success": True, "result_url": "https://logs.example/min-gpu"}
         if method == "DELETE" and path == "/instances/2020/":
             return 200, {"success": True}
@@ -2513,7 +2513,7 @@ def test_vast_adapter_retries_stale_offer_create_before_allocation(
             return 200, {"success": True, "new_contract": 3020}
         if method == "GET" and path == "/instances/3020/":
             return 200, _created_instance_detail(dph_total=0.26)
-        if method == "PUT" and path == "/instances/request_logs/3020":
+        if method == "PUT" and path == "/instances/request_logs/3020/":
             return 200, {"success": True, "result_url": "https://logs.example/stale-retry"}
         if method == "DELETE" and path == "/instances/3020/":
             return 200, {"success": True}
@@ -2620,7 +2620,7 @@ def test_vast_adapter_empty_create_400_stays_ambiguous_after_offer_absence(
             return 200, {"success": True, "new_contract": 4020}
         if method == "GET" and path == "/instances/4020/":
             return 200, _created_instance_detail(dph_total=0.26)
-        if method == "PUT" and path == "/instances/request_logs/4020":
+        if method == "PUT" and path == "/instances/request_logs/4020/":
             return 200, {"success": True, "result_url": "https://logs.example/empty-400"}
         if method == "DELETE" and path == "/instances/4020/":
             return 200, {"success": True}
@@ -2730,7 +2730,7 @@ def test_vast_adapter_empty_create_400_stays_ambiguous_after_empty_inventory(
             return 200, {"success": True, "new_contract": 5020}
         if method == "GET" and path == "/instances/5020/":
             return 200, _created_instance_detail(dph_total=0.26)
-        if method == "PUT" and path == "/instances/request_logs/5020":
+        if method == "PUT" and path == "/instances/request_logs/5020/":
             return 200, {"success": True, "result_url": "https://logs.example/no-mutation"}
         if method == "DELETE" and path == "/instances/5020/":
             return 200, {"success": True}
@@ -2904,7 +2904,7 @@ def test_vast_adapter_researches_empty_capacity_before_authority_or_create(
             return 200, {"success": True, "new_contract": 3030}
         if method == "GET" and path == "/instances/3030/":
             return 200, _created_instance_detail(dph_total=0.25)
-        if method == "PUT" and path == "/instances/request_logs/3030":
+        if method == "PUT" and path == "/instances/request_logs/3030/":
             return 200, {"success": True, "result_url": "https://logs.example/search-retry"}
         if method == "DELETE" and path == "/instances/3030/":
             return 200, {"success": True}
@@ -3156,7 +3156,7 @@ def test_vast_adapter_mocked_isaac_uses_args_mode_required_env_and_disk(
             return 200, {"success": True, "new_contract": 777}
         if method == "GET" and path == "/instances/777/":
             return 200, _created_instance_detail("exited", dph_total=0.2)
-        if method == "PUT" and path == "/instances/request_logs/777":
+        if method == "PUT" and path == "/instances/request_logs/777/":
             return 200, {"success": True, "result_url": "https://logs.example/isaac"}
         if method == "DELETE" and path == "/instances/777/":
             return 200, {"success": True, "msg": "Instance destroyed successfully"}
@@ -4099,7 +4099,7 @@ def test_vast_adapter_mocked_blueprint_bundle_run_uploads_and_inspects_zip(
             return 200, {"success": True, "new_contract": 888}
         if method == "GET" and path == "/instances/888/":
             return 200, _created_instance_detail("exited", dph_total=0.31)
-        if method == "PUT" and path == "/instances/request_logs/888":
+        if method == "PUT" and path == "/instances/request_logs/888/":
             return 200, {"success": True, "result_url": "https://logs.example/provider"}
         if method == "DELETE" and path == "/instances/888/":
             return 200, {"success": True, "msg": "Instance destroyed successfully"}
@@ -4313,7 +4313,7 @@ def test_vast_adapter_unitree_groot_bundle_completes_without_video_smoke(
             return 200, {"new_contract": 4241}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/4241/":
             return 200, _created_instance_detail(dph_total=0.13)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/4241":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/4241/":
             return 200, {"success": True, "result_url": "https://logs.example/unitree"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -4426,7 +4426,7 @@ def test_vast_adapter_infers_provider_start_when_log_tail_drops_early_markers(
             return 200, {"success": True, "new_contract": 889}
         if method == "GET" and path == "/instances/889/":
             return 200, _created_instance_detail("exited", dph_total=0.2)
-        if method == "PUT" and path == "/instances/request_logs/889":
+        if method == "PUT" and path == "/instances/request_logs/889/":
             return 200, {"success": True, "result_url": "https://logs.example/tail"}
         if method == "DELETE" and path == "/instances/889/":
             return 200, {"success": True}
@@ -4521,7 +4521,7 @@ def test_vast_adapter_records_machine_avoidlist_on_heartbeat_blocker(
             return 200, {"success": True, "new_contract": 990}
         if method == "GET" and path == "/instances/990/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if method == "PUT" and path == "/instances/request_logs/990":
+        if method == "PUT" and path == "/instances/request_logs/990/":
             return 200, {"success": True, "result_url": "https://logs.example/heartbeat-blocked"}
         if method == "DELETE" and path == "/instances/990/":
             return 200, {"success": True}
@@ -4603,7 +4603,7 @@ def test_vast_adapter_heartbeat_no_progress_has_startup_specific_timeout(
             return 200, {"success": True, "new_contract": 6061}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/6061/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/6061":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/6061/":
             return 200, {"success": True, "result_url": "https://logs.example/empty-startup"}
         if kwargs["method"] == "DELETE" and kwargs["path"] == "/instances/6061/":
             return 200, {"success": True}
@@ -4687,7 +4687,7 @@ def test_vast_adapter_accepts_downstream_markers_when_heartbeat_url_fails(
             return 200, {"new_contract": 7071}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/7071/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/7071":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/7071/":
             return 200, {"success": True, "result_url": "https://logs.example/downstream"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -4778,7 +4778,7 @@ def test_vast_adapter_records_machine_avoidlist_on_probe_interrupt(
             return 200, {"success": True, "new_contract": 991}
         if method == "GET" and path == "/instances/991/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if method == "PUT" and path == "/instances/request_logs/991":
+        if method == "PUT" and path == "/instances/request_logs/991/":
             raise KeyboardInterrupt("simulated_request_log_interrupt")
         if method == "DELETE" and path == "/instances/991/":
             return 200, {"success": True}
@@ -6463,7 +6463,7 @@ def test_vast_adapter_falls_back_to_command_execute_after_missing_container_logs
             return 200, {"success": True, "new_contract": 556}
         if method == "GET" and path == "/instances/556/":
             return 200, _created_instance_detail(dph_total=0.42)
-        if method == "PUT" and path == "/instances/request_logs/556":
+        if method == "PUT" and path == "/instances/request_logs/556/":
             return 200, {"success": True, "result_url": "https://logs.example/request"}
         if method == "PUT" and path == "/instances/command/556/":
             assert payload is not None
@@ -6552,7 +6552,7 @@ def test_native_arena_falls_back_when_vast_log_transport_is_unavailable(
             return 200, {"success": True, "new_contract": 556}
         if method == "GET" and path == "/instances/556/":
             return 200, _created_instance_detail(dph_total=0.42)
-        if method == "PUT" and path == "/instances/request_logs/556":
+        if method == "PUT" and path == "/instances/request_logs/556/":
             return 200, {"success": True, "result_url": "https://logs.example/request"}
         if method == "PUT" and path == "/instances/command/556/":
             assert payload is not None
@@ -7335,7 +7335,7 @@ def test_vast_adapter_mocked_wam_bundle_marks_isaac_not_required(
             return 200, {"new_contract": 8181}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/8181/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/8181":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/8181/":
             return 200, {"success": True, "result_url": "https://logs.example/wam"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -7410,7 +7410,7 @@ def test_vast_adapter_isaac_ngc_missing_blocks_smoke_after_gpu(
             return 200, {"new_contract": 9191}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/9191/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/9191":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/9191/":
             return 200, {"success": True, "result_url": "https://logs.example/isaac-ngc"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -7485,7 +7485,7 @@ def test_vast_adapter_provider_blockers_after_mocked_preflight_pass(
             return 200, {"new_contract": 6161}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/6161/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/6161":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/6161/":
             return 200, {"success": True, "result_url": "https://logs.example/provider-blockers"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -7628,7 +7628,7 @@ def test_vast_adapter_non_rt_gpu_and_gpu_failure_block_isaac_and_provider(
             return 200, {"instances": []}
         if kwargs["method"] == "GET":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/6061":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/6061/":
             return 200, {"success": True, "result_url": "https://logs.example/non-rt"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -7702,7 +7702,7 @@ def test_vast_adapter_provider_marker_missing_branches(
             return 200, {"instances": []}
         if kwargs["method"] == "GET":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/7071":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/7071/":
             return 200, {"success": True, "result_url": "https://logs.example/missing-markers"}
         if kwargs["method"] == "DELETE":
             return 200, {"success": True}
@@ -8246,7 +8246,7 @@ def test_vast_adapter_run_preflight_and_wam_live_edges(
             return 200, {"new_contract": 8081}
         if kwargs["method"] == "GET" and kwargs["path"] == "/instances/8081/":
             return 200, _created_instance_detail(dph_total=0.2)
-        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/8081":
+        if kwargs["method"] == "PUT" and kwargs["path"] == "/instances/request_logs/8081/":
             return 200, {"success": True, "result_url": "https://logs.example/wam"}
         if kwargs["method"] == "DELETE":
             mutation_order.append("provider_delete")
@@ -9593,3 +9593,68 @@ def test_retained_scene_render_bundle_still_requires_the_retained_layers(tmp_pat
         "provider_runtime/input/shared_retained_scene.ply",
     ]
     assert "provider_runtime_bundle_required_entries_missing" in preflight["blockers"]
+
+
+def test_uploaded_result_survives_log_failure_before_teardown(tmp_path, monkeypatch):
+    """Exercise the real adapter ordering, not just its output/log poll helper."""
+    _configure_live_gates(tmp_path, monkeypatch)
+    bundle = tmp_path / "bundle.zip"
+    _write_valid_provider_bundle(bundle)
+    output = tmp_path / "result.zip"
+    events = []
+
+    def api(*, method, path, **kwargs):
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST" and path == "/bundles/":
+            return 200, {"offers": [{"id": 303, "ask_contract_id": 303,
+                "gpu_name": "RTX 4090", "dph_total": 0.31, "num_gpus": 1,
+                "rentable": True, "verified": True, "driver_version": "580.95.05"}]}
+        if method == "PUT" and path == "/asks/303/":
+            return 200, {"success": True, "new_contract": 888}
+        if method == "GET" and path == "/instances/888/":
+            return 200, _created_instance_detail(dph_total=0.31)
+        if method == "DELETE" and path == "/instances/888/":
+            events.append("teardown")
+            assert output.is_file(), "teardown must follow preservation of observed output"
+            return 200, {"success": True}
+        raise AssertionError((method, path))
+
+    def logs(**kwargs):
+        kwargs["output_log_path"].write_text("")
+        return {"output_log_path": str(kwargs["output_log_path"]),
+                "output_probe_observed": True, "break_reason": "output_available",
+                "log_bytes_ever_read": False, "log_transport_failure_streak": 20}
+
+    def download(**kwargs):
+        import zipfile
+        assert kwargs["url"] == "https://example.invalid/output.zip?signed"
+        events.append("download")
+        with zipfile.ZipFile(kwargs["output_path"], "w") as archive:
+            archive.writestr("native_task_arena_construction_result.v1.json",
+                             json.dumps({"status": "blocked", "blockers": ["pregrasp"]}))
+        return {"status": "completed", "download_attempted": True,
+                "downloaded_size_bytes": kwargs["output_path"].stat().st_size}
+
+    monkeypatch.setattr(vpa, "_api_json", api)
+    monkeypatch.setattr(vpa, "_request_logs_and_fetch", logs)
+    monkeypatch.setattr(vpa, "_download_provider_output_with_capacity_guard", download)
+    monkeypatch.setattr(vpa.time, "sleep", lambda _: None)
+    result = run_vast_provider_adapter(
+        job_dir=tmp_path, mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True, allow_instance_launch=True,
+        provider_bundle=bundle, provider_bundle_url="https://example.invalid/bundle.zip?signed",
+        provider_output_put_url="https://example.invalid/output.zip?signed",
+        provider_output_get_url="https://example.invalid/output.zip?signed",
+        provider_runtime_output_zip=output, enable_blueprint_bundle=True,
+        enable_isaac_smoke=True, poll_interval_seconds=0, startup_timeout_seconds=20,
+    )
+    assert events == ["download", "teardown"]
+    assert output.is_file()
+    assert "vast_heartbeat_log_transport_failed" in result["blockers"]
+    assert result["status"] != "completed"
+    assert result["continuing_spend_from_this_run"] is False
+    receipt = _read_json(tmp_path / "vast_provider_output_preclassification_receipt.json")
+    assert receipt["transfer"]["status"] == "completed"
+    assert receipt["startup_or_scientific_success_claimed"] is False

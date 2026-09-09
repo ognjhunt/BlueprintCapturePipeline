@@ -246,3 +246,41 @@ def test_controls_preprovision_stage_then_policy_stage_reuses_same_verified_cont
     assert len([item for item in order if item[0] == "policy"]) == 10
     assert not any(item[0] == "control" for item in order)
     assert result["control_episode_count"] == 20
+
+
+def test_marked_destination_visibility_requires_real_marker_pixels():
+    from blueprint_pipeline.native_policy_canary_control_gate import validate_strict_camera_gate
+    plan = {"objects": [], "task_spec": {"target_position_world_m": [1.,2.,3.],
+        "visible_target_marker": {"schema_version": "native_task_target_marker.v1",
+            "shape": "flat_green_disc", "non_colliding": True, "radius_m": .06,
+            "surface_position_world_m": [1.,2.,3.]}}}
+    gate = {"policy_observation_integrity_passed": True, "snapshot": {"cameras": [
+        {"role": role, "observability": {"thresholds": {"effective_minimum_pixels": 8}},
+         "semantic_label_pixels": {"task_object": 20, "task_support": 0, "task_target_marker": 10}}
+        for role in ("external", "wrist", "overview")]}}
+    validate_strict_camera_gate(gate, scene_plan=plan)
+    with pytest.raises(RuntimeError, match="subject_destination_visibility_failed"):
+        validate_strict_camera_gate(gate)
+    gate["snapshot"]["cameras"][1]["semantic_label_pixels"]["task_target_marker"] = 0
+    with pytest.raises(RuntimeError, match="subject_destination_visibility_failed:wrist"):
+        validate_strict_camera_gate(gate, scene_plan=plan)
+    plan["task_spec"]["visible_target_marker"]["surface_position_world_m"][0] = 4.
+    with pytest.raises(RuntimeError, match="target_marker_binding_invalid"):
+        validate_strict_camera_gate(gate, scene_plan=plan)
+
+
+def test_camera_gate_consumes_native_measurement_records():
+    import numpy as np
+    from blueprint_pipeline.native_task_camera_observability import measure_native_task_semantic_label_pixels
+    from blueprint_pipeline.native_policy_canary_control_gate import validate_strict_camera_gate
+    semantic = np.array([[7,7,8,8]]*8)
+    labels = {"7": {"class": "task_object"}, "8": {"class": "task_support"}}
+    pixels = {label: measure_native_task_semantic_label_pixels(semantic_ids=semantic,
+        id_to_labels=labels, target_label=label) for label in ("task_object", "task_support")}
+    gate = {"policy_observation_integrity_passed": True, "snapshot": {"cameras": [
+        {"role": role, "observability": {"thresholds": {"effective_minimum_pixels": 8}},
+         "semantic_label_pixels": pixels} for role in ("external", "wrist", "overview")]}}
+    validate_strict_camera_gate(gate)
+    pixels["task_support"]["target_label"] = "robot"
+    with pytest.raises(RuntimeError, match="subject_destination_visibility_failed"):
+        validate_strict_camera_gate(gate)

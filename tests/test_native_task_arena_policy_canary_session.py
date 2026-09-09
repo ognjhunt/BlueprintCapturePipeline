@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     CANDIDATE_IDS,
     PolicyCanaryEpisodeFailure,
@@ -735,3 +735,74 @@ def test_preload_observation_gate_must_return_an_explicit_pass(tmp_path: Path) -
     assert result["status"] == "blocked"
     assert result["policy_loads"] == []
     assert calls["loads"] == []
+
+
+def test_explicit_user_omission_is_diagnostic_and_cannot_bypass_strict_contract(tmp_path):
+    activation = _activation()
+    inputs = _runtime_inputs(tmp_path, activation)
+    contract_digest = inputs['task_success_contract_digest']
+    authority = {
+        'schema_version': 'task_evaluation_diagnostic_control_omission_authority.v1',
+        'run_kind': 'internal_policy_canary', 'claim_ceiling': 'diagnostic_policy_execution',
+        'authorized_by': 'owner', 'authorization_reference': 'explicit-user-request',
+        'omitted_controls': ['zero_action_negative', 'deterministic_scripted_positive'],
+        'source_task_success_contract_digest': 'sha256:'+'a'*64,
+        'result_task_success_contract_digest': contract_digest,
+        'task_scoring_criteria_changed': False, 'qualified_comparison_permitted': False,
+    }
+    authority['authority_digest'] = canonical_digest(authority, digest_field='authority_digest')
+    for cell in inputs['cells']:
+        cell['control_diagnostic'] = {'mode': 'nonblocking_omitted_by_user',
+            'typed_gap': 'controls_omitted_by_user_request', 'policy_execution_blocked': False,
+            'omission_authority': authority}
+    inputs['runtime_inputs_digest'] = canonical_digest(inputs, digest_field='runtime_inputs_digest')
+    validate_runtime_input_manifest(inputs)
+    authority['qualified_comparison_permitted'] = True
+    authority['authority_digest'] = canonical_digest(authority, digest_field='authority_digest')
+    inputs['runtime_inputs_digest'] = canonical_digest(inputs, digest_field='runtime_inputs_digest')
+    with pytest.raises(PolicyCanarySessionError, match='omission_authority_invalid'):
+        validate_runtime_input_manifest(inputs)
+    authority['qualified_comparison_permitted'] = False
+    authority['authority_digest'] = canonical_digest(authority, digest_field='authority_digest')
+    inputs['task_success_contract']['criteria']['controls'] = {
+        'mode': 'required_per_cell', 'control_ids': ['zero_action_negative', 'deterministic_scripted_positive']}
+    inputs['task_success_contract']['contract_digest'] = cross_runtime_canonical_digest(inputs['task_success_contract'], digest_field='contract_digest')
+    inputs['task_success_contract_digest'] = inputs['task_success_contract']['contract_digest']
+    inputs['runtime_inputs_digest'] = canonical_digest(inputs, digest_field='runtime_inputs_digest')
+    with pytest.raises(PolicyCanarySessionError, match='control_requirement_mismatch'):
+        validate_runtime_input_manifest(inputs)
+
+
+def test_direct_canary_accepts_real_compiled_packet_without_claiming_construction():
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import _construction_lineage_mode
+    plan = {'scene_id': 'scene-a', 'task_id': 'book-to-area'}
+    plan['plan_digest'] = canonical_digest(plan, digest_field='plan_digest')
+    packet = {'schema_version': 'native_task_arena_packet_receipt.v1', 'status': 'construction_packet_completed',
+        'scene_id': 'scene-a', 'task_id': 'book-to-area', 'arena_scene_plan_digest': plan['plan_digest'],
+        'native_application_claimed': False, 'policy_episode_claimed': False}
+    packet['receipt_digest'] = canonical_digest(packet, digest_field='receipt_digest')
+    record = {'path': '/compiled/packet.json', 'sha256': 'sha256:'+'1'*64, 'size_bytes': 100}
+    inputs = {'run_kind': 'internal_policy_canary', 'claim_ceiling': 'diagnostic_policy_execution',
+        'base_native_packet': record, 'construction_result': dict(record)}
+    assert _construction_lineage_mode(inputs=inputs, base_scene_plan=plan, construction=packet) == 'compiled_native_packet_diagnostic'
+    inputs['run_kind'] = 'qualified_evaluation'
+    with pytest.raises(RuntimeError, match='compiled_packet_lineage_invalid'):
+        _construction_lineage_mode(inputs=inputs, base_scene_plan=plan, construction=packet)
+
+
+def test_native_initialization_preserves_only_safe_refusal_codes(tmp_path: Path) -> None:
+    from blueprint_pipeline.native_task_arena_runtime import NativeTaskArenaRuntimeError
+    calls = {"open": 0, "close": 0, "loads": []}
+    kwargs = _preload_gate_session_kwargs(tmp_path, calls)
+    def refuse(_inputs):
+        raise NativeTaskArenaRuntimeError([
+            "native_task_arena_camera_intrinsics_not_representable:overview",
+            "unexpected token=secret-value /private/provider/path",
+        ])
+    kwargs["open_session"] = refuse
+    result = execute_paired_session(**kwargs)
+    assert result["session_failure_codes"] == [
+        "native_task_arena_camera_intrinsics_not_representable:overview"
+    ]
+    assert "secret-value" not in json.dumps(result)
+    assert result["candidate_policy_queried"] is False

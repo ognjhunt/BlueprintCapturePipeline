@@ -1514,3 +1514,42 @@ def test_task_light_readback_uses_spawned_usd_attribute() -> None:
 
     assert result["observed_intensity"] == pytest.approx(1350.0)
     assert result["observed_intensity_scale"] == pytest.approx(0.9)
+
+
+def test_explicit_tabletop_marker_uses_retained_surface_height():
+    from blueprint_pipeline.native_task_arena_runtime import visible_target_marker_parameters
+    marker = {"schema_version": "native_task_target_marker.v1", "shape": "flat_green_disc", "non_colliding": True, "radius_m": 0.06, "surface_position_world_m": [-2.0292786, -2.952289986, 0.275]}
+    plan = {"task_spec": {"visible_target_marker": marker}}
+    position, radius = visible_target_marker_parameters(plan)
+    assert position == pytest.approx((-2.0292786, -2.952289986, 0.276))
+    assert radius == 0.06
+    marker["non_colliding"] = False
+    with pytest.raises(NativeTaskArenaRuntimeError, match="target_marker_invalid"):
+        visible_target_marker_parameters(plan)
+
+
+def test_legacy_droid_marker_position_is_preserved():
+    from blueprint_pipeline.native_task_arena_runtime import visible_target_marker_parameters
+    plan = {"policy_canary_embodiment_profile": {"visible_target_marker": {"shape": "flat_green_disc", "non_colliding": True, "radius_m": 0.06, "position_world_m": [1, 2, 0.34]}}}
+    position, radius = visible_target_marker_parameters(plan)
+    assert position == pytest.approx((1, 2, 0.277))
+    assert radius == 0.06
+
+
+def test_explicit_marker_gets_distinct_visual_semantics(monkeypatch):
+    _install_fake_native_runtime(monkeypatch)
+    import sys
+    captured = []
+    def cylinder(**kwargs):
+        captured.append(kwargs)
+        return SimpleNamespace(**kwargs)
+    monkeypatch.setattr(sys.modules["isaaclab.sim"], "CylinderCfg", cylinder)
+    plan = _sealed_scene_plan()
+    plan.setdefault("task_spec", {})["visible_target_marker"] = {"schema_version": "native_task_target_marker.v1",
+        "shape": "flat_green_disc", "non_colliding": True, "radius_m": .06,
+        "surface_position_world_m": [1.,2.,.8]}
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    build_native_task_arena_environment(plan)
+    assert captured[-1]["semantic_tags"] == [("class", "task_target_marker")]
+    assert captured[-1]["collision_props"] is None
+    assert captured[-1]["rigid_props"] is None

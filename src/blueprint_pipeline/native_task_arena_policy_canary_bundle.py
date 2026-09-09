@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from collections.abc import Mapping
+from importlib.metadata import distribution
 import json
 from pathlib import Path
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 import zipfile
 from typing import Any
@@ -49,11 +53,82 @@ from .task_evaluation_canary_hotfix_overlay import (
 EXECUTION_AUTHORITY = "internal_policy_canary_unqualified"
 
 
+def stage_policy_contract_dependencies(runtime: Path) -> dict[str, Any]:
+    """Ship the pinned pure-Python owner-contract canonicalizer with its license.
+
+    The retained simulator archive predates this dependency. Bundling these small
+    files makes validation independent of the provider's site-packages and avoids
+    rebuilding or downloading an unchanged multi-gigabyte simulator archive.
+    """
+    dependency = distribution("rfc8785")
+    if dependency.version != "0.1.4":
+        raise ValueError("policy_canary_rfc8785_version_mismatch")
+    paths = ("rfc8785/__init__.py", "rfc8785/_impl.py", "rfc8785/py.typed",
+             "rfc8785-0.1.4.dist-info/LICENSE")
+    rows = []
+    for relative in paths:
+        source = Path(dependency.locate_file(relative))
+        if not source.is_file() or source.is_symlink():
+            raise ValueError("policy_canary_rfc8785_source_missing")
+        target = runtime / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        rows.append({"relative_path": relative, "sha256": _sha256(target),
+                     "size_bytes": target.stat().st_size})
+    return {"distribution": "rfc8785", "version": "0.1.4", "files": rows}
+
+
 def _read(path: str | Path) -> dict[str, Any]:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("policy_canary_bundle_input_invalid")
     return value
+
+
+def preflight_sealed_policy_canary_bundle(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Run the sealed worker's own static preflight, without assets or providers."""
+    blocked = {"schema_version": "policy_canary_static_startup_preflight.v1", "status": "blocked",
+               "provider_mutation_performed": False, "candidate_policy_queried": False}
+    archive_path = Path(str(receipt.get("bundle_path") or ""))
+    if (not archive_path.is_file() or archive_path.stat().st_size != receipt.get("bundle_size_bytes")
+        or _sha256(archive_path) != receipt.get("bundle_sha256")):
+        return {**blocked, "blockers": ["policy_canary_preflight_bundle_bytes_mismatch"]}
+    try:
+        with tempfile.TemporaryDirectory(prefix="policy-canary-static-preflight-") as raw:
+            root = Path(raw)
+            with zipfile.ZipFile(archive_path) as archive:
+                manifest = json.loads(archive.read("provider_runtime/adp_arena_provider_manifest.json"))
+                dependencies = manifest.get("contract_python_dependencies") or []
+                canonicalizer = next((item for item in dependencies if item.get("distribution") == "rfc8785"), {})
+                required = {"rfc8785/__init__.py", "rfc8785/_impl.py", "rfc8785/py.typed", "rfc8785-0.1.4.dist-info/LICENSE"}
+                if canonicalizer.get("version") != "0.1.4" or {row.get("relative_path") for row in canonicalizer.get("files", [])} != required:
+                    return {**blocked, "blockers": ["policy_canary_preflight_contract_dependency_missing"]}
+                for row in canonicalizer["files"]:
+                    content = archive.read("provider_runtime/" + row["relative_path"])
+                    if len(content) != row["size_bytes"] or "sha256:" + hashlib.sha256(content).hexdigest() != row["sha256"]:
+                        return {**blocked, "blockers": ["policy_canary_preflight_contract_dependency_digest_mismatch"]}
+                for member in archive.infolist():
+                    path = Path(member.filename)
+                    if (not path.is_absolute() and ".." not in path.parts and path.parts
+                        and path.parts[0] == "provider_runtime" and path.suffix in {".py", ".json"}):
+                        target = root / path
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(archive.read(member))
+            output = root / "preflight.json"
+            code = ("import json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
+                    "from adp_arena_provider_runner import preflight_policy_canary_runtime_directory;"
+                    "r=preflight_policy_canary_runtime_directory(Path(sys.argv[1]));"
+                    "Path(sys.argv[2]).write_text(json.dumps(r));sys.exit(0 if r['status']=='passed' else 2)")
+            child = subprocess.run([sys.executable, "-I", "-c", code, str(root / "provider_runtime"), str(output)],
+                                   capture_output=True, text=True, timeout=60, check=False)
+            if output.is_file():
+                result = _read(output)
+                result["sealed_bundle_sha256"] = receipt["bundle_sha256"]
+                return result
+            return {**blocked, "blockers": ["policy_canary_sealed_static_preflight_unavailable"],
+                    "diagnostic": child.stderr[-3000:]}
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.TimeoutExpired) as exc:
+        return {**blocked, "blockers": ["policy_canary_sealed_static_preflight_failed:" + str(exc)]}
 
 
 def _bound_record_path(record: Mapping[str, Any], *, code: str) -> Path:
@@ -149,6 +224,22 @@ if [ $source_rc -ne 0 ]; then
   exit $source_rc
 fi
 
+# Validate the actual immutable input before downloading or starting either
+# policy. Lazy contract dependencies must be present at this boundary.
+/isaac-sim/python.sh - <<'PYINPUT'
+import json, os
+from pathlib import Path
+from adp_arena_provider_runner import preflight_policy_canary_runtime_directory
+receipt = preflight_policy_canary_runtime_directory(Path(os.environ["RUNTIME_DIR"]))
+print(json.dumps(receipt, sort_keys=True))
+raise SystemExit(0 if receipt["status"] == "passed" else 2)
+PYINPUT
+input_rc=$?
+if [ $input_rc -ne 0 ]; then
+  write_fallback_result policy_canary_input_preflight_failed "$input_rc"
+  exit $input_rc
+fi
+
 # Strict controls execute before either checkpoint is loaded. The second stage
 # validates and reuses these exact cell receipts after ordinary provisioning.
 strict_controls=$(/isaac-sim/python.sh - <<'PYSTRICT'
@@ -226,6 +317,11 @@ def build_policy_canary_session_bundle(
         inputs["base_native_packet"], code="policy_canary_base_packet_record_invalid"
     ) != packet_receipt_path:
         raise ValueError("policy_canary_base_packet_record_mismatch")
+    from .native_task_arena_policy_canary_worker import appearance_render_backend_from_plan
+    appearance_render_backend_from_plan(
+        _read(packet_receipt_path.parent / "native_task_arena_scene_plan.v1.json"),
+        packet_request=_read(packet_receipt_path.parent / "native_task_arena_packet_request.v1.json"),
+    )
     runtime_source_path = _bound_record_path(
         inputs["runtime_source"], code="policy_canary_runtime_source_record_invalid"
     )
@@ -252,6 +348,17 @@ def build_policy_canary_session_bundle(
         for spec in specs.values()
     ):
         raise ValueError("policy_canary_execution_spec_task_success_contract_mismatch")
+    from .native_task_arena_policy_canary_worker import preflight_policy_canary_static_inputs
+    static_preflight = preflight_policy_canary_static_inputs(
+        inputs=inputs, authority=authority,
+        base_scene_plan=_read(packet_receipt_path.parent / "native_task_arena_scene_plan.v1.json"),
+        construction=_read(construction_result_path),
+        packet_request=_read(packet_receipt_path.parent / "native_task_arena_packet_request.v1.json"),
+        specs=specs,
+    )
+    write_json(Path(job_dir) / "policy_canary_static_startup_preflight.v1.json", static_preflight)
+    if static_preflight["status"] != "passed":
+        raise ValueError("policy_canary_static_startup_preflight_failed:" + ",".join(static_preflight["blockers"]))
     package = Path(__file__).resolve().parent
     runtime_modules = [package / name for name in POLICY_RUNTIME_MODULE_NAMES]
     runtime_modules.extend(
@@ -297,6 +404,7 @@ def build_policy_canary_session_bundle(
         with zipfile.ZipFile(base["bundle_path"]) as archive:
             archive.extractall(root)
         runtime = root / "provider_runtime"
+        contract_dependency = stage_policy_contract_dependencies(runtime)
         for candidate in inputs["candidate_ids"]:
             script = runtime / f"adp009d_policy_provisioning.{candidate}.sh"
             script.write_text(build_provisioning_script(candidate), encoding="utf-8")
@@ -346,6 +454,8 @@ def build_policy_canary_session_bundle(
                     candidate: spec["execution_spec_digest"]
                     for candidate, spec in specs.items()
                 },
+                "contract_python_dependencies": [contract_dependency],
+                "static_startup_preflight": static_preflight,
                 "input_digest": "",
             }
         )

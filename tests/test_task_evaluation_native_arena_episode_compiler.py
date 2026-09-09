@@ -300,10 +300,17 @@ def _destination_case(
     return request_value, references, context
 
 
+@pytest.mark.parametrize("content_addressed", [False, True])
 def test_destination_asset_is_qualified_staged_and_compiler_ready(
-    tmp_path: Path,
+    tmp_path: Path, content_addressed: bool,
 ) -> None:
     request_value, references, context = _destination_case(tmp_path)
+    if content_addressed:
+        row = references["task.destination.asset"]
+        original = Path(row["materialized_path"])
+        blob = original.with_name(_sha(original).removeprefix("sha256:"))
+        original.rename(blob)
+        row["materialized_path"] = str(blob)
     output = tmp_path / "output"
     output.mkdir()
 
@@ -323,10 +330,11 @@ def test_destination_asset_is_qualified_staged_and_compiler_ready(
         [3.2, -6.76, 0.9425]
     )
     assert Path(result["path"]).is_file()
+    assert Path(result["path"]).suffix == ".usda"
     assert output in Path(result["path"]).parents
 
 
-def test_large_nurec_requires_a_cached_official_particlefield(
+def test_large_nurec_uses_bounded_cache_builder_instead_of_inline_converter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     arrays = {
@@ -366,15 +374,25 @@ def test_large_nurec_requires_a_cached_official_particlefield(
         "MAXIMUM_INLINE_NUREC_CONVERSION_BYTES",
         0,
     )
+    calls = []
+    def unavailable_runtime(**kwargs):
+        calls.append(kwargs)
+        raise ValueError("pinned_runtime_missing")
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_native_arena_episode_compiler."
+        "materialize_automatic_particlefield", unavailable_runtime,
+    )
 
     with pytest.raises(
         TaskEvaluationNativeArenaEpisodeCompilerError,
-        match="episode_compiler_official_particlefield_cache_required",
+        match="episode_compiler_official_particlefield_cache_invalid:pinned_runtime_missing",
     ):
         _materialize_native_particlefield_appearance(
             source_path=source,
             output_root=tmp_path / "native-appearance",
         )
+    assert len(calls) == 1
+    assert calls[0]["source_path"] == source
 
 
 def test_policy_canary_keeps_registry_out_of_native_controller_slot() -> None:

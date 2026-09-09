@@ -36,6 +36,14 @@ def validated_cancellation(directory: Path, attempt: Mapping[str, Any]) -> dict[
     if not path.exists() and not path.is_symlink():
         return None
     receipt = _read(path)
+    if receipt.get('schema_version') == 'task_evaluation_unused_native_plan_cancellation.v1':
+        from .task_evaluation_completed_placement_adoption import validate_cancellation
+        validate_cancellation(receipt=receipt,attempt=attempt)
+        return receipt
+    if receipt.get('schema_version') == 'task_evaluation_unstarted_native_after_visual_review.v1':
+        from .task_evaluation_visual_review_continuation import validate_native_retirement
+        validate_native_retirement(receipt=receipt, attempt=attempt)
+        return receipt
     if receipt.get('schema_version') == 'task_evaluation_unmaterialized_adoption_cancellation.v1':
         from .task_evaluation_terminal_adoption_retirement import validate_retirement
         validate_retirement(receipt=receipt, attempt=attempt)

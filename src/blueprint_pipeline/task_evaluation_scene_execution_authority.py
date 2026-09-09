@@ -109,6 +109,17 @@ def scene_execution_authority_blockers(
         return ["scene_execution_owner_window_invalid"]
     if not _positive(expiry) or moment >= expiry:
         return ["scene_execution_owner_expired"]
+    correction = attempt.get('visual_review_correction')
+    if correction is not None:
+        from .task_evaluation_visual_review_authority import read_authority
+        try:
+            grant = read_authority(directory=directory,source_attempt_id=correction['source_attempt_id'],admission=True,now=moment)
+            if (grant is None or grant['authority_digest'] != correction.get('authority_digest')
+                    or correction.get('scope') != 'placement_visual_review_only'
+                    or actual_provider != 'openai' or attempt['maximum_spend_usd'] > grant['maximum_cost_usd']):
+                return ['scene_execution_visual_review_correction_invalid']
+        except (ValueError,OSError,KeyError,TypeError):
+            return ['scene_execution_visual_review_correction_invalid']
     if (consent.get("spend_authorized") is not True or consent.get("task_confirmed") is not True
             or consent.get("private_processing_authorized") is not True
             or consent.get("provider_training_authorized") is not False

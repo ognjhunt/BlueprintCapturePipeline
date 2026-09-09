@@ -1329,7 +1329,7 @@ def _run_retained_native_construction_feedback(
         search_ledger.record_adopted_baseline(
             baseline_record=adopted_baseline
         )
-    if invoker is None:
+    if invoker is None and control_search_execution is None:
         invoker = OpenAIAgentsSDKInvoker(
             robot_placement_agents_sdk_config(
                 max_inference_cost_usd=float(max_inference_cost_usd),
@@ -1415,6 +1415,7 @@ def _run_retained_native_construction_feedback(
         execute_candidate=executor,
         continue_to_controls=executor.continue_to_controls,
         initial_native_feedback=feedback,
+        selection_strategy=("funnel_shortlist_order" if control_search_execution is not None else "agents_sdk"),
     )
     if control_search_execution is not None:
         controller_result["control_search"] = {

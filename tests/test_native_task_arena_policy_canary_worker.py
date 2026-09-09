@@ -158,6 +158,59 @@ def test_appearance_backend_is_sealed_from_the_plan_not_a_default() -> None:
     assert nurec["derived_asset_digest"] is None
 
 
+def test_backend_consumes_exact_configured_scene_compiler_provenance():
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import appearance_render_backend_from_plan
+    from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import _appearance_render_backend
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    plan = _plan_with_appearance()
+    source = plan["appearance_frame_alignment"].pop("source_asset_sha256")
+    derived = "sha256:" + plan["objects"][1]["sha256"]
+    receipt = _appearance_render_backend(kind="nvidia_3dgrut_direct_nurec_transcode",
+        source_digest=source, particlefield_digest=derived, authoring_receipt_digest="sha256:" + "a"*64,
+        upstream_converter={"module": "threedgrut.export.scripts.transcode", "source_identity_verified": True,
+            "source_revision": "a37ef721012dea0f29c0fcfff2d525023b4e854a"})
+    request = {"appearance_variant": {"representation": "particlefield_3d_gaussian_splat",
+        "source_configured_appearance_digest": source, "render_backend": receipt}}
+    backend = appearance_render_backend_from_plan(plan, packet_request=request)
+    assert backend["source_asset_digest"] == source
+    assert backend["derived_asset_digest"] == derived
+    assert backend["kind"] == "particlefield_3dgrut_transcode"
+    receipt["particlefield_digest"] = "sha256:" + "b"*64
+    receipt["backend_digest"] = canonical_digest(receipt, digest_field="backend_digest")
+    with pytest.raises(RuntimeError, match="configured_appearance_backend_binding_invalid"):
+        appearance_render_backend_from_plan(plan, packet_request=request)
+
+
+def test_official_droid_camera_route_does_not_require_a_mount_sweep_registry():
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import policy_observation_gate_mode
+    from blueprint_pipeline.droid_policy_canary_embodiment import apply_droid_policy_canary_profile
+    from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import _scene_plan
+    plan = apply_droid_policy_canary_profile(_scene_plan())
+    assert policy_observation_gate_mode({}, plan) == "native_official_droid_camera"
+    plan["policy_canary_embodiment_profile"]["arena_source"]["revision"] = "wrong"
+    with pytest.raises(RuntimeError, match="official_camera_profile_invalid"):
+        policy_observation_gate_mode({}, plan)
+
+
+def test_static_preflight_reports_independent_errors_together(tmp_path):
+    import json
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import preflight_policy_canary_runtime_directory
+    from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import _stage_runtime_root
+    runtime, _ = _stage_runtime_root(tmp_path)
+    (runtime / "native_task_packet/native_task_arena_packet_request.v1.json").write_text("{}")
+    path = runtime / "runtime_inputs/policy_execution_spec.pi05_droid.json"
+    spec = json.loads(path.read_text())
+    spec["execution_spec_digest"] = "sha256:" + "f" * 64
+    path.write_text(json.dumps(spec))
+    (runtime / "runtime_inputs/native_task_arena_construction_result.v1.json").unlink()
+    report = preflight_policy_canary_runtime_directory(runtime)
+    assert report["status"] == "blocked"
+    assert any("execution_spec.pi05_droid" in blocker for blocker in report["blockers"])
+    assert any("construction" in blocker for blocker in report["blockers"])
+    assert len(report["cells"]) == 10
+    assert report["provider_mutation_performed"] is False
+
+
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [

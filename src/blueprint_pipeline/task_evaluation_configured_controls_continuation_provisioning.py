@@ -70,6 +70,11 @@ CAMERA_TEMPLATE_SCHEMA_VERSION = "native_task_arena_packet_request.v1"
 WRIST_PARENT_PRIM_PATH = "{ENV_REGEX_NS}/Robot/Gripper/Robotiq_2F_85/base_link"
 RIGHTS_SCOPE = "internal_noncommercial_research_and_development_Task_Evaluation_Run"
 PHASES = ("construction", "controls")
+DESTINATION_PHASES = ("destination", "construction", "controls")
+
+
+def phase_names(context: Mapping[str, Any]) -> tuple[str, ...]:
+    return DESTINATION_PHASES if (context or {}).get('requires_destination_qualification') else PHASES
 DEFAULT_PHASE_HARD_CAP_USD = 2.0
 DEFAULT_PHASE_TTL_SECONDS = 9_000
 DEFAULT_HOURLY_RATE_USD = 0.8
@@ -282,6 +287,7 @@ def _preparation_context(
         "task_id": str(request["task"]["identity"]["id"]),
         "target_position_world_m": [float(item) for item in target],
         "documents": documents,
+        "requires_destination_qualification": isinstance(request['task'].get('destination'), Mapping),
     }
 
 
@@ -417,6 +423,20 @@ def _runtime_source_reference(
     external_layer_bucket: str | None,
     external_layer_min_bytes: int,
 ) -> dict[str, Any]:
+    # This consumer requires a sealed runtime packet and receipt, not an
+    # expanded source checkout. Verify that contract before publishing anything.
+    from .native_task_runtime_source_packet import verify_native_task_runtime_source_packet
+    try:
+        if payload_dir.is_symlink() or not payload_dir.is_dir():
+            raise ValueError("runtime_packet_root_missing")
+        verify_native_task_runtime_source_packet(
+            payload_dir / "native_task_runtime_source_packet.v1.json",
+            packet_path_override=payload_dir / "native_task_runtime_sources.zip",
+        )
+    except (OSError, ValueError) as exc:
+        raise ConfiguredControlsProvisioningError(
+            f"configured_controls_provisioning_runtime_packet_invalid:{exc}"
+        ) from exc
     wrapper = controls_root / "native_task_runtime_source_adapter_bundle.zip"
     receipt_path = controls_root / "native_task_runtime_source_build_receipt.v1.json"
     if wrapper.exists() and receipt_path.is_file():
@@ -529,6 +549,21 @@ def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def bounded_native_phase_budget(hard_cap_usd: float) -> dict[str, Any]:
+    """Fit the shared minimum native runtime inside the owner's existing cap."""
+    from .native_task_arena_paid_authority import (
+        MIN_TTL_SECONDS, native_task_arena_attempt_budget_blockers,
+    )
+
+    if isinstance(hard_cap_usd, bool) or not isinstance(hard_cap_usd, (int, float)) or not math.isfinite(hard_cap_usd) or hard_cap_usd <= 0:
+        raise ConfiguredControlsProvisioningError("configured_controls_provisioning_phase_spend_invalid")
+    ttl = min(DEFAULT_PHASE_TTL_SECONDS, max(MIN_TTL_SECONDS, int(hard_cap_usd * 3600 / DEFAULT_HOURLY_RATE_USD)))
+    rate = math.floor(min(DEFAULT_HOURLY_RATE_USD, hard_cap_usd * 3600 / ttl) * 1_000_000) / 1_000_000
+    if native_task_arena_attempt_budget_blockers(max_hourly_rate_usd=rate, hard_cap_usd=hard_cap_usd, hard_ttl_seconds=ttl):
+        raise ConfiguredControlsProvisioningError("configured_controls_provisioning_phase_spend_invalid")
+    return {"phase_hard_cap_usd": hard_cap_usd, "phase_ttl_seconds": ttl, "maximum_hourly_rate_usd": rate}
+
+
 def provision_configured_controls_continuation(
     *,
     expected_production_commit: str,
@@ -562,6 +597,8 @@ def provision_configured_controls_continuation(
     scene_intake_root: str | Path | None = None,
     configuration_source_commit: str | None = None,
     configuration_adoption: Mapping[str, Any] | None = None,
+    visual_review_continuation: Mapping[str, Any] | None = None,
+    completed_placement_adoption: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Author, publish, and seal every continuation input; return the intent path."""
 
@@ -580,8 +617,6 @@ def provision_configured_controls_continuation(
         )
     if scene_phase_attempts is None and str(authorization_reference).startswith("scene-intent:"):
         raise ConfiguredControlsProvisioningError("configured_controls_provisioning_scene_phase_attempts_missing")
-    if scene_phase_attempts is not None and set(scene_phase_attempts) != set(PHASES):
-        raise ConfiguredControlsProvisioningError("configured_controls_provisioning_scene_phase_attempts_invalid")
     if (
         isinstance(phase_hard_cap_usd, bool)
         or not isinstance(phase_hard_cap_usd, (int, float))
@@ -601,6 +636,9 @@ def provision_configured_controls_continuation(
         preparation_queue_root=Path(preparation_queue_root).expanduser(),
         expected_production_commit=configuration_source_commit or commit,
     )
+    native_phases = phase_names(context)
+    if scene_phase_attempts is not None and set(scene_phase_attempts) != set(native_phases):
+        raise ConfiguredControlsProvisioningError("configured_controls_provisioning_scene_phase_attempts_invalid")
     robot_asset = Path(robot_asset_usd_path).expanduser()
     if robot_asset.is_symlink() or not robot_asset.is_file():
         raise ConfiguredControlsProvisioningError(
@@ -723,7 +761,7 @@ def provision_configured_controls_continuation(
     _write_once(runtime_binding_path, runtime_binding)
     rights = context["documents"]["rights_admission"]["reference"]
     phases: dict[str, dict[str, str]] = {}
-    for phase in PHASES:
+    for phase in native_phases:
         phase_root = root / phase
         scene_owner_attempt = None
         if scene_phase_attempts is not None:
@@ -786,7 +824,7 @@ def provision_configured_controls_continuation(
             "authorization_path": str(phase_root / "authorization.v1.json"),
             "launch_authority_path": str(phase_root / "launch_authority.v1.json"),
         }
-        if phase == "construction":
+        if phase == native_phases[0]:
             _write_once(
                 phase_root / "lineage.v1.json",
                 {
@@ -815,6 +853,8 @@ def provision_configured_controls_continuation(
         intent = materialize_configured_controls_autostart_intent(
             configuration_source_commit=configuration_source_commit,
             configuration_adoption=configuration_adoption,
+            visual_review_continuation=visual_review_continuation,
+            completed_placement_adoption=completed_placement_adoption,
             expected_production_commit=commit,
             submitted_by="configured-controls-continuation-provisioning",
             team_namespace=context["team_namespace"],
@@ -826,6 +866,8 @@ def provision_configured_controls_continuation(
             profile_dir=Path(profile_dir).expanduser(),
             output_path=intent_path,
             max_inference_cost_usd=float(max_inference_cost_usd),
+            **({'max_rounds':1, 'max_input_tokens':12000} if visual_review_continuation is not None else {}),
+            **({'max_rounds':0} if completed_placement_adoption is not None else {}),
             openai_project_id=str(openai_project_id),
             openai_api_key_id=str(openai_api_key_id),
         )

@@ -985,3 +985,16 @@ def test_front_entry_construction_uses_off_sim_multistart_then_native_replay() -
     assert "native_execution_remains_" in source
     assert "reset_grasp_pose = servo.current_grasp_frame_pose_world()" in source
     assert "reset_body_pose = servo.current_body_pose_world()" not in source
+
+
+def test_snapshot_retains_distinct_target_marker_pixel_count(tmp_path):
+    import numpy as np
+    semantic = np.full((64,64), 7, dtype=np.int32)
+    semantic[:16,:16] = 8
+    snapshot = _snapshot_one_camera(rgb=np.full((64,64,3),128,dtype=np.uint8),
+        semantic=semantic, labels={"7": {"class": "task_object"}, "8": {"class": "task_target_marker"}},
+        output_root=tmp_path)
+    pixels = snapshot["cameras"][0]["semantic_label_pixels"]
+    assert pixels["task_target_marker"]["pixel_count"] == 256
+    assert pixels["task_support"]["pixel_count"] == 0
+    assert pixels["task_object"]["pixel_count"] == 3840

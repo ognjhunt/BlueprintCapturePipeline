@@ -43,6 +43,25 @@ def _mesh(stage, path, points, faces):
     return mesh
 
 
+def test_robot_preview_uses_default_root_and_includes_instanced_gripper(tmp_path):
+    from blueprint_pipeline.task_evaluation_robot_placement_geometry import _stage_triangles, _robot_root
+    points=[[0,0,0],[1,0,0],[0,1,0]]
+    part=Usd.Stage.CreateNew(str(tmp_path/'part.usda'))
+    part.SetDefaultPrim(UsdGeom.Xform.Define(part,'/Part').GetPrim())
+    _mesh(part,'/Part/Geometry',points,[[0,1,2]])
+    part.GetRootLayer().Save()
+    robot=Usd.Stage.CreateInMemory()
+    robot.SetDefaultPrim(UsdGeom.Xform.Define(robot,'/Robot').GetPrim())
+    _mesh(robot,'/Robot/Arm',points,[[0,1,2]])
+    proxy=UsdGeom.Xform.Define(robot,'/Robot/Gripper').GetPrim()
+    proxy.GetReferences().AddReference(str(tmp_path/'part.usda'))
+    proxy.SetInstanceable(True)
+    _mesh(robot,'/DemoBowl',points,[[0,1,2]])
+    triangles,paths=_stage_triangles(robot,root_prim=_robot_root(robot))
+    assert len(triangles)==2
+    assert set(paths)=={'/Robot/Arm','/Robot/Gripper/Geometry'}
+
+
 def _box(stage, path, minimum, maximum):
     x0, y0, z0 = minimum
     x1, y1, z1 = maximum
@@ -102,6 +121,35 @@ def _proposal(surface_id, position=(0.0, 0.0, 0.0), yaw=0.0):
             "orientation_xyzw": [0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)],
         },
     }
+
+
+def test_room_clear_robot_is_rejected_when_task_object_or_goal_occupies_reset_envelope(tmp_path):
+    from blueprint_pipeline.task_evaluation_robot_placement_task_geometry import task_occupancy_from_native_plan
+    scene, robot = _assets(tmp_path)
+    plan = {"plan_digest": "sha256:" + "a"*64, "subject_asset_id": "book",
+        "task_occupancy_required": True,
+        "subject_collision_bounds_scoring_frame_m": {"minimum": [-.1,-.1,-.01], "maximum": [.1,.1,.01]},
+        "start_scoring_pose_world": [0.,0.,.3,0.,0.,0.,1.],
+        "destination_position_world_m": [.8,0.,.3], "destination_orientation_xyzw": [0.,0.,0.,1.]}
+    index = build_robot_placement_geometry_index(scene_collision_usd_path=scene,
+        robot_asset_usd_path=robot, task_occupancy=task_occupancy_from_native_plan(plan))
+    floor = next(s for s in index.support_surfaces if s.prim_path == "/Scene/Floor")
+    for x, region in [(0., "subject_start"), (.8, "subject_destination")]:
+        gate = validate_robot_placement_geometry_candidate(index=index,
+            proposal=_proposal(floor.surface_id, position=(x,0.,0.)), target_position_world_m=[.8,0.,.5])
+        assert gate["scene_overlap_triangle_count"] == 0
+        assert gate["task_overlap_region_ids"] == [region]
+        assert gate["collision_passed"] is False
+        assert "robot_reset_bounds_overlap_task_object_or_destination" in gate["blockers"]
+    clear = validate_robot_placement_geometry_candidate(index=index,
+        proposal=_proposal(floor.surface_id, position=(.4,.5,0.)), target_position_world_m=[.8,0.,.5])
+    assert clear["task_overlap_region_ids"] == []
+    summary = summarize_robot_placement_geometry(index, target_position_world_m=[.8,0.,.5])
+    assert summary["task_occupancy_status"] == "available"
+    assert summary["placement_qualification"] == "provisional_geometry_and_position_ik_only"
+    previews = render_robot_placement_geometry_previews(index=index,
+        proposal=_proposal(floor.surface_id, position=(.4,.5,0.)), target_position_world_m=[.8,0.,.5])
+    assert all(p["render_provenance"]["task_occupancy_digest"] == index.task_occupancy["occupancy_digest"] for p in previews)
 
 
 def test_geometry_gate_uses_batched_support_coverage(tmp_path, monkeypatch) -> None:
@@ -207,7 +255,8 @@ def test_geometry_previews_are_digest_bound_multimodal_inputs(tmp_path) -> None:
         image_size=(320, 240),
     )
 
-    assert [image["label"] for image in images] == ["top_down_xy", "side_xz"]
+    assert [image["label"] for image in images] == ["top_down_xy", "side_task", "oblique"]
+    assert all(image['render_provenance']['depth_buffer_shared_by_scene_and_robot'] for image in images)
     assert all(image["digest"].startswith("sha256:") for image in images)
     assert all(image["image_url"].startswith("data:image/png;base64,") for image in images)
 

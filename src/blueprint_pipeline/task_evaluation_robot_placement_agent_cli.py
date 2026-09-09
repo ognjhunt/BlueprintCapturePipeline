@@ -84,6 +84,14 @@ def _persist_images(
             raise ValueError("robot_placement_generated_preview_digest_mismatch")
         path = output_dir / f"{prefix}-{index:02d}-{str(image.get('label') or 'view')}.png"
         path.write_bytes(payload)
+        provenance_record = {}
+        if image.get('render_provenance') is not None:
+            provenance = dict(image['render_provenance'])
+            if provenance.get('image_digest') != digest or provenance.get('render_digest') != canonical_digest(provenance, digest_field='render_digest'):
+                raise ValueError('robot_placement_preview_provenance_invalid')
+            provenance_path = path.with_suffix('.render.json')
+            write_json(provenance_path, provenance)
+            provenance_record = {'render_provenance_path': str(provenance_path), 'render_provenance_digest': provenance['render_digest']}
         records.append(
             {
                 "label": str(image.get("label") or path.stem),
@@ -92,6 +100,7 @@ def _persist_images(
                 "path": str(path),
                 "image_url": image_url,
                 "detail": str(image.get("detail") or "high"),
+                **provenance_record,
             }
         )
     return records
@@ -124,7 +133,12 @@ def run_robot_placement_cli(
     expected_visual_review_reuse_probability: float = 0.0,
     expected_proposal_reuse_count: int | None = None,
     expected_visual_review_reuse_count: int | None = None,
+    visual_review_continuation: Mapping[str, Any] | None = None,
+    placement_scene_owner: Mapping[str, Any] | None = None,
+    render_geometry_previews: bool = True,
 ) -> dict[str, Any]:
+    if not render_geometry_previews and not deterministic_selection:
+        raise ValueError('robot_placement_visual_previews_required')
     root = output_dir.expanduser().resolve()
     if root.exists() and any(root.iterdir()):
         raise ValueError("robot_placement_output_not_empty")
@@ -134,6 +148,7 @@ def run_robot_placement_cli(
     index = build_robot_placement_geometry_index(
         scene_collision_usd_path=scene_collision_usd,
         robot_asset_usd_path=robot_asset_usd,
+        task_occupancy=(task_trajectory or {}).get("task_occupancy"),
     )
     summary = summarize_robot_placement_geometry(
         index,
@@ -201,15 +216,14 @@ def run_robot_placement_cli(
         proposal=candidates[0],
         target_position_world_m=target_position_world_m,
         trajectory_waypoints_world_m=trajectory_waypoints,
-    )
-    overview_images.extend(
-        _persist_images(seed_previews, output_dir=preview_root, prefix="geometry-overview")
-    )
+    ) if render_geometry_previews else []
+    seed_images = _persist_images(seed_previews, output_dir=preview_root, prefix="geometry-overview")
+    overview_images.extend(seed_images)
     artifact_records: list[dict[str, Any]] = [
         {
             key: value
             for key, value in image.items()
-            if key in {"label", "digest", "size_bytes", "path"}
+            if key in {"label", "digest", "size_bytes", "path", "render_provenance_path", "render_provenance_digest"}
         }
         for image in overview_images
         if image.get("path")
@@ -227,6 +241,8 @@ def run_robot_placement_cli(
         )
 
     def renderer(proposal: Mapping[str, Any], round_index: int):
+        if not render_geometry_previews:
+            return []  # Analytic-only checkpoint; never used by the visual reviewer.
         images = render_robot_placement_geometry_previews(
             index=index,
             proposal=proposal,
@@ -242,7 +258,7 @@ def run_robot_placement_cli(
             {
                 key: value
                 for key, value in image.items()
-                if key in {"label", "digest", "size_bytes", "path"}
+                if key in {"label", "digest", "size_bytes", "path", "render_provenance_path", "render_provenance_digest"}
             }
             for image in persisted
         )
@@ -307,6 +323,8 @@ def run_robot_placement_cli(
             "task_context_digest": canonical_digest({
                 "target_position_world_m": [float(value) for value in target_position_world_m],
                 "robot_id": robot_id,
+                "task_occupancy": (task_trajectory or {}).get("task_occupancy"),
+                "placement_qualification": "provisional_geometry_and_position_ik_only",
                 "native_trajectory": task_trajectory,
             }),
             "task_trajectory_digest": trajectory_digest,
@@ -351,6 +369,19 @@ def run_robot_placement_cli(
         )
         return receipt
 
+    if visual_review_continuation is not None:
+        from .task_evaluation_retained_placement_review import run as run_retained_review
+        def corrected_renderer(proposal, round_index):
+            if (proposal['pose'] == candidates[0]['pose']
+                    and proposal['support_surface_id'] == candidates[0]['support_surface_id']):
+                return seed_images
+            return renderer(proposal,round_index)
+        return run_retained_review(source=visual_review_continuation, run_id=run_id,
+            scene_binding=scene_binding,task_binding=task_binding,task_trajectory=task_trajectory,
+            inventory=checkpoint,overview_images=overview_images,output_dir=root,artifacts=artifact_records,
+            validate_candidate=validator,render_candidate=corrected_renderer,
+            placement_scene_owner=placement_scene_owner or {},max_inference_cost_usd=max_inference_cost_usd)
+
     invoker = OpenAIAgentsSDKInvoker(
         robot_placement_agents_sdk_config(
             max_inference_cost_usd=max_inference_cost_usd,
@@ -389,6 +420,8 @@ def run_robot_placement_cli(
                 "candidate_pose_or_support_mutation_allowed": False,
             },
             task_context={
+                "task_occupancy": (task_trajectory or {}).get("task_occupancy"),
+                "placement_qualification": "provisional_geometry_and_position_ik_only",
                 "target_position_world_m": [
                     float(value) for value in target_position_world_m
                 ],

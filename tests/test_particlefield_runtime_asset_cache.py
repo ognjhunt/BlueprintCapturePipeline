@@ -20,6 +20,7 @@ from blueprint_pipeline.nvidia_3dgrut_particlefield_transcode import (
     UPSTREAM_SOURCE_REVISION as NVIDIA_3DGRUT_UPSTREAM_SOURCE_REVISION,
 )
 from blueprint_pipeline.particlefield_usd import write_particlefield_usd
+from blueprint_pipeline.particlefield_runtime_cache_build import materialize_automatic_particlefield
 
 
 def _upstream_asset(root: Path, source_digest: str) -> tuple[Path, Path]:
@@ -91,6 +92,59 @@ def _direct_transcode_asset(root: Path, source_digest: str) -> tuple[Path, Path]
     )
     receipt_path.write_text(json.dumps(receipt))
     return asset, receipt_path
+
+
+def test_automatic_cache_builds_once_and_reopens_exact_output(tmp_path: Path) -> None:
+    source = tmp_path / "source.usdz"
+    source.write_bytes(b"sealed source")
+    digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+    calls = []
+    def convert(*, source, source_digest, output, runtime_root):
+        calls.append(source_digest)
+        asset, receipt = _direct_transcode_asset(output, source_digest)
+        asset.rename(output / "scene_appearance.usdc")
+        receipt.rename(output / "particlefield_authoring_receipt.v1.json")
+    first = materialize_automatic_particlefield(
+        source_path=source, source_digest=digest, output_root=tmp_path / "first",
+        cache_root=tmp_path / "cache", converter=convert,
+    )
+    second = materialize_automatic_particlefield(
+        source_path=source, source_digest=digest, output_root=tmp_path / "second",
+        cache_root=tmp_path / "cache", converter=convert,
+    )
+    assert calls == [digest]
+    assert Path(first["asset_path"]).read_bytes() == Path(second["asset_path"]).read_bytes()
+    assert first["cache_manifest_digest"] == second["cache_manifest_digest"]
+    assert not list((tmp_path / "cache").glob(".building-*"))
+
+
+@pytest.mark.parametrize("failure", ["converter", "receipt", "incomplete", "oversize"])
+def test_automatic_cache_does_not_publish_failed_or_unbounded_builds(
+    tmp_path: Path, monkeypatch, failure: str,
+) -> None:
+    source = tmp_path / "source.usdz"
+    source.write_bytes(b"sealed source")
+    digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+    cache = tmp_path / "cache"
+    destination = cache / digest.removeprefix("sha256:")
+    if failure == "incomplete":
+        destination.mkdir(parents=True)
+    if failure == "oversize":
+        monkeypatch.setattr("blueprint_pipeline.particlefield_runtime_cache_build.MAXIMUM_AUTOMATIC_SOURCE_BYTES", 1)
+    calls = []
+    def convert(*, source, source_digest, output, runtime_root):
+        calls.append(True)
+        if failure == "converter":
+            raise ValueError("conversion_failed")
+        asset, receipt = _direct_transcode_asset(output, source_digest)
+        asset.rename(output / "scene_appearance.usdc")
+        receipt.rename(output / "particlefield_authoring_receipt.v1.json")
+        (output / "particlefield_authoring_receipt.v1.json").write_text("{}")
+    with pytest.raises(ValueError):
+        materialize_automatic_particlefield(source_path=source, source_digest=digest,
+            output_root=tmp_path / "episode", cache_root=cache, converter=convert)
+    assert not (destination / "particlefield_runtime_asset_cache.v1.json").exists()
+    assert bool(calls) == (failure in {"converter", "receipt"})
 
 
 def test_publish_and_materialize_cached_upstream_particlefield(tmp_path: Path) -> None:

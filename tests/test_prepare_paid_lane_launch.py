@@ -1007,6 +1007,26 @@ def test_native_context_reopens_independent_versioned_references(
         row["role"] for row in context["reference_bindings"]["rights_evidence"]
     ] == ["publisher_terms", "human_authority_record"]
 
+    destination_value = json.loads(context_file.read_text())
+    destination_value["lane"] = "native_task_arena_destination_qualification"
+    destination_ops = destination_value["operations"]
+    for name in ("terminal_feedback_adoption", "terminal_feedback_adoption_digest", "retain_warm_control_search"):
+        destination_ops.pop(name)
+    destination_fields = ("destination_probe_request", "configured_scene_support_plane",
+                          "destination_static_qualification", "destination_native_import_qualification", "destination_geometry")
+    for name in destination_fields:
+        destination_ops[name] = str(tmp_path / (name + ".json"))
+    destination_path = tmp_path / "destination-context.json"
+    destination_path.write_text(json.dumps(destination_value))
+    loaded = prep._load_native_context(destination_path, expected_lane="native_task_arena_destination_qualification")
+    assert "prior_webapp_lineage" not in loaded["reference_bindings"]
+    for name in destination_fields:
+        assert loaded[name] == destination_ops[name]
+    destination_ops.pop("destination_probe_request")
+    destination_path.write_text(json.dumps(destination_value))
+    with pytest.raises(prep.PaidLaneLaunchPreparationError, match="context_schema_invalid"):
+        prep._load_native_context(destination_path, expected_lane="native_task_arena_destination_qualification")
+
     packet_request_path = packet / "native_task_arena_packet_request.v1.json"
     packet_request_value = json.loads(packet_request_path.read_text(encoding="utf-8"))
     packet_request_value["appearance_variant"] = {
@@ -1539,3 +1559,141 @@ def test_set_root_symlink_is_refused_before_any_lane_step(
         )
 
     assert calls == []
+
+
+def test_configured_runtime_rights_use_derived_scope_and_exact_destination(tmp_path):
+    digest = "sha256:" + "a" * 64
+    tray_digest = "sha256:" + "b" * 64
+    request = {"request_digest": ""}
+    request["request_digest"] = prep._canonical_artifact_digest(request, digest_field="request_digest")
+    binding = {"semantic_role": "scene_collision", "source": {"sha256": digest, "size_bytes": 17}, "staged_sha256": digest, "staged_size_bytes": 17}
+    receipt = {"source_bindings": [binding], "request_digest": request["request_digest"]}
+    revision = {"source": {"provider_disclosure_decision": {"rights_admission_permits_upload": False, "human_authority_accepts_provider_terms": True}}, "geometry": {"configured_collision": {"digest": digest, "size_bytes": 17}}}
+    rights = {"private_provider_processing_allowed": True, "provider_disclosure": {"sage_collision_runtime_bytes_may_be_privately_processed": True, "provider_training_allowed": False, "public_redistribution_allowed": False, "provider_retention_rule": "exact run then teardown"}}
+    kwargs = dict(packet_receipt=receipt, packet_request=request, source_manifest={"artifacts": []}, configured_scene_revision=revision, rights_admission=rights)
+    prep._validate_provider_packet_source_rights(**kwargs)
+    rights["provider_disclosure"]["sage_collision_runtime_bytes_may_be_privately_processed"] = False
+    with pytest.raises(prep.PaidLaneLaunchPreparationError, match="provider_source_rights_invalid"):
+        prep._validate_provider_packet_source_rights(**kwargs)
+    rights["provider_disclosure"]["sage_collision_runtime_bytes_may_be_privately_processed"] = True
+    binding["source"]["sha256"] = "sha256:" + "c" * 64
+    with pytest.raises(prep.PaidLaneLaunchPreparationError, match="provider_source_rights_invalid"):
+        prep._validate_provider_packet_source_rights(**kwargs)
+    binding["source"]["sha256"] = digest
+    identity = {"id": "tray", "version": "v1"}
+    tray_rights = {"schema_version": "task_evaluation_rigid_destination_rights_admission.v1", "status": "admitted", "destination_identity": identity, "private_provider_processing_allowed": True, "provider_training_allowed": False, "public_redistribution_allowed": False, "rights_admission_digest": ""}
+    tray_rights["rights_admission_digest"] = prep._canonical_artifact_digest(tray_rights, digest_field="rights_admission_digest")
+    path = tmp_path / "tray-rights.json"
+    path.write_text(json.dumps(tray_rights))
+    destination = {"identity": identity, "asset": {"digest": tray_digest, "size_bytes": 12}, "rights_admission": str(path), "rights_admission_digest": prep._sha256_file(path)}
+    receipt["source_bindings"].append({"semantic_role": "task_support", "asset_id": "tray", "source": {"sha256": tray_digest, "size_bytes": 12}, "staged_sha256": tray_digest, "staged_size_bytes": 12})
+    with pytest.raises(prep.PaidLaneLaunchPreparationError, match="provider_source_rights_invalid"):
+        prep._validate_provider_packet_source_rights(**kwargs)
+    prep._validate_provider_packet_source_rights(**kwargs, destination=destination)
+    path.write_text('{}')
+    with pytest.raises(prep.PaidLaneLaunchPreparationError, match="destination_rights_invalid"):
+        prep._validate_provider_packet_source_rights(**kwargs, destination=destination)
+
+
+def test_every_native_preparation_command_passes_its_real_cli_parser(monkeypatch):
+    """Exercise producer-to-consumer argv for the whole graph before any work."""
+    import argparse
+    import importlib
+
+    class ParsedWithoutExecution(Exception):
+        pass
+
+    original = argparse.ArgumentParser.parse_args
+    observed = []
+
+    def parse_only(parser, args=None, namespace=None):
+        parsed = original(parser, args, namespace)
+        assert getattr(parsed, "execute", False) is False
+        observed.append(parsed)
+        raise ParsedWithoutExecution
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", parse_only)
+    for lane, steps in prep.LANES.items():
+        if not lane.startswith("native_task_arena_"):
+            continue
+        for step in steps:
+            context = {name: "/tmp/preparation-parser/" + name for name in prep.step_placeholders(step)}
+            context.update(python="python", repository_root="/repo", provider="vast", machine_avoidlist=[], scene_owner_attempt=[], maximum_hourly_rate_usd=0.5, hard_total_spend_cap_usd=0.3, hard_ttl_seconds=1800, source_commit="a" * 40, profile_id="profile-1", revision="r1", authorized_on="2026-09-09T12:00:00+00:00", standing_authorization_expires_at="2026-09-09T17:00:00+00:00")
+            argv = prep._step_argv(step, context)
+            if argv[1] == "-m":
+                module = importlib.import_module(argv[2])
+                arguments = argv[3:]
+            else:
+                module = importlib.import_module("scripts." + Path(argv[1]).stem)
+                arguments = argv[2:]
+            with pytest.raises(ParsedWithoutExecution):
+                module.main(arguments)
+    assert len(observed) == sum(len(steps) for lane, steps in prep.LANES.items() if lane.startswith("native_task_arena_"))
+
+
+def test_native_genesis_refreshes_inventory_without_changing_consent_or_budget(tmp_path):
+    old = tmp_path / "old-zero.json"
+    old.write_text('{"retained":true}')
+    context = {"set_root": str(tmp_path / "launch"), "service_account": pwd.getpwuid(os.getuid()).pw_name, "service_group": grp.getgrgid(os.getgid()).gr_name, "initial_provider_zero": str(old), "authorized_on": "2026-01-01T00:00:00+00:00", "authorization_recorded_on": "2026-01-01T00:00:00+00:00", "hard_total_spend_cap_usd": 0.266666}
+    zero = {"schema_version": "adp_paid_provider_zero.v1", "provider": "vast", "api_confirmed": True, "provider_zero": True, "global_live_resource_count": 0, "inventory": [], "observed_at_utc": "2026-09-09T12:00:00+00:00", "provider_zero_digest": ""}
+    zero["provider_zero_digest"] = prep._canonical_artifact_digest(zero, digest_field="provider_zero_digest")
+    result = prep.refresh_native_initial_provider_zero(context, collector=lambda: zero)
+    assert result["initial_provider_zero"] != str(old)
+    assert json.loads(Path(result["initial_provider_zero"]).read_text()) == zero
+    assert old.read_text() == '{"retained":true}'
+    assert result["authorization_recorded_on"] == context["authorization_recorded_on"]
+    assert result["hard_total_spend_cap_usd"] == context["hard_total_spend_cap_usd"]
+    assert result["reference_bindings"]["initial_provider_zero_refresh"]["prior_sha256"] == prep._sha256_file(old)
+    zero["provider_zero"] = False
+    with pytest.raises(prep.PaidLaneLaunchPreparationError, match="refresh_invalid"):
+        prep.refresh_native_initial_provider_zero(context, collector=lambda: zero)
+
+
+def test_continuing_native_lane_does_not_replace_terminal_provider_evidence():
+    context = {"prior_provider_zero": "/retained/terminal.json"}
+    def no_query():
+        pytest.fail("continuing lane must retain its terminal evidence")
+    assert prep.refresh_native_initial_provider_zero(context, collector=no_query) == context
+
+
+def test_construction_recovery_requires_real_predecessor_without_destination():
+    import jsonschema
+    from scripts import prepare_paid_lane_launch as prepare
+
+    steps = prepare.LANES["native_task_arena_construction_recovery"]
+    authority = next(step for step in steps if step.step_id == "paid_authority")
+    for flag in ("--prior-authority", "--prior-result", "--prior-provider-zero",
+                 "--prior-spend-reconciliation"):
+        assert flag in authority.argv
+    assert "--initial-provider-zero" not in authority.argv
+    bundle = next(step for step in steps if step.step_id == "provider_bundle")
+    assert "blueprint_pipeline.native_task_arena_construction_bundle" in bundle.argv
+    assert all("destination" not in arg for arg in bundle.argv)
+    terminal = next(step for step in steps if step.step_id == "terminal_rehearsal")
+    assert terminal.argv[terminal.argv.index("--lane") + 1] == "native_task_arena_construction_recovery"
+    schema = json.loads((Path(prepare.__file__).resolve().parents[1] /
+        "docs/schemas/native_task_arena_launch_preparation_context.v2.schema.json").read_text())
+    jsonschema.Draft202012Validator.check_schema(schema)
+    assert "native_task_arena_construction_recovery" in schema["properties"]["lane"]["enum"]
+    errors = list(jsonschema.Draft202012Validator(schema).iter_errors({
+        "lane": "native_task_arena_construction_recovery", "operations": {},
+    }))
+    messages = [error.message for error in errors]
+    for required in ("prior_authority", "prior_result", "prior_provider_zero",
+                     "prior_spend_reconciliation", "prior_launch_receipt", "prior_webapp_sync"):
+        assert any(repr(required) + " is a required property" == message for message in messages)
+    assert not any("destination_qualification_result" in message or
+                   "construction_result" in message for message in messages)
+
+
+def test_recovery_schema_admits_only_bound_warm_control_search():
+    import jsonschema
+    schema = json.loads((Path(prep.__file__).resolve().parents[1] /
+        "docs/schemas/native_task_arena_launch_preparation_context.v2.schema.json").read_text())
+    validator = jsonschema.Draft202012Validator(schema)
+    def conditional_errors(lane, operations):
+        return [e for e in validator.iter_errors({"lane": lane, "operations": operations})
+                if e.validator == "not"]
+    assert not conditional_errors("native_task_arena_construction_recovery", {"retain_warm_control_search": True})
+    assert conditional_errors("native_task_arena_controls", {"retain_warm_control_search": True})
+    assert conditional_errors("native_task_arena_construction_recovery", {"terminal_feedback_adoption": "/adoption.json"})

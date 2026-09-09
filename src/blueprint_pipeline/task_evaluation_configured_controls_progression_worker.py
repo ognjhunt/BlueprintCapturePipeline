@@ -474,6 +474,39 @@ def _queue_result(queue_root: Path, preparation_id: str) -> dict[str, Any] | Non
     return _load(matches[0], blocker="configured_controls_worker_preparation_result_invalid")
 
 
+def _compilation_ready(*, preparation: Mapping[str, Any], queue_root: Path,
+                       source_commit: str) -> bool:
+    if preparation.get("status") != "queued_for_production_episode_compilation":
+        return True
+    compilation_id = str(preparation.get("episode_compilation_id") or "")
+    digest = str(preparation.get("episode_compilation_queue_envelope_digest") or "")
+    if not compilation_id or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_compilation_binding_invalid")
+    path = queue_root / "results" / f"{compilation_id}-{digest.removeprefix('sha256:')}.json"
+    if not path.is_file():
+        return False
+    result = _load(path, blocker="configured_controls_compilation_invalid")
+    if (result.get("schema_version") != "task_evaluation_episode_compilation_result.v1"
+            or result.get("status") != "compiled_for_production_launch"
+            or result.get("compilation_id") != compilation_id
+            or result.get("run_id") != preparation.get("run_id")
+            or result.get("source_commit") != source_commit
+            or result.get("configured_scene_revision_digest") != preparation.get("configured_scene_revision_digest")
+            or result.get("result_digest") != canonical_digest(result, digest_field="result_digest")):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_compilation_invalid")
+    return True
+
+
+def _activation_capacity_ready(queue_root: Path) -> bool:
+    ledger = os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT")
+    if not ledger:
+        return True  # The activation worker always retains its own disk gate.
+    from .control_plane_disk_budget import disk_headroom, footprint_bytes
+    return disk_headroom(target_root=queue_root, reservation_root=ledger)["available_bytes"] >= footprint_bytes("launch_activation")
+
+
 def _policy_canary_activation_id(run_id: str) -> str:
     proposed = f"{run_id}-activation"
     if len(proposed) <= 192 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", proposed):
@@ -1213,6 +1246,8 @@ def _production_submitter(
                     "--request", str(request_path),
                     "--secret-file", str(secret_file),
                     "--receipt-out", str(receipt_path),
+                    # The immutable request may already be accepted after a lost response.
+                    "--allow-replay",
                     "--endpoint", endpoint,
                 ],
                 cwd=repo_root,
@@ -1252,6 +1287,7 @@ def advance_configured_controls_plan(
     progression_root: str | Path,
     preparation_queue_root: str | Path,
     activation_queue_root: str | Path,
+    episode_compilation_queue_root: str | Path | None = None,
     publisher_factory: PublisherFactory = configured_controls_object_store_publisher,
     release_window_publisher_factory: PublisherFactory | None = None,
     submitter: Submitter | None = None,
@@ -1269,6 +1305,8 @@ def advance_configured_controls_plan(
         )
 
     plan = _plan(Path(plan_path).expanduser())
+    compilation_queue = Path(episode_compilation_queue_root or
+        Path(preparation_queue_root).parent / "task-evaluation-episode-compilations")
     run_root = Path(launch_state_root).expanduser() / plan["source_launch_id"]
     # Scope progression state to the production commit. The sealed receipt
     # carries the episode preparation id, and preparation results are
@@ -1394,6 +1432,13 @@ def advance_configured_controls_plan(
             statuses={"destination_qualification_activation_queued"},
         )
         if destination_activation is None:
+            if not _compilation_ready(preparation=destination_preparation,
+                    queue_root=compilation_queue, source_commit=plan["expected_production_commit"]):
+                return {"status": "awaiting_destination_qualification_compilation",
+                        "source_launch_id": plan["source_launch_id"]}
+            if not _activation_capacity_ready(Path(activation_queue_root)):
+                return {"status": "awaiting_destination_activation_capacity",
+                        "source_launch_id": plan["source_launch_id"]}
             lineage = _input(
                 destination_phase.get("lineage_path"),
                 blocker="configured_controls_worker_lineage_missing",
@@ -1537,6 +1582,11 @@ def advance_configured_controls_plan(
         construction_activation_path, statuses={"construction_activation_queued"}
     )
     if construction_activation is None:
+        if not _compilation_ready(preparation=preparation, queue_root=compilation_queue,
+                source_commit=plan["expected_production_commit"]):
+            return {"status": "awaiting_construction_compilation", "source_launch_id": plan["source_launch_id"]}
+        if not _activation_capacity_ready(Path(activation_queue_root)):
+            return {"status": "awaiting_construction_activation_capacity", "source_launch_id": plan["source_launch_id"]}
         construction_lane = (
             "native_task_arena_construction_after_destination"
             if destination_enabled
@@ -1620,6 +1670,8 @@ def advance_configured_controls_plan(
         controls_activation_path, statuses={"controls_activation_queued"}
     )
     if controls_activation is None:
+        if not _activation_capacity_ready(Path(activation_queue_root)):
+            return {"status": "awaiting_controls_activation_capacity", "source_launch_id": plan["source_launch_id"]}
         predecessor = _construction_predecessor(
             launch_state_root=Path(launch_state_root),
             construction_launch_id=str(construction_launch["launch_id"]),
@@ -1903,10 +1955,6 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
         ) as exc:
             rows.append({"status": "blocked", "source_launch_id": run_root.name, "blockers": [str(exc)]})
     configured_controls_kwargs = dict(kwargs)
-    # This root belongs only to the policy-canary branch above. Forwarding it
-    # into the older configured-controls transition caused the production CLI
-    # to fail before it could revisit the completed canary compilation.
-    configured_controls_kwargs.pop("episode_compilation_queue_root", None)
     for path in sorted(plan_root.glob("*.json")) if plan_root.is_dir() else []:
         owner_blocker = owner_scope.plan_blocker(path, launch_state_root)
         if owner_blocker:

@@ -96,3 +96,22 @@ def test_prior_native_result_supplies_exact_next_round_trajectory() -> None:
         match="robot_placement_native_construction_result_invalid",
     ):
         placement_trajectory_from_native_result(result)
+
+
+def test_task_volumes_use_source_bounds_at_pickup_and_rotated_destination():
+    import math
+    plan = _plan()
+    plan.update(subject_asset_id="book", task_occupancy_required=True,
+        subject_collision_bounds_scoring_frame_m={"minimum": [-.1, -.2, -.01], "maximum": [.1, .2, .01]},
+        start_scoring_pose_world=[1., 2., .3, 0., 0., 0., 1.],
+        destination_position_world_m=[2., 3., .3],
+        destination_orientation_xyzw=[0., 0., math.sqrt(.5), math.sqrt(.5)])
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    occupancy = placement_trajectory_from_native_plan(plan)["task_occupancy"]
+    assert occupancy["source_plan_digest"] == plan["plan_digest"]
+    assert occupancy["regions"][0]["bounds_world_m"]["minimum"] == pytest.approx([.9, 1.8, .29])
+    assert occupancy["regions"][1]["bounds_world_m"]["maximum"] == pytest.approx([2.2, 3.1, .31])
+    plan.pop("subject_collision_bounds_scoring_frame_m")
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    with pytest.raises(ValueError, match="required_task_collision_bounds_missing"):
+        placement_trajectory_from_native_plan(plan)

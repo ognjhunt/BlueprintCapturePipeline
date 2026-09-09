@@ -63,6 +63,7 @@ CANARY_NAME_PREFIXES = (
     # labelled paid stages. Each stage arms before create and hands the exact
     # started Vast instance id to this watchdog.
     "blueprint-native-task-arena-",
+    "blueprint-native-task-destination-qualification-",
     "blueprint-native-task-controls-",
     "blueprint-native-task-policy-",
     "blueprint-native-warehouse-camera-",

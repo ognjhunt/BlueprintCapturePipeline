@@ -13,6 +13,8 @@ from collections.abc import Mapping
 
 
 CONSTRUCTION_RUNTIME_MODULE_NAMES = (
+    "native_task_camera_start_configuration.py",
+    "franka_kinematics.py",
     "articulation_graph_contract.py",
     "articulated_control_planner.py",
     "decision_evidence_contracts.py",
@@ -89,6 +91,8 @@ DESTINATION_QUALIFICATION_RUNTIME_MODULE_NAMES = tuple(
 )
 
 CONTROLS_RUNTIME_MODULE_NAMES = (
+    "native_task_camera_start_configuration.py",
+    "franka_kinematics.py",
     "policy_scientific_reset.py",
     "adp009d_control_episode.py",
     "adp009d_contact_envelope.py",

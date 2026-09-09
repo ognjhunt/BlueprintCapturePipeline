@@ -47,7 +47,7 @@ PROVIDER_RESULT_FILENAME = "native_task_arena_policy_canary_session_result.v1.js
 CANONICAL_ALLOCATOR = (
     "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"
 )
-CONTROL_MODES = frozenset({"nonblocking_diagnostic_pending", "nonblocking_diagnostic_bound", "required_before_policy"})
+CONTROL_MODES = frozenset({"nonblocking_diagnostic_pending", "nonblocking_diagnostic_bound", "nonblocking_omitted_by_user", "required_before_policy"})
 _REGISTRY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -155,6 +155,23 @@ def _execution_release(value: Any) -> dict[str, Any] | None:
     return release
 
 
+def validate_control_omission_authority(value: Mapping[str, Any], *, contract_digest: str) -> dict[str, Any]:
+    authority = json.loads(json.dumps(dict(value), allow_nan=False))
+    if (authority.get("schema_version") != "task_evaluation_diagnostic_control_omission_authority.v1"
+            or authority.get("run_kind") != RUN_KIND
+            or authority.get("claim_ceiling") != CLAIM_CEILING
+            or not str(authority.get("authorized_by") or "").strip()
+            or not str(authority.get("authorization_reference") or "").strip()
+            or authority.get("omitted_controls") != ["zero_action_negative", "deterministic_scripted_positive"]
+            or not _digest(authority.get("source_task_success_contract_digest"))
+            or authority.get("result_task_success_contract_digest") != contract_digest
+            or authority.get("task_scoring_criteria_changed") is not False
+            or authority.get("qualified_comparison_permitted") is not False
+            or authority.get("authority_digest") != canonical_digest(authority, digest_field="authority_digest")):
+        raise PolicyCanarySessionError("policy_canary_control_omission_authority_invalid")
+    return authority
+
+
 def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate the canary-only base-scene and resolved-cell input set.
 
@@ -257,7 +274,14 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         strict_controls = (task_success_contract.get("criteria") or {}).get("controls", {}).get("mode") == "required_per_cell"
         if strict_controls != (mode == "required_before_policy"):
             raise PolicyCanarySessionError("policy_canary_control_requirement_mismatch")
-        if mode in {"nonblocking_diagnostic_pending", "required_before_policy"}:
+        if mode == "nonblocking_omitted_by_user":
+            if control.get("typed_gap") != "controls_omitted_by_user_request" or "receipt" in control:
+                raise PolicyCanarySessionError("policy_canary_control_gap_invalid")
+            validate_control_omission_authority(
+                _mapping(control.get("omission_authority")),
+                contract_digest=task_success_contract["contract_digest"],
+            )
+        elif mode in {"nonblocking_diagnostic_pending", "required_before_policy"}:
             if control.get("typed_gap") != "controls_pending_at_submission" or "receipt" in control:
                 raise PolicyCanarySessionError("policy_canary_control_gap_invalid")
         else:
@@ -843,6 +867,9 @@ def execute_paired_session(
                     "provider_zero_confirmed": False,
                     "failure_type": type(exc).__name__,
                 }
+    raw_failure_codes = getattr(open_failure, "errors", ())
+    if not isinstance(raw_failure_codes, (list, tuple)):
+        raw_failure_codes = ()
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "blocked",
@@ -865,6 +892,11 @@ def execute_paired_session(
         "episodes": episodes,
         "session_closeout": closeout,
         "session_failure_type": type(open_failure).__name__ if open_failure else None,
+        "session_failure_codes": sorted({
+            code for code in raw_failure_codes
+            if isinstance(code, str)
+            and re.fullmatch(r"[a-z][a-z0-9_]*(?::[A-Za-z0-9_.-]{1,80})?", code)
+        }),
         "scene_promotion_performed": False,
         "official_ranking_performed": False,
         "candidate_policy_queried": any(
