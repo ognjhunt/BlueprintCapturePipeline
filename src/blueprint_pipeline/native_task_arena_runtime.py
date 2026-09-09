@@ -1173,6 +1173,9 @@ def build_native_task_arena_environment(
         official_policy_camera = (
             preserve_policy_cameras and parameters["role"] in policy_camera_roles
         )
+        if official_policy_camera and parameters["role"] == "external" and plan.get("policy_canary_camera_start_configuration") is not None:
+            from .native_task_camera_start_configuration import external_camera_offset_position
+            camera_cfg.offset.pos = tuple(external_camera_offset_position(plan))
         if not official_policy_camera:
             camera_cfg.prim_path = parameters["prim_path"]
             camera_cfg.offset.pos = tuple(parameters["offset_position_m"])

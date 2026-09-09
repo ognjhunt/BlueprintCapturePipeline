@@ -13,6 +13,8 @@ from blueprint_pipeline.droid_policy_canary_embodiment import (
 )
 from blueprint_pipeline.native_task_camera_start_configuration import (
     camera_framing_report,
+    external_camera_offset_position,
+    resolved_camera_matrices,
     validate_camera_start_configuration,
 )
 
@@ -92,3 +94,16 @@ def test_resealed_default_reset_is_refused_before_gpu():
     binding["configuration_digest"] = canonical_digest(binding, digest_field="configuration_digest")
     with pytest.raises(ValueError, match="final_reset_does_not_frame_task"):
         apply_droid_policy_canary_profile(plan)
+
+
+def test_preregistered_camera_shift_reaches_the_official_parent_frame():
+    import numpy as np
+    plan = fixture()
+    binding = plan["policy_canary_camera_start_configuration"]
+    nominal = resolved_camera_matrices(plan, binding["source_joint_chain"], binding["joint_reset_positions_rad"])["external"][0]
+    plan["scenario"] = {"parameters": {"external_camera_x_delta_m": 0.02}}
+    shifted = resolved_camera_matrices(plan, binding["source_joint_chain"], binding["joint_reset_positions_rad"])["external"][0]
+    np.testing.assert_allclose(shifted[:3, 3]-nominal[:3, 3], [0.02, 0., 0.], atol=1e-12)
+    # The base faces 180 degrees, so a world-positive shift is parent-negative.
+    assert external_camera_offset_position(plan)[0] == pytest.approx(0.03)
+    assert validate_camera_start_configuration(plan, binding) == binding

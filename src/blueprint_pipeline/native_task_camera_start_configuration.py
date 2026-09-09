@@ -68,6 +68,16 @@ def joint_body_poses(chain, joints, base_pose) -> dict[str, np.ndarray]:
     return poses
 
 
+def external_camera_offset_position(plan) -> list[float]:
+    """Apply the preregistered world-X shift in the DROID camera's parent frame."""
+    delta = float(((plan.get("scenario") or {}).get("parameters") or {}).get("external_camera_x_delta_m", 0.0))
+    if not math.isfinite(delta) or abs(delta) > 0.1:
+        raise ValueError("policy_camera_external_variation_out_of_bounds")
+    base = plan["robot"]["base_pose_world"]
+    rotation = pose_matrix(base["position_world_m"], base["orientation_xyzw"])[:3, :3]
+    return (np.asarray(EXTERNAL_POSITION) + rotation.T @ np.asarray([delta, 0., 0.])).tolist()
+
+
 def resolved_camera_matrices(plan, chain, joints) -> dict[str, tuple[np.ndarray, list[list[float]]]]:
     base = plan["robot"]["base_pose_world"]
     poses = joint_body_poses(chain, joints, base)
@@ -77,7 +87,7 @@ def resolved_camera_matrices(plan, chain, joints) -> dict[str, tuple[np.ndarray,
     k = overview["intrinsics"]
     return {
         "external": (pose_matrix(base["position_world_m"], base["orientation_xyzw"])
-                     @ pose_matrix(EXTERNAL_POSITION, EXTERNAL_QUATERNION_XYZW),
+                     @ pose_matrix(external_camera_offset_position(plan), EXTERNAL_QUATERNION_XYZW),
                      [[500., 0., 640.], [0., 500., 360.], [0., 0., 1.]]),
         "wrist": (poses[BODY] @ pose_matrix(WRIST_POSITION, WRIST_QUATERNION_XYZW),
                   [[2000/3, 0., 640.], [0., 2000/3, 360.], [0., 0., 1.]]),
