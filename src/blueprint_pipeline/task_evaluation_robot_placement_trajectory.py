@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_robot_placement_task_geometry import task_occupancy_from_native_plan, validate_task_occupancy
 
 
 SCHEMA_VERSION = "task_evaluation_robot_placement_trajectory.v1"
@@ -113,6 +114,7 @@ def placement_trajectory_from_native_plan(
         "schema_version": SCHEMA_VERSION,
         "source_plan_schema_version": plan["schema_version"],
         "source_plan_digest": plan["plan_digest"],
+        "task_occupancy": task_occupancy_from_native_plan(plan),
         "task_kind": str(plan.get("task_kind") or ""),
         "manipulation_strategy": str(plan.get("manipulation_strategy") or ""),
         "arrival_tolerance_m": float(
@@ -189,6 +191,8 @@ def validate_robot_placement_trajectory(
     phases = trajectory.get("phases")
     if not isinstance(phases, list) or not phases:
         raise RobotPlacementTrajectoryError("robot_placement_trajectory_invalid")
+    if trajectory.get("task_occupancy") is not None:
+        validate_task_occupancy(trajectory["task_occupancy"])
     return trajectory
 
 

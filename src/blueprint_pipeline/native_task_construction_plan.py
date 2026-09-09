@@ -1908,6 +1908,8 @@ def materialize_rigid_construction_phase_plan(
         "asset_root_reset_pose_world": [*root_position, *root_orientation],
         "asset_root_from_scoring_frame": scoring_transform,
         "start_scoring_pose_world": start_pose,
+        "subject_collision_bounds_scoring_frame_m": task_spec.get("subject_collision_bounds_scoring_frame_m"),
+        "task_occupancy_required": (task_spec.get("configured_success_criteria") or {}).get("owner_success_contract_required") is True,
         "start_position_world_m": start,
         "destination_position_world_m": destination,
         "destination_orientation_xyzw": destination_orientation,

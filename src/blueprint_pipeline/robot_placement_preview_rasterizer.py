@@ -115,7 +115,16 @@ def render(
         [[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]]
     )
     robot = index.robot_triangles @ rotation.T + position
-    focus = np.concatenate([robot.reshape(-1, 3), path, target.reshape(1, 3)])
+    task_boxes = []
+    box_faces = np.asarray([[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5],
+                            [0, 4, 5], [0, 5, 1], [2, 3, 7], [2, 7, 6],
+                            [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]])
+    for region in (index.task_occupancy or {}).get("regions", []):
+        bounds = region["bounds_world_m"]
+        corners = np.asarray(list(product(*zip(bounds["minimum"], bounds["maximum"], strict=True))))
+        task_boxes.append(corners[box_faces])
+    task_triangles = np.concatenate(task_boxes) if task_boxes else np.empty((0, 3, 3))
+    focus = np.concatenate([robot.reshape(-1, 3), task_triangles.reshape(-1, 3), path, target.reshape(1, 3)])
     crop_low, crop_high = focus.min(axis=0) - 0.30, focus.max(axis=0) + 0.30
     selected = np.flatnonzero(
         np.all(index.triangle_maximum >= crop_low, axis=1)
@@ -130,8 +139,9 @@ def render(
         [(113, 164, 207) if int(i) in support_ids else (191, 197, 204) for i in selected],
         dtype=float,
     ).reshape(-1, 3)
-    triangles = np.concatenate([index.triangles[selected], robot])
-    colours = np.concatenate([colours, np.tile([218.0, 75.0, 57.0], (len(robot), 1))])
+    triangles = np.concatenate([index.triangles[selected], robot, task_triangles])
+    colours = np.concatenate([colours, np.tile([218.0, 75.0, 57.0], (len(robot), 1)),
+                              np.tile([162.0, 67.0, 190.0], (len(task_triangles), 1))])
     forward = np.asarray([math.cos(yaw), math.sin(yaw), 0.0])
     up = np.asarray([0.0, 0.0, 1.0])
     side_depth = np.cross(forward, up)
@@ -192,7 +202,7 @@ def render(
         draw.line([point(position), point(position + 0.22 * forward)], fill=(238, 148, 35), width=4)
         draw.text(
             (12, 8),
-            f"{label} | opaque local geometry | red robot, blue support, gray scene",
+            f"{label} | red robot, blue support, gray scene, purple task bounds",
             fill=(25, 30, 35),
         )
         draw.text(
@@ -210,6 +220,7 @@ def render(
             "renderer_module_digest": "sha256:" + hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "scene_digest": index.scene_digest,
             "robot_asset_digest": index.robot_asset_digest,
+            "task_occupancy_digest": (index.task_occupancy or {}).get("occupancy_digest"),
             "pose": dict(pose),
             "target_position_world_m": target.tolist(),
             "trajectory_world_m": path.tolist(),
