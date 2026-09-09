@@ -95,9 +95,13 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
     worker._require(not (directory/'revoked.json').exists(), 'authority_revoked')
     expiry = intake.effective_execution_expiry(directory, intent)
     worker._require(moment < expiry, 'authority_expired')
+    from . import task_evaluation_visual_review_continuation as visual
+    review_continuation = visual.discover(config=config,intent_id=intent_id,source=source,
+        expected_commit=expected_production_commit)
     from .task_evaluation_terminal_adoption_retirement import retire_unmaterialized_adoptions
     retire_unmaterialized_adoptions(config=config, intent_id=intent_id,
-        source=source, expected_production_commit=expected_production_commit)
+        source=source, expected_production_commit=expected_production_commit,
+        visual_review_continuation=review_continuation)
     request = intake.validate_request(intent['request'], now=intent['accepted_at_epoch'])
     binding = catalog['bindings'].get(request['task'].get('robot_binding_id'))
     worker._require(isinstance(binding, dict) and binding.get('expected_production_commit') == expected_production_commit, 'runtime_release_mismatch')
@@ -110,10 +114,15 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
     cap = min(float(binding.get('phase_hard_cap_usd', producer.DEFAULT_PHASE_HARD_CAP_USD)),
               float(original_caps['construction']), float(original_caps['controls']))
     inference_cap = min(producer.DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD, float(original_caps['placement']))
+    if review_continuation is not None:
+        cap = min(cap, visual.NATIVE_CAP)
+        inference_cap = visual.REVIEW_CAP
     link = worker._configured_scene_preparation_link(intent=intent, preparation_queue_root=Path(config['preparation_queue_root']), expected_production_commit=source['source_commit'])
     worker._require(link is not None, 'terminal_adoption_preparation_missing')
     identity = {'owner_intent_digest': intent['intent_digest'], 'adoption': source['adoption'],
                 'execution_source_commit': expected_production_commit, 'catalog_binding_digest': canonical_digest({k:v for k,v in binding.items() if k not in {'project_spend_reconciliation', 'project_spend_observed_at_epoch'}})}
+    if review_continuation is not None:
+        identity['visual_review_continuation'] = review_continuation
     key = canonical_digest(identity).removeprefix('sha256:')
     root = Path(config['controls_root'])/'terminal-adoptions'/intent_id/key
     worker._require(root.is_absolute() and not any(p.is_symlink() for p in (root, *root.parents)), 'controls_root_unsafe')
@@ -132,7 +141,9 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
             attempt = intake.reserve_scene_attempt(queue_root=config['scene_root'], intent_id=intent_id,
                 attempt_id='controls-'+key[:40]+'-'+phase, source_commit=expected_production_commit,
                 runtime_digest=binding['runtime_digest'], input_digest='sha256:'+key,
-                provider=provider, maximum_spend_usd=amount, now=moment)
+                provider=provider, maximum_spend_usd=amount, now=moment,
+                visual_review_authority=(visual.reference(review_continuation['review_authority'])
+                    if phase == 'placement' and review_continuation is not None else None))
             if phase != 'placement':
                 phases[phase] = bind_scene_attempt(attempt)
         retained_path = root/'terminal_adoption_inputs.json'
@@ -147,6 +158,7 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
         issued = retained['issued_at_epoch']
         authority = 'scene-intent:'+intent['intent_digest']
         result = producer.provision_configured_controls_continuation(expected_production_commit=expected_production_commit,
+            visual_review_continuation=review_continuation,
             configuration_source_commit=source['source_commit'], configuration_adoption=source['adoption'],
             preparation_result_path=Path(config['preparation_queue_root'])/'results'/link['result_filename'],
             preparation_queue_root=config['preparation_queue_root'], robot_asset_usd_path=robot,

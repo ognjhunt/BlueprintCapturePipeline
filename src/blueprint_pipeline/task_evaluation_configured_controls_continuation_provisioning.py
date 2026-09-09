@@ -562,6 +562,7 @@ def provision_configured_controls_continuation(
     scene_intake_root: str | Path | None = None,
     configuration_source_commit: str | None = None,
     configuration_adoption: Mapping[str, Any] | None = None,
+    visual_review_continuation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Author, publish, and seal every continuation input; return the intent path."""
 
@@ -815,6 +816,7 @@ def provision_configured_controls_continuation(
         intent = materialize_configured_controls_autostart_intent(
             configuration_source_commit=configuration_source_commit,
             configuration_adoption=configuration_adoption,
+            visual_review_continuation=visual_review_continuation,
             expected_production_commit=commit,
             submitted_by="configured-controls-continuation-provisioning",
             team_namespace=context["team_namespace"],
@@ -826,6 +828,7 @@ def provision_configured_controls_continuation(
             profile_dir=Path(profile_dir).expanduser(),
             output_path=intent_path,
             max_inference_cost_usd=float(max_inference_cost_usd),
+            **({'max_rounds':1, 'max_input_tokens':12000} if visual_review_continuation is not None else {}),
             openai_project_id=str(openai_project_id),
             openai_api_key_id=str(openai_api_key_id),
         )

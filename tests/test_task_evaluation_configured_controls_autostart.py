@@ -283,6 +283,18 @@ def test_worker_materializes_cpu_autostart_before_advancing_plan(
     assert report["provider_mutation_performed"] is False
 
 
+def test_paid_agent_does_not_repeat_an_existing_failed_or_interrupted_attempt(tmp_path):
+    attempt=tmp_path/'agent-attempts'/'attempt_000'
+    attempt.mkdir(parents=True)
+    def forbidden(**kwargs):
+        raise AssertionError('paid agent must not be called again')
+    with pytest.raises(autostart.TaskEvaluationConfiguredControlsAutostartError,match='agent_attempt_already_used'):
+        autostart._placement_checkpoint(root=tmp_path,placement_runner=forbidden,runner_kwargs={},
+            expected_scene_binding_digest='sha256:'+'a'*64,expected_task_binding_digest='sha256:'+'b'*64,
+            attempts_dir_name='agent-attempts',allow_new_attempt_after_failure=False)
+    assert list((tmp_path/'agent-attempts').iterdir()) == [attempt]
+
+
 def test_cpu_placement_retry_uses_fresh_attempt_then_reopens_checkpoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
