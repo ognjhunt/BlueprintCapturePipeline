@@ -57,6 +57,17 @@ def test_cli_reads_only_mapping_bindings(tmp_path) -> None:
     }
 
 
+def test_paid_visual_review_cannot_disable_geometry_previews(tmp_path):
+    import pytest
+    from blueprint_pipeline.task_evaluation_robot_placement_agent_cli import run_robot_placement_cli
+    with pytest.raises(ValueError,match='visual_previews_required'):
+        run_robot_placement_cli(run_id='review',scene_collision_usd=tmp_path/'missing.usd',
+            robot_asset_usd=tmp_path/'missing-robot.usd',target_position_world_m=[0.,0.,0.],
+            scene_binding={},task_binding={},overview_image_paths=[],output_dir=tmp_path/'out',
+            max_rounds=1,candidate_inventory_cap=24,max_input_tokens=12000,max_inference_cost_usd=.15,
+            allow_live_invocation=True,tracing_disabled=True,render_geometry_previews=False)
+
+
 def test_cli_draws_trajectory_but_keeps_analytic_gate_point_scoped(
     tmp_path, monkeypatch
 ) -> None:

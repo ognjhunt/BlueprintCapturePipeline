@@ -133,7 +133,12 @@ def run_robot_placement_cli(
     expected_visual_review_reuse_probability: float = 0.0,
     expected_proposal_reuse_count: int | None = None,
     expected_visual_review_reuse_count: int | None = None,
+    visual_review_continuation: Mapping[str, Any] | None = None,
+    placement_scene_owner: Mapping[str, Any] | None = None,
+    render_geometry_previews: bool = True,
 ) -> dict[str, Any]:
+    if not render_geometry_previews and not deterministic_selection:
+        raise ValueError('robot_placement_visual_previews_required')
     root = output_dir.expanduser().resolve()
     if root.exists() and any(root.iterdir()):
         raise ValueError("robot_placement_output_not_empty")
@@ -210,15 +215,14 @@ def run_robot_placement_cli(
         proposal=candidates[0],
         target_position_world_m=target_position_world_m,
         trajectory_waypoints_world_m=trajectory_waypoints,
-    )
-    overview_images.extend(
-        _persist_images(seed_previews, output_dir=preview_root, prefix="geometry-overview")
-    )
+    ) if render_geometry_previews else []
+    seed_images = _persist_images(seed_previews, output_dir=preview_root, prefix="geometry-overview")
+    overview_images.extend(seed_images)
     artifact_records: list[dict[str, Any]] = [
         {
             key: value
             for key, value in image.items()
-            if key in {"label", "digest", "size_bytes", "path"}
+            if key in {"label", "digest", "size_bytes", "path", "render_provenance_path", "render_provenance_digest"}
         }
         for image in overview_images
         if image.get("path")
@@ -236,6 +240,8 @@ def run_robot_placement_cli(
         )
 
     def renderer(proposal: Mapping[str, Any], round_index: int):
+        if not render_geometry_previews:
+            return []  # Analytic-only checkpoint; never used by the visual reviewer.
         images = render_robot_placement_geometry_previews(
             index=index,
             proposal=proposal,
@@ -251,7 +257,7 @@ def run_robot_placement_cli(
             {
                 key: value
                 for key, value in image.items()
-                if key in {"label", "digest", "size_bytes", "path"}
+                if key in {"label", "digest", "size_bytes", "path", "render_provenance_path", "render_provenance_digest"}
             }
             for image in persisted
         )
@@ -359,6 +365,19 @@ def run_robot_placement_cli(
             },
         )
         return receipt
+
+    if visual_review_continuation is not None:
+        from .task_evaluation_retained_placement_review import run as run_retained_review
+        def corrected_renderer(proposal, round_index):
+            if (proposal['pose'] == candidates[0]['pose']
+                    and proposal['support_surface_id'] == candidates[0]['support_surface_id']):
+                return seed_images
+            return renderer(proposal,round_index)
+        return run_retained_review(source=visual_review_continuation, run_id=run_id,
+            scene_binding=scene_binding,task_binding=task_binding,task_trajectory=task_trajectory,
+            inventory=checkpoint,overview_images=overview_images,output_dir=root,artifacts=artifact_records,
+            validate_candidate=validator,render_candidate=corrected_renderer,
+            placement_scene_owner=placement_scene_owner or {},max_inference_cost_usd=max_inference_cost_usd)
 
     invoker = OpenAIAgentsSDKInvoker(
         robot_placement_agents_sdk_config(

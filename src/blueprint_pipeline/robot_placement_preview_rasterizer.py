@@ -12,12 +12,14 @@ import hashlib
 import io
 import math
 from itertools import product
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 from PIL import Image, ImageDraw
 
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_release_identity import running_release_commit
 
 RENDERER = "blueprint.cpu-placement-orthographic-zbuffer.v2"
 
@@ -204,6 +206,8 @@ def render(
         digest = "sha256:" + hashlib.sha256(payload).hexdigest()
         provenance = {
             "renderer": RENDERER,
+            "renderer_source_commit": running_release_commit(),
+            "renderer_module_digest": "sha256:" + hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "scene_digest": index.scene_digest,
             "robot_asset_digest": index.robot_asset_digest,
             "pose": dict(pose),

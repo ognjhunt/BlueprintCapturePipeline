@@ -481,6 +481,12 @@ def validate_configured_controls_autostart_intent(
         else None
     )
     adoption = intent.get("configuration_adoption")
+    review_continuation = intent.get('visual_review_continuation')
+    expected_inference_cap = DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD
+    if review_continuation is not None:
+        from . import task_evaluation_visual_review_continuation as visual
+        visual.validate(review_continuation,expected_commit=intent.get('expected_production_commit'))
+        expected_inference_cap = visual.REVIEW_CAP
     if (
         intent.get("schema_version") not in destination_phases.INTENT_SCHEMA_VERSIONS
         or intent.get("enabled") is not True
@@ -512,7 +518,9 @@ def validate_configured_controls_autostart_intent(
         or not 1 <= int(placement.get("candidate_inventory_cap", 0)) <= 128
         or not 1 <= int(placement.get("max_input_tokens", 0)) <= 1_000_000
         or float(placement.get("max_inference_cost_usd", -1.0))
-        != DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD
+        != expected_inference_cap
+        or (review_continuation is not None and (placement.get('max_rounds') != 1
+            or placement.get('max_input_tokens') != visual.MAX_INPUT_TOKENS))
         or not inference_usage.prompt_cache_placement_intent_valid(placement)
         or placement.get("agent_selection_required") is not True
         or placement.get("agent_model") != ROBOT_PLACEMENT_AGENT_MODEL
@@ -647,6 +655,7 @@ def materialize_configured_controls_autostart_intent(
     openai_api_key_id: str,
     configuration_source_commit: str | None = None,
     configuration_adoption: Mapping[str, Any] | None = None,
+    visual_review_continuation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seal all fixed downstream bytes before the configuration launch."""
 
@@ -701,6 +710,8 @@ def materialize_configured_controls_autostart_intent(
         "paid_execution_requested": True,
         "intent_digest": "",
     }
+    if visual_review_continuation is not None:
+        draft['visual_review_continuation'] = dict(visual_review_continuation)
     flattened = _intent_paths(draft)
     draft["artifact_inventory"] = {
         name: _artifact(path) for name, path in sorted(flattened.items())
@@ -991,6 +1002,7 @@ def _placement_checkpoint(
     attempts_dir_name: str = "placement-attempts",
     checkpoint_file_name: str = "cpu-placement-checkpoint.v1.json",
     checkpoint_schema_version: str = _PLACEMENT_CHECKPOINT_SCHEMA_VERSION,
+    allow_new_attempt_after_failure: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any], Path]:
     """Run in a fresh attempt and publish one immutable completed checkpoint."""
 
@@ -1074,6 +1086,8 @@ def _placement_checkpoint(
 
     if checkpoint_path.exists():
         return reopen()
+    if not allow_new_attempt_after_failure and any(attempts_root.glob('attempt_*')):
+        raise TaskEvaluationConfiguredControlsAutostartError('configured_controls_agent_attempt_already_used')
 
     attempt_root: Path | None = None
     for index in range(1_000):
@@ -1297,6 +1311,17 @@ def _validated_agent_openai_evidence(
     }
 
 
+def _placement_scene_owner(intent: Mapping[str, Any]) -> dict[str, Any]:
+    from .task_evaluation_scene_intake import ROOT_ENV, _read as read_scene_record
+    from .task_evaluation_scene_execution_authority import bind_scene_attempt
+    authorization = _read(Path(intent['phases']['construction']['authorization_path']),
+        blocker='configured_controls_visual_owner_invalid')
+    binding = authorization['scene_owner_attempt']['scene_attempt_binding']
+    attempt_id = binding['attempt_id'].removesuffix('-construction') + '-placement'
+    attempt = read_scene_record(Path(os.environ[ROOT_ENV])/binding['intent_id']/'attempts'/(attempt_id+'.json'), 'attempt_digest')
+    return bind_scene_attempt(attempt)
+
+
 def materialize_configured_controls_autostart(
     *,
     source_launch_id: str,
@@ -1440,6 +1465,14 @@ def materialize_configured_controls_autostart(
         revision=revision, revision_path=revision_path, output_root=root
     )
     placement = intent["placement"]
+    continued_review = None
+    if intent.get('visual_review_continuation') is not None:
+        from .task_evaluation_visual_review_continuation import validate as validate_visual_continuation
+        continued_review = validate_visual_continuation(intent['visual_review_continuation'], expected_commit=intent['expected_production_commit'])
+        if (continued_review['receipt']['scene_binding_digest'] != scene_binding_digest
+                or continued_review['receipt']['task_binding_digest'] != task_binding_digest
+                or continued_review['receipt']['task_trajectory_digest'] != trajectory['trajectory_digest']):
+            raise TaskEvaluationConfiguredControlsAutostartError('configured_controls_visual_continuation_binding_mismatch')
     cpu_placement_receipt, inventory, _placement_root = _placement_checkpoint(
         root=_cpu_placement_checkpoint_root(
             root=root,
@@ -1473,6 +1506,8 @@ def materialize_configured_controls_autostart(
             "robot_id": "franka_panda",
             "task_trajectory": trajectory,
             "deterministic_selection": True,
+            **({'candidate_inventory_checkpoint': continued_review['inventory'], 'render_geometry_previews': False}
+               if continued_review is not None else {}),
         },
     )
     selected_agent_runner = agent_placement_runner or placement_runner
@@ -1538,6 +1573,7 @@ def materialize_configured_controls_autostart(
         attempts_dir_name=f"agent-placement-attempts-{intent_token}",
         checkpoint_file_name=f"agent-placement-checkpoint-{intent_token}.v1.json",
         checkpoint_schema_version=_AGENT_PLACEMENT_CHECKPOINT_SCHEMA_VERSION,
+        allow_new_attempt_after_failure=False,
         runner_kwargs={
             "run_id": f"{terminal['run_id']}-agent-placement",
             "scene_collision_usd": collision,
@@ -1559,6 +1595,8 @@ def materialize_configured_controls_autostart(
             "task_trajectory": trajectory,
             "candidate_inventory_checkpoint": inventory,
             "deterministic_selection": False,
+            **({'visual_review_continuation': intent['visual_review_continuation'],
+                'placement_scene_owner': _placement_scene_owner(intent)} if continued_review is not None else {}),
         },
     )
     if (

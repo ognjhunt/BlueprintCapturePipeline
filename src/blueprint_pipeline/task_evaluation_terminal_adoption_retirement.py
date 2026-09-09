@@ -42,7 +42,8 @@ def validate_retirement(*, receipt: Mapping[str, Any], attempt: Mapping[str, Any
 
 
 def retire_unmaterialized_adoptions(*, config: Mapping[str, Any], intent_id: str,
-        source: Mapping[str, Any], expected_production_commit: str, dry_run: bool = False) -> list[dict[str, Any]]:
+        source: Mapping[str, Any], expected_production_commit: str, dry_run: bool = False,
+        visual_review_continuation: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     from . import task_evaluation_scene_intake as intake
     from .task_evaluation_controls_autoprovision import _require, _sealed
     from .task_evaluation_configured_controls_autostart import validate_configured_controls_autostart_intent
@@ -83,6 +84,26 @@ def retire_unmaterialized_adoptions(*, config: Mapping[str, Any], intent_id: str
                 old = validated_cancellation(directory, attempt)
                 if old is not None:
                     results.append(old)
+                    continue
+                if visual_review_continuation is not None and binding_root.exists():
+                    from . import task_evaluation_visual_review_continuation as visual
+                    bound = visual.validate(visual_review_continuation, expected_commit=expected_production_commit)
+                    _require(bound['intent']['intent_digest'] == intent['intent_digest'], 'visual_retirement_source_mismatch')
+                    if phase == 'placement':
+                        continue  # Preserve the entire already-spent inference hold.
+                    _require(visual.native_plan_absent(config=config, source_launch_id=source['launch_id'],
+                        source_commit=intent['expected_production_commit']), 'native_plan_already_materialized')
+                    receipt = {'schema_version':visual.RETIREMENT_SCHEMA,'status':'cancelled_before_native_activation',
+                        **{k:attempt[k] for k in ('attempt_id','attempt_digest','intent_digest','provider','maximum_spend_usd')},
+                        'visual_review_continuation':dict(visual_review_continuation), 'native_activation_absent':True,
+                        'spent_placement_hold_retained':True,'provider_mutation_performed':False}
+                    receipt['receipt_digest']=canonical_digest(receipt,digest_field='receipt_digest')
+                    visual.validate_native_retirement(receipt=receipt,attempt=attempt)
+                    if not dry_run:
+                        target=directory/DIRECTORY/(attempt['attempt_id']+'.json')
+                        target.parent.mkdir(mode=0o750,exist_ok=True)
+                        intake.write_exclusive(target,receipt)
+                    results.append(receipt)
                     continue
                 _require(not binding_root.exists(), 'terminal_adoption_materialization_already_started')
                 receipt = {'schema_version': SCHEMA, 'status': 'cancelled_before_adoption_materialization',
