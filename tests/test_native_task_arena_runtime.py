@@ -1534,3 +1534,22 @@ def test_legacy_droid_marker_position_is_preserved():
     position, radius = visible_target_marker_parameters(plan)
     assert position == pytest.approx((1, 2, 0.277))
     assert radius == 0.06
+
+
+def test_explicit_marker_gets_distinct_visual_semantics(monkeypatch):
+    _install_fake_native_runtime(monkeypatch)
+    import sys
+    captured = []
+    def cylinder(**kwargs):
+        captured.append(kwargs)
+        return SimpleNamespace(**kwargs)
+    monkeypatch.setattr(sys.modules["isaaclab.sim"], "CylinderCfg", cylinder)
+    plan = _sealed_scene_plan()
+    plan.setdefault("task_spec", {})["visible_target_marker"] = {"schema_version": "native_task_target_marker.v1",
+        "shape": "flat_green_disc", "non_colliding": True, "radius_m": .06,
+        "surface_position_world_m": [1.,2.,.8]}
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    build_native_task_arena_environment(plan)
+    assert captured[-1]["semantic_tags"] == [("class", "task_target_marker")]
+    assert captured[-1]["collision_props"] is None
+    assert captured[-1]["rigid_props"] is None

@@ -1295,6 +1295,7 @@ def build_native_task_arena_environment(
             name="policy_target_marker",
             prim_path="{ENV_REGEX_NS}/policy_target_marker",
             spawner_cfg=sim_utils.CylinderCfg(
+                semantic_tags=[("class", "task_target_marker")],
                 radius=marker_radius,
                 height=0.002,
                 axis="Z",
