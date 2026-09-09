@@ -57,7 +57,7 @@ def resolve_release_binding(config, *, running_commit):
     env = checked_file(env_ref["path"], env_ref)
     require(deploy["scene_configuration_environment"].get("credential_values_recorded") is False,
             "release_environment_secret_boundary_missing")
-    mode = "development_iteration" if provenance_ref.get("provenance_status") == "iteration" else "promoted"
+    mode = "development_iteration" if provenance_ref.get("provenance_status") in {"iteration", "canary"} else "promoted"
     _, toolchain, renderer = release_inputs(deploy_path=candidate, provenance_path=provenance,
         publication_root=safe_path(config["runtime_publication_root"]), commit=running_commit,
         release_admission_mode=mode)
