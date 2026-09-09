@@ -290,6 +290,8 @@ def _install_fake_native_runtime(monkeypatch) -> None:
     )
     modules = {
         "isaaclab": types.ModuleType("isaaclab"),
+        "isaaclab.app": types.ModuleType("isaaclab.app"),
+        "isaaclab.app.settings_manager": types.ModuleType("isaaclab.app.settings_manager"),
         "isaaclab.envs": types.ModuleType("isaaclab.envs"),
         "isaaclab.envs.mdp": types.ModuleType("isaaclab.envs.mdp"),
         "isaaclab.sim": types.ModuleType("isaaclab.sim"),
@@ -385,6 +387,10 @@ def _install_fake_native_runtime(monkeypatch) -> None:
     modules[
         "isaaclab_physx.renderers.isaac_rtx_renderer_cfg"
     ].IsaacRtxRendererCfg = lambda **kwargs: SimpleNamespace(**kwargs)
+    settings = {}
+    modules["isaaclab.app.settings_manager"].SettingsManager = SimpleNamespace(
+        instance=lambda: SimpleNamespace(set=settings.__setitem__, get=settings.get)
+    )
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
 

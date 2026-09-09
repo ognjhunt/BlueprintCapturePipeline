@@ -1,4 +1,4 @@
-"""Replay the pinned Isaac reset body through the actual Blueprint config callback."""
+"""Check pinned reset call order; native pose freshness requires the frame-view binding."""
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,7 +7,7 @@ from blueprint_pipeline.native_task_arena_runtime import build_native_task_arena
 from tests.test_native_task_arena_runtime import _install_fake_native_runtime, _sealed_scene_plan
 
 
-def test_reset_refreshes_the_camera_after_joint_kinematics_without_policy_or_physics(monkeypatch):
+def test_reset_requests_render_after_joint_write_and_forward_without_physics(monkeypatch):
     _install_fake_native_runtime(monkeypatch)
     cfg = build_native_task_arena_environment(_sealed_scene_plan()).cfg
     old = np.eye(4)

@@ -1374,6 +1374,14 @@ def build_native_task_arena_environment(
         # images at the previous pose even after the joint reset and forward.
         # Refresh before reset() returns observations, without a physics step.
         cfg.num_rerenders_on_reset = 1 if enable_cameras else 0
+        # Pinned Isaac's PhysxManager publishes /isaaclab/fabric_enabled, but
+        # FabricFrameView reads /physics/fabricEnabled and otherwise reads USD.
+        # PhysX disables USD pose writes with Fabric enabled. Bind its legacy
+        # reader before camera views are constructed, preserving live link poses.
+        from isaaclab.app.settings_manager import SettingsManager
+
+        cfg.sim.use_fabric = True
+        SettingsManager.instance().set("/physics/fabricEnabled", cfg.sim.use_fabric)
         cfg.sim.physics = PhysxCfg(
             solver_type=1,
             enable_enhanced_determinism=True,
