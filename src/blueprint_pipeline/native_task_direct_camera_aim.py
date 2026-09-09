@@ -46,13 +46,14 @@ def _native_body_poses(robot):
 
 class NativeAttachedCameraView:
     """Keep one fixed camera mount on the live PhysX body across every frame."""
-    def __init__(self, delegate, robot, body_index, attachment, device, forward):
+    def __init__(self, delegate, robot, body_index, attachment, device, forward, render):
         self._delegate = delegate
         self._robot = robot
         self._body_index = body_index
         self._attachment = np.asarray(attachment)
         self._device = device
         self._forward = forward
+        self._render = render
 
     def __getattr__(self, name):
         return getattr(self._delegate, name)
@@ -64,19 +65,38 @@ class NativeAttachedCameraView:
 
     def get_world_poses(self, indices=None):
         import warp as wp
-        from isaaclab.utils.warp import ProxyArray
+        scene_indices = indices
         matrices = self.world_matrices()
         if indices is not None and not isinstance(indices, slice):
             indices = np.asarray(indices.numpy() if hasattr(indices, 'numpy') else indices, dtype=int)
         matrices = matrices if indices is None else matrices[indices]
         positions = np.ascontiguousarray(matrices[:, :3, 3], dtype=np.float32)
         quaternions = np.ascontiguousarray(Rotation.from_matrix(matrices[:, :3, :3]).as_quat(), dtype=np.float32)
-        return (ProxyArray(wp.from_numpy(positions, device=self._device)),
-                ProxyArray(wp.from_numpy(quaternions, device=self._device)))
+        # IsaacRtxRenderer.update_camera is a no-op: changing CameraData only
+        # changes metadata. Write the actual Fabric scene camera, then advance
+        # the render generation so another camera's same-step pump cannot make
+        # this camera consume an image rendered before the write.
+        self._delegate.set_world_poses(
+            wp.from_numpy(positions, device=self._device),
+            wp.from_numpy(quaternions, device=self._device), scene_indices,
+        )
+        self._render()
+        # Report the scene view readback, rather than our requested pose.
+        observed = self._delegate.get_world_poses(scene_indices)
+        actual_positions = np.asarray(observed[0].numpy())
+        actual_quaternions = np.asarray(observed[1].numpy())
+        if (not np.allclose(actual_positions, positions, atol=1e-4, rtol=0)
+            or not np.allclose(np.abs(np.sum(actual_quaternions * quaternions, axis=-1)), 1., atol=1e-5)):
+            raise RuntimeError('native_camera_aim_scene_pose_write_readback_mismatch')
+        return observed
 
 
 def install_direct_wrist_camera_aim(*, env: Any, camera_name: str, target) -> dict:
     native = env.unwrapped
+    # Arena constructs the robot before reset events apply its configured
+    # joints. Freeze the mount only after the full native reset has finished.
+    # This is setup; the episode still performs its normal, identical reset.
+    native.reset()
     native.sim.forward()
     robot = native.scene['robot']
     camera = native.scene[camera_name]
@@ -89,7 +109,18 @@ def install_direct_wrist_camera_aim(*, env: Any, camera_name: str, target) -> di
         raise RuntimeError('native_camera_aim_requires_one_resolved_environment')
     body_index = names.index(parent)
     attachment = target_facing_attachment(poses[0, body_index], camera.cfg.offset.pos, target)
-    camera._view = NativeAttachedCameraView(camera._view, robot, body_index, attachment, camera.device, native.sim.forward)
+    if getattr(camera._view, '_use_fabric', False) is not True:
+        raise RuntimeError('native_camera_aim_fabric_scene_writer_required')
+    # Keep authored USD mount metadata consistent with the actual scene write.
+    # The Fabric world pose is refreshed from PhysX for every observation.
+    from pxr import Gf
+    local_quat = Rotation.from_matrix(attachment[:3, :3]).as_quat()
+    for prim in camera._view.prims:
+        if not prim.GetAttribute('xformOp:orient').Set(
+            Gf.Quatd(float(local_quat[3]), Gf.Vec3d(*local_quat[:3]))):
+            raise RuntimeError('native_camera_aim_usd_mount_write_failed')
+    camera._view = NativeAttachedCameraView(camera._view, robot, body_index, attachment,
+        camera.device, native.sim.forward, native.sim.render)
     camera.cfg.offset.rot = tuple(Rotation.from_matrix(attachment[:3, :3]).as_quat())
     camera.cfg.offset.convention = "opengl"
     camera.cfg.update_latest_camera_pose = True
@@ -98,5 +129,11 @@ def install_direct_wrist_camera_aim(*, env: Any, camera_name: str, target) -> di
         'body_name': parent, 'target_position_world_m': list(target),
         'body_from_camera_opengl': attachment.tolist(),
         'pose_source': 'native_physx_get_link_transforms',
+        'aim_setup_phase': 'after_native_environment_reset',
+        'initial_native_body_pose_xyzw': poses[0, body_index].tolist(),
+        'render_pose_writer': 'fabric_frame_view_set_world_poses',
+        'render_generation_advanced_after_pose_write': True,
+        'camera_pose_readback_source': 'scene_frame_view_after_write',
+        'camera_prim_paths': list(camera._view.prim_paths),
         'intrinsics_preserved': True, 'official_mount_orientation_preserved': False,
         'tracks_object_after_reset': False, 'attachment_fixed_during_episode': True}
