@@ -188,7 +188,7 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
             project_spend_reconciliation_path=retained['spend_path'], controls_root=root/'inputs',
             profile_dir=config['profile_dir'], authorization_reference=authority, authorized_by=request['owner']['user_id'],
             release_reference=authority, openai_project_id=binding['openai_project_id'], openai_api_key_id=binding['openai_api_key_id'],
-            phase_hard_cap_usd=cap, phase_ttl_seconds=min(producer.DEFAULT_PHASE_TTL_SECONDS, int(cap*3600/producer.DEFAULT_HOURLY_RATE_USD)),
+            **producer.bounded_native_phase_budget(cap),
             max_inference_cost_usd=inference_cap, authority_valid_seconds=int(expiry-issued),
             now=datetime.fromtimestamp(issued, timezone.utc), external_layer_bucket=binding.get('external_layer_bucket'),
             scene_phase_attempts=phases, scene_intake_root=config['scene_root'])

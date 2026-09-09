@@ -772,7 +772,10 @@ def _build_native_context(
         "revision": activation_request["authorization"]["profile_revision"],
         "authorization_reference": activation_request["authorization"]["reference"],
         "authorized_by": activation_request["authorization"]["authorized_by"],
-        "authorized_on": activation_request["authorization"]["authorized_on"],
+        # The parent consent may precede the provider-zero observation. Issue
+        # this subordinate launch authority now, retaining the consent date.
+        "authorization_recorded_on": activation_request["authorization"]["authorized_on"],
+        "authorized_on": datetime.now(timezone.utc).isoformat(),
         "maximum_hourly_rate_usd": preparation_request["spend"][
             "maximum_hourly_rate_usd"
         ],
@@ -814,6 +817,12 @@ def _build_native_context(
                 "rights_admission": str(rights_admission_path),
                 "rights_admission_digest": rights_admission_digest,
                 "rights_evidence": rights_evidence,
+                **({"destination": {
+                    "identity": preparation_request["task"]["destination"]["identity"],
+                    "asset": preparation_request["task"]["destination"]["asset"],
+                    "rights_admission": str(preparation_materialized["task.destination.rights_admission"]),
+                    "rights_admission_digest": preparation_request["task"]["destination"]["rights_admission"]["digest"],
+                }} if preparation_request.get("task", {}).get("destination") else {}),
                 **(
                     {
                         "configured_scene_revision": str(

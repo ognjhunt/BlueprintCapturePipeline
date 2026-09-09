@@ -14,7 +14,9 @@
         "native_task_arena_controls",
         "native_task_arena_zero_action",
         "native_task_arena_scripted_positive",
-        "native_task_arena_policy_evaluation"
+        "native_task_arena_policy_evaluation",
+        "native_task_arena_destination_qualification",
+        "native_task_arena_construction_after_destination"
       ]
     },
     "team_namespace": {
@@ -54,6 +56,16 @@
             "rights_admission_digest": {"$ref": "#/$defs/digest"},
             "configured_scene_revision": {"type": "string", "minLength": 1},
             "configured_scene_revision_digest": {"$ref": "#/$defs/digest"},
+            "destination": {
+              "type": "object", "additionalProperties": false,
+              "required": ["identity", "asset", "rights_admission", "rights_admission_digest"],
+              "properties": {
+                "identity": {"type": "object", "required": ["id", "version"], "properties": {"id": {"type": "string", "minLength": 1}, "version": {"type": "string", "minLength": 1}}, "additionalProperties": false},
+                "asset": {"type": "object", "required": ["digest", "size_bytes"], "properties": {"digest": {"$ref": "#/$defs/digest"}, "size_bytes": {"type": "integer", "minimum": 1}, "uri": {"type": "string"}}, "additionalProperties": false},
+                "rights_admission": {"type": "string", "minLength": 1},
+                "rights_admission_digest": {"$ref": "#/$defs/digest"}
+              }
+            },
             "rights_evidence": {
               "type": "array",
               "minItems": 2,
@@ -179,6 +191,7 @@
         "revision": {"type": "string", "minLength": 1},
         "authorization_reference": {"type": "string", "minLength": 1},
         "authorized_by": {"type": "string", "minLength": 1},
+        "authorization_recorded_on": {"type": "string", "format": "date-time"},
         "authorized_on": {"type": "string", "format": "date-time"},
         "maximum_hourly_rate_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.8},
         "hard_total_spend_cap_usd": {"type": "number", "exclusiveMinimum": 0},
@@ -198,6 +211,12 @@
         "retain_warm_control_search": {"type": "boolean", "const": true},
         "zero_action_result": {"type": "string", "minLength": 1},
         "controls_qualification_manifest": {"type": "string", "minLength": 1},
+        "destination_probe_request": {"type": "string", "minLength": 1},
+        "configured_scene_support_plane": {"type": "string", "minLength": 1},
+        "destination_static_qualification": {"type": "string", "minLength": 1},
+        "destination_native_import_qualification": {"type": "string", "minLength": 1},
+        "destination_geometry": {"type": "string", "minLength": 1},
+        "destination_qualification_result": {"type": "string", "minLength": 1},
         "machine_avoidlist": {"type": "string"},
         "scene_owner_attempt": {"type": "string", "minLength": 1},
         "python": {"type": "string", "minLength": 1},
@@ -213,7 +232,7 @@
   },
   "allOf": [
     {
-      "if": {"properties": {"lane": {"const": "native_task_arena_construction"}}},
+      "if": {"properties": {"lane": {"enum": ["native_task_arena_construction", "native_task_arena_destination_qualification"]}}},
       "then": {
         "properties": {
           "operations": {
@@ -230,8 +249,7 @@
               "prior_launch_receipt",
               "prior_webapp_sync",
               "prior_provider_zero",
-              "prior_spend_reconciliation",
-              "construction_result"
+              "prior_spend_reconciliation"
             ]
           }
         }
@@ -284,7 +302,10 @@
           }
         }
       }
-    }
+    },
+    {"if": {"properties": {"lane": {"const": "native_task_arena_destination_qualification"}}}, "then": {"properties": {"operations": {"required": ["destination_probe_request", "configured_scene_support_plane", "destination_static_qualification", "destination_native_import_qualification", "destination_geometry"]}}}},
+    {"if": {"properties": {"lane": {"const": "native_task_arena_construction_after_destination"}}}, "then": {"properties": {"operations": {"required": ["destination_qualification_result"]}}}},
+    {"if": {"not": {"properties": {"lane": {"enum": ["native_task_arena_construction", "native_task_arena_destination_qualification", "native_task_arena_construction_after_destination"]}}}}, "then": {"properties": {"operations": {"required": ["construction_result"]}}}}
   ],
   "additionalProperties": false,
   "$defs": {

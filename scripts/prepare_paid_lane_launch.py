@@ -282,7 +282,8 @@ def _native_task_arena_steps(
         "construction": "blueprint_pipeline.native_task_arena_construction_bundle",
         "controls": "blueprint_pipeline.native_task_arena_controls_bundle",
     }[link]
-    probe_kind = f"native-task-arena-{link}"
+    probe_kind = ("native-task-arena-destination-qualification" if destination
+                  else f"native-task-arena-{link}")
     bundle_argv = [
         "{python}",
         "-m",
@@ -1683,6 +1684,7 @@ def _validate_provider_packet_source_rights(
     source_manifest: Mapping[str, Any],
     configured_scene_revision: Mapping[str, Any] | None = None,
     rights_admission: Mapping[str, Any] | None = None,
+    destination: Mapping[str, Any] | None = None,
 ) -> None:
     """Require every provider-staged source binding to be upload-admitted."""
 
@@ -1713,7 +1715,7 @@ def _validate_provider_packet_source_rights(
         if (
             not isinstance(rights_admission, Mapping)
             or rights_admission.get("private_provider_processing_allowed") is not True
-            or disclosure.get("rights_admission_permits_upload") is not True
+            or disclosure.get("human_authority_accepts_provider_terms") is not True
         ):
             raise PaidLaneLaunchPreparationError(
                 "native_task_arena_provider_source_rights_invalid"
@@ -1737,6 +1739,31 @@ def _validate_provider_packet_source_rights(
             size = raw.get("size_bytes")
             if raw.get("provider_upload_allowed") is True and isinstance(size, int):
                 admitted.add((digest, size))
+    runtime_disclosure = (rights_admission or {}).get("provider_disclosure") or {}
+    role_permissions = {
+        "scene_appearance": "minimum_digest_bound_derived_appearance_runtime_bytes_may_be_privately_processed",
+        "scene_collision": "sage_collision_runtime_bytes_may_be_privately_processed",
+        "task_object": "qualified_replacement_usd_may_be_privately_processed",
+    }
+    destination_pair = None
+    if destination is not None:
+        rights_path, destination_rights = _load_unlinked_json(
+            destination.get("rights_admission"),
+            error="native_task_arena_destination_rights_invalid",
+        )
+        asset = destination.get("asset") or {}
+        if (
+            _sha256_file(rights_path) != destination.get("rights_admission_digest")
+            or destination_rights.get("schema_version") != "task_evaluation_rigid_destination_rights_admission.v1"
+            or destination_rights.get("rights_admission_digest") != _canonical_artifact_digest(destination_rights, digest_field="rights_admission_digest")
+            or destination_rights.get("status") != "admitted"
+            or destination_rights.get("destination_identity") != destination.get("identity")
+            or destination_rights.get("private_provider_processing_allowed") is not True
+            or destination_rights.get("provider_training_allowed") is not False
+            or destination_rights.get("public_redistribution_allowed") is not False
+        ):
+            raise PaidLaneLaunchPreparationError("native_task_arena_destination_rights_invalid")
+        destination_pair = (asset.get("digest"), asset.get("size_bytes"))
     for raw in bindings:
         if not isinstance(raw, Mapping):
             raise PaidLaneLaunchPreparationError(
@@ -1784,6 +1811,24 @@ def _validate_provider_packet_source_rights(
             and source_pair == staged_pair
         )
         source_is_admitted = source_pair in admitted or staged_is_bound_particlefield
+        if configured_scene_revision is not None:
+            role = raw.get("semantic_role")
+            derived_permission = (
+                runtime_disclosure.get(role_permissions.get(role, "")) is True
+                and runtime_disclosure.get("provider_training_allowed") is False
+                and runtime_disclosure.get("public_redistribution_allowed") is False
+                and bool(runtime_disclosure.get("provider_retention_rule"))
+            )
+            source_is_admitted = source_is_admitted and (
+                disclosure.get("rights_admission_permits_upload") is True or derived_permission
+            )
+            if role == "task_support":
+                source_is_admitted = (
+                    request_digest_valid
+                    and destination_pair is not None
+                    and source_pair == destination_pair
+                    and raw.get("asset_id") == (destination.get("identity") or {}).get("id")
+                )
         if not source_is_admitted or not (
             staged_matches_source
             or staged_is_bound_adaptation
@@ -2164,6 +2209,7 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
         source_manifest=source_manifest,
         configured_scene_revision=configured_scene_revision,
         rights_admission=rights_admission,
+        destination=scene.get("destination"),
     )
     if (
         reference_symlink_present
@@ -2190,7 +2236,7 @@ def _load_native_context(path: str | Path, *, expected_lane: str) -> dict[str, A
             "native_task_arena_reference_binding_invalid"
         )
     prior_webapp_lineage = None
-    if expected_lane != "native_task_arena_construction":
+    if expected_lane not in {"native_task_arena_construction", "native_task_arena_destination_qualification"}:
         prior_webapp_lineage = _validate_prior_webapp_lineage(
             prior_result_path=operations.get("prior_result"),
             launch_receipt_path=operations.get("prior_launch_receipt"),

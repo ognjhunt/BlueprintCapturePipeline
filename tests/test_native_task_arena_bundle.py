@@ -4238,3 +4238,18 @@ def test_zip_member_compression_stores_entropy_coded_bytes_and_deflates_text(
     assert zip_member_compression(text) == zipfile.ZIP_DEFLATED
     assert zip_member_compression(empty) == zipfile.ZIP_DEFLATED
     assert zip_member_compression(splat) == zip_member_compression(splat)
+
+
+def test_destination_collision_binding_preserves_configured_source_identity():
+    from blueprint_pipeline.native_task_arena_destination_qualification_bundle import _collision_binding_matches
+
+    original = "sha256:" + "a" * 64
+    binding = {"source": {"sha256": original, "size_bytes": 23}, "staged_sha256": original, "staged_size_bytes": 23}
+    assert _collision_binding_matches(binding, original)
+    binding.update(staged_sha256="sha256:" + "b" * 64, staged_size_bytes=21)
+    assert not _collision_binding_matches(binding, original)
+    adaptation = {"adaptation": "static_convex_to_triangle_mesh", "derived_from_sha256": original, "candidate_bytes_modified": False, "conversion_scope": "all_static_convex_collision_meshes", "converted_prim_paths": ["/Room/Shelf"]}
+    binding["static_scene_collision_adaptation"] = adaptation
+    assert _collision_binding_matches(binding, original)
+    adaptation["derived_from_sha256"] = "sha256:" + "c" * 64
+    assert not _collision_binding_matches(binding, original)
