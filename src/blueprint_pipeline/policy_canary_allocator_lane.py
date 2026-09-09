@@ -135,6 +135,10 @@ def run_policy_canary_allocator_lane(
             blockers.append("policy_canary_session_contract_invalid")
     if not blockers and authority is not None and prepared_bundle is not None:
         blockers.extend(_launch_environment_blockers(args, authority, prepared_bundle))
+        from .native_task_arena_policy_canary_bundle import preflight_sealed_policy_canary_bundle
+        static_preflight = preflight_sealed_policy_canary_bundle(prepared_bundle)
+        write_json(Path(args.adp_job_dir) / "launch_preflight" / "sealed_bundle_static_preflight.json", static_preflight)
+        blockers.extend(static_preflight.get("blockers") or [])
     binding = {
         "program_id": "arm-decision-proof-v1",
         "probe_kind": PROBE_KIND,

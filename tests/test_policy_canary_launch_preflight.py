@@ -10,7 +10,7 @@ from blueprint_pipeline import policy_canary_allocator_lane as lane
 
 
 @pytest.mark.parametrize("execute", [False, True])
-@pytest.mark.parametrize("fault", ["watchdog_name", "billing", "runtime_window"])
+@pytest.mark.parametrize("fault", ["watchdog_name", "billing", "runtime_window", "bundle_static"])
 def test_launch_refusal_precedes_consumption_staging_and_transport(tmp_path, monkeypatch, execute, fault):
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.delenv(lane.SPEND_ADMISSION_LOCK_PATH_ENV, raising=False)
@@ -40,6 +40,7 @@ def test_launch_refusal_precedes_consumption_staging_and_transport(tmp_path, mon
     result = json.loads((tmp_path / "result.json").read_text())
     expected = {"watchdog_name": "independent_vast_watchdog_exact_resource_name_invalid",
         "runtime_window": "adp_arena_cumulative_budget_below_minimum_live_window",
+        "bundle_static": "policy_canary_preflight_bundle_bytes_mismatch",
         "billing": "spend_admission:spend_admission_lock_schema_invalid"}[fault]
     assert expected in result["blockers"]
     assert result["provider_mutations_performed"] == 0

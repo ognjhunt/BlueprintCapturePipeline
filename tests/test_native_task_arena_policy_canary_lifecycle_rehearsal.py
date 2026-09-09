@@ -848,6 +848,18 @@ def _real_policy_client(spec: dict[str, Any], *, groot_worker_identity_receipt=N
 
 
 def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
+    def camera_gate(**kwargs: Any) -> dict[str, Any]:
+        # Only the native render edge is faked; the real worker selects and
+        # enforces this gate before constructing either real policy client.
+        assert kwargs["built"].env is not None
+        assert kwargs["plan"]["policy_canary_embodiment_profile"]["preserve_official_policy_camera_calibration"] is True
+        value = {"schema_version": "policy_canary_runtime_observation_integrity_gate.v1",
+                 "status": "passed", "policy_observation_integrity_passed": True,
+                 "frame_structure_passed": True, "candidate_policy_loaded": False,
+                 "candidate_policy_queried": False, "blockers": [], "gate_digest": ""}
+        value["gate_digest"] = canonical_digest(value, digest_field="gate_digest")
+        return value
+
     def configure_post_gate_renderer(
         *, observation_gate: Mapping[str, Any], output_path: str | Path
     ) -> dict[str, Any]:
@@ -917,6 +929,7 @@ def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
         policy_client=_real_policy_client,
         groot_worker_identity=_runtime_groot_worker_identity,
         run_policy_episode=run_policy_episode,
+        prepolicy_camera_gate=camera_gate,
         configure_post_gate_renderer=configure_post_gate_renderer,
         make_rigid_task_readback=lambda built: object(),
         wrap_rigid_scoring_environment=(
@@ -1341,7 +1354,7 @@ def test_one_failed_cell_is_a_typed_gap_and_the_other_nineteen_rollouts_continue
         def build(*args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("camera graph failed at /workspace/private/cell.py")
 
-        return worker.CellRuntime(**{**runtime.__dict__, "build_environment": build})
+        return worker.CellRuntime(**{**runtime.__dict__, "build_episode_environment": build})
 
     exit_code = worker._run_isolated_cell_processes(
         runtime_root=runtime_root,
@@ -1408,21 +1421,15 @@ def test_unqualified_nurec_renderer_blocks_both_policies_before_query_and_seals_
 
     assert exited.value.code == 0
     result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
-    assert [row["typed_harness_failure"] for row in result["episodes"]] == [
-        "RuntimeError",
-        "RuntimeError",
-    ]
-    assert all(row["candidate_policy_queried"] is False for row in result["episodes"])
-    gaps = sorted((child_root / "episodes").glob("*.failure_gap.json"))
-    assert len(gaps) == 2
-    assert all(
-        json.loads(path.read_text(encoding="utf-8"))["failure_message"]
-        == "policy_canary_appearance_renderer_unqualified"
-        for path in gaps
-    )
+    assert result["status"] == "blocked"
+    assert result["session_failure_type"] == "RuntimeError"
+    assert result["episodes"] == []
+    assert result["policy_loads"] == []
+    assert result["candidate_policy_queried"] is False
+    assert isaac.result_sealed_at_close is True
 
 
-def test_cadence_mismatch_is_refused_by_the_real_episode_contract_and_still_sealed(
+def test_cadence_mismatch_is_refused_before_isaac_and_policies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime_root, provider_output = _stage_runtime_root(tmp_path)
@@ -1431,15 +1438,15 @@ def test_cadence_mismatch_is_refused_by_the_real_episode_contract_and_still_seal
     isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
     resolved = worker._resolved_scene_plan
 
-    def stale_cadence(base: dict[str, Any], cell: dict[str, Any]) -> dict[str, Any]:
-        plan = resolved(base, cell)
+    def stale_cadence(base: dict[str, Any], cell: dict[str, Any], **kwargs) -> dict[str, Any]:
+        plan = resolved(base, cell, **kwargs)
         plan["task_spec"]["control_frequency_hz"] = 20.0
         plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
         return plan
 
     monkeypatch.setattr(worker, "_resolved_scene_plan", stale_cadence)
 
-    with pytest.raises(SystemExit) as exited:
+    with pytest.raises(RuntimeError, match="policy_canary_control_frequency_invalid"):
         worker._run_selected_cell(
             0,
             runtime_root=runtime_root,
@@ -1448,21 +1455,11 @@ def test_cadence_mismatch_is_refused_by_the_real_episode_contract_and_still_seal
             cell_runtime=_rehearsal_runtime(isaac),
         )
 
-    assert exited.value.code == 0
-    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
-    assert [row["typed_harness_failure"] for row in result["episodes"]] == [
-        "PolicyEpisodeError",
-        "PolicyEpisodeError",
-    ]
-    assert all(row["candidate_policy_queried"] is False for row in result["episodes"])
-    gaps = sorted((child_root / "episodes").glob("*.failure_gap.json"))
-    assert len(gaps) == 2
-    assert all(
-        "policy_episode_control_frequency_task_spec_mismatch"
-        in json.loads(path.read_text(encoding="utf-8"))["failure_message"]
-        for path in gaps
-    )
-    assert isaac.result_sealed_at_close is True
+    result = json.loads((child_root / "policy_canary_static_startup_preflight.v1.json").read_text())
+    assert result["status"] == "blocked"
+    assert all("policy_canary_control_frequency_invalid" in blocker for blocker in result["blockers"])
+    assert result["candidate_policy_queried"] is False
+    assert isaac.launches == 0
 
 
 def test_environment_rebuild_after_close_is_impossible_in_one_process(
@@ -1551,8 +1548,8 @@ def test_real_clients_reset_episode_scoped_state_before_second_episode(
         client.close()
 
 
-def test_missing_observation_integrity_authority_blocks_before_any_policy_load(
-    tmp_path: Path,
+def test_legacy_missing_observation_integrity_authority_blocks_before_isaac(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Scene 839873: a structurally passing render is not observation integrity.
 
@@ -1575,7 +1572,13 @@ def test_missing_observation_integrity_authority_blocks_before_any_policy_load(
         }
     )
 
-    with pytest.raises(SystemExit):
+    resolve = worker._resolved_scene_plan
+    def legacy_plan(*args, **kwargs):
+        plan = resolve(*args, **kwargs)
+        plan.pop("policy_canary_embodiment_profile")
+        return plan
+    monkeypatch.setattr(worker, "_resolved_scene_plan", legacy_plan)
+    with pytest.raises(RuntimeError, match="policy_canary_static_startup_preflight_failed"):
         worker._run_selected_cell(
             3,
             runtime_root=runtime_root,
@@ -1584,22 +1587,13 @@ def test_missing_observation_integrity_authority_blocks_before_any_policy_load(
             cell_runtime=runtime,
         )
 
-    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+    result = json.loads((child_root / "policy_canary_static_startup_preflight.v1.json").read_text())
     assert result["status"] == "blocked"
-    assert result["session_failure_type"] == "PolicyCanarySessionError"
-    assert result["policy_loads"] == []
-    assert result["episodes"] == []
     assert result["candidate_policy_queried"] is False
     assert loads == []
-    assert isaac.launches == 1
+    assert isaac.launches == 0
     assert isaac.builds == 0
-    gate = result["preload_observation_gate"]
-    assert gate["authority_present"] is False
-    assert gate["policy_observation_integrity_passed"] is False
-    assert gate["blockers"] == [
+    assert result["blockers"] == [
         "native_task_appearance_reference_parity_missing",
         "native_task_human_visual_review_not_approved",
-    ]
-    assert result["appearance_render_backend"]["receipt_digest"] == gate[
-        "session_backend_receipt_digest"
     ]

@@ -462,6 +462,7 @@ def test_paid_allocator_routes_canary_only_through_one_session_transport(
         lambda _value, **_kwargs: receipt,
     )
     monkeypatch.setattr(allocator_lane, "_launch_environment_blockers", lambda *args: [])
+    monkeypatch.setattr(bundle, "preflight_sealed_policy_canary_bundle", lambda _receipt: {"status": "passed", "blockers": []})
 
     def fake_run(**kwargs):
         observed.update(kwargs)
