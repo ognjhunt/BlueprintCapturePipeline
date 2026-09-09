@@ -90,10 +90,12 @@ def _triangulate(counts: Sequence[int], indices: Sequence[int]) -> np.ndarray:
     return np.asarray(faces, dtype=np.int64)
 
 
-def _stage_triangles(stage: Usd.Stage) -> tuple[np.ndarray, tuple[str, ...]]:
+def _stage_triangles(stage: Usd.Stage, *, root_prim: Usd.Prim | None = None) -> tuple[np.ndarray, tuple[str, ...]]:
     triangles: list[np.ndarray] = []
     prim_paths: list[str] = []
-    for prim in stage.Traverse():
+    prims = (Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies())
+             if root_prim is not None else stage.Traverse())
+    for prim in prims:
         if not prim.IsA(UsdGeom.Mesh):
             continue
         mesh = UsdGeom.Mesh(prim)
@@ -120,13 +122,18 @@ def _stage_triangles(stage: Usd.Stage) -> tuple[np.ndarray, tuple[str, ...]]:
     return np.concatenate(triangles, axis=0), tuple(prim_paths)
 
 
-def _robot_bounds(stage: Usd.Stage) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+def _robot_root(stage: Usd.Stage) -> Usd.Prim:
     default_prim = stage.GetDefaultPrim()
     if not default_prim.IsValid():
         roots = [prim for prim in stage.GetPseudoRoot().GetChildren() if prim.IsValid()]
         if len(roots) != 1:
             raise RobotPlacementGeometryError("robot_placement_robot_default_prim_missing")
         default_prim = roots[0]
+    return default_prim
+
+
+def _robot_bounds(stage: Usd.Stage) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    default_prim = _robot_root(stage)
     cache = UsdGeom.BBoxCache(
         Usd.TimeCode.Default(),
         [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
@@ -238,7 +245,9 @@ def build_robot_placement_geometry_index(
     valid = norm > 1.0e-12
     normal_abs_z[valid] = np.abs(cross[valid, 2]) / norm[valid]
     robot_minimum, robot_maximum = _robot_bounds(robot_stage)
-    robot_triangles, _robot_prim_paths = _stage_triangles(robot_stage)
+    # Native asset references select the default robot prim. Publisher demo
+    # objects outside it are not robot links; instance proxies inside it are.
+    robot_triangles, _robot_prim_paths = _stage_triangles(robot_stage, root_prim=_robot_root(robot_stage))
     robot_bounds_minimum = np.asarray(robot_minimum, dtype=np.float64) - 1.0e-4
     robot_bounds_maximum = np.asarray(robot_maximum, dtype=np.float64) + 1.0e-4
     inside_robot_bounds = np.all(

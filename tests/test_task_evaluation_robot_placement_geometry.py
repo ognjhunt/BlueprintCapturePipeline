@@ -43,6 +43,25 @@ def _mesh(stage, path, points, faces):
     return mesh
 
 
+def test_robot_preview_uses_default_root_and_includes_instanced_gripper(tmp_path):
+    from blueprint_pipeline.task_evaluation_robot_placement_geometry import _stage_triangles, _robot_root
+    points=[[0,0,0],[1,0,0],[0,1,0]]
+    part=Usd.Stage.CreateNew(str(tmp_path/'part.usda'))
+    part.SetDefaultPrim(UsdGeom.Xform.Define(part,'/Part').GetPrim())
+    _mesh(part,'/Part/Geometry',points,[[0,1,2]])
+    part.GetRootLayer().Save()
+    robot=Usd.Stage.CreateInMemory()
+    robot.SetDefaultPrim(UsdGeom.Xform.Define(robot,'/Robot').GetPrim())
+    _mesh(robot,'/Robot/Arm',points,[[0,1,2]])
+    proxy=UsdGeom.Xform.Define(robot,'/Robot/Gripper').GetPrim()
+    proxy.GetReferences().AddReference(str(tmp_path/'part.usda'))
+    proxy.SetInstanceable(True)
+    _mesh(robot,'/DemoBowl',points,[[0,1,2]])
+    triangles,paths=_stage_triangles(robot,root_prim=_robot_root(robot))
+    assert len(triangles)==2
+    assert set(paths)=={'/Robot/Arm','/Robot/Gripper/Geometry'}
+
+
 def _box(stage, path, minimum, maximum):
     x0, y0, z0 = minimum
     x1, y1, z1 = maximum

@@ -216,6 +216,7 @@ def render(
             "scene_triangle_count": len(index.triangles),
             "retained_scene_triangle_count": len(selected),
             "robot_triangle_count": len(robot),
+            "robot_mesh_scope": "default_prim_with_instance_proxies",
             "depth_buffer_shared_by_scene_and_robot": True,
             "omitted_region": "outside_explicit_local_crop",
             "image_digest": digest,
