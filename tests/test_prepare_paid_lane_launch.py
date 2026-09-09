@@ -1629,3 +1629,28 @@ def test_every_native_preparation_command_passes_its_real_cli_parser(monkeypatch
             with pytest.raises(ParsedWithoutExecution):
                 module.main(arguments)
     assert len(observed) == sum(len(steps) for lane, steps in prep.LANES.items() if lane.startswith("native_task_arena_"))
+
+
+def test_native_genesis_refreshes_inventory_without_changing_consent_or_budget(tmp_path):
+    old = tmp_path / "old-zero.json"
+    old.write_text('{"retained":true}')
+    context = {"set_root": str(tmp_path / "launch"), "service_account": pwd.getpwuid(os.getuid()).pw_name, "service_group": grp.getgrgid(os.getgid()).gr_name, "initial_provider_zero": str(old), "authorized_on": "2026-01-01T00:00:00+00:00", "authorization_recorded_on": "2026-01-01T00:00:00+00:00", "hard_total_spend_cap_usd": 0.266666}
+    zero = {"schema_version": "adp_paid_provider_zero.v1", "provider": "vast", "api_confirmed": True, "provider_zero": True, "global_live_resource_count": 0, "inventory": [], "observed_at_utc": "2026-09-09T12:00:00+00:00", "provider_zero_digest": ""}
+    zero["provider_zero_digest"] = prep._canonical_artifact_digest(zero, digest_field="provider_zero_digest")
+    result = prep.refresh_native_initial_provider_zero(context, collector=lambda: zero)
+    assert result["initial_provider_zero"] != str(old)
+    assert json.loads(Path(result["initial_provider_zero"]).read_text()) == zero
+    assert old.read_text() == '{"retained":true}'
+    assert result["authorization_recorded_on"] == context["authorization_recorded_on"]
+    assert result["hard_total_spend_cap_usd"] == context["hard_total_spend_cap_usd"]
+    assert result["reference_bindings"]["initial_provider_zero_refresh"]["prior_sha256"] == prep._sha256_file(old)
+    zero["provider_zero"] = False
+    with pytest.raises(prep.PaidLaneLaunchPreparationError, match="refresh_invalid"):
+        prep.refresh_native_initial_provider_zero(context, collector=lambda: zero)
+
+
+def test_continuing_native_lane_does_not_replace_terminal_provider_evidence():
+    context = {"prior_provider_zero": "/retained/terminal.json"}
+    def no_query():
+        pytest.fail("continuing lane must retain its terminal evidence")
+    assert prep.refresh_native_initial_provider_zero(context, collector=no_query) == context

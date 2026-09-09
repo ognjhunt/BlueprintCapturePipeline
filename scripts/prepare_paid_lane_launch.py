@@ -39,6 +39,7 @@ import subprocess
 import sys
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -2448,6 +2449,32 @@ def _load_scene_configuration_context(
     return operations
 
 
+def refresh_native_initial_provider_zero(context: Mapping[str, Any], *, collector=None) -> dict[str, Any]:
+    """Observe genesis inventory at preparation time, after any deployment delay."""
+    if not context.get("initial_provider_zero"):
+        return dict(context)
+    from blueprint_pipeline.adp_task_evaluation_abstention import collect_vast_provider_zero_receipt
+
+    zero = (collector or collect_vast_provider_zero_receipt)()
+    if (zero.get("schema_version") != "adp_paid_provider_zero.v1"
+            or zero.get("api_confirmed") is not True
+            or zero.get("provider_zero") is not True
+            or zero.get("global_live_resource_count") != 0
+            or zero.get("provider_zero_digest") != _canonical_artifact_digest(zero, digest_field="provider_zero_digest")):
+        raise PaidLaneLaunchPreparationError("native_task_arena_initial_provider_zero_refresh_invalid")
+    root = _prepare_set_root_for_service(str(context["set_root"]), service_account=str(context["service_account"]), service_group=str(context["service_group"]))
+    target, descriptor = _reserve_receipt_output(root / ("initial-provider-zero-" + uuid.uuid4().hex + ".json"))
+    _write_reserved_receipt(target, descriptor, zero, service_account=str(context["service_account"]), service_group=str(context["service_group"]))
+    issued = datetime.now(timezone.utc).isoformat()
+    old = Path(str(context["initial_provider_zero"]))
+    return {**context, "initial_provider_zero": str(target), "authorized_on": issued,
+            "reference_bindings": {**dict(context.get("reference_bindings") or {}), "initial_provider_zero_refresh": {
+                "prior_path": str(old), "prior_sha256": _sha256_file(old),
+                "path": str(target), "sha256": _sha256_file(target),
+                "observed_at_utc": zero["observed_at_utc"], "authority_issued_at": issued,
+                "provider_mutation_performed": False}}}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lane", required=True, choices=sorted(LANES))
@@ -2557,6 +2584,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise PaidLaneLaunchPreparationError(
                     "paid_lane_resume_receipt_invalid"
                 )
+        if (not args.validate_only and args.lane.startswith("native_task_arena_")
+                and not any(row.get("step_id") == "paid_authority" for row in (resume_receipt or {}).get("completed_steps", []))):
+            context = refresh_native_initial_provider_zero(context)
         receipt = (
             validate_paid_lane_launch(args.lane, context)
             if args.validate_only

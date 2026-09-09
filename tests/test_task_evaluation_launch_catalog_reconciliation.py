@@ -235,9 +235,10 @@ def test_a_symlinked_profile_fails_closed(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("inactive_blocker", ["scene_execution_owner_revoked", "scene_execution_owner_attempt_cancelled_before_execution"])
 @pytest.mark.parametrize("extra_blocker", [None, "scene_execution_owner_record_mismatch"])
 def test_revoked_owner_profile_is_retained_as_non_runnable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra_blocker: str | None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra_blocker: str | None, inactive_blocker: str
 ) -> None:
     from blueprint_pipeline import task_evaluation_launch_catalog as catalog_module
 
@@ -248,7 +249,7 @@ def test_revoked_owner_profile_is_retained_as_non_runnable(
 
     def validate(profile):
         if profile["profile_id"] == "revoked-profile":
-            return ["scene_execution_owner_revoked", *([extra_blocker] if extra_blocker else [])]
+            return [inactive_blocker, *([extra_blocker] if extra_blocker else [])]
         return real_validate(profile)
 
     monkeypatch.setattr(catalog_module, "validate_launch_profile", validate)
@@ -260,7 +261,7 @@ def test_revoked_owner_profile_is_retained_as_non_runnable(
         assert set(rows) == {"revoked-profile", "other-profile"}
         admission = rows["revoked-profile"]["execution_admission"]
         assert admission["live_enabled"] is False
-        assert "scene_execution_owner_revoked" in admission["blockers"]
+        assert inactive_blocker in admission["blockers"]
     assert revoked_path.read_bytes() == original
 
 
