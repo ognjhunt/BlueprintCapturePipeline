@@ -40,6 +40,7 @@ CANARY_SHIPPED_MODULES = sorted(
     | {
         "native_task_arena_policy_worker.py",
         "native_task_arena_policy_canary_session.py",
+        "policy_canary_interrupted_cell_recovery.py",
         "native_task_arena_policy_canary_worker.py",
     }
 )

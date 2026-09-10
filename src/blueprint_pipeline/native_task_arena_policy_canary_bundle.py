@@ -258,6 +258,8 @@ def build_policy_canary_session_bundle(
         (
             package / "native_task_arena_policy_worker.py",
             package / "native_task_arena_policy_canary_session.py",
+            # Recovery depends on paired-canary authority, absent from generic policy bundles.
+            package / "policy_canary_interrupted_cell_recovery.py",
             # Interruption recovery reuses the worker's pure input validators.
             package / "native_task_arena_policy_canary_worker.py",
         )
