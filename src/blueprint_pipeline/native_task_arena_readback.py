@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import struct
 from collections.abc import Callable
 from typing import Any, Mapping, Sequence
 
@@ -265,8 +266,15 @@ def _quaternion_angle_xyzw(a: Sequence[float], b: Sequence[float]) -> float:
         raise NativeTaskArenaReadbackError(
             ["native_task_arena_quaternion_invalid"]
         )
-    dot = abs(sum(x * y for x, y in zip(qa, qb, strict=True)) / (norm_a * norm_b))
-    return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
+    qa = [value / norm_a for value in qa]
+    qb = [value / norm_b for value in qb]
+    if sum(x * y for x, y in zip(qa, qb, strict=True)) < 0:
+        qb = [-value for value in qb]
+    # The chord formulation retains precision near equality, where acos(dot)
+    # can report zero for distinct orientations or nonzero for identical ones.
+    difference = math.sqrt(sum((x - y) ** 2 for x, y in zip(qa, qb, strict=True)))
+    combined = math.sqrt(sum((x + y) ** 2 for x, y in zip(qa, qb, strict=True)))
+    return 4.0 * math.atan2(difference, combined)
 
 
 def read_native_task_arena_task_link_frame_equivalence(
@@ -648,6 +656,7 @@ def read_native_task_arena_scenario_parameters(
         kind = application["readback_kind"]
         tolerance = float(application["application_tolerance"])
         expected = application["expected_native_value"]
+        storage_comparison = None
         if kind.startswith("task_subject_root_"):
             if scene is None:
                 raise NativeTaskArenaReadbackError(
@@ -660,17 +669,47 @@ def read_native_task_arena_scenario_parameters(
                 raise NativeTaskArenaReadbackError(
                     [f"native_task_arena_scenario_asset_missing:{runtime_name}"]
                 ) from exc
+            native_pose = getattr(getattr(asset, "data", None), "root_pose_w", None)
             pose = _first_environment(
-                getattr(getattr(asset, "data", None), "root_pose_w", None),
+                native_pose,
                 error=f"native_task_arena_scenario_root_pose_missing:{runtime_name}",
             )
+            dtype = str(getattr(native_pose, "dtype", ""))
             if kind == "task_subject_root_position_y_m":
                 observed: Any = float(pose[1])
                 error = abs(observed - float(expected))
+                if tolerance == 0.0 and dtype in {"float32", "torch.float32"}:
+                    # Compare an exact reset with the exact value its native
+                    # storage can hold. Keep the unrounded request/error below;
+                    # this introduces no distance tolerance and even one native
+                    # ULP of observed drift still refuses.
+                    stored_expected = struct.unpack("!f", struct.pack("!f", float(expected)))[0]
+                    storage_comparison = {
+                        "schema_version": "native_float_storage_comparison.v1",
+                        "mode": "exact_expected_native_storage_value",
+                        "native_dtype": dtype,
+                        "expected_stored_value": stored_expected,
+                        "absolute_error_stored_value": abs(observed - stored_expected),
+                        "unit": "m",
+                        "physical_tolerance_changed": False,
+                    }
             else:
                 observed = _native_xyzw_to_contract_xyzw(pose[3:7])
                 error = _quaternion_angle_xyzw(observed, expected)
                 tolerance = math.radians(tolerance)
+                if tolerance == 0.0 and dtype in {"float32", "torch.float32"}:
+                    stored_expected = [struct.unpack("!f", struct.pack("!f", float(value)))[0]
+                                       for value in expected]
+                    storage_comparison = {
+                        "schema_version": "native_float_storage_comparison.v1",
+                        "mode": "exact_expected_native_storage_value",
+                        "native_dtype": dtype,
+                        "expected_stored_value": stored_expected,
+                        # Use both raw orientations so each is normalized once.
+                        "absolute_error_stored_value": _quaternion_angle_xyzw(pose[3:7], stored_expected),
+                        "unit": "rad",
+                        "physical_tolerance_changed": False,
+                    }
         elif kind == "camera_offset_position_x_m":
             role = application["camera_role"]
             try:
@@ -715,7 +754,9 @@ def read_native_task_arena_scenario_parameters(
                 "observed_native_value": observed,
                 "absolute_error_native_unit": error,
                 "application_tolerance_native_unit": tolerance,
-                "passed": error <= tolerance,
+                "passed": (storage_comparison["absolute_error_stored_value"]
+                           if storage_comparison is not None else error) <= tolerance,
+                **({"native_storage_comparison": storage_comparison} if storage_comparison is not None else {}),
             }
         )
     return {

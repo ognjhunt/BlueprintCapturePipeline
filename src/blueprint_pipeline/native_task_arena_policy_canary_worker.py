@@ -2032,13 +2032,18 @@ def _run_selected_cell(
         spec = policy["spec"]
         episode_id = f"{authority['run_id']}--{context['cell_id']}--{context['candidate_id']}"
         def scientific_reset_reader():
-            from blueprint_pipeline.policy_scientific_reset import compare_reset_readbacks, read_native_reset_channels, seal_reset_readback
-            channels = read_native_reset_channels(built, episode_environment)
-            receipt = seal_reset_readback(binding={
+            from blueprint_pipeline.policy_scientific_reset import ScientificResetScenarioMismatch, compare_reset_readbacks, read_native_reset_channels, seal_reset_readback
+            binding = {
                 "candidate_id": context["candidate_id"], "cell_id": context["cell_id"],
                 "seed": context["seed"], "resolved_scenario_digest": context["resolved_scenario_digest"],
                 "task_spec_digest": canonical_digest(scene_plan["task_spec"]),
-            }, **channels)
+            }
+            try:
+                channels = read_native_reset_channels(built, episode_environment)
+            except ScientificResetScenarioMismatch as exc:
+                episode_progress["scientific_reset"] = seal_reset_readback(binding=binding, **exc.channels)
+                raise
+            receipt = seal_reset_readback(binding=binding, **channels)
             reference = current_env.setdefault("scientific_reset_reference", receipt)
             parity = compare_reset_readbacks(reference, receipt)
             if parity["status"] == "mismatch":

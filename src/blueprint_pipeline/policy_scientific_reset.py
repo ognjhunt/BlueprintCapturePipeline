@@ -24,6 +24,15 @@ def _json(value: Any) -> Any:
     return json.loads(json.dumps(value, allow_nan=False))
 
 
+class ScientificResetScenarioMismatch(ValueError):
+    """Refuse a wrong native reset without discarding the measured channels."""
+
+    def __init__(self, *, observed, sources, gaps):
+        super().__init__("scientific_reset_scenario_application_mismatch")
+        self.channels = _json({"observed": observed, "sources": sources,
+                               "gaps": [*gaps, "scenario_application_mismatch"]})
+
+
 def _differences(left: Any, right: Any, tolerances: Mapping[str, float], path: str = "") -> list[str]:
     if isinstance(left, Mapping) and isinstance(right, Mapping):
         errors = [path + "/" + str(key) for key in set(left) ^ set(right)]
@@ -302,8 +311,8 @@ def read_native_reset_channels(built: Any, episode_environment: Any) -> dict[str
     if applications:
         from .native_task_arena_readback import read_native_task_arena_scenario_parameters
         channel("scenario_parameters", lambda: read_native_task_arena_scenario_parameters(built), "live_native_scenario_parameter_readback")
-        if observed.get("scenario_parameters", {}).get("passed") is False:
-            raise ValueError("scientific_reset_scenario_application_mismatch")
     gaps.extend("unapplied_scenario:" + str(row.get("family")) for row in
                 (built.plan.get("scenario") or {}).get("runtime_coverage_gaps") or [])
+    if observed.get("scenario_parameters", {}).get("passed") is False:
+        raise ScientificResetScenarioMismatch(observed=observed, sources=sources, gaps=gaps)
     return {"observed": observed, "sources": sources, "gaps": gaps}
