@@ -160,3 +160,43 @@ def test_aim_uses_completed_reset_and_rtx_scene_write_before_render(monkeypatch)
     np.testing.assert_allclose(np.linalg.inv(pose_matrix(constructed[0,0]))@rendered[-1],
         receipt['body_from_camera_opengl'],atol=1e-6)
     assert not np.allclose((np.linalg.inv(rendered[-1])@np.r_[target,1])[:2],0)
+
+
+def test_scene_readback_copies_cuda_proxy_through_explicit_warp_accessor(monkeypatch):
+    from blueprint_pipeline.native_task_direct_camera_aim import NativeAttachedCameraView
+    Array = _install_camera_native_edges(monkeypatch)
+    class CudaProxy:
+        def __init__(self, value):
+            self.warp = Array(value)
+        def numpy(self):
+            # Exact pinned ProxyArray.__getattr__ delegates this call to the
+            # CUDA torch tensor, which refuses implicit host conversion.
+            raise TypeError("can't convert cuda:0 device type tensor to numpy")
+    scene = _scene_view()
+    def readback(indices):
+        assert indices is scene.indices
+        return (CudaProxy(scene.positions.numpy()), CudaProxy(scene.orientations.numpy()))
+    scene.get_world_poses = readback
+    robot = SimpleNamespace(data=SimpleNamespace(_root_view=SimpleNamespace(
+        get_link_transforms=lambda: CudaProxy([[[0.,0.,1.,0.,0.,0.,1.]]]))))
+    view = NativeAttachedCameraView(scene, robot, 0, np.eye(4), 'cuda:0', lambda: None, lambda: None)
+    positions, quaternions = view.get_world_poses(Array([0]))
+    np.testing.assert_allclose(positions.warp.numpy(), [[0.,0.,1.]])
+    np.testing.assert_allclose(quaternions.warp.numpy(), [[0.,0.,0.,1.]])
+
+
+def test_native_tensor_copy_moves_to_host_before_numpy():
+    from blueprint_pipeline.native_task_direct_camera_aim import _host_numpy
+    calls = []
+    expected = np.array([[1.,2.,3.]])
+    class Tensor:
+        def detach(self):
+            calls.append('detach')
+            return self
+        def cpu(self):
+            calls.append('cpu')
+            return SimpleNamespace(numpy=lambda: expected)
+        def numpy(self):
+            raise TypeError('CUDA tensor has no direct NumPy view')
+    np.testing.assert_array_equal(_host_numpy(Tensor()), expected)
+    assert calls == ['detach', 'cpu']

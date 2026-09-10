@@ -806,3 +806,8 @@ def test_native_initialization_preserves_only_safe_refusal_codes(tmp_path: Path)
     ]
     assert "secret-value" not in json.dumps(result)
     assert result["candidate_policy_queried"] is False
+    trace = result["session_failure_source_trace"]
+    assert trace[-1]["function"] == "refuse"
+    assert trace[-1]["file"] == Path(__file__).name
+    assert trace[-1]["line"] > 0
+    assert "/private/provider/path" not in json.dumps(trace)
