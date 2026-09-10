@@ -262,6 +262,13 @@ class _ArenaBuilderCfg:
 
 def _install_fake_native_runtime(monkeypatch) -> None:
     from blueprint_pipeline import native_task_arena_preconstruction
+    from blueprint_pipeline import native_task_direct_camera_aim
+
+    # This fixture stops at the builder's configuration boundary ("native-env"
+    # is a sentinel). Actual scene writes and calibration preservation are
+    # exercised by test_native_task_direct_camera_aim with native edge fakes.
+    monkeypatch.setattr(native_task_direct_camera_aim, 'install_native_wrist_camera_attachment',
+        lambda *, env, camera_name: {'source': 'test_configuration_boundary', 'camera_name': camera_name})
 
     preconstruction = {
         "schema_version": "native_task_arena_preconstruction.v1",
