@@ -210,12 +210,25 @@ def validate_blender_program(source: str) -> None:
                  'getattr', 'setattr', 'globals', 'locals', 'vars', 'breakpoint'}
     forbidden_attributes = {'load', 'libraries', 'drivers', 'driver_add',
                             'preferences', 'handlers', 'app', 'save', 'save_render'}
+    # Generated Blender scripts commonly look up an injected input this way.
+    # Admit only a literal read of the three public wrapper inputs, never the
+    # global mapping itself or mutation/introspection of arbitrary names.
+    input_global_reads = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == 'get' and isinstance(node.func.value, ast.Call)
+                and isinstance(node.func.value.func, ast.Name) and node.func.value.func.id == 'globals'
+                and not node.func.value.args and not node.func.value.keywords
+                and len(node.args) == 1 and not node.keywords
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value in {'CAD_BASE', 'DIMENSIONS', 'SOURCE_IMAGES'}):
+            input_global_reads.add(id(node.func.value.func))
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else [node.module or '']
             if any(name.split('.')[0] not in {'bpy', 'math', 'mathutils'} for name in names):
                 raise AssetAuthoringError('authoring_blender_import_forbidden')
-        if isinstance(node, ast.Name) and node.id in forbidden:
+        if isinstance(node, ast.Name) and node.id in forbidden and id(node) not in input_global_reads:
             raise AssetAuthoringError('authoring_blender_operation_forbidden')
         if isinstance(node, ast.Attribute) and (node.attr.startswith('__') or node.attr in forbidden_attributes):
             raise AssetAuthoringError('authoring_blender_attribute_forbidden')
@@ -433,12 +446,18 @@ def blender_author_prompt(request: AuthoringRequest, brief: VisualBrief, feedbac
         'generic swatch. You may decorate or replace CAD_BASE visual geometry while retaining '
         'the exact supplied envelope. The original STEP remains structural candidate evidence. '
         'Create only the task asset; the wrapper creates lights, ground, cameras, exports '
-        'and renders. No file IO, external assets, saving, rendering, libraries, subprocesses '
+        'and renders. Do not add rigid bodies, collision simulation settings, or guessed mass/friction; '
+        'the separate accepted physical review and packaging stage own all dynamics. '
+        'Use CAD_BASE, DIMENSIONS and SOURCE_IMAGES directly from the injected namespace. '
+        'No file IO, external assets, saving, rendering, libraries, subprocesses '
         'or external networking. Only bpy/math/mathutils imports. Do not load images from paths. '
         'No camera/light objects. Use Principled BSDF, opaque observed paper/plastic must '
         'have Alpha=1 and Transmission Weight=0. Preserve observed parts/material differences. '
         'Use mesh UVs for real source texture regions; do not bake scene surroundings onto '
         'unrelated surfaces. Keep units and extrema exact; no invisible sizing geometry. '
+        'Preserve nominal parameters in double precision, but Blender Vector/mesh storage is '
+        'float32: numerical checks on computed mesh volume must allow float32 rounding '
+        '(for example 1e-6 relative). The wrapper independently checks the final 10-micrometre envelope. '
         'Blender 5.2 mesh primitives and bpy.data.from_pydata work. Avoid fragile context '
         'operators where possible. Materials use nodes. Return the complete replacement '
         'program on repair.\nBinding request: ' + canonical_json({

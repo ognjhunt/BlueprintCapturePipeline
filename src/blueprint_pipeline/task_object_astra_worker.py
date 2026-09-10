@@ -38,7 +38,8 @@ def author_one(*, request_path: Path, output_root: Path, budget_root: Path,
                adopt_cad_state_from: Path | None = None,
                adopt_coder_from: Path | None = None,
                adopt_physical_review_from: Path | None = None,
-               adopt_blender_program_from: Path | None = None) -> dict[str, Any]:
+               adopt_blender_program_from: Path | None = None,
+               adopt_blender_program_round: int = 0) -> dict[str, Any]:
     value = json.loads(request_path.read_text())
     request = validate_request(value)
     repo = Path(__file__).resolve().parents[2]
@@ -78,7 +79,8 @@ def author_one(*, request_path: Path, output_root: Path, budget_root: Path,
     blender_program = blender_adoption = None
     if adopt_blender_program_from is not None:
         blender_program, blender_adoption = verify_blender_program_adoption(
-            prior_root=adopt_blender_program_from, request_value=value, budget_root=budget_root)
+            prior_root=adopt_blender_program_from, request_value=value, budget_root=budget_root,
+            round_index=adopt_blender_program_round)
     # Every charged HTTP attempt is individually reserved. SDK transport
     # retries after a timeout could otherwise duplicate an unknown charge.
     from agents import set_default_openai_client
@@ -126,6 +128,7 @@ def main(argv=None):
     parser.add_argument('--adopt-coder-from', type=Path)
     parser.add_argument('--adopt-physical-review-from', type=Path)
     parser.add_argument('--adopt-blender-program-from', type=Path)
+    parser.add_argument('--adopt-blender-program-round', type=int, choices=(0, 1), default=0)
     args = parser.parse_args(argv)
     result = author_one(request_path=args.request, output_root=args.output_root,
         budget_root=args.budget_root, cad_source_root=args.cad_source_root,
@@ -135,7 +138,8 @@ def main(argv=None):
         adopt_cad_state_from=args.adopt_cad_state_from,
         adopt_coder_from=args.adopt_coder_from,
         adopt_physical_review_from=args.adopt_physical_review_from,
-        adopt_blender_program_from=args.adopt_blender_program_from)
+        adopt_blender_program_from=args.adopt_blender_program_from,
+        adopt_blender_program_round=args.adopt_blender_program_round)
     print(json.dumps({'status': result['status'], 'object_id': result['object_id'],
                       'result_digest': result['result_digest']}))
     return 0
@@ -206,8 +210,11 @@ def verify_physical_review_adoption(*, prior_root: Path, request_value: dict, bu
         'new_provider_call': False}
 
 
-def verify_blender_program_adoption(*, prior_root: Path, request_value: dict, budget_root: Path):
-    """Adopt the first completed appearance program for identical source/CAD inputs."""
+def verify_blender_program_adoption(*, prior_root: Path, request_value: dict, budget_root: Path,
+                                   round_index: int = 0):
+    """Adopt one completed appearance program for identical source/CAD inputs."""
+    if type(round_index) is not int or round_index not in (0, 1):
+        raise AssetAuthoringError('authoring_blender_adoption_round_invalid')
     prior_request = json.loads((prior_root / 'request.json').read_text())
     validate_request(prior_request)
     def relevant(value):
@@ -215,7 +222,7 @@ def verify_blender_program_adoption(*, prior_root: Path, request_value: dict, bu
                 if key not in {'request_digest', 'expected_production_commit'}}
     if relevant(request_value) != relevant(prior_request):
         raise AssetAuthoringError('authoring_blender_adoption_source_inputs_changed')
-    phase = prior_root / 'appearance-00/blender_author_0.json'
+    phase = prior_root / f'appearance-{round_index:02d}/blender_author_{round_index}.json'
     record = json.loads(phase.read_text())
     if (record.get('request_digest') != prior_request['request_digest']
             or record.get('model') != 'gpt-6-astra' or record.get('provider') != 'openai'
@@ -227,7 +234,7 @@ def verify_blender_program_adoption(*, prior_root: Path, request_value: dict, bu
     for path in (budget_root / 'inference_reservations/completed').glob('*.json'):
         row = json.loads(path.read_text())
         if (row.get('run_id') == request_value['run_id']
-            and row.get('capability') == request_value['object_id'] + '_blender_author_0'
+            and row.get('capability') == request_value['object_id'] + f'_blender_author_{round_index}'
             and row.get('model') == 'gpt-6-astra' and row.get('provider') == 'openai'
             and row.get('structured_output_digest') == output_digest
             and row.get('inference_completion_digest') == canonical_digest(row, digest_field='inference_completion_digest')):
@@ -237,6 +244,7 @@ def verify_blender_program_adoption(*, prior_root: Path, request_value: dict, bu
     return output, {'schema_version': 'asset_blender_program_adoption.v1',
         'output_digest': output_digest, 'source_phase': file_record(phase),
         'source_request_digest': prior_request['request_digest'],
+        'source_round_index': round_index,
         'completed_provider_response': file_record(matches[0]),
         'cad_readback_digest': canonical_digest(json.loads((prior_root / 'cad_result.json').read_text())['readback']),
         'new_provider_call': False}

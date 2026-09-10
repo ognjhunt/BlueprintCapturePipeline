@@ -16,6 +16,15 @@ def test_only_rigidbody_object_add_is_admitted_for_superseded_appearance_dynamic
         author.validate_blender_program('bpy.ops.ptcache.bake_all()')
 
 
+def test_globals_only_reads_named_public_blender_inputs():
+    for name in ('CAD_BASE', 'DIMENSIONS', 'SOURCE_IMAGES'):
+        author.validate_blender_program(f"obj = globals().get('{name}')")
+    for code in ("x = globals()", "x = globals().get('secret')", "globals().update(x=1)",
+                 "x = globals().get(variable)", "x = globals().get('CAD_BASE', open)"):
+        with pytest.raises(author.AssetAuthoringError, match='operation_forbidden'):
+            author.validate_blender_program(code)
+
+
 def test_final_mesh_facts_detect_disconnection_open_edges_and_inverted_winding():
     vertices = [[0,0,0],[1,0,0],[0,1,0],[0,0,1]]
     faces = [[0,2,1],[0,1,3],[0,3,2],[1,2,3]]
@@ -30,10 +39,12 @@ def test_final_mesh_facts_detect_disconnection_open_edges_and_inverted_winding()
     assert mesh_facts(double, faces + [[a+4,b+4,c+4] for a,b,c in faces])['connected_component_count'] == 2
 
 
-def test_blender_program_adoption_requires_unchanged_request_and_completed_sdk_digest(tmp_path, monkeypatch):
+@pytest.mark.parametrize('round_index', [0, 1])
+def test_blender_program_adoption_requires_unchanged_request_and_completed_sdk_digest(tmp_path, monkeypatch, round_index):
     monkeypatch.setattr(worker, 'validate_request', lambda value: value)
     prior = tmp_path / 'prior'
-    (prior / 'appearance-00').mkdir(parents=True)
+    phase_path = prior / f'appearance-{round_index:02d}/blender_author_{round_index}.json'
+    phase_path.parent.mkdir(parents=True)
     budget = tmp_path / 'budget'
     completed = budget / 'inference_reservations/completed'
     completed.mkdir(parents=True)
@@ -44,21 +55,24 @@ def test_blender_program_adoption_requires_unchanged_request_and_completed_sdk_d
                'generated_surface_assumptions': ['unknown underside']}
     phase = {'request_digest': request['request_digest'], 'model': 'gpt-6-astra', 'provider': 'openai',
              'references': [], 'output': program}
-    completion = {'run_id': 'same-run', 'capability': 'book_blender_author_0',
+    completion = {'run_id': 'same-run', 'capability': f'book_blender_author_{round_index}',
                   'provider': 'openai', 'model': 'gpt-6-astra',
                   'structured_output_digest': canonical_digest(program)}
     completion['inference_completion_digest'] = canonical_digest(completion, digest_field='inference_completion_digest')
     author.save_json(prior / 'request.json', request)
-    author.save_json(prior / 'appearance-00/blender_author_0.json', phase)
+    author.save_json(phase_path, phase)
     author.save_json(prior / 'cad_result.json', {'readback': {'volume_mm3': 6000}})
     author.save_json(completed / 'receipt.json', completion)
     current = {**request, 'expected_production_commit': 'fixed-commit', 'request_digest': 'new-digest'}
-    output, receipt = worker.verify_blender_program_adoption(prior_root=prior, request_value=current, budget_root=budget)
+    def adopt(value):
+        return worker.verify_blender_program_adoption(prior_root=prior, request_value=value,
+            budget_root=budget, round_index=round_index)
+    output, receipt = adopt(current)
     assert output.program == program['program'] and receipt['new_provider_call'] is False
     assert receipt['cad_readback_digest'] == canonical_digest({'volume_mm3': 6000})
     with pytest.raises(author.AssetAuthoringError, match='source_inputs_changed'):
-        worker.verify_blender_program_adoption(prior_root=prior, request_value={**current,'dimensions_m':[2,2,3]}, budget_root=budget)
+        adopt({**current,'dimensions_m':[2,2,3]})
     phase['output']['program'] += '\nCAD_BASE.rigid_body.mass=1000'
-    author.save_json(prior / 'appearance-00/blender_author_0.json', phase)
+    author.save_json(phase_path, phase)
     with pytest.raises(author.AssetAuthoringError, match='completed_response_missing'):
-        worker.verify_blender_program_adoption(prior_root=prior, request_value=current, budget_root=budget)
+        adopt(current)
