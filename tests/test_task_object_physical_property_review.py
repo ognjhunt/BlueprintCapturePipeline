@@ -65,6 +65,15 @@ def test_actual_book_mass_is_size_consistent_but_glass_is_blocked():
     assert result.proposed.optical_material.transmission == 1.
 
 
+def test_conservative_outward_rounded_mass_uncertainty_is_not_a_contradiction():
+    data, proposal = fixtures()
+    proposal['properties']['mass_kg'] = value(1.196, .5, 2.)
+    result = review(data, proposal)
+    assert result.accepted is not None
+    assert result.accepted.properties.mass_kg.interval.lower < result.model_mass_range_kg.lower
+    assert result.accepted.properties.mass_kg.interval.upper > result.model_mass_range_kg.upper
+
+
 def test_measured_mass_wins_without_clamp_and_retains_original_proposal():
     data, proposal = fixtures()
     data["measured"]["mass_kg"] = value(.9, .89, .91, basis="measured")

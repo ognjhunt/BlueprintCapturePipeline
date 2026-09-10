@@ -21,6 +21,7 @@ from .task_object_astra_authoring import (
     save_json, validate_request,
 )
 from .decision_evidence_contracts import canonical_digest
+from .task_object_physical_property_review import PhysicalPropertyReviewProposal
 
 
 def verify_execution_commit(expected: str, repo: Path) -> None:
@@ -35,7 +36,8 @@ def author_one(*, request_path: Path, output_root: Path, budget_root: Path,
                maximum_cost_usd: float = 15.0,
                adopt_source_analysis_from: Path | None = None,
                adopt_cad_state_from: Path | None = None,
-               adopt_coder_from: Path | None = None) -> dict[str, Any]:
+               adopt_coder_from: Path | None = None,
+               adopt_physical_review_from: Path | None = None) -> dict[str, Any]:
     value = json.loads(request_path.read_text())
     request = validate_request(value)
     repo = Path(__file__).resolve().parents[2]
@@ -68,6 +70,10 @@ def author_one(*, request_path: Path, output_root: Path, budget_root: Path,
     if adopt_source_analysis_from is not None:
         adopted, adoption = verify_source_analysis_adoption(
             prior_root=adopt_source_analysis_from, request_value=value, budget_root=budget_root)
+    physical = physical_adoption = None
+    if adopt_physical_review_from is not None:
+        physical, physical_adoption = verify_physical_review_adoption(
+            prior_root=adopt_physical_review_from, request_value=value, budget_root=budget_root)
     # Every charged HTTP attempt is individually reserved. SDK transport
     # retries after a timeout could otherwise duplicate an unknown charge.
     from agents import set_default_openai_client
@@ -94,6 +100,7 @@ def author_one(*, request_path: Path, output_root: Path, budget_root: Path,
             invoker=invoker, mac_executor=cad_executor, blender_runner=runner,
             blender_executable=str(blender), adopted_source_analysis=adopted,
             adoption_record=adoption,
+            adopted_physical_review=physical, physical_adoption_record=physical_adoption,
             authoring_instructions=(cad_source_root / 'skills/cad/SKILL.md').read_text())
     finally:
         save_json(budget_root / 'budget_manifest.json', audit.write_manifest())
@@ -111,6 +118,7 @@ def main(argv=None):
     parser.add_argument('--adopt-source-analysis-from', type=Path)
     parser.add_argument('--adopt-cad-state-from', type=Path)
     parser.add_argument('--adopt-coder-from', type=Path)
+    parser.add_argument('--adopt-physical-review-from', type=Path)
     args = parser.parse_args(argv)
     result = author_one(request_path=args.request, output_root=args.output_root,
         budget_root=args.budget_root, cad_source_root=args.cad_source_root,
@@ -118,7 +126,8 @@ def main(argv=None):
         maximum_cost_usd=args.maximum_cost_usd,
         adopt_source_analysis_from=args.adopt_source_analysis_from,
         adopt_cad_state_from=args.adopt_cad_state_from,
-        adopt_coder_from=args.adopt_coder_from)
+        adopt_coder_from=args.adopt_coder_from,
+        adopt_physical_review_from=args.adopt_physical_review_from)
     print(json.dumps({'status': result['status'], 'object_id': result['object_id'],
                       'result_digest': result['result_digest']}))
     return 0
@@ -157,6 +166,36 @@ def verify_source_analysis_adoption(*, prior_root: Path, request_value: dict,
         'source_production_commit': prior_request['expected_production_commit'],
         'new_request_digest': request_value['request_digest'],
         'completed_provider_response': file_record(matching[0]), 'new_provider_call': False}
+
+
+def verify_physical_review_adoption(*, prior_root: Path, request_value: dict, budget_root: Path):
+    prior_request = json.loads((prior_root / 'request.json').read_text())
+    validate_request(prior_request)
+    for key in request_value:
+        if key not in {'request_digest', 'expected_production_commit'} and request_value[key] != prior_request.get(key):
+            raise AssetAuthoringError('authoring_physical_adoption_source_inputs_changed')
+    phase = prior_root / 'physical_property_review.json'
+    record = json.loads(phase.read_text())
+    if record.get('request_digest') != prior_request['request_digest'] or record.get('model') != 'gpt-6-astra':
+        raise AssetAuthoringError('authoring_physical_adoption_phase_binding_invalid')
+    output = PhysicalPropertyReviewProposal.model_validate(record['output'])
+    output_digest = canonical_digest(output.model_dump(mode='json'))
+    matches = []
+    for path in (budget_root / 'inference_reservations/completed').glob('*.json'):
+        row = json.loads(path.read_text())
+        if (row.get('run_id') == request_value['run_id']
+            and row.get('capability') == request_value['object_id'] + '_physical_property_review'
+            and row.get('structured_output_digest') == output_digest
+            and row.get('inference_completion_digest') == canonical_digest(row, digest_field='inference_completion_digest')):
+            matches.append(path)
+    if len(matches) != 1:
+        raise AssetAuthoringError('authoring_physical_adoption_completed_response_missing')
+    return output, {'schema_version': 'asset_physical_review_adoption.v1',
+        'output_digest': output_digest, 'source_phase': file_record(phase),
+        'completed_provider_response': file_record(matches[0]),
+        'physical_input_digest': canonical_digest(json.loads((prior_root / 'physical_review_input.json').read_text())),
+        'cad_readback_digest': canonical_digest(json.loads((prior_root / 'cad_result.json').read_text())['readback']),
+        'new_provider_call': False}
 
 
 if __name__ == '__main__':

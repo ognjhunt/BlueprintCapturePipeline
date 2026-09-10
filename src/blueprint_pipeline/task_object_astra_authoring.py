@@ -253,7 +253,9 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                            mac_executor, blender_runner, blender_executable: str,
                            adopted_source_analysis: VisualBrief | None = None,
                            adoption_record: dict | None = None,
-                           authoring_instructions: str = '') -> dict:
+                           authoring_instructions: str = '',
+                           adopted_physical_review: PhysicalPropertyReviewProposal | None = None,
+                           physical_adoption_record: dict | None = None) -> dict:
     """Two bounded visual attempts, independent physics review, retained failures.
 
     ``mac_executor(brief, output_root, dimensions_m)`` must execute pinned CAD
@@ -301,13 +303,22 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
         cad = mac_executor(brief=compact_cad_handoff(request, brief), output_root=output_root / 'cad',
                            dimensions_m=request.dimensions_m)
         save_json(output_root / 'cad_result.json', cad)
-        physics = invoke_vision(invoker, request, capability='physical_property_review',
-            prompt=build_physical_property_review_prompt(physical_input) +
-                   '\nConstruction constraints: ' + request.construction_constraints +
-                   '\nDeterministic CAD readback (volume in cubic millimetres; multiply by 1e-9 for m3): ' +
-                   canonical_json(cad.get('readback', {})),
-            output_type=PhysicalPropertyReviewProposal, frames=request.source_frames,
-            root=output_root, cache_prefix=authoring_instructions)
+        if adopted_physical_review is not None:
+            if (not physical_adoption_record
+                or physical_adoption_record.get('output_digest') != canonical_digest(adopted_physical_review.model_dump(mode='json'))
+                or physical_adoption_record.get('physical_input_digest') != canonical_digest(physical_input.model_dump(mode='json'))
+                or physical_adoption_record.get('cad_readback_digest') != canonical_digest(cad.get('readback', {}))):
+                raise AssetAuthoringError('authoring_physical_review_adoption_invalid')
+            physics = adopted_physical_review
+            save_json(output_root / 'physical_review_adoption.json', physical_adoption_record)
+        else:
+            physics = invoke_vision(invoker, request, capability='physical_property_review',
+                prompt=build_physical_property_review_prompt(physical_input) +
+                       '\nConstruction constraints: ' + request.construction_constraints +
+                       '\nDeterministic CAD readback (volume in cubic millimetres; multiply by 1e-9 for m3): ' +
+                       canonical_json(cad.get('readback', {})),
+                output_type=PhysicalPropertyReviewProposal, frames=request.source_frames,
+                root=output_root, cache_prefix=authoring_instructions)
         physical_result = review_physical_properties(physical_input, physics)
         save_json(output_root / 'physical_property_review_result.json', physical_result.model_dump(mode='json'))
         if physical_result.accepted is None:
