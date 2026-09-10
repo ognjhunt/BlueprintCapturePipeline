@@ -1122,3 +1122,23 @@ def test_the_simulators_own_violation_flag_stays_authoritative() -> None:
     assert report["predicates"]["joint_hard_limits_respected"] is False
     assert report["measurements"]["joint_hard_limit_max_excursion_rad"] == 0.0
     assert report["task_succeeded"] is False
+
+
+@pytest.mark.parametrize('force,passed', [(20.,True),(20.000001,False)])
+def test_task_robot_twenty_newton_cap_is_independent_of_permitted_initial_support(force,passed):
+    spec = _rigid_v2_spec()
+    samples = _dropped_then_placed_samples()
+    baseline = score_task_episode_from_spec(task_spec=spec,samples=samples)
+    criteria=copy.deepcopy(baseline['task_success_contract']['criteria'])
+    criteria['temporal_invariants']['maximum_task_contact_force_n']=20.
+    spec.update(site_id='source-support-force-scope',task_id='bounded-pick-place')
+    spec['task_success_contract']=seal_rigid_task_success_contract(task_spec=spec,site_id=spec['site_id'],
+        task_id=spec['task_id'],author_source='site_robot_team',author_id='robot-team:fixture',
+        confirmation_status='confirmed',confirmed_by_team_id='robot-team:fixture',criteria=criteria)
+    for sample in samples:
+        sample.update(task_robot_contact_peak_force_n=force,task_initial_support_contact_peak_force_n=11.732293128967285,
+                      initial_source_support_contact_permitted=True)
+    report=score_task_episode_from_spec(task_spec=spec,samples=samples)
+    assert report['criteria_satisfied']['maximum_task_contact_force'] is passed
+    assert report['event_ledger']['peak_task_contact_force_n']==force
+    assert report['event_ledger']['task_contact_force_sources']==['task_robot_contact_peak_force_n']
