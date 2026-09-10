@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     CANDIDATE_IDS,
     PolicyCanaryEpisodeFailure,
@@ -755,3 +755,40 @@ def test_native_initialization_preserves_safe_source_locations(tmp_path: Path) -
     assert trace[-1]["file"] == Path(__file__).name
     assert trace[-1]["line"] > 0
     assert "/private/provider/path" not in json.dumps(trace)
+
+
+def test_explicit_user_omission_is_diagnostic_and_cannot_bypass_strict_contract(tmp_path):
+    activation = _activation()
+    inputs = _runtime_inputs(tmp_path, activation)
+    contract_digest = inputs['task_success_contract_digest']
+    authority = {
+        'schema_version': 'task_evaluation_diagnostic_control_omission_authority.v1',
+        'run_kind': 'internal_policy_canary', 'claim_ceiling': 'diagnostic_policy_execution',
+        'authorized_by': 'owner', 'authorization_reference': 'explicit-user-request',
+        'omitted_controls': ['zero_action_negative', 'deterministic_scripted_positive'],
+        'source_task_success_contract_digest': 'sha256:'+'a'*64,
+        'result_task_success_contract_digest': contract_digest,
+        'task_scoring_criteria_changed': False, 'qualified_comparison_permitted': False,
+    }
+    authority['authority_digest'] = canonical_digest(authority, digest_field='authority_digest')
+    for cell in inputs['cells']:
+        cell['control_diagnostic'] = {'mode': 'nonblocking_omitted_by_user',
+            'typed_gap': 'controls_omitted_by_user_request', 'policy_execution_blocked': False,
+            'omission_authority': authority}
+    inputs['runtime_inputs_digest'] = canonical_digest(inputs, digest_field='runtime_inputs_digest')
+    validate_runtime_input_manifest(inputs)
+    authority['qualified_comparison_permitted'] = True
+    authority['authority_digest'] = canonical_digest(authority, digest_field='authority_digest')
+    inputs['runtime_inputs_digest'] = canonical_digest(inputs, digest_field='runtime_inputs_digest')
+    with pytest.raises(PolicyCanarySessionError, match='omission_authority_invalid'):
+        validate_runtime_input_manifest(inputs)
+    authority['qualified_comparison_permitted'] = False
+    authority['authority_digest'] = canonical_digest(authority, digest_field='authority_digest')
+    inputs['task_success_contract']['criteria']['controls'] = {
+        'mode': 'required_per_cell', 'control_ids': ['zero_action_negative', 'deterministic_scripted_positive']}
+    inputs['task_success_contract']['contract_digest'] = cross_runtime_canonical_digest(inputs['task_success_contract'], digest_field='contract_digest')
+    inputs['task_success_contract_digest'] = inputs['task_success_contract']['contract_digest']
+    inputs['runtime_inputs_digest'] = canonical_digest(inputs, digest_field='runtime_inputs_digest')
+    with pytest.raises(PolicyCanarySessionError, match='control_requirement_mismatch'):
+        validate_runtime_input_manifest(inputs)
+

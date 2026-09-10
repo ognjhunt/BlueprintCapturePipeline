@@ -37,37 +37,11 @@ def _write(path, value):
 
 def _setup(tmp_path, *, opt_in=True):
     runtime, child, inputs, _task_digest = _stage(tmp_path)
-    # Use the existing camera-start fixture, translated onto the lifecycle
-    # fixture's task; keep the production final-camera admission predicate.
-    from tests.test_native_task_camera_start_configuration import fixture as camera_fixture
-    camera = camera_fixture()
+    # Exercise the production lifecycle fixture and its existing observation
+    # admission route. The experiment's optional camera-start configuration
+    # belongs to a separate extension and is not a fixture dependency here.
     plan_path = runtime / "native_task_packet/native_task_arena_scene_plan.v1.json"
     plan = _read(plan_path)
-    delta = np.asarray(plan["task_spec"]["start_pose_world"][:3]) - np.asarray(camera["task_spec"]["start_pose_world"][:3])
-    plan["robot"] = camera["robot"]
-    plan["robot"]["base_pose_world"]["position_world_m"] = (np.asarray(plan["robot"]["base_pose_world"]["position_world_m"]) + delta).tolist()
-    plan["cameras"] = camera["cameras"]
-    for view in plan["cameras"]:
-        view["intrinsics"]["cx"] = (view["intrinsics"]["width"] - 1) / 2
-        view["intrinsics"]["cy"] = (view["intrinsics"]["height"] - 1) / 2
-        if view["pose_frame"] == "world":
-            matrix = np.asarray(view["frame_from_camera_matrix"]).reshape(4, 4)
-            matrix[:3, 3] += delta
-            view["frame_from_camera_matrix"] = matrix.reshape(-1).tolist()
-    binding = camera["policy_canary_camera_start_configuration"]
-    binding["robot_base_pose_world"] = deepcopy(plan["robot"]["base_pose_world"])
-    reference = binding["native_reference"]
-    reference["robot_base_pose_world"]["position_world_m"] = (np.asarray(reference["robot_base_pose_world"]["position_world_m"]) + delta).tolist()
-    matrix = np.asarray(reference["world_from_wrist_camera_opengl"])
-    matrix[:3, 3] += delta
-    reference["world_from_wrist_camera_opengl"] = matrix.tolist()
-    binding["task_success_contract_digest"] = inputs["task_success_contract_digest"]
-    binding["camera_plan_digest"] = canonical_digest({"cameras": plan["cameras"]})
-    binding["configuration_digest"] = canonical_digest(binding, digest_field="configuration_digest")
-    plan["policy_canary_camera_start_configuration"] = binding
-    plan["task_spec"]["target_position_world_m"] = plan["task_spec"]["destination_position_world_m"]
-    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
-    _write(plan_path, plan)
     omission = {"schema_version": "task_evaluation_diagnostic_control_omission_authority.v1",
         "run_kind": "internal_policy_canary", "claim_ceiling": "diagnostic_policy_execution",
         "authorized_by": "fixture_owner", "authorization_reference": "explicit_fixture_request",
