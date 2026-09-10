@@ -9,7 +9,7 @@ import pytest
 
 from blueprint_pipeline.adp009d_droid_observation import CANDIDATE_VIEW_SHAPES, resize_with_pad
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.episode_visual_evidence import finalize_failed_policy_visual_evidence, persist_observation_frame
+from blueprint_pipeline.episode_visual_evidence import finalize_failed_policy_visual_evidence, finalize_visual_evidence, persist_observation_frame
 from blueprint_pipeline.groot_n17_wire_client import encode_wire_message
 from blueprint_pipeline.native_task_arena_policy_canary_worker import _resolved_scene_plan
 from blueprint_pipeline.policy_canary_interrupted_cell_recovery import recover_interrupted_cell_result
@@ -276,3 +276,46 @@ def test_recovery_replay_refuses_new_uninventoried_original_files(tmp_path):
     with pytest.raises(FileExistsError, match="overwrite_forbidden"):
         recover_interrupted_cell_result(runtime_root=runtime, child_root=child,
             selected_cell_index=0, reason="offline_interruption")
+
+
+@pytest.mark.parametrize("parity_attachment", [False, True])
+def test_retains_terminal_receipt_before_child_seal_without_claiming_completion(tmp_path, parity_attachment):
+    runtime, child, inputs, task_digest = _stage(tmp_path)
+    episode_id, frame, request_ref = _request(runtime, child, inputs, task_digest, "pi05_droid", 0)
+    spec = _read(runtime / "runtime_inputs/policy_execution_spec.pi05_droid.json")
+    base = _read(runtime / "native_task_packet/native_task_arena_scene_plan.v1.json")
+    task = _resolved_scene_plan(base, inputs["cells"][0], task_success_contract=inputs["task_success_contract"])["task_spec"]
+    terminal_frame = persist_observation_frame(np.zeros((224, 448, 3), dtype=np.uint8),
+        output_dir=child / "episodes", episode_id=episode_id, frame_index=1, kind="terminal-observation")
+    visual, media = finalize_visual_evidence(output_dir=child / "episodes", episode_id=episode_id,
+        identity={"candidate_id": "pi05_droid"}, policy_input_frames=[frame], terminal_observation=terminal_frame)
+    receipt = {"schema_version": "adp009d_policy_episode.v4", "candidate_id": "pi05_droid", "episode_id": episode_id,
+        "task_spec": task, "task_spec_digest": task_digest, "max_policy_queries": spec["max_policy_queries"],
+        "open_loop_horizon": spec["open_loop_horizon"], "prompt": spec["prompt"],
+        "media_artifacts": media, "policy_request_artifacts": [request_ref], "visual_evidence": visual,
+        "score": {"status": "scored", "task_succeeded": False}, "receipt_digest": ""}
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    if parity_attachment:
+        receipt["embodiment_parity_diagnostic"] = {"status": "passed"}
+    path = child / "episodes" / f"{episode_id}.episode_receipt.json"
+    _write(path, receipt)
+    original = path.read_bytes()
+    result = recover_interrupted_cell_result(runtime_root=runtime, child_root=child,
+        selected_cell_index=0, reason="interrupted_during_second_candidate")
+    first = result["episodes"][0]
+    assert first["status"] == "blocked"
+    assert first["typed_harness_failure"] == "retained_terminal_receipt_unadjudicated"
+    assert first["terminal_evidence_status"] == "retained_pending_adjudication"
+    assert first["episode"] == receipt
+    assert first["visual_evidence"] == visual
+    assert first["retained_terminal_episode_receipt"]["completion_claim_promoted"] is False
+    assert first["retained_terminal_episode_receipt"]["receipt_digest_scope"] == (
+        "before_worker_embodiment_parity_attachment" if parity_attachment else "whole_receipt")
+    assert first["evidence_artifacts"]["episode_receipt"]["relative_path"] == path.relative_to(child).as_posix()
+    assert path.read_bytes() == original
+    assert "terminal_episode_receipt_missing" not in first["recovery_evidence_gaps"]
+    assert first["evidence_artifacts"]["review_video"] is not None
+    assert first["evidence_artifacts"]["frame_manifest"] is not None
+    assert any(row["role"] == "episode_receipt" and row["relative_path"] == path.relative_to(child).as_posix()
+               for row in result["artifact_inventory"])
+    assert result["episodes"][1]["typed_harness_failure"] == "interrupted_before_first_observation"
