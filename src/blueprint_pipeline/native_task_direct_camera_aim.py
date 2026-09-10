@@ -53,6 +53,19 @@ def _native_body_poses(robot):
     return _host_numpy(view.get_link_transforms())
 
 
+def _camera_render_identity(camera):
+    data = getattr(camera, '_render_data', None)
+    spec = getattr(data, 'spec', None)
+    rendered = [str(path) for path in getattr(spec, 'camera_prim_paths', ())]
+    delegated = [str(path) for path in camera._view.prim_paths]
+    products = [str(path) for path in getattr(data, 'render_product_paths', ())]
+    if (not delegated or len(set(delegated)) != len(delegated) or rendered != delegated
+        or not products or any(not path.startswith('/') for path in products)):
+        raise RuntimeError('native_camera_render_product_view_binding_mismatch')
+    return {'camera_prim_paths': rendered, 'render_product_paths': products,
+        'source': 'native_renderer_spec_and_scene_view_identity'}
+
+
 class NativeAttachedCameraView:
     """Keep one fixed camera mount on the live PhysX body across every frame."""
     def __init__(self, delegate, robot, body_index, attachment, device, forward, render):
@@ -74,6 +87,7 @@ class NativeAttachedCameraView:
 
     def get_world_poses(self, indices=None):
         import warp as wp
+        from pxr import Gf, UsdGeom
         scene_indices = indices
         matrices = self.world_matrices()
         if indices is not None and not isinstance(indices, slice):
@@ -81,6 +95,22 @@ class NativeAttachedCameraView:
         matrices = matrices if indices is None else matrices[indices]
         positions = np.ascontiguousarray(matrices[:, :3, 3], dtype=np.float32)
         quaternions = np.ascontiguousarray(Rotation.from_matrix(matrices[:, :3, :3]).as_quat(), dtype=np.float32)
+        prim_indices = np.arange(len(self._delegate.prims))
+        if indices is not None:
+            prim_indices = prim_indices[indices]
+        # The renderer can read the USD camera hierarchy independently of the
+        # Fabric pose buffer. Bind both representations to the measured world
+        # pose. Resetting this camera's transform stack prevents a stale parent
+        # pose from being applied a second time; the rigid mount still follows
+        # PhysX through world_matrices() on every observation.
+        selected_prims = [self._delegate.prims[int(i)] for i in prim_indices]
+        for prim, position, quaternion in zip(selected_prims, positions, quaternions, strict=True):
+            UsdGeom.Xformable(prim).SetResetXformStack(True)
+            position_set = prim.GetAttribute('xformOp:translate').Set(Gf.Vec3d(*map(float, position)))
+            orientation_set = prim.GetAttribute('xformOp:orient').Set(
+                Gf.Quatd(float(quaternion[3]), Gf.Vec3d(*map(float, quaternion[:3]))))
+            if not position_set or not orientation_set:
+                raise RuntimeError('native_camera_usd_world_pose_write_failed')
         # IsaacRtxRenderer.update_camera is a no-op: changing CameraData only
         # changes metadata. Write the actual Fabric scene camera, then advance
         # the render generation so another camera's same-step pump cannot make
@@ -90,6 +120,13 @@ class NativeAttachedCameraView:
             wp.from_numpy(quaternions, device=self._device), scene_indices,
         )
         self._render()
+        usd_cache = UsdGeom.XformCache()
+        usd_matrices = np.asarray([
+            np.asarray(usd_cache.GetLocalToWorldTransform(prim), dtype=float).T
+            for prim in selected_prims
+        ])
+        if not np.allclose(usd_matrices, matrices, atol=1e-5, rtol=0):
+            raise RuntimeError('native_camera_usd_world_pose_readback_mismatch')
         # Report the scene view readback, rather than our requested pose.
         observed = self._delegate.get_world_poses(scene_indices)
         actual_positions = _host_numpy(observed[0])
@@ -109,6 +146,7 @@ def install_direct_wrist_camera_aim(*, env: Any, camera_name: str, target) -> di
     native.sim.forward()
     robot = native.scene['robot']
     camera = native.scene[camera_name]
+    render_identity = _camera_render_identity(camera)
     parent = camera.cfg.prim_path.rsplit('/', 2)[-2]
     names = list(robot.data.body_names)
     if names.count(parent) != 1:
@@ -140,10 +178,11 @@ def install_direct_wrist_camera_aim(*, env: Any, camera_name: str, target) -> di
         'pose_source': 'native_physx_get_link_transforms',
         'aim_setup_phase': 'after_native_environment_reset',
         'initial_native_body_pose_xyzw': poses[0, body_index].tolist(),
-        'render_pose_writer': 'fabric_frame_view_set_world_poses',
+        'render_pose_writer': 'native_body_to_usd_and_fabric_world_pose',
         'render_generation_advanced_after_pose_write': True,
-        'camera_pose_readback_source': 'scene_frame_view_after_write',
+        'camera_pose_readback_source': 'usd_world_transform_and_fabric_frame_view',
         'camera_prim_paths': list(camera._view.prim_paths),
+        'render_product_binding': render_identity,
         'intrinsics_preserved': True, 'official_mount_orientation_preserved': False,
         'tracks_object_after_reset': False, 'attachment_fixed_during_episode': True}
 
@@ -153,6 +192,7 @@ def install_native_wrist_camera_attachment(*, env: Any, camera_name: str) -> dic
     native = env.unwrapped
     robot = native.scene['robot']
     camera = native.scene[camera_name]
+    render_identity = _camera_render_identity(camera)
     parent = camera.cfg.prim_path.rsplit('/', 2)[-2]
     names = list(robot.data.body_names)
     if names.count(parent) != 1:
@@ -179,9 +219,10 @@ def install_native_wrist_camera_attachment(*, env: Any, camera_name: str) -> dic
         'source': 'authored_camera_local_pose_on_native_physx_body',
         'body_name': parent, 'body_from_camera_opengl': attachment.tolist(),
         'pose_source': 'native_physx_get_link_transforms',
-        'render_pose_writer': 'fabric_frame_view_set_world_poses',
+        'render_pose_writer': 'native_body_to_usd_and_fabric_world_pose',
         'render_generation_advanced_after_pose_write': True,
-        'camera_pose_readback_source': 'scene_frame_view_after_write',
+        'camera_pose_readback_source': 'usd_world_transform_and_fabric_frame_view',
         'camera_prim_paths': list(camera._view.prim_paths),
+        'render_product_binding': render_identity,
         'intrinsics_preserved': True, 'configured_mount_orientation_preserved': True,
         'tracks_object_after_reset': False, 'attachment_fixed_during_episode': True}

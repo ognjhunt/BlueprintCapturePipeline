@@ -587,6 +587,12 @@ def isaac_cell_runtime() -> CellRuntime:
         robot = env.unwrapped.scene["robot"]
         positions = _jsonable(getattr(robot.data.joint_pos, "torch", robot.data.joint_pos))[0]
         measured_joints = dict(zip(robot.joint_names, positions, strict=True))
+        reset_errors = [
+            abs(float(measured_joints[name]) - float(expected))
+            for name, expected in plan["robot"]["joint_reset_positions_rad"].items()
+        ]
+        if any(not (error <= 1e-4) for error in reset_errors):
+            raise RuntimeError("policy_canary_native_joint_reset_readback_mismatch")
         reset_observation_readback = {
             "camera_rerenders_on_reset": built.cfg.num_rerenders_on_reset,
             "camera_pose_backends": {
@@ -602,6 +608,10 @@ def isaac_cell_runtime() -> CellRuntime:
                 name: float(measured_joints[name])
                 for name in plan["robot"]["joint_reset_positions_rad"]
             },
+            "maximum_joint_reset_error_rad": max(reset_errors, default=0.),
+            "native_wrist_camera_attachment": _jsonable(
+                getattr(built, "native_configuration_readback", {}).get("native_wrist_camera_attachment")
+            ),
         }
         root = output_root / "prepolicy_observation_gate"
         root.mkdir(parents=True, exist_ok=True)
