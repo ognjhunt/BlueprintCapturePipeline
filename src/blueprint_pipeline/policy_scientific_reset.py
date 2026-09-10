@@ -114,6 +114,14 @@ def _native_value(value: Any) -> Any:
     if type(value).__module__ == "pxr.Gf" and type(value).__name__ in {"Quatd", "Quatf", "Quath"}:
         return {"real": _native_value(value.GetReal()),
                 "imaginary": _native_value(value.GetImaginary())}
+    if type(value).__module__ in {"pxr.Gf", "pxr.Vt"}:
+        import numpy as np
+
+        # Vt mesh arrays expose a numeric buffer. Read the same values in bulk
+        # instead of constructing a Python-wrapped Gf vector for every vertex.
+        array = np.asarray(value)
+        if array.dtype.kind in "biuf":
+            value = array.tolist()
     if isinstance(value, Mapping):
         return {str(key): _native_value(item) for key, item in value.items()}
     if isinstance(value, (str, int, float, bool)):
