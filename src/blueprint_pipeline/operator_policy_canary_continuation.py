@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -80,12 +82,70 @@ def cleanup_owned_objects(intent):
     return cleanup_staged_wam_provider_objects(staging.parent, **config)
 
 
+def retained_official_billing_query_period(continuation_intent, audit_root):
+    """Expand a refresh window from exact retained provider periods, never costs.
+
+    Vast can return a daily bucket starting before the allocation timestamp.
+    The charge validator must still require the entire bucket inside its source
+    query. Retain the observed bucket as provenance for a new, wider API query.
+    """
+    declared = continuation_intent['billing_period_start_at']
+    start = datetime.fromisoformat(str(declared).replace('Z', '+00:00'))
+    if start.tzinfo is None:
+        raise ContinuationError('continuation_billing_start_timezone_missing')
+    earliest = start.timestamp()
+    evidence = []
+    for source_path in sorted(Path(audit_root).glob('*/provider_billing_source_receipt.json')):
+        source = read_json(source_path)
+        if (source.get('status') != 'reconciled'
+                or 'vast' not in source.get('covered_provider_ids', [])
+                or source.get('receipt_digest') != canonical_digest(source, digest_field='receipt_digest')):
+            continue
+        upper = datetime.fromisoformat(str(source['cohort_end_at']).replace('Z', '+00:00'))
+        if upper.tzinfo is None:
+            continue
+        for source_index, record in enumerate(source.get('sources', [])):
+            if record.get('provider') != 'vast' or record.get('endpoint') != 'https://console.vast.ai/api/v0/charges/':
+                continue
+            response_path = verified_record({'path': record['retained_path'],
+                'sha256': record['response_digest'], 'size_bytes': record['response_size_bytes']})
+            response = read_json(response_path)
+            for row_index, row in enumerate(response.get('results', [])):
+                if (row.get('source') != f"instance-{continuation_intent['instance_id']}"
+                        or row.get('type') != 'instance'
+                        or row.get('metadata', {}).get('label') != continuation_intent['resource_name']):
+                    continue
+                lower, end = row.get('start'), row.get('end')
+                if (any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in (lower, end))
+                        or not 0 <= lower <= end <= upper.timestamp()):
+                    raise ContinuationError('continuation_retained_billing_period_invalid')
+                if lower < start.timestamp():
+                    earliest = min(earliest, lower)
+                    evidence.append({'source_receipt': file_record(source_path), 'response': file_record(response_path),
+                        'source_index': source_index, 'result_index': row_index,
+                        'official_row_digest': canonical_digest(row), 'official_period_start_epoch': lower,
+                        'official_period_end_epoch': end})
+    if not evidence:
+        return declared, None
+    expanded = datetime.fromtimestamp(earliest, timezone.utc).isoformat()
+    return expanded, seal_value({'schema_version': 'operator_existing_canary_billing_query_period.v1',
+        'intent_digest': continuation_intent['intent_digest'], 'instance_id': continuation_intent['instance_id'],
+        'resource_name': continuation_intent['resource_name'], 'original_declared_start_at': declared,
+        'expanded_query_start_at': expanded, 'derivation': 'exact_retained_official_instance_charge_period',
+        'evidence': evidence, 'official_charge_repriced': False, 'sealed_terminal_adapter_modified': False,
+        'provider_mutations_performed': 0})
+
+
 def refresh_official_billing(*, intent, adapter, continuation_intent):
     del adapter
     from .provider_billing_reconciler import reconcile_provider_billing
+    start_at, period = retained_official_billing_query_period(continuation_intent, intent['billing_audit_root'])
+    if period is not None:
+        _seal(metadata_root(continuation_intent) / 'billing_query_periods' /
+              (period['receipt_digest'].removeprefix('sha256:') + '.json'), period)
     return reconcile_provider_billing(secrets_dir=continuation_intent["billing_secrets_dir"],
         billing_export_path=metadata_root(continuation_intent) / "official_billing_export.json",
-        audit_root=intent["billing_audit_root"], start_at=continuation_intent["billing_period_start_at"],
+        audit_root=intent["billing_audit_root"], start_at=start_at,
         required_providers=("vast",))
 
 
