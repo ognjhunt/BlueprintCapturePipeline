@@ -172,7 +172,6 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "policy_canary_media_integrity.py",
-    "policy_canary_interrupted_cell_recovery.py",
     "policy_scientific_reset.py",
     "policy_request_evidence.py",
     "policy_interface_binding.py",
