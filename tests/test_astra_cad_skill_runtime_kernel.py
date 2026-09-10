@@ -8,7 +8,7 @@ import pytest
 
 from blueprint_pipeline import astra_cad_skill_runtime as runtime
 
-pytestmark = pytest.mark.external_runtime
+pytestmark = [pytest.mark.external_runtime, pytest.mark.slow]
 
 
 def test_real_step_roundtrip_preserves_unrounded_dimensions(tmp_path):
