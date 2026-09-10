@@ -227,6 +227,8 @@ def _write_episode_failure_gap(
         "failure_message_digest": _digest(raw_message),
         "candidate_policy_action_queries": raw_queries,
         "commanded_actions": commanded_actions,
+        **({'native_joint_state_violation': progress['native_joint_state_violation']}
+           if progress.get('native_joint_state_violation') is not None else {}),
         "action_delivery_rejection": action_rejection,
         "visual_evidence": visual_evidence,
         "lossless_frame_manifest_digest": (
@@ -251,6 +253,8 @@ def _write_episode_failure_gap(
             "scientific_reset": progress.get("scientific_reset"),
             "candidate_policy_action_queries": raw_queries,
             "commanded_actions": commanded_actions,
+            **({'native_joint_state_violation': progress['native_joint_state_violation']}
+               if progress.get('native_joint_state_violation') is not None else {}),
             "visual_evidence": visual_evidence,
             "media_artifacts": media_artifacts,
             "motion_evidence": {
