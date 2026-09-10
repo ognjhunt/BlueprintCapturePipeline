@@ -69,8 +69,9 @@ def test_packages_released_artifixer_source_for_every_scene(tmp_path: Path, monk
     monkeypatch.setattr(subject, "VGG16_WEIGHTS_SIZE_BYTES", vgg16_weights.stat().st_size)
     monkeypatch.setattr(subject, "VGG16_WEIGHTS_SHA256", subject._sha256(vgg16_weights))
 
-    def build_python_runtime(*, lockfile_path, output_root):
+    def build_python_runtime(*, lockfile_path, output_root, profile):
         assert lockfile_path == repository / "uv.lock"
+        assert profile == "base"
         root = Path(output_root)
         wheels = root / "wheels"
         wheels.mkdir(parents=True)
