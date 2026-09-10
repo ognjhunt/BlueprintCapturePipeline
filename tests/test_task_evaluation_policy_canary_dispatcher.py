@@ -785,8 +785,9 @@ def test_complete_pinned_ssh_recovery_adopts_all_ten_cells_without_provider_retr
     assert receipt["automatic_retry_performed"] is False
 
 
+@pytest.mark.parametrize("retained_candidates", [(), ("pi05_droid",), ("pi05_droid", "groot_n17_droid")])
 def test_partial_provider_result_preserves_prepolicy_blocked_cell_evidence(
-    tmp_path: Path,
+    tmp_path: Path, retained_candidates,
 ) -> None:
     evidence_root = tmp_path / "immutable_execution"
     native_path = _write(
@@ -809,7 +810,17 @@ def test_partial_provider_result_preserves_prepolicy_blocked_cell_evidence(
         "schema_version": "native_task_arena_policy_canary_session_result.v1",
         "status": "blocked",
         "selected_cell_index": 0,
-        "episodes": [],
+        "episodes": [
+            {"candidate_id": candidate, "cell_id": "cell-0", "seed": 3100,
+             "status": "blocked", "candidate_policy_queried": False,
+             "checkpoint_digest": "sha256:" + ("a" if candidate == "pi05_droid" else "b") * 64,
+             "runtime_identity_digest": "sha256:" + ("A" if candidate == "pi05_droid" else "B") * 64,
+             "candidate_policy_query_attempted": True,
+             "typed_harness_failure": "interrupted_after_first_observation"}
+            for candidate in retained_candidates
+        ],
+        "task_success_contract": public_setup()["task_success_contract"],
+        "task_success_contract_digest": public_setup()["task_success_contract_digest"],
         "candidate_policy_queried": False,
         "blockers": ["policy_canary_task_semantic_visibility_failed"],
         "artifact_inventory": [
@@ -857,9 +868,44 @@ def test_partial_provider_result_preserves_prepolicy_blocked_cell_evidence(
     assert result["completed_cell_count"] == 0
     assert result["incomplete_cell_count"] == 10
     assert len(result["episodes"]) == 20
+    assert sum(row.get("candidate_policy_query_attempted") is True for row in result["episodes"]) == len(retained_candidates)
     assert result["artifact_inventory"][0]["relative_path"] == (
         "cell_runs/00/prepolicy_observation_gate/external.png"
     )
+
+
+@pytest.mark.parametrize("tamper", ["duplicate", "candidate", "seed", "checkpoint", "contract"])
+def test_blocked_partial_rows_cannot_cross_frozen_execution_bindings(tmp_path, tamper):
+    cells = [{"cell_id": f"cell-{i}", "seed": 3100 + i, "resolved_scenario": {}} for i in range(10)]
+    contract = public_setup()["task_success_contract"]
+    specs = {candidate: {"checkpoint_digest": "sha256:" + "a" * 64,
+                         "runtime_identity_digest": "sha256:" + "b" * 64}
+             for candidate in ("pi05_droid", "groot_n17_droid")}
+    row = {"candidate_id": "pi05_droid", "cell_id": "cell-0", "seed": 3100,
+           "status": "blocked", **specs["pi05_droid"]}
+    child = {"schema_version": "native_task_arena_policy_canary_session_result.v1",
+             "status": "blocked", "selected_cell_index": 0, "episodes": [row],
+             "artifact_inventory": [], "task_success_contract": contract,
+             "task_success_contract_digest": contract["contract_digest"]}
+    if tamper == "duplicate":
+        child["episodes"].append(dict(row))
+    elif tamper == "candidate":
+        row["candidate_id"] = "unfrozen_policy"
+    elif tamper == "seed":
+        row["seed"] += 1
+    elif tamper == "checkpoint":
+        row["checkpoint_digest"] = "sha256:" + "c" * 64
+    else:
+        child["task_success_contract_digest"] = "sha256:" + "d" * 64
+    child["result_digest"] = canonical_digest(child, digest_field="result_digest")
+    _write(tmp_path / "cell_runs/00/native_task_arena_policy_canary_session_result.v1.json", child)
+    with pytest.raises(TaskEvaluationPolicyCanaryDispatchError, match="partial_cell_.*invalid"):
+        _partial_policy_canary_result(
+            native_path=tmp_path / "native_task_arena_policy_canary_session_result.v1.json",
+            fallback={"status": "blocked"}, specs=specs,
+            runtime_inputs={"cells": cells, "task_success_contract": contract,
+                            "task_success_contract_digest": contract["contract_digest"]},
+        )
 
 
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
