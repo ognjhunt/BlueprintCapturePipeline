@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import traceback
 from typing import Any
 
 try:  # flat provider-bundle layout
@@ -865,6 +866,14 @@ def execute_paired_session(
         "episodes": episodes,
         "session_closeout": closeout,
         "session_failure_type": type(open_failure).__name__ if open_failure else None,
+        # Source locations diagnose runtime-boundary failures without retaining
+        # exception messages, local variables, credentials, or absolute paths.
+        "session_failure_source_trace": [
+            {"file": Path(frame.filename).name, "function": frame.name, "line": frame.lineno}
+            for frame in traceback.extract_tb(open_failure.__traceback__)[-24:]
+            if re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", Path(frame.filename).name)
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,159}", frame.name)
+        ] if open_failure else [],
         "scene_promotion_performed": False,
         "official_ranking_performed": False,
         "candidate_policy_queried": any(

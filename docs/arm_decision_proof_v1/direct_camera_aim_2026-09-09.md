@@ -62,3 +62,20 @@ view's independent pose readback. A write/readback mismatch refuses the frame.
 Both policies still use the same fixed mount, intrinsics, scene, object, cells,
 and seeds; coordinates are used only for setup. Native image confirmation is
 still required before claiming repair or production success.
+
+## V17 CUDA readback boundary
+
+V17 (`14caef0729a1539bc3e2026e5a748d1f7c2b9f42`, GPU 50441475)
+closed with `TypeError` before retaining a reset frame or querying a policy.
+The new scene readback called `ProxyArray.numpy()`. The pinned wrapper forwards
+that method to its CUDA torch tensor, whose NumPy conversion requires an
+explicit host copy. Replaying the exact pinned wrapper's forwarding behavior
+against V17 reproduces the exception at the new pose-readback line. The local
+scene-view fake returned plain NumPy-compatible arrays and missed this boundary.
+
+The repair reads through `ProxyArray.warp.numpy()` (the explicit host-copy
+path), handles native torch values via `detach().cpu().numpy()`, and retains
+only source file/function/line locations for setup exceptions. Exception
+messages, local variables, and absolute paths remain excluded. Camera aim,
+scene writes, reset order, policy inputs, and the frozen matrix are unchanged.
+Native image confirmation is still outstanding.

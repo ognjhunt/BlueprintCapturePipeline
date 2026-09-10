@@ -31,17 +31,26 @@ def target_facing_attachment(body_pose, offset_position, target):
     return np.linalg.inv(body) @ camera
 
 
+def _host_numpy(value):
+    # ProxyArray.numpy() forwards to torch.Tensor.numpy(); on CUDA that
+    # refuses instead of copying. Its explicit Warp accessor performs the
+    # required host transfer and avoids the deprecated forwarding bridge.
+    warp_array = getattr(value, "warp", None)
+    if warp_array is not None:
+        return np.asarray(warp_array.numpy())
+    if hasattr(value, "detach"):
+        return value.detach().cpu().numpy()
+    numpy = getattr(value, "numpy", None)
+    return np.asarray(numpy() if callable(numpy) else value)
+
+
 def _native_body_poses(robot):
     # Read the exact pinned PhysX view, not a timestamp-cached body_pose_w that
     # a sensor reset may have fetched before the joint forward pass.
     view = getattr(robot.data, "_root_view", None)
     if view is None:
         raise RuntimeError("native_camera_body_transform_view_missing")
-    value = view.get_link_transforms()
-    if hasattr(value, "numpy"):
-        return np.asarray(value.numpy())
-    tensor = getattr(value, "torch", value)
-    return tensor.detach().cpu().numpy() if hasattr(tensor, "detach") else np.asarray(tensor)
+    return _host_numpy(view.get_link_transforms())
 
 
 class NativeAttachedCameraView:
@@ -68,7 +77,7 @@ class NativeAttachedCameraView:
         scene_indices = indices
         matrices = self.world_matrices()
         if indices is not None and not isinstance(indices, slice):
-            indices = np.asarray(indices.numpy() if hasattr(indices, 'numpy') else indices, dtype=int)
+            indices = np.asarray(_host_numpy(indices), dtype=int)
         matrices = matrices if indices is None else matrices[indices]
         positions = np.ascontiguousarray(matrices[:, :3, 3], dtype=np.float32)
         quaternions = np.ascontiguousarray(Rotation.from_matrix(matrices[:, :3, :3]).as_quat(), dtype=np.float32)
@@ -83,8 +92,8 @@ class NativeAttachedCameraView:
         self._render()
         # Report the scene view readback, rather than our requested pose.
         observed = self._delegate.get_world_poses(scene_indices)
-        actual_positions = np.asarray(observed[0].numpy())
-        actual_quaternions = np.asarray(observed[1].numpy())
+        actual_positions = _host_numpy(observed[0])
+        actual_quaternions = _host_numpy(observed[1])
         if (not np.allclose(actual_positions, positions, atol=1e-4, rtol=0)
             or not np.allclose(np.abs(np.sum(actual_quaternions * quaternions, axis=-1)), 1., atol=1e-5)):
             raise RuntimeError('native_camera_aim_scene_pose_write_readback_mismatch')
