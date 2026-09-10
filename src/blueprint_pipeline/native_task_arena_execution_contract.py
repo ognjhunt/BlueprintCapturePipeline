@@ -181,6 +181,7 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "policy_paired_summary.py",
     "adp009d_policy_episode.py",
     "adp009d_policy_episode_evidence.py",
+    "adp009d_policy_episode_native_validation.py",
     "adp009d_droid_action_execution.py",
     # Imported as ``.adp009d_groot_worker_identity`` by the GR00T runtime and
     # by the rights module inside the package; the flat root copy used by the
