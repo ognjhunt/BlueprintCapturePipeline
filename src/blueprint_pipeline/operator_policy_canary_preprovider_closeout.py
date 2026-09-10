@@ -9,7 +9,6 @@ from typing import Any, Mapping
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
-from .core.security_controls import strict_identifier
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .task_evaluation_launch_webapp_sync import load_pipeline_sync_token
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
@@ -18,6 +17,14 @@ from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 def _digest(value: Any) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
         raise ValueError("operator_preprovider_digest_invalid")
+    return value
+
+
+def _metadata_identifier(value: Any) -> str:
+    # Match the Website registration grammar, including owner namespaces. These
+    # values are metadata, never filesystem paths; shared path validation stays strict.
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,191}", value):
+        raise ValueError("operator_preprovider_metadata_identifier_invalid")
     return value
 
 
@@ -100,7 +107,7 @@ def build_operator_preprovider_publication(
         raise ValueError("operator_preprovider_blockers_invalid")
     payload = {
         "schema_version": "task_evaluation_operator_policy_canary_preprovider_blocked.v1",
-        **{key: strict_identifier(registration.get(key), field=key, max_length=192)
+        **{key: _metadata_identifier(registration.get(key))
            for key in ("run_id", "capture_session_id", "intake_id", "team_namespace")},
         **{key: _digest(registration.get(key)) for key in ("request_digest", "configuration_digest")},
         "operator_registration_digest": _digest(registration.get("registration_digest")),

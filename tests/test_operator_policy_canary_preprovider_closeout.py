@@ -63,6 +63,24 @@ def test_native_float_spelling_and_original_bytes_are_preserved():
     assert "activation_id" not in publication and "result_delivery" not in publication
 
 
+@pytest.mark.parametrize("namespace", ["user:blueprint-production-runner", "team:example"])
+def test_owner_metadata_namespace_matches_website_grammar(namespace):
+    registration, receipt = inputs()
+    registration["team_namespace"] = namespace
+    registration["registration_digest"] = cross_runtime_canonical_digest(registration, digest_field="registration_digest")
+    result = closeout.build_operator_preprovider_publication(registration=registration, closeout_bytes=sealed_bytes(receipt))
+    assert result["team_namespace"] == namespace
+
+
+@pytest.mark.parametrize("namespace", ["../other", "/absolute", "namespace with spaces", "user:bad/child"])
+def test_metadata_namespace_refuses_path_and_whitespace(namespace):
+    registration, receipt = inputs()
+    registration["team_namespace"] = namespace
+    registration["registration_digest"] = cross_runtime_canonical_digest(registration, digest_field="registration_digest")
+    with pytest.raises(ValueError, match="metadata_identifier_invalid"):
+        closeout.build_operator_preprovider_publication(registration=registration, closeout_bytes=sealed_bytes(receipt))
+
+
 @pytest.mark.parametrize(("field", "value"), [
     ("run_id", "wrong-run"), ("provider_create_attempted", True),
     ("provider_allocation_performed", True), ("vast_side_effects_may_have_occurred", True),
