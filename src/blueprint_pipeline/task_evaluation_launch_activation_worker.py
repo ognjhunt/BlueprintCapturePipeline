@@ -91,12 +91,8 @@ from .task_evaluation_scene_owner_attempt_profiles import record_owner_attempt a
 
 
 QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT"
-PREPARATION_QUEUE_ROOT_ENV = (
-    "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT"
-)
-PREPARATION_INPUT_ROOT_ENV = (
-    "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT"
-)
+PREPARATION_QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT"
+PREPARATION_INPUT_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT"
 EPISODE_COMPILATION_QUEUE_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT"
 )
@@ -121,9 +117,7 @@ RELEASE_WINDOW_PREFIX_ENV = (
 )
 PROFILE_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR"
 WEBAPP_CATALOG_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_CATALOG"
-STANDING_AUTHORIZATION_DIR_ENV = (
-    "BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR"
-)
+STANDING_AUTHORIZATION_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR"
 CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT"
 )
@@ -2008,12 +2002,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             episode_compilation_queue_root=args.episode_compilation_queue_root,
             episode_compilation_output_root=args.episode_compilation_output_root,
             scene_construction_queue_root=args.scene_construction_queue_root,
-            scene_configuration_toolchain_root=(
-                args.scene_configuration_toolchain_root
-            ),
-            configured_controls_autostart_intent_root=(
-                args.configured_controls_autostart_intent_root
-            ),
+            scene_configuration_toolchain_root=args.scene_configuration_toolchain_root,
+            configured_controls_autostart_intent_root=args.configured_controls_autostart_intent_root,
             policy_canary_dispatch_queue_root=(
                 args.policy_canary_dispatch_queue_root
             ),

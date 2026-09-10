@@ -22,8 +22,10 @@ the choice in its immutable stage-three configuration. An explicitly selected
 stage configurations without the field retain their original execution route;
 old completed stages remain eligible for digest-verified adoption.
 
-Deploy with `scripts/deploy_control_plane_commit.py --astra-blender-archive`
-pointing at the verified official Linux archive. The release builder seals
+The canonical deployment command automatically uses the verified official Linux
+archive in the configured Blender toolchain's `archives` directory. An explicit
+`--astra-blender-archive` can select another copy of those same pinned bytes.
+The release builder seals
 Blender with the CAD sources and the `astra_asset_authoring` Python wheelhouse.
 The provider installs only those locked wheels and runs an isolated import
 preflight. An Astra configuration with a legacy toolchain refuses before bundle

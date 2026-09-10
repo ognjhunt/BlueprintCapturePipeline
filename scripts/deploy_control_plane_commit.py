@@ -61,6 +61,10 @@ from provision_task_evaluation_scene_configuration_release import (  # noqa: E40
     provision_scene_configuration_release,
     service_account_readback,
 )
+from blueprint_pipeline.production_blender_runtime import (  # noqa: E402
+    ARCHIVE_NAME as BLENDER_ARCHIVE_NAME,
+    DEFAULT_ROOT as BLENDER_INSTALL_ROOT,
+)
 from blueprint_pipeline.task_evaluation_configured_controls_autostart import (  # noqa: E402
     configured_controls_autostart_registry_name,
     validate_configured_controls_autostart_intent,
@@ -2153,7 +2157,7 @@ def deploy_control_plane_commit(
     artifixer_source_root: str | Path = DEFAULT_ARTIFIXER_SOURCE_ROOT,
     content_agents_source_root: str | Path = DEFAULT_CONTENT_AGENTS_SOURCE_ROOT,
     cad_skill_source_root: str | Path = DEFAULT_CAD_SKILL_SOURCE_ROOT,
-    astra_blender_archive_path: str | Path | None = None,
+    astra_blender_archive_path: str | Path | None = BLENDER_INSTALL_ROOT.parent / 'archives' / BLENDER_ARCHIVE_NAME,
     configured_controls_autostart_intent_root: str | Path = (
         DEFAULT_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT
     ),
@@ -2699,6 +2703,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--astra-blender-archive", type=Path,
+        default=BLENDER_INSTALL_ROOT.parent / 'archives' / BLENDER_ARCHIVE_NAME,
         help="Verified official Linux Blender archive to seal with the Astra authoring runtime.",
     )
     parser.add_argument(

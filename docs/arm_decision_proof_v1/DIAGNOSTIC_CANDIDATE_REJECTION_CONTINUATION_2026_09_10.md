@@ -9,8 +9,9 @@ change action admission, or supply physical proof.
 
 ## Read-only V22 finding
 
-V22 used source `277a01c668d74193c6b99b8467e24f1e9cf6e594`. Its pi05 receipt is
-`/Users/nijelhunt_1/workspace/scene841757-direct-policy-20260909/preparation-v22/cell00-pi05-live-failure-evidence.json`,
+V22 used source `277a01c668d74193c6b99b8467e24f1e9cf6e594`. Its pi05 receipt,
+relative to the run artifact root, is
+`preparation-v22/cell00-pi05-live-failure-evidence.json`,
 with file SHA-256 `f8bad661a684216a065d356fed26ea0acc77e1dddac22469f9d762a76da20001`.
 The failure seal and all three retained response digests verify. Query index 2,
 row 0, joint dimension 3 is the only violation in the eight-row executable
@@ -110,15 +111,19 @@ new run, rewrite run/candidate/source IDs, or authorize a second allocation.
 This command reads the retained receipt and frozen arithmetic only; it does not
 query a policy, load a model, start a simulator, or write evidence:
 
+Run from the relevant checkout with its Python environment active and
+`BLUEPRINT_RUN_ARTIFACT_ROOT` pointing to the retained run artifact directory.
+
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/private/tmp/bcp-policy-canary-bounded-deadlines-20260910/src /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.venv/bin/python - <<'PY'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python - <<'PY'
 import json
+import os
 from pathlib import Path
 from blueprint_pipeline.adp009d_droid_action_execution import (
     DroidActionExecutionError, validate_candidate_action_bounds,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-p = Path('/Users/nijelhunt_1/workspace/scene841757-direct-policy-20260909/preparation-v22/cell00-pi05-live-failure-evidence.json')
+p = Path(os.environ['BLUEPRINT_RUN_ARTIFACT_ROOT']) / 'preparation-v22/cell00-pi05-live-failure-evidence.json'
 r = json.loads(p.read_text())
 assert r['gap_digest'] == canonical_digest(r, digest_field='gap_digest')
 q = r['candidate_policy_action_queries'][2]
