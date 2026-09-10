@@ -79,3 +79,14 @@ only source file/function/line locations for setup exceptions. Exception
 messages, local variables, and absolute paths remain excluded. Camera aim,
 scene writes, reset order, policy inputs, and the frozen matrix are unchanged.
 Native image confirmation is still outstanding.
+
+## Standard production mount
+
+The ordinary wrist-camera path also installs the native scene-pose writer.
+It reads the camera's authored local OpenGL pose after Isaac's convention
+conversion and keeps that calibration fixed on the measured PhysX body.
+It does not reset the environment during installation, use task coordinates,
+or change the authored mount. Its receipt is separate from the explicitly
+operator-directed aim receipt. Baseline visibility predicates remain required;
+correct synchronization alone does not prove that a particular mount sees the
+task object. Both paths share the same CUDA-safe scene writer and readback.

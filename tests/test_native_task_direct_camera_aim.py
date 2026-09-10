@@ -200,3 +200,74 @@ def test_native_tensor_copy_moves_to_host_before_numpy():
             raise TypeError('CUDA tensor has no direct NumPy view')
     np.testing.assert_array_equal(_host_numpy(Tensor()), expected)
     assert calls == ['detach', 'cpu']
+
+
+def test_standard_mount_follows_native_body_without_reaim_or_reset(monkeypatch):
+    from blueprint_pipeline.native_task_direct_camera_aim import install_native_wrist_camera_attachment
+    Array = _install_camera_native_edges(monkeypatch)
+    calls = []
+    scene = _scene_view(calls)
+    offset = [.011, -.031, -.074]
+    rotation = Rotation.from_euler('xyz', [.2, -.4, .7]).as_quat()
+    scene.get_local_poses = lambda: (Array([offset]), Array([rotation]))
+    measured = np.array([[[0., 0., 1., 0., 0., 0., 1.]]])
+    robot = SimpleNamespace(data=SimpleNamespace(body_names=['base_link'],
+        _root_view=SimpleNamespace(get_link_transforms=lambda: measured)))
+    camera = SimpleNamespace(_view=scene, device='cpu', cfg=SimpleNamespace(
+        prim_path='/World/Robot/Gripper/base_link/wrist_camera',
+        offset=SimpleNamespace(pos=tuple(offset),rot=tuple(rotation),convention='opengl'),
+        update_latest_camera_pose=False))
+    env = SimpleNamespace(unwrapped=SimpleNamespace(scene={'robot':robot,'wrist':camera},
+        sim=SimpleNamespace(forward=lambda: None,render=lambda: calls.append('render'))))
+    receipt = install_native_wrist_camera_attachment(env=env,camera_name='wrist')
+    assert receipt['configured_mount_orientation_preserved'] is True
+    assert camera.cfg.offset.pos == tuple(offset) and camera.cfg.offset.rot == tuple(rotation)
+    assert camera.cfg.offset.convention == 'opengl'
+    assert not calls  # no reset, camera motion, or authored USD write during installation
+    expected = pose_matrix([*offset,*rotation])
+    for pose in ([0,0,1,0,0,0,1], [1,.3,1.2,*Rotation.from_euler('z',.4).as_quat()]):
+        measured[0,0] = pose
+        p,q = camera._view.get_world_poses(Array([0]))
+        np.testing.assert_allclose(pose_matrix([*p.numpy()[0],*q.numpy()[0]]),
+            pose_matrix(pose)@expected,atol=1e-6)
+    assert calls == ['scene_write','render','scene_read'] * 2
+
+
+def test_standard_builder_binds_camera_without_operator_aim(monkeypatch):
+    from blueprint_pipeline import native_task_direct_camera_aim as aim
+    from blueprint_pipeline.native_task_arena_runtime import build_native_task_arena_environment
+    from tests.test_native_task_arena_runtime import _ArenaBuilder, _install_fake_native_runtime, _sealed_scene_plan
+    install = aim.install_native_wrist_camera_attachment
+    _install_fake_native_runtime(monkeypatch)
+    Array = _install_camera_native_edges(monkeypatch)
+    monkeypatch.setattr(aim, 'install_native_wrist_camera_attachment', install)
+    original = _ArenaBuilder.make_registered_and_return_cfg
+    def native_boundary(self, *, render_mode):
+        _,cfg = original(self,render_mode=render_mode)
+        scene = _scene_view()
+        scene.get_local_poses = lambda: (Array([[1.,2.,3.]]), Array([[1.,0.,0.,0.]]))
+        camera = SimpleNamespace(_view=scene,device='cpu',cfg=SimpleNamespace(
+            prim_path='/World/Robot/Gripper/base_link/wrist_camera',update_latest_camera_pose=False))
+        robot = SimpleNamespace(data=SimpleNamespace(body_names=['base_link']))
+        return SimpleNamespace(unwrapped=SimpleNamespace(scene={'robot':robot,'wrist_camera':camera},
+            sim=SimpleNamespace(forward=lambda: None,render=lambda: None))),cfg
+    monkeypatch.setattr(_ArenaBuilder,'make_registered_and_return_cfg',native_boundary)
+    built = build_native_task_arena_environment(_sealed_scene_plan())
+    receipt = built.native_configuration_readback['native_wrist_camera_attachment']
+    assert receipt['render_pose_writer'] == 'fabric_frame_view_set_world_poses'
+    assert receipt['configured_mount_orientation_preserved'] is True
+    assert built.native_configuration_readback['direct_wrist_camera_aim'] is None
+    assert built.native_configuration_readback['cameras']['wrist']['calibration_source'] == 'resolved_scene_plan'
+
+
+def test_standard_mount_refuses_invalid_authored_quaternion(monkeypatch):
+    from blueprint_pipeline.native_task_direct_camera_aim import install_native_wrist_camera_attachment
+    Array = _install_camera_native_edges(monkeypatch)
+    view = _scene_view()
+    view.get_local_poses = lambda: (Array([[0.,0.,0.]]),Array([[0.,0.,0.,0.]]))
+    camera = SimpleNamespace(_view=view,cfg=SimpleNamespace(prim_path='/World/base_link/camera'))
+    robot = SimpleNamespace(data=SimpleNamespace(body_names=['base_link']))
+    env = SimpleNamespace(unwrapped=SimpleNamespace(scene={'robot':robot,'wrist':camera}))
+    with pytest.raises(RuntimeError,match='native_camera_attachment_local_pose_invalid'):
+        install_native_wrist_camera_attachment(env=env,camera_name='wrist')
+    assert camera._view is view

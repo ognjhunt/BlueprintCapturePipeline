@@ -146,3 +146,42 @@ def install_direct_wrist_camera_aim(*, env: Any, camera_name: str, target) -> di
         'camera_prim_paths': list(camera._view.prim_paths),
         'intrinsics_preserved': True, 'official_mount_orientation_preserved': False,
         'tracks_object_after_reset': False, 'attachment_fixed_during_episode': True}
+
+
+def install_native_wrist_camera_attachment(*, env: Any, camera_name: str) -> dict:
+    """Synchronize the authored rigid mount without changing its calibration."""
+    native = env.unwrapped
+    robot = native.scene['robot']
+    camera = native.scene[camera_name]
+    parent = camera.cfg.prim_path.rsplit('/', 2)[-2]
+    names = list(robot.data.body_names)
+    if names.count(parent) != 1:
+        raise RuntimeError('native_camera_attachment_parent_body_missing:' + parent)
+    if getattr(camera._view, '_use_fabric', False) is not True:
+        raise RuntimeError('native_camera_attachment_fabric_scene_writer_required')
+    # The camera constructor has already converted the configured convention
+    # to the authored OpenGL USD local pose. Read that pose; never derive an
+    # attachment from a potentially stale world-pose getter.
+    translations, orientations = camera._view.get_local_poses()
+    positions, quaternions = _host_numpy(translations), _host_numpy(orientations)
+    if (positions.ndim != 2 or positions.shape[1] != 3 or len(positions) == 0
+        or quaternions.shape != (len(positions), 4)
+        or not np.isfinite(positions).all() or not np.isfinite(quaternions).all()
+        or not np.allclose(np.linalg.norm(quaternions, axis=-1), 1., atol=1e-5, rtol=0)
+        or not np.allclose(positions, positions[:1], atol=1e-6, rtol=0)
+        or not np.allclose(quaternions, quaternions[:1], atol=1e-6, rtol=0)):
+        raise RuntimeError('native_camera_attachment_local_pose_invalid')
+    attachment = pose_matrix([*positions[0], *quaternions[0]])
+    camera._view = NativeAttachedCameraView(camera._view, robot, names.index(parent),
+        attachment, camera.device, native.sim.forward, native.sim.render)
+    camera.cfg.update_latest_camera_pose = True
+    return {'schema_version': 'native_task_camera_attachment.v1',
+        'source': 'authored_camera_local_pose_on_native_physx_body',
+        'body_name': parent, 'body_from_camera_opengl': attachment.tolist(),
+        'pose_source': 'native_physx_get_link_transforms',
+        'render_pose_writer': 'fabric_frame_view_set_world_poses',
+        'render_generation_advanced_after_pose_write': True,
+        'camera_pose_readback_source': 'scene_frame_view_after_write',
+        'camera_prim_paths': list(camera._view.prim_paths),
+        'intrinsics_preserved': True, 'configured_mount_orientation_preserved': True,
+        'tracks_object_after_reset': False, 'attachment_fixed_during_episode': True}
