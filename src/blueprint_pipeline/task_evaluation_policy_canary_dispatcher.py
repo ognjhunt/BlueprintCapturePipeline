@@ -717,7 +717,10 @@ def _partial_policy_canary_result(
             == "runtime_selected_cell_completed_pending_aggregation"
             and len(episodes) == len(CANDIDATE_IDS)
         )
-        child_blocked = child.get("status") == "blocked" and not episodes
+        child_blocked = (
+            child.get("status") == "blocked"
+            and len(episodes) <= len(CANDIDATE_IDS)
+        )
         if not child_completed and not child_blocked:
             raise TaskEvaluationPolicyCanaryDispatchError(
                 "policy_canary_partial_cell_result_invalid"
@@ -739,10 +742,28 @@ def _partial_policy_canary_result(
             raise TaskEvaluationPolicyCanaryDispatchError(
                 "policy_canary_partial_cell_pairing_invalid"
             )
-        if child_blocked and observed:
+        if child_blocked and (
+            not observed.issubset(expected) or len(observed) != len(episodes)
+        ):
             raise TaskEvaluationPolicyCanaryDispatchError(
                 "policy_canary_partial_cell_pairing_invalid"
             )
+        if child_blocked and episodes:
+            if (
+                child.get("task_success_contract") != runtime_inputs.get("task_success_contract")
+                or child.get("task_success_contract_digest")
+                != runtime_inputs.get("task_success_contract_digest")
+                or any(
+                    any(
+                        row.get(field) != specs[row["candidate_id"]].get(field)
+                        for field in ("checkpoint_digest", "runtime_identity_digest")
+                    )
+                    for row in episodes
+                )
+            ):
+                raise TaskEvaluationPolicyCanaryDispatchError(
+                    "policy_canary_partial_cell_execution_binding_invalid"
+                )
         prefix = f"cell_runs/{index:02d}"
         for row in episodes:
             episode = json.loads(json.dumps(dict(row), allow_nan=False))

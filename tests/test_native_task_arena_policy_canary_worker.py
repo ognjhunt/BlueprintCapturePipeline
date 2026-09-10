@@ -232,6 +232,38 @@ def test_static_preflight_reports_independent_errors_together(tmp_path):
     assert report["provider_mutation_performed"] is False
 
 
+def test_parent_cell_deadline_seals_interruption_and_stops_before_next_cell(tmp_path):
+    import json
+    import subprocess
+    from blueprint_pipeline import native_task_arena_policy_canary_worker as worker
+    from tests.test_policy_canary_interrupted_cell_recovery import _stage
+
+    runtime, staged_child, _inputs, _task_digest = _stage(tmp_path)
+    output = staged_child.parent.parent
+    staged_child.rmdir()  # The production parent must create its own empty child directory.
+    (runtime / "native_task_packet/native_task_arena_packet_request.v1.json").write_text("{}")
+    calls = []
+
+    def timeout(**kwargs):
+        calls.append(kwargs["index"])
+        (kwargs["child_root"] / "worker_console.log").write_text("retained startup diagnostic\n")
+        raise subprocess.TimeoutExpired(["isolated-policy-cell"], worker.ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS)
+
+    assert worker._run_isolated_cell_processes(
+        runtime_root=runtime, output_root=output, run_cell_process=timeout,
+    ) == 1
+    assert calls == [0]
+    parent = json.loads((output / worker.PROVIDER_RESULT_FILENAME).read_text())
+    child = json.loads((output / "cell_runs/00" / worker.PROVIDER_RESULT_FILENAME).read_text())
+    assert parent["status"] == child["status"] == "blocked"
+    assert parent["blockers"] == ["policy_canary_isolated_cell_process_timeout"]
+    assert parent["interrupted_child_result_digest"] == child["result_digest"]
+    assert child["result_digest"] == canonical_digest(child, digest_field="result_digest")
+    assert len(child["episodes"]) == 2
+    assert all(row["candidate_policy_queried"] is False for row in child["episodes"])
+    assert not (output / "cell_runs/01").exists()
+
+
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [
