@@ -194,6 +194,7 @@ class _SDKChatBridge:
         self.max_input_tokens, self.max_output_tokens, self.max_calls = max_input_tokens, max_output_tokens, max_calls
         self.object_label = object_label
         self.stable_prefix = stable_prefix
+        self.reasoning_effort = 'high'
         self.calls: list[dict[str, Any]] = []
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -221,13 +222,14 @@ class _SDKChatBridge:
         stable_prefix = instructions + '\n' + self.stable_prefix if self.stable_prefix else None
         if stable_prefix:
             from .asset_authoring_prompt_cache import asset_cache_policy
-            policy = asset_cache_policy(family='cad', output_type=_TextOutput, stable_prefix=stable_prefix)
+            policy = asset_cache_policy(family='cad', output_type=_TextOutput,
+                stable_prefix=stable_prefix, reasoning_effort=self.reasoning_effort)
         else:
             policy = None
         spec = AgentsSDKAgentSpec(
             run_id=self.run_id, capability=f"astra_cad_candidate:{self.object_label}", name="Astra CAD candidate",
             instructions=instructions,
-            model="gpt-6-astra", reasoning_effort="high", max_turns=1,
+            model="gpt-6-astra", reasoning_effort=self.reasoning_effort, max_turns=1,
             max_input_tokens=self.max_input_tokens, max_output_tokens=self.max_output_tokens,
             output_type=_TextOutput, tool_bindings=(),
             stable_developer_prefix=stable_prefix, cache_policy=policy,
@@ -245,6 +247,12 @@ class _SDKChatBridge:
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
         except Exception as exc:
             record["failure"] = type(exc).__name__
+            # Preserve returned candidate text on structured-output failures;
+            # never persist run_data.input (which contains the source prompt).
+            if type(exc).__name__ == 'ModelBehaviorError':
+                partial = str(exc)
+                (self.root / f'invocation-{index:02d}-invalid-response.txt').write_text(partial)
+                record['invalid_response_sha256'] = hashlib.sha256(partial.encode()).hexdigest()
             raise
         finally:
             _save(self.root / "invocations.json", self.calls)
@@ -364,9 +372,12 @@ def _compact_coder_prompt(**kwargs: Any) -> str:
                        "previous_feedback": kwargs.get("previous_feedback"),
                        "step_path": kwargs["step_path"], "stl_path": kwargs["stl_path"],
                        "task": "Implement the complete exact plan, including custom curved profiles in notes. "
-                       "Return self-contained build123d Python defining gen_step(), and a main block that calls it "
+                       "Return at most 120 lines of straightforward build123d Python defining gen_step(), and a main block that calls it "
                        "and exports STEP/STL to the supplied paths. Use from build123d import *. "
-                       "Do not copy the brief or source evidence into code. Preserve every exact dimension; no sizing objects. "
+                       "Use ordinary Python floats; the tolerance is 0.01 millimetre, not symbolic infinite precision. "
+                       "Use build123d sketch/Bezier/extrude primitives, no direct OCP APIs or Decimal arithmetic. "
+                       "Do not write validation, measurement, rendering, report, metadata, or test code: the trusted harness supplies those. "
+                       "Do not copy the brief or source evidence into code. Preserve every supplied nominal dimension; no sizing objects. "
                        "No network, external files, subprocesses, or viewers. Geometry remains development_only."},
                       separators=(",", ":"))
 
@@ -510,6 +521,8 @@ def execute_mac_candidate(
             original = getattr(nodes, name)
 
             def guarded(state, fn=original, node_name=name):
+                bridge.reasoning_effort = ('medium' if node_name in
+                    {'node_python_coder', 'node_autonomous_skill_loop'} else 'high')
                 result = dict(adopted[node_name]) if node_name in adopted else fn(state)
                 brief_value = result.get("cad_brief")
                 part_name = getattr(brief_value, "part_name", "")

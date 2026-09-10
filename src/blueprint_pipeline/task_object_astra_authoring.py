@@ -175,20 +175,21 @@ def invoke_vision(invoker, request: AuthoringRequest, *, capability: str,
         'regions explicit. Outputs are development-only candidates, never physical truth.'
     )
     stable_prefix = instructions + '\n' + cache_prefix if cache_prefix else None
+    reasoning_effort = 'medium' if output_type is BlenderProgram else 'high'
     if stable_prefix:
         from .asset_authoring_prompt_cache import asset_cache_policy
         family = {'VisualBrief': 'source_analysis', 'BlenderProgram': 'blender_author',
                   'PhysicalPropertyReviewProposal': 'physics',
                   'AppearanceReview': 'visual_review'}[output_type.__name__]
         cache_policy = asset_cache_policy(family=family,
-            output_type=output_type, stable_prefix=stable_prefix)
+            output_type=output_type, stable_prefix=stable_prefix, reasoning_effort=reasoning_effort)
     else:
         cache_policy = None
     spec = AgentsSDKAgentSpec(
         run_id=request.run_id, capability=f'{request.object_id}_{capability}',
         name=f'Blueprint {capability}', instructions=instructions, model=MODEL,
         max_turns=1, max_output_tokens=12000, max_input_tokens=80000,
-        reasoning_effort='high', output_type=output_type,
+        reasoning_effort=reasoning_effort, output_type=output_type,
         stable_developer_prefix=stable_prefix, cache_policy=cache_policy,
     )
     invocation = invoker.invoke(spec, [{'role': 'user', 'content': content}])
