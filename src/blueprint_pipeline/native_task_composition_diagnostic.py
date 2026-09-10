@@ -174,6 +174,7 @@ def run_composition_diagnostic(request, *, output_root, adapters: CompositionAda
         adapters.restore_visibility(visibility)
     if adapters.snapshot_visibility() != visibility:
         raise CompositionDiagnosticError('composition_visibility_restoration_failed')
+    final_state = adapters.read_fixed_state()
     comparison = None
     if failure is None:
         try:
@@ -183,8 +184,10 @@ def run_composition_diagnostic(request, *, output_root, adapters: CompositionAda
     result = seal({'schema_version': RESULT_SCHEMA, 'status': 'captured' if failure is None else 'blocked',
         'request_digest': request['request_digest'], 'passes': rows, 'fixed_state': baseline,
         'fixed_state_digest': fixed_digest, 'visibility_restored': True, 'pixel_comparison': comparison,
-        'policy_queries': 0, 'physics_steps_between_passes': 0, 'source_assets_mutated': False,
-        'metric_depth_usable_for_occlusion': bool(rows) and all(row['camera']['metric_depth']['status'] == 'valid' for row in rows),
+        'policy_queries': 0,
+        'physics_steps_between_passes': final_state['physics_step_index'] - baseline['physics_step_index'],
+        'final_fixed_state': final_state, 'source_assets_mutated': False,
+        'metric_depth_usable_for_occlusion': len(rows) == len(PASSES) and all(row['camera']['metric_depth']['status'] == 'valid' for row in rows),
         'pixel_cause_proven': False, 'physical_truth_claimed': False,
         'blockers': [] if failure is None else [failure]})
     (output_root / 'composition_diagnostic.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')

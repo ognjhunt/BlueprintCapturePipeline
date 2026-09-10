@@ -99,7 +99,7 @@ def test_three_native_passes_retain_exact_aovs_calibration_and_restore_light_pre
     assert native.sim.current_time_step_index == 0
 
 
-@pytest.mark.parametrize('failure', ['capture', 'pose', 'settings', 'stale'])
+@pytest.mark.parametrize('failure', ['capture', 'pose', 'settings', 'stale', 'physics'])
 def test_scope_restores_on_capture_failure_or_fixed_state_change(native, failure):
     original = native.adapters.render_and_capture
     def capture(label, output):
@@ -110,6 +110,8 @@ def test_scope_restores_on_capture_failure_or_fixed_state_change(native, failure
                 native.scene['robot'].data.root_pose_w[0,0] += .01
             if failure == 'settings':
                 native.config['/rtx/rendermode'] = 'different'
+            if failure == 'physics':
+                native.sim.current_time_step_index += 1
         return original(label, output)
     adapters = replace(native.adapters, render_and_capture=capture)
     if failure == 'stale':
@@ -120,6 +122,8 @@ def test_scope_restores_on_capture_failure_or_fixed_state_change(native, failure
     assert result['visibility_restored']
     assert adapters.snapshot_visibility() == before
     assert native.stage.GetRootLayer().ExportToString() == native.before_layer
+    if failure == 'physics':
+        assert result['physics_steps_between_passes'] == 1
 
 
 def test_invalid_native_depth_is_retained_as_gap_instead_of_fabricated(native):
