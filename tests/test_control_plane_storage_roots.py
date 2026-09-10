@@ -95,3 +95,20 @@ def test_most_specific_root_wins_and_tools_refuse_wrong_classes() -> None:
         require_storage_class("/srv/elsewhere", expected="cache", code="fixture_code")
     with pytest.raises(ValueError, match="control_plane_storage_class_invalid"):
         roots_of_class("bogus")
+
+
+@pytest.mark.parametrize(("path", "storage_class", "owner"), [
+    ("/var/lib/blueprint/pipeline-control-plane/completed-replay-cache-retention", "evidence_hot", "root"),
+    ("/var/lib/blueprint/pipeline-control-plane/scene-project-spend", "evidence_hot", "blueprint"),
+    ("/var/lib/blueprint/task-evaluation-inputs/task-evaluation-terminal-results", "evidence_hot", "blueprint"),
+    ("/var/lib/blueprint/pipeline-control-plane/result-artifact-cache", "cache", "blueprint"),
+    ("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents", "work", "blueprint"),
+    ("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-configuration-activation-intents", "work", "blueprint"),
+])
+def test_owner_delivery_and_replay_roots_keep_their_retention_law(path, storage_class, owner):
+    root = classify_path(path + "/retained-record.json")
+    assert root is not None
+    assert (root.path, root.storage_class, root.owner) == (path, storage_class, owner)
+    if storage_class == "evidence_hot":
+        with pytest.raises(ValueError, match="cannot_evict:evidence_hot"):
+            require_storage_class(path, expected="cache", code="cannot_evict")

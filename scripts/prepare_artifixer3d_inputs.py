@@ -90,6 +90,10 @@ STEPS: dict[str, Step] = {
             "source_candidate_inputs_receipt_path": Param("--source-candidate-inputs", required=True),
             "task_id": Param("--task-id", required=True),
             "semantic_teacher_frames_root": Param("--semantic-teacher-frames-root", required=True),
+            "training_view_selection": Param(
+                "--training-view-selection", "Retained training-view selection JSON, when supplied.",
+                json_file=True,
+            ),
             "editor_identity": EDITOR_IDENTITY,
             "prompt_policy": Param("--prompt-policy", required=True),
             "output_path": Param("--output", required=True),
