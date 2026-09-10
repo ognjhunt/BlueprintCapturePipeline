@@ -223,6 +223,36 @@ class PolicyEpisodeError(ValueError):
         super().__init__(";".join(self.errors))
 
 
+class NativeJointStateBoundsError(PolicyEpisodeError):
+    """Observed simulator state violated native limits; this is not a policy response."""
+
+    def __init__(self, readback: Mapping[str, Any]):
+        self.readback = dict(readback)
+        first = self.readback['violations'][0]
+        super().__init__([
+            f"native_joint_state_bounds_invalid:phase={readback['phase']}:"
+            f"count={len(readback['violations'])}:first_joint_index={first['joint_index']}:"
+            f"value={first['observed_rad']!r}:bounds={first['limits_rad']!r}"
+        ])
+
+
+def validate_native_joint_state(joints, joint_limits, *, phase: str) -> None:
+    """Use the same unexpanded native position interval as reset admission."""
+    values = [float(value) for value in joints]
+    limits = [[float(value) for value in row] for row in joint_limits]
+    if (len(values) != ARM_JOINT_COUNT or len(limits) != ARM_JOINT_COUNT
+            or any(len(row) != 2 or row[0] >= row[1] for row in limits)
+            or not all(math.isfinite(value) for value in [*values, *(x for row in limits for x in row)])):
+        raise PolicyEpisodeError(['native_joint_state_bounds_contract_invalid'])
+    violations = [{'joint_index': index, 'observed_rad': value, 'limits_rad': limits[index]}
+                  for index, value in enumerate(values) if not limits[index][0] <= value <= limits[index][1]]
+    if violations:
+        raise NativeJointStateBoundsError({'schema_version': 'native_joint_state_bounds_violation.v1',
+            'phase': phase, 'observed_joint_positions_rad': values, 'joint_limits_rad': limits,
+            'violations': violations, 'observed_state_clamped': False,
+            'candidate_response_was_not_the_refusing_boundary': True})
+
+
 def _measured_source_hw(observed):
     return _evidence(measured_source_hw, observed=observed)
 
@@ -856,6 +886,7 @@ def run_policy_episode(
                         "candidate_exact_policy_input_frames",
                         "prestart_readiness",
                         "episode_terminal_class",
+                        "native_joint_state_violation",
                     )
                     if key in episode_progress
                 }
@@ -903,8 +934,17 @@ def run_policy_episode(
     }
     phase_started = time.monotonic()
     environment.reset()
+    # Prestart probes retain their own resets. Begin the actual episode only
+    # after its final canonical reset so those probes cannot count as retries.
+    if callable(getattr(environment, 'begin_episode', None)):
+        environment.begin_episode()
     joint_limits = environment.joint_limits()
     joint_trace = [_read_arm_joint_positions(environment)]
+    try:
+        validate_native_joint_state(joint_trace[0], joint_limits, phase='initial_native_state')
+    except NativeJointStateBoundsError as exc:
+        episode_progress['native_joint_state_violation'] = exc.readback
+        raise
 
     samples: list[dict[str, Any]] = []
     previous_index: int | None = None
@@ -1313,6 +1353,14 @@ def run_policy_episode(
     for query_index in range(int(max_policy_queries)):
         phase_started = time.monotonic()
         inputs = environment.read_policy_inputs()
+        try:
+            if 'joint_position' in inputs:
+                validate_native_joint_state(inputs['joint_position'], joint_limits, phase='before_policy_query')
+        except NativeJointStateBoundsError as exc:
+            episode_progress['native_joint_state_violation'] = exc.readback
+            episode_progress['candidate_joint_state_validated'] = False
+            _emit_progress('native_joint_state_bounds_refused')
+            raise
         sensor_freshness.append({"query_index": query_index,
             "cameras": dict(inputs.get("sensor_freshness") or {}),
             "verified": set(inputs.get("sensor_freshness") or {}) == {"external", "wrist"}
@@ -1662,10 +1710,18 @@ def run_policy_episode(
             after = _read_arm_joint_positions(environment)
             timings_seconds["joint_state_read"] += time.monotonic() - phase_started
             action_record["observed_after_rad"] = after
+            joint_trace.append(after)
+            try:
+                validate_native_joint_state(after, joint_limits, phase='after_action')
+            except NativeJointStateBoundsError as exc:
+                action_record['native_joint_state_violation'] = exc.readback
+                episode_progress['native_joint_state_violation'] = exc.readback
+                episode_progress['candidate_joint_state_validated'] = False
+                _emit_progress('native_joint_state_bounds_refused')
+                raise
             action_record["joint_state_after_validated"] = True
             episode_progress["candidate_joint_state_validated"] = True
             _emit_progress("joint_state_validated")
-            joint_trace.append(after)
             target = [float(value) for value in action["joint_position_target_rad"]]
             response_observed = any(
                 abs(after[index] - before[index]) > ARM_MOTION_EPSILON_RAD
