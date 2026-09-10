@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 from types import SimpleNamespace
 import zipfile
 
@@ -183,12 +184,52 @@ def test_sealed_python_loader_survives_checkmesh_and_cad_cli_subprocesses(tmp_pa
     assert set(runner.calls[1][1]["env"]) == {"PYTHONPATH"}
 
 
-def test_step_readback_rejects_rounded_dimensions(tmp_path):
-    build123d = pytest.importorskip("build123d")
+def _stub_step_reader(monkeypatch, path, dimensions, *, solid_count=1, volume=1.0,
+                      valid=True, validity_is_method=False):
+    """Fake only the external STEP kernel; production readback computes every verdict."""
+    path.write_bytes(b"retained STEP parser fixture")
+    imported = []
+    shape = SimpleNamespace(
+        bounding_box=lambda: SimpleNamespace(size=SimpleNamespace(
+            X=dimensions[0], Y=dimensions[1], Z=dimensions[2])),
+        is_valid=(lambda: valid) if validity_is_method else valid,
+        volume=volume, solids=lambda: [object() for _ in range(solid_count)],
+    )
+    def import_step(actual_path):
+        assert actual_path == str(path)
+        assert Path(actual_path).read_bytes() == b"retained STEP parser fixture"
+        imported.append(actual_path)
+        return shape
+    monkeypatch.setitem(sys.modules, "build123d", SimpleNamespace(import_step=import_step))
+    versions = {"build123d": "fixture-build123d", "fixture-ocp": "fixture-kernel"}
+    monkeypatch.setattr(runtime.importlib.metadata, "version", versions.__getitem__)
+    monkeypatch.setattr(runtime.importlib.metadata, "packages_distributions", lambda: {"OCP": ["fixture-ocp"]})
+    return imported
+
+
+def test_step_readback_rejects_rounded_dimensions(tmp_path, monkeypatch):
     step = tmp_path / "box.step"
-    build123d.export_step(build123d.Box(12.34567, 20, 30), str(step))
-    assert runtime._read_step(step, (12.34567, 20, 30), 0.000001)["passed"]
+    imported = _stub_step_reader(monkeypatch, step, (12.34567, 20, 30))
+    exact = runtime._read_step(step, (12.34567, 20, 30), 0.000001)
+    assert exact["passed"] and exact["measured_dimensions_mm"] == [12.34567, 20.0, 30.0]
+    assert exact["build123d"] == "fixture-build123d"
+    assert exact["kernel_versions"] == {"fixture-ocp": "fixture-kernel"}
     assert not runtime._read_step(step, (12.35, 20, 30), 0.000001)["passed"]
+    assert imported == [str(step), str(step)]
+
+
+@pytest.mark.parametrize(("dimensions", "volume", "valid"), [
+    ((1, 2, 3), 6, False),
+    ((1, 2, 3), 0, True),
+    ((float("nan"), 2, 3), 6, True),
+    ((1, float("inf"), 3), 6, True),
+])
+def test_step_readback_refuses_invalid_nonpositive_or_nonfinite_kernel_outputs(
+        tmp_path, monkeypatch, dimensions, volume, valid):
+    step = tmp_path / "invalid.step"
+    _stub_step_reader(monkeypatch, step, dimensions, volume=volume, valid=valid,
+                      validity_is_method=True)
+    assert runtime._read_step(step, (1, 2, 3), 0.000001)["passed"] is False
 
 
 def test_dirty_source_refuses_before_model(tmp_path, monkeypatch):
@@ -408,14 +449,13 @@ def test_compact_coder_prompt_preserves_curved_geometry_and_no_duplicate_brief()
     assert 'giant duplicated brief' not in prompt
 
 
-def test_step_readback_rejects_disconnected_solids_even_with_exact_envelope(tmp_path):
-    build123d = pytest.importorskip('build123d')
-    shape = build123d.Compound(children=[build123d.Box(1, 1, 1),
-        build123d.Pos(2, 0, 0) * build123d.Box(1, 1, 1)])
-    path = tmp_path / 'disconnected.step'
-    build123d.export_step(shape, str(path))
+def test_step_readback_rejects_disconnected_solids_even_with_exact_envelope(tmp_path, monkeypatch):
+    path = tmp_path / "disconnected.step"
+    _stub_step_reader(monkeypatch, path, (3, 1, 1), solid_count=2, volume=2,
+                      validity_is_method=True)
     result = runtime._read_step(path, (3, 1, 1), 0.01)
-    assert result['solid_count'] == 2 and result['valid'] and not result['passed']
+    assert result["measured_dimensions_mm"] == [3.0, 1.0, 1.0]
+    assert result["solid_count"] == 2 and result["valid"] and not result["passed"]
 
 
 def test_adopted_coder_uses_no_invoker_and_retains_pending_raw_program(tmp_path):
