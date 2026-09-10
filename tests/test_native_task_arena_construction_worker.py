@@ -1,4 +1,5 @@
 from __future__ import annotations
+import pytest
 
 import hashlib
 import json
@@ -752,6 +753,27 @@ def _snapshot_one_camera(*, rgb, semantic, labels, output_root, hdr=None):
         output_root=output_root,
         snapshot_id="reset",
     )
+
+
+@pytest.mark.parametrize("native_counters_available", [True, False])
+def test_snapshot_reads_camera_frame_and_native_physics_step_not_camera_data_frame(tmp_path, native_counters_available):
+    import numpy as np
+    from types import SimpleNamespace
+    from blueprint_pipeline.native_task_arena_construction_worker import _camera_snapshot
+
+    camera = SimpleNamespace(data=_FakeCameraData(
+        rgb=np.full((24, 32, 3), 80, dtype=np.uint8), semantic=np.ones((24, 32), dtype=np.int32), labels={"1": {"class": "task_object"}},
+    ))
+    camera.data.frame = 999
+    env = _FakeEnv({"wrist_cam": camera})
+    if native_counters_available:
+        camera.frame = SimpleNamespace(torch=np.array([37], dtype=np.int64))
+        env.unwrapped.sim = SimpleNamespace(get_physics_step_count=lambda: 296)
+    snapshot = _camera_snapshot(env=env, camera_scene_names={"wrist": "wrist_cam"}, output_root=tmp_path, snapshot_id="reset")
+    row = snapshot["cameras"][0]
+    assert row["native_sensor_timestamp"] == ([37] if native_counters_available else None)
+    assert row["native_sensor_timestamp_source"] == "Camera.frame"
+    assert row["native_physics_step_count"] == (296 if native_counters_available else None)
 
 
 def test_display_encode_rolls_off_highlights_without_channel_fringes() -> None:

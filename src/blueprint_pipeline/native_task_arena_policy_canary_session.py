@@ -255,6 +255,13 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         ):
             raise PolicyCanarySessionError("policy_canary_runtime_input_cell_invalid")
         strict_controls = (task_success_contract.get("criteria") or {}).get("controls", {}).get("mode") == "required_per_cell"
+        if row.get("observation_protocol") is not None:
+            from .policy_observation_runtime_contract import validate_native_cell_protocol
+
+            try:
+                validate_native_cell_protocol(row, task_success_contract_digest=task_success_contract["contract_digest"])
+            except ValueError as exc:
+                raise PolicyCanarySessionError("policy_canary_observation_protocol_invalid:" + str(exc)) from exc
         if strict_controls != (mode == "required_before_policy"):
             raise PolicyCanarySessionError("policy_canary_control_requirement_mismatch")
         if mode in {"nonblocking_diagnostic_pending", "required_before_policy"}:

@@ -22,6 +22,8 @@ import time
 from typing import Any, Callable, Mapping
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.policy_observation_episode import protocol_mount_selection, wrap_protocol_environment, create_visibility_reader
+from blueprint_pipeline.native_policy_visibility import policy_camera_visibility_contract as _policy_camera_visibility_contract
 from blueprint_pipeline.appearance_render_backend import (
     BACKEND_ISAAC_NATIVE_NUREC,
     BACKEND_PARTICLEFIELD_3DGRUT_TRANSCODE,
@@ -40,101 +42,6 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 
 ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS = 900
 DROID_PARITY_MINIMUM_APPROACH_M = 0.05
-
-
-def _policy_camera_visibility_contract(
-    snapshot: Mapping[str, Any],
-    *,
-    preserve_official_droid_calibration: bool,
-) -> dict[str, Any]:
-    """Qualify task visibility according to each camera's policy role.
-
-    A fixed external camera must frame the task at reset. The official DROID
-    wrist camera is attached to the gripper, so its reset observation may put
-    the task near an image edge before the policy approaches it. For that
-    camera, visible native-semantic task pixels are the reset requirement;
-    centering remains recorded as a typed notice and is measured during the
-    rollout.
-    """
-
-    rows = {
-        str(row.get("role")): row
-        for row in snapshot.get("cameras") or []
-        if isinstance(row, Mapping) and str(row.get("role") or "")
-    }
-    expected_roles = {"external", "wrist", "overview"}
-    raw_visibility = {
-        role: bool((row.get("observability") or {}).get("passed"))
-        for role, row in rows.items()
-    }
-    qualifications: dict[str, Any] = {}
-    blockers: list[str] = []
-    notices: list[str] = []
-    if set(rows) != expected_roles:
-        blockers.append("policy_canary_camera_role_inventory_invalid")
-    for role in sorted(expected_roles):
-        row = rows.get(role)
-        observability = (
-            row.get("observability")
-            if isinstance(row, Mapping)
-            and isinstance(row.get("observability"), Mapping)
-            else {}
-        )
-        raw_passed = bool(observability.get("passed"))
-        pixel_count = int(observability.get("pixel_count") or 0)
-        thresholds = observability.get("thresholds")
-        minimum_pixels = (
-            int(thresholds.get("effective_minimum_pixels") or 0)
-            if isinstance(thresholds, Mapping)
-            else 0
-        )
-        render_passed = observability.get("render_passed") is True
-        centroid_within_margin = (
-            observability.get("centroid_within_margin") is True
-        )
-        if preserve_official_droid_calibration and role == "wrist":
-            passed = (
-                render_passed
-                and minimum_pixels > 0
-                and pixel_count >= minimum_pixels
-                and bool(observability.get("target_semantic_ids"))
-            )
-            status = (
-                "centered"
-                if passed and centroid_within_margin
-                else "initial_edge_visible"
-                if passed
-                else "insufficient_task_pixels"
-            )
-            if passed and not centroid_within_margin:
-                notices.append("droid_wrist_task_initially_near_frame_edge")
-            if not passed:
-                blockers.append("droid_wrist_task_pixels_below_threshold")
-        else:
-            passed = raw_passed
-            status = "centered" if passed else "not_qualified"
-            if not passed:
-                blockers.append(f"policy_canary_{role}_task_visibility_failed")
-        qualifications[role] = {
-            "status": status,
-            "passed": passed,
-            "raw_observability_passed": raw_passed,
-            "pixel_count": pixel_count,
-            "minimum_pixels": minimum_pixels,
-            "render_passed": render_passed,
-            "centroid_within_margin": centroid_within_margin,
-        }
-    return {
-        "passed": not blockers and set(rows) == expected_roles,
-        "camera_visibility": {
-            role: bool(qualifications.get(role, {}).get("passed"))
-            for role in sorted(expected_roles)
-        },
-        "raw_camera_visibility": raw_visibility,
-        "role_qualifications": qualifications,
-        "blockers": sorted(set(blockers)),
-        "notices": sorted(set(notices)),
-    }
 
 
 def _sha256_prefixed(value: Any) -> str:
@@ -351,6 +258,7 @@ class CellRuntime:
     configure_post_gate_renderer: Callable[..., Mapping[str, Any]] | None = None
     make_rigid_task_readback: Callable[..., Any] | None = None
     wrap_rigid_scoring_environment: Callable[..., Any] | None = None
+    make_observation_visibility_reader: Callable[..., Any] | None = None
 
 
 def isaac_cell_runtime() -> CellRuntime:
@@ -362,6 +270,7 @@ def isaac_cell_runtime() -> CellRuntime:
     """
 
     from blueprint_pipeline.adp009d_policy_episode import run_policy_episode
+    from blueprint_pipeline.native_policy_visibility import NativePolicyVisibilityReader
     from blueprint_pipeline.native_franka_pose_servo import (
         NativeFrankaDifferentialIkServo,
     )
@@ -416,6 +325,7 @@ def isaac_cell_runtime() -> CellRuntime:
         packet_request: Mapping[str, Any],
         plan: Mapping[str, Any],
         output_root: Path,
+        observation_visibility_reader: Any = None,
     ) -> Mapping[str, Any]:
         """Prove the task-facing mount and exact reset frames before policy load."""
 
@@ -456,7 +366,11 @@ def isaac_cell_runtime() -> CellRuntime:
         root = output_root / "prepolicy_observation_gate"
         root.mkdir(parents=True, exist_ok=True)
         droid_profile = plan.get("policy_canary_embodiment_profile")
-        if (
+        protocol = plan.get("observation_protocol")
+        protocol_setup = None
+        if protocol is not None:
+            protocol_setup, selection = protocol_mount_selection(observation_visibility_reader, protocol)
+        elif (
             isinstance(droid_profile, Mapping)
             and droid_profile.get("preserve_official_policy_camera_calibration")
             is True
@@ -513,9 +427,14 @@ def isaac_cell_runtime() -> CellRuntime:
         visibility = dict(visibility_contract["camera_visibility"])
         blockers = list((selection or {}).get("blockers") or [])
         blockers.extend(visual.get("blockers") or [])
-        blockers.extend(visibility_contract["blockers"])
-        if visibility_contract["passed"] is not True:
-            blockers.append("policy_canary_task_semantic_visibility_failed")
+        search_condition = protocol is not None and protocol["acquisition"]["mode"] == "visual_search"
+        if search_condition:
+            if not visibility.get("overview"):
+                blockers.append("policy_canary_overview_task_visibility_failed")
+        else:
+            blockers.extend(visibility_contract["blockers"])
+            if visibility_contract["passed"] is not True:
+                blockers.append("policy_canary_task_semantic_visibility_failed")
         passed = (
             isinstance(selection, Mapping)
             and selection.get("status") == "selected"
@@ -571,6 +490,9 @@ def isaac_cell_runtime() -> CellRuntime:
             "policy_observation_integrity_passed": passed,
             "gate_digest": "",
         }
+        if protocol is not None:
+            receipt["observation_protocol"] = protocol
+            receipt["observation_protocol_setup"] = protocol_setup
         receipt["gate_digest"] = canonical_digest(
             receipt, digest_field="gate_digest"
         )
@@ -600,6 +522,7 @@ def isaac_cell_runtime() -> CellRuntime:
         configure_post_gate_renderer=configure_post_gate_rtx_streaming_wait,
         make_rigid_task_readback=NativeRigidTaskArenaReadback,
         wrap_rigid_scoring_environment=NativeRigidScoringEnvironment,
+        make_observation_visibility_reader=NativePolicyVisibilityReader,
     )
 
 
@@ -829,7 +752,12 @@ def _resolved_scene_plan(
         apply_droid_policy_canary_profile,
     )
 
-    return apply_droid_policy_canary_profile(plan)
+    plan = apply_droid_policy_canary_profile(plan)
+    if cell.get("observation_protocol") is not None:
+        from blueprint_pipeline.policy_observation_runtime_contract import apply_native_cell_protocol
+
+        plan = apply_native_cell_protocol(plan, cell)
+    return plan
 
 
 def _sha256(path: Path) -> str:
@@ -1057,6 +985,7 @@ def _write_episode_failure_gap(
         "seed": context.get("seed"),
         "episode_failure_stage": failure_stage,
         "scientific_reset": progress.get("scientific_reset"),
+        "object_acquisition": progress.get("object_acquisition"),
         "first_observation_retained": first_observation_retained,
         "reset_state_digest": canonical_digest(
             {
@@ -1368,6 +1297,7 @@ def _aggregate_isolated_cell_results(
             if any(row.get(field) != cell.get(field) for field in (
                 "cell_id", "seed", "cell_spec_digest", "family",
                 "resolved_scenario", "resolved_scenario_digest",
+                "observation_protocol",
             )):
                 raise RuntimeError("policy_canary_isolated_cell_scenario_binding_invalid")
         prefix = f"cell_runs/{index:02d}"
@@ -1767,6 +1697,8 @@ def _run_selected_cell(
                 current_session.get("post_gate_rtx_streaming_guard") or {}
             ),
         }
+        episode_environment, environment_receipt = wrap_protocol_environment(
+            episode_environment, environment_receipt, scene_plan, current_env)
         tracker = _PolicyQueryTracker(policy["client"])
         spec = policy["spec"]
         episode_id = f"{authority['run_id']}--{context['cell_id']}--{context['candidate_id']}"
@@ -1777,6 +1709,7 @@ def _run_selected_cell(
                 "candidate_id": context["candidate_id"], "cell_id": context["cell_id"],
                 "seed": context["seed"], "resolved_scenario_digest": context["resolved_scenario_digest"],
                 "task_spec_digest": canonical_digest(scene_plan["task_spec"]),
+                **({"observation_protocol_binding_digest": scene_plan["observation_protocol"]["binding_digest"]} if scene_plan.get("observation_protocol") is not None else {}),
             }, **channels)
             reference = current_env.setdefault("scientific_reset_reference", receipt)
             parity = compare_reset_readbacks(reference, receipt)
@@ -1813,12 +1746,18 @@ def _run_selected_cell(
                     "runtime_gate": current_session.get(
                         "policy_observation_runtime_gate"
                     ),
+                    "observation_protocol_binding_digest": (scene_plan.get("observation_protocol") or {}).get("binding_digest"),
                 },
                 progress=episode_progress,
                 scientific_reset_reader=scientific_reset_reader,
+                **({"observation_protocol": scene_plan["observation_protocol"]} if scene_plan.get("observation_protocol") is not None else {}),
             )
             try:
                 _require_completed_episode_media(output_root, episode)
+                if scene_plan.get("observation_protocol") is not None:
+                    from blueprint_pipeline.policy_observation_episode import require_episode_acquisition_evidence
+
+                    require_episode_acquisition_evidence(episode=episode, binding=scene_plan["observation_protocol"], output_root=output_root / "episodes")
             except (OSError, ValueError) as media_error:
                 episode_progress["media_integrity_failure"] = str(media_error)
                 raise
@@ -1836,6 +1775,9 @@ def _run_selected_cell(
             ) from exc
         finally:
             if str(context["candidate_id"]) == str(inputs["candidate_ids"][-1]):
+                reader = current_env.get("observation_visibility_reader")
+                if reader is not None:
+                    reader.close()
                 close = getattr(env, "close", None)
                 if callable(close):
                     close()
@@ -1979,6 +1921,8 @@ def _run_selected_cell(
                 value=parity_diagnostic,
             ),
         }
+        if episode.get("object_acquisition") is not None:
+            evidence_artifacts["object_acquisition"] = {**_write_episode_json_artifact(output_root, episode_id=episode_id, role="object_acquisition", value=episode["object_acquisition"]), "media_root_relative": "episodes"}
         return {
             "status": "completed",
             "candidate_policy_queried": tracker.candidate_policy_queried,
@@ -1989,6 +1933,7 @@ def _run_selected_cell(
             "checkpoint_digest": policy["checkpoint_digest"],
             "runtime_identity_digest": policy["runtime_identity_digest"],
             "scientific_reset": episode.get("scientific_reset"),
+            "object_acquisition": episode.get("object_acquisition"),
             "lossless_frame_manifest_digest": _digest(visual),
             "review_video_digest": _digest(media),
             "returned_action_sequence_digest": _digest(
@@ -2044,6 +1989,9 @@ def _run_selected_cell(
             close()
 
     def close_session(session: Mapping[str, Any]) -> dict[str, Any]:
+        reader = current_env.pop("observation_visibility_reader", None)
+        if reader is not None:
+            reader.close()
         close = getattr(session.get("simulation_app"), "close", None)
         if not callable(close) or session.get("simulation_app") is not current_session.get(
             "simulation_app"
@@ -2057,7 +2005,7 @@ def _run_selected_cell(
         }
 
     def prepolicy_observation_gate(session: Mapping[str, Any]) -> dict[str, Any]:
-        if packet_request.get("wrist_camera_mount_registry") is not None:
+        if packet_request.get("wrist_camera_mount_registry") is not None or inputs["cells"][selected_cell_index].get("observation_protocol") is not None:
             if bound_runtime.prepolicy_camera_gate is None:
                 raise RuntimeError("policy_canary_runtime_camera_gate_unavailable")
             cell = inputs["cells"][selected_cell_index]
@@ -2093,6 +2041,7 @@ def _run_selected_cell(
                 cell_id=str(cell["cell_id"]),
                 appearance_renderer=dict(appearance_renderer),
             )
+            protocol_gate_arguments = create_visibility_reader(bound_runtime.make_observation_visibility_reader, built, scene_plan, current_env)
             gate = dict(
                 bound_runtime.prepolicy_camera_gate(
                     simulation_app=current_session["simulation_app"],
@@ -2100,6 +2049,7 @@ def _run_selected_cell(
                     packet_request=packet_request,
                     plan=scene_plan,
                     output_root=output_root,
+                    **protocol_gate_arguments,
                 )
             )
             if bound_runtime.configure_post_gate_renderer is None:
@@ -2160,6 +2110,13 @@ def _run_selected_cell(
         except Exception as exc:
             result = {"schema_version": "policy_canary_control_cell_result.v1", "status": "blocked",
                       "blockers": [str(exc)], "episodes": [], "candidate_policy_queried": False}
+        reader = current_env.pop("observation_visibility_reader", None)
+        if reader is not None:
+            try:
+                reader.close()
+            except Exception as exc:
+                result["status"] = "blocked"
+                result.setdefault("blockers", []).append("observation_reader_close_failed:" + str(exc))
         _seal_result_before_simulation_close(result_path=result_path, result=result,
                                             simulation_app=current_session.get("simulation_app"))
         return 0 if result["status"] == "passed" else 1

@@ -845,6 +845,7 @@ def _camera_snapshot(
     from blueprint_pipeline.native_task_camera_observability import (
         measure_native_task_camera_observability,
         measure_native_task_semantic_label_pixels,
+        native_camera_snapshot_counters,
     )
     from blueprint_pipeline.native_task_frame_display_encoding import (
         display_encode_hdr,
@@ -994,9 +995,7 @@ def _camera_snapshot(
                 },
                 "semantic_id_to_labels": labels,
                 "raw_shapes": diagnostics["cameras"][-1],
-                "native_sensor_timestamp": _jsonable(
-                    getattr(camera.data, "frame", None)
-                ),
+                **_jsonable(native_camera_snapshot_counters(camera, getattr(env.unwrapped, "sim", None))),
             }
         )
     return {"snapshot_id": snapshot_id, "cameras": rows}

@@ -1,0 +1,134 @@
+{
+  "acquisition": {
+    "camera_calibration_digests": {
+      "external": "sha256:2ec882c1cf415da4934b731ef587d0853733db7a3fadb52c59c4a380a7fd6ed3",
+      "wrist": "sha256:1478b6215f4ff61307d5fffd7324aff07ce4f8988d797b11c0a069d997153037"
+    },
+    "initial_visibility": "initially_out_of_view",
+    "maximum_search_seconds": 5.0,
+    "minimum_target_pixels": 8,
+    "mode": "visual_search"
+  },
+  "binding_digest": "sha256:1c76406ff8d0da41abeb195712f5198a8055114c59318a70061236c630b63ec0",
+  "camera_setups": {
+    "external": {
+      "frame_from_camera_matrix": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "pose_tolerance_m": 0.0001,
+      "reset_world_from_camera_opencv_matrix": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "rotation_tolerance": 0.0001,
+      "source_intrinsics_digest": "sha256:1df3c7eff646e17609ae7f799472874040fb8e4759782a9250f94b645a4c4338"
+    },
+    "wrist": {
+      "frame_from_camera_matrix": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "pose_tolerance_m": 0.0001,
+      "reset_world_from_camera_opencv_matrix": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "rotation_tolerance": 0.0001,
+      "source_intrinsics_digest": "sha256:1df3c7eff646e17609ae7f799472874040fb8e4759782a9250f94b645a4c4338"
+    }
+  },
+  "cell_id": "fixture_workcell.object_acquisition.configuration_only.cell_002",
+  "cell_spec_digest": "sha256:874f7cdede751e4eb2000da83ccc4101a1eacd6b5358ac947564188898297880",
+  "claim_ceiling": "diagnostic_policy_execution",
+  "information": {
+    "policy_object_coordinates": null,
+    "scene_id": "fixture_workcell",
+    "schema_version": "policy_observation_information.v1",
+    "setup_object_coordinates": {
+      "coordinate_frame_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "measured_at_s": 100.0,
+      "measurement_context_digest": "sha256:26c7c4e924b60e76df02b5774be0f4f466e6ab50137858e3b73af8970b2781fc",
+      "measurement_digest": "sha256:70aa81e9ebe38c54cb72810897a612ec62848ed4077c43af364ce9b74a18a7ee",
+      "object_id": "fixture_block",
+      "position_m": [
+        1.0,
+        0.0,
+        0.5
+      ],
+      "source_contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_id": "scene_setup",
+      "source_kind": "simulator_ground_truth"
+    },
+    "setup_position_dimensions": {
+      "x": "object_x_m"
+    },
+    "task_id": "place_fixture_block"
+  },
+  "native_scene_plan_digest": "sha256:f8bd84cfb7114f11525d004234553a9efed111e8dd70cc4aad56ccb2b452e05f",
+  "preregistration_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "reset_digest": "sha256:26c7c4e924b60e76df02b5774be0f4f466e6ab50137858e3b73af8970b2781fc",
+  "resolved_scenario_digest": "sha256:8561a0cb2e16de509e729ff011685041fbde1597c1d222319a23c34cfd8ef1d5",
+  "run_kind": "internal_policy_canary",
+  "schema_version": "native_policy_observation_protocol.v1",
+  "seed": 1877872005,
+  "source_configuration_digest": "sha256:75e6e880e735c1434deb3fefe525acee0de033cee492a9276c0379b73cf8bcc8",
+  "source_plan_digest": "sha256:cc1f93d708d6b6b8ff004f37dc5d3bb93b5caffd97995b74fdd54597821a4264",
+  "task_success_contract_digest": "sha256:b1921cb11e235831ba0e765e5b04fb60b9952e1bb86519a776b08906ca566d03"
+}

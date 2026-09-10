@@ -1,0 +1,478 @@
+{
+  "camera_setups": {
+    "external": {
+      "frame_from_camera_matrix": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "reset_world_from_camera_opencv_matrix": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "source_intrinsics_digest": "sha256:1df3c7eff646e17609ae7f799472874040fb8e4759782a9250f94b645a4c4338"
+    },
+    "wrist": {
+      "frame_from_camera_matrix": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "reset_world_from_camera_opencv_matrix": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "source_intrinsics_digest": "sha256:1df3c7eff646e17609ae7f799472874040fb8e4759782a9250f94b645a4c4338"
+    }
+  },
+  "native_cell": {
+    "cell_id": "fixture_workcell.object_acquisition.configuration_only.cell_002",
+    "cell_spec_digest": "sha256:874f7cdede751e4eb2000da83ccc4101a1eacd6b5358ac947564188898297880",
+    "family": "camera_sensor",
+    "resolved_scenario": {
+      "family": "camera_sensor",
+      "parameters": {}
+    },
+    "resolved_scenario_digest": "sha256:8561a0cb2e16de509e729ff011685041fbde1597c1d222319a23c34cfd8ef1d5",
+    "seed": 1877872005
+  },
+  "native_scene_plan": {
+    "appearance_frame_alignment": {
+      "measurement_authority": "particlefield_position_quantiles",
+      "representation": "particlefield_3d_gaussian_splat",
+      "source_asset_sha256": "sha256:9193a9de6bd81bd6348065b3cad46ad835b62dcfaa6212285a91bffd8a166445",
+      "status": "aligned"
+    },
+    "cadence": {
+      "control_decimation": 8,
+      "control_frequency_hz": 15.0,
+      "episode_length_seconds": 16.116666666666667,
+      "maximum_action_steps": 240,
+      "physics_dt_seconds": 0.008333333333333333,
+      "physics_frequency_hz": 120.0,
+      "settle_window_samples": 1
+    },
+    "cameras": [
+      {
+        "frame_from_camera_matrix": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "intrinsics": {
+          "cx": 15.5,
+          "cy": 11.5,
+          "fx": 20.0,
+          "fy": 20.0,
+          "height": 24,
+          "width": 32
+        },
+        "optical_convention": "opencv",
+        "parent_prim_path": "{ENV_REGEX_NS}",
+        "policy_input": true,
+        "pose_frame": "world",
+        "review_only": false,
+        "role": "external"
+      },
+      {
+        "frame_from_camera_matrix": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "intrinsics": {
+          "cx": 15.5,
+          "cy": 11.5,
+          "fx": 20.0,
+          "fy": 20.0,
+          "height": 24,
+          "width": 32
+        },
+        "optical_convention": "opencv",
+        "parent_prim_path": "{ENV_REGEX_NS}/Robot/panda_hand",
+        "policy_input": true,
+        "pose_frame": "robot_body",
+        "review_only": false,
+        "role": "wrist"
+      },
+      {
+        "frame_from_camera_matrix": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "intrinsics": {
+          "cx": 15.5,
+          "cy": 11.5,
+          "fx": 20.0,
+          "fy": 20.0,
+          "height": 24,
+          "width": 32
+        },
+        "optical_convention": "opencv",
+        "parent_prim_path": "{ENV_REGEX_NS}",
+        "policy_input": false,
+        "pose_frame": "world",
+        "review_only": true,
+        "role": "overview"
+      }
+    ],
+    "canary_cadence_adjustment": {
+      "control_decimation": 8,
+      "physics_frequency_hz": 120.0,
+      "reason": "frozen_droid_policy_action_cadence",
+      "resolved_control_frequency_hz": 15.0,
+      "source_control_frequency_hz": 20.0
+    },
+    "objects": [
+      {
+        "asset_id": "fixture_block",
+        "name": "task_object",
+        "pose_world": {
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "position_world_m": [
+            1.0,
+            0.0,
+            0.5
+          ]
+        },
+        "reset_state": {
+          "root_pose_world": {
+            "orientation_xyzw": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "position_world_m": [
+              1.0,
+              0.0,
+              0.5
+            ]
+          }
+        },
+        "task_subject": true
+      },
+      {
+        "name": "scene_appearance",
+        "pose_world": {
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "position_world_m": [
+            3.4681748,
+            -3.3100837,
+            0.5264650138348479
+          ]
+        },
+        "semantic_role": "scene_appearance",
+        "sha256": "1bfd4438e057587c785b8211a70e26b896dd1ef90626e7923c541dbfd7c125cc",
+        "task_subject": false
+      },
+      {
+        "asset_id": "document_tray",
+        "name": "task_support",
+        "object_type": "RIGID",
+        "pose_world": {
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "position_world_m": [
+            3.750152333333333,
+            -3.4074919,
+            0.5264650138348479
+          ]
+        },
+        "reset_state": {
+          "joint_positions": {},
+          "root_pose_world": {
+            "orientation_xyzw": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "position_world_m": [
+              3.750152333333333,
+              -3.4074919,
+              0.5264650138348479
+            ]
+          }
+        },
+        "semantic_role": "task_support",
+        "task_subject": false
+      }
+    ],
+    "plan_digest": "sha256:f8bd84cfb7114f11525d004234553a9efed111e8dd70cc4aad56ccb2b452e05f",
+    "policy_canary_embodiment_profile": {
+      "action_contract": {
+        "arena_control_variant": "droid_abs_joint_pos",
+        "executed_policy_head": "joint_position",
+        "official_gr00t_config_path": "isaaclab_arena_gr00t/policy/config/droid_manip_gr00t_closedloop_config.yaml",
+        "retained_auxiliary_policy_heads": [
+          "eef_9d"
+        ],
+        "selection_rule": "official_arena_droid_abs_joint_pos_executes_joint_head;eef_head_retained_as_diagnostic_evidence"
+      },
+      "arena_source": {
+        "git_blob_sha1": "2c8566a48bed83760e204b979f76d2e58ebc8a66",
+        "path": "isaaclab_arena/embodiments/droid/droid.py",
+        "revision": "8b4a3a47fc53de23e8205089d71109a2e2348acd"
+      },
+      "embodiment_class": "DroidAbsoluteJointPositionEmbodiment",
+      "embodiment_id": "droid_franka_robotiq_2f85",
+      "policy_camera_roles": [
+        "external",
+        "wrist"
+      ],
+      "preserve_official_policy_camera_calibration": true,
+      "preserve_official_reset_joint_positions": true,
+      "profile_digest": "sha256:ffb24654d8866efa5339f89a0689058a923c371fbc89348647055012dbb8ca5e",
+      "review_only_camera_roles": [
+        "overview"
+      ],
+      "robot_preset_id": "droid_franka_panda_robotiq_2f85_v1",
+      "schema_version": "droid_policy_canary_embodiment_profile.v1",
+      "visible_target_marker": null
+    },
+    "robot": {
+      "joint_reset_positions_rad": {
+        "panda_joint1": 0.0,
+        "panda_joint2": -0.6283185307179586,
+        "panda_joint3": 0.0,
+        "panda_joint4": -2.5132741228718345,
+        "panda_joint5": 0.0,
+        "panda_joint6": 1.8849555921538759,
+        "panda_joint7": 0.0
+      },
+      "robot_id": "franka_panda"
+    },
+    "scenario": {
+      "cell_id": "fixture_workcell.object_acquisition.configuration_only.cell_002",
+      "family": "camera_sensor",
+      "parameter_applications": [],
+      "parameters": {},
+      "resolved_scenario_digest": "sha256:8561a0cb2e16de509e729ff011685041fbde1597c1d222319a23c34cfd8ef1d5",
+      "runtime_coverage_gaps": [],
+      "seed": 1877872005
+    },
+    "scene_id": "fixture_workcell",
+    "schema_version": "native_task_arena_scene_plan.v1",
+    "task_id": "place_fixture_block",
+    "task_kind": "rigid_pick_place",
+    "task_spec": {
+      "control_frequency_hz": 15.0,
+      "destination_position_world_m": [
+        3.750152333333333,
+        -3.4074919,
+        0.5264650138348479
+      ],
+      "maximum_action_steps": 240,
+      "maximum_episode_seconds": 16.0,
+      "prompt": "Move the task object onto the green target marker.",
+      "require_sealed_start_pose": true,
+      "schema_version": "adp_task_spec.v1",
+      "settle_window_samples": 1,
+      "start_pose_world": [
+        1.0,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "support_plane_z_m": 0.5264650138348479,
+      "task_kind": "rigid_pick_place",
+      "task_success_contract": {
+        "contract_digest": "sha256:b1921cb11e235831ba0e765e5b04fb60b9952e1bb86519a776b08906ca566d03",
+        "criteria": {
+          "destination_containment": {
+            "mode": "required",
+            "position_bounds_world_m": {
+              "maximum": [
+                1.16,
+                2.01,
+                0.81
+              ],
+              "minimum": [
+                1.14,
+                1.99,
+                0.79
+              ]
+            }
+          },
+          "gripper_state": {
+            "mode": "ignored",
+            "threshold_m": null
+          },
+          "motion": {
+            "minimum_lift_m": null,
+            "minimum_translation_m": 0.14,
+            "movement_epsilon_m": 0.001
+          },
+          "orientation": {
+            "mode": "ignored",
+            "reference_xyzw": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "tolerance_rad": 0.1
+          },
+          "safety": {
+            "mode": "required"
+          },
+          "settling": {
+            "mode": "required",
+            "orientation_tolerance_rad": 0.01,
+            "position_tolerance_m": 0.002,
+            "window_samples": 3
+          },
+          "support": {
+            "contact_mode": "required",
+            "height_interval_m": [
+              0.79,
+              0.81
+            ],
+            "height_mode": "required"
+          },
+          "temporal_invariants": {
+            "containment_excursions": "forbidden",
+            "forbidden_contact_classes": [],
+            "maximum_regrasps": null,
+            "maximum_retries": null,
+            "maximum_task_contact_force_n": null,
+            "no_drop": {
+              "minimum_fall_m": 0.02,
+              "mode": "ignored"
+            },
+            "schema_version": "rigid_task_event_ledger_expectation.v1",
+            "workspace_excursions": "ignored"
+          },
+          "terminal_task_contact": {
+            "mode": "cleared"
+          }
+        },
+        "provenance": {
+          "author_id": "blueprint:manipulation_strategy_defaults.v1",
+          "author_source": "compatibility_default",
+          "confirmation_status": "confirmed",
+          "confirmed_by_team_id": null,
+          "proposal_digest": null
+        },
+        "schema_version": "rigid_task_success_contract.v1",
+        "scope": {
+          "site_id": "interiorgs-839873",
+          "task_id": "scene-839873-mug-planar-push"
+        }
+      }
+    }
+  },
+  "task_success_contract_digest": "sha256:b1921cb11e235831ba0e765e5b04fb60b9952e1bb86519a776b08906ca566d03"
+}

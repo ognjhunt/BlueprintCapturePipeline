@@ -114,6 +114,11 @@ def prepolicy_visual_readiness_evidence(
     binding = dict(observation_integrity or {})
     runtime_gate = binding.get("runtime_gate")
     runtime_gate = dict(runtime_gate) if isinstance(runtime_gate, Mapping) else None
+    search_gate_passed = False
+    if runtime_gate is not None and binding.get("observation_protocol_binding_digest") is not None:
+        from blueprint_pipeline.policy_observation_runtime_contract import validate_search_gate
+
+        search_gate_passed = validate_search_gate(runtime_gate, expected_binding_digest=binding["observation_protocol_binding_digest"])
     runtime_gate_passed = bool(
         runtime_gate
         and runtime_gate.get("schema_version")
@@ -122,7 +127,7 @@ def prepolicy_visual_readiness_evidence(
         and runtime_gate.get("run_kind") == "internal_policy_canary"
         and runtime_gate.get("claim_ceiling") == "diagnostic_policy_execution"
         and runtime_gate.get("frame_structure_passed") is True
-        and runtime_gate.get("target_semantic_visibility_passed") is True
+        and (runtime_gate.get("target_semantic_visibility_passed") is True or search_gate_passed)
         and runtime_gate.get("candidate_policy_loaded") is False
         and runtime_gate.get("candidate_policy_queried") is False
         and runtime_gate.get("official_ranking_permitted") is False
@@ -169,7 +174,8 @@ def prepolicy_visual_readiness_evidence(
         receipt.update(
             policy_observation_integrity_passed=True,
             policy_observation_integrity_blockers=[],
-            target_semantic_visibility_passed=True,
+            target_semantic_visibility_passed=runtime_gate.get("target_semantic_visibility_passed") is True,
+            declared_search_condition_passed=search_gate_passed,
             appearance_reference_parity_passed=False,
             human_visual_review_status=(
                 "not_required_for_internal_diagnostic_policy_execution"
