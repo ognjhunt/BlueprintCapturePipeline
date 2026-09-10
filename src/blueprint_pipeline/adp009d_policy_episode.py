@@ -1804,11 +1804,21 @@ def run_policy_episode(
     for _ in range(int(settle_window_samples)):
         phase_started = time.monotonic()
         environment.step(release_action)
-        joint_trace.append(_read_arm_joint_positions(environment))
+        step_index += 1
+        after = _read_arm_joint_positions(environment)
+        joint_trace.append(after)
+        try:
+            validate_native_joint_state(after, joint_limits, phase='terminal_settle')
+        except NativeJointStateBoundsError as exc:
+            exc.readback.update(step_index=step_index, isaac_action=list(release_action),
+                                environment_step_applied=True)
+            episode_progress['native_joint_state_violation'] = exc.readback
+            episode_progress['candidate_joint_state_validated'] = False
+            _emit_progress('native_joint_state_bounds_refused')
+            raise
         timings_seconds["settle_steps_including_render"] += (
             time.monotonic() - phase_started
         )
-        step_index += 1
         if (
             media_root is not None
             and episode_id is not None

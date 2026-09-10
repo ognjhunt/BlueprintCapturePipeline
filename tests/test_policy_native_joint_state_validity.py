@@ -140,3 +140,32 @@ def test_actual_mid_episode_reset_still_counts_as_retry():
     counts=[sample['retry_count'] for sample in receipt['state_trace']['task_state_samples']]
     assert counts[:4]==[0,0,0,0] and all(count==1 for count in counts[4:])
     assert environment.reset_count==2
+
+
+def test_terminal_settle_violation_retains_applied_state_and_prevents_scientific_completion(monkeypatch):
+    from blueprint_pipeline import adp009d_policy_episode as episode
+    class Environment(_Environment):
+        def step(self,action):
+            super().step(action)
+            if len(self.steps)==9:  # Eight policy actions, then the first release/settle step.
+                self._joints[4]=-4.004210948944092
+    original_score=episode.score_task_episode_from_spec
+    score_sizes=[]
+    def forbidden_score(**kwargs):
+        score_sizes.append(len(kwargs['samples']))
+        if len(kwargs['samples'])==1:
+            return original_score(**kwargs)  # Initial reset admission remains active.
+        raise AssertionError('invalid terminal native state must never be scored')
+    monkeypatch.setattr(episode,'score_task_episode_from_spec',forbidden_score)
+    environment,policy,progress=Environment(),_Policy(),{}
+    with pytest.raises(NativeJointStateBoundsError) as caught:
+        _run(environment=environment,policy=policy,max_policy_queries=1,settle_window_samples=3,progress=progress)
+    assert len(policy.observations)==1 and len(environment.steps)==9
+    violation=progress['native_joint_state_violation']
+    assert violation==caught.value.readback
+    assert violation['phase']=='terminal_settle' and violation['step_index']==9
+    assert violation['isaac_action']==environment.steps[-1]
+    assert violation['environment_step_applied'] is True
+    assert violation['observed_joint_positions_rad'][4]==-4.004210948944092
+    assert progress['candidate_joint_state_validated'] is False
+    assert score_sizes==[1]
