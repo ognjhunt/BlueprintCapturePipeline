@@ -346,7 +346,7 @@ def run_native_task_arena_runtime_preflight_vast(
         provider_bundle_kind=PROVIDER_BUNDLE_KIND,
         result_schema_version=RUNTIME_PREFLIGHT_RESULT_SCHEMA_VERSION,
         object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/runtime-preflight",
-        instance_label_prefix="blueprint-native-task-arena-preflight-",
+        instance_label_prefix="blueprint-task-evaluation-native-arena-preflight-",
         blocker_prefix="native_task_arena_runtime_preflight",
         # This no-motion preflight captures three 320x180 cameras and runs no
         # policy or training workload.  NVIDIA lists 16 GB as the Isaac Sim
