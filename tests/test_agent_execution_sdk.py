@@ -136,7 +136,7 @@ def test_inflight_abort_preserves_reservation_no_retry(tmp_path, monkeypatch, re
     async def handler(request):
         calls.append(request)
         started.set()
-        await asyncio.sleep(10)
+        await asyncio.Event().wait()
         return response()
 
     def validate(_):
@@ -158,7 +158,11 @@ def test_inflight_abort_preserves_reservation_no_retry(tmp_path, monkeypatch, re
 
     worker = threading.Thread(target=run)
     worker.start()
-    assert started.wait(5)
+    observed_start = started.wait(30)
+    if not observed_start:
+        runtime.cancel(task.task_id)
+        worker.join(5)
+    assert observed_start, [type(error).__name__ for error in errors]
     if reason == "deadline":
         clock[0] = task.deadline + 1
     if reason == "cancel":

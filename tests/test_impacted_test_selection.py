@@ -89,6 +89,18 @@ def test_source_basename_is_not_a_dependency_on_a_longer_filename(tmp_path: Path
     assert "tests/test_other_service.py" not in plan["selected_tests"]
 
 
+def test_longer_module_and_package_names_do_not_count_as_coverage(tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_longer.py").write_text("import blueprint_pipeline.owned.service_worker\n")
+    plan = MODULE.build_plan(tmp_path, ["src/blueprint_pipeline/owned/service.py"])
+    assert plan["requires_full_suite"] is True
+    assert "tests/test_longer.py" not in plan["selected_tests"]
+    (tests / "test_longer.py").write_text("from blueprint_pipeline import owned_else\n")
+    plan = MODULE.build_plan(tmp_path, ["src/blueprint_pipeline/owned/__init__.py"])
+    assert plan["requires_full_suite"] is True
+
+
 def test_changed_test_is_selected_directly() -> None:
     plan = MODULE.build_plan(ROOT, ["tests/test_capture_qa.py"])
 
