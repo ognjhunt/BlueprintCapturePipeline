@@ -219,7 +219,10 @@ def validate_blender_program(source: str) -> None:
             raise AssetAuthoringError('authoring_blender_operation_forbidden')
         if isinstance(node, ast.Attribute) and (node.attr.startswith('__') or node.attr in forbidden_attributes):
             raise AssetAuthoringError('authoring_blender_attribute_forbidden')
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute) and node.value.attr == 'ops' and node.attr not in {'mesh', 'object', 'transform', 'uv'}:
+        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute)
+                and node.value.attr == 'rigidbody' and node.attr != 'object_add'):
+            raise AssetAuthoringError('authoring_blender_operator_forbidden')
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute) and node.value.attr == 'ops' and node.attr not in {'mesh', 'object', 'transform', 'uv', 'rigidbody'}:
             raise AssetAuthoringError('authoring_blender_operator_forbidden')
 
 
@@ -255,7 +258,9 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                            adoption_record: dict | None = None,
                            authoring_instructions: str = '',
                            adopted_physical_review: PhysicalPropertyReviewProposal | None = None,
-                           physical_adoption_record: dict | None = None) -> dict:
+                           physical_adoption_record: dict | None = None,
+                           adopted_blender_program: BlenderProgram | None = None,
+                           blender_adoption_record: dict | None = None) -> dict:
     """Two bounded visual attempts, independent physics review, retained failures.
 
     ``mac_executor(brief, output_root, dimensions_m)`` must execute pinned CAD
@@ -328,10 +333,18 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
         for index in range(MAX_AUTHORING_ROUNDS):
             attempt = output_root / f'appearance-{index:02d}'
             attempt.mkdir()
-            program = invoke_vision(invoker, request, capability=f'blender_author_{index}',
-                prompt=blender_author_prompt(request, brief, prior_feedback),
-                output_type=BlenderProgram, frames=request.source_frames, root=attempt,
-                cache_prefix=authoring_instructions)
+            if index == 0 and adopted_blender_program is not None:
+                if (not blender_adoption_record
+                    or blender_adoption_record.get('output_digest') != canonical_digest(adopted_blender_program.model_dump(mode='json'))
+                    or blender_adoption_record.get('cad_readback_digest') != canonical_digest(cad.get('readback', {}))):
+                    raise AssetAuthoringError('authoring_blender_program_adoption_invalid')
+                program = adopted_blender_program
+                save_json(attempt / 'blender_program_adoption.json', blender_adoption_record)
+            else:
+                program = invoke_vision(invoker, request, capability=f'blender_author_{index}',
+                    prompt=blender_author_prompt(request, brief, prior_feedback),
+                    output_type=BlenderProgram, frames=request.source_frames, root=attempt,
+                    cache_prefix=authoring_instructions)
             validate_blender_program(program.program)
             (attempt / 'asset_program.py').write_text(program.program, encoding='utf-8')
             stl = Path(cad['stl']['path'])
@@ -392,6 +405,8 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
             'asset': file_record(selected / 'candidate.usdc'),
             'blend': file_record(selected / 'candidate.blend'),
             'cad': cad, 'geometry_readback': file_record(selected / 'geometry_readback.json'),
+            'final_visual_mesh': file_record(selected / 'final_visual_mesh.json'),
+            'final_visual_mesh_receipt': file_record(selected / 'final_visual_mesh_receipt.json'),
             'physical_review': file_record(output_root / 'physical_property_review_result.json'),
             'physical_review_input': file_record(output_root / 'physical_review_input.json'),
             'review_images': [file_record(selected / f'{view}.png') for view in ('perspective', 'top', 'side')],

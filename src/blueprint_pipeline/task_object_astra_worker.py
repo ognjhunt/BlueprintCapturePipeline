@@ -17,7 +17,7 @@ from typing import Any
 from .asset_authoring_sandbox import SandboxedAssetRunner
 from .astra_cad_skill_runtime import execute_mac_candidate
 from .task_object_astra_authoring import (
-    AssetAuthoringError, VisualBrief, budgeted_invoker, execute_asset_authoring, file_record,
+    AssetAuthoringError, BlenderProgram, VisualBrief, budgeted_invoker, execute_asset_authoring, file_record,
     save_json, validate_request,
 )
 from .decision_evidence_contracts import canonical_digest
@@ -37,7 +37,8 @@ def author_one(*, request_path: Path, output_root: Path, budget_root: Path,
                adopt_source_analysis_from: Path | None = None,
                adopt_cad_state_from: Path | None = None,
                adopt_coder_from: Path | None = None,
-               adopt_physical_review_from: Path | None = None) -> dict[str, Any]:
+               adopt_physical_review_from: Path | None = None,
+               adopt_blender_program_from: Path | None = None) -> dict[str, Any]:
     value = json.loads(request_path.read_text())
     request = validate_request(value)
     repo = Path(__file__).resolve().parents[2]
@@ -74,6 +75,10 @@ def author_one(*, request_path: Path, output_root: Path, budget_root: Path,
     if adopt_physical_review_from is not None:
         physical, physical_adoption = verify_physical_review_adoption(
             prior_root=adopt_physical_review_from, request_value=value, budget_root=budget_root)
+    blender_program = blender_adoption = None
+    if adopt_blender_program_from is not None:
+        blender_program, blender_adoption = verify_blender_program_adoption(
+            prior_root=adopt_blender_program_from, request_value=value, budget_root=budget_root)
     # Every charged HTTP attempt is individually reserved. SDK transport
     # retries after a timeout could otherwise duplicate an unknown charge.
     from agents import set_default_openai_client
@@ -101,6 +106,7 @@ def author_one(*, request_path: Path, output_root: Path, budget_root: Path,
             blender_executable=str(blender), adopted_source_analysis=adopted,
             adoption_record=adoption,
             adopted_physical_review=physical, physical_adoption_record=physical_adoption,
+            adopted_blender_program=blender_program, blender_adoption_record=blender_adoption,
             authoring_instructions=(cad_source_root / 'skills/cad/SKILL.md').read_text())
     finally:
         save_json(budget_root / 'budget_manifest.json', audit.write_manifest())
@@ -119,6 +125,7 @@ def main(argv=None):
     parser.add_argument('--adopt-cad-state-from', type=Path)
     parser.add_argument('--adopt-coder-from', type=Path)
     parser.add_argument('--adopt-physical-review-from', type=Path)
+    parser.add_argument('--adopt-blender-program-from', type=Path)
     args = parser.parse_args(argv)
     result = author_one(request_path=args.request, output_root=args.output_root,
         budget_root=args.budget_root, cad_source_root=args.cad_source_root,
@@ -127,7 +134,8 @@ def main(argv=None):
         adopt_source_analysis_from=args.adopt_source_analysis_from,
         adopt_cad_state_from=args.adopt_cad_state_from,
         adopt_coder_from=args.adopt_coder_from,
-        adopt_physical_review_from=args.adopt_physical_review_from)
+        adopt_physical_review_from=args.adopt_physical_review_from,
+        adopt_blender_program_from=args.adopt_blender_program_from)
     print(json.dumps({'status': result['status'], 'object_id': result['object_id'],
                       'result_digest': result['result_digest']}))
     return 0
@@ -194,6 +202,42 @@ def verify_physical_review_adoption(*, prior_root: Path, request_value: dict, bu
         'output_digest': output_digest, 'source_phase': file_record(phase),
         'completed_provider_response': file_record(matches[0]),
         'physical_input_digest': canonical_digest(json.loads((prior_root / 'physical_review_input.json').read_text())),
+        'cad_readback_digest': canonical_digest(json.loads((prior_root / 'cad_result.json').read_text())['readback']),
+        'new_provider_call': False}
+
+
+def verify_blender_program_adoption(*, prior_root: Path, request_value: dict, budget_root: Path):
+    """Adopt the first completed appearance program for identical source/CAD inputs."""
+    prior_request = json.loads((prior_root / 'request.json').read_text())
+    validate_request(prior_request)
+    def relevant(value):
+        return {key: item for key, item in value.items()
+                if key not in {'request_digest', 'expected_production_commit'}}
+    if relevant(request_value) != relevant(prior_request):
+        raise AssetAuthoringError('authoring_blender_adoption_source_inputs_changed')
+    phase = prior_root / 'appearance-00/blender_author_0.json'
+    record = json.loads(phase.read_text())
+    if (record.get('request_digest') != prior_request['request_digest']
+            or record.get('model') != 'gpt-6-astra' or record.get('provider') != 'openai'
+            or record.get('references') != prior_request['source_frames']):
+        raise AssetAuthoringError('authoring_blender_adoption_phase_binding_invalid')
+    output = BlenderProgram.model_validate(record['output'])
+    output_digest = canonical_digest(output.model_dump(mode='json'))
+    matches = []
+    for path in (budget_root / 'inference_reservations/completed').glob('*.json'):
+        row = json.loads(path.read_text())
+        if (row.get('run_id') == request_value['run_id']
+            and row.get('capability') == request_value['object_id'] + '_blender_author_0'
+            and row.get('model') == 'gpt-6-astra' and row.get('provider') == 'openai'
+            and row.get('structured_output_digest') == output_digest
+            and row.get('inference_completion_digest') == canonical_digest(row, digest_field='inference_completion_digest')):
+            matches.append(path)
+    if len(matches) != 1:
+        raise AssetAuthoringError('authoring_blender_adoption_completed_response_missing')
+    return output, {'schema_version': 'asset_blender_program_adoption.v1',
+        'output_digest': output_digest, 'source_phase': file_record(phase),
+        'source_request_digest': prior_request['request_digest'],
+        'completed_provider_response': file_record(matches[0]),
         'cad_readback_digest': canonical_digest(json.loads((prior_root / 'cad_result.json').read_text())['readback']),
         'new_provider_call': False}
 
