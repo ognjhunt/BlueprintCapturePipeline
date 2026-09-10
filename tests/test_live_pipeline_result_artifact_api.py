@@ -13,7 +13,7 @@ from blueprint_pipeline import live_pipeline_intake_service as service
 from blueprint_pipeline.live_pipeline_result_artifact_resolution import (
     resolve_live_pipeline_result_artifact,
 )
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.live_pipeline_control_plane import (
     CONTROL_PLANE_OUTPUT_PATH_ENV,
 )
@@ -203,3 +203,63 @@ def test_registry_cannot_point_to_another_runs_evidence(
     _registry(run_root, run_id=run_id, evidence_root=other_evidence)
 
     assert _get(client, token, run_id, "outside-evidence").status_code == 404
+
+
+def _operator_registration(run_root: Path, run_id: str) -> Path:
+    value = {
+        "schema_version": "task_evaluation_operator_policy_canary_registration.v1",
+        "run_id": run_id,
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+    }
+    value["registration_digest"] = cross_runtime_canonical_digest(value, digest_field="registration_digest")
+    path = run_root / "website-operator-registration.json"
+    path.write_text(json.dumps(value))
+    return path
+
+
+def test_registered_operator_artifact_uses_direct_run_root_and_preserves_auth_and_ranges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, token, canary_root = _configure(tmp_path, monkeypatch)
+    run_id = "operator-policy-841757-frozen"
+    run_root = canary_root / run_id
+    _registry(run_root, run_id=run_id)
+    _operator_registration(run_root, run_id)
+    url = f"/api/live-pipeline/task-evaluation-runs/{run_id}/artifacts/{ARTIFACT_ID}"
+    assert client.get(url).status_code == 401
+    response = client.get(url, headers={**_headers(token, "operator-range"), "Range": "bytes=0-5"})
+    assert response.status_code == 206
+    assert response.content == b"review"
+    assert response.headers["x-blueprint-artifact-sha256"] == "sha256:" + hashlib.sha256(b"review-video").hexdigest()
+    assert _get(client, token, run_id, "operator-full").content == b"review-video"
+
+
+@pytest.mark.parametrize("fault", ["missing_registration", "registration_digest", "cross_run_registration", "registration_symlink", "run_symlink", "cross_run_evidence", "changed_bytes", "ambiguous_run"])
+def test_operator_artifact_lookup_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str,
+) -> None:
+    client, token, canary_root = _configure(tmp_path, monkeypatch)
+    run_id = "operator-policy-841757-refuse"
+    run_root = canary_root / run_id
+    other = canary_root / "other-run"
+    _registry(run_root, run_id=run_id, evidence_root=other / "evidence" if fault == "cross_run_evidence" else None)
+    registration = _operator_registration(run_root, "other-run" if fault == "cross_run_registration" else run_id)
+    if fault == "missing_registration":
+        registration.unlink()
+    elif fault == "registration_digest":
+        value = json.loads(registration.read_text())
+        value["registration_digest"] = "sha256:" + "0" * 64
+        registration.write_text(json.dumps(value))
+    elif fault == "registration_symlink":
+        retained = registration.with_suffix(".retained.json")
+        registration.rename(retained)
+        registration.symlink_to(retained)
+    elif fault == "run_symlink":
+        run_root.rename(other)
+        run_root.symlink_to(other, target_is_directory=True)
+    elif fault == "changed_bytes":
+        (run_root / "evidence/external.mp4").write_bytes(b"tampered")
+    elif fault == "ambiguous_run":
+        _registry(canary_root / f"{run_id}-activation", run_id=run_id)
+    assert _get(client, token, run_id, "operator-" + fault).status_code == 404
