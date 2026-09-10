@@ -5,8 +5,9 @@ policy test must declare what information the policy receives and whether the
 object should already be visible. The existing DROID builder selects its inputs
 correctly, but it had no explicit deployment-source contract for object
 coordinates or a separately preregistered visual-search protocol. The smallest
-change is a staging adapter around that builder and the existing exact-workcell
-schedule. It does not modify the current frozen GPU run.
+change is an explicit binding around that builder, the existing exact-workcell
+schedule, and the current canary worker/episode/receipt seams. It does not modify
+the current frozen GPU run.
 
 ## What is configured
 
@@ -98,29 +99,102 @@ It refuses to overwrite a prior artifact. It has no launch, upload, model-call,
 or provider interface. The same operation is callable through
 `stage_observation_protocol(ObservationStagingRequest)`.
 
-## Execution integration remains staged
+## Bind a new native cell
 
-Every generated plan says `staged_runtime_integration_required`,
-`development_only: true`, and `execution_authorized: false`. It is a separate
-artifact, not an existing launch/execution spec. Before a separately authorized
-search experiment, the runtime still must:
+The plan reports `configured_pending_native_binding`, `development_only: true`,
+and `execution_authorized: false`. It is separate from paid execution authority.
+`bind_native_cell_observation_protocol` consumes that plan, a matching new
+native cell, the resolved native scene plan, the task-success contract digest,
+and explicit camera setups. Each camera setup carries its parent-relative
+OpenCV transform, expected world transform at reset, and source-intrinsics
+digest. The binder validates the proposed geometry against the actual native
+plan offline, before producing a `native_policy_observation_protocol.v1`
+attachment. The staging CLI accepts the same arguments from
+`--native-cell-request <json-path>` and writes the attachment create-only.
 
-1. Apply the newly preregistered camera/occlusion setup and read back its actual
-   geometry. The new visibility dimension is deliberately not registered as an
-   executable native target by this change.
-2. Bind independent visibility samples to the exact lossless frames actually
-   passed to the policy, including reset and episode-time origin, and retain
-   the acquisition assessment in the episode receipt.
-3. Select the explicit search predicate only for those bound search cells.
-   Baseline and qualified-evaluation gates, camera validity/freshness, paired
-   controls, and full media requirements remain mandatory.
-4. Wire any future coordinate-aware adapter through its qualified deployment
-   source. The current DROID policies continue to receive their documented
-   inputs.
+The synthetic [native-cell request](examples/policy_object_acquisition/native_cell_request.v1.json)
+and its [validated binding](examples/policy_object_acquisition/native_binding.v1.json)
+exercise this path for an initially out-of-view cell. Reproduce the binding by
+adding `--native-cell-request docs/arm_decision_proof_v1/examples/policy_object_acquisition/native_cell_request.v1.json`
+to the staging command and choosing a new output filename. Its declared reset
+poses are fixture data, not native readback or deployable calibration.
 
-No camera-pose runtime, policy client, provider bundle, paid allocator, live
-matrix, or deployed host is changed here. Operator-authorized direct camera aim
-remains setup knowledge; it does not imply that object XYZ is a policy input.
+The returned attachment belongs in a newly prepared cell's
+`observation_protocol` field. Preparing and authorizing that new manifest
+remains the existing launch workflow; this command never edits or re-seals an
+active manifest. Cell ID, seed, scenario digest, cell-spec digest, native-plan
+digest, source configuration, task-success contract, setup coordinates, camera
+geometry, and acquisition condition are all bound together. The native
+manifest validator rejects mismatches before runtime construction.
+
+## Runtime behavior
+
+The canary worker applies the bound camera mounts through its existing
+scene-plan/CameraCfg path. It preserves the source intrinsics and bypasses the
+automatic camera-mount search only for the explicitly configured mounts. Each
+reset checks the actual object position, camera mount, intrinsics, and native
+world pose. Camera mount/intrinsic checks continue during the episode; a moving
+wrist is allowed to change its world pose after reset.
+The intrinsic comparison explicitly uses the pinned SDK's aperture-center
+coordinates (`width/2`, `height/2`), rather than silently treating the
+scene-plan pixel-center convention as the native matrix. Only a new explicit
+protocol clears the camera-preservation switches needed to apply its declared
+source calibration; the ordinary DROID path retains its original calibration.
+
+The native reader attaches RGB, bounding-box, and reference-time annotations to
+the **existing policy render products**. It neither creates a new camera nor
+advances simulation. Independent annotation RGB must equal the camera RGB used
+by the production policy-input builder. Semantic masks follow that builder's
+letterbox geometry; the exact processed RGB is checked before the acquisition
+sample is retained. Native sensor counters, physics-step counters, render time,
+and episode-relative simulation time must agree. Small pixel area is never
+used as a substitute for occlusion evidence: partial occlusion uses the
+renderer's bounding-box occlusion ratio, and an entirely occluded in-view
+object is distinguished from an object outside the view.
+
+Production construction/reset snapshots also read the counter from
+`Camera.frame`, rather than the nonexistent `CameraData.frame`, and retain
+`SimulationContext.get_physics_step_count()`. A missing native counter remains
+`null`; these counters support freshness review without replacing the actual
+image/semantic acceptance gate.
+
+This follows the documented [Replicator annotation outputs](https://docs.omniverse.nvidia.com/kit/docs/omni_replicator/1.13.30/source/extensions/omni.replicator.core/docs/API.html#referencetime).
+Structured bounding boxes are attached separately because the
+[Isaac Lab camera buffers exclude these structured outputs](https://isaac-sim.github.io/IsaacLab/develop/_modules/isaaclab/sensors/camera/camera.html).
+
+Before inference, the episode retains lossless native segmentation and processed
+target masks, their byte digests, the exact policy-frame manifest binding, and
+the acquisition sample. The episode receipt includes the acquisition
+assessment. The worker re-reads those files and checks the sample/frame/receipt
+bindings before accepting a completed episode. Failures preserve the available
+acquisition evidence and an explicit blocker.
+
+The initial task-visible predicate changes only for a digest-bound search cell
+whose geometry, sensor freshness, and declared initial condition pass. The
+receipt reports actual task visibility separately; it does not turn an empty
+view into `target_semantic_visibility_passed: true`. Both required controls still
+execute the same geometry and seeds. Baseline and qualified-evaluation gates,
+renderer checks, complete media, scoring independence, and paid-resource gates
+retain their existing requirements.
+
+## Remaining native validation
+
+The code and hermetic runtime wiring are implemented. No new GPU run was
+performed for this PR. A newly authorized run must still demonstrate that the
+pinned Isaac build supplies synchronized `ReferenceTime` and bounding-box
+annotations on these render products, and that the configured camera geometry
+produces the intended initial condition. Unsupported annotations, mismatched
+RGB, stale time/counters, wrong calibration, or wrong geometry fail closed
+before the affected policy query. The implementation does not infer native
+success from its fake-Isaac tests.
+
+Any future coordinate-aware policy still needs its own admitted adapter and
+qualified deployment source. The two current DROID policy inputs are unchanged.
+No camera-aim helper, paid allocator, active matrix/input packet, or deployed
+host was changed. Operator-authorized camera aiming remains setup knowledge.
+The new protocol rejects a cell that also requests operator camera re-aiming,
+so two competing mount definitions cannot silently coexist. It is compatible
+with the ordinary native wrist attachment that follows the configured mount.
 
 ## Verification
 
@@ -130,3 +204,8 @@ baseline versus search behavior, stale camera rejection, sampled acquisition
 timing, reset/placement/time-origin substitutions, paired harness bindings,
 and the documented staging CLI's create-only output. Existing DROID-observation
 and exact-workcell tests protect compatibility with the reused production seams.
+The canary lifecycle rehearsal additionally drives both real client classes
+through a bound search cell, including retained acquisition receipts and a
+prepolicy invalid-frame refusal. Native reader tests inject only the documented
+AOV transport and verify real geometry/frame/time/semantic validators. The
+provider import-closure suite verifies the added runtime modules are shipped.

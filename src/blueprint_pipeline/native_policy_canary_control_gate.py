@@ -42,13 +42,28 @@ def verify_files(records: list[Mapping[str, Any]], root: Path) -> bool:
 
 
 
-def validate_strict_camera_gate(gate: Mapping[str, Any]) -> None:
+def validate_strict_camera_gate(gate: Mapping[str, Any], *, observation_protocol_binding_digest: str | None = None) -> None:
     cameras = {row.get("role"): row for row in (gate.get("snapshot") or {}).get("cameras", [])}
     if gate.get("policy_observation_integrity_passed") is not True or set(cameras) != {"external", "wrist", "overview"}:
         raise RuntimeError("strict_controls_native_camera_gate_failed")
+    search_condition = False
+    if observation_protocol_binding_digest is not None:
+        from .policy_observation_runtime_contract import validate_search_gate
+
+        if validate_search_gate(gate, expected_binding_digest=observation_protocol_binding_digest):
+            # Both controls still execute the identical bound cell. Initial
+            # target absence is the declared search condition, not bad RGB.
+            if gate.get("frame_structure_passed") is not True or gate.get("blockers") != []:
+                raise RuntimeError("strict_controls_native_search_camera_gate_failed")
+            search_condition = True
     for role, camera in cameras.items():
+        if search_condition and role in {"external", "wrist"}:
+            if (camera.get("observability") or {}).get("render_passed") is not True:
+                raise RuntimeError("strict_controls_native_search_camera_gate_failed")
+            continue
         minimum = ((camera.get("observability") or {}).get("thresholds") or {}).get("effective_minimum_pixels")
         pixels = camera.get("semantic_label_pixels") or {}
+        pixels = {label: value.get("pixel_count") if isinstance(value, Mapping) else value for label, value in pixels.items()}
         if (type(minimum) is not int or minimum <= 0
                 or any(type(pixels.get(label)) is not int or pixels[label] < minimum
                        for label in ("task_object", "task_support"))):
@@ -113,7 +128,7 @@ def execute_native_controls(*, cell_runtime: Any, built: Any, scene_plan: Mappin
         "execution_binding": dict(execution_binding or {}),
     }
     try:
-        validate_strict_camera_gate(gate)
+        validate_strict_camera_gate(gate, observation_protocol_binding_digest=(scene_plan.get("observation_protocol") or {}).get("binding_digest"))
         env = built.env
         seed = int(scene_plan["scenario"]["seed"])
         env.reset(seed=seed)

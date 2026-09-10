@@ -372,6 +372,18 @@ def _semantic_identifier_candidates(identifier: Any) -> list[int]:
     return sorted({packed, signed})
 
 
+def native_camera_snapshot_counters(camera: Any, simulation: Any) -> dict[str, Any]:
+    """Read the pinned native counter owners; absence remains an explicit gap."""
+
+    frame = getattr(camera, "frame", None)
+    physics_step_reader = getattr(simulation, "get_physics_step_count", None)
+    return {
+        "native_sensor_timestamp": getattr(frame, "torch", frame),
+        "native_sensor_timestamp_source": "Camera.frame",
+        "native_physics_step_count": physics_step_reader() if callable(physics_step_reader) else None,
+    }
+
+
 def measure_native_task_semantic_label_pixels(
     *, semantic_ids: Any, id_to_labels: Mapping[str, Any], target_label: str
 ) -> dict[str, Any]:

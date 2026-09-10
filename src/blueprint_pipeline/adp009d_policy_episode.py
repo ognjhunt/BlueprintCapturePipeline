@@ -727,6 +727,7 @@ def run_policy_episode(
     progress: dict[str, Any] | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     scientific_reset_reader: Callable[[], Mapping[str, Any]] | None = None,
+    observation_protocol: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one episode end to end and return a digest-bound receipt.
 
@@ -741,6 +742,8 @@ def run_policy_episode(
     :class:`~blueprint_pipeline.adp009d_task_scoring.TaskScoringError`.
     """
 
+    from blueprint_pipeline.policy_observation_episode import EpisodeAcquisition
+    acquisition = EpisodeAcquisition(environment, observation_protocol, require_prestart_readiness, require_complete_multicamera_media)
     if candidate_id not in CANDIDATE_REQUIRED_VIEWS:
         raise PolicyEpisodeError([f"policy_episode_unknown_candidate:{candidate_id}"])
     if int(max_policy_queries) < 1:
@@ -903,6 +906,7 @@ def run_policy_episode(
     }
     phase_started = time.monotonic()
     environment.reset()
+    acquisition.begin(episode_id, candidate_id)
     joint_limits = environment.joint_limits()
     joint_trace = [_read_arm_joint_positions(environment)]
 
@@ -1294,6 +1298,7 @@ def run_policy_episode(
                 "timings_seconds": rounded_timings,
             },
         }
+        acquisition.attach(receipt)
         receipt["receipt_digest"] = canonical_digest(
             receipt, digest_field="receipt_digest"
         )
@@ -1409,6 +1414,8 @@ def run_policy_episode(
                 episode_progress["multicamera_policy_observation_retained"] = True
                 _emit_progress("multicamera_observation_retained")
             timings_seconds["media_persistence"] += time.monotonic() - phase_started
+
+        acquisition.record(observation, query_index, retained_policy_frames, media_root, episode_progress)
 
         phase_started = time.monotonic()
         episode_progress["candidate_policy_query_attempted"] = True
@@ -1968,6 +1975,7 @@ def run_policy_episode(
         raise PolicyEpisodeError([f"{BLOCKER_POST_START_INFRASTRUCTURE}:policy_request_evidence_missing"])
     if lifecycle is not None:
         receipt["lifecycle"] = lifecycle
+    acquisition.attach(receipt)
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     if require_prestart_readiness:
         validate_policy_episode_lifecycle(receipt)

@@ -510,7 +510,8 @@ def _groot_identity_receipt() -> dict[str, Any]:
 
 
 def _stage_runtime_root(
-    tmp_path: Path, *, scene_plan: dict[str, Any] | None = None
+    tmp_path: Path, *, scene_plan: dict[str, Any] | None = None,
+    observation_protocol_factory: Any = None,
 ) -> tuple[Path, Path]:
     """Lay out the provider bundle exactly as the worker reads it on a GPU host."""
 
@@ -592,6 +593,11 @@ def _stage_runtime_root(
                 },
             }
         )
+    if observation_protocol_factory is not None:
+        for cell in cells:
+            protocol = observation_protocol_factory(cell, plan, task_success_contract)
+            if protocol is not None:
+                cell["observation_protocol"] = protocol
     inputs: dict[str, Any] = {
         "schema_version": "task_evaluation_policy_canary_runtime_inputs.v1",
         "run_id": RUN_ID,
@@ -1603,3 +1609,94 @@ def test_missing_observation_integrity_authority_blocks_before_any_policy_load(
     assert result["appearance_render_backend"]["receipt_digest"] == gate[
         "session_backend_receipt_digest"
     ]
+
+
+@pytest.mark.parametrize("invalid_camera_gate", [False, True])
+def test_bound_search_cell_uses_real_episode_clients_and_retains_acquisition(
+    tmp_path: Path, invalid_camera_gate: bool,
+) -> None:
+    from tests.test_policy_observation_runtime import (
+        FixtureVisibilityReader, FreshEnvironment, _search_gate, native_binding, source_plan,
+    )
+
+    plan = source_plan()
+    runtime_root, provider_output = _stage_runtime_root(
+        tmp_path, scene_plan=plan,
+        observation_protocol_factory=lambda cell, base, contract: native_binding(
+            cell=cell, plan=base, task_success_contract=contract,
+        ) if cell["cell_id"] == "cell-3" else None,
+    )
+    manifest_path = runtime_root / "adp_arena_provider_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    for candidate in CANDIDATE_IDS:
+        spec_path = runtime_root / "runtime_inputs" / f"policy_execution_spec.{candidate}.json"
+        spec = json.loads(spec_path.read_text())
+        spec["max_policy_queries"] = 2
+        spec["execution_spec_digest"] = canonical_digest(spec, digest_field="execution_spec_digest")
+        _write(spec_path, spec)
+        manifest["execution_spec_digests"][candidate] = spec["execution_spec_digest"]
+    manifest["input_digest"] = canonical_digest(manifest, digest_field="input_digest")
+    _write(manifest_path, manifest)
+    child_root = provider_output / "cell_runs" / "03"
+    child_root.mkdir(parents=True)
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    base_runtime = _rehearsal_runtime(isaac)
+    readers = []
+    events = []
+
+    def make_reader(*, built, binding):
+        assert built.plan["observation_protocol"] == binding
+        assert built.plan["policy_canary_embodiment_profile"]["preserve_official_policy_camera_calibration"] is False
+        reader = FixtureVisibilityReader(None)
+        readers.append(reader)
+        return reader
+
+    def camera_gate(**kwargs):
+        events.append("search_gate")
+        assert kwargs["observation_visibility_reader"] is readers[0]
+        gate = _search_gate(kwargs["plan"]["observation_protocol"])
+        gate["appearance_render_backend_receipt_digest"] = worker.appearance_render_backend_from_plan(plan)["receipt_digest"]
+        if invalid_camera_gate:
+            gate.update(status="blocked", policy_observation_integrity_passed=False,
+                        frame_structure_passed=False, blockers=["invalid_camera_frame"])
+        gate["gate_digest"] = canonical_digest(gate, digest_field="gate_digest")
+        return gate
+
+    def build_episode_environment(**kwargs):
+        environment = FreshEnvironment()
+        readers[0].environment = environment
+        return environment, {"schema_version": "rehearsal_episode_environment.v1", "seed": kwargs["built"].env.reset_seeds[-1]}
+
+    def policy_client(*args, **kwargs):
+        events.append("policy_load")
+        return base_runtime.policy_client(*args, **kwargs)
+
+    runtime = worker.CellRuntime(**{
+        **base_runtime.__dict__, "make_observation_visibility_reader": make_reader,
+        "prepolicy_camera_gate": camera_gate, "build_episode_environment": build_episode_environment,
+        "policy_client": policy_client,
+    })
+    with pytest.raises(SystemExit):
+        worker._run_selected_cell(3, runtime_root=runtime_root, output_root=child_root,
+                                 provider_output_root=provider_output, cell_runtime=runtime)
+    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+    assert events[0] == "search_gate"
+    assert readers[0].closed
+    if invalid_camera_gate:
+        assert events == ["search_gate"]
+        assert result["status"] == "blocked"
+        assert result["episodes"] == []
+    else:
+        assert events.count("policy_load") == 2
+        assert result["status"] == "runtime_selected_cell_completed_pending_aggregation"
+        for row in result["episodes"]:
+            acquisition = row["episode"]["object_acquisition"]
+            assert acquisition["status"] == "observed"
+            assert acquisition["assessment"]["initial_visibility"] == "initially_out_of_view"
+            assert acquisition["assessment"]["acquisition_status"] == "acquired"
+            assert len(acquisition["sample_artifacts"]) == row["episode"]["policy_queries"]
+            assert row["evidence_artifacts"]["object_acquisition"] is not None
+            gate = row["episode"]["prestart_readiness"]["prepolicy_visual_quality"]
+            assert gate["target_semantic_visibility_passed"] is False
+            assert gate["declared_search_condition_passed"] is True
+            assert row["scientific_reset"]["binding"]["observation_protocol_binding_digest"] == acquisition["binding_digest"]

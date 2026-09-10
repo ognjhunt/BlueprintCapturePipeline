@@ -121,8 +121,8 @@
     {
       "acquisition": {
         "camera_calibration_digests": {
-          "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          "external": "sha256:2ec882c1cf415da4934b731ef587d0853733db7a3fadb52c59c4a380a7fd6ed3",
+          "wrist": "sha256:1478b6215f4ff61307d5fffd7324aff07ce4f8988d797b11c0a069d997153037"
         },
         "initial_visibility": "initially_out_of_view",
         "maximum_search_seconds": 5.0,
@@ -131,7 +131,7 @@
       },
       "cell_digest": "sha256:874f7cdede751e4eb2000da83ccc4101a1eacd6b5358ac947564188898297880",
       "cell_id": "fixture_workcell.object_acquisition.configuration_only.cell_002",
-      "configuration_digest": "sha256:29dd0df9388cfe4699a862339b50843ead38b9b08f6eb388099337df31bbab3e",
+      "configuration_digest": "sha256:75e6e880e735c1434deb3fefe525acee0de033cee492a9276c0379b73cf8bcc8",
       "information": {
         "policy_object_coordinates": null,
         "scene_id": "fixture_workcell",
@@ -861,13 +861,13 @@
   "execution_authorized": false,
   "existing_matrix_modified": false,
   "matrix_digest": "sha256:105a22864b61c31fa249198aaf238177900ce3b105c070888a881ab89a5c2724",
-  "plan_digest": "sha256:d2203831a4260a2949acb9a10356484192db99af294ce3317fa5d56361c310ce",
+  "plan_digest": "sha256:cc1f93d708d6b6b8ff004f37dc5d3bb93b5caffd97995b74fdd54597821a4264",
   "preregistration_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-  "required_runtime_integration": [
-    "apply_and_read_back_preregistered_visibility_setup",
-    "bind_visibility_measurements_to_exact_policy_frames",
-    "record_acquisition_assessment_in_episode_receipt",
-    "retain_baseline_and_qualified_admission_gates"
+  "required_native_validation": [
+    "camera_mount_and_reset_pose_readback",
+    "same_render_product_reference_time_and_bbox_annotations",
+    "exact_policy_frame_visibility_capture",
+    "paired_episode_acquisition_receipts"
   ],
   "rows": [
     {
@@ -1008,7 +1008,7 @@
       "episode_id": "fixture_workcell.object_acquisition.configuration_only.cell_002.zero_action_negative",
       "execution_order": 8,
       "independent_grader_required": true,
-      "observation_configuration_digest": "sha256:29dd0df9388cfe4699a862339b50843ead38b9b08f6eb388099337df31bbab3e",
+      "observation_configuration_digest": "sha256:75e6e880e735c1434deb3fefe525acee0de033cee492a9276c0379b73cf8bcc8",
       "reset_digest": "sha256:26c7c4e924b60e76df02b5774be0f4f466e6ab50137858e3b73af8970b2781fc",
       "seed": 1877872005,
       "subject_id": "zero_action_negative",
@@ -1024,7 +1024,7 @@
       "episode_id": "fixture_workcell.object_acquisition.configuration_only.cell_002.deterministic_scripted_positive",
       "execution_order": 9,
       "independent_grader_required": true,
-      "observation_configuration_digest": "sha256:29dd0df9388cfe4699a862339b50843ead38b9b08f6eb388099337df31bbab3e",
+      "observation_configuration_digest": "sha256:75e6e880e735c1434deb3fefe525acee0de033cee492a9276c0379b73cf8bcc8",
       "reset_digest": "sha256:26c7c4e924b60e76df02b5774be0f4f466e6ab50137858e3b73af8970b2781fc",
       "seed": 1877872005,
       "subject_id": "deterministic_scripted_positive",
@@ -1040,7 +1040,7 @@
       "episode_id": "fixture_workcell.object_acquisition.configuration_only.cell_002.pi05_droid",
       "execution_order": 10,
       "independent_grader_required": true,
-      "observation_configuration_digest": "sha256:29dd0df9388cfe4699a862339b50843ead38b9b08f6eb388099337df31bbab3e",
+      "observation_configuration_digest": "sha256:75e6e880e735c1434deb3fefe525acee0de033cee492a9276c0379b73cf8bcc8",
       "reset_digest": "sha256:26c7c4e924b60e76df02b5774be0f4f466e6ab50137858e3b73af8970b2781fc",
       "seed": 1877872005,
       "subject_id": "pi05_droid",
@@ -1056,7 +1056,7 @@
       "episode_id": "fixture_workcell.object_acquisition.configuration_only.cell_002.groot_n17_droid",
       "execution_order": 11,
       "independent_grader_required": true,
-      "observation_configuration_digest": "sha256:29dd0df9388cfe4699a862339b50843ead38b9b08f6eb388099337df31bbab3e",
+      "observation_configuration_digest": "sha256:75e6e880e735c1434deb3fefe525acee0de033cee492a9276c0379b73cf8bcc8",
       "reset_digest": "sha256:26c7c4e924b60e76df02b5774be0f4f466e6ab50137858e3b73af8970b2781fc",
       "seed": 1877872005,
       "subject_id": "groot_n17_droid",
@@ -2153,5 +2153,5 @@
   ],
   "schedule_digest": "sha256:b84d211f85dfcf873da025ff9bcd4b170d1875a5e41a8f7eff9f841b3ee3063f",
   "schema_version": "policy_observation_protocol_plan.v1",
-  "status": "staged_runtime_integration_required"
+  "status": "configured_pending_native_binding"
 }

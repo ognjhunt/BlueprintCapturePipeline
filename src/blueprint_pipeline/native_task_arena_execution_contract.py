@@ -89,6 +89,9 @@ DESTINATION_QUALIFICATION_RUNTIME_MODULE_NAMES = tuple(
 )
 
 CONTROLS_RUNTIME_MODULE_NAMES = (
+    "policy_observation_information.py",
+    "policy_object_acquisition_contract.py",
+    "policy_observation_runtime_contract.py",
     "policy_scientific_reset.py",
     "adp009d_control_episode.py",
     "adp009d_contact_envelope.py",
@@ -165,6 +168,8 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
 )
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
+    "native_policy_visibility.py",
+    "policy_observation_episode.py",
     "policy_canary_media_integrity.py",
     "policy_scientific_reset.py",
     "policy_request_evidence.py",

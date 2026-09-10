@@ -10,14 +10,16 @@ from pydantic import ValidationError
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.exact_workcell_variation_matrix import compile_variation_matrix
 from blueprint_pipeline.policy_object_acquisition import (
-    AcquisitionSample,
     ObservationStagingRequest,
-    ObjectAcquisitionProtocol,
-    assess_object_acquisition,
     compile_observation_protocol_plan,
     object_acquisition_dimension,
     stage_observation_protocol,
     main,
+)
+from blueprint_pipeline.policy_object_acquisition_contract import (
+    AcquisitionSample,
+    ObjectAcquisitionProtocol,
+    assess_object_acquisition,
 )
 from blueprint_pipeline.policy_observation_information import DROID_INFORMATION_CONTRACTS
 from tests.test_exact_workcell_variation_matrix import _request, _schedule_request
@@ -191,7 +193,7 @@ def test_plan_reuses_exact_harness_schedule_preserves_anchor_and_pairs_all_subje
     assert args["matrix"] == original
     assert plan == compile_observation_protocol_plan(**args)
     assert plan["execution_authorized"] is False
-    assert plan["status"] == "staged_runtime_integration_required"
+    assert plan["status"] == "configured_pending_native_binding"
     assert len(plan["rows"]) == 400
     assert plan["cells"][0]["acquisition"]["mode"] == "baseline_visible"
     assert {c["acquisition"]["initial_visibility"] for c in plan["cells"]} == {
@@ -283,6 +285,30 @@ def test_documented_staging_entrypoint_reproduces_plan_without_overwrite(tmp_pat
     with pytest.raises(FileExistsError):
         main(["--request", str(request_path), "--output", str(output)])
     assert output.read_bytes() == before
+
+
+def test_documented_native_binding_entrypoint_validates_geometry_without_mutating_source(tmp_path):
+    request_path = _EXAMPLE / "staging_request.v1.json"
+    native_path = _EXAMPLE / "native_cell_request.v1.json"
+    before = native_path.read_bytes()
+    output = tmp_path / "native_binding.json"
+    assert (
+        main(
+            [
+                "--request",
+                str(request_path),
+                "--native-cell-request",
+                str(native_path),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert json.loads(output.read_text()) == json.loads(
+        (_EXAMPLE / "native_binding.v1.json").read_text()
+    )
+    assert native_path.read_bytes() == before
 
 
 def test_wrong_position_cannot_pass_even_with_rebound_reset_context():

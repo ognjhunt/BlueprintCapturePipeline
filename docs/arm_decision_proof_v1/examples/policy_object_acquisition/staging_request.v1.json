@@ -22,8 +22,8 @@
     },
     "fixture_workcell.object_acquisition.configuration_only.cell_002": {
       "camera_calibration_digests": {
-        "external": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "wrist": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "external": "sha256:2ec882c1cf415da4934b731ef587d0853733db7a3fadb52c59c4a380a7fd6ed3",
+        "wrist": "sha256:1478b6215f4ff61307d5fffd7324aff07ce4f8988d797b11c0a069d997153037"
       },
       "initial_visibility": "initially_out_of_view",
       "maximum_search_seconds": 5.0,
