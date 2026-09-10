@@ -25,6 +25,7 @@ from .task_evaluation_scene_configuration_runtime_budget import (
     MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
     MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
     MIN_CONTENT_AGENTS_SPEND_USD,
+    scene_configuration_budget_profile,
     REQUIRED_PARENT_TTL_SECONDS,
 )
 from .task_evaluation_scene_construction_recipe import (
@@ -132,17 +133,21 @@ def stage_sequence() -> list[dict[str, Any]]:
     return rows
 
 
-def spend_block() -> dict[str, Any]:
+def spend_block(authoring_backend: str = "content_agents", *, authoring_max_cost_usd: float | None = None) -> dict[str, Any]:
+    profile = scene_configuration_budget_profile(authoring_backend)
+    caps = profile.stage_caps(authoring_max_cost_usd)
+    external_cap = round(sum(caps.values()), 6)
     return {
         "maximum_hourly_rate_usd": MAX_HOURLY_RATE_USD,
-        "hard_cap_usd": MAX_ATTEMPT_SPEND_USD,
+        "hard_cap_usd": (MAX_ATTEMPT_SPEND_USD if authoring_backend == "content_agents"
+                         else round(MAX_PROVIDER_COMPUTE_SPEND_USD + external_cap, 6)),
         "hard_ttl_seconds": REQUIRED_PARENT_TTL_SECONDS,
         "provider_compute_spend_cap_usd": MAX_PROVIDER_COMPUTE_SPEND_USD,
         "external_service_caps": {
             "openai": {
-                "maximum_cost_usd": round(sum(OPENAI_STAGE_CAPS_USD.values()), 6),
+                "maximum_cost_usd": external_cap,
                 "maximum_requests": 32,
-                "stage_max_cost_usd": dict(OPENAI_STAGE_CAPS_USD),
+                "stage_max_cost_usd": caps,
             }
         },
         "retry_cap": 0,

@@ -369,6 +369,9 @@ def _stage_three_refusal(
     required = configuration.get("required_output")
     if configuration.get("authoring_backend", "content_agents") not in {"content_agents", "astra_cad_blender_v1"}:
         return "authoring_backend"
+    declared_backend = (envelope.get("request") or {}).get("replacement_authoring_backend")
+    if declared_backend is not None and configuration.get("authoring_backend", "content_agents") != declared_backend:
+        return "authoring_backend_budget_binding"
     if (
         configuration.get("schema_version")
         != "rigid_replacement_authoring_configuration.v1"

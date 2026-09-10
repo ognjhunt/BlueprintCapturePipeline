@@ -371,6 +371,9 @@ def test_scene_and_task_objects_become_one_validated_production_submission(tmp_p
     namespace = result["input_namespace"]
     assert namespace == f"adp-new-scene-book-to-tray-841757-{SHA}-20260904T230000Z"
     assert request["run_mode"] == "scene_configuration"
+    assert request["replacement_authoring_backend"] == "astra_cad_blender_v1"
+    assert request["spend"]["hard_cap_usd"] == 16.76
+    assert request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == 5.0
     assert request["expected_production_commit"] == SHA
     assert request["task"]["strategy"] == "pick_and_place"
     references = _staged_references(staging, request, namespace)

@@ -112,3 +112,90 @@ def test_stable_quaternion_angle_matches_known_rotation_and_scale_invariance():
     q = [0., 0., math.sin(half), math.cos(half)]
     assert _quaternion_angle_xyzw([0., 0., 0., 1.], q) == pytest.approx(math.radians(43))
     assert _quaternion_angle_xyzw(q, [-2 * value for value in q]) == 0
+
+
+class _TorchStorageView:
+    """CPU tensor-shaped readback with dtype derived from its stored array."""
+    def __init__(self, values):
+        self.values = values
+        self.dtype = 'torch.' + str(values.dtype)
+
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def tolist(self):
+        return self.values.tolist()
+
+
+class _IsaacProxyArray:
+    """Pinned Isaac ProxyArray: dtype belongs to Warp; methods delegate to Torch."""
+    __module__ = 'isaaclab.utils.warp.proxy_array'
+    dtype = type('transformf', (), {'__module__': 'warp._src.types'})
+
+    def __init__(self, values):
+        self.torch = _TorchStorageView(values)
+
+    def __getattr__(self, name):
+        return getattr(self.torch, name)
+
+
+class _WarpTransformArray:
+    __module__ = 'warp._src.types'
+    dtype = _IsaacProxyArray.dtype
+
+    def __init__(self, values):
+        self.values = values
+
+
+def _read_backend_pose(pose, *, kind, expected, degrees=7.5):
+    application = {
+        'parameter_id': 'object_start_y_delta_m' if kind.endswith('position_y_m') else 'object_yaw_delta_degrees',
+        'readback_kind': kind, 'application_tolerance': 0., 'expected_native_value': expected,
+        'runtime_name': 'book', 'runtime_target': kind,
+        'unit': 'm' if kind.endswith('position_y_m') else 'degrees',
+        'resolved_value': -.02 if kind.endswith('position_y_m') else degrees,
+    }
+    built = NS(plan={'scenario': {'parameter_applications': [application]}},
+        env=NS(unwrapped=NS(scene={'book': NS(data=NS(root_pose_w=pose))})),
+        scene_asset_names={'book': 'book'}, native_configuration_readback={})
+    return read_native_task_arena_scenario_parameters(built)
+
+
+@pytest.mark.parametrize('backend', [_IsaacProxyArray, _WarpTransformArray])
+@pytest.mark.parametrize('kind', ['task_subject_root_position_y_m', 'task_subject_root_orientation_xyzw'])
+def test_retained_cells_02_03_use_converted_storage_dtype_without_relaxing_tolerance(monkeypatch, backend, kind):
+    import sys
+    monkeypatch.setitem(sys.modules, 'warp', NS(to_torch=lambda value: _TorchStorageView(value.values)))
+    orientation = [0., 0., math.sin(math.radians(7.5)/2), math.cos(math.radians(7.5)/2)]
+    values = np.asarray([[0., -3.461138, 1., *orientation]], dtype=np.float32)
+    expected = -3.461138 if kind.endswith('position_y_m') else orientation
+    report = _read_backend_pose(backend(values), kind=kind, expected=expected)
+    row = report['parameters'][0]
+    assert report['passed'] is True
+    assert row['application_tolerance_native_unit'] == 0
+    assert row['native_storage_comparison']['absolute_error_stored_value'] == 0
+    assert row['native_storage_comparison']['physical_tolerance_changed'] is False
+    assert row['native_storage_provenance']['source_backend'] == backend.__module__
+    assert 'transformf' in row['native_storage_provenance']['source_dtype']
+    assert row['native_storage_provenance']['storage_dtype'] == 'torch.float32'
+    assert row['native_storage_provenance']['canonical_scalar_dtype'] == 'float32'
+    observed_error = 1.0025024366200341e-08 if kind.endswith('position_y_m') else 8.482783936408417e-09
+    assert row['absolute_error_native_unit'] == pytest.approx(observed_error, abs=1e-18)
+    coordinate = 1 if kind.endswith('position_y_m') else 5
+    values[0, coordinate] = np.nextafter(values[0, coordinate], np.float32(np.inf))
+    changed = _read_backend_pose(backend(values), kind=kind, expected=expected)
+    assert changed['passed'] is False
+    assert changed['parameters'][0]['native_storage_comparison']['absolute_error_stored_value'] > 0
+
+
+def test_proxy_float64_storage_is_not_guessed_float32_from_wrapper_name():
+    expected = -3.461138
+    values = np.asarray([[0., float(np.float32(expected)), 1., 0., 0., 0., 1.]], dtype=np.float64)
+    report = _read_backend_pose(_IsaacProxyArray(values), kind='task_subject_root_position_y_m', expected=expected)
+    assert report['passed'] is False
+    row = report['parameters'][0]
+    assert row['native_storage_provenance']['canonical_scalar_dtype'] == 'float64'
+    assert 'native_storage_comparison' not in row

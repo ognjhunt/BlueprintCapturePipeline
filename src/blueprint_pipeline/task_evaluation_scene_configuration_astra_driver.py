@@ -31,6 +31,7 @@ from .task_evaluation_scene_configuration_content_agents_driver import (
 from .task_evaluation_scene_configuration_openai_gate import (
     scene_configuration_openai_stage_gate, scene_configuration_openai_stage_scope,
 )
+from .task_evaluation_scene_configuration_astra_phase_adoption import prepare_phase_adoption
 from .task_evaluation_scene_configuration_render_inputs import _materialized
 from .task_evaluation_scene_configuration_stage_tool import (
     COMPONENT_RESULT_SCHEMA_VERSION, _validate_dependencies, _validate_input,
@@ -179,11 +180,12 @@ def build_authoring_request(stage_input: Mapping[str, Any], source_record: Mappi
 
 
 class _StageInvoker:
-    def __init__(self, invoker, run_id: str, maximum_calls: int):
+    def __init__(self, invoker, run_id: str, maximum_calls: int, prior_calls: int = 0):
         self.invoker, self.run_id, self.maximum_calls, self.calls = invoker, run_id, maximum_calls, 0
+        self.prior_calls = prior_calls
 
     def invoke(self, spec, input_value):
-        if (self.calls >= self.maximum_calls or spec.run_id != self.run_id or spec.model != "gpt-6-astra"
+        if (self.calls + self.prior_calls >= self.maximum_calls or spec.run_id != self.run_id or spec.model != "gpt-6-astra"
                 or spec.max_turns != 1 or spec.tool_bindings or spec.max_output_tokens > 12000
                 or spec.max_input_tokens is None or spec.max_input_tokens > 80000
                 or spec.reasoning_effort not in {"medium", "high"}):
@@ -312,8 +314,15 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         raise AstraStageError("astra_parent_budget_invalid") from exc
     if any(not math.isfinite(v) or v <= 0 for v in (stage_cap, total_cap)) or maximum_calls <= 0:
         raise AstraStageError("astra_parent_budget_invalid")
+    adoption = prepare_phase_adoption(value=configuration.get("astra_phase_adoption"),
+        request_value=request.model_dump(mode="json"), package=package, budget_root=runtime / "inference")
+    if adoption.get("retained_inference_cost_usd", 0) > maximum_cost:
+        raise AstraStageError("astra_phase_adoption_budget_exhausted")
     base_invoker, audit = invoker_factory(root=runtime / "inference", run_id=request.run_id, maximum_cost_usd=maximum_cost)
-    invoker = _StageInvoker(base_invoker, request.run_id, maximum_calls)
+    invoker = _StageInvoker(base_invoker, request.run_id, maximum_calls, adoption["prior_call_count"])
+    if adoption.get("adoption_digest"):
+        _write(runtime / "phase_adoption.json", {key: item for key, item in adoption.items()
+                                               if key not in {"authoring_kwargs", "cad_kwargs"}})
 
     def mac_executor(*, brief, output_root, dimensions_m):
         result = execute_mac_candidate(brief, output_root, cad_root / "Multi-Agent-CAD", cad_root / "text-to-cad",
@@ -321,7 +330,7 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
             subprocess_runner=sandbox, run_id=request.run_id, object_label=request.object_id,
             max_input_tokens=80000, max_output_tokens=12000, max_calls=maximum_calls, repair_budget=2,
             dimension_tolerance_mm=request.maximum_export_error_m * 1000,
-            verified_sources=verified_sources)
+            verified_sources=verified_sources, **adoption["cad_kwargs"])
         return {**result, "stl": file_record(Path(result["stl_path"])),
                 "step": file_record(Path(result["step_path"])),
                 "measured_dimensions_m": [v / 1000 for v in result["readback"]["measured_dimensions_mm"]]}
@@ -335,7 +344,8 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         with _stage_sdk_environment(key_path.resolve()):
             authored = authoring_executor(request_value=request.model_dump(mode="json"), output_root=authored_root,
                 invoker=invoker, mac_executor=mac_executor, blender_runner=sandbox, blender_executable=blender["executable"],
-                authoring_instructions=(cad_root / "text-to-cad/skills/cad/SKILL.md").read_text())
+                authoring_instructions=(cad_root / "text-to-cad/skills/cad/SKILL.md").read_text(),
+                **adoption["authoring_kwargs"])
     except Exception as exc:
         failure = type(exc).__name__
         raise

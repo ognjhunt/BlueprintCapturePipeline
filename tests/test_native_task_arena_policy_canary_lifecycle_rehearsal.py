@@ -1665,3 +1665,56 @@ def test_legacy_missing_observation_integrity_authority_blocks_before_isaac(
         "native_task_appearance_reference_parity_missing",
         "native_task_human_visual_review_not_approved",
     ]
+
+
+@pytest.mark.parametrize('native_ulp_drift', [False, True])
+def test_real_canary_lifecycle_reads_proxy_storage_and_refuses_true_reset_drift(tmp_path, monkeypatch, native_ulp_drift):
+    """The real reset reader must handle Isaac's Warp-first wrapper before queries."""
+    from copy import deepcopy
+    from tests.test_native_scenario_storage_precision import _IsaacProxyArray
+
+    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    child_root = provider_output / 'cell_runs' / '03'
+    child_root.mkdir(parents=True)
+    isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
+    original_build = isaac.build
+
+    def build(scene_plan, **kwargs):
+        built = original_build(scene_plan, **kwargs)
+        native_plan = deepcopy(scene_plan)
+        subject = next(row for row in native_plan['objects'] if row.get('task_subject'))
+        pose = subject['reset_state']['root_pose_world']
+        expected_y = pose['position_world_m'][1]
+        native = np.asarray([[*pose['position_world_m'], *pose['orientation_xyzw']]], dtype=np.float32)
+        if native_ulp_drift:
+            native[0, 1] = np.nextafter(native[0, 1], np.float32(np.inf))
+        native_plan.setdefault('scenario', {})['parameter_applications'] = [{
+            'parameter_id': 'object_start_y_delta_m', 'readback_kind': 'task_subject_root_position_y_m',
+            'application_tolerance': 0., 'expected_native_value': expected_y,
+            'runtime_name': subject['name'], 'runtime_target': 'task_subject_root_position_y_m',
+            'unit': 'm', 'resolved_value': 0.,
+        }]
+        built.plan = native_plan
+        built.scene_asset_names = {subject['name']: subject['name']}
+        built.native_configuration_readback = {}
+        built.env.unwrapped.scene[subject['name']] = SimpleNamespace(
+            data=SimpleNamespace(root_pose_w=_IsaacProxyArray(native)))
+        return built
+
+    monkeypatch.setattr(isaac, 'build', build)
+    with pytest.raises(SystemExit):
+        worker._run_selected_cell(3, runtime_root=runtime_root, output_root=child_root,
+            provider_output_root=provider_output, cell_runtime=_rehearsal_runtime(isaac))
+    result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+    for episode in result['episodes']:
+        assert episode['candidate_policy_queried'] is (not native_ulp_drift)
+        reset = episode['episode']['scientific_reset']
+        row = reset['observed']['scenario_parameters']['parameters'][0]
+        assert row['passed'] is (not native_ulp_drift)
+        assert row['application_tolerance_native_unit'] == 0
+        assert row['native_storage_provenance']['canonical_scalar_dtype'] == 'float32'
+        assert row['native_storage_comparison']['physical_tolerance_changed'] is False
+        if native_ulp_drift:
+            assert episode['typed_harness_failure'] == 'ScientificResetScenarioMismatch'
+        else:
+            assert row['native_storage_comparison']['absolute_error_stored_value'] == 0

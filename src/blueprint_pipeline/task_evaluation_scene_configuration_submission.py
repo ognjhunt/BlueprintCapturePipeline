@@ -445,8 +445,10 @@ def materialize_scene_configuration_submission(
         "execution_adapter": {"kind": "scene_configuration_pipeline", "version": "v1",
                               "runtime_source_bundle": release_ref},
         "publication": {"input_namespace": namespace, "service_account_readback_required": True},
-        "spend": records.spend_block(),
+        "spend": records.spend_block(configs[2].get("authoring_backend", "content_agents")),
     }
+    if configs[2].get("authoring_backend", "content_agents") != "content_agents":
+        request["replacement_authoring_backend"] = configs[2]["authoring_backend"]
     if sam_plan_ref is not None:
         request["runtime"]["mounts"].append({
             "source": sam_plan_ref, "container_path": "/inputs/sam31-preparation-plan.json",

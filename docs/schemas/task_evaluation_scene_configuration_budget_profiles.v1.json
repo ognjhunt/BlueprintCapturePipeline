@@ -1,0 +1,36 @@
+{
+  "schema_version": "task_evaluation_scene_configuration_budget_profiles.v1",
+  "creates_spend_authority": false,
+  "parent_ttl_seconds": 27000,
+  "provider_compute_cap": 6.0,
+  "semantic_teacher_minimum": 4.8,
+  "visual_review_minimum": 0.96,
+  "profiles": {
+    "content_agents": {
+      "authoring_minimum": 0.2,
+      "authoring_maximum": 5.0,
+      "external_maximum": 6.0,
+      "attempt_maximum": 12.0,
+      "default_stage_caps": {
+        "artifixer_semantic_teacher": 4.8,
+        "artifixer_visual_review": 0.96,
+        "content_agents": 0.24
+      },
+      "default_external_cap": 6.0,
+      "default_attempt_cap": 12.0
+    },
+    "astra_cad_blender_v1": {
+      "authoring_minimum": 5.0,
+      "authoring_maximum": 15.0,
+      "external_maximum": 20.76,
+      "attempt_maximum": 26.76,
+      "default_stage_caps": {
+        "artifixer_semantic_teacher": 4.8,
+        "artifixer_visual_review": 0.96,
+        "content_agents": 5.0
+      },
+      "default_external_cap": 10.76,
+      "default_attempt_cap": 16.76
+    }
+  }
+}

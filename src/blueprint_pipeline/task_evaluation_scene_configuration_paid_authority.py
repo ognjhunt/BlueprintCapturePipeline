@@ -27,12 +27,14 @@ from .task_evaluation_scene_configuration_diagnostic_mode import (
 )
 from .task_evaluation_scene_configuration_runtime_budget import (
     MAX_ATTEMPT_SPEND_USD,
-    MAX_EXTERNAL_SERVICE_SPEND_USD,
+    MAX_EXTERNAL_SERVICE_SPEND_USD as MAX_EXTERNAL_SERVICE_SPEND_USD,
     MAX_HOURLY_RATE_USD,
     MAX_PROVIDER_COMPUTE_SPEND_USD,
     MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
     MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
-    MIN_CONTENT_AGENTS_SPEND_USD,
+    MIN_CONTENT_AGENTS_SPEND_USD as MIN_CONTENT_AGENTS_SPEND_USD,
+    MIN_ASTRA_AUTHORING_SPEND_USD as MIN_ASTRA_AUTHORING_SPEND_USD,
+    scene_configuration_budget_profile,
     REQUIRED_PARENT_TTL_SECONDS,
     diagnostic_parent_runtime_budget_blockers,
 )
@@ -45,7 +47,6 @@ MIN_TTL_SECONDS = 600
 MAX_PROVIDER_ZERO_AGE_SECONDS = 900
 _RESOURCE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{15,127}")
 _LEGACY_ARTIFIXER_VISUAL_REVIEW_SPEND_USD = 0.30
-MIN_ASTRA_AUTHORING_SPEND_USD = 5.0
 
 
 class TaskEvaluationSceneConfigurationAuthorityError(ValueError):
@@ -61,6 +62,10 @@ def _required_external_stage_minima(
     production_semantic_reuse: bool = False,
     authoring_backend: str = "content_agents",
 ) -> dict[str, float]:
+    try:
+        budget_profile = scene_configuration_budget_profile(authoring_backend)
+    except ValueError as exc:
+        raise TaskEvaluationSceneConfigurationAuthorityError("scene_configuration_authority_authoring_backend_invalid") from exc
     fresh_diagnostic_bootstrap = (
         diagnostic_only
         and diagnostic_bootstrap_mode == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
@@ -84,8 +89,7 @@ def _required_external_stage_minima(
         "content_agents": (
             0.0
             if diagnostic_only and carried_stage_count >= 3
-            else (MIN_ASTRA_AUTHORING_SPEND_USD
-                  if authoring_backend == "astra_cad_blender_v1" else MIN_CONTENT_AGENTS_SPEND_USD)
+            else budget_profile.content_agents_minimum
         ),
     }
 
@@ -276,6 +280,7 @@ def materialize_scene_configuration_paid_authority(
         authoring_backend=receipt.get("replacement_authoring_backend", "content_agents"),
     )
     minimum_external_cap = sum(required_stage_minima.values())
+    budget_profile = scene_configuration_budget_profile(receipt.get("replacement_authoring_backend", "content_agents"))
     diagnostic_budget_blockers = (
         diagnostic_parent_runtime_budget_blockers(
             completed_stage_prefix_count=carried_stage_count,
@@ -288,8 +293,10 @@ def materialize_scene_configuration_paid_authority(
     )
     external_contract_valid = (
         math.isfinite(external_cap)
-        and minimum_external_cap <= external_cap <= MAX_EXTERNAL_SERVICE_SPEND_USD
+        and minimum_external_cap <= external_cap <= budget_profile.external_maximum
         and all(math.isfinite(value) and value >= 0 for value in stage_caps.values())
+        and (budget_profile.backend != "astra_cad_blender_v1"
+             or stage_caps["content_agents"] <= budget_profile.content_agents_maximum)
         and all(
             stage_caps[name] >= required_minimum
             for name, required_minimum in required_stage_minima.items()
@@ -335,7 +342,9 @@ def materialize_scene_configuration_paid_authority(
             )
             or (
                 not diagnostic_only
-                and abs(float(hard_cap_usd) - MAX_ATTEMPT_SPEND_USD) <= 1e-9
+                and (abs(float(hard_cap_usd) - MAX_ATTEMPT_SPEND_USD) <= 1e-9
+                     if budget_profile.backend == "content_agents"
+                     else 0 < float(hard_cap_usd) <= budget_profile.attempt_maximum)
             )
         )
         and compute_cap + external_cap <= float(hard_cap_usd) + 1e-9
@@ -508,6 +517,7 @@ def validate_scene_configuration_paid_authority(
     if historical_terminal_evidence and not diagnostic_only:
         errors.append("historical_terminal_evidence_scope_invalid")
     minimum_external_cap = sum(required_stage_minima.values())
+    budget_profile = scene_configuration_budget_profile(bundle_receipt.get("replacement_authoring_backend", "content_agents"))
     diagnostic_budget_blockers = (
         diagnostic_parent_runtime_budget_blockers(
             completed_stage_prefix_count=carried_stage_count,
@@ -529,7 +539,7 @@ def validate_scene_configuration_paid_authority(
         and math.isfinite(float(external_cost))
         and minimum_external_cap
         <= float(external_cost)
-        <= MAX_EXTERNAL_SERVICE_SPEND_USD
+        <= budget_profile.external_maximum
         and isinstance(external_requests, int)
         and not isinstance(external_requests, bool)
         and (
@@ -554,6 +564,8 @@ def validate_scene_configuration_paid_authority(
             float(stage_caps[name]) >= required_minimum
             for name, required_minimum in required_stage_minima.items()
         )
+        and (budget_profile.backend != "astra_cad_blender_v1"
+             or float(stage_caps["content_agents"]) <= budget_profile.content_agents_maximum)
         and (
             not diagnostic_only
             or fresh_diagnostic_bootstrap
@@ -594,7 +606,9 @@ def validate_scene_configuration_paid_authority(
             )
             or (
                 not diagnostic_only
-                and abs(float(total_cap) - MAX_ATTEMPT_SPEND_USD) <= 1e-9
+                and (abs(float(total_cap) - MAX_ATTEMPT_SPEND_USD) <= 1e-9
+                     if budget_profile.backend == "content_agents"
+                     else 0 < float(total_cap) <= budget_profile.attempt_maximum)
             )
         )
         and float(compute_cap) + float(external_cost)

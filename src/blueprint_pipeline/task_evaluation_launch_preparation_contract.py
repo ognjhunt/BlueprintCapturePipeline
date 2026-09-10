@@ -17,12 +17,13 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_configuration_runtime_budget import (
-    MAX_EXTERNAL_SERVICE_SPEND_USD,
-    MAX_ATTEMPT_SPEND_USD,
+    MAX_EXTERNAL_SERVICE_SPEND_USD as MAX_EXTERNAL_SERVICE_SPEND_USD,
+    MAX_ATTEMPT_SPEND_USD as MAX_ATTEMPT_SPEND_USD,
     MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
     MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
-    MIN_CONTENT_AGENTS_SPEND_USD,
+    MIN_CONTENT_AGENTS_SPEND_USD as MIN_CONTENT_AGENTS_SPEND_USD,
     REQUIRED_PARENT_TTL_SECONDS,
+    scene_configuration_budget_profile,
 )
 from .task_evaluation_configured_scene_public_projection import (
     ConfiguredScenePublicProjectionError,
@@ -98,9 +99,13 @@ def preparation_request_schema() -> dict[str, Any]:
 def validate_launch_preparation_request(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate a request for NEW execution under the current budget contract."""
     from .task_evaluation_retained_preparation_contract import ScenePreparationBudget
+    try:
+        profile = scene_configuration_budget_profile(value.get("replacement_authoring_backend", "content_agents"))
+    except (AttributeError, ValueError) as exc:
+        raise TaskEvaluationLaunchPreparationContractError("launch_preparation_scene_configuration_backend_invalid") from exc
     budget = ScenePreparationBudget('current_execution', REQUIRED_PARENT_TTL_SECONDS,
         MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD, MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
-        MIN_CONTENT_AGENTS_SPEND_USD, MAX_EXTERNAL_SERVICE_SPEND_USD, MAX_ATTEMPT_SPEND_USD, '')
+        profile.content_agents_minimum, profile.external_maximum, profile.attempt_maximum, '')
     return _validate_launch_preparation_request(value, scene_budget=budget)
 
 
@@ -294,6 +299,8 @@ def _validate_launch_preparation_request(
                 "launch_preparation_scene_configuration_external_spend_invalid"
             )
     else:
+        if "replacement_authoring_backend" in request:
+            raise TaskEvaluationLaunchPreparationContractError("launch_preparation_episode_authoring_backend_forbidden")
         if request.get("appearance_review_override") is not None:
             raise TaskEvaluationLaunchPreparationContractError(
                 "launch_preparation_episode_appearance_review_override_forbidden"
