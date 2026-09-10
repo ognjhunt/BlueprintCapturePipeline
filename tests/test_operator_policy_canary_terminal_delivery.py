@@ -692,3 +692,56 @@ def test_ephemeral_download_urls_are_used_in_memory_but_never_persisted(tmp_path
     assert proof["ephemeral_download_urls_retained"] is False
     assert proof["readback_digest"] == canonical_digest(proof, digest_field="readback_digest")
     assert terminal.finalize_operator_policy_canary(intent)["status"] == "completed"
+
+
+def test_finalizer_retains_exact_relocated_registration_for_live_artifact_routing_and_completed_resume(tmp_path, monkeypatch):
+    from blueprint_pipeline.live_pipeline_result_artifact_resolution import resolve_live_pipeline_result_artifact
+    # Mirror CP custody: provider evidence is physically inside the run root.
+    intent, source = _fixture(tmp_path / 'scene-839873-canary-1', monkeypatch)
+    registration_path = Path(intent['records']['registration']['path'])
+    raw = b'\n\n' + registration_path.read_bytes() + b'\n'
+    relocated = tmp_path / 'immutable-inputs/registration.raw.json'
+    relocated.parent.mkdir()
+    relocated.write_bytes(raw)
+    expected = terminal.file_record(relocated)
+    intent['records']['registration'] = {**expected, 'path': '/mac-only/registration.raw.json'}
+    intent['artifact_locations'] = {'/mac-only/registration.raw.json': expected}
+    intent['run_root'] = str(tmp_path / intent['run_id'])
+    intent['intent_digest'] = canonical_digest(intent, digest_field='intent_digest')
+    adapters, _ = _adapters(monkeypatch)
+    result = terminal.finalize_operator_policy_canary(intent, adapters=adapters)
+    assert result['status'] == 'completed', result
+    root = Path(intent['run_root'])
+    alias = root / 'website-operator-registration.json'
+    assert alias.read_bytes() == raw
+    assert terminal.file_record(alias)['sha256'] == expected['sha256']
+    registry_path = root / 'artifacts/result_delivery/artifact_registry.json'
+    original_registry = registry_path.read_bytes()
+    registry = json.loads(original_registry)
+    requested = registry['artifacts'][0]
+    path, row = resolve_live_pipeline_result_artifact(legacy_state_root=tmp_path/'legacy',
+        policy_canary_result_root=root.parent, run_id=intent['run_id'], artifact_id=requested['artifact_id'])
+    assert path.is_file() and row['sha256'] == requested['sha256']
+    # Recover the historical missing-alias state even after terminal receipts
+    # exist; registry and producer input bytes remain unchanged.
+    alias.unlink()
+    assert terminal.finalize_operator_policy_canary(intent, adapters=adapters) == result
+    assert alias.read_bytes() == raw and registry_path.read_bytes() == original_registry
+    assert relocated.read_bytes() == raw
+
+
+@pytest.mark.parametrize('conflict', ['different_bytes', 'symlink'])
+def test_finalizer_never_replaces_conflicting_registration_alias(tmp_path, monkeypatch, conflict):
+    intent, _ = _fixture(tmp_path, monkeypatch)
+    root = Path(intent['run_root'])
+    root.mkdir()
+    alias = root / 'website-operator-registration.json'
+    if conflict == 'symlink':
+        alias.symlink_to(intent['records']['registration']['path'])
+    else:
+        alias.write_bytes(b'{"unrelated_owner":true}\n')
+    original = alias.read_bytes()
+    with pytest.raises(terminal.OperatorTerminalDeliveryError):
+        terminal.finalize_operator_policy_canary(intent)
+    assert alias.read_bytes() == original
+    assert alias.is_symlink() == (conflict == 'symlink')
