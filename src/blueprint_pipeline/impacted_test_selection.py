@@ -120,10 +120,20 @@ def _matching_tests(
     if direct in test_sources:
         candidates.add(direct)
 
-    tokens = {changed_path, path.name}
+    # An unanchored basename also matches unrelated longer filenames (for
+    # example service.py inside live_pipeline_intake_service.py). Preserve
+    # literal file-loader references without creating that false dependency.
+    tokens = {changed_path, f'"{path.name}"', f"'{path.name}'"}
     if changed_path.startswith("src/blueprint_pipeline/") and path.suffix == ".py":
         module = changed_path.removeprefix("src/").removesuffix(".py").replace("/", ".")
-        tokens.add(module)
+        if path.name == "__init__.py":
+            # Every package shares this basename. Match consumers of this
+            # package, rather than every unrelated test mentioning __init__.py.
+            tokens = {changed_path, module.removesuffix(".__init__")}
+            parent, _, package_name = module.removesuffix(".__init__").rpartition(".")
+            tokens.add(f"from {parent} import {package_name}")
+        else:
+            tokens.add(module)
     elif changed_path.startswith("scripts/"):
         tokens.add(f"scripts/{path.name}")
         # A script test loads its subject by bare module name --

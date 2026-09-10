@@ -62,6 +62,33 @@ def test_unmapped_executable_and_dependency_changes_request_full_suite() -> None
     assert "cross_cutting_file:pyproject.toml" in dependency["reasons"]
 
 
+def test_package_initializer_maps_its_consumers_not_every_initializer(tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_own_package.py").write_text("from blueprint_pipeline.owned import widget\n")
+    (tests / "test_own_child.py").write_text("import blueprint_pipeline.owned.child\n")
+    (tests / "test_parent_import.py").write_text("from blueprint_pipeline import owned\n")
+    for index in range(MODULE.MAX_IMPACTED_TEST_FILES + 1):
+        (tests / f"test_unrelated_{index}.py").write_text('filename = "__init__.py"\n')
+    plan = MODULE.build_plan(tmp_path, ["src/blueprint_pipeline/owned/__init__.py"])
+    assert plan["requires_full_suite"] is False
+    assert set(plan["selected_tests"]) == set(MODULE.SENTINEL_TESTS) | {
+        "tests/test_own_package.py", "tests/test_own_child.py", "tests/test_parent_import.py",
+    }
+
+
+def test_source_basename_is_not_a_dependency_on_a_longer_filename(tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_own_service.py").write_text("from blueprint_pipeline.owned.service import Service\n")
+    (tests / "test_file_loader.py").write_text('source = root / "service.py"\n')
+    (tests / "test_other_service.py").write_text('source = root / "live_pipeline_intake_service.py"\n')
+    plan = MODULE.build_plan(tmp_path, ["src/blueprint_pipeline/owned/service.py"])
+    assert plan["requires_full_suite"] is False
+    assert {"tests/test_own_service.py", "tests/test_file_loader.py"} <= set(plan["selected_tests"])
+    assert "tests/test_other_service.py" not in plan["selected_tests"]
+
+
 def test_changed_test_is_selected_directly() -> None:
     plan = MODULE.build_plan(ROOT, ["tests/test_capture_qa.py"])
 
