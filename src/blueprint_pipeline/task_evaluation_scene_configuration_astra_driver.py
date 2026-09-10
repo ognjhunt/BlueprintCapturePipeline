@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import contextmanager
+import fcntl
+from functools import wraps
 import importlib.util
 import hashlib
 import inspect
@@ -31,7 +33,9 @@ from .task_evaluation_scene_configuration_content_agents_driver import (
 from .task_evaluation_scene_configuration_openai_gate import (
     scene_configuration_openai_stage_gate, scene_configuration_openai_stage_scope,
 )
-from .task_evaluation_scene_configuration_astra_phase_adoption import prepare_phase_adoption
+from .task_evaluation_scene_configuration_astra_phase_adoption import (
+    materialize_automatic_phase_adoption, prepare_phase_adoption,
+)
 from .task_evaluation_scene_configuration_render_inputs import _materialized
 from .task_evaluation_scene_configuration_stage_tool import (
     COMPONENT_RESULT_SCHEMA_VERSION, _validate_dependencies, _validate_input,
@@ -53,6 +57,17 @@ class AstraStageError(RuntimeError):
 
 def _write(path: Path, value: Mapping[str, Any]) -> None:
     path.write_text(canonical_json(value) + "\n", encoding="utf-8")
+
+
+def _stage_source_binding(request, stage_input, source_record, rights_path):
+    semantic = request.model_dump(mode="json")
+    for key in ("request_digest", "expected_production_commit"):
+        semantic.pop(key)
+    value = {"schema_version": "astra_same_run_source_binding.v1", "run_id": request.run_id,
+        "authoring_input_digest": canonical_digest(semantic), "source_candidate": dict(source_record),
+        "rights_admission": file_record(rights_path), "configuration_sha256": stage_input["configuration_sha256"]}
+    value["binding_digest"] = canonical_digest(value, digest_field="binding_digest")
+    return value
 
 
 def _verify_physical_evidence(values: Any, envelope: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -218,11 +233,29 @@ def _stage_sdk_environment(key_path: Path):
                 os.environ[name] = value
 
 
+def _locked_component(function):
+    @wraps(function)
+    def execute(*args, **kwargs):
+        values = os.environ if kwargs.get("environment") is None else kwargs["environment"]
+        root = _required_path(values, _OUTPUT_ENV)
+        path = root / ".astra-component.lock"
+        if path.is_symlink():
+            raise AstraStageError("astra_component_lock_unsafe")
+        with path.open("a+b") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise AstraStageError("astra_component_already_running") from exc
+            return function(*args, **kwargs)
+    return execute
+
+
+@_locked_component
 def execute_astra_component(*, environment=None, runner=subprocess.run,
                             cost_gate_factory=scene_configuration_openai_stage_gate,
                             authoring_executor=execute_asset_authoring, invoker_factory=budgeted_invoker,
                             sandbox_factory=SandboxedAssetRunner, blender_validator=validate_runtime,
-                            package_candidate=None) -> dict[str, Any]:
+                            package_candidate=None, no_cost_replay=False, retained_runtime=None) -> dict[str, Any]:
     values = dict(os.environ if environment is None else environment)
     input_path = _required_path(values, _INPUT_ENV)
     stage_input = _validate_input(_read(input_path, code="astra_stage_input_invalid"),
@@ -244,13 +277,60 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
     package = _required_path(values, _PACKAGE_ENV)
     if not package.is_relative_to(toolchain_root) or not result_path.is_relative_to(output) or result_path.exists():
         raise AstraStageError("astra_component_path_invalid")
-    runtime = output / "astra_cad_blender_runtime"
+    primary = output / "astra_cad_blender_runtime"
+    attempts = output / "astra_resume_attempts"
+    prior_roots = ([primary] if primary.exists() else []) + sorted(attempts.glob("attempt-????"))
+    descriptor = configuration.get("astra_phase_adoption")
+    if retained_runtime is not None:
+        if not no_cost_replay or descriptor is not None:
+            raise AstraStageError("astra_operational_replay_scope_invalid")
+        descriptor = materialize_automatic_phase_adoption(prior_runtime=Path(retained_runtime))
+    if prior_roots:
+        if descriptor is not None and Path(descriptor["prior_runtime"]) != prior_roots[-1]:
+            raise AstraStageError("astra_resume_cannot_skip_latest_budget_journal")
+        descriptor = descriptor or materialize_automatic_phase_adoption(prior_runtime=prior_roots[-1])
+    if no_cost_replay and (descriptor is None or "authoring_result" not in descriptor.get("completed_artifacts", [])):
+        raise AstraStageError("astra_no_cost_replay_requires_completed_authoring")
+    source_binding = _stage_source_binding(request, stage_input, source_record, rights_path)
+    if descriptor is not None and descriptor.get("schema_version") == "task_evaluation_retained_astra_artifacts.v1":
+        prior_binding = Path(descriptor["prior_runtime"]) / "stage_source_binding.json"
+        if not prior_binding.is_file() or _read(prior_binding, code="astra_retained_source_binding_invalid") != source_binding:
+            raise AstraStageError("astra_retained_source_or_rights_binding_changed")
+    if len(prior_roots) >= 16:
+        raise AstraStageError("astra_same_run_resume_limit_reached")
+    runtime = primary if not prior_roots else attempts / f"attempt-{len(prior_roots):04d}"
+    runtime.parent.mkdir(parents=True, exist_ok=True)
     runtime.mkdir(mode=0o700)
+    _write(runtime / "stage_source_binding.json", source_binding)
+    delivery_output = output if not prior_roots else runtime / "delivery"
     for name in _CAD_PACKAGE_FILES:
         source = package / name
         if source.is_symlink() or not source.is_file():
             raise AstraStageError("astra_cad_package_incomplete")
         shutil.copyfile(source, runtime / name)
+    adoption = prepare_phase_adoption(value=descriptor, request_value=request.model_dump(mode="json"),
+        package=package, budget_root=runtime / "inference")
+    if descriptor is not None:
+        _write(runtime / "retained_artifact_contract.json", descriptor)
+    if package_candidate is None:
+        from .task_object_simready_packaging import package_astra_candidate
+        package_candidate = package_astra_candidate
+    authored_root = runtime / "authoring"
+    authored_root.mkdir()
+    if adoption.get("completed_authoring_result") is not None:
+        authored = adoption["completed_authoring_result"]
+        _write(authored_root / "request.json", request.model_dump(mode="json"))
+        _write(authored_root / "result.json", authored)
+        _write(runtime / "no_cost_authoring_adoption.json", {"status": "completed_authoring_adopted",
+            "adoption_digest": adoption["adoption_digest"], "retained_inference_cost_usd": adoption["retained_inference_cost_usd"],
+            "prior_call_count": adoption["prior_call_count"], "new_provider_calls": 0,
+            "cad_execution_repeated": False, "blender_execution_repeated": False})
+        retained_runtime = {"status": "retained_completed_artifacts", "adoption_digest": adoption["adoption_digest"],
+                            "runtime_execution_repeated": False}
+        return _finish_component(request=request, authored=authored, package_candidate=package_candidate,
+            output=delivery_output, physics_bounds=physics_bounds, configuration=configuration,
+            source_record=source_record, stage_input=stage_input, rights_record=rights_record,
+            cad_runtime=retained_runtime, blender=retained_runtime, authored_root=authored_root, result_path=result_path)
     cad_runtime = _materialize_cad_skill_runtime(runtime)
     cad_root = Path(cad_runtime["root"])
     verified_sources = {}
@@ -277,11 +357,6 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
     for dependency in ("build123d", "langgraph", "agents"):
         if importlib.util.find_spec(dependency) is None:
             raise AstraStageError(f"astra_runtime_dependency_missing:{dependency}")
-    if package_candidate is None:
-        from .task_object_simready_packaging import package_astra_candidate
-        package_candidate = package_astra_candidate
-    authored_root = runtime / "authoring"
-    authored_root.mkdir()
     runtime_loader = [Path(value).resolve() for value in os.environ.get("PYTHONPATH", "").split(os.pathsep)
                       if value and Path(value).is_dir()]
     roots = [Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), cad_root,
@@ -314,8 +389,6 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         raise AstraStageError("astra_parent_budget_invalid") from exc
     if any(not math.isfinite(v) or v <= 0 for v in (stage_cap, total_cap)) or maximum_calls <= 0:
         raise AstraStageError("astra_parent_budget_invalid")
-    adoption = prepare_phase_adoption(value=configuration.get("astra_phase_adoption"),
-        request_value=request.model_dump(mode="json"), package=package, budget_root=runtime / "inference")
     if adoption.get("retained_inference_cost_usd", 0) > maximum_cost:
         raise AstraStageError("astra_phase_adoption_budget_exhausted")
     base_invoker, audit = invoker_factory(root=runtime / "inference", run_id=request.run_id, maximum_cost_usd=maximum_cost)
@@ -355,6 +428,15 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         finally:
             gate.complete(provider_call_performed=invoker.calls > 0,
                           runtime_result_digest=(authored or {}).get("result_digest"), runtime_exception_type=failure)
+    return _finish_component(request=request, authored=authored, package_candidate=package_candidate,
+        output=delivery_output, physics_bounds=physics_bounds, configuration=configuration,
+        source_record=source_record, stage_input=stage_input, rights_record=rights_record,
+        cad_runtime=cad_runtime, blender=blender, authored_root=authored_root, result_path=result_path)
+
+
+def _finish_component(*, request, authored, package_candidate, output, physics_bounds, configuration,
+                      source_record, stage_input, rights_record, cad_runtime, blender, authored_root, result_path):
+    output.mkdir(parents=True, exist_ok=True)
     packaged = package_candidate(request=request, authoring_result=authored,
                                   output_root=output, physics_bounds=physics_bounds)
     asset = Path(packaged["asset"]["path"])

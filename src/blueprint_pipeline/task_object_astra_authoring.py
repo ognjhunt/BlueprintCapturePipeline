@@ -14,6 +14,7 @@ import math
 from pathlib import Path
 import shutil
 from typing import Any, Literal
+from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -118,6 +119,18 @@ def file_record(path: Path) -> dict[str, Any]:
 
 def save_json(path: Path, value: Any) -> None:
     path.write_text(canonical_json(value) + '\n', encoding='utf-8')
+
+
+def _save_adopted_model_phase(path: Path, record: dict, *, request_digest: str, references=None):
+    """Retain a derived phase while keeping its original provider response explicit."""
+    source = Path(record['source_phase']['path'])
+    if file_record(source)['sha256'] != record['source_phase']['sha256']:
+        raise AssetAuthoringError('authoring_adopted_phase_changed')
+    phase = json.loads(source.read_text())
+    phase.update(request_digest=request_digest, source_phase=record['source_phase'], new_provider_call=False)
+    if references is not None:
+        phase['references'] = references
+    save_json(path, phase)
 
 
 def validate_request(value: dict) -> AuthoringRequest:
@@ -273,7 +286,12 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                            adopted_physical_review: PhysicalPropertyReviewProposal | None = None,
                            physical_adoption_record: dict | None = None,
                            adopted_blender_program: BlenderProgram | None = None,
-                           blender_adoption_record: dict | None = None) -> dict:
+                           blender_adoption_record: dict | None = None,
+                           adopted_cad_result: dict | None = None,
+                           cad_adoption_record: dict | None = None,
+                           adopted_blender_execution: dict | None = None,
+                           adopted_visual_review: AppearanceReview | None = None,
+                           visual_adoption_record: dict | None = None) -> dict:
     """Two bounded visual attempts, independent physics review, retained failures.
 
     ``mac_executor(brief, output_root, dimensions_m)`` must execute pinned CAD
@@ -296,6 +314,8 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                 raise AssetAuthoringError('authoring_source_analysis_adoption_invalid')
             brief = adopted_source_analysis
             save_json(output_root / 'source_analysis_adoption.json', adoption_record)
+            _save_adopted_model_phase(output_root / 'source_analysis.json', adoption_record,
+                                      request_digest=request.request_digest)
         else:
             brief = invoke_vision(invoker, request, capability='source_analysis',
                 prompt='Inspect the source object and create a precise CAD brief in millimetres. '
@@ -309,17 +329,39 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
         if physical_input.appearance == 'unknown':
             phase_path = (Path(adoption_record['source_phase']['path']) if adoption_record
                           else output_root / 'source_analysis.json')
+            evidence_uri = phase_path.resolve().as_uri()
+            evidence_sha = file_record(phase_path)['sha256']
+            if adoption_record and adoption_record.get('source_evidence_identity'):
+                alias = adoption_record['source_evidence_identity']
+                parsed = urlparse(alias['uri'])
+                if parsed.scheme != 'file' or parsed.netloc not in ('', 'localhost'):
+                    raise AssetAuthoringError('authoring_source_evidence_alias_invalid')
+                aliased = Path(unquote(parsed.path))
+                if file_record(aliased)['sha256'] != alias['sha256']:
+                    raise AssetAuthoringError('authoring_source_evidence_alias_changed')
+                original_phase = json.loads(aliased.read_text())
+                if original_phase.get('model') != MODEL or original_phase.get('output') != brief.model_dump(mode='json'):
+                    raise AssetAuthoringError('authoring_source_evidence_alias_output_mismatch')
+                evidence_uri, evidence_sha = alias['uri'], alias['sha256']
             physical_input.appearance = brief.proposed_appearance
             physical_input.material_description = brief.proposed_material
             physical_input.evidence.append(EvidenceReference(
-                evidence_id='source-appearance-analysis', uri=phase_path.resolve().as_uri(),
-                sha256=file_record(phase_path)['sha256'].removeprefix('sha256:'),
+                evidence_id='source-appearance-analysis', uri=evidence_uri,
+                sha256=evidence_sha.removeprefix('sha256:'),
                 kind='material_observation', excerpt='Candidate visual interpretation of the supplied source images: ' +
                 canonical_json({'material': brief.proposed_material, 'appearance': brief.proposed_appearance,
                                 'observed_parts': brief.observed_parts})))
         save_json(output_root / 'physical_review_input.json', physical_input.model_dump(mode='json'))
-        cad = mac_executor(brief=compact_cad_handoff(request, brief), output_root=output_root / 'cad',
-                           dimensions_m=request.dimensions_m)
+        if adopted_cad_result is not None:
+            if (not cad_adoption_record or cad_adoption_record.get('readback_digest') != canonical_digest(adopted_cad_result.get('readback', {}))
+                    or cad_adoption_record.get('stl_sha256') != file_record(Path(adopted_cad_result['stl']['path']))['sha256']
+                    or cad_adoption_record.get('step_sha256') != file_record(Path(adopted_cad_result['step']['path']))['sha256']):
+                raise AssetAuthoringError('authoring_cad_result_adoption_invalid')
+            cad = adopted_cad_result
+            save_json(output_root / 'cad_result_adoption.json', cad_adoption_record)
+        else:
+            cad = mac_executor(brief=compact_cad_handoff(request, brief), output_root=output_root / 'cad',
+                               dimensions_m=request.dimensions_m)
         save_json(output_root / 'cad_result.json', cad)
         if adopted_physical_review is not None:
             if (not physical_adoption_record
@@ -329,6 +371,8 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                 raise AssetAuthoringError('authoring_physical_review_adoption_invalid')
             physics = adopted_physical_review
             save_json(output_root / 'physical_review_adoption.json', physical_adoption_record)
+            _save_adopted_model_phase(output_root / 'physical_property_review.json', physical_adoption_record,
+                                      request_digest=request.request_digest)
         else:
             physics = invoke_vision(invoker, request, capability='physical_property_review',
                 prompt=build_physical_property_review_prompt(physical_input) +
@@ -343,16 +387,21 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
             raise AssetAuthoringError('authoring_physical_review_blocked:' + ','.join(physical_result.blockers))
         prior_feedback = ''
         selected = None
-        for index in range(MAX_AUTHORING_ROUNDS):
+        start_index = blender_adoption_record.get('source_round_index', 0) if blender_adoption_record else 0
+        if type(start_index) is not int or start_index not in range(MAX_AUTHORING_ROUNDS):
+            raise AssetAuthoringError('authoring_retained_round_invalid')
+        for index in range(start_index, MAX_AUTHORING_ROUNDS):
             attempt = output_root / f'appearance-{index:02d}'
             attempt.mkdir()
-            if index == 0 and adopted_blender_program is not None:
+            if index == start_index and adopted_blender_program is not None:
                 if (not blender_adoption_record
                     or blender_adoption_record.get('output_digest') != canonical_digest(adopted_blender_program.model_dump(mode='json'))
                     or blender_adoption_record.get('cad_readback_digest') != canonical_digest(cad.get('readback', {}))):
                     raise AssetAuthoringError('authoring_blender_program_adoption_invalid')
                 program = adopted_blender_program
                 save_json(attempt / 'blender_program_adoption.json', blender_adoption_record)
+                _save_adopted_model_phase(attempt / f'blender_author_{index}.json', blender_adoption_record,
+                                          request_digest=request.request_digest)
             else:
                 program = invoke_vision(invoker, request, capability=f'blender_author_{index}',
                     prompt=blender_author_prompt(request, brief, prior_feedback),
@@ -373,18 +422,29 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                 'dimensions_m': request.dimensions_m,
                 'reference_files': copied_frames, 'cad_units': 'millimetres',
             })
-            from . import task_object_blender_runtime
-            wrapper = Path(task_object_blender_runtime.__file__).resolve()
-            completed = blender_runner(
-                [blender_executable, '--background', '--factory-startup',
-                 '--python-exit-code', '23', '--python', str(wrapper), '--', str(attempt)],
-                cwd=attempt, timeout=600, check=False, capture_output=True, text=True)
-            (attempt / 'blender.stdout.txt').write_text(completed.stdout[-100000:])
-            (attempt / 'blender.stderr.txt').write_text(completed.stderr[-100000:])
-            if completed.returncode:
-                prior_feedback = 'Blender execution failed. Correct the source.\n' + completed.stderr[-6000:] + completed.stdout[-6000:]
-                save_json(attempt / 'failure.json', {'blocker': 'blender_execution_failed', 'returncode': completed.returncode})
-                continue
+            if index == start_index and adopted_blender_execution is not None:
+                if (adopted_blender_execution.get('round_index') != index
+                        or adopted_blender_execution.get('program_digest') != canonical_digest(program.model_dump(mode='json'))
+                        or adopted_blender_execution.get('cad_stl_sha256') != cad['stl']['sha256']):
+                    raise AssetAuthoringError('authoring_blender_execution_adoption_invalid')
+                for name, record in adopted_blender_execution['records'].items():
+                    if Path(name).name != name or file_record(Path(record['path']))['sha256'] != record['sha256']:
+                        raise AssetAuthoringError('authoring_blender_execution_adoption_invalid')
+                    shutil.copyfile(record['path'], attempt / name)
+                save_json(attempt / 'blender_execution_adoption.json', adopted_blender_execution)
+            else:
+                from . import task_object_blender_runtime
+                wrapper = Path(task_object_blender_runtime.__file__).resolve()
+                completed = blender_runner(
+                    [blender_executable, '--background', '--factory-startup',
+                     '--python-exit-code', '23', '--python', str(wrapper), '--', str(attempt)],
+                    cwd=attempt, timeout=600, check=False, capture_output=True, text=True)
+                (attempt / 'blender.stdout.txt').write_text(completed.stdout[-100000:])
+                (attempt / 'blender.stderr.txt').write_text(completed.stderr[-100000:])
+                if completed.returncode:
+                    prior_feedback = 'Blender execution failed. Correct the source.\n' + completed.stderr[-6000:] + completed.stdout[-6000:]
+                    save_json(attempt / 'failure.json', {'blocker': 'blender_execution_failed', 'returncode': completed.returncode})
+                    continue
             measurement = json.loads((attempt / 'geometry_readback.json').read_text())
             try:
                 validate_geometry_readback(request, measurement, physical_input.appearance)
@@ -396,14 +456,25 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                 sha256=file_record(attempt / f'{view}.png')['sha256'], role='prior_candidate',
                 description=f'New candidate {view} inspection render')
                 for view in ('perspective', 'top', 'side')]
-            review = invoke_vision(invoker, request, capability=f'independent_visual_review_{index}',
-                prompt='Independently compare new CAD/Blender render views to the ORIGINAL '
+            if index == start_index and adopted_visual_review is not None:
+                if (not visual_adoption_record or visual_adoption_record.get('round_index') != index
+                        or visual_adoption_record.get('output_digest') != canonical_digest(adopted_visual_review.model_dump(mode='json'))
+                        or visual_adoption_record.get('source_frames') != [frame.model_dump(mode='json') for frame in request.source_frames]
+                        or visual_adoption_record.get('render_sha256') != [frame.sha256 for frame in rendered]):
+                    raise AssetAuthoringError('authoring_visual_review_adoption_invalid')
+                review = adopted_visual_review
+                save_json(attempt / 'visual_review_adoption.json', visual_adoption_record)
+                _save_adopted_model_phase(attempt / f'independent_visual_review_{index}.json', visual_adoption_record,
+                    request_digest=request.request_digest, references=[frame.model_dump(mode='json') for frame in request.source_frames + rendered])
+            else:
+                review = invoke_vision(invoker, request, capability=f'independent_visual_review_{index}',
+                    prompt='Independently compare new CAD/Blender render views to the ORIGINAL '
                        'observed source and binding owner specification. Reject missing required '
                        'parts, wrong materials, glass paper, jagged/crumpled forms, missing source '
                        'print/color structure. Do not reward merely producing a file. These '
                        'are isolated studio views, not proof of scene placement.\n' + canonical_json(context),
-                output_type=AppearanceReview, frames=request.source_frames + rendered, root=attempt,
-                cache_prefix=authoring_instructions)
+                    output_type=AppearanceReview, frames=request.source_frames + rendered, root=attempt,
+                    cache_prefix=authoring_instructions)
             if appearance_passed(review):
                 selected = attempt
                 break

@@ -116,7 +116,7 @@ def validate_retained_preparation_request(value: Mapping[str, Any]) -> dict[str,
     Every scientific/rights check and the immutable parent join remains required.
     """
     from .task_evaluation_retained_preparation_contract import retained_schema
-    return _validate_launch_preparation_request(value, schema=retained_schema())
+    return _validate_launch_preparation_request(value, schema=retained_schema(value))
 
 
 
