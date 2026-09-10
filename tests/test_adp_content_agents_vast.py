@@ -4131,6 +4131,34 @@ def test_scene_configuration_uses_dynamic_safe_mesh_collision(tmp_path: Path) ->
     )
 
 
+def test_scene_configuration_forwards_object_identity_and_image_conditioning(tmp_path: Path) -> None:
+    """The image generator consumes texture.reference_image_uris, not input references."""
+    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    sources = {
+        f"{agent}_agent.yaml": assets / f"adp009a_content_agents_{agent}.vast.yaml"
+        for agent in ("material", "texture", "physics")
+    }
+    destination = tmp_path / "configs"
+    destination.mkdir()
+    references = [(tmp_path / "input" / name).as_uri() for name in ("source.png", "detail.png")]
+    content_agents._materialize_remote_configs(
+        config_sources=sources, destination=destination, variant="scene_configuration_v1",
+        agent_mesh_prim_paths=["/Asset/Geometry/Visual"],
+        agent_default_material_path="/Asset/Looks/GeneratedCandidate",
+        authoring_context={"authoring_target": "One rigid open book matching the source."},
+        reference_image_uris=references,
+    )
+    material = yaml.safe_load((destination / "material_agent.yaml").read_text())
+    prompts = material["steps"]["build_dataset_prepare_dataset"]["prompts"]
+    assert "open book" in prompts["vlm_user"].format(materials_list="Paper, Glass")
+    assert "placeholder or missing materials" in prompts["vlm_system"]
+    texture = yaml.safe_load((destination / "texture_agent.yaml").read_text())
+    assert texture["texture"]["reference_image_uris"] == references
+    prompt = texture["material_textures"]["/Asset/Looks/GeneratedCandidate"]["prompt"]
+    assert "open book" in prompt and "printed or photographic patterns" in prompt
+    assert "no text" not in prompt
+
+
 def test_articulated_configs_preserve_agent_policy_while_normalizing_inputs(
     tmp_path: Path,
 ) -> None:

@@ -129,9 +129,16 @@ def _policy_camera_visibility_contract(
         }
         if require_task_support and role in {"external", "overview"}:
             labels = row.get("semantic_label_pixels") if isinstance(row, Mapping) else None
-            support_pixels = labels.get("task_support") if isinstance(labels, Mapping) else None
+            support_measurement = labels.get("task_support") if isinstance(labels, Mapping) else None
+            support_pixels = (
+                support_measurement.get("pixel_count")
+                if isinstance(support_measurement, Mapping) else None
+            )
             support_visible = (
                 type(support_pixels) is int
+                and support_measurement.get("target_label") == "task_support"
+                and support_measurement.get("measurement_authority") == "native_semantic_segmentation_aov"
+                and bool(support_measurement.get("target_semantic_ids"))
                 and minimum_pixels > 0
                 and support_pixels >= minimum_pixels
                 and render_passed

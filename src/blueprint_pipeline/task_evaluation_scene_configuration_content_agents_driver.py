@@ -960,6 +960,15 @@ def execute_content_agents_component(
         agent_render_prim_paths=selection["selected_mesh_prim_paths"],
         agent_default_material_path=normalized["default_material_path"],
         reference_image_relpaths=reference_relpaths,
+        authoring_context={
+            "authoring_target": configuration.get("authoring_target"),
+            "source_object_identity": configuration.get("source_object_identity"),
+            "metric_envelope": metric_envelope,
+        },
+        reference_image_uris=[
+            (runtime / "configs" / relative).resolve().as_uri()
+            for relative in reference_relpaths
+        ],
     )
     _validate_remote_configs(
         source=runtime / "content_agents_source",
@@ -980,6 +989,8 @@ def execute_content_agents_component(
         "input_usd_normalization": normalized,
         "agent_dataset_render_selection": selection,
         "reference_image_sha256s": [_sha256(path) for path in references],
+        "source_reference_image_conditioning_required": True,
+        "task_owner_authoring_target": configuration.get("authoring_target"),
         "remote_config_sha256": config_hashes,
         "runtime_input_binding": {
             "relative_path": "input/source_asset.usda",
