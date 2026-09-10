@@ -106,6 +106,18 @@ def load_verified_native_task_arena_runtime_preflight_bundle(
         errors.append("native_task_arena_runtime_preflight_bundle_identity_invalid")
     if errors:
         raise ValueError(";".join(sorted(set(errors))))
+    # Exercise the exact local archive/runner gate used by Vast immediately
+    # before allocation. URL verification remains a separate live admission;
+    # this pass performs no network request or provider operation.
+    from .vast_provider_adapter import _blueprint_bundle_preflight
+    preflight = _blueprint_bundle_preflight(
+        job_dir=path.parent / 'verified_vast_static_preflight', generated_at=str(receipt.get('generated_at', 'fixed')),
+        enable_blueprint_bundle=True, enable_isaac_smoke=True, provider_bundle_kind='native_task_arena',
+        bundle_path=bundle, provider_bundle_url='https://example.com/offline-bundle.zip?sig=offline',
+        provider_output_put_url='https://example.com/offline-output.zip?sig=offline', verify_staging_urls=False,
+        allow_staging_output_put_probe=False)
+    if preflight.get('status') != 'passed' or preflight.get('blockers'):
+        raise ValueError('native_task_arena_runtime_preflight_adapter_blocked:' + ','.join(preflight.get('blockers', [])))
     return receipt
 
 

@@ -47,22 +47,9 @@ def composition_runtime_sources(*, include_replay=False):
         names[name] = package / name
     if include_replay:
         from blueprint_pipeline.native_task_arena_execution_contract import (
-            POLICY_RUNTIME_MODULE_NAMES,
+            COMBINED_DIAGNOSTIC_MODULE_NAMES,
         )
-
-        for name in (
-            *POLICY_RUNTIME_MODULE_NAMES,
-            "adp009d_policy_episode.py",
-            "native_task_arena_policy_canary_session.py",
-            "native_policy_canary_diagnostic_continuation.py",
-            "policy_canary_interrupted_cell_recovery.py",
-            "native_task_arena_policy_canary_worker.py",
-            "native_task_arena_policy_worker.py",
-            "native_task_retained_command_replay.py",
-            "native_task_retained_command_worker.py",
-            "native_task_combined_diagnostic_worker.py",
-        ):
-            names[name] = package / name
+        names = {name: package / name for name in COMBINED_DIAGNOSTIC_MODULE_NAMES}
     assert_provider_runtime_import_closure(
         package_source_dir=package,
         shipped_module_names=names,
@@ -220,6 +207,7 @@ def prepare_composition_bundle(
         runtime_module_sources=composition_runtime_sources(include_replay=bool(replay_request)),
         implementation_commit=implementation_commit,
         execution_mode="runtime_preflight",
+        runtime_variant='native_composition_and_retained_command_replay.v1' if replay_request else None,
         expected_output_filename="native_task_arena_runtime_preflight.v1.json",
         container_image=NATIVE_TASK_ARENA_IMAGE,
         runtime_source_packet_receipt=runtime_source_packet_receipt,

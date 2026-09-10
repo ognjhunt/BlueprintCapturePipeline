@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .native_task_arena_execution_contract import (
     NATIVE_TASK_ARENA_RESULT_FILENAMES,
+    COMBINED_DIAGNOSTIC_VARIANT, combined_diagnostic_runner_valid,
 )
 
 
@@ -118,6 +119,7 @@ def provider_runtime_contract_blockers(
     entrypoint_text: str,
     runner_text: str,
     task_evaluation_scene_configuration_diagnostic: bool = False,
+    native_task_arena_runtime_variant: str | None = None,
 ) -> list[str]:
     """Return stable fail-closed runtime-contract blockers for a provider bundle.
 
@@ -271,6 +273,9 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_valid = construction_runner_valid or runtime_preflight_runner_valid
+        if native_task_arena_runtime_variant is not None:
+            runner_valid = (native_task_arena_runtime_variant == COMBINED_DIAGNOSTIC_VARIANT
+                            and combined_diagnostic_runner_valid(runner_text))
         runner_blocker = "provider_runner_missing_native_task_arena_runtime_contract"
     elif provider_bundle_kind == "paired_target_native_import":
         entrypoint_valid = all(

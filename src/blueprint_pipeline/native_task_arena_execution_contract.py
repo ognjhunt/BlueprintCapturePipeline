@@ -250,6 +250,46 @@ EXECUTION_MODE_CONTRACTS = {
     ),
 }
 
+COMBINED_DIAGNOSTIC_VARIANT = "native_composition_and_retained_command_replay.v1"
+COMBINED_DIAGNOSTIC_MODULE_NAMES = tuple(sorted({
+    *CONSTRUCTION_RUNTIME_MODULE_NAMES, *POLICY_RUNTIME_MODULE_NAMES,
+    'adp009d_approach_capture.py', 'adp009d_hold_trace.py', 'adp009d_isaac_runtime.py',
+    'adp009d_newton_collision_adapter.py', 'native_policy_canary_diagnostic_continuation.py',
+    'native_task_arena_policy_canary_session.py', 'native_task_arena_policy_canary_worker.py',
+    'native_task_arena_policy_worker.py', 'native_task_combined_diagnostic_worker.py',
+    'native_task_composition_diagnostic.py', 'native_task_composition_worker.py',
+    'native_task_retained_command_replay.py', 'native_task_retained_command_worker.py',
+    'policy_canary_interrupted_cell_recovery.py',
+}))
+
+
+def execution_contract(execution_mode: str, runtime_variant=None):
+    if runtime_variant is None:
+        return EXECUTION_MODE_CONTRACTS.get(execution_mode)
+    if execution_mode == 'runtime_preflight' and runtime_variant == COMBINED_DIAGNOSTIC_VARIANT:
+        return NativeTaskArenaExecutionContract('native_task_arena_runtime_preflight.v1.json',
+                                               COMBINED_DIAGNOSTIC_MODULE_NAMES)
+    return None
+
+
+def combined_diagnostic_runner_valid(source: str) -> bool:
+    """Require the executable two-child dispatch, not marker words/comments."""
+    import ast
+    expected = (('composition', 'blueprint_pipeline.native_task_composition_worker',
+                 'native_task_arena_runtime_preflight.v1.json'),
+                ('command_replay', 'blueprint_pipeline.native_task_retained_command_worker',
+                 'native_task_retained_command_child.json'))
+    try:
+        tree = ast.parse(source)
+        children = next(ast.literal_eval(node.value) for node in tree.body
+                        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
+                        and target.id == 'CHILDREN' for target in node.targets))
+        calls = {node.func.id for node in ast.walk(tree)
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+        return children == expected and {'runner', 'run_diagnostic_children'} <= calls
+    except (SyntaxError, ValueError, StopIteration):
+        return False
+
 NATIVE_TASK_ARENA_RESULT_FILENAMES = frozenset(
     contract.expected_output_filename
     for contract in EXECUTION_MODE_CONTRACTS.values()
@@ -382,16 +422,21 @@ def native_task_arena_execution_transport_completed(
     )
 
 
-def required_archive_entries(execution_mode: str) -> set[str]:
+def required_archive_entries(execution_mode: str, runtime_variant=None) -> set[str]:
     """Return the exact internal Python module members required by one mode."""
 
-    contract = EXECUTION_MODE_CONTRACTS.get(str(execution_mode))
+    contract = execution_contract(str(execution_mode), runtime_variant)
     if contract is None:
         return set()
-    return {
+    entries = {
         f"provider_runtime/blueprint_pipeline/{name}"
         for name in contract.runtime_module_names
     }
+    if runtime_variant == COMBINED_DIAGNOSTIC_VARIANT:
+        entries.update('provider_runtime/runtime_inputs/' + name for name in (
+            'composition_request.json', 'composition_scene_plan.json', 'original_policy_runtime_inputs.json',
+            'replay_request.json', 'replay_scene_plan.json', 'retained_cell_result.json', 'retained_adapter_reset.json'))
+    return entries
 
 
 __all__ = [

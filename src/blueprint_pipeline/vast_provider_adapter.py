@@ -95,7 +95,8 @@ from .task_evaluation_scene_configuration_provider_preflight import (
     scene_configuration_bundle_contract as _scene_configuration_bundle_contract,
 )
 from .native_task_arena_execution_contract import (
-    EXECUTION_MODE_CONTRACTS as NATIVE_TASK_ARENA_EXECUTION_MODE_CONTRACTS,
+    execution_contract as native_task_arena_execution_contract,
+    COMBINED_DIAGNOSTIC_VARIANT,
     NATIVE_TASK_ARENA_POLICY_CANDIDATES,
     required_archive_entries as native_task_arena_required_archive_entries,
 )
@@ -2953,9 +2954,7 @@ def _blueprint_bundle_preflight(
                                 native_manifest.get("execution_mode") or ""
                             )
                             mode_contract = (
-                                NATIVE_TASK_ARENA_EXECUTION_MODE_CONTRACTS.get(
-                                    execution_mode
-                                )
+                                native_task_arena_execution_contract(execution_mode, native_manifest.get('runtime_variant'))
                             )
                             if mode_contract is None:
                                 raise ValueError(
@@ -2963,7 +2962,7 @@ def _blueprint_bundle_preflight(
                                 )
                             required_entries.update(
                                 native_task_arena_required_archive_entries(
-                                    execution_mode
+                                    execution_mode, native_manifest.get('runtime_variant')
                                 )
                             )
                             declared_modules = {
@@ -3003,6 +3002,26 @@ def _blueprint_bundle_preflight(
                                 raise ValueError(
                                     "native_task_arena_mode_contract_invalid"
                                 )
+                            if native_manifest.get('runtime_variant') == COMBINED_DIAGNOSTIC_VARIANT:
+                                import ast
+                                if len(native_manifest['runtime_modules']) != len(expected_modules):
+                                    raise ValueError('native_diagnostic_duplicate_modules')
+                                for record in native_manifest['runtime_modules']:
+                                    raw = archive.read('provider_runtime/' + record['relative_path'])
+                                    if (len(raw) != record['size_bytes'] or
+                                            'sha256:' + hashlib.sha256(raw).hexdigest() != record['sha256']):
+                                        raise ValueError('native_diagnostic_module_bytes_mismatch')
+                                parent = archive.read('provider_runtime/blueprint_pipeline/native_task_combined_diagnostic_worker.py')
+                                if (parent.decode('utf-8') != runner_text or
+                                        'sha256:' + hashlib.sha256(parent).hexdigest() != native_manifest['worker_source_sha256']):
+                                    raise ValueError('native_diagnostic_parent_identity_mismatch')
+                                for child, required_calls in (
+                                    ('native_task_composition_worker.py', {'launch_native_task_isaaclab', 'build_native_task_arena_environment', 'run_composition_diagnostic'}),
+                                    ('native_task_retained_command_worker.py', {'launch_native_task_isaaclab', 'build_native_task_arena_environment', 'run_retained_command_replay'})):
+                                    tree = ast.parse(archive.read('provider_runtime/blueprint_pipeline/' + child).decode('utf-8'))
+                                    calls = {node.func.id for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+                                    if not required_calls <= calls:
+                                        raise ValueError('native_diagnostic_child_execution_missing')
                             candidate_id = native_manifest.get("policy_candidate_id")
                             if mode_contract.policy_candidate_required:
                                 if candidate_id not in NATIVE_TASK_ARENA_POLICY_CANDIDATES:
@@ -3453,6 +3472,8 @@ def _blueprint_bundle_preflight(
                             == "task_evaluation_scene_configuration"
                             and readiness.get("diagnostic_only") is True
                         ),
+                        native_task_arena_runtime_variant=(readiness.get('runtime_variant')
+                            if provider_bundle_kind == 'native_task_arena' else None),
                     )
                 )
                 if provider_bundle_kind in {"isaac", "adp_simready_isaac"}:

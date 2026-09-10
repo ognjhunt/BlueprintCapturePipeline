@@ -497,6 +497,7 @@ def build_native_task_arena_bundle(
     runtime_module_sources: Sequence[str | Path],
     implementation_commit: str,
     execution_mode: str = "construction_canary",
+    runtime_variant: str | None = None,
     policy_candidate_id: str | None = None,
     expected_output_filename: str = DEFAULT_EXPECTED_OUTPUT_FILENAME,
     container_image: str = DEFAULT_IMAGE,
@@ -524,6 +525,10 @@ def build_native_task_arena_bundle(
             ["native_task_arena_bundle_execution_mode_invalid"]
         )
     is_policy_mode = execution_mode in {"policy", "policy_diagnostic"}
+    if runtime_variant is not None:
+        from .native_task_arena_execution_contract import execution_contract
+        if execution_contract(execution_mode, runtime_variant) is None:
+            raise NativeTaskArenaBundleError(['native_task_arena_runtime_variant_invalid'])
     if is_policy_mode is not bool(str(policy_candidate_id or "").strip()):
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_policy_binding_invalid"]
@@ -777,6 +782,7 @@ def build_native_task_arena_bundle(
         "status": "ready",
         "program_id": "arm-decision-proof-v1",
         "execution_mode": execution_mode,
+        **({'runtime_variant': runtime_variant} if runtime_variant is not None else {}),
         "implementation_commit": implementation_commit,
         "container_image": image,
         "scene_id": packet_receipt.get("scene_id"),
