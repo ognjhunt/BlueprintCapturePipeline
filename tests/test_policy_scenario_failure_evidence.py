@@ -32,11 +32,21 @@ def test_native_scenario_refusal_retains_expected_and_observed_measurements(monk
     assert caught.value.channels["observed"]["scenario_parameters"]["parameters"][0]["observed_native_value"] == -2.95
 
 
-def test_real_worker_seals_wrong_reset_before_first_policy_query(tmp_path, monkeypatch):
+@pytest.mark.parametrize("standalone", [False, True])
+def test_real_worker_seals_wrong_reset_before_first_policy_query(tmp_path, monkeypatch, standalone):
     from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import (
         FakeIsaac, PROVIDER_RESULT_FILENAME, _rehearsal_runtime, _sealed_result, _stage_runtime_root, worker,
     )
     from tests.test_policy_scientific_reset import snapshot
+    runner = worker
+    if standalone:
+        import importlib.util
+        import sys
+        spec = importlib.util.spec_from_file_location("policy_scenario_worker_standalone", worker.__file__)
+        runner = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, spec.name, runner)
+        spec.loader.exec_module(runner)
+        assert not runner.__package__
     full = snapshot()
     full["observed"]["scenario_parameters"] = mismatch_readback()
     full["sources"]["scenario_parameters"] = "live_native_scenario_parameter_readback"
@@ -50,7 +60,7 @@ def test_real_worker_seals_wrong_reset_before_first_policy_query(tmp_path, monke
     child_root.mkdir(parents=True)
     isaac = FakeIsaac(child_root / PROVIDER_RESULT_FILENAME)
     with pytest.raises(SystemExit) as exited:
-        worker._run_selected_cell(0, runtime_root=runtime_root, output_root=child_root,
+        runner._run_selected_cell(0, runtime_root=runtime_root, output_root=child_root,
             provider_output_root=provider_output, cell_runtime=_rehearsal_runtime(isaac))
     assert exited.value.code == 0 and isaac.result_sealed_at_close is True
     result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)

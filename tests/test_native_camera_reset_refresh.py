@@ -15,7 +15,7 @@ def test_reset_requests_render_after_joint_write_and_forward_without_physics(mon
     binding = fixture['policy_canary_camera_start_configuration']
     old = np.asarray(binding['native_reference']['world_from_wrist_camera_opengl'])
     target = resolved_camera_matrices(fixture, binding['source_joint_chain'], binding['joint_reset_positions_rad'])['wrist'][0]
-    source = json.loads((Path(__file__).parent/'fixtures/isaaclab_camera_reset_method.json').read_text())
+    source = json.loads((Path(__file__).parent/'fixtures/isaaclab_reset/manager_reset_method.json').read_text())
     namespace = {}
     exec(compile('from __future__ import annotations\n'+source['reset_method'], source['source_path'], 'exec'), namespace)
 

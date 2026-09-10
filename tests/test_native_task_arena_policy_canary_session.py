@@ -737,6 +737,26 @@ def test_preload_observation_gate_must_return_an_explicit_pass(tmp_path: Path) -
     assert calls["loads"] == []
 
 
+def test_native_initialization_preserves_safe_source_locations(tmp_path: Path) -> None:
+    from blueprint_pipeline.native_task_arena_runtime import NativeTaskArenaRuntimeError
+    calls = {"open": 0, "close": 0, "loads": []}
+    kwargs = _preload_gate_session_kwargs(tmp_path, calls)
+    def refuse(_inputs):
+        raise NativeTaskArenaRuntimeError([
+            "native_task_arena_camera_intrinsics_not_representable:overview",
+            "unexpected token=secret-value /private/provider/path",
+        ])
+    kwargs["open_session"] = refuse
+    result = execute_paired_session(**kwargs)
+    assert "secret-value" not in json.dumps(result)
+    assert result["candidate_policy_queried"] is False
+    trace = result["session_failure_source_trace"]
+    assert trace[-1]["function"] == "refuse"
+    assert trace[-1]["file"] == Path(__file__).name
+    assert trace[-1]["line"] > 0
+    assert "/private/provider/path" not in json.dumps(trace)
+
+
 def test_explicit_user_omission_is_diagnostic_and_cannot_bypass_strict_contract(tmp_path):
     activation = _activation()
     inputs = _runtime_inputs(tmp_path, activation)

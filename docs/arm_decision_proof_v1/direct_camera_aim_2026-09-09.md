@@ -117,3 +117,24 @@ poses every frame. Real OpenUSD tests with a deliberately stale parent
 reproduce the predecessor's divergence between a correct Fabric readback
 and a wrong USD world camera. The corrected writer requires both to agree.
 Actual native frame visibility remains the acceptance criterion.
+
+## Observed native wrist visibility, 2026-09-10
+
+The frozen `67d50c1253f573111fd4453b84429a8cf90b96e5` run on provider
+instance 50448155 retained a wrist RGB image of the open gray book. Independent
+visual review identified the same page photographs and binding seam in the
+external view. The wrist semantic AOV measured 419,398 task-object pixels
+(45.5 percent), zero robot pixels, and a centered centroid. The book is clipped
+at the top edge; full-object framing is not claimed. All three camera roles
+passed the native observation gate. Joint reset error was below 4.3e-8 radians,
+and the receipt binds the original DROID mount, USD and Fabric world readbacks,
+and the actual renderer camera and render-product paths.
+
+This establishes visibility for this setup, not an isolated causal comparison
+between the transform-writer repair and the changed arm pose. Production reuse
+preserves each admitted body-relative camera calibration, synchronizes from
+measured native robot poses, and checks rendered visibility for each new site.
+The book-specific starting joint angles are a site configuration. Neither policy
+acted: a separate setup query-budget rounding defect was refused before the
+first episode observation. Scientific outcome and qualified ranking remain
+unproven.
