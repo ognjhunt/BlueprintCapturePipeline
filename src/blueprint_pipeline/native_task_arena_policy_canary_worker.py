@@ -48,6 +48,7 @@ def _policy_camera_visibility_contract(
     snapshot: Mapping[str, Any],
     *,
     preserve_official_droid_calibration: bool,
+    require_task_support: bool = False,
 ) -> dict[str, Any]:
     """Qualify task visibility according to each camera's policy role.
 
@@ -126,6 +127,24 @@ def _policy_camera_visibility_contract(
             "render_passed": render_passed,
             "centroid_within_margin": centroid_within_margin,
         }
+        if require_task_support and role in {"external", "overview"}:
+            labels = row.get("semantic_label_pixels") if isinstance(row, Mapping) else None
+            support_pixels = labels.get("task_support") if isinstance(labels, Mapping) else None
+            support_visible = (
+                type(support_pixels) is int
+                and minimum_pixels > 0
+                and support_pixels >= minimum_pixels
+                and render_passed
+            )
+            qualifications[role].update(
+                destination_pixel_count=support_pixels,
+                minimum_destination_pixels=minimum_pixels,
+                destination_visible=support_visible,
+                passed=bool(passed and support_visible),
+            )
+            if not support_visible:
+                qualifications[role]["status"] = "destination_not_visible"
+                blockers.append(f"policy_canary_{role}_destination_visibility_failed")
     return {
         "passed": not blockers and set(rows) == expected_roles,
         "camera_visibility": {
@@ -687,6 +706,10 @@ def isaac_cell_runtime() -> CellRuntime:
             preserve_official_droid_calibration=(
                 isinstance(droid_profile, Mapping)
                 and droid_profile.get("policy_camera_roles") == ["external", "wrist"]
+            ),
+            require_task_support=(
+                bool(plan["task_spec"].get("destination_support_asset_id"))
+                or any(row.get("semantic_role") == "task_support" for row in plan["objects"])
             ),
         )
         visibility = dict(visibility_contract["camera_visibility"])

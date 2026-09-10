@@ -17,6 +17,12 @@ only the explicitly authorized control clauses are omitted. Current robot reset
 and camera calibration are rebound to the new diagnostic contract. Static camera
 framing does not establish native rendering or occlusion qualification.
 
+For a physical destination asset, the existing pre-policy camera gate now also
+requires native `task_support` semantic pixels in the external policy camera and
+overview. It uses each camera's existing minimum-pixel threshold and retains the
+counts in the gate receipt. A visible book alone cannot satisfy tray visibility.
+The wrist camera remains subject-focused at reset; no control rollout is added.
+
 During this preparation, the existing direct-policy adapter was observed to
 update the nested success contract while leaving its adjacent digest field bound
 to the old controls-required contract. The smallest fix synchronizes that digest
