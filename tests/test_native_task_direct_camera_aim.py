@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import sys
 import numpy as np
 import pytest
+from pxr import Gf, Usd, UsdGeom
 from scipy.spatial.transform import Rotation
 from blueprint_pipeline.native_task_direct_camera_aim import (
     install_direct_wrist_camera_aim, pose_matrix, target_facing_attachment,
@@ -17,9 +18,13 @@ def _install_camera_native_edges(monkeypatch):
             return self.value
     monkeypatch.setitem(sys.modules, 'warp', SimpleNamespace(
         from_numpy=lambda value, **kwargs: Array(value)))
-    monkeypatch.setitem(sys.modules, 'pxr', SimpleNamespace(Gf=SimpleNamespace(
-        Vec3d=lambda *values: values, Quatd=lambda real, imaginary: (real, imaginary))))
     return Array
+
+
+def _render_data():
+    return SimpleNamespace(spec=SimpleNamespace(
+        camera_prim_paths=['/World/Robot/Gripper/base_link/wrist_camera']),
+        render_product_paths=['/Render/TestWristProduct'])
 
 
 def _scene_view(calls=None):
@@ -27,8 +32,14 @@ def _scene_view(calls=None):
     class View:
         _use_fabric = True
         prim_paths = ['/World/Robot/Gripper/base_link/wrist_camera']
-        prims = [SimpleNamespace(GetAttribute=lambda name: SimpleNamespace(
-            Set=lambda value: (calls.append(('usd', name, value)), True)[1]))]
+        def __init__(self):
+            self.stage = Usd.Stage.CreateInMemory()
+            parent = UsdGeom.Xform.Define(self.stage, '/World/Robot/Gripper/base_link')
+            parent.AddTranslateOp().Set(Gf.Vec3d(10., 11., 12.))
+            camera = UsdGeom.Camera.Define(self.stage, self.prim_paths[0])
+            camera.AddTranslateOp().Set(Gf.Vec3d(.011, -.031, -.074))
+            camera.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(1., Gf.Vec3d(0.)))
+            self.prims = [camera.GetPrim()]
         def set_world_poses(self, positions, orientations, indices):
             calls.append('scene_write')
             self.positions, self.orientations = positions, orientations
@@ -59,7 +70,7 @@ def test_view_reads_uncached_physics_and_follows_wrist_with_fixed_mount(monkeypa
     calls = []
     robot = SimpleNamespace(data=SimpleNamespace(body_names=['base_link'], body_pose_w=old_usd,
         _root_view=SimpleNamespace(get_link_transforms=lambda: measured)))
-    camera = SimpleNamespace(_view=_scene_view(), device='cuda:0',
+    camera = SimpleNamespace(_render_data=_render_data(), _view=_scene_view(), device='cuda:0',
         cfg=SimpleNamespace(prim_path='/World/Robot/Gripper/base_link/wrist_camera',
             offset=SimpleNamespace(pos=(.011,-.031,-.074)),update_latest_camera_pose=True))
     env = SimpleNamespace()
@@ -101,7 +112,7 @@ def test_actual_environment_builder_installs_target_aim_and_records_changed_orie
     original = _ArenaBuilder.make_registered_and_return_cfg
     def native_boundary(self, *, render_mode):
         _, cfg = original(self, render_mode=render_mode)
-        camera = SimpleNamespace(_view=_scene_view(), device='cuda:0',
+        camera = SimpleNamespace(_render_data=_render_data(), _view=_scene_view(), device='cuda:0',
             cfg=SimpleNamespace(prim_path='/World/Robot/Gripper/base_link/wrist_camera',
                 offset=SimpleNamespace(pos=(.011,-.031,-.074)),update_latest_camera_pose=True))
         robot = SimpleNamespace(data=SimpleNamespace(body_names=['base_link'],
@@ -129,7 +140,7 @@ def test_aim_uses_completed_reset_and_rtx_scene_write_before_render(monkeypatch)
     target = np.array([-.4, -.2, .3])
     calls, rendered = [], []
     scene = _scene_view(calls)
-    camera = SimpleNamespace(_view=scene, device='cpu', cfg=SimpleNamespace(
+    camera = SimpleNamespace(_render_data=_render_data(), _view=scene, device='cpu', cfg=SimpleNamespace(
         prim_path='/World/Robot/Gripper/base_link/wrist_camera',
         offset=SimpleNamespace(pos=(.011,-.031,-.074)),update_latest_camera_pose=True))
     robot = SimpleNamespace(data=SimpleNamespace(body_names=['base_link'],
@@ -213,7 +224,7 @@ def test_standard_mount_follows_native_body_without_reaim_or_reset(monkeypatch):
     measured = np.array([[[0., 0., 1., 0., 0., 0., 1.]]])
     robot = SimpleNamespace(data=SimpleNamespace(body_names=['base_link'],
         _root_view=SimpleNamespace(get_link_transforms=lambda: measured)))
-    camera = SimpleNamespace(_view=scene, device='cpu', cfg=SimpleNamespace(
+    camera = SimpleNamespace(_render_data=_render_data(), _view=scene, device='cpu', cfg=SimpleNamespace(
         prim_path='/World/Robot/Gripper/base_link/wrist_camera',
         offset=SimpleNamespace(pos=tuple(offset),rot=tuple(rotation),convention='opengl'),
         update_latest_camera_pose=False))
@@ -246,7 +257,7 @@ def test_standard_builder_binds_camera_without_operator_aim(monkeypatch):
         _,cfg = original(self,render_mode=render_mode)
         scene = _scene_view()
         scene.get_local_poses = lambda: (Array([[1.,2.,3.]]), Array([[1.,0.,0.,0.]]))
-        camera = SimpleNamespace(_view=scene,device='cpu',cfg=SimpleNamespace(
+        camera = SimpleNamespace(_render_data=_render_data(), _view=scene,device='cpu',cfg=SimpleNamespace(
             prim_path='/World/Robot/Gripper/base_link/wrist_camera',update_latest_camera_pose=False))
         robot = SimpleNamespace(data=SimpleNamespace(body_names=['base_link']))
         return SimpleNamespace(unwrapped=SimpleNamespace(scene={'robot':robot,'wrist_camera':camera},
@@ -254,7 +265,7 @@ def test_standard_builder_binds_camera_without_operator_aim(monkeypatch):
     monkeypatch.setattr(_ArenaBuilder,'make_registered_and_return_cfg',native_boundary)
     built = build_native_task_arena_environment(_sealed_scene_plan())
     receipt = built.native_configuration_readback['native_wrist_camera_attachment']
-    assert receipt['render_pose_writer'] == 'fabric_frame_view_set_world_poses'
+    assert receipt['render_pose_writer'] == 'native_body_to_usd_and_fabric_world_pose'
     assert receipt['configured_mount_orientation_preserved'] is True
     assert built.native_configuration_readback['direct_wrist_camera_aim'] is None
     assert built.native_configuration_readback['cameras']['wrist']['calibration_source'] == 'resolved_scene_plan'
@@ -265,9 +276,43 @@ def test_standard_mount_refuses_invalid_authored_quaternion(monkeypatch):
     Array = _install_camera_native_edges(monkeypatch)
     view = _scene_view()
     view.get_local_poses = lambda: (Array([[0.,0.,0.]]),Array([[0.,0.,0.,0.]]))
-    camera = SimpleNamespace(_view=view,cfg=SimpleNamespace(prim_path='/World/base_link/camera'))
+    camera = SimpleNamespace(_render_data=_render_data(), _view=view,cfg=SimpleNamespace(prim_path='/World/base_link/camera'))
     robot = SimpleNamespace(data=SimpleNamespace(body_names=['base_link']))
     env = SimpleNamespace(unwrapped=SimpleNamespace(scene={'robot':robot,'wrist':camera}))
     with pytest.raises(RuntimeError,match='native_camera_attachment_local_pose_invalid'):
         install_native_wrist_camera_attachment(env=env,camera_name='wrist')
     assert camera._view is view
+
+
+def test_renderer_usd_world_pose_matches_fabric_even_with_stale_parent(monkeypatch):
+    from blueprint_pipeline.native_task_direct_camera_aim import NativeAttachedCameraView
+    Array = _install_camera_native_edges(monkeypatch)
+    scene = _scene_view()
+    measured = np.array([[[.2, -.3, .8, *Rotation.from_euler('y', .8).as_quat()]]])
+    robot = SimpleNamespace(data=SimpleNamespace(_root_view=SimpleNamespace(
+        get_link_transforms=lambda: measured)))
+    mount = pose_matrix([.011, -.031, -.074, .570, .576, -.409, -.420])
+    rendered = []
+    def render_usd():
+        # Read what a USD scene consumer sees, independently of the Fabric
+        # setter/getter fake. A correct Fabric readback alone is insufficient.
+        rendered.append(np.asarray(UsdGeom.XformCache().GetLocalToWorldTransform(scene.prims[0])).T)
+    view = NativeAttachedCameraView(scene, robot, 0, mount, 'cpu', lambda: None, render_usd)
+    for delta in ([0.,0.,0.], [.1, -.2, .05]):
+        measured[0,0,:3] += delta
+        p,q = view.get_world_poses(Array([0]))
+        expected = pose_matrix(measured[0,0])@mount
+        np.testing.assert_allclose(rendered[-1], expected, atol=1e-6)
+        np.testing.assert_allclose(pose_matrix([*p.numpy()[0],*q.numpy()[0]]), expected, atol=1e-6)
+        assert UsdGeom.Xformable(scene.prims[0]).GetResetXformStack()
+
+
+def test_camera_refuses_render_product_bound_to_another_prim(monkeypatch):
+    from blueprint_pipeline.native_task_direct_camera_aim import install_native_wrist_camera_attachment
+    _install_camera_native_edges(monkeypatch)
+    data = _render_data()
+    data.spec.camera_prim_paths = ['/World/OtherCamera']
+    camera = SimpleNamespace(_render_data=data,_view=_scene_view())
+    env = SimpleNamespace(unwrapped=SimpleNamespace(scene={'robot':object(),'wrist':camera}))
+    with pytest.raises(RuntimeError,match='native_camera_render_product_view_binding_mismatch'):
+        install_native_wrist_camera_attachment(env=env,camera_name='wrist')

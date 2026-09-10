@@ -90,3 +90,30 @@ or change the authored mount. Its receipt is separate from the explicitly
 operator-directed aim receipt. Baseline visibility predicates remain required;
 correct synchronization alone does not prove that a particular mount sees the
 task object. Both paths share the same CUDA-safe scene writer and readback.
+
+## Restored DROID mount and downward arm configuration
+
+The operator rejected further camera re-aiming and requested the original
+DROID wrist camera with the gripper pointed downward toward the book. The
+next setup removes the operator camera-aim field, preserves the exact DROID
+mount position, quaternion and intrinsics, and changes only the sealed arm
+joint reset. Its gripper forward axis is vertical down; geometric projection
+centers the book, while a peripheral sample can intersect a finger. This is
+provisional setup evidence, not rendered visibility.
+
+V18 (`7e292f7cda6657a036d89b9744adbf34e15e1dc9`) retained a nearly black
+wrist frame whose semantic AOV labels every pixel as robot. Its reported
+world camera centers the book, and the exact source joint chain matches the
+measured native body pose within 9.4e-7. Rays using the original DROID mount
+on that same arm pose are clear against the retained robot and scene meshes.
+Those observations do not establish that the intended lens pose was inside
+the housing; the earlier explanation was too strong. The rendered view and
+its reported pose still need an independently verified binding.
+
+The camera writer now authors and reads back the USD world transform as well
+as the Fabric pose. Only the camera resets its USD transform stack; its
+calibrated body-relative mount remains fixed and follows measured PhysX
+poses every frame. Real OpenUSD tests with a deliberately stale parent
+reproduce the predecessor's divergence between a correct Fabric readback
+and a wrong USD world camera. The corrected writer requires both to agree.
+Actual native frame visibility remains the acceptance criterion.
