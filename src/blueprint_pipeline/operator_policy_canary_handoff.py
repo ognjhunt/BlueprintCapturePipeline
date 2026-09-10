@@ -56,7 +56,16 @@ def host_identity() -> dict[str, Any]:
         "machine_id_sha256": "sha256:" + hashlib.sha256(machine.read_bytes()).hexdigest() if machine.is_file() else None}
 
 
-def process_identity(pid: int, *, required_tokens=(), runner=subprocess.run) -> dict[str, Any]:
+def validate_control_plane_host(intent, *, host_reader=host_identity):
+    host = host_reader()
+    if (host.get('platform') != 'Linux'
+            or host.get('machine_id_sha256') != intent.get('control_plane_machine_id_sha256')
+            or not host.get('machine_id_sha256')):
+        raise ContinuationError('continuation_control_plane_host_mismatch')
+    return host
+
+
+def process_identity(pid: int, *, required_tokens=(), required_argument_pairs=(), runner=subprocess.run) -> dict[str, Any]:
     """Record a narrow process identity while keeping raw argv out of receipts."""
     if type(pid) is not int or pid <= 0:
         raise ContinuationError("continuation_process_id_invalid")
@@ -70,6 +79,10 @@ def process_identity(pid: int, *, required_tokens=(), runner=subprocess.run) -> 
     command = rows["command"]
     if any(str(token) not in command.split() for token in required_tokens):
         raise ContinuationError("continuation_process_command_mismatch")
+    tokens = command.split()
+    for option, value in required_argument_pairs:
+        if tokens.count(option) != 1 or tokens.index(option) + 1 >= len(tokens) or tokens[tokens.index(option) + 1] != str(value):
+            raise ContinuationError("continuation_process_argument_mismatch")
     result = {"pid": pid, "started_at_local": rows["lstart"], "state": rows["stat"],
               "command_sha256": "sha256:" + hashlib.sha256(command.encode()).hexdigest(),
               "hostname": socket.gethostname(), "required_command_tokens_verified": True}
@@ -151,20 +164,44 @@ def metadata_root(intent):
     return Path(intent["terminal_delivery_intent"]["run_root"]) / "existing_run_continuation"
 
 
+def record_watchdog_process(intent, intent_path, *, process_reader=process_identity):
+    record = file_record(intent_path)
+    if read_json(record['path']) != intent:
+        raise ContinuationError('continuation_watchdog_intent_mismatch')
+    process = process_reader(os.getpid(), required_tokens=('-m', MODULE, 'watchdog'),
+                             required_argument_pairs=(('--intent', record['path']),))
+    value = seal_value({'intent_digest': intent['intent_digest'], 'intent_record': record,
+                        'process': process})
+    root = Path(intent['watchdog_root'])
+    _seal(root / 'process_adoptions' / (value['receipt_digest'].removeprefix('sha256:') + '.json'), value)
+    temporary = root / 'watchdog_process_identity.tmp'
+    temporary.write_text(json.dumps(value, sort_keys=True) + '\n')
+    temporary.replace(root / 'watchdog_process_identity.json')
+    return value
+
+
 def cloud_readiness(intent, *, inventory_reader, process_reader=process_identity,
                     host_reader=host_identity, clock=time.time, inputs_validator=None) -> dict:
     """Prove CP custody and an independently running exact-deadline watchdog."""
     validate_continuation_intent(intent, inputs_validator=inputs_validator)
     from .provider_output_range_ingestion import validate_ingestion_binding
     validate_ingestion_binding(intent["ingestion_binding"], intent["signed_get_url_file"])
-    host = host_reader()
+    host = validate_control_plane_host(intent, host_reader=host_reader)
     watchdog_path = Path(intent["watchdog_root"]) / "groot_oscar_runpod_canary_watchdog.json"
     watchdog = read_json(watchdog_path)
     started = Path(intent["watchdog_root"]) / "started_vast_instance_id.txt"
-    process = process_reader(watchdog["pid"], required_tokens=("-m", MODULE, "watchdog"))
+    adoption = read_json(Path(intent['watchdog_root']) / 'watchdog_process_identity.json')
+    intent_path = verified_record(adoption['intent_record'])
+    process = process_reader(watchdog["pid"], required_tokens=("-m", MODULE, "watchdog"),
+                             required_argument_pairs=(('--intent', str(intent_path)),))
     inventory = inventory_reader(intent)
     rows = inventory.get("resources")
     if (host.get("platform") != "Linux" or host.get("machine_id_sha256") != intent["control_plane_machine_id_sha256"]
+            or adoption.get('receipt_digest') != canonical_digest(adoption, digest_field='receipt_digest')
+            or adoption.get('intent_digest') != intent['intent_digest'] or read_json(intent_path) != intent
+            or adoption.get('process', {}).get('pid') != watchdog['pid']
+            or not process.get('process_identity_digest')
+            or adoption.get('process', {}).get('process_identity_digest') != process.get('process_identity_digest')
             or watchdog.get("status") != "armed" or watchdog.get("independent_process") is not True
             or watchdog.get("provider") != "vast" or watchdog.get("resource_name_exact") != intent["resource_name"]
             or Path(watchdog.get("watchdog_out_dir", "")) != Path(intent["watchdog_root"])
@@ -187,7 +224,7 @@ def cloud_readiness(intent, *, inventory_reader, process_reader=process_identity
         "deadline_epoch": intent["deadline_epoch"], "hard_cap_usd": intent["hard_cap_usd"],
         "scientific_commit": intent["scientific_commit"], "immutable_inputs_readable": True,
         "watchdog": file_record(snapshot), "watchdog_live_evidence_path": str(watchdog_path), "started_instance": file_record(started),
-        "watchdog_process": process, "inventory": inventory,
+        "watchdog_process": process, "watchdog_process_adoption": adoption, "inventory": inventory,
         "original_watchdog": intent["original_watchdog"], "cp_watchdog_armed_before_original_allocation": False,
         "provider_mutations_performed": 0, "raw_secret_values_recorded": False})
     meta = metadata_root(intent)

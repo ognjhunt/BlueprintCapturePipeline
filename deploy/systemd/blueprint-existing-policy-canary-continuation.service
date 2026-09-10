@@ -13,8 +13,25 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CPUQuota=200%
 ReadWritePaths=/var/lib/blueprint
 ReadOnlyPaths=/etc/blueprint/provider-secrets
+Environment=PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token
+Environment=PIPELINE_TASK_EVALUATION_RUN_WEBAPP_URL=https://tryblueprint.io/api/internal/pipeline/capture-task-evaluation-runs
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 EnvironmentFile=/etc/blueprint/existing-policy-canary-continuation.env
 Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key

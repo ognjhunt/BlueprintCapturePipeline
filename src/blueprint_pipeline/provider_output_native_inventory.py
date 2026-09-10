@@ -35,14 +35,17 @@ def _read(root, relative, maximum_json_bytes):
 
 
 def verify_native_inventory(root: Path, binding: Mapping, members: Mapping,
-                            *, maximum_json_bytes=128 * 1024**2):
+                            *, maximum_json_bytes=128 * 1024**2,
+                            maximum_result_json_bytes=256 * 1024**2):
     identity = _read(root, binding['identity_document'], maximum_json_bytes)
     if (identity.get('schema_version') != 'policy_canary_static_startup_preflight.v1'
             or identity.get('run_id') != binding['run_id']
             or identity.get('runtime_inputs_digest') != binding['runtime_inputs_digest']
             or identity.get('result_digest') != canonical_digest(identity, digest_field='result_digest')):
         raise ProviderOutputInventoryError('provider_output_native_identity_mismatch')
-    result = _read(root, binding['result_document'], maximum_json_bytes)
+    # Quick-10 retains all 20 episode receipts; the observed V27 aggregate is
+    # 190,573,875 bytes. Keep its bound separate from individual JSON evidence.
+    result = _read(root, binding['result_document'], maximum_result_json_bytes)
     if (result.get('schema_version') != 'native_task_arena_policy_canary_session_result.v1'
             or result.get('run_kind') != 'internal_policy_canary'
             or result.get('claim_ceiling') != 'diagnostic_policy_execution'

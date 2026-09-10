@@ -319,3 +319,31 @@ def test_whole_archive_read_cannot_exceed_bounded_memory(store):
     )
     with pytest.raises(ProviderOutputTransportError, match="memory_cap_exceeded"):
         reader.read()
+
+
+def test_aggregate_result_has_separate_bounded_json_budget(tmp_path):
+    from blueprint_pipeline.provider_output_native_inventory import (
+        ProviderOutputInventoryError, verify_native_inventory,
+    )
+    with zipfile.ZipFile(io.BytesIO(_zip())) as archive:
+        archive.extractall(tmp_path)
+    members = {
+        p.relative_to(tmp_path).as_posix(): {
+            "sha256": "sha256:" + hashlib.sha256(p.read_bytes()).hexdigest(),
+            "size_bytes": p.stat().st_size,
+        }
+        for p in tmp_path.rglob("*") if p.is_file()
+    }
+    binding = {
+        "run_id": "run-1", "runtime_inputs_digest": "sha256:" + "1" * 64,
+        "identity_document": "runtime/identity.json", "result_document": "runtime/result.json",
+    }
+    identity_bytes = (tmp_path / binding["identity_document"]).stat().st_size
+    result_bytes = (tmp_path / binding["result_document"]).stat().st_size
+    assert result_bytes > identity_bytes
+    result = verify_native_inventory(tmp_path, binding, members,
+        maximum_json_bytes=identity_bytes, maximum_result_json_bytes=result_bytes)
+    assert result["verified_native_file_count"] == 1
+    with pytest.raises(ProviderOutputInventoryError, match="oversize"):
+        verify_native_inventory(tmp_path, binding, members,
+            maximum_json_bytes=identity_bytes, maximum_result_json_bytes=result_bytes - 1)

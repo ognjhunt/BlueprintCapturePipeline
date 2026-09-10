@@ -22,7 +22,7 @@ from .operator_policy_canary_handoff import (
     ContinuationError, build_continuation_intent as build_continuation_intent,
     cloud_readiness, commit_owner_handoff, host_identity, metadata_root,
     process_identity, read_json, seal_value, validate_continuation_intent,
-    validate_owner_handoff, verified_record,
+    validate_owner_handoff, verified_record, validate_control_plane_host, record_watchdog_process,
 )
 from .operator_policy_canary_terminal_delivery import (
     OperatorTerminalDeliveryAdapters, file_record, finalize_operator_policy_canary, _seal,
@@ -107,6 +107,7 @@ class ExistingRunContinuationAdapters:
     delivery_adapters_factory: Callable[..., Any] = canonical_delivery_adapters
     inputs_validator: Callable[..., dict] | None = None
     clock: Callable[[], float] = time.time
+    host_reader: Callable[[], dict] = host_identity
 
 
 def _pending(intent, phases, blocker):
@@ -259,6 +260,7 @@ def _build_recovery_adapter(intent, values, native, collected, teardown, cleanup
 
 def continue_existing_run(intent, *, adapters=ExistingRunContinuationAdapters()):
     """One resumable tick. Side-effect callbacks never include create/allocate."""
+    validate_control_plane_host(intent, host_reader=adapters.host_reader)
     values = validate_continuation_intent(intent, inputs_validator=adapters.inputs_validator)
     root = Path(intent["terminal_delivery_intent"]["run_root"])
     meta = metadata_root(intent)
@@ -297,7 +299,9 @@ def continue_existing_run(intent, *, adapters=ExistingRunContinuationAdapters())
             else:
                 collected = adapters.collector(binding=intent["ingestion_binding"],
                     signed_get_url_file=intent["signed_get_url_file"], output_root=root / "provider_output",
-                    deadline_seconds=max(1, min(3600, int(intent["deadline_epoch"] - adapters.clock()))))
+                    # CPU/object-store custody has its own bounded attempt. The
+                    # independent watchdog still enforces the original GPU deadline.
+                    deadline_seconds=3600)
                 if collected.get("status") != "collected_pending_finalization":
                     if adapters.clock() >= intent["deadline_epoch"]:
                         _teardown(intent, adapters, terminal_archive_verified=False)
@@ -355,8 +359,9 @@ def continue_existing_run(intent, *, adapters=ExistingRunContinuationAdapters())
             return _pending(intent, phases, "continuation_" + phase + "_pending")
 
 
-def run_existing_watchdog(intent):
+def run_existing_watchdog(intent, *, intent_path, host_reader=host_identity):
     """Adopt an original absolute deadline; restart after expiry cannot extend it."""
+    validate_control_plane_host(intent, host_reader=host_reader)
     validate_continuation_intent(intent)
     root = Path(intent["watchdog_root"])
     root.mkdir(parents=True, exist_ok=True)
@@ -373,6 +378,7 @@ def run_existing_watchdog(intent):
         "original_watchdog": intent["original_watchdog"], "original_started_instance": intent["original_started_instance"],
         "deadline_epoch": intent["deadline_epoch"], "armed_before_original_allocation": False,
         "resource_creation_permitted": False})
+    record_watchdog_process(intent, intent_path)
     if time.time() + 60 < intent["deadline_epoch"]:
         return watchdog.run_watchdog(out_dir=root, pod_name_prefix=intent["resource_name"],
             resource_name_exact=intent["resource_name"], deadline_epoch=intent["deadline_epoch"], provider_name="vast",
@@ -411,7 +417,7 @@ def main(argv=None):
             elif args.action == "readiness":
                 result = cloud_readiness(intent, inventory_reader=live_inventory)
             elif args.action == "watchdog":
-                result = run_existing_watchdog(intent)
+                result = run_existing_watchdog(intent, intent_path=args.intent)
             else:
                 result = commit_owner_handoff(intent, read_json(args.readiness))
         if args.output:

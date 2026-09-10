@@ -25,6 +25,35 @@ def _write(path, value):
     return path
 
 
+def test_intent_preserves_remote_paths_without_resolving_author_host_symlinks(monkeypatch):
+    def forbidden_resolution(*args, **kwargs):
+        raise AssertionError('A remote control-plane path cannot resolve on the author host')
+
+    monkeypatch.setattr(Path, 'resolve', forbidden_resolution)
+    paths = {
+        name: '/var/lib/blueprint/canary/' + name
+        for name in ('run_root', 'allocator_result_path', 'official_billing_path',
+                     'provider_zero_path', 'billing_audit_root', 'native_result_path')
+    }
+    intent = terminal.operator_terminal_delivery_intent(run_id='cross-host', records={}, **paths)
+    assert {name: intent[name] for name in paths} == paths
+    assert intent['intent_digest'] == canonical_digest(intent, digest_field='intent_digest')
+
+
+@pytest.mark.parametrize('invalid', ['relative/run', '/var/../tmp/run', '/var/./run',
+                                    '//server/run', '/var/run\x00', 'C:\\run'])
+def test_intent_rejects_nonabsolute_or_traversing_control_plane_paths(invalid):
+    paths = {
+        name: '/var/lib/blueprint/canary/' + name
+        for name in ('run_root', 'allocator_result_path', 'official_billing_path',
+                     'provider_zero_path', 'billing_audit_root', 'native_result_path')
+    }
+    for name in paths:
+        with pytest.raises(terminal.OperatorTerminalDeliveryError, match='control_plane_path_invalid'):
+            terminal.operator_terminal_delivery_intent(
+                run_id='cross-host', records={}, **{**paths, name: invalid})
+
+
 def _fixture(tmp_path, monkeypatch, *, partial=False):
     from tests.test_task_evaluation_policy_canary_dispatcher import _inputs
 

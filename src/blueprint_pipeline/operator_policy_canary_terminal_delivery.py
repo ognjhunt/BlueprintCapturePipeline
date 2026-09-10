@@ -150,6 +150,16 @@ def _seal(path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
     return body
 
 
+def _control_plane_path(value: str | Path) -> str:
+    """Validate a remote POSIX path without consulting the author's filesystem."""
+    path = os.fspath(value)
+    if (not isinstance(path, str) or not path.startswith('/') or path.startswith('//')
+            or '\x00' in path or '\\' in path
+            or any(part in {'.', '..'} for part in path.split('/'))):
+        raise OperatorTerminalDeliveryError('operator_terminal_control_plane_path_invalid')
+    return path
+
+
 def operator_terminal_delivery_intent(*, run_id: str, run_root: str | Path,
         records: Mapping[str, Mapping[str, Any]], allocator_result_path: str | Path,
         official_billing_path: str | Path, provider_zero_path: str | Path,
@@ -163,12 +173,12 @@ def operator_terminal_delivery_intent(*, run_id: str, run_root: str | Path,
     A CP recovery adapter may occupy allocator_result_path, but must reference
     actual teardown/object-cleanup/native records and the same bundle/instance.
     """
-    value = {'schema_version': INTENT_SCHEMA, 'run_id': run_id, 'run_root': str(Path(run_root).resolve()),
-             'records': dict(records), 'allocator_result_path': str(Path(allocator_result_path).resolve()),
-             'official_billing_path': str(Path(official_billing_path).resolve()),
-             'provider_zero_path': str(Path(provider_zero_path).resolve()),
-             'billing_audit_root': str(Path(billing_audit_root).resolve()),
-             'native_result_path': str(Path(native_result_path).resolve()) if native_result_path is not None else None,
+    value = {'schema_version': INTENT_SCHEMA, 'run_id': run_id, 'run_root': _control_plane_path(run_root),
+             'records': dict(records), 'allocator_result_path': _control_plane_path(allocator_result_path),
+             'official_billing_path': _control_plane_path(official_billing_path),
+             'provider_zero_path': _control_plane_path(provider_zero_path),
+             'billing_audit_root': _control_plane_path(billing_audit_root),
+             'native_result_path': _control_plane_path(native_result_path) if native_result_path is not None else None,
              'artifact_locations': dict(artifact_locations or {})}
     value['intent_digest'] = canonical_digest(value, digest_field='intent_digest')
     return value

@@ -139,7 +139,6 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
         "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
         "SystemCallFilter=@system-service",
         "ReadWritePaths=/var/lib/blueprint",
-        "TasksMax=512",
         "CPUQuota=200%",
     )
     for unit in SYSTEMD_DIR.glob("*.service"):
@@ -199,10 +198,14 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
         text = unit.read_text(encoding="utf-8")
         for control in required_controls:
             assert control in text, (unit.name, control)
+        task_limit = {"blueprint-existing-policy-canary-watchdog.service": 64,
+                      "blueprint-existing-policy-canary-continuation.service": 128}.get(unit.name, 512)
+        assert f"TasksMax={task_limit}" in text, unit.name
         # Compilation uses bounded appearance-cache chunks and a tighter limit
         # so it cannot exhaust the shared control-plane host during packet build.
         memory_limit = (
-            "4G" if unit.name == "blueprint-task-evaluation-episode-compilation.service"
+            "1G" if unit.name == "blueprint-existing-policy-canary-watchdog.service"
+            else "4G" if unit.name == "blueprint-task-evaluation-episode-compilation.service"
             else "8G"
         )
         assert f"MemoryMax={memory_limit}" in text, unit.name

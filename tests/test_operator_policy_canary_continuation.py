@@ -22,7 +22,7 @@ def write(path, value):
 
 
 @pytest.fixture
-def fixture(tmp_path, store):
+def fixture(tmp_path, store):  # noqa: F811 - imported shared pytest fixture
     root = tmp_path / "cloud"
     root.mkdir()
     binding, url = _binding(tmp_path, store)
@@ -60,13 +60,18 @@ def fixture(tmp_path, store):
     write(watchroot / coordinator.watchdog.EVIDENCE_NAME,
         json.loads(old.read_text()) | {"pid": 999999, "watchdog_out_dir": str(watchroot)})
     (watchroot / coordinator.watchdog.VAST_STARTED_INSTANCE_ID_NAME).write_text("50518293\n")
+    intent_path = write(root / 'continuation_intent.json', intent)
+    def host_reader():
+        return {'platform': 'Linux', 'machine_id_sha256': intent['control_plane_machine_id_sha256']}
+    cloud_process = owner | {'pid': 999999, 'hostname': 'cloud', 'state': 'S'}
+    handoff.record_watchdog_process(intent, intent_path, process_reader=lambda *args, **kwargs: cloud_process)
     events = []
     clock = [1000.]
     inventory = {"status": "observed", "api_confirmed": True, "live_resource_count": 1,
                  "resources": [{"instance_id": "50518293", "name": name}]}
     readiness = handoff.cloud_readiness(intent, inventory_reader=lambda _: inventory,
         inputs_validator=lambda _: values, clock=lambda: clock[0],
-        host_reader=lambda: {"platform": "Linux", "machine_id_sha256": intent["control_plane_machine_id_sha256"]},
+        host_reader=host_reader,
         process_reader=lambda pid, **kwargs: owner | {"pid": pid, "hostname": "cloud", "state": "S"})
 
     def commit():
@@ -110,9 +115,10 @@ def fixture(tmp_path, store):
 
     adapters = coordinator.ExistingRunContinuationAdapters(collector=collect, terminator=terminate, cleanup=cleanup,
         provider_zero_reader=zero, finalizer=finalize, delivery_adapters_factory=lambda _: None,
-        inputs_validator=lambda _: values, clock=lambda: clock[0])
+        inputs_validator=lambda _: values, clock=lambda: clock[0], host_reader=host_reader)
     return SimpleNamespace(root=root, intent=intent, values=values, adapters=adapters, commit=commit,
-                           events=events, clock=clock, owner=owner, readiness=readiness)
+                           events=events, clock=clock, owner=owner, readiness=readiness,
+                           cloud_process=cloud_process, inventory=inventory, intent_path=intent_path)
 
 
 def test_no_collection_or_mutation_before_explicit_owner_handoff(fixture):
@@ -225,3 +231,54 @@ def test_readiness_cannot_be_claimed_on_the_owners_machine(fixture):
         handoff.cloud_readiness(fixture.intent, inventory_reader=lambda _: {},
             inputs_validator=lambda _: fixture.values, host_reader=lambda: {"platform": "Darwin"},
             process_reader=lambda *args, **kwargs: fixture.owner, clock=lambda: 1000.)
+
+
+def test_collection_after_gpu_deadline_has_independent_cpu_budget(fixture):
+    fixture.commit()
+    fixture.clock[0] = fixture.intent['deadline_epoch'] + 100
+    collect = fixture.adapters.collector
+    def bounded_collection(**kwargs):
+        assert fixture.events == ['teardown']
+        assert kwargs['deadline_seconds'] == 3600
+        return collect(**kwargs)
+    result = coordinator.continue_existing_run(
+        fixture.intent, adapters=replace(fixture.adapters, collector=bounded_collection))
+    assert result['status'] == 'completed', result
+    assert fixture.events == ['teardown', 'collect', 'cleanup', 'zero', 'finalize']
+
+
+def test_every_continuation_tick_rejects_copied_handoff_on_another_host(fixture):
+    fixture.commit()
+    def wrong_host():
+        return {'platform': 'Linux', 'machine_id_sha256': 'sha256:' + '0' * 64}
+    with pytest.raises(handoff.ContinuationError, match='control_plane_host_mismatch'):
+        coordinator.continue_existing_run(fixture.intent, adapters=replace(fixture.adapters, host_reader=wrong_host))
+    assert fixture.events == []
+    with pytest.raises(handoff.ContinuationError, match='control_plane_host_mismatch'):
+        coordinator.run_existing_watchdog(fixture.intent, intent_path=fixture.intent_path, host_reader=wrong_host)
+    assert fixture.events == []
+
+
+def test_readiness_rejects_reused_watchdog_pid_and_checks_exact_intent_argument(fixture):
+    observed = []
+    def process_reader(pid, **kwargs):
+        observed.append(kwargs['required_argument_pairs'])
+        return fixture.cloud_process | {'process_identity_digest': 'sha256:' + '0' * 64,
+                                         'started_at_local': 'different process birth'}
+    with pytest.raises(handoff.ContinuationError, match='cloud_readiness_unproven'):
+        handoff.cloud_readiness(fixture.intent, inventory_reader=lambda _: fixture.inventory,
+            process_reader=process_reader, host_reader=fixture.adapters.host_reader,
+            inputs_validator=lambda _: fixture.values, clock=lambda: 1000.)
+    assert observed == [(('--intent', str(fixture.intent_path.resolve())),)]
+
+
+@pytest.mark.parametrize('command', [
+    'python -m module watchdog --intent /wrong/intent.json /exact/intent.json',
+    'python -m module watchdog --intent /exact/intent.json --intent /wrong/intent.json',
+])
+def test_process_identity_rejects_wrong_or_duplicated_intent_option(command):
+    def runner(argv, **kwargs):
+        return SimpleNamespace(returncode=0, stdout={
+            'lstart=': 'start', 'stat=': 'S', 'command=': command}[argv[-1]])
+    with pytest.raises(handoff.ContinuationError, match='process_argument_mismatch'):
+        handoff.process_identity(42, required_argument_pairs=(('--intent', '/exact/intent.json'),), runner=runner)
