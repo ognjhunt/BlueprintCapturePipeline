@@ -139,16 +139,46 @@ def _native_usd_attribute(attribute: Any) -> Any:
     from pxr import Usd
 
     value = attribute.Get()
+    name, usd_type = attribute.GetName(), str(attribute.GetTypeName())
+    source = attribute.GetResolveInfo().GetSource()
     # UsdPhysicsMassAPI defines this exact nonnumeric fallback. Retain the
     # loaded USD configuration explicitly; it is not a measured center of mass.
-    # Authored nonfinite values and every other nonfinite measurement still fail.
-    if (attribute.GetName() == "physics:centerOfMass"
-            and str(attribute.GetTypeName()) == "point3f"
-            and attribute.GetResolveInfo().GetSource() == Usd.ResolveInfoSourceFallback
+    # This COM exception remains fallback-only; an authored nonfinite COM fails.
+    if (name == "physics:centerOfMass" and usd_type == "point3f"
+            and source == Usd.ResolveInfoSourceFallback
             and tuple(value) == (-math.inf, -math.inf, -math.inf)):
         return {"source": "usd_schema_fallback", "usd_type": "point3f",
                 "value_tokens": ["-inf", "-inf", "-inf"], "measured_numeric_value": False}
-    return _native(value)
+    # Exact configuration sentinels in installed PhysX 110.1.13's schema.
+    # These are solver settings, never measured infinite distances/velocities.
+    # An authored setting stays distinguishable from the schema fallback.
+    sentinels = {
+        "physxScene:maxBiasCoefficient": ("PhysxSceneAPI", math.inf, "unbounded_solver_bias_limit"),
+        "physxCollision:contactOffset": ("PhysxCollisionAPI", -math.inf, "simulation_selected_contact_offset"),
+        "physxCollision:restOffset": ("PhysxCollisionAPI", -math.inf, "simulation_selected_rest_offset"),
+    }
+    declared = sentinels.get(name)
+    if (declared is not None and usd_type == "float" and value == declared[1]
+            and source in (Usd.ResolveInfoSourceFallback, Usd.ResolveInfoSourceDefault)
+            and attribute.GetPrim().HasAPI(declared[0])):
+        return {"source": "usd_schema_fallback" if source == Usd.ResolveInfoSourceFallback else "usd_authored_configuration",
+                "schema_identifier": declared[0], "usd_type": usd_type,
+                "value_tokens": ["inf" if declared[1] > 0 else "-inf"],
+                "configuration_semantics": declared[2], "measured_numeric_value": False}
+    try:
+        return _native(value)
+    except (TypeError, ValueError) as exc:
+        # Retain the failing attribute's identity, never its value or an SDK
+        # exception message that could include data. Existing receipts are not rewritten.
+        raise _NativeUsdAttributeError(attribute, source=source, error_type=type(exc).__name__) from exc
+
+
+class _NativeUsdAttributeError(ValueError):
+    def __init__(self, attribute: Any, *, source: Any, error_type: str):
+        self.error_type = error_type
+        self.detail = (f"usd_attribute_unreadable:{attribute.GetPath()}:"
+                       f"usd_type={attribute.GetTypeName()}:source={source}:error={error_type}")
+        super().__init__(self.detail)
 
 
 def read_native_reset_channels(built: Any, episode_environment: Any) -> dict[str, Any]:
@@ -167,7 +197,9 @@ def read_native_reset_channels(built: Any, episode_environment: Any) -> dict[str
             observed[name] = _json(reader())
             sources[name] = source
         except (AttributeError, KeyError, TypeError, ValueError, IndexError, ImportError, RuntimeError) as exc:
-            gaps.append(name + ":" + type(exc).__name__)
+            gaps.append(name + ":" + (exc.error_type if isinstance(exc, _NativeUsdAttributeError) else type(exc).__name__))
+            if isinstance(exc, _NativeUsdAttributeError):
+                gaps.append(name + ":" + exc.detail)
 
     def robot():
         data = scene["robot"].data

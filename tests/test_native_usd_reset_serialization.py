@@ -58,7 +58,7 @@ def test_only_exact_unauthored_usd_center_of_mass_fallback_is_retained_as_nonnum
         _native_usd_attribute(attribute)
 
 
-def test_real_usd_stage_retains_all_reset_channels_and_detects_changed_light(monkeypatch):
+def _native_usd_fixture(monkeypatch):
     stage = Usd.Stage.CreateInMemory()
     physics = UsdPhysics.Scene.Define(stage, "/World/physics")
     physics.CreateGravityDirectionAttr(Gf.Vec3f(0, 0, -1))
@@ -104,12 +104,17 @@ def test_real_usd_stage_retains_all_reset_channels_and_detects_changed_light(mon
         contact_sensor_names={"support": ["contact"]})
     episode = NS(read_control_observation_metadata=lambda: {
         "calibrations": {"external": {"resolution": [64, 32]}, "wrist": {"resolution": [64, 32]}}})
+    return NS(stage=stage, built=built, episode=episode, points=points, light=light)
+
+
+def test_real_usd_stage_retains_all_reset_channels_and_detects_changed_light(monkeypatch):
+    fixture = _native_usd_fixture(monkeypatch)
 
     def read(candidate):
         return seal_reset_readback(binding={"candidate_id": candidate, "cell_id": "anchor", "seed": 31,
             "task_spec_digest": "sha256:" + "1" * 64,
             "resolved_scenario_digest": "sha256:" + "2" * 64},
-            **read_native_reset_channels(built, episode))
+            **read_native_reset_channels(fixture.built, fixture.episode))
 
     left = read("pi05_droid")
     assert left["complete"] is True and left["gaps"] == []
@@ -117,13 +122,13 @@ def test_real_usd_stage_retains_all_reset_channels_and_detects_changed_light(mon
     assert observed["physics"]["scene_attributes"]["/World/physics"]["physics:gravityDirection"] == [0.0, 0.0, -1.0]
     assert observed["scene_assets"]["task_object"]["world_transform"][3][:3] == [1.2, -0.4, 0.1]
     assert observed["lighting"]["/World/key_light"]["inputs"]["inputs:color"] == [1.0, 0.5, 0.25]
-    assert observed["colliders"]["/World/envs/env_0/room"]["geometry_attribute_digests"]["points"] == canonical_digest({"value": points})
+    assert observed["colliders"]["/World/envs/env_0/room"]["geometry_attribute_digests"]["points"] == canonical_digest({"value": fixture.points})
     properties = observed["colliders"]["/World/envs/env_0/task_object"]["properties"]
     assert properties["physics:centerOfMass"]["measured_numeric_value"] is False
     assert properties["physics:principalAxes"] == {"real": 0.0, "imaginary": [0.0, 0.0, 0.0]}
     assert compare_reset_readbacks(left, read("groot_n17_droid"))["status"] == "matched"
 
-    light.GetIntensityAttr().Set(1001.0)
+    fixture.light.GetIntensityAttr().Set(1001.0)
     parity = compare_reset_readbacks(left, read("groot_n17_droid"))
     assert parity["status"] == "mismatch"
     assert parity["comparison_eligible"] is False
