@@ -38,7 +38,9 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 )
 
 
-ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS = 900
+# Includes native renderer startup and both complete 675-action candidates.
+# The independent allocation watchdog remains the total-session hard stop.
+ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS = 2700
 DROID_PARITY_MINIMUM_APPROACH_M = 0.05
 
 
@@ -932,6 +934,11 @@ def _write_episode_failure_gap(
     progress = progress if isinstance(progress, Mapping) else {}
     first_observation_retained = progress.get("first_observation_retained") is True
     candidate_policy_queried = progress.get("candidate_policy_queried") is True
+    query_attempted = candidate_policy_queried or progress.get("candidate_policy_query_attempted") is True
+    query_attempt = {
+        "candidate_policy_query_attempted": query_attempted,
+        "policy_response_status": "received" if candidate_policy_queried else "unproven" if query_attempted else "not_attempted",
+    }
     candidate_action_returned = progress.get("candidate_action_returned") is True
     action_applied = progress.get("candidate_action_applied") is True
     violations = [
@@ -1044,14 +1051,16 @@ def _write_episode_failure_gap(
             role="review_video",
             role_match=lambda name: "video" in name,
         )
-    if candidate_policy_queried:
+    if query_attempted:
         evidence_artifacts["policy_query_receipt"] = _write_episode_json_artifact(
             output_root,
             episode_id=episode_id,
             role="policy_query_receipt",
             value={
-                "candidate_policy_queried": True,
+                **query_attempt,
+                "candidate_policy_queried": candidate_policy_queried,
                 "candidate_action_returned": candidate_action_returned,
+                "policy_request_artifacts": progress.get("policy_request_artifacts") or [],
                 "policy_queries": raw_queries,
             },
         )
@@ -1088,6 +1097,7 @@ def _write_episode_failure_gap(
             }
         ),
         "candidate_policy_queried": candidate_policy_queried,
+        **query_attempt,
         "candidate_action_returned": candidate_action_returned,
         "candidate_action_shape_validated": (
             progress.get("candidate_action_shape_validated") is True
@@ -1125,6 +1135,7 @@ def _write_episode_failure_gap(
         ),
         "evidence_artifacts": evidence_artifacts,
         "episode": {
+            **query_attempt,
             "episode_id": episode_id,
             "policy_request_artifacts": progress.get("policy_request_artifacts") or [],
             "scientific_reset": progress.get("scientific_reset"),
@@ -1529,14 +1540,43 @@ def _run_isolated_cell_processes(
     for index in range(len(inputs["cells"])):
         child_root = output_root / "cell_runs" / f"{index:02d}"
         child_root.mkdir(parents=True, exist_ok=False)
-        exit_code = int(
-            spawn(
-                index=index,
-                runtime_root=runtime,
-                output_root=output_root,
-                child_root=child_root,
+        try:
+            exit_code = int(
+                spawn(
+                    index=index,
+                    runtime_root=runtime,
+                    output_root=output_root,
+                    child_root=child_root,
+                )
             )
-        )
+        except subprocess.TimeoutExpired:
+            from blueprint_pipeline.policy_canary_interrupted_cell_recovery import recover_interrupted_cell_result
+
+            child = recover_interrupted_cell_result(
+                runtime_root=runtime, child_root=child_root,
+                selected_cell_index=index,
+                reason="policy_canary_isolated_cell_process_timeout",
+                timeout_seconds=ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS,
+            )
+            result = {
+                "schema_version": "native_task_arena_policy_canary_session_result.v1",
+                "status": "blocked", "run_kind": "internal_policy_canary",
+                "claim_ceiling": "diagnostic_policy_execution",
+                "task_success_contract": inputs["task_success_contract"],
+                "task_success_contract_digest": inputs["task_success_contract_digest"],
+                "episodes": [], "artifact_inventory": [],
+                "candidate_policy_queried": child.get("candidate_policy_queried") is True,
+                "candidate_policy_query_attempted": any(
+                    row.get("candidate_policy_query_attempted") is True
+                    for row in child.get("episodes", [])
+                ),
+                "blockers": ["policy_canary_isolated_cell_process_timeout"],
+                "interrupted_cell_index": index,
+                "interrupted_child_result_digest": child["result_digest"],
+            }
+            result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+            _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
+            return 1
         child_result_path = child_root / PROVIDER_RESULT_FILENAME
         if not child_result_path.is_file():
             raise RuntimeError(

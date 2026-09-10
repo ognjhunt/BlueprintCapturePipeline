@@ -15,6 +15,7 @@ from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import (
 @pytest.mark.parametrize("phase,observed,queried,delivered", [
     ("episode_started", False, False, False),
     ("first_observation", True, False, False),
+    ("policy_query_started", True, False, False),
     ("policy_response_received", True, True, False),
     ("episode_running", True, True, True),
     ("episode_media_sealed", True, True, True),
@@ -55,6 +56,12 @@ def test_real_episode_interruption_preserves_reached_truth_and_other_candidate(
     assert len(gaps) == 1
     evidence = json.loads(gaps[0].read_text())
     assert evidence["first_observation_retained"] is observed
+    attempted = queried or phase == "policy_query_started"
+    assert evidence["candidate_policy_query_attempted"] is attempted
+    assert evidence["policy_response_status"] == (
+        "received" if queried else "unproven" if attempted else "not_attempted"
+    )
+    assert ("policy_query_receipt" in evidence["evidence_artifacts"]) is attempted
     assert evidence["episode"]["score"]["status"] == "not_scored"
     assert evidence["episode_failure_stage"] == ("after_first_observation" if observed else "before_first_observation")
     if not observed:
