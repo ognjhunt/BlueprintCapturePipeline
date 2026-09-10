@@ -101,11 +101,18 @@ class SandboxedAssetRunner:
                           if privileged else ['--unshare-all'])
             command = [self.launcher, *namespaces, '--die-with-parent',
                        '--new-session', '--proc', '/proc', '--dev', '/dev',
-                       '--tmpfs', '/tmp']
-            for path in ['/usr', '/bin', '/lib', '/lib64', '/etc/fonts',
-                         '/etc/ld.so.cache', '/etc/localtime']:
-                if Path(path).exists():
-                    command += ['--ro-bind', path, path]
+                       '--perms', '0755', '--tmpfs', '/tmp']
+            system_paths = [Path(path) for path in ['/usr', '/bin', '/lib', '/lib64',
+                '/etc/fonts', '/etc/ld.so.cache', '/etc/localtime'] if Path(path).exists()]
+            # Deep bind targets otherwise acquire root-owned 0700 ancestors.
+            # Create traversable EMPTY namespace directories before mounting
+            # anything. This never chmods or exposes host ancestor contents.
+            parents = {parent for target in (*system_paths, *roots, self.write_root)
+                       for parent in target.parents if str(parent) not in {'/', '/tmp', '/proc', '/dev'}}
+            for parent in sorted(parents, key=lambda value: (len(value.parts), str(value))):
+                command += ['--perms', '0755', '--dir', str(parent)]
+            for path in system_paths:
+                command += ['--ro-bind', str(path), str(path)]
             for root in dict.fromkeys(roots):
                 command += ['--ro-bind', str(root), str(root)]
             command += ['--bind', str(self.write_root), str(self.write_root),

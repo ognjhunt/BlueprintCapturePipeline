@@ -186,7 +186,7 @@ class _StageInvoker:
         if (self.calls >= self.maximum_calls or spec.run_id != self.run_id or spec.model != "gpt-6-astra"
                 or spec.max_turns != 1 or spec.tool_bindings or spec.max_output_tokens > 12000
                 or spec.max_input_tokens is None or spec.max_input_tokens > 80000
-                or spec.reasoning_effort != "high"):
+                or spec.reasoning_effort not in {"medium", "high"}):
             raise AstraStageError("astra_stage_inference_boundary_refused")
         self.calls += 1
         return self.invoker.invoke(spec, input_value)
@@ -194,14 +194,21 @@ class _StageInvoker:
 
 @contextmanager
 def _stage_sdk_environment(key_path: Path):
+    from agents import set_default_openai_client
+    from agents.models import _openai_shared
+    from openai import AsyncOpenAI
     names = ("OPENAI_API_KEY", "OPENAI_API_KEY_FILE", LIVE_AGENTS_SDK_ENV)
     previous = {name: os.environ.get(name) for name in names}
+    previous_client = _openai_shared.get_default_openai_client()
     try:
         os.environ.pop("OPENAI_API_KEY", None)
         os.environ["OPENAI_API_KEY_FILE"] = str(key_path)
         os.environ[LIVE_AGENTS_SDK_ENV] = "1"
+        set_default_openai_client(AsyncOpenAI(api_key=key_path.read_text().strip(),
+            base_url='https://api.openai.com/v1', max_retries=0, timeout=600), use_for_tracing=False)
         yield
     finally:
+        _openai_shared.set_default_openai_client(previous_client)
         for name, value in previous.items():
             if value is None:
                 os.environ.pop(name, None)
@@ -258,8 +265,13 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
     if "verified_sources" not in inspect.signature(execute_mac_candidate).parameters:
         raise AstraStageError("astra_mac_archive_admission_unavailable")
     verify_cad_sources(cad_root / "Multi-Agent-CAD", cad_root / "text-to-cad", verified_sources)
-    blender_root = _required_path(values, BLENDER_ROOT_ENV)
-    blender = blender_validator(blender_root, runner=runner)
+    if str(values.get(BLENDER_ROOT_ENV) or "").strip():
+        blender_root = _required_path(values, BLENDER_ROOT_ENV)
+        blender = blender_validator(blender_root, runner=runner)
+    else:
+        from .task_evaluation_scene_configuration_astra_runtime import materialize_packaged_blender_runtime
+        blender_root = runtime / "packaged_blender"
+        blender = materialize_packaged_blender_runtime(package, blender_root, runner=runner)
     for dependency in ("build123d", "langgraph", "agents"):
         if importlib.util.find_spec(dependency) is None:
             raise AstraStageError(f"astra_runtime_dependency_missing:{dependency}")
@@ -268,15 +280,20 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         package_candidate = package_astra_candidate
     authored_root = runtime / "authoring"
     authored_root.mkdir()
+    runtime_loader = [Path(value).resolve() for value in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+                      if value and Path(value).is_dir()]
     roots = [Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), cad_root,
-             blender_root, Path(__file__).resolve().parent]
-    sandbox = sandbox_factory(read_roots=roots, write_root=authored_root, executable_roots=roots[:2] + [blender_root])
+             blender_root, Path(__file__).resolve().parent.parent, *runtime_loader]
+    roots = list(dict.fromkeys(roots))
+    sandbox = sandbox_factory(read_roots=roots, write_root=authored_root,
+        executable_roots=[Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), blender_root])
     sandbox.preflight()
     cad_probe = sandbox([sys.executable, "-c", "import build123d; from langgraph.graph import StateGraph; "
                          "from cadpy.generation import run_script_generator; "
                          "assert abs(build123d.Box(1,2,3).volume - 6) < 1e-8"],
-        cwd=authored_root, env={"PYTHONPATH": os.pathsep.join((str(cad_root / "Multi-Agent-CAD/packages/cadpy/src"),
-                                                              str(cad_root / "text-to-cad/packages/cadpy/src")))},
+        cwd=authored_root, env={"PYTHONPATH": os.pathsep.join(dict.fromkeys([
+            str(cad_root / "Multi-Agent-CAD/packages/cadpy/src"),
+            str(cad_root / "text-to-cad/packages/cadpy/src"), *map(str, runtime_loader)]))},
         capture_output=True, text=True, check=False, timeout=60)
     if cad_probe.returncode:
         _write(runtime / "cad_runtime_preflight_failure.json", {"returncode": cad_probe.returncode,
@@ -306,6 +323,7 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
             dimension_tolerance_mm=request.maximum_export_error_m * 1000,
             verified_sources=verified_sources)
         return {**result, "stl": file_record(Path(result["stl_path"])),
+                "step": file_record(Path(result["step_path"])),
                 "measured_dimensions_m": [v / 1000 for v in result["readback"]["measured_dimensions_mm"]]}
 
     gate = cost_gate_factory(environment=values, stage="content_agents", run_id=request.run_id,

@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 import hashlib
 import json
+import os
 from pathlib import Path
 import stat
 from types import SimpleNamespace
@@ -85,7 +86,7 @@ def fake_graph(monkeypatch, tmp_path):
     skill.write_text("# Fixture CAD instructions")
     nodes = SimpleNamespace()
     graph = SimpleNamespace(get_default_initial_state=lambda: {})
-    seen = {}
+    seen = {"nodes": nodes}
 
     def planner(state):
         nodes._llm_client().create(messages=[{"role": "user", "content": state["user_request"]}])
@@ -100,6 +101,8 @@ def fake_graph(monkeypatch, tmp_path):
         root = Path.cwd()
         nodes.subprocess.run(["python", "candidate.py"], env={"SECRET": "must disappear"},
                              cwd="/unsafe", timeout=999)
+        if seen.get("exercise_fallback_cli"):
+            nodes.subprocess.run(["python", str(root / "temp_design_0.py")], cwd=str(root))
         for name in ("candidate.step", "candidate.stl", "candidate.py"):
             (root / name).write_text("candidate")
         return {"current_step_path": str(root / "candidate.step"),
@@ -121,7 +124,7 @@ def fake_graph(monkeypatch, tmp_path):
     def invoke(state, config):
         assert graph._MAX_SELF_RETRIES == 1 and config["recursion_limit"] == 8
         assert nodes._CFG_MAX_EXEC_RETRIES == 0
-        assert nodes._node_python_coder_deterministic() is None
+        assert callable(nodes._node_python_coder_deterministic)
         assert nodes._optimize_print_orientation(Path("same.stl"))[0] == Path("same.stl")
         for name in ("OpenAI", "_fill_unsupported_with_aider", "generate_initial_solution", "_run_direct_repair_fallback"):
             with pytest.raises(runtime.AstraCADRuntimeBlocked, match="bypass_denied"):
@@ -163,6 +166,21 @@ def test_graph_routes_models_and_execution_through_bounded_supplied_adapters(tmp
     assert runner.calls[0][1]["timeout"] == 120
     assert (root / "repair-2-before.py").is_file()
     assert json.loads((root / "parameters.json").read_text())["expected_dimensions_mm"][0] == 12.34567
+
+
+def test_sealed_python_loader_survives_checkmesh_and_cad_cli_subprocesses(tmp_path, fake_graph, monkeypatch):
+    loader = tmp_path / "sealed_python_runtime"
+    loader.mkdir()
+    monkeypatch.setenv("PYTHONPATH", str(loader))
+    fake_graph["exercise_fallback_cli"] = True
+    runner = FakeRunner()
+    runtime.execute_mac_candidate("box", tmp_path / "out", tmp_path / "mac", tmp_path / "cad", FakeInvoker(),
+        expected_dimensions_mm=(12.34567, 20, 30), subprocess_runner=runner)
+    assert len(runner.calls) == 2
+    assert str(loader) in runner.calls[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
+    assert "skills/cad/scripts/step" in runner.calls[1][0][1]
+    assert str(loader) in runner.calls[1][1]["env"]["PYTHONPATH"].split(os.pathsep)
+    assert set(runner.calls[1][1]["env"]) == {"PYTHONPATH"}
 
 
 def test_step_readback_rejects_rounded_dimensions(tmp_path):
@@ -334,3 +352,138 @@ def test_source_change_after_graph_cannot_leave_a_passing_receipt(tmp_path, fake
     receipt = json.loads((output / "candidate-receipt.json").read_text())
     assert receipt["passed"] is False and receipt["source_unchanged_after"] is False
     assert len(calls) == 2
+
+
+def test_adoption_requires_matching_completed_sdk_output_and_exact_parameters(tmp_path):
+    from pydantic import BaseModel
+
+    class Brief(BaseModel):
+        part_name: str
+        user_request_raw: str
+
+    class Plan(BaseModel):
+        width: float
+
+    source = tmp_path / 'prior'
+    source.mkdir()
+    budget = tmp_path / 'budget'
+    completions = budget / 'inference_reservations/completed'
+    completions.mkdir(parents=True)
+    parameters = {'brief': 'exact 12.34567 mm', 'expected_dimensions_mm': [12.34567, 20, 30],
+                  'run_id': 'same-global-run', 'object_label': 'book'}
+    runtime._save(source / 'parameters.json', parameters)
+    for index, (node, field, output) in enumerate((
+        ('node_spec_planner', 'cad_brief', {'part_name': 'book', 'user_request_raw': 'book'}),
+        ('node_geometric_architect', 'architect_plan', {'width': 12.34567}),
+    )):
+        raw = json.dumps(output)
+        (source / f'invocation-{index:02d}-output.txt').write_text(raw)
+        retained = dict(output)
+        if index == 0:
+            retained['user_request_raw'] = parameters['brief']
+        runtime._save(source / f'node-{node}.json', {field: retained})
+        completion = {'run_id': parameters['run_id'], 'model': 'gpt-6-astra', 'provider': 'openai',
+                      'capability': 'astra_cad_candidate:book',
+                      'structured_output_digest': canonical_digest({'content': raw})}
+        completion['inference_completion_digest'] = canonical_digest(completion, digest_field='inference_completion_digest')
+        runtime._save(completions / f'{index}.json', completion)
+    nodes = SimpleNamespace(CADBrief=Brief, ArchitectPlan=Plan)
+    result, receipt = runtime._adopt_completed_phases(source, budget, parameters, nodes)
+    assert result['node_spec_planner']['cad_brief'].user_request_raw == parameters['brief']
+    assert len(receipt['phases']) == 2
+    with pytest.raises(runtime.AstraCADRuntimeBlocked, match='parameters_mismatch'):
+        runtime._adopt_completed_phases(source, budget, {**parameters, 'brief': 'changed'}, nodes)
+    (source / 'invocation-01-output.txt').write_text('{"width":12.35}')
+    with pytest.raises(runtime.AstraCADRuntimeBlocked, match='missing_sdk_completion'):
+        runtime._adopt_completed_phases(source, budget, parameters, nodes)
+
+
+def test_compact_coder_prompt_preserves_curved_geometry_and_no_duplicate_brief():
+    prompt = runtime._compact_coder_prompt(plan_json=json.dumps({'radius': None, 'control_points': [],
+        'notes': 'degree-five Bezier, no overshoot', 'width': 12.34567}), previous_feedback='',
+        user_request='giant duplicated brief', step_path='/scratch/model.step', stl_path='/scratch/model.stl')
+    result = json.loads(prompt)
+    assert result['architect_plan'] == {'notes': 'degree-five Bezier, no overshoot', 'width': 12.34567}
+    assert result['step_path'] == '/scratch/model.step'
+    assert 'giant duplicated brief' not in prompt
+
+
+def test_step_readback_rejects_disconnected_solids_even_with_exact_envelope(tmp_path):
+    build123d = pytest.importorskip('build123d')
+    shape = build123d.Compound(children=[build123d.Box(1, 1, 1),
+        build123d.Pos(2, 0, 0) * build123d.Box(1, 1, 1)])
+    path = tmp_path / 'disconnected.step'
+    build123d.export_step(shape, str(path))
+    result = runtime._read_step(path, (3, 1, 1), 0.01)
+    assert result['solid_count'] == 2 and result['valid'] and not result['passed']
+
+
+def test_adopted_coder_uses_no_invoker_and_retains_pending_raw_program(tmp_path):
+    invoker = FakeInvoker(fail=True)
+    bridge = runtime._SDKChatBridge(invoker, tmp_path, 'exact', 'run', 4000, 512, 1)
+    raw = 'from build123d import *\ndef gen_step():\n    return Box(1,2,3)\n'
+    bridge.adopted_coder_output = raw
+    for _ in range(2):
+        response = bridge.create(messages=[{'role': 'system', 'content': runtime._CODER_SYSTEM_PROMPT}])
+        assert response.choices[0].message.content == raw
+        assert bridge.pending_coder_output == raw
+    assert invoker.calls == [] and bridge.calls == []
+
+
+def test_upstream_shim_is_retained_but_raw_coder_source_runs_via_skill(tmp_path, fake_graph):
+    nodes = fake_graph['nodes']
+    raw = '# complete candidate\nx = 1\n'
+
+    def coder(state):
+        nodes._llm_client().create(messages=[{'role': 'system', 'content': runtime._CODER_SYSTEM_PROMPT}])
+        root = Path.cwd()
+        path = root / 'temp_design_0.py'
+        path.write_text('# destructive shim\n' + raw)
+        nodes.subprocess.run(['/python', str(path)], capture_output=True)
+        assert path.read_text() == raw
+        assert path.with_suffix('.upstream-compat.py').read_text() == '# destructive shim\n' + raw
+        (root / 'candidate.py').write_text(raw)
+        for name in ('temp_output_0.step', 'temp_output_0.stl'):
+            (root / name).write_text('fixture')
+        return {'current_step_path': str(root / 'temp_output_0.step'),
+                'current_stl_path': str(root / 'temp_output_0.stl')}
+
+    nodes.node_python_coder = coder
+    runner = FakeRunner()
+    result = runtime.execute_mac_candidate('box', tmp_path / 'out', tmp_path / 'mac', tmp_path / 'cad',
+        FakeInvoker(), expected_dimensions_mm=(12.34567,20,30), subprocess_runner=runner, repair_budget=0)
+    assert result['passed']
+    argv = runner.calls[0][0]
+    assert str(tmp_path / 'cad/skills/cad/scripts/step') == argv[1]
+    assert '--output' in argv and '--stl' in argv
+
+
+def test_coder_adoption_binds_completed_output_to_original_budgeted_input(tmp_path):
+    source = tmp_path / 'prior'
+    source.mkdir()
+    budget = tmp_path / 'budget/inference_reservations'
+    (budget / 'completed').mkdir(parents=True)
+    (budget / 'reserved').mkdir()
+    params = {'brief': 'exact original brief', 'expected_dimensions_mm': [1,2,3],
+              'run_id': 'global-run', 'object_label': 'book'}
+    request = {'object_label': 'book', 'immutable_original_brief': params['brief'],
+               'upstream_messages': [{'role': 'system', 'content': runtime._CODER_SYSTEM_PROMPT}]}
+    raw = 'from build123d import *\ndef gen_step():\n    return Box(1,2,3)\n'
+    runtime._save(source / 'parameters.json', params)
+    runtime._save(source / 'invocation-00-input.json', request)
+    (source / 'invocation-00-output.txt').write_text(raw)
+    reservation = {'reservation_id': 'reservation',
+                   'input_digest': canonical_digest({'input_text': json.dumps(request)})}
+    reservation['inference_reservation_digest'] = canonical_digest(reservation, digest_field='inference_reservation_digest')
+    completion = {'reservation_id': 'reservation', 'run_id': params['run_id'], 'provider': 'openai',
+                  'model': 'gpt-6-astra', 'capability': 'astra_cad_candidate:book',
+                  'structured_output_digest': canonical_digest({'content': raw})}
+    completion['inference_completion_digest'] = canonical_digest(completion, digest_field='inference_completion_digest')
+    runtime._save(budget / 'reserved/receipt.json', reservation)
+    runtime._save(budget / 'completed/receipt.json', completion)
+    adopted, receipt = runtime._adopt_completed_coder(source, budget.parent, params)
+    assert adopted == raw and receipt['source_output_sha256'] == runtime._digest(source / 'invocation-00-output.txt')
+    request['upstream_messages'].append({'role': 'user', 'content': 'tampered request'})
+    runtime._save(source / 'invocation-00-input.json', request)
+    with pytest.raises(runtime.AstraCADRuntimeBlocked, match='reservation_mismatch'):
+        runtime._adopt_completed_coder(source, budget.parent, params)

@@ -5,6 +5,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from blueprint_pipeline import production_blender_runtime as blender
+from blueprint_pipeline.task_evaluation_scene_configuration_astra_runtime import MANIFEST_NAME
+
 from blueprint_pipeline.task_evaluation_scene_configuration_component_package import (
     validate_scene_configuration_component_package,
 )
@@ -44,8 +49,9 @@ def _commit(root: Path) -> tuple[str, str]:
     return commit, tree
 
 
+@pytest.mark.parametrize("with_blender", [False, True])
 def test_builds_released_content_agents_component_without_scene_inputs(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, with_blender
 ) -> None:
     repository = tmp_path / "repository"
     copies = (
@@ -138,6 +144,12 @@ def test_builds_released_content_agents_component_without_scene_inputs(
     monkeypatch.setattr(subject.subprocess, "run", recorded_run)
 
     output = tmp_path / "component"
+    optional = {}
+    if with_blender:
+        archive_input = tmp_path / "retained-blender.tar.xz"
+        archive_input.write_bytes(b"fixture official archive bytes")
+        monkeypatch.setattr(blender, "ARCHIVE_SHA256", hashlib.sha256(archive_input.read_bytes()).hexdigest())
+        optional["blender_archive_path"] = archive_input
     value = subject.build_content_agents_scene_configuration_component(
         repository_root=repository,
         expected_blueprint_commit=blueprint_commit,
@@ -145,6 +157,7 @@ def test_builds_released_content_agents_component_without_scene_inputs(
         text_to_cad_root=text_to_cad,
         multi_agent_cad_root=multi_agent_cad,
         output_root=output,
+        **optional,
     )
 
     assert value == validate_scene_configuration_component_package(
@@ -156,6 +169,17 @@ def test_builds_released_content_agents_component_without_scene_inputs(
     assert (output / "text_to_cad_skills_source.zip").is_file()
     assert (output / "multi_agent_cad_source.zip").is_file()
     assert (output / "cad_skill_source_receipt.json").is_file()
+    assert (output / MANIFEST_NAME).is_file() is with_blender
+    assert (output / blender.ARCHIVE_NAME).is_file() is with_blender
+    if with_blender:
+        import json
+        manifest = json.loads((output / MANIFEST_NAME).read_text())
+        assert manifest["python_profile"] == "astra_asset_authoring"
+        assert manifest["python_runtime"]["required_requirements"] == ["langgraph==0.2.76"]
+        assert manifest["python_runtime"]["dependencies_packaged_here"] is False
+        assert manifest["provider_download_required"] is False
+        assert next(row for row in value["files"] if row["relative_path"] == blender.ARCHIVE_NAME)["sha256"] == (
+            "sha256:" + blender.ARCHIVE_SHA256)
     assert (output / "run").stat().st_mode & 0o111
     provider_runtime = output / "run_adp_content_agents_provider_runtime.sh"
     assert provider_runtime.stat().st_mode & 0o111

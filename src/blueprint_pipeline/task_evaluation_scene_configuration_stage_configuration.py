@@ -367,6 +367,8 @@ def _stage_three_refusal(
 ) -> str | None:
     identity = configuration.get("replacement_identity")
     required = configuration.get("required_output")
+    if configuration.get("authoring_backend", "content_agents") not in {"content_agents", "astra_cad_blender_v1"}:
+        return "authoring_backend"
     if (
         configuration.get("schema_version")
         != "rigid_replacement_authoring_configuration.v1"

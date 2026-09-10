@@ -447,7 +447,10 @@ def stage_three_configuration(
     source_max: Sequence[float],
     dimension_tolerance: float,
     physics_bounds: Mapping[str, Sequence[float]],
+    authoring_backend: str = "astra_cad_blender_v1",
 ) -> dict[str, Any]:
+    if authoring_backend not in {"content_agents", "astra_cad_blender_v1"}:
+        raise ValueError("replacement_authoring_backend_invalid")
     return {
         "schema_version": "rigid_replacement_authoring_configuration.v1",
         "status": PENDING_STATUS,
@@ -455,6 +458,7 @@ def stage_three_configuration(
         "replacement_identity": dict(replacement_identity),
         "source_object_identity": f"publisher-instance-{source_instance_id}",
         "authoring_target": authoring_target,
+        "authoring_backend": authoring_backend,
         "appearance_inputs": "digest_bound_derived_views_from_stage_1_only",
         "geometry_support": "publisher_metric_bounds_and_exact_SAGE_target_bounds",
         "metric_envelope": {

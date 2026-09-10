@@ -27,6 +27,10 @@ from packaging.utils import parse_wheel_filename
 
 from .decision_evidence_contracts import canonical_digest
 from .safe_outbound_http import pinned_api_policy, request
+from .task_evaluation_scene_configuration_python_runtime import (
+    DEFAULT_RUNTIME_PROFILE, RUNTIME_PROFILE_IMPORTS, RUNTIME_PROFILE_PLATFORM_TAGS,
+    runtime_profile_roots, validate_runtime_profile_inventory,
+)
 
 
 SCHEMA_VERSION = "task_evaluation_scene_configuration_python_wheelhouse.v1"
@@ -94,17 +98,25 @@ def _package_applies(package: Mapping[str, Any]) -> bool:
     return isinstance(markers, list) and any(_marker_applies(row) for row in markers)
 
 
-def _wheel_rank(filename: str) -> int | None:
+def _wheel_rank(filename: str, *, profile: str = DEFAULT_RUNTIME_PROFILE) -> int | None:
     try:
         _name, _version, _build, tags = parse_wheel_filename(filename)
     except (TypeError, ValueError):
         return None
-    ranks = [_SUPPORTED_TAG_RANK[tag] for tag in tags if tag in _SUPPORTED_TAGS]
+    rank = _SUPPORTED_TAG_RANK
+    if profile != DEFAULT_RUNTIME_PROFILE:
+        platforms = list(RUNTIME_PROFILE_PLATFORM_TAGS[profile])
+        ordered = dict.fromkeys([
+            *cpython_tags(python_version=(3, 12), platforms=platforms),
+            *compatible_tags(python_version=(3, 12), interpreter="cp312", platforms=platforms),
+        ])
+        rank = {tag: index for index, tag in enumerate(ordered)}
+    ranks = [rank[tag] for tag in tags if tag in rank]
     return min(ranks) if ranks else None
 
 
 def _select_wheel(
-    wheels: object, *, distribution: str
+    wheels: object, *, distribution: str, profile: str = DEFAULT_RUNTIME_PROFILE
 ) -> tuple[str, Mapping[str, Any]]:
     compatible: list[tuple[int, str, Mapping[str, Any]]] = []
     for wheel in wheels if isinstance(wheels, list) else []:
@@ -113,7 +125,7 @@ def _select_wheel(
         filename = Path(
             urllib.parse.urlparse(str(wheel.get("url") or "")).path
         ).name
-        rank = _wheel_rank(filename)
+        rank = _wheel_rank(filename, profile=profile)
         if rank is not None:
             compatible.append((rank, filename, wheel))
     compatible.sort(key=lambda row: (row[0], row[1]))
@@ -146,10 +158,14 @@ def _download(url: str, *, maximum_bytes: int) -> bytes:
 def plan_scene_configuration_python_wheelhouse(
     lock_bytes: bytes,
     *,
-    root_distributions: Sequence[str] = ROOT_DISTRIBUTIONS,
+    root_distributions: Sequence[str] | None = None,
+    profile: str = DEFAULT_RUNTIME_PROFILE,
 ) -> dict[str, Any]:
     """Derive the exact CPython 3.12 Linux closure without network access."""
 
+    roots = runtime_profile_roots(profile)
+    if root_distributions is not None and tuple(_normalize(name) for name in root_distributions) != roots:
+        raise ValueError("scene_configuration_python_runtime_root_set_mismatch")
     lock = tomllib.loads(lock_bytes.decode("utf-8"))
     packages = lock.get("package") if isinstance(lock, Mapping) else None
     by_name: dict[str, list[Mapping[str, Any]]] = {}
@@ -157,45 +173,43 @@ def plan_scene_configuration_python_wheelhouse(
         if isinstance(package, Mapping) and _package_applies(package):
             by_name.setdefault(_normalize(package.get("name")), []).append(package)
     selected: dict[str, Mapping[str, Any]] = {}
-    pending: list[tuple[str, str | None]] = [
-        (str(name), None) for name in root_distributions
-    ]
+    activated_extras: dict[str, set[str]] = {}
+    pending: list[tuple[str, str | None, tuple[str, ...]]] = [(name, None, ()) for name in roots]
     while pending:
-        unresolved, version = pending.pop()
+        unresolved, version, extras = pending.pop()
         name = _normalize(unresolved)
         if not name:
             raise ValueError("scene_configuration_python_dependency_name_invalid")
-        if name in selected:
+        first_visit = name not in selected
+        if not first_visit:
             if version and str(selected[name].get("version")) != version:
-                raise ValueError(
-                    "scene_configuration_python_dependency_version_conflict"
-                )
-            continue
-        candidates = by_name.get(name, [])
-        if version:
-            candidates = [
-                row for row in candidates if str(row.get("version")) == version
-            ]
-        if len(candidates) != 1:
-            raise ValueError(
-                "scene_configuration_python_locked_package_ambiguous:" + name
-            )
-        package = candidates[0]
-        selected[name] = package
-        dependencies = package.get("dependencies")
-        for dependency in dependencies if isinstance(dependencies, list) else []:
-            if not isinstance(dependency, Mapping) or not _marker_applies(
-                dependency.get("marker")
-            ):
+                raise ValueError("scene_configuration_python_dependency_version_conflict")
+        else:
+            candidates = by_name.get(name, [])
+            if version:
+                candidates = [row for row in candidates if str(row.get("version")) == version]
+            if len(candidates) != 1:
+                raise ValueError("scene_configuration_python_locked_package_ambiguous:" + name)
+            selected[name] = candidates[0]
+        package = selected[name]
+        dependencies = list(package.get("dependencies") or []) if first_visit else []
+        if profile != DEFAULT_RUNTIME_PROFILE:
+            new_extras = set(extras) - activated_extras.setdefault(name, set())
+            for extra in sorted(new_extras):
+                optional = package.get("optional-dependencies", {}).get(extra)
+                if not isinstance(optional, list):
+                    raise ValueError("scene_configuration_python_locked_extra_missing:" + name + ":" + extra)
+                dependencies.extend(optional)
+            activated_extras[name].update(new_extras)
+        for dependency in dependencies:
+            if not isinstance(dependency, Mapping) or not _marker_applies(dependency.get("marker")):
                 continue
-            pending.append(
-                (
-                    str(dependency.get("name") or ""),
-                    str(dependency.get("version"))
-                    if dependency.get("version")
-                    else None,
-                )
-            )
+            dependency_extras = dependency.get("extra", []) if profile != DEFAULT_RUNTIME_PROFILE else []
+            if not isinstance(dependency_extras, list) or any(not isinstance(extra, str) for extra in dependency_extras):
+                raise ValueError("scene_configuration_python_dependency_extra_invalid")
+            pending.append((str(dependency.get("name") or ""),
+                            str(dependency["version"]) if dependency.get("version") else None,
+                            tuple(dependency_extras)))
     requirements = [
         {"name": name, "version": str(package.get("version") or "")}
         for name, package in sorted(selected.items())
@@ -203,7 +217,7 @@ def plan_scene_configuration_python_wheelhouse(
     wheels: list[dict[str, Any]] = []
     filenames: set[str] = set()
     for name, package in sorted(selected.items()):
-        filename, wheel = _select_wheel(package.get("wheels"), distribution=name)
+        filename, wheel = _select_wheel(package.get("wheels"), distribution=name, profile=profile)
         digest = str(wheel.get("hash") or "").removeprefix("sha256:")
         size = wheel.get("size")
         url = str(wheel.get("url") or "")
@@ -237,9 +251,11 @@ def build_scene_configuration_python_wheelhouse(
     lockfile_path: str | Path,
     output_root: str | Path,
     downloader: Downloader = _download,
+    profile: str = DEFAULT_RUNTIME_PROFILE,
 ) -> dict[str, Any]:
     """Download and verify the exact closure before provider allocation."""
 
+    roots = runtime_profile_roots(profile)
     lockfile = Path(lockfile_path).expanduser().resolve()
     output = Path(output_root).expanduser().resolve()
     if output.exists():
@@ -249,7 +265,7 @@ def build_scene_configuration_python_wheelhouse(
     wheels_root.mkdir(mode=0o700)
     try:
         lock_bytes = lockfile.read_bytes()
-        plan = plan_scene_configuration_python_wheelhouse(lock_bytes)
+        plan = plan_scene_configuration_python_wheelhouse(lock_bytes, profile=profile)
         sealed_rows: list[dict[str, Any]] = []
         for row in plan["wheels"]:
             try:
@@ -278,15 +294,17 @@ def build_scene_configuration_python_wheelhouse(
             "python_version": TARGET_PYTHON_VERSION,
             "implementation": "cpython",
             "platform": "linux-x86_64",
-            "platform_tags": list(TARGET_PLATFORM_TAGS),
+            "platform_tags": list(RUNTIME_PROFILE_PLATFORM_TAGS[profile]),
             "lockfile_sha256": "sha256:" + hashlib.sha256(lock_bytes).hexdigest(),
-            "root_distributions": list(ROOT_DISTRIBUTIONS),
+            "root_distributions": list(roots),
             "requirements": plan["requirements"],
             "wheels": sealed_rows,
             "sdists_allowed": False,
             "provider_network_install_required": False,
             "manifest_digest": "",
         }
+        if profile != DEFAULT_RUNTIME_PROFILE:
+            manifest.update(runtime_profile=profile, required_imports=list(RUNTIME_PROFILE_IMPORTS[profile]))
         manifest["manifest_digest"] = canonical_digest(
             manifest, digest_field="manifest_digest"
         )
@@ -301,10 +319,11 @@ def build_scene_configuration_python_wheelhouse(
 
 
 def validate_scene_configuration_python_wheelhouse(
-    *, root: str | Path
+    *, root: str | Path, profile: str = DEFAULT_RUNTIME_PROFILE
 ) -> dict[str, Any]:
     """Reopen every sealed wheel byte before it can enter a provider bundle."""
 
+    roots = runtime_profile_roots(profile)
     wheelhouse = Path(root).expanduser().resolve()
     manifest_path = wheelhouse / MANIFEST_NAME
     try:
@@ -326,7 +345,7 @@ def validate_scene_configuration_python_wheelhouse(
         or manifest.get("python_version") != TARGET_PYTHON_VERSION
         or manifest.get("implementation") != "cpython"
         or manifest.get("platform") != "linux-x86_64"
-        or manifest.get("root_distributions") != list(ROOT_DISTRIBUTIONS)
+        or manifest.get("root_distributions") != list(roots)
         or manifest.get("sdists_allowed") is not False
         or manifest.get("provider_network_install_required") is not False
         or manifest.get("manifest_digest")
@@ -335,6 +354,7 @@ def validate_scene_configuration_python_wheelhouse(
         or not rows
     ):
         raise ValueError("scene_configuration_python_wheelhouse_manifest_invalid")
+    validate_runtime_profile_inventory(manifest, profile)
     expected: set[str] = set()
     wheels_root = wheelhouse / "wheels"
     for row in rows:

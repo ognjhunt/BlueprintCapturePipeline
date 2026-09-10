@@ -86,6 +86,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Closed, opt-in CPU authoring closure; the legacy provider profile stays unchanged.
+astra_asset_authoring = [
+    "openai-agents==0.19.1",
+    "usd-core==26.5",
+    "build123d==0.11.1",
+    "langgraph==0.2.76",
+    "langgraph-checkpoint==2.1.2",
+    "langchain-core==0.3.86",
+    "langgraph-sdk==0.1.74",
+    "trimesh==4.12.2",
+]
 cloud = [
     "google-cloud-storage>=2.10.0",
     "google-auth>=2.0.0",

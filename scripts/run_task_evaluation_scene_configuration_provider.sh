@@ -105,6 +105,10 @@ trap 'kill "$ticker_pid" 2>/dev/null || true' EXIT
 
 PYTHON_WHEELHOUSE="$RUNTIME_ROOT/toolchain/components/artifixer3d_observed_object_removal/package/python_wheelhouse"
 PYTHON_RUNTIME="$OUTPUT_ROOT/.venv/provider_python_runtime"
+PYTHON_RUNTIME_PROFILE="base"
+if [ -f "$RUNTIME_ROOT/toolchain/components/content_agents_rigid_replacement/package/astra_runtime_manifest.v1.json" ]; then
+  PYTHON_RUNTIME_PROFILE="astra_asset_authoring"
+fi
 mkdir -p "$(dirname "$PYTHON_RUNTIME")"
 python_runtime_rc=0
 if [ -z "$PYTHON_BIN" ] || [ ! -d "$PYTHON_WHEELHOUSE" ]; then
@@ -114,6 +118,7 @@ else
   blueprint_pipeline.task_evaluation_scene_configuration_python_runtime \
   --wheelhouse-root "$PYTHON_WHEELHOUSE" \
   --output-root "$PYTHON_RUNTIME" \
+  --profile "$PYTHON_RUNTIME_PROFILE" \
   >"$OUTPUT_ROOT/provider_python_runtime_setup.log" 2>&1 \
   || python_runtime_rc=$?
 fi

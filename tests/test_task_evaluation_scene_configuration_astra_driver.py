@@ -94,11 +94,12 @@ def test_invalid_input_refuses_before_authoring(retained, mutation):
         driver.build_authoring_request(retained.input, retained.source, [retained.image], retained.rights)
 
 
-def test_shared_stage_invoker_denies_extra_calls_wrong_identity_or_unbounded_tools():
+@pytest.mark.parametrize("reasoning_effort", ["medium", "high"])
+def test_shared_stage_invoker_denies_extra_calls_wrong_identity_or_unbounded_tools(reasoning_effort):
     seen = []
     invoker = driver._StageInvoker(SimpleNamespace(invoke=lambda *args: seen.append(args)), "shared", 1)
     spec = SimpleNamespace(run_id="other", model="gpt-6-astra", max_turns=1, tool_bindings=(),
-                           max_output_tokens=12000, max_input_tokens=80000, reasoning_effort="high")
+                           max_output_tokens=12000, max_input_tokens=80000, reasoning_effort=reasoning_effort)
     with pytest.raises(driver.AstraStageError):
         invoker.invoke(spec, "input")
     spec.run_id = "shared"
@@ -106,6 +107,21 @@ def test_shared_stage_invoker_denies_extra_calls_wrong_identity_or_unbounded_too
     with pytest.raises(driver.AstraStageError):
         invoker.invoke(spec, "input")
     assert len(seen) == 1
+
+
+def test_stage_sdk_disables_unreserved_http_retries_and_restores_client(tmp_path):
+    from agents.models import _openai_shared
+    previous = _openai_shared.get_default_openai_client()
+    key = tmp_path / "stage-key"
+    key.write_text("fixture-no-network")
+    with pytest.raises(RuntimeError, match="fixture failure"):
+        with driver._stage_sdk_environment(key):
+            client = _openai_shared.get_default_openai_client()
+            assert client.max_retries == 0
+            assert client.timeout == 600
+            assert os.environ["OPENAI_API_KEY_FILE"] == str(key)
+            raise RuntimeError("fixture failure")
+    assert _openai_shared.get_default_openai_client() is previous
 
 
 @pytest.fixture
@@ -159,6 +175,7 @@ def component(retained, monkeypatch):
         def preflight(self): events.append("sandbox")
         def __call__(self, *args, **kw):
             events.append("cad_preflight")
+            seen["cad_probe"] = kw
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     class Gate:
@@ -216,6 +233,15 @@ def test_stage_reserves_parent_gate_then_seals_existing_roles_without_nvidia_cla
     assert os.environ.get("OPENAI_API_KEY_FILE") == previous
 
 
+def test_stage_preserves_sealed_external_python_runtime_in_sandbox(component, tmp_path, monkeypatch):
+    installed = tmp_path / "sealed-python-runtime"
+    installed.mkdir()
+    monkeypatch.setenv("PYTHONPATH", str(installed))
+    driver.execute_astra_component(**component.kwargs)
+    assert installed in component.seen["sandbox"]["read_roots"]
+    assert str(installed) in component.seen["cad_probe"]["env"]["PYTHONPATH"].split(os.pathsep)
+
+
 def test_authoring_failure_closes_parent_cost_receipt(component):
     def failure(**kw): raise RuntimeError("fixture failure before invocation")
     component.kwargs["authoring_executor"] = failure
@@ -253,6 +279,25 @@ def test_archive_source_verification_refusal_precedes_stage_spend(component, mon
     with pytest.raises(driver.AstraStageError, match="source archive drift"):
         driver.execute_astra_component(**component.kwargs)
     assert component.events == [] and "budget" not in component.seen
+
+
+def test_absent_blender_environment_uses_own_sealed_component_before_stage_spend(component, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_configuration_astra_runtime as materializer
+    component.environment.pop(driver.BLENDER_ROOT_ENV)
+    observed = []
+    def materialize(package_root, destination_root, *, runner):
+        component.events.append("packaged_blender")
+        observed.append((Path(package_root), Path(destination_root)))
+        return {"executable": str(destination_root / "blender"), "version": "5.2.1"}
+    def forbidden(*args, **kwargs):
+        pytest.fail("absent environment must use packaged materializer")
+    monkeypatch.setattr(materializer, "materialize_packaged_blender_runtime", materialize)
+    component.kwargs["blender_validator"] = forbidden
+    result = driver.execute_astra_component(**component.kwargs)
+    assert result["status"] == "completed"
+    assert observed[0][0] == Path(component.environment[driver._PACKAGE_ENV])
+    assert observed[0][1].name == "packaged_blender"
+    assert component.events.index("packaged_blender") < component.events.index("reserve")
 
 
 def test_backend_dispatch_is_explicit_and_legacy_remains_default(tmp_path, monkeypatch):

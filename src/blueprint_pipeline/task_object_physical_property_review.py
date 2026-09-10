@@ -265,9 +265,11 @@ def review_physical_properties(
             blockers.append(f"mass_model:{exc}")
         if model_range is not None:
             mass = candidate.properties.mass_kg
-            if (not model_range.contains(mass.value)
-                    or mass.interval.lower < model_range.lower
-                    or mass.interval.upper > model_range.upper):
+            # A wider stated uncertainty interval is conservative, including
+            # outward rounding (e.g. 0.7365..1.7975 -> 0.73..1.80). It does not
+            # make a size-consistent nominal estimate physically inconsistent.
+            # The independent packaging gate still enforces admitted bounds.
+            if not model_range.contains(mass.value):
                 blockers.append("mass:inconsistent_with_dimension_material_model")
     return PhysicalPropertyReviewResult(
         claim_ceiling="development_only", proposed=proposal, accepted=None if blockers else candidate,

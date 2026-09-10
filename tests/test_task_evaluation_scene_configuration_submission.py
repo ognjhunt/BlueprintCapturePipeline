@@ -668,6 +668,19 @@ def test_submission_accepts_canonical_friction_ceiling_without_changing_it(tmp_p
                      if stage.get("schema_version") == "rigid_replacement_authoring_configuration.v1")
     assert authoring["required_output"]["static_friction_bounds"] == [0.2, 1.0]
     assert authoring["required_output"]["mass_kg_bounds"] == [0.3, 1.2]
+    assert authoring["authoring_backend"] == "astra_cad_blender_v1"
+
+
+def test_submission_preserves_explicit_astra_backend_and_exact_dimensions(tmp_path: Path) -> None:
+    fixture = production_fixture(tmp_path)
+    task = json.loads(fixture["task_request"].read_text())
+    task["subject"]["authoring_backend"] = "astra_cad_blender_v1"
+    _write_json(fixture["task_request"], task)
+    result = _materialize(fixture)
+    authoring = json.loads((Path(result["staging_root"]) / "configuration/stage_3.v1.json").read_text())
+    assert authoring["authoring_backend"] == "astra_cad_blender_v1"
+    assert authoring["physics_authority_granted_by_authoring"] is False
+    assert authoring["required_output"]["mass_kg_bounds"] == task["subject"]["physics_bounds"]["mass_kg_bounds"]
 
 
 def test_submission_preserves_scoped_full_source_authority_references(tmp_path: Path) -> None:

@@ -1071,10 +1071,15 @@ def test_selected_cell_queries_both_real_clients_and_seals_before_isaac_close(
     assert (child_root / "policy_canary_telemetry_index.json").is_file()
 
 
+@pytest.mark.parametrize('feasibility_status', [None, 'passed', 'blocked'])
 def test_selected_cell_runs_native_mount_gate_before_loading_either_policy(
-    tmp_path: Path,
+    tmp_path: Path, feasibility_status,
 ) -> None:
-    runtime_root, provider_output = _stage_runtime_root(tmp_path)
+    plan = _scene_plan()
+    if feasibility_status is not None:
+        plan['task_spec']['astra_asset_adoption'] = {'fixture_native_adapter': True}
+        plan['plan_digest'] = canonical_digest(plan, digest_field='plan_digest')
+    runtime_root, provider_output = _stage_runtime_root(tmp_path, scene_plan=plan)
     child_root = provider_output / "cell_runs" / "00"
     child_root.mkdir(parents=True)
     packet_request = {
@@ -1136,12 +1141,34 @@ def test_selected_cell_runs_native_mount_gate_before_loading_either_policy(
         events.append("renderer_guard")
         return base_runtime.configure_post_gate_renderer(**kwargs)
 
+    def monitor():
+        events.append('monitor_before_asset_import')
+        return 'fixture-monitor'
+
+    def build(*args, **kwargs):
+        if feasibility_status is not None:
+            assert events == ['monitor_before_asset_import']
+        return base_runtime.build_environment(*args, **kwargs)
+
+    def feasibility(**kwargs):
+        events.append('native_asset_feasibility')
+        assert kwargs['monitor'] == 'fixture-monitor'
+        kwargs['output_root'].mkdir(parents=True)
+        result = {'status': feasibility_status, 'candidate_policy_queried': False,
+                  'policy_start_already_settled': False,
+                  'blockers': ['fixture_missing_support_contact'] if feasibility_status == 'blocked' else []}
+        result['gate_digest'] = canonical_digest(result, digest_field='gate_digest')
+        return result
+
     runtime = worker.CellRuntime(
         **{
             **base_runtime.__dict__,
             "prepolicy_camera_gate": camera_gate,
             "configure_post_gate_renderer": configure_post_gate_renderer,
             "policy_client": policy_client,
+            "begin_native_asset_monitor": monitor,
+            "native_asset_feasibility_gate": feasibility,
+            "build_environment": build,
         }
     )
     with pytest.raises(SystemExit) as exited:
@@ -1153,7 +1180,14 @@ def test_selected_cell_runs_native_mount_gate_before_loading_either_policy(
             cell_runtime=runtime,
         )
     assert exited.value.code == 0
-    assert events[:2] == ["camera_gate", "renderer_guard"]
+    if feasibility_status == 'blocked':
+        assert events == ['monitor_before_asset_import', 'native_asset_feasibility']
+        result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
+        assert result['preload_observation_gate']['policy_observation_integrity_passed'] is False
+        assert result['policy_loads'] == []
+        return
+    prefix = ['monitor_before_asset_import', 'native_asset_feasibility'] if feasibility_status else []
+    assert events[:len(prefix)+2] == prefix + ["camera_gate", "renderer_guard"]
     assert events.count("policy_load") == 2
     result = _sealed_result(child_root / PROVIDER_RESULT_FILENAME)
     assert result["preload_observation_gate"][

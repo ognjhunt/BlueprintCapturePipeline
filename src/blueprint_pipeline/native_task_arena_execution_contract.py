@@ -171,6 +171,9 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
 )
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
+    "policy_canary_worker_evidence.py",
+    "task_object_native_settle_gate.py",
+    "task_object_native_settle_runtime.py",
     "policy_canary_media_integrity.py",
     "policy_scientific_reset.py",
     "policy_request_evidence.py",

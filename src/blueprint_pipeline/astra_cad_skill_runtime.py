@@ -26,6 +26,7 @@ from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, AgentsSDK
 MAC_COMMIT = "42737c408534e7c00c63081d73ce7565a9464e56"
 CAD_COMMIT = "4fd71ea75fbb8a80b0d7c76862e0fd73c52a8989"
 _LOCK = threading.Lock()
+_CODER_SYSTEM_PROMPT = "Implement the supplied ArchitectPlan as complete executable build123d Python."
 
 
 class AstraCADRuntimeBlocked(RuntimeError):
@@ -194,10 +195,18 @@ class _SDKChatBridge:
         self.max_input_tokens, self.max_output_tokens, self.max_calls = max_input_tokens, max_output_tokens, max_calls
         self.object_label = object_label
         self.stable_prefix = stable_prefix
+        self.adopted_coder_output: str | None = None
+        self.pending_coder_output: str | None = None
+        self.reasoning_effort = 'high'
         self.calls: list[dict[str, Any]] = []
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
     def create(self, *, messages: list[dict[str, Any]], **_kwargs: Any) -> Any:
+        is_coder = any(message.get("role") == "system" and message.get("content") == _CODER_SYSTEM_PROMPT
+                       for message in messages)
+        if is_coder and self.adopted_coder_output is not None:
+            self.pending_coder_output = self.adopted_coder_output
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=self.adopted_coder_output))])
         if len(self.calls) >= self.max_calls:
             raise AstraCADRuntimeBlocked("cad_invocation_budget_exhausted")
         payload = json.dumps({"object_label": self.object_label,
@@ -221,13 +230,14 @@ class _SDKChatBridge:
         stable_prefix = instructions + '\n' + self.stable_prefix if self.stable_prefix else None
         if stable_prefix:
             from .asset_authoring_prompt_cache import asset_cache_policy
-            policy = asset_cache_policy(family='cad', output_type=_TextOutput, stable_prefix=stable_prefix)
+            policy = asset_cache_policy(family='cad', output_type=_TextOutput,
+                stable_prefix=stable_prefix, reasoning_effort=self.reasoning_effort)
         else:
             policy = None
         spec = AgentsSDKAgentSpec(
             run_id=self.run_id, capability=f"astra_cad_candidate:{self.object_label}", name="Astra CAD candidate",
             instructions=instructions,
-            model="gpt-6-astra", reasoning_effort="high", max_turns=1,
+            model="gpt-6-astra", reasoning_effort=self.reasoning_effort, max_turns=1,
             max_input_tokens=self.max_input_tokens, max_output_tokens=self.max_output_tokens,
             output_type=_TextOutput, tool_bindings=(),
             stable_developer_prefix=stable_prefix, cache_policy=policy,
@@ -242,9 +252,17 @@ class _SDKChatBridge:
                            "provider": result.provider, "sdk_version": result.sdk_version,
                            "output_sha256": hashlib.sha256(content.encode()).hexdigest()})
             (self.root / f"invocation-{index:02d}-output.txt").write_text(content)
+            if is_coder:
+                self.pending_coder_output = content
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
         except Exception as exc:
             record["failure"] = type(exc).__name__
+            # Preserve returned candidate text on structured-output failures;
+            # never persist run_data.input (which contains the source prompt).
+            if type(exc).__name__ == 'ModelBehaviorError':
+                partial = str(exc)
+                (self.root / f'invocation-{index:02d}-invalid-response.txt').write_text(partial)
+                record['invalid_response_sha256'] = hashlib.sha256(partial.encode()).hexdigest()
             raise
         finally:
             _save(self.root / "invocations.json", self.calls)
@@ -299,13 +317,117 @@ def _read_step(step: Path, expected: tuple[float, float, float], tolerance: floa
     valid = shape.is_valid() if callable(shape.is_valid) else shape.is_valid
     result = {"measured_dimensions_mm": measured, "expected_dimensions_mm": list(expected),
               "absolute_tolerance_mm": tolerance, "valid": bool(valid), "volume_mm3": float(shape.volume),
+              "solid_count": len(shape.solids()),
               "build123d": importlib.metadata.version("build123d")}
     result["kernel_versions"] = {package: importlib.metadata.version(package) for package in
                                  importlib.metadata.packages_distributions().get("OCP", [])}
-    result["passed"] = bool(valid and shape.volume > 0 and all(
+    result["passed"] = bool(valid and shape.volume > 0 and result["solid_count"] == 1 and all(
         math.isfinite(a) and abs(a - b) <= tolerance for a, b in zip(measured, expected)
     ))
     return result
+
+
+def _adopt_completed_phases(source: Path, budget_root: Path, parameters: dict[str, Any], nodes: Any):
+    """Authenticate retained typed outputs against completed SDK receipts."""
+    source = source.resolve(strict=True)
+    previous = json.loads((source / "parameters.json").read_text())
+    for key in ("brief", "expected_dimensions_mm", "run_id", "object_label"):
+        if previous.get(key) != parameters[key]:
+            raise AstraCADRuntimeBlocked("cad_adoption_parameters_mismatch:" + key)
+    completions = []
+    for path in (budget_root / "inference_reservations/completed").glob("*.json"):
+        row = json.loads(path.read_text())
+        if (row.get("run_id") == parameters["run_id"]
+                and row.get("capability") == "astra_cad_candidate:" + parameters["object_label"]
+                and row.get("model") == "gpt-6-astra" and row.get("provider") == "openai"
+                and row.get("inference_completion_digest") == canonical_digest(row, digest_field="inference_completion_digest")):
+            completions.append((path, row))
+    adopted, evidence = {}, []
+    for index, (name, field, model) in enumerate((
+        ("node_spec_planner", "cad_brief", nodes.CADBrief),
+        ("node_geometric_architect", "architect_plan", nodes.ArchitectPlan),
+    )):
+        raw_path = source / f"invocation-{index:02d}-output.txt"
+        raw = raw_path.read_text()
+        digest = canonical_digest({"content": raw})
+        matching = [(path, row) for path, row in completions if row.get("structured_output_digest") == digest]
+        if len(matching) != 1:
+            raise AstraCADRuntimeBlocked("cad_adoption_missing_sdk_completion:" + name)
+        data = json.loads(raw.strip().removeprefix("```json").removesuffix("```").strip())
+        typed = model.model_validate(data)
+        if field == "cad_brief":
+            typed.user_request_raw = parameters["brief"]
+        retained_path = source / f"node-{name}.json"
+        retained = json.loads(retained_path.read_text())
+        if model.model_validate(retained[field]).model_dump(mode="json") != typed.model_dump(mode="json"):
+            raise AstraCADRuntimeBlocked("cad_adoption_node_output_mismatch:" + name)
+        adopted[name] = {field: typed, "node_history": ["planner"] if index == 0 else ["planner", "architect"],
+                         "execution_log": [name + ": adopted verified completed Astra output"]}
+        evidence.append({"phase": name, "source_output": str(raw_path), "output_sha256": _digest(raw_path),
+                         "node_path": str(retained_path), "node_sha256": _digest(retained_path),
+                         "completion_path": str(matching[0][0]), "completion_sha256": _digest(matching[0][0]),
+                         "structured_output_digest": digest})
+    return adopted, {"schema_version": "astra_cad_phase_adoption.v1", "source": str(source),
+                     "source_parameters_sha256": _digest(source / "parameters.json"), "phases": evidence}
+
+
+def _compact_coder_prompt(**kwargs: Any) -> str:
+    def compact(value):
+        if isinstance(value, dict):
+            return {key: compact(item) for key, item in value.items() if item is not None and item != [] and item != {}}
+        if isinstance(value, list):
+            return [compact(item) for item in value]
+        return value
+    return json.dumps({"architect_plan": compact(json.loads(kwargs["plan_json"])),
+                       "previous_feedback": kwargs.get("previous_feedback"),
+                       "step_path": kwargs["step_path"], "stl_path": kwargs["stl_path"],
+                       "task": "Implement the complete exact plan, including custom curved profiles in notes. "
+                       "Return at most 120 lines of straightforward build123d Python defining gen_step(), and a main block that calls it "
+                       "and exports STEP/STL to the supplied paths. Use from build123d import *. "
+                       "Use ordinary Python floats; the tolerance is 0.01 millimetre, not symbolic infinite precision. "
+                       "Use build123d sketch/Bezier/extrude primitives, no direct OCP APIs or Decimal arithmetic. "
+                       "Do not write validation, measurement, rendering, report, metadata, or test code: the trusted harness supplies those. "
+                       "Do not copy the brief or source evidence into code. Preserve every supplied nominal dimension; no sizing objects. "
+                       "No network, external files, subprocesses, or viewers. Geometry remains development_only."},
+                      separators=(",", ":"))
+
+
+def _adopt_completed_coder(source: Path, budget_root: Path, parameters: dict[str, Any]):
+    previous = json.loads((source / "parameters.json").read_text())
+    for key in ("brief", "expected_dimensions_mm", "run_id", "object_label"):
+        if previous.get(key) != parameters[key]:
+            raise AstraCADRuntimeBlocked("cad_adoption_parameters_mismatch:" + key)
+    matches = []
+    for raw_path in source.glob("invocation-*-output.txt"):
+        input_path = raw_path.with_name(raw_path.name.replace("-output.txt", "-input.json"))
+        request = json.loads(input_path.read_text())
+        if not any(message.get("role") == "system" and message.get("content") == _CODER_SYSTEM_PROMPT
+                   for message in request.get("upstream_messages", [])):
+            continue
+        if request.get("immutable_original_brief") != parameters["brief"] or request.get("object_label") != parameters["object_label"]:
+            raise AstraCADRuntimeBlocked("cad_coder_adoption_request_mismatch")
+        raw = raw_path.read_text()
+        for completion_path in (budget_root / "inference_reservations/completed").glob("*.json"):
+            row = json.loads(completion_path.read_text())
+            if (row.get("run_id") != parameters["run_id"]
+                    or row.get("capability") != "astra_cad_candidate:" + parameters["object_label"]
+                    or row.get("provider") != "openai" or row.get("model") != "gpt-6-astra"
+                    or row.get("structured_output_digest") != canonical_digest({"content": raw})
+                    or row.get("inference_completion_digest") != canonical_digest(row, digest_field="inference_completion_digest")):
+                continue
+            reservation_path = budget_root / "inference_reservations/reserved" / completion_path.name
+            reservation = json.loads(reservation_path.read_text())
+            if (reservation.get("reservation_id") != row.get("reservation_id")
+                    or reservation.get("input_digest") != canonical_digest({"input_text": json.dumps(request)})
+                    or reservation.get("inference_reservation_digest") != canonical_digest(reservation, digest_field="inference_reservation_digest")):
+                raise AstraCADRuntimeBlocked("cad_coder_adoption_reservation_mismatch")
+            matches.append((raw, {"source_output": str(raw_path), "source_output_sha256": _digest(raw_path),
+                "source_input": str(input_path), "source_input_sha256": _digest(input_path),
+                "completion": str(completion_path), "completion_sha256": _digest(completion_path),
+                "reservation": str(reservation_path), "reservation_sha256": _digest(reservation_path)}))
+    if len(matches) != 1:
+        raise AstraCADRuntimeBlocked("cad_coder_adoption_requires_one_completed_output")
+    return matches[0]
 
 
 def execute_mac_candidate(
@@ -316,6 +438,8 @@ def execute_mac_candidate(
     max_input_tokens: int = 80_000, max_output_tokens: int = 12_000,
     max_calls: int = 7, repair_budget: int = 2, dimension_tolerance_mm: float = 0.01,
     verified_sources: dict[str, Any] | None = None,
+    adopt_state_from: Path | None = None, adoption_budget_root: Path | None = None,
+    adopt_coder_from: Path | None = None,
 ) -> dict[str, Any]:
     """Execute the real pinned graph through a supplied budgeted SDK invoker and sandbox.
 
@@ -335,6 +459,7 @@ def execute_mac_candidate(
     if not math.isfinite(dimension_tolerance_mm) or not 0 <= dimension_tolerance_mm <= 0.1:
         raise AstraCADRuntimeBlocked("cad_dimension_tolerance_invalid")
     root, mac, cad = (Path(p).resolve() for p in (output_root, mac_source_root, cad_source_root))
+    runtime_loader = [str(Path(p).resolve()) for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
     if root.exists() and any(root.iterdir()):
         raise AstraCADRuntimeBlocked("cad_output_root_not_empty")
     if root.is_relative_to(mac) or root.is_relative_to(cad):
@@ -360,7 +485,33 @@ def execute_mac_candidate(
         nodes._CACHE_DIR = root / "pipeline_cache"
         nodes._llm_client = lambda: bridge
         nodes.OpenAI = _deny
-        nodes._node_python_coder_deterministic = lambda *_args, **_kwargs: None
+        def deterministic_child(state, architect_plan, iteration):
+            request_path = root / f"deterministic-{iteration}-request.json"
+            result_path = root / f"deterministic-{iteration}-result.json"
+            _save(request_path, {"state": dict(state), "architect_plan": architect_plan, "iteration": iteration})
+            # Preserve every upstream loader root, while adding exact pinned source roots.
+            loader = [str(mac), str(cad / "packages/cadpy/src"), *runtime_loader]
+            result = subprocess_runner([sys.executable, str(Path(__file__).with_name("astra_cad_deterministic_child.py")),
+                                        str(request_path), str(result_path)], cwd=str(root), timeout=120,
+                                       env={"PYTHONPATH": os.pathsep.join(dict.fromkeys(loader))},
+                                       capture_output=True, text=True, check=False)
+            (root / f"deterministic-{iteration}-stdout.txt").write_text(result.stdout or "")
+            (root / f"deterministic-{iteration}-stderr.txt").write_text(result.stderr or "")
+            if result.returncode or not result_path.is_file():
+                raise AstraCADRuntimeBlocked("cad_deterministic_child_failed")
+            envelope = json.loads(result_path.read_text())
+            if envelope.get("status") == "unsupported":
+                return None
+            if envelope.get("status") != "completed" or not isinstance(envelope.get("result"), dict):
+                raise AstraCADRuntimeBlocked("cad_deterministic_child_failed")
+            update = envelope["result"]
+            if update.get("qa_report"):
+                update["qa_report"] = nodes.QAReport.model_validate(update["qa_report"])
+            return update
+
+        nodes._node_python_coder_deterministic = deterministic_child
+        nodes._build_coder_user_prompt = _compact_coder_prompt
+        nodes.SYSTEM_PROMPT_PYTHON_CODER = _CODER_SYSTEM_PROMPT
         nodes._fill_unsupported_with_aider = _deny
         nodes.generate_initial_solution = _deny
         # Printing orientation is unrelated to task coordinates and would desynchronize STEP/STL.
@@ -399,21 +550,53 @@ def execute_mac_candidate(
             kwargs.pop("env", None)
             kwargs.pop("encoding", None)
             kwargs.pop("errors", None)
-            kwargs["env"] = {"PYTHONPATH": os.pathsep.join((str(mac / "packages/cadpy/src"),
-                                                            str(cad / "packages/cadpy/src")))}
+            kwargs["env"] = {"PYTHONPATH": os.pathsep.join(dict.fromkeys((str(mac / "packages/cadpy/src"),
+                                                            str(cad / "packages/cadpy/src"), *runtime_loader)))}
             kwargs["cwd"] = str(root)
             kwargs["timeout"] = min(float(kwargs.get("timeout", 120)), 120)
+            if len(argv) == 2 and Path(argv[1]).name.startswith("temp_design_") and str(argv[1]).endswith(".py"):
+                script = Path(argv[1]).resolve()
+                if not script.is_relative_to(root):
+                    raise AstraCADRuntimeBlocked("cad_script_outside_scratch")
+                if bridge.pending_coder_output is not None:
+                    # Preserve upstream injection for diagnosis; execute the model source unchanged.
+                    script.with_suffix(".upstream-compat.py").write_bytes(script.read_bytes())
+                    raw_code = bridge.pending_coder_output
+                    script.write_text(nodes._extract_code_from_llm_response(raw_code)
+                                      if raw_code.lstrip().startswith("```") else raw_code)
+                    bridge.pending_coder_output = None
+                suffix = script.stem.removeprefix("temp_design_")
+                kwargs["env"] = {"PYTHONPATH": os.pathsep.join(dict.fromkeys((str(cad / "packages/cadpy/src"),
+                                                                               *runtime_loader)))}
+                argv = [sys.executable, str(cad / "skills/cad/scripts/step"), str(script),
+                        "--output", str(root / f"temp_output_{suffix}.step"),
+                        "--stl", f"temp_output_{suffix}.stl",
+                        "--mesh-tolerance", "0.005", "--mesh-angular-tolerance", "0.1"]
             return subprocess_runner(argv, **kwargs)
 
         nodes._run_repair_on_script = repair
         nodes._run_direct_repair_fallback = _deny
         nodes.subprocess = SimpleNamespace(run=run, TimeoutExpired=subprocess.TimeoutExpired)
         nodes._prompt_iteration_choice = lambda **_kw: 1
+        adopted = {}
+        if adopt_coder_from is not None:
+            if adoption_budget_root is None or adopt_state_from is None:
+                raise AstraCADRuntimeBlocked("cad_coder_adoption_verified_phases_required")
+            bridge.adopted_coder_output, coder_receipt = _adopt_completed_coder(
+                Path(adopt_coder_from), Path(adoption_budget_root), parameters)
+            _save(root / "coder-adoption-receipt.json", coder_receipt)
+        if adopt_state_from is not None:
+            if adoption_budget_root is None:
+                raise AstraCADRuntimeBlocked("cad_adoption_budget_root_required")
+            adopted, adoption_receipt = _adopt_completed_phases(Path(adopt_state_from), Path(adoption_budget_root), parameters, nodes)
+            _save(root / "adoption-receipt.json", adoption_receipt)
         for name in ("node_spec_planner", "node_geometric_architect", "node_python_coder", "node_autonomous_skill_loop"):
             original = getattr(nodes, name)
 
-            def guarded(state, fn=original):
-                result = fn(state)
+            def guarded(state, fn=original, node_name=name):
+                bridge.reasoning_effort = ('medium' if node_name in
+                    {'node_python_coder', 'node_autonomous_skill_loop'} else 'high')
+                result = dict(adopted[node_name]) if node_name in adopted else fn(state)
                 brief_value = result.get("cad_brief")
                 part_name = getattr(brief_value, "part_name", "")
                 if any(c in part_name for c in ("/", "\\", "..")):

@@ -45,6 +45,7 @@ MIN_TTL_SECONDS = 600
 MAX_PROVIDER_ZERO_AGE_SECONDS = 900
 _RESOURCE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{15,127}")
 _LEGACY_ARTIFIXER_VISUAL_REVIEW_SPEND_USD = 0.30
+MIN_ASTRA_AUTHORING_SPEND_USD = 5.0
 
 
 class TaskEvaluationSceneConfigurationAuthorityError(ValueError):
@@ -58,6 +59,7 @@ def _required_external_stage_minima(
     carried_stage_count: int,
     historical_terminal_evidence: bool = False,
     production_semantic_reuse: bool = False,
+    authoring_backend: str = "content_agents",
 ) -> dict[str, float]:
     fresh_diagnostic_bootstrap = (
         diagnostic_only
@@ -82,7 +84,8 @@ def _required_external_stage_minima(
         "content_agents": (
             0.0
             if diagnostic_only and carried_stage_count >= 3
-            else MIN_CONTENT_AGENTS_SPEND_USD
+            else (MIN_ASTRA_AUTHORING_SPEND_USD
+                  if authoring_backend == "astra_cad_blender_v1" else MIN_CONTENT_AGENTS_SPEND_USD)
         ),
     }
 
@@ -270,6 +273,7 @@ def materialize_scene_configuration_paid_authority(
         diagnostic_bootstrap_mode=diagnostic_bootstrap_mode,
         carried_stage_count=carried_stage_count,
         production_semantic_reuse=production_semantic_reuse,
+        authoring_backend=receipt.get("replacement_authoring_backend", "content_agents"),
     )
     minimum_external_cap = sum(required_stage_minima.values())
     diagnostic_budget_blockers = (
@@ -499,6 +503,7 @@ def validate_scene_configuration_paid_authority(
         carried_stage_count=carried_stage_count,
         historical_terminal_evidence=historical_terminal_evidence,
         production_semantic_reuse=production_semantic_reuse,
+        authoring_backend=bundle_receipt.get("replacement_authoring_backend", "content_agents"),
     )
     if historical_terminal_evidence and not diagnostic_only:
         errors.append("historical_terminal_evidence_scope_invalid")

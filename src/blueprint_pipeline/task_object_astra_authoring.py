@@ -175,20 +175,21 @@ def invoke_vision(invoker, request: AuthoringRequest, *, capability: str,
         'regions explicit. Outputs are development-only candidates, never physical truth.'
     )
     stable_prefix = instructions + '\n' + cache_prefix if cache_prefix else None
+    reasoning_effort = 'medium' if output_type is BlenderProgram else 'high'
     if stable_prefix:
         from .asset_authoring_prompt_cache import asset_cache_policy
         family = {'VisualBrief': 'source_analysis', 'BlenderProgram': 'blender_author',
                   'PhysicalPropertyReviewProposal': 'physics',
                   'AppearanceReview': 'visual_review'}[output_type.__name__]
         cache_policy = asset_cache_policy(family=family,
-            output_type=output_type, stable_prefix=stable_prefix)
+            output_type=output_type, stable_prefix=stable_prefix, reasoning_effort=reasoning_effort)
     else:
         cache_policy = None
     spec = AgentsSDKAgentSpec(
         run_id=request.run_id, capability=f'{request.object_id}_{capability}',
         name=f'Blueprint {capability}', instructions=instructions, model=MODEL,
         max_turns=1, max_output_tokens=12000, max_input_tokens=80000,
-        reasoning_effort='high', output_type=output_type,
+        reasoning_effort=reasoning_effort, output_type=output_type,
         stable_developer_prefix=stable_prefix, cache_policy=cache_policy,
     )
     invocation = invoker.invoke(spec, [{'role': 'user', 'content': content}])
@@ -209,16 +210,32 @@ def validate_blender_program(source: str) -> None:
                  'getattr', 'setattr', 'globals', 'locals', 'vars', 'breakpoint'}
     forbidden_attributes = {'load', 'libraries', 'drivers', 'driver_add',
                             'preferences', 'handlers', 'app', 'save', 'save_render'}
+    # Generated Blender scripts commonly look up an injected input this way.
+    # Admit only a literal read of the three public wrapper inputs, never the
+    # global mapping itself or mutation/introspection of arbitrary names.
+    input_global_reads = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == 'get' and isinstance(node.func.value, ast.Call)
+                and isinstance(node.func.value.func, ast.Name) and node.func.value.func.id == 'globals'
+                and not node.func.value.args and not node.func.value.keywords
+                and len(node.args) == 1 and not node.keywords
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value in {'CAD_BASE', 'DIMENSIONS', 'SOURCE_IMAGES'}):
+            input_global_reads.add(id(node.func.value.func))
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else [node.module or '']
             if any(name.split('.')[0] not in {'bpy', 'math', 'mathutils'} for name in names):
                 raise AssetAuthoringError('authoring_blender_import_forbidden')
-        if isinstance(node, ast.Name) and node.id in forbidden:
+        if isinstance(node, ast.Name) and node.id in forbidden and id(node) not in input_global_reads:
             raise AssetAuthoringError('authoring_blender_operation_forbidden')
         if isinstance(node, ast.Attribute) and (node.attr.startswith('__') or node.attr in forbidden_attributes):
             raise AssetAuthoringError('authoring_blender_attribute_forbidden')
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute) and node.value.attr == 'ops' and node.attr not in {'mesh', 'object', 'transform', 'uv'}:
+        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute)
+                and node.value.attr == 'rigidbody' and node.attr != 'object_add'):
+            raise AssetAuthoringError('authoring_blender_operator_forbidden')
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute) and node.value.attr == 'ops' and node.attr not in {'mesh', 'object', 'transform', 'uv', 'rigidbody'}:
             raise AssetAuthoringError('authoring_blender_operator_forbidden')
 
 
@@ -252,7 +269,11 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                            mac_executor, blender_runner, blender_executable: str,
                            adopted_source_analysis: VisualBrief | None = None,
                            adoption_record: dict | None = None,
-                           authoring_instructions: str = '') -> dict:
+                           authoring_instructions: str = '',
+                           adopted_physical_review: PhysicalPropertyReviewProposal | None = None,
+                           physical_adoption_record: dict | None = None,
+                           adopted_blender_program: BlenderProgram | None = None,
+                           blender_adoption_record: dict | None = None) -> dict:
     """Two bounded visual attempts, independent physics review, retained failures.
 
     ``mac_executor(brief, output_root, dimensions_m)`` must execute pinned CAD
@@ -300,13 +321,22 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
         cad = mac_executor(brief=compact_cad_handoff(request, brief), output_root=output_root / 'cad',
                            dimensions_m=request.dimensions_m)
         save_json(output_root / 'cad_result.json', cad)
-        physics = invoke_vision(invoker, request, capability='physical_property_review',
-            prompt=build_physical_property_review_prompt(physical_input) +
-                   '\nConstruction constraints: ' + request.construction_constraints +
-                   '\nDeterministic CAD readback (volume in cubic millimetres; multiply by 1e-9 for m3): ' +
-                   canonical_json(cad.get('readback', {})),
-            output_type=PhysicalPropertyReviewProposal, frames=request.source_frames,
-            root=output_root, cache_prefix=authoring_instructions)
+        if adopted_physical_review is not None:
+            if (not physical_adoption_record
+                or physical_adoption_record.get('output_digest') != canonical_digest(adopted_physical_review.model_dump(mode='json'))
+                or physical_adoption_record.get('physical_input_digest') != canonical_digest(physical_input.model_dump(mode='json'))
+                or physical_adoption_record.get('cad_readback_digest') != canonical_digest(cad.get('readback', {}))):
+                raise AssetAuthoringError('authoring_physical_review_adoption_invalid')
+            physics = adopted_physical_review
+            save_json(output_root / 'physical_review_adoption.json', physical_adoption_record)
+        else:
+            physics = invoke_vision(invoker, request, capability='physical_property_review',
+                prompt=build_physical_property_review_prompt(physical_input) +
+                       '\nConstruction constraints: ' + request.construction_constraints +
+                       '\nDeterministic CAD readback (volume in cubic millimetres; multiply by 1e-9 for m3): ' +
+                       canonical_json(cad.get('readback', {})),
+                output_type=PhysicalPropertyReviewProposal, frames=request.source_frames,
+                root=output_root, cache_prefix=authoring_instructions)
         physical_result = review_physical_properties(physical_input, physics)
         save_json(output_root / 'physical_property_review_result.json', physical_result.model_dump(mode='json'))
         if physical_result.accepted is None:
@@ -316,10 +346,18 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
         for index in range(MAX_AUTHORING_ROUNDS):
             attempt = output_root / f'appearance-{index:02d}'
             attempt.mkdir()
-            program = invoke_vision(invoker, request, capability=f'blender_author_{index}',
-                prompt=blender_author_prompt(request, brief, prior_feedback),
-                output_type=BlenderProgram, frames=request.source_frames, root=attempt,
-                cache_prefix=authoring_instructions)
+            if index == 0 and adopted_blender_program is not None:
+                if (not blender_adoption_record
+                    or blender_adoption_record.get('output_digest') != canonical_digest(adopted_blender_program.model_dump(mode='json'))
+                    or blender_adoption_record.get('cad_readback_digest') != canonical_digest(cad.get('readback', {}))):
+                    raise AssetAuthoringError('authoring_blender_program_adoption_invalid')
+                program = adopted_blender_program
+                save_json(attempt / 'blender_program_adoption.json', blender_adoption_record)
+            else:
+                program = invoke_vision(invoker, request, capability=f'blender_author_{index}',
+                    prompt=blender_author_prompt(request, brief, prior_feedback),
+                    output_type=BlenderProgram, frames=request.source_frames, root=attempt,
+                    cache_prefix=authoring_instructions)
             validate_blender_program(program.program)
             (attempt / 'asset_program.py').write_text(program.program, encoding='utf-8')
             stl = Path(cad['stl']['path'])
@@ -380,6 +418,8 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
             'asset': file_record(selected / 'candidate.usdc'),
             'blend': file_record(selected / 'candidate.blend'),
             'cad': cad, 'geometry_readback': file_record(selected / 'geometry_readback.json'),
+            'final_visual_mesh': file_record(selected / 'final_visual_mesh.json'),
+            'final_visual_mesh_receipt': file_record(selected / 'final_visual_mesh_receipt.json'),
             'physical_review': file_record(output_root / 'physical_property_review_result.json'),
             'physical_review_input': file_record(output_root / 'physical_review_input.json'),
             'review_images': [file_record(selected / f'{view}.png') for view in ('perspective', 'top', 'side')],
@@ -406,12 +446,18 @@ def blender_author_prompt(request: AuthoringRequest, brief: VisualBrief, feedbac
         'generic swatch. You may decorate or replace CAD_BASE visual geometry while retaining '
         'the exact supplied envelope. The original STEP remains structural candidate evidence. '
         'Create only the task asset; the wrapper creates lights, ground, cameras, exports '
-        'and renders. No file IO, external assets, saving, rendering, libraries, subprocesses '
+        'and renders. Do not add rigid bodies, collision simulation settings, or guessed mass/friction; '
+        'the separate accepted physical review and packaging stage own all dynamics. '
+        'Use CAD_BASE, DIMENSIONS and SOURCE_IMAGES directly from the injected namespace. '
+        'No file IO, external assets, saving, rendering, libraries, subprocesses '
         'or external networking. Only bpy/math/mathutils imports. Do not load images from paths. '
         'No camera/light objects. Use Principled BSDF, opaque observed paper/plastic must '
         'have Alpha=1 and Transmission Weight=0. Preserve observed parts/material differences. '
         'Use mesh UVs for real source texture regions; do not bake scene surroundings onto '
         'unrelated surfaces. Keep units and extrema exact; no invisible sizing geometry. '
+        'Preserve nominal parameters in double precision, but Blender Vector/mesh storage is '
+        'float32: numerical checks on computed mesh volume must allow float32 rounding '
+        '(for example 1e-6 relative). The wrapper independently checks the final 10-micrometre envelope. '
         'Blender 5.2 mesh primitives and bpy.data.from_pydata work. Avoid fragile context '
         'operators where possible. Materials use nodes. Return the complete replacement '
         'program on repair.\nBinding request: ' + canonical_json({
