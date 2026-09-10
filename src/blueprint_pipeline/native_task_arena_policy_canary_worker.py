@@ -1110,6 +1110,11 @@ def _write_episode_failure_gap(
     progress = progress if isinstance(progress, Mapping) else {}
     first_observation_retained = progress.get("first_observation_retained") is True
     candidate_policy_queried = progress.get("candidate_policy_queried") is True
+    query_attempted = candidate_policy_queried or progress.get("candidate_policy_query_attempted") is True
+    query_attempt = {
+        "candidate_policy_query_attempted": query_attempted,
+        "policy_response_status": "received" if candidate_policy_queried else "unproven" if query_attempted else "not_attempted",
+    }
     candidate_action_returned = progress.get("candidate_action_returned") is True
     action_applied = progress.get("candidate_action_applied") is True
     violations = [
@@ -1222,14 +1227,16 @@ def _write_episode_failure_gap(
             role="review_video",
             role_match=lambda name: "video" in name,
         )
-    if candidate_policy_queried:
+    if query_attempted:
         evidence_artifacts["policy_query_receipt"] = _write_episode_json_artifact(
             output_root,
             episode_id=episode_id,
             role="policy_query_receipt",
             value={
-                "candidate_policy_queried": True,
+                **query_attempt,
+                "candidate_policy_queried": candidate_policy_queried,
                 "candidate_action_returned": candidate_action_returned,
+                "policy_request_artifacts": progress.get("policy_request_artifacts") or [],
                 "policy_queries": raw_queries,
             },
         )
@@ -1266,6 +1273,7 @@ def _write_episode_failure_gap(
             }
         ),
         "candidate_policy_queried": candidate_policy_queried,
+        **query_attempt,
         "candidate_action_returned": candidate_action_returned,
         "candidate_action_shape_validated": (
             progress.get("candidate_action_shape_validated") is True
@@ -1303,6 +1311,7 @@ def _write_episode_failure_gap(
         ),
         "evidence_artifacts": evidence_artifacts,
         "episode": {
+            **query_attempt,
             "episode_id": episode_id,
             "policy_request_artifacts": progress.get("policy_request_artifacts") or [],
             "scientific_reset": progress.get("scientific_reset"),
