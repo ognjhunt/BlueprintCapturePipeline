@@ -192,6 +192,27 @@ def test_official_droid_camera_route_does_not_require_a_mount_sweep_registry():
         policy_observation_gate_mode({}, plan)
 
 
+def test_static_preflight_rejects_digest_valid_action_overrun_in_every_cell(tmp_path):
+    import json
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import preflight_policy_canary_runtime_directory
+    from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import _stage_runtime_root
+
+    runtime, _ = _stage_runtime_root(tmp_path)
+    (runtime / "native_task_packet/native_task_arena_packet_request.v1.json").write_text("{}")
+    assert preflight_policy_canary_runtime_directory(runtime)["status"] == "passed"
+    path = runtime / "runtime_inputs/policy_execution_spec.pi05_droid.json"
+    spec = json.loads(path.read_text())
+    spec["max_policy_queries"] = 10000
+    spec["execution_spec_digest"] = canonical_digest(spec, digest_field="execution_spec_digest")
+    path.write_text(json.dumps(spec))
+    report = preflight_policy_canary_runtime_directory(runtime)
+    budget_blockers = [item for item in report["blockers"] if "policy_episode_action_budget_exceeds_task_spec" in item]
+    assert len(budget_blockers) == 10
+    assert all("episode_budget.pi05_droid" in item for item in budget_blockers)
+    assert report["provider_mutation_performed"] is False
+    assert report["candidate_policy_queried"] is False
+
+
 def test_static_preflight_reports_independent_errors_together(tmp_path):
     import json
     from blueprint_pipeline.native_task_arena_policy_canary_worker import preflight_policy_canary_runtime_directory

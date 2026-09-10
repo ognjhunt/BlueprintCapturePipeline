@@ -348,6 +348,16 @@ def preflight_policy_canary_static_inputs(
                     == float(plan["cadence"]["control_frequency_hz"]) == 15.0):
                 raise RuntimeError("policy_canary_control_frequency_invalid")
         check(f"cell.{index}.cadence", validate_cadence)
+        for candidate, spec in specs.items():
+            def validate_episode_budget(plan=plan, spec=spec):
+                from blueprint_pipeline.adp009d_policy_episode import _resolved_task_spec
+                _resolved_task_spec(
+                    task_spec=plan["task_spec"], destination_position_world_m=None,
+                    settle_window_samples=int(plan["task_spec"]["settle_window_samples"]),
+                    max_policy_queries=int(spec["max_policy_queries"]),
+                    open_loop_horizon=int(spec["open_loop_horizon"]),
+                )
+            check(f"cell.{index}.episode_budget.{candidate}", validate_episode_budget)
         mode = check(f"cell.{index}.observation_route", lambda plan=plan: policy_observation_gate_mode(packet_request, plan))
         cells.append({"cell_id": cell.get("cell_id"), "observation_gate_mode": mode})
         if mode == "sealed_reference_and_human_review" and backend is not None:

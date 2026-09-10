@@ -1487,7 +1487,11 @@ def test_native_configuration_mismatch_is_refused_before_isaac_and_policies(
 
     result = json.loads((child_root / "policy_canary_static_startup_preflight.v1.json").read_text())
     assert result["status"] == "blocked"
-    assert all(blocker in observed for observed in result["blockers"])
+    expected_reasons = {blocker}
+    if fault == "cadence":
+        expected_reasons.add("policy_episode_control_frequency_task_spec_mismatch")
+    assert all(any(reason in observed for reason in expected_reasons)
+               for observed in result["blockers"])
     assert result["candidate_policy_queried"] is False
     assert isaac.launches == 0
 

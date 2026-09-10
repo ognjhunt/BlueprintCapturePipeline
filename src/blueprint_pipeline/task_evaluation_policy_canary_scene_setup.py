@@ -29,6 +29,7 @@ from .adp009d_droid_observation import (
     DROID_WRIST_VIEW,
 )
 from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
+from .adp009d_policy_episode import maximum_policy_queries_for_task_spec
 from .common import utc_now_iso, write_json
 from .decision_evidence_contracts import (
     canonical_digest,
@@ -471,7 +472,9 @@ def _candidate_spec(
     }
     rights["rights_receipt_digest"] = canonical_digest(rights, digest_field="rights_receipt_digest")
     horizon = int(policy.open_loop_horizon)
-    max_queries = math.ceil(int(scene_plan["task_spec"]["maximum_action_steps"]) / horizon)
+    max_queries = maximum_policy_queries_for_task_spec(
+        scene_plan["task_spec"], open_loop_horizon=horizon
+    )
     spec: dict[str, Any] = {
         "schema_version": SPEC_SCHEMA_VERSION,
         "candidate_id": candidate_id,
