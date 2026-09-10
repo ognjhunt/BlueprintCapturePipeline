@@ -6,39 +6,16 @@ a failed or partial attempt, prevents this path from returning budget or retries
 """
 from __future__ import annotations
 
+from .task_evaluation_retained_controls_evidence import validate_terminal_retirement as validate_retirement
+
 import os
-import re
 from pathlib import Path
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
-from .task_evaluation_unstarted_controls_reservations import DIRECTORY, _file, _read
+from .task_evaluation_retained_controls_evidence import DIRECTORY, _file, _read
 
 SCHEMA = 'task_evaluation_unmaterialized_adoption_cancellation.v1'
-
-
-def validate_retirement(*, receipt: Mapping[str, Any], attempt: Mapping[str, Any]) -> None:
-    from .task_evaluation_controls_autoprovision import _require
-    ref = receipt.get('source_adoption_intent') or {}
-    intent = _read(Path(str(ref.get('path') or '')))
-    _require(receipt.get('schema_version') == SCHEMA
-        and receipt.get('status') == 'cancelled_before_adoption_materialization'
-        and receipt.get('receipt_digest') == canonical_digest(receipt, digest_field='receipt_digest')
-        and all(receipt.get(k) == attempt.get(k) for k in ('attempt_id', 'attempt_digest', 'intent_digest', 'provider', 'maximum_spend_usd'))
-        and _file(Path(ref['path'])) == ref
-        and intent.get('intent_digest') == canonical_digest(intent, digest_field='intent_digest')
-        and intent.get('expected_production_commit') == attempt.get('source_commit')
-        and (intent.get('configuration_adoption') or {}).get('mode') == 'explicit_terminal_adoption'
-        and re.fullmatch(r'[0-9a-f]{40}', str(receipt.get('superseding_release')))
-        and receipt['superseding_release'] != attempt['source_commit']
-        and receipt.get('materialization_started') is False
-        and receipt.get('provider_mutation_performed') is False,
-        'terminal_adoption_retirement_invalid')
-    owner = _read(Path(intent['phases']['construction']['authorization_path']))['scene_owner_attempt']['scene_attempt_binding']
-    stem = owner['attempt_id'].removesuffix('-construction')
-    _require(attempt['attempt_id'] in {stem+'-'+p for p in ('construction', 'controls', 'placement')}
-        and all(owner[k] == attempt[k] for k in ('intent_id', 'intent_digest', 'source_commit', 'input_digest', 'runtime_digest')),
-        'terminal_adoption_retirement_owner_mismatch')
 
 
 def retire_unmaterialized_adoptions(*, config: Mapping[str, Any], intent_id: str,
@@ -48,7 +25,7 @@ def retire_unmaterialized_adoptions(*, config: Mapping[str, Any], intent_id: str
     from .task_evaluation_controls_autoprovision import _require, _sealed
     from .task_evaluation_configured_controls_autostart import validate_configured_controls_autostart_intent
     from .task_evaluation_release_identity import running_release_commit
-    from .task_evaluation_unstarted_controls_reservations import validated_cancellation
+    from .task_evaluation_retained_controls_evidence import validated_cancellation
 
     base = Path(config['controls_root'])/'terminal-adoptions'/intent_id
     candidates = list(base.glob('*/terminal_adoption_provisioning.json'))

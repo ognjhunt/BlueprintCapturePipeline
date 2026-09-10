@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
-from .task_evaluation_unstarted_controls_reservations import _read
+from .task_evaluation_retained_controls_evidence import _read
 
 SCHEMA = 'task_evaluation_visual_review_correction_authority.v1'
 DIRECTORY = 'visual-review-corrections'
@@ -14,7 +14,7 @@ DIRECTORY = 'visual-review-corrections'
 
 def validate(*, directory: Path, value: Mapping[str, Any], admission: bool = False, now: float | None = None) -> dict[str, Any]:
     from . import task_evaluation_scene_intake as intake
-    from .task_evaluation_visual_review_continuation import require
+    from .task_evaluation_retained_controls_evidence import _visual_require as require
     require(intake._identifier(value.get('source_attempt_id')), 'source_attempt_id_invalid')
     require(intake._DIGEST.fullmatch(str(value.get('source_placement_receipt_digest'))) is not None,
             'source_receipt_digest_invalid')

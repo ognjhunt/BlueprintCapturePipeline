@@ -6,12 +6,18 @@ reopened, never replaced by an authored success or an invented pose.
 """
 from __future__ import annotations
 
+from .task_evaluation_retained_controls_evidence import (
+    _visual_require as require, validate_visual_continuation as validate,
+    _visual_ref as reference,  # noqa: F401 - historical public facade
+    validate_visual_native_retirement as validate_native_retirement,  # noqa: F401 - historical public facade
+)
+
 import os
 from pathlib import Path
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
-from .task_evaluation_unstarted_controls_reservations import _file, _read
+from .task_evaluation_retained_controls_evidence import _file, _read
 
 SCHEMA = 'task_evaluation_visual_review_continuation.v1'
 RETIREMENT_SCHEMA = 'task_evaluation_unstarted_native_after_visual_review.v1'
@@ -19,57 +25,6 @@ REVIEW_CAP = .15
 NATIVE_CAP = .40
 MAX_INPUT_TOKENS = 12000
 MAX_OUTPUT_TOKENS = 4096
-
-
-def require(value: Any, code: str) -> None:
-    if not value:
-        raise ValueError('visual_review_continuation_'+code)
-
-
-def reference(value: Mapping[str, Any]) -> dict[str, Any]:
-    p = Path(str(value.get('path') or ''))
-    require(_file(p) == dict(value), 'reference_changed')
-    return _read(p)
-
-
-def validate(value: Mapping[str, Any], *, expected_commit: str | None = None) -> dict[str, Any]:
-    from .task_evaluation_configured_controls_autostart import validate_configured_controls_autostart_intent
-    require(value.get('schema_version') == SCHEMA
-        and value.get('continuation_digest') == canonical_digest(value,digest_field='continuation_digest')
-        and value.get('maximum_reviewer_calls') == 1
-        and value.get('review_hard_cap_usd') == REVIEW_CAP
-        and value.get('native_phase_hard_cap_usd') == NATIVE_CAP
-        and (expected_commit is None or value.get('execution_commit') == expected_commit), 'invalid')
-    old = validate_configured_controls_autostart_intent(reference(value['source_intent']))
-    grant = reference(value['review_authority'])
-    require('visual_review_continuation' not in old and old['expected_production_commit'] != value['execution_commit'], 'recursive_or_same_release')
-    receipt = reference(value['source_placement_receipt'])
-    from .task_evaluation_visual_review_authority import validate as validate_authority
-    directory = Path(value['review_authority']['path']).parent.parent
-    validate_authority(directory=directory,value=grant)
-    require(grant['source_placement_receipt_digest'] == receipt.get('receipt_digest'), 'owner_approved_other_review')
-    inventory = reference(value['source_inventory'])
-    require(receipt.get('receipt_digest') == canonical_digest(receipt,digest_field='receipt_digest')
-        and receipt.get('status') == 'blocked' and receipt.get('accepted_pose') is None
-        and receipt.get('model') == 'gpt-5.6-sol' and receipt.get('reasoning_effort') == 'high'
-        and receipt.get('native_attempt_count') == 0 and receipt.get('model_grades_controls') is False
-        and inventory.get('checkpoint_digest') == canonical_digest(inventory,digest_field='checkpoint_digest')
-        and inventory.get('candidate_inventory_digest') == receipt.get('candidate_inventory_digest'), 'source_invalid')
-    rounds = receipt.get('rounds') or []
-    require(bool(rounds) and all(r.get('geometry_gate',{}).get('status') == 'passed'
-        and r.get('visual_review',{}).get('camera_views_are_sufficient') is False
-        and r.get('visual_review',{}).get('status') in {'uncertain','rejected'}
-        and r.get('native_attempt') is None for r in rounds), 'not_preview_only_failure')
-    proposal = rounds[0]['proposal']
-    require(any(c.get('candidate_id') == proposal.get('candidate_id') and c.get('pose') == proposal.get('pose')
-        and c.get('support_surface_id') == proposal.get('support_surface_id') for c in inventory.get('candidates',[])), 'proposal_not_inventory_member')
-    completion = reference(value['source_cost_completion'])
-    require(completion.get('completion_receipt_digest') == canonical_digest(completion,digest_field='completion_receipt_digest')
-        and completion.get('provider_call_performed') is True
-        and completion.get('runtime_result_digest') == receipt['receipt_digest']
-        and completion.get('authorization_receipt_digest') == old['intent_digest'], 'source_cost_missing')
-    require(old['configuration_adoption']['source_launch_id'] == value['source_launch_id'], 'source_launch_mismatch')
-    return {'intent':old,'receipt':receipt,'inventory':inventory,'proposal':proposal}
 
 
 def native_plan_absent(*, config: Mapping[str, Any], source_launch_id: str, source_commit: str) -> bool:
@@ -85,7 +40,7 @@ def native_plan_absent(*, config: Mapping[str, Any], source_launch_id: str, sour
 
 def discover(*, config: Mapping[str, Any], intent_id: str, source: Mapping[str, Any], expected_commit: str) -> dict[str, Any] | None:
     from .task_evaluation_controls_autoprovision import _sealed
-    from .task_evaluation_unstarted_controls_reservations import validated_cancellation
+    from .task_evaluation_retained_controls_evidence import validated_cancellation
     from . import task_evaluation_scene_intake as intake
     state = Path(config.get('progression_root') or os.getenv('BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_STATE_ROOT')
         or str(Path(config['scene_root']).parent/'task-evaluation-configured-controls'))
@@ -146,17 +101,3 @@ def discover(*, config: Mapping[str, Any], intent_id: str, source: Mapping[str, 
         matches.append(packet)
     require(len(matches)<=1,'ambiguous_sources')
     return matches[0] if matches else None
-
-
-def validate_native_retirement(*, receipt: Mapping[str, Any], attempt: Mapping[str, Any]) -> None:
-    source=validate(receipt['visual_review_continuation'])
-    old=source['intent']
-    require(receipt.get('schema_version') == RETIREMENT_SCHEMA
-        and receipt.get('receipt_digest') == canonical_digest(receipt,digest_field='receipt_digest')
-        and receipt.get('status') == 'cancelled_before_native_activation'
-        and receipt.get('native_activation_absent') is True and receipt.get('spent_placement_hold_retained') is True
-        and receipt.get('provider_mutation_performed') is False
-        and all(receipt.get(k)==attempt.get(k) for k in ('attempt_id','attempt_digest','intent_digest','provider','maximum_spend_usd'))
-        and attempt['source_commit']==old['expected_production_commit'] and attempt['provider']=='vast', 'retirement_invalid')
-    owners=[_read(Path(old['phases'][phase]['authorization_path']))['scene_owner_attempt']['scene_attempt_binding'] for phase in ('construction','controls')]
-    require(any(all(owner[k]==attempt[k] for k in ('attempt_id','intent_id','intent_digest','source_commit','input_digest','runtime_digest')) for owner in owners), 'retirement_owner_mismatch')

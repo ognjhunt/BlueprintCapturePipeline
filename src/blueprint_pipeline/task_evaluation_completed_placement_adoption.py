@@ -2,27 +2,22 @@
 
 from __future__ import annotations
 
+from .task_evaluation_retained_controls_evidence import (
+    _placement_require as require, _placement_ref as read_ref,
+    validate_placement_adoption as validate_adoption,
+    validate_placement_cancellation as validate_cancellation,
+)
+
 import os
 import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
-from .task_evaluation_unstarted_controls_reservations import _file, _read
+from .task_evaluation_retained_controls_evidence import _file, _read
 
 SCHEMA = "task_evaluation_completed_placement_adoption.v1"
 CANCELLATION_SCHEMA = "task_evaluation_unused_native_plan_cancellation.v1"
-
-
-def require(condition: Any, code: str) -> None:
-    if not condition:
-        raise ValueError("completed_placement_adoption_" + code)
-
-
-def read_ref(ref: Mapping[str, Any]) -> dict[str, Any]:
-    path = Path(ref["path"])
-    require(_file(path) == dict(ref), "reference_changed")
-    return _read(path)
 
 
 def checkpoint_reference(*, result: Mapping[str, Any], binding: Path, token: str) -> dict:
@@ -98,80 +93,6 @@ def materialize_legacy_checkpoint_alias(*, intent_path: Path, binding_root: Path
     }
 
 
-def validate_adoption(
-    value: Mapping[str, Any], *, expected_owner_digest: str | None = None
-) -> dict[str, Any]:
-    from . import task_evaluation_configured_controls_autostart as auto
-    from .task_evaluation_configured_controls_progression_worker import _plan
-    from .task_evaluation_robot_placement_agent import validate_robot_placement_receipt
-
-    require(
-        value.get("schema_version") == SCHEMA
-        and value.get("adoption_digest") == canonical_digest(value, digest_field="adoption_digest"),
-        "invalid",
-    )
-    intent = auto.validate_configured_controls_autostart_intent(read_ref(value["source_intent"]))
-    result = read_ref(value["source_result"])
-    auto._validate_result(
-        result,
-        expected_intent_digest=intent["intent_digest"],
-        expected_scene_binding_digest=result["scene_binding_digest"],
-        expected_task_binding_digest=result["task_binding_digest"],
-        expected_cpu_checkpoint_binding_digest=result["cpu_placement_checkpoint_binding_digest"],
-    )
-    read_ref(value["source_plan"])
-    plan = _plan(Path(value["source_plan"]["path"]))
-    require(
-        plan["plan_digest"] == result["plan_digest"]
-        and plan["expected_production_commit"] == intent["expected_production_commit"]
-        and plan["source_launch_id"] == value["source_launch_id"]
-        and plan["source_configuration_commit"] == intent["configuration_source_commit"],
-        "plan_mismatch",
-    )
-    checkpoint = read_ref(value["source_agent_checkpoint"])
-    require(
-        checkpoint.get("checkpoint_digest")
-        == canonical_digest(checkpoint, digest_field="checkpoint_digest"),
-        "checkpoint_invalid",
-    )
-    receipt_path = Path(checkpoint["receipt_path"])
-    inventory_path = Path(checkpoint["inventory_path"])
-    require(
-        _file(receipt_path)["digest"] == checkpoint["receipt_sha256"]
-        and _file(inventory_path)["digest"] == checkpoint["inventory_sha256"],
-        "checkpoint_changed",
-    )
-    receipt = validate_robot_placement_receipt(
-        _read(receipt_path),
-        expected_scene_binding_digest=result["scene_binding_digest"],
-        expected_task_binding_digest=result["task_binding_digest"],
-    )
-    inventory = _read(inventory_path)
-    require(
-        receipt["receipt_digest"] == result["placement_agent_receipt_digest"]
-        and inventory["checkpoint_digest"]
-        == canonical_digest(inventory, digest_field="checkpoint_digest")
-        and inventory["candidate_inventory_digest"] == result["candidate_inventory_digest"],
-        "placement_mismatch",
-    )
-    owner = _read(Path(intent["phases"]["construction"]["authorization_path"]))[
-        "scene_owner_attempt"
-    ]["scene_attempt_binding"]
-    require(
-        value["owner_intent_digest"] == owner["intent_digest"]
-        and (expected_owner_digest is None or owner["intent_digest"] == expected_owner_digest),
-        "owner_mismatch",
-    )
-    return {
-        "intent": intent,
-        "result": result,
-        "plan": plan,
-        "placement": receipt,
-        "inventory": inventory,
-        "owner": owner,
-    }
-
-
 def native_submission_absent(*, config: Mapping[str, Any], plan: Mapping[str, Any]) -> bool:
     state = Path(
         config.get("progression_root")
@@ -211,7 +132,7 @@ def discover(
 ) -> dict[str, Any] | None:
     from . import task_evaluation_configured_controls_autostart as auto
     from .task_evaluation_controls_autoprovision import _sealed
-    from .task_evaluation_unstarted_controls_reservations import validated_cancellation
+    from .task_evaluation_retained_controls_evidence import validated_cancellation
     from . import task_evaluation_scene_intake as intake
 
     state = Path(
@@ -267,60 +188,11 @@ def discover(
     return matches[0] if matches else None
 
 
-def validate_cancellation(*, receipt: Mapping[str, Any], attempt: Mapping[str, Any]) -> None:
-    source = validate_adoption(
-        receipt["completed_placement_adoption"], expected_owner_digest=attempt["intent_digest"]
-    )
-    require(
-        receipt.get("schema_version") == CANCELLATION_SCHEMA
-        and receipt.get("receipt_digest")
-        == canonical_digest(receipt, digest_field="receipt_digest")
-        and receipt.get("status") == "cancelled_before_native_submission"
-        and receipt.get("native_submission_absent") is True
-        and receipt.get("model_holds_retained") is True
-        and receipt.get("provider_mutation_performed") is False
-        and all(
-            receipt.get(k) == attempt.get(k)
-            for k in (
-                "attempt_id",
-                "attempt_digest",
-                "intent_digest",
-                "provider",
-                "maximum_spend_usd",
-            )
-        )
-        and attempt["provider"] == "vast"
-        and attempt["source_commit"] == source["intent"]["expected_production_commit"],
-        "cancellation_invalid",
-    )
-    owners = [
-        _read(Path(p["authorization_path"]))["scene_owner_attempt"]["scene_attempt_binding"]
-        for p in source["intent"]["phases"].values()
-    ]
-    require(
-        any(
-            all(
-                o[k] == attempt[k]
-                for k in (
-                    "attempt_id",
-                    "intent_id",
-                    "intent_digest",
-                    "source_commit",
-                    "runtime_digest",
-                    "input_digest",
-                )
-            )
-            for o in owners
-        ),
-        "cancellation_owner_mismatch",
-    )
-
-
 def retire_unused_native(
     *, config: Mapping[str, Any], intent_id: str, packet: Mapping[str, Any], dry_run: bool = False
 ) -> None:
     from . import task_evaluation_scene_intake as intake
-    from .task_evaluation_unstarted_controls_reservations import DIRECTORY, validated_cancellation
+    from .task_evaluation_retained_controls_evidence import DIRECTORY, validated_cancellation
     from .task_evaluation_release_identity import running_release_commit
 
     source = validate_adoption(packet)

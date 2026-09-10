@@ -10,6 +10,8 @@ an allocator or provider directly.
 
 from __future__ import annotations
 
+from .configured_controls_plan_validation import TaskEvaluationConfiguredControlsProgressionWorkerError as TaskEvaluationConfiguredControlsProgressionWorkerError
+
 import argparse
 import hashlib
 import json
@@ -81,10 +83,6 @@ CONFIGURED_CONTROLS_RELEASE_WINDOW_KEY_PREFIX = (
 )
 Submitter = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 PublisherFactory = Callable[[], Callable[..., Mapping[str, Any]]]
-
-
-class TaskEvaluationConfiguredControlsProgressionWorkerError(RuntimeError):
-    """The automatic progression worker refused an unsafe transition."""
 
 
 def configured_controls_object_store_publisher() -> Callable[..., Mapping[str, Any]]:

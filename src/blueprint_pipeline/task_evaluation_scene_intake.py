@@ -243,7 +243,7 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             body['visual_review_correction'] = {'scope':'placement_visual_review_only',
                 'authority_digest':grant['authority_digest'],'source_attempt_id':grant['source_attempt_id']}
         path = attempts / (attempt_id + ".json")
-        from .task_evaluation_unstarted_controls_reservations import validated_cancellation
+        from .task_evaluation_retained_controls_evidence import validated_cancellation
         if path.exists():
             _require(validated_cancellation(directory, _read(path, "attempt_digest")) is None,
                      "attempt_cancelled_before_execution")
@@ -354,7 +354,7 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
         attempts.append({key: row[key] for key in (
             "attempt_id", "source_commit", "runtime_digest", "input_digest", "provider",
             "maximum_spend_usd", "status")})
-        from .task_evaluation_unstarted_controls_reservations import validated_cancellation
+        from .task_evaluation_retained_controls_evidence import validated_cancellation
         if validated_cancellation(directory, row) is not None:
             attempts[-1]["status"] = "cancelled_before_execution"
     # Expiry and revocation close the authority to admit *new* execution. They

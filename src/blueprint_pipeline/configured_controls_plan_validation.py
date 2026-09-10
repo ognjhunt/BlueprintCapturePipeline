@@ -5,6 +5,9 @@ checks; service progression and pause/omission decisions remain in the worker.
 """
 from __future__ import annotations
 
+import json
+import hashlib
+
 from pathlib import Path
 import re
 import stat
@@ -132,3 +135,31 @@ def load_configured_controls_plan(
         )
     return value
 
+
+class TaskEvaluationConfiguredControlsProgressionWorkerError(RuntimeError):
+    """The automatic progression worker refused an unsafe transition."""
+
+
+def read_configured_controls_plan(path: Path) -> dict[str, Any]:
+    """Reopen the same complete plan contract without importing its execution worker."""
+    def load(path: Path, *, blocker: str) -> dict[str, Any]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(blocker) from exc
+        if path.is_symlink() or not isinstance(value, Mapping):
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(blocker)
+        return dict(value)
+
+    def sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return "sha256:" + digest.hexdigest()
+
+    return load_configured_controls_plan(path, load_json=load, sha256=sha256,
+        error_factory=TaskEvaluationConfiguredControlsProgressionWorkerError,
+        plan_schema="task_evaluation_configured_controls_progression_plan.v2",
+        destination_plan_schema="task_evaluation_configured_controls_progression_plan.v3",
+        commit_pattern=re.compile(r"[0-9a-f]{40}"))

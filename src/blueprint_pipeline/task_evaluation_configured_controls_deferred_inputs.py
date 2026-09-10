@@ -17,6 +17,17 @@ idempotent and immutable; it executes nothing and screens nothing itself.
 
 from __future__ import annotations
 
+from .task_evaluation_deferred_controls_contract import (
+    TRAJECTORY_MODE as TRAJECTORY_MODE,
+    OVERVIEW_MODE as OVERVIEW_MODE,
+    SCENE_BUNDLE_MODE as SCENE_BUNDLE_MODE,
+    DEFERRED_KEY as DEFERRED_KEY,
+    DEFERRABLE_MODES as DEFERRABLE_MODES,
+    ConfiguredControlsDeferredInputError as ConfiguredControlsDeferredInputError,
+    deferred_declarations as deferred_declarations,
+    concrete_paths as concrete_paths,
+)
+
 import hashlib
 import json
 import re
@@ -51,14 +62,6 @@ from .task_evaluation_robot_placement_trajectory import (
 )
 
 
-TRAJECTORY_MODE = "derive_from_configured_revision"
-OVERVIEW_MODE = "configured_task_thumbnail"
-SCENE_BUNDLE_MODE = "configured_scene_bundle"
-DEFERRED_KEY = "deferred"
-DEFERRABLE_MODES = {
-    "native_trajectory_plan_path": TRAJECTORY_MODE,
-    "overview_image_paths": OVERVIEW_MODE,
-}
 DEFERRED_DIRECTORY = "deferred-inputs"
 TRAJECTORY_FILE_NAME = "native_trajectory_plan.v1.json"
 THUMBNAIL_FILE_NAME = "configured_task_thumbnail.png"
@@ -80,10 +83,6 @@ REVISION_DOCUMENTS: dict[str, tuple[str, str]] = {
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 ReferenceFetcher = Callable[[Mapping[str, Any]], bytes]
-
-
-class ConfiguredControlsDeferredInputError(RuntimeError):
-    """A deferred controls input could not be derived from exact published bytes."""
 
 
 def _digest(payload: bytes) -> str:
@@ -127,35 +126,6 @@ def _write_immutable_bytes(path: Path, payload: bytes, *, conflict: str) -> Path
 
 
 # ------------------------------------------------------------------ declarations
-
-
-def deferred_declarations(paths: Any) -> dict[str, str]:
-    """Return ``{input_name: mode}`` for every deferred input the intent declares."""
-
-    if not isinstance(paths, Mapping):
-        return {}
-    declared: dict[str, str] = {}
-    for name, value in paths.items():
-        if not isinstance(value, Mapping):
-            continue
-        mode = DEFERRABLE_MODES.get(str(name))
-        if (
-            mode is None
-            or set(value) != {DEFERRED_KEY}
-            or value.get(DEFERRED_KEY) != mode
-        ):
-            raise ConfiguredControlsDeferredInputError(
-                f"configured_controls_deferred_declaration_invalid:{name}"
-            )
-        declared[str(name)] = mode
-    return declared
-
-
-def concrete_paths(paths: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the intent paths without their deferred declarations."""
-
-    declared = deferred_declarations(paths)
-    return {name: value for name, value in paths.items() if name not in declared}
 
 
 # ------------------------------------------------------------------ trajectory

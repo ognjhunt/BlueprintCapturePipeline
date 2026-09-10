@@ -18,7 +18,7 @@ from .decision_evidence_contracts import canonical_digest
 def terminal_adoption_source(*, config: Mapping[str, Any], intent_id: str,
                              expected_production_commit: str) -> dict[str, Any] | None:
     from . import task_evaluation_scene_intake as intake
-    from .task_evaluation_unstarted_controls_reservations import validated_cancellation
+    from .task_evaluation_retained_controls_evidence import validated_cancellation
     from .task_evaluation_configured_controls_progression_worker import _validate_source
     from .task_evaluation_controls_autoprovision import _json, _require
 

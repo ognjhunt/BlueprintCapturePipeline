@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import re
 import time
 from decimal import Decimal
 from pathlib import Path
@@ -17,15 +16,10 @@ from typing import Any, Mapping
 
 from .task_evaluation_scene_intake import CLIENTS_ENV, ROOT_ENV, SceneIntakeError, _read
 
-SCHEMA = "task_evaluation_scene_attempt_binding.v1"
-OWNER_FIELDS = {"scene_intent_digest", "scene_attempt_id", "scene_attempt_binding"}
-POLICY_FIELDS = {"scene_policy_candidates", "scene_policy_binding"}
-_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
-
-
-class SceneExecutionAuthorityError(ValueError):
-    pass
+from .task_evaluation_scene_attempt_binding import (
+    BINDING_FIELDS, OWNER_FIELDS, POLICY_FIELDS, SCHEMA, SceneExecutionAuthorityError,
+    scene_execution_binding_blockers,
+)
 
 
 def bind_scene_attempt(attempt: Mapping[str, Any]) -> dict[str, Any]:
@@ -45,25 +39,10 @@ def scene_execution_authority_blockers(
     provider: str | None = None,
     queue_root: str | Path | None = None, now: float | None = None,
 ) -> list[str]:
-    if not (OWNER_FIELDS | POLICY_FIELDS).intersection(value):
-        return []  # existing legacy authority still passes its original gates
-    if not OWNER_FIELDS.issubset(value):
-        return ["scene_execution_owner_binding_missing"]
-    binding = value.get("scene_attempt_binding")
-    required = {"schema_version", "intent_id", "intent_digest", "attempt_id", "source_commit",
-                "runtime_digest", "input_digest"}
-    if (not isinstance(binding, Mapping) or set(binding) != required or binding.get("schema_version") != SCHEMA
-            or any(not isinstance(binding.get(k), str) or _ID.fullmatch(binding[k]) is None
-                   for k in ("intent_id", "attempt_id"))
-            or any(not isinstance(binding.get(k), str) or _DIGEST.fullmatch(binding[k]) is None
-                   for k in ("intent_digest", "runtime_digest", "input_digest"))
-            or binding.get("intent_digest") != value.get("scene_intent_digest")
-            or binding.get("attempt_id") != value.get("scene_attempt_id")
-            or not re.fullmatch(r"[0-9a-f]{40}", str(binding.get("source_commit")))
-            or binding["source_commit"] != (source_commit or value.get("source_commit"))):
-        return ["scene_execution_owner_binding_invalid"]
-    if not reopen_records:
-        return []
+    blockers = scene_execution_binding_blockers(value, source_commit=source_commit)
+    if blockers or not (OWNER_FIELDS | POLICY_FIELDS).intersection(value) or not reopen_records:
+        return blockers
+    binding, required = value['scene_attempt_binding'], BINDING_FIELDS
     configured = str(queue_root or os.getenv(ROOT_ENV, ""))
     if not configured:
         return ["scene_execution_owner_store_missing"]
@@ -81,7 +60,7 @@ def scene_execution_authority_blockers(
     if (intent.get("intent_digest") != binding["intent_digest"]
             or any(attempt.get(k) != binding[k] for k in required - {"schema_version"})):
         return ["scene_execution_owner_record_mismatch"]
-    from .task_evaluation_unstarted_controls_reservations import validated_cancellation
+    from .task_evaluation_retained_controls_evidence import validated_cancellation
     try:
         if validated_cancellation(directory, attempt) is not None:
             return ["scene_execution_owner_attempt_cancelled_before_execution"]
