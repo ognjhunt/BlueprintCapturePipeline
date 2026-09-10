@@ -379,6 +379,31 @@ def test_setup_binds_current_scene_pair_quick10_and_unqualified_boundary(
         assert record["sha256"].startswith("sha256:")
 
 
+def test_setup_keeps_both_policies_inside_nondivisible_action_ceiling(tmp_path: Path) -> None:
+    from blueprint_pipeline.adp009d_policy_episode import _resolved_task_spec
+
+    kwargs = _kwargs(tmp_path)
+    scene_path = Path(kwargs["scene_plan_path"])
+    scene = json.loads(scene_path.read_text())
+    scene["task_spec"].update(maximum_action_steps=675, task_kind="rigid_pick_place")
+    scene["plan_digest"] = canonical_digest(scene, digest_field="plan_digest")
+    write_json(scene_path, scene)
+    packet_path = Path(kwargs["packet_receipt_path"])
+    packet = json.loads(packet_path.read_text())
+    packet["arena_scene_plan_digest"] = scene["plan_digest"]
+    write_json(packet_path, packet)
+    setup = materialize_scene839873_policy_canary_setup(**kwargs)
+    for role in ("pi05_execution_spec", "groot_execution_spec"):
+        spec = json.loads(Path(setup["records"][role]["path"]).read_text())
+        assert spec["max_policy_queries"] * spec["open_loop_horizon"] == 672
+        _resolved_task_spec(
+            task_spec=scene["task_spec"], destination_position_world_m=None,
+            settle_window_samples=scene["task_spec"]["settle_window_samples"],
+            max_policy_queries=spec["max_policy_queries"],
+            open_loop_horizon=spec["open_loop_horizon"],
+        )
+
+
 def test_setup_accepts_a_new_interiorgs_scene_without_scene_specific_code(
     tmp_path: Path,
 ) -> None:
