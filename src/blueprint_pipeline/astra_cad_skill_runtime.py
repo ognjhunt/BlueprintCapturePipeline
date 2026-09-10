@@ -8,15 +8,19 @@ import importlib.metadata
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import stat
 import subprocess
 import sys
 import threading
 from types import SimpleNamespace
 from typing import Any, Callable
+import zipfile
 
 from pydantic import BaseModel, ConfigDict
 
+from .decision_evidence_contracts import canonical_digest
+from .production_cad_skill_sources import SOURCE_SPECS
 from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, AgentsSDKInvoker
 
 MAC_COMMIT = "42737c408534e7c00c63081d73ce7565a9464e56"
@@ -54,6 +58,128 @@ def _verify_source(root: Path, expected: str) -> dict[str, Any]:
     return {"root": str(root), "commit": commit, "tracked_file_sha256": hashes, "source_diff": ""}
 
 
+def _archive_file_inventory(path: Path) -> dict[str, str]:
+    """Hash exact safe ZIP files without extracting or following member links."""
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 512 * 1024**2:
+        raise AstraCADRuntimeBlocked("cad_source_archive_invalid")
+    hashes: dict[str, str] = {}
+    names: set[str] = set()
+    total = 0
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+            if len(members) > 100_000:
+                raise AstraCADRuntimeBlocked("cad_source_archive_size_limit")
+            for member in members:
+                name = member.filename.rstrip("/") if member.is_dir() else member.filename
+                parts = PurePosixPath(name)
+                if (not name or "\\" in name or "\x00" in name or parts.is_absolute()
+                        or ":" in parts.parts[0] or any(part in ("", ".", "..") for part in name.split("/"))
+                        or parts.as_posix() != name or name in names):
+                    raise AstraCADRuntimeBlocked("cad_source_archive_path_invalid")
+                names.add(name)
+                mode = (member.external_attr >> 16) & 0xFFFF
+                kind = stat.S_IFMT(mode)
+                if stat.S_ISLNK(mode) or kind not in (0, stat.S_IFREG, stat.S_IFDIR):
+                    raise AstraCADRuntimeBlocked("cad_source_archive_link_or_special_file")
+                if member.is_dir():
+                    if kind not in (0, stat.S_IFDIR) or member.file_size:
+                        raise AstraCADRuntimeBlocked("cad_source_archive_directory_invalid")
+                    continue
+                if kind == stat.S_IFDIR or member.flag_bits & 1:
+                    raise AstraCADRuntimeBlocked("cad_source_archive_file_invalid")
+                total += member.file_size
+                if total > 1024**3:
+                    raise AstraCADRuntimeBlocked("cad_source_archive_size_limit")
+                digest = hashlib.sha256()
+                with archive.open(member) as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                hashes[name] = digest.hexdigest()
+    except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+        if isinstance(exc, AstraCADRuntimeBlocked):
+            raise
+        raise AstraCADRuntimeBlocked("cad_source_archive_invalid") from exc
+    if not hashes or any(parent.as_posix() in hashes for name in names for parent in PurePosixPath(name).parents):
+        raise AstraCADRuntimeBlocked("cad_source_archive_file_directory_collision")
+    return hashes
+
+
+def _verify_packaged_source(root: Path, expected: str, supplied: dict[str, Any]) -> dict[str, Any]:
+    """The original sealed component receipt is authoritative, not caller inventory."""
+    if not isinstance(supplied, dict):
+        raise AstraCADRuntimeBlocked("cad_packaged_source_receipt_invalid")
+    supplied_root = Path(str(supplied.get("root") or ""))
+    if (root.is_symlink() or not root.is_dir() or not supplied_root.is_absolute()
+            or supplied_root.is_symlink() or supplied_root.resolve() != root.resolve()
+            or supplied.get("commit") != expected or supplied.get("source_diff") != ""):
+        raise AstraCADRuntimeBlocked("cad_packaged_source_root_or_pin_invalid")
+    receipt_path = Path(str(supplied.get("source_receipt_path") or ""))
+    archive_path = Path(str(supplied.get("archive_path") or ""))
+    if (not receipt_path.is_absolute() or receipt_path.is_symlink() or not receipt_path.is_file()
+            or not archive_path.is_absolute() or archive_path.is_symlink() or not archive_path.is_file()):
+        raise AstraCADRuntimeBlocked("cad_packaged_source_paths_invalid")
+    try:
+        receipt = json.loads(receipt_path.read_text())
+    except (OSError, ValueError) as exc:
+        raise AstraCADRuntimeBlocked("cad_packaged_source_receipt_invalid") from exc
+    if (not isinstance(receipt, dict)
+            or receipt.get("schema_version") != "task_evaluation_cad_skill_component_source.v1"
+            or receipt.get("status") != "pinned_sources_packaged"
+            or receipt.get("scene_specific_source") is not False or receipt.get("skill_count") != 10
+            or not isinstance(receipt.get("sources"), list) or len(receipt["sources"]) != 2
+            or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
+            or receipt["receipt_digest"] != supplied.get("source_receipt_digest")):
+        raise AstraCADRuntimeBlocked("cad_packaged_source_receipt_invalid")
+    if any(not isinstance(row, dict) or not isinstance(row.get("id"), str) for row in receipt["sources"]):
+        raise AstraCADRuntimeBlocked("cad_packaged_source_receipt_pins_invalid")
+    rows = {row["id"]: row for row in receipt["sources"]}
+    if set(rows) != {spec["id"] for spec in SOURCE_SPECS}:
+        raise AstraCADRuntimeBlocked("cad_packaged_source_receipt_pins_invalid")
+    selected = None
+    for spec in SOURCE_SPECS:
+        row = rows[spec["id"]]
+        if (any(row.get(key) != spec[key] for key in ("repository", "commit", "tree", "license", "license_sha256"))
+                or row.get("skills") != list(spec["skills"])):
+            raise AstraCADRuntimeBlocked("cad_packaged_source_receipt_pins_invalid")
+        if spec["commit"] == expected:
+            selected = spec
+    if selected is None:
+        raise AstraCADRuntimeBlocked("cad_packaged_source_pin_unknown")
+    archive_hash = "sha256:" + _digest(archive_path)
+    if archive_hash != supplied.get("archive_sha256") or archive_hash != rows[selected["id"]].get("archive_sha256"):
+        raise AstraCADRuntimeBlocked("cad_packaged_source_archive_digest_mismatch")
+    archive_inventory = _archive_file_inventory(archive_path)
+    if "sha256:" + archive_inventory.get("LICENSE", "") != selected["license_sha256"]:
+        raise AstraCADRuntimeBlocked("cad_packaged_source_license_bytes_mismatch")
+    inventory = {}
+    for path in root.rglob("*"):
+        if path.is_symlink() or not (path.is_file() or path.is_dir()) or not path.resolve().is_relative_to(root.resolve()):
+            raise AstraCADRuntimeBlocked("cad_packaged_source_extracted_path_invalid")
+        if path.is_file():
+            inventory[path.relative_to(root).as_posix()] = _digest(path)
+    if inventory != archive_inventory or inventory != supplied.get("tracked_file_sha256"):
+        raise AstraCADRuntimeBlocked("cad_packaged_source_file_inventory_mismatch")
+    return {"root": str(root.resolve()), "commit": expected, "tree": selected["tree"],
+            "tracked_file_sha256": inventory, "source_diff": "", "admission": "sealed_component_archive",
+            "source_receipt_digest": receipt["receipt_digest"], "source_receipt_path": str(receipt_path),
+            "archive_path": str(archive_path), "archive_sha256": archive_hash}
+
+
+def verify_cad_sources(mac_source_root: Path, cad_source_root: Path,
+                       verified_sources: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Pre-paid and post-run exact source verification for clones or sealed archives."""
+    if verified_sources is not None and (not isinstance(verified_sources, dict) or set(verified_sources) != {"mac", "cad"}):
+        raise AstraCADRuntimeBlocked("cad_verified_sources_invalid")
+    result = {}
+    for name, root, commit in (("mac", Path(mac_source_root), MAC_COMMIT), ("cad", Path(cad_source_root), CAD_COMMIT)):
+        result[name] = (_verify_source(root, commit) if verified_sources is None
+                        else _verify_packaged_source(root, commit, verified_sources[name]))
+    if verified_sources is not None and result["mac"]["source_receipt_digest"] != result["cad"]["source_receipt_digest"]:
+        raise AstraCADRuntimeBlocked("cad_source_receipts_differ")
+    return result
+
+
 def _deny(*_args: Any, **_kwargs: Any) -> Any:
     raise AstraCADRuntimeBlocked("direct_model_or_execution_bypass_denied")
 
@@ -63,10 +189,11 @@ class _SDKChatBridge:
 
     def __init__(self, invoker: AgentsSDKInvoker, root: Path, brief: str, run_id: str,
                  max_input_tokens: int, max_output_tokens: int, max_calls: int,
-                 object_label: str = "candidate"):
+                 object_label: str = "candidate", stable_prefix: str = ""):
         self.invoker, self.root, self.brief, self.run_id = invoker, root, brief, run_id
         self.max_input_tokens, self.max_output_tokens, self.max_calls = max_input_tokens, max_output_tokens, max_calls
         self.object_label = object_label
+        self.stable_prefix = stable_prefix
         self.calls: list[dict[str, Any]] = []
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
@@ -83,14 +210,27 @@ class _SDKChatBridge:
                                   "input_sha256": hashlib.sha256(payload.encode()).hexdigest()}
         self.calls.append(record)  # Failed calls consume the local allowance, too.
         _save(self.root / f"invocation-{index:02d}-input.json", json.loads(payload))
+        instructions = (
+            "Use the supplied immutable brief as hard constraints. Preserve every exact "
+            "dimension in millimeters without silent rounding. Return the requested JSON "
+            "or complete Python code in content. Generated CAD is development_only. "
+            "Never repeat the raw prompt/evidence packet. For user_request_raw return only "
+            "a concise one-line object name; the harness restores the canonical request. "
+            "For digital candidates manufacturing_method must be the schema enum 'unspecified'. "
+            "Use only requested schema fields and keep narrative concise.")
+        stable_prefix = instructions + '\n' + self.stable_prefix if self.stable_prefix else None
+        if stable_prefix:
+            from .asset_authoring_prompt_cache import asset_cache_policy
+            policy = asset_cache_policy(family='cad', output_type=_TextOutput, stable_prefix=stable_prefix)
+        else:
+            policy = None
         spec = AgentsSDKAgentSpec(
             run_id=self.run_id, capability=f"astra_cad_candidate:{self.object_label}", name="Astra CAD candidate",
-            instructions=("Use the supplied immutable brief as hard constraints. Preserve every exact "
-                          "dimension in millimeters without silent rounding. Return the requested JSON "
-                          "or complete Python code in content. Generated CAD is development_only."),
+            instructions=instructions,
             model="gpt-6-astra", reasoning_effort="high", max_turns=1,
             max_input_tokens=self.max_input_tokens, max_output_tokens=self.max_output_tokens,
             output_type=_TextOutput, tool_bindings=(),
+            stable_developer_prefix=stable_prefix, cache_policy=policy,
         )
         try:
             result = self.invoker.invoke(spec, payload)
@@ -175,6 +315,7 @@ def execute_mac_candidate(
     object_label: str = "candidate",
     max_input_tokens: int = 80_000, max_output_tokens: int = 12_000,
     max_calls: int = 7, repair_budget: int = 2, dimension_tolerance_mm: float = 0.01,
+    verified_sources: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute the real pinned graph through a supplied budgeted SDK invoker and sandbox.
 
@@ -199,7 +340,7 @@ def execute_mac_candidate(
     if root.is_relative_to(mac) or root.is_relative_to(cad):
         raise AstraCADRuntimeBlocked("cad_output_inside_immutable_source")
     subprocess_runner.preflight()
-    sources = {"mac": _verify_source(mac, MAC_COMMIT), "cad": _verify_source(cad, CAD_COMMIT)}
+    sources = verify_cad_sources(mac, cad, verified_sources)
     if importlib.util.find_spec("langgraph") is None or importlib.util.find_spec("build123d") is None:
         raise AstraCADRuntimeBlocked("cad_runtime_dependency_missing")
     root.mkdir(parents=True, exist_ok=True)
@@ -210,7 +351,8 @@ def execute_mac_candidate(
                   "max_input_tokens": max_input_tokens, "max_output_tokens": max_output_tokens,
                   "dimension_tolerance_mm": dimension_tolerance_mm}
     _save(root / "parameters.json", parameters)
-    bridge = _SDKChatBridge(invoker, root, brief, run_id, max_input_tokens, max_output_tokens, max_calls, object_label)
+    bridge = _SDKChatBridge(invoker, root, brief, run_id, max_input_tokens, max_output_tokens, max_calls, object_label,
+                           stable_prefix=(cad / "skills/cad/SKILL.md").read_text())
     receipt: dict[str, Any] = {"claim": "development_only_candidate", "passed": False,
                                "source_receipt": str(root / "source-receipt.json")}
     with _LOCK, _source_modules(mac, cad) as (graph, nodes):
@@ -297,16 +439,20 @@ def execute_mac_candidate(
             if not readback["passed"] or str(getattr(result.get("error_type"), "value", result.get("error_type"))) != "none":
                 raise AstraCADRuntimeBlocked("cad_geometry_or_upstream_qa_failed")
             receipt.update(passed=True, step_path=str(step), stl_path=str(stl), readback=readback)
-            receipt["source_unchanged_after"] = all(
-                _verify_source(path, commit) == sources[label]
-                for label, path, commit in (("mac", mac, MAC_COMMIT), ("cad", cad, CAD_COMMIT))
-            )
         except Exception as exc:
             receipt["failure"] = str(exc)
             raise
         finally:
-            receipt.update(invocation_count=len(bridge.calls), repair_calls=repair_calls)
-            receipt["artifacts"] = {str(p.relative_to(root)): _digest(p) for p in root.rglob("*")
-                                    if p.is_file() and p.suffix in (".py", ".step", ".stl", ".json", ".txt")}
-            _save(root / "candidate-receipt.json", receipt)
+            try:
+                receipt["source_unchanged_after"] = verify_cad_sources(mac, cad, verified_sources) == sources
+                if not receipt["source_unchanged_after"]:
+                    raise AstraCADRuntimeBlocked("cad_source_changed_during_execution")
+            except Exception as exc:
+                receipt.update(passed=False, source_verification_failure=str(exc))
+                raise
+            finally:
+                receipt.update(invocation_count=len(bridge.calls), repair_calls=repair_calls)
+                receipt["artifacts"] = {str(p.relative_to(root)): _digest(p) for p in root.rglob("*")
+                                        if p.is_file() and p.suffix in (".py", ".step", ".stl", ".json", ".txt")}
+                _save(root / "candidate-receipt.json", receipt)
     return receipt

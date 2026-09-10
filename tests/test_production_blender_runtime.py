@@ -195,3 +195,20 @@ def test_version_failure_retains_missing_library_diagnostic():
         return subprocess.CompletedProcess(args, 127, stdout="", stderr="libXrender.so.1: cannot open shared object file")
     with pytest.raises(runtime.BlenderRuntimeError, match="libXrender.so.1"):
         runtime._version(Path("/fake/blender"), failed)
+
+
+def test_official_linux_lts_build_banner_is_accepted():
+    observed = (
+        "Blender 5.2.1 LTS (hash 9e2066aef7ef built 2026-08-25 02:12:34)\n"
+        "Blender 5.2.1 LTS\n\tbuild hash: 9e2066aef7ef\n"
+    )
+    def official(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout=observed, stderr="")
+    assert runtime._version(Path("/fixture/blender"), official) == observed.strip()
+
+
+def test_similar_version_prefix_is_not_the_pinned_release():
+    def wrong(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout="Blender 5.2.10 LTS\n", stderr="")
+    with pytest.raises(runtime.BlenderRuntimeError, match="version_mismatch"):
+        runtime._version(Path("/fixture/blender"), wrong)

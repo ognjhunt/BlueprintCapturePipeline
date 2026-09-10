@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import pwd
 import shutil
 import subprocess
 from collections.abc import Sequence
@@ -55,6 +56,8 @@ class SandboxedAssetRunner:
         environment = {
             'PATH': '/usr/bin:/bin', 'HOME': str(self.write_root),
             'TMPDIR': str(self.write_root / 'tmp'),
+            'XDG_RUNTIME_DIR': str(self.write_root / 'xdg'),
+            'XDG_CACHE_HOME': str(self.write_root / 'cache'),
             'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONNOUSERSITE': '1',
         }
         # Only loader settings needed for the explicitly mounted CAD closure.
@@ -66,6 +69,8 @@ class SandboxedAssetRunner:
                     raise AssetSandboxError('asset_sandbox_loader_path_not_admitted')
                 environment[name] = str(env[name])
         (self.write_root / 'tmp').mkdir(exist_ok=True)
+        (self.write_root / 'xdg').mkdir(exist_ok=True, mode=0o700)
+        (self.write_root / 'cache').mkdir(exist_ok=True)
         if self.system == 'Darwin':
             readable = ['/System', '/usr', '/bin', '/sbin', '/Library/Fonts',
                         '/Library/Apple', '/private/etc/fonts', '/private/etc/localtime',
@@ -91,7 +96,10 @@ class SandboxedAssetRunner:
             ])
             command = [self.launcher, '-p', profile, *map(str, argv)]
         else:
-            command = [self.launcher, '--unshare-all', '--die-with-parent',
+            privileged = os.geteuid() == 0
+            namespaces = (['--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-net']
+                          if privileged else ['--unshare-all'])
+            command = [self.launcher, *namespaces, '--die-with-parent',
                        '--new-session', '--proc', '/proc', '--dev', '/dev',
                        '--tmpfs', '/tmp']
             for path in ['/usr', '/bin', '/lib', '/lib64', '/etc/fonts',
@@ -101,7 +109,23 @@ class SandboxedAssetRunner:
             for root in dict.fromkeys(roots):
                 command += ['--ro-bind', str(root), str(root)]
             command += ['--bind', str(self.write_root), str(self.write_root),
-                        '--chdir', str(directory), '--', *map(str, argv)]
+                        '--chdir', str(directory), '--']
+            if privileged:
+                # A trusted service creates kernel namespaces where the host
+                # forbids unprivileged user namespaces, then drops all host
+                # privileges before the candidate interpreter starts.
+                try:
+                    account = pwd.getpwnam('blueprint')
+                except KeyError:
+                    account = pwd.getpwnam('nobody')
+                for folder in {self.write_root, directory, self.write_root / 'tmp',
+                               self.write_root / 'xdg', self.write_root / 'cache',
+                               *[p for p in directory.parents if p.is_relative_to(self.write_root)]}:
+                    os.chown(folder, account.pw_uid, account.pw_gid)
+                command += ['/usr/bin/setpriv', f'--reuid={account.pw_uid}',
+                            f'--regid={account.pw_gid}', '--clear-groups',
+                            '--no-new-privs', '--']
+            command += list(map(str, argv))
         # Never inherit a caller's stdin handles or credentials. Bound outputs
         # on readback; subprocess wall time remains enforced by the parent.
         if kwargs:

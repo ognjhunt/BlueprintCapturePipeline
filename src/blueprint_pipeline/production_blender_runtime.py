@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import re
 import shutil
 import subprocess
 import tarfile
@@ -104,7 +105,9 @@ def _version(executable: Path, runner: Callable = subprocess.run) -> str:
     if result.returncode != 0:
         raise BlenderRuntimeError(f"blender_version_command_failed:{result.returncode}:{result.stderr[:2000]}")
     output = result.stdout.strip()
-    if not output.splitlines() or output.splitlines()[0] != f"Blender {VERSION}":
+    first_line = output.splitlines()[0] if output else ""
+    banner = rf"Blender {re.escape(VERSION)}(?: LTS)?(?: \(hash [0-9a-f]+ built [0-9: -]+\))?"
+    if re.fullmatch(banner, first_line) is None:
         raise BlenderRuntimeError("blender_version_mismatch")
     return output
 

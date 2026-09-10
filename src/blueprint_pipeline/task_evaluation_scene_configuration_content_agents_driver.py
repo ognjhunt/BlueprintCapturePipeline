@@ -900,6 +900,9 @@ def execute_content_agents_component(
         _required_path(values, _INPUT_ENV),
         code="scene_configuration_content_agents_input_invalid",
     )
+    if (stage_input.get("configuration") or {}).get("authoring_backend") == "astra_cad_blender_v1":
+        from .task_evaluation_scene_configuration_astra_driver import execute_astra_component
+        return execute_astra_component(environment=values, runner=runner, cost_gate_factory=cost_gate_factory)
     dependencies_path = _required_path(values, _DEPENDENCIES_ENV)
     try:
         dependencies = json.loads(dependencies_path.read_text(encoding="utf-8"))
