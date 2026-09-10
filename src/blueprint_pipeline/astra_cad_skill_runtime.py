@@ -26,6 +26,7 @@ from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, AgentsSDK
 MAC_COMMIT = "42737c408534e7c00c63081d73ce7565a9464e56"
 CAD_COMMIT = "4fd71ea75fbb8a80b0d7c76862e0fd73c52a8989"
 _LOCK = threading.Lock()
+_CODER_SYSTEM_PROMPT = "Implement the supplied ArchitectPlan as complete executable build123d Python."
 
 
 class AstraCADRuntimeBlocked(RuntimeError):
@@ -194,11 +195,18 @@ class _SDKChatBridge:
         self.max_input_tokens, self.max_output_tokens, self.max_calls = max_input_tokens, max_output_tokens, max_calls
         self.object_label = object_label
         self.stable_prefix = stable_prefix
+        self.adopted_coder_output: str | None = None
+        self.pending_coder_output: str | None = None
         self.reasoning_effort = 'high'
         self.calls: list[dict[str, Any]] = []
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
     def create(self, *, messages: list[dict[str, Any]], **_kwargs: Any) -> Any:
+        is_coder = any(message.get("role") == "system" and message.get("content") == _CODER_SYSTEM_PROMPT
+                       for message in messages)
+        if is_coder and self.adopted_coder_output is not None:
+            self.pending_coder_output = self.adopted_coder_output
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=self.adopted_coder_output))])
         if len(self.calls) >= self.max_calls:
             raise AstraCADRuntimeBlocked("cad_invocation_budget_exhausted")
         payload = json.dumps({"object_label": self.object_label,
@@ -244,6 +252,8 @@ class _SDKChatBridge:
                            "provider": result.provider, "sdk_version": result.sdk_version,
                            "output_sha256": hashlib.sha256(content.encode()).hexdigest()})
             (self.root / f"invocation-{index:02d}-output.txt").write_text(content)
+            if is_coder:
+                self.pending_coder_output = content
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
         except Exception as exc:
             record["failure"] = type(exc).__name__
@@ -382,6 +392,44 @@ def _compact_coder_prompt(**kwargs: Any) -> str:
                       separators=(",", ":"))
 
 
+def _adopt_completed_coder(source: Path, budget_root: Path, parameters: dict[str, Any]):
+    previous = json.loads((source / "parameters.json").read_text())
+    for key in ("brief", "expected_dimensions_mm", "run_id", "object_label"):
+        if previous.get(key) != parameters[key]:
+            raise AstraCADRuntimeBlocked("cad_adoption_parameters_mismatch:" + key)
+    matches = []
+    for raw_path in source.glob("invocation-*-output.txt"):
+        input_path = raw_path.with_name(raw_path.name.replace("-output.txt", "-input.json"))
+        request = json.loads(input_path.read_text())
+        if not any(message.get("role") == "system" and message.get("content") == _CODER_SYSTEM_PROMPT
+                   for message in request.get("upstream_messages", [])):
+            continue
+        if request.get("immutable_original_brief") != parameters["brief"] or request.get("object_label") != parameters["object_label"]:
+            raise AstraCADRuntimeBlocked("cad_coder_adoption_request_mismatch")
+        raw = raw_path.read_text()
+        for completion_path in (budget_root / "inference_reservations/completed").glob("*.json"):
+            row = json.loads(completion_path.read_text())
+            if (row.get("run_id") != parameters["run_id"]
+                    or row.get("capability") != "astra_cad_candidate:" + parameters["object_label"]
+                    or row.get("provider") != "openai" or row.get("model") != "gpt-6-astra"
+                    or row.get("structured_output_digest") != canonical_digest({"content": raw})
+                    or row.get("inference_completion_digest") != canonical_digest(row, digest_field="inference_completion_digest")):
+                continue
+            reservation_path = budget_root / "inference_reservations/reserved" / completion_path.name
+            reservation = json.loads(reservation_path.read_text())
+            if (reservation.get("reservation_id") != row.get("reservation_id")
+                    or reservation.get("input_digest") != canonical_digest({"input_text": json.dumps(request)})
+                    or reservation.get("inference_reservation_digest") != canonical_digest(reservation, digest_field="inference_reservation_digest")):
+                raise AstraCADRuntimeBlocked("cad_coder_adoption_reservation_mismatch")
+            matches.append((raw, {"source_output": str(raw_path), "source_output_sha256": _digest(raw_path),
+                "source_input": str(input_path), "source_input_sha256": _digest(input_path),
+                "completion": str(completion_path), "completion_sha256": _digest(completion_path),
+                "reservation": str(reservation_path), "reservation_sha256": _digest(reservation_path)}))
+    if len(matches) != 1:
+        raise AstraCADRuntimeBlocked("cad_coder_adoption_requires_one_completed_output")
+    return matches[0]
+
+
 def execute_mac_candidate(
     brief: str, output_root: Path, mac_source_root: Path, cad_source_root: Path,
     invoker: AgentsSDKInvoker, *, expected_dimensions_mm: tuple[float, float, float],
@@ -391,6 +439,7 @@ def execute_mac_candidate(
     max_calls: int = 7, repair_budget: int = 2, dimension_tolerance_mm: float = 0.01,
     verified_sources: dict[str, Any] | None = None,
     adopt_state_from: Path | None = None, adoption_budget_root: Path | None = None,
+    adopt_coder_from: Path | None = None,
 ) -> dict[str, Any]:
     """Execute the real pinned graph through a supplied budgeted SDK invoker and sandbox.
 
@@ -462,7 +511,7 @@ def execute_mac_candidate(
 
         nodes._node_python_coder_deterministic = deterministic_child
         nodes._build_coder_user_prompt = _compact_coder_prompt
-        nodes.SYSTEM_PROMPT_PYTHON_CODER = "Implement the supplied ArchitectPlan as complete executable build123d Python."
+        nodes.SYSTEM_PROMPT_PYTHON_CODER = _CODER_SYSTEM_PROMPT
         nodes._fill_unsupported_with_aider = _deny
         nodes.generate_initial_solution = _deny
         # Printing orientation is unrelated to task coordinates and would desynchronize STEP/STL.
@@ -505,6 +554,23 @@ def execute_mac_candidate(
                                                             str(cad / "packages/cadpy/src")))}
             kwargs["cwd"] = str(root)
             kwargs["timeout"] = min(float(kwargs.get("timeout", 120)), 120)
+            if len(argv) == 2 and Path(argv[1]).name.startswith("temp_design_") and str(argv[1]).endswith(".py"):
+                script = Path(argv[1]).resolve()
+                if not script.is_relative_to(root):
+                    raise AstraCADRuntimeBlocked("cad_script_outside_scratch")
+                if bridge.pending_coder_output is not None:
+                    # Preserve upstream injection for diagnosis; execute the model source unchanged.
+                    script.with_suffix(".upstream-compat.py").write_bytes(script.read_bytes())
+                    raw_code = bridge.pending_coder_output
+                    script.write_text(nodes._extract_code_from_llm_response(raw_code)
+                                      if raw_code.lstrip().startswith("```") else raw_code)
+                    bridge.pending_coder_output = None
+                suffix = script.stem.removeprefix("temp_design_")
+                kwargs["env"] = {"PYTHONPATH": str(cad / "packages/cadpy/src")}
+                argv = [sys.executable, str(cad / "skills/cad/scripts/step"), str(script),
+                        "--output", str(root / f"temp_output_{suffix}.step"),
+                        "--stl", f"temp_output_{suffix}.stl",
+                        "--mesh-tolerance", "0.005", "--mesh-angular-tolerance", "0.1"]
             return subprocess_runner(argv, **kwargs)
 
         nodes._run_repair_on_script = repair
@@ -512,6 +578,12 @@ def execute_mac_candidate(
         nodes.subprocess = SimpleNamespace(run=run, TimeoutExpired=subprocess.TimeoutExpired)
         nodes._prompt_iteration_choice = lambda **_kw: 1
         adopted = {}
+        if adopt_coder_from is not None:
+            if adoption_budget_root is None or adopt_state_from is None:
+                raise AstraCADRuntimeBlocked("cad_coder_adoption_verified_phases_required")
+            bridge.adopted_coder_output, coder_receipt = _adopt_completed_coder(
+                Path(adopt_coder_from), Path(adoption_budget_root), parameters)
+            _save(root / "coder-adoption-receipt.json", coder_receipt)
         if adopt_state_from is not None:
             if adoption_budget_root is None:
                 raise AstraCADRuntimeBlocked("cad_adoption_budget_root_required")

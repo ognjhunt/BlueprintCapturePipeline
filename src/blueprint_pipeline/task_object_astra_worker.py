@@ -34,7 +34,8 @@ def author_one(*, request_path: Path, output_root: Path, budget_root: Path,
                cad_source_root: Path, mac_source_root: Path, blender: Path,
                maximum_cost_usd: float = 15.0,
                adopt_source_analysis_from: Path | None = None,
-               adopt_cad_state_from: Path | None = None) -> dict[str, Any]:
+               adopt_cad_state_from: Path | None = None,
+               adopt_coder_from: Path | None = None) -> dict[str, Any]:
     value = json.loads(request_path.read_text())
     request = validate_request(value)
     repo = Path(__file__).resolve().parents[2]
@@ -84,6 +85,7 @@ def author_one(*, request_path: Path, output_root: Path, budget_root: Path,
             subprocess_runner=runner, run_id=request.run_id, object_label=request.object_id,
             dimension_tolerance_mm=request.maximum_export_error_m * 1000,
             adopt_state_from=adopt_cad_state_from, adoption_budget_root=budget_root,
+            adopt_coder_from=adopt_coder_from,
         )
         return {**receipt, 'stl': file_record(Path(receipt['stl_path'])),
                 'step': file_record(Path(receipt['step_path']))}
@@ -108,13 +110,15 @@ def main(argv=None):
     parser.add_argument('--maximum-cost-usd', type=float, default=15.0)
     parser.add_argument('--adopt-source-analysis-from', type=Path)
     parser.add_argument('--adopt-cad-state-from', type=Path)
+    parser.add_argument('--adopt-coder-from', type=Path)
     args = parser.parse_args(argv)
     result = author_one(request_path=args.request, output_root=args.output_root,
         budget_root=args.budget_root, cad_source_root=args.cad_source_root,
         mac_source_root=args.mac_source_root, blender=args.blender,
         maximum_cost_usd=args.maximum_cost_usd,
         adopt_source_analysis_from=args.adopt_source_analysis_from,
-        adopt_cad_state_from=args.adopt_cad_state_from)
+        adopt_cad_state_from=args.adopt_cad_state_from,
+        adopt_coder_from=args.adopt_coder_from)
     print(json.dumps({'status': result['status'], 'object_id': result['object_id'],
                       'result_digest': result['result_digest']}))
     return 0
