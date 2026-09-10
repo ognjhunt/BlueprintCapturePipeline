@@ -104,6 +104,7 @@ from .provider_machine_avoidlist import (
     machine_avoidlist_ids as _machine_avoidlist_ids,
 )
 from .vast_independent_watchdog_control import write_started_vast_instance_id
+from .vast_arena_output_archive import arena_output_archive_script
 from .vast_attempt_preservation import (
     VAST_LIVE_ATTEMPT_ARTIFACT_NAMES,
     attempt_preservation_slug,
@@ -4755,24 +4756,10 @@ def _probe_shell_script(
                 + '"; provider_rc=$?; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
                 "$RUNTIME_PY - <<'PY'\n"
-                "import json\n"
-                "import os\n"
-                "import zipfile\n"
-                "from pathlib import Path\n"
-                "output_dir = Path(os.environ.get('BLUEPRINT_ADP_ARENA_OUTPUT_DIR', '/workspace/adp_arena_provider_bundle/runtime_output'))\n"
-                "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
-                "output_zip = work_dir / 'adp_arena_provider_runtime_output.zip'\n"
-                "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
-                "    if output_dir.is_dir():\n"
-                "        for path in sorted(output_dir.rglob('*')):\n"
-                "            if path.is_file():\n"
-                "                size = path.stat().st_size\n"
-                "                if size <= 100_000_000:\n"
-                "                    archive.write(path, path.relative_to(output_dir).as_posix())\n"
-                "    else:\n"
-                "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
-                "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
-                "PY\n"
+                + arena_output_archive_script(
+                    policy_canary=provider_bundle_kind == "native_task_arena_policy_canary_session"
+                )
+                + "PY\n"
                 "zip_rc=$?; "
                 "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
                 'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_arena_provider_runtime_output.zip"; then '
