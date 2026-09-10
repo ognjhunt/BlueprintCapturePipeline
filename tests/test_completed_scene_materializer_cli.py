@@ -25,7 +25,7 @@ def _script(name="materialize_completed_scene_inputs"):
 
 
 @pytest.mark.parametrize("name", [
-    "legacy-placement-alias", "astra-phase-adoption", "packaged-blender-runtime",
+    "legacy-placement-alias", "astra-phase-adoption", "astra-automatic-phase-adoption", "packaged-blender-runtime",
     "astra-native-adoption", "completed-scene-attempt", "completed-mesh-inputs",
     "completed-scene-submission", "repair-support",
 ])

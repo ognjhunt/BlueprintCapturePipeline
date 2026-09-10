@@ -25,7 +25,7 @@ from blueprint_pipeline.task_evaluation_completed_scene_submission import (
     materialize_completed_scene_submission,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_astra_phase_adoption import (
-    materialize_phase_adoption,
+    materialize_phase_adoption, materialize_automatic_phase_adoption,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_astra_runtime import (
     AstraRuntimePackageError, materialize_packaged_blender_runtime,
@@ -53,6 +53,14 @@ def _path(flag: str) -> Param:
     return Param(flag, required=True, type=Path)
 
 
+def _retain_automatic_phase_adoption(*, prior_runtime: Path, output_path: Path) -> dict:
+    receipt = materialize_automatic_phase_adoption(prior_runtime=prior_runtime)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+    return receipt
+
+
 def _json(flag: str) -> Param:
     return Param(flag, required=True, json_file=True)
 
@@ -70,6 +78,11 @@ STEPS: dict[str, Step] = {
          "phases": Param("--phase", "Repeat in completed-prefix order.", accumulate=True),
          "blender_round": Param("--blender-round", type=int, default=0),
          "output_path": _path("--output")},
+    ),
+    "astra-automatic-phase-adoption": Step(
+        "Select and seal only authenticated completed Astra phases from retained inputs.",
+        _retain_automatic_phase_adoption,
+        {"prior_runtime": _path("--prior-runtime"), "output_path": _path("--output")},
     ),
     "packaged-blender-runtime": Step(
         "Validate and unpack the already-sealed local Blender runtime archive.",

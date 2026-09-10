@@ -39,7 +39,7 @@ RestartSec=5s
 MemoryMax=1G
 TasksMax=64
 WorkingDirectory=/
-ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.operator_policy_canary_continuation watchdog --intent "$${BLUEPRINT_EXISTING_POLICY_CANARY_INTENT}"'
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.operator_policy_canary_continuation watchdog --intent "$${BLUEPRINT_EXISTING_POLICY_CANARY_INTENT}"'
 
 [Install]
 WantedBy=multi-user.target

@@ -132,6 +132,28 @@ def test_no_collection_or_mutation_before_explicit_owner_handoff(fixture):
     assert fixture.events == []
 
 
+@pytest.mark.parametrize('host_valid', [True, False])
+def test_artifact_routing_repair_cli_checks_host_and_intent_without_provider_actions(fixture, monkeypatch, host_valid):
+    alias = fixture.root / 'website-operator-registration.json'
+    alias.unlink()
+    validate_host = coordinator.validate_control_plane_host
+    validate_inputs = coordinator.validate_continuation_intent
+    host = fixture.adapters.host_reader()
+    if not host_valid:
+        host['machine_id_sha256'] = 'sha256:' + '0' * 64
+    monkeypatch.setattr(coordinator, 'validate_control_plane_host',
+                        lambda intent: validate_host(intent, host_reader=lambda: host))
+    monkeypatch.setattr(coordinator, 'validate_continuation_intent',
+                        lambda intent: validate_inputs(intent, inputs_validator=lambda _: fixture.values))
+    code = coordinator.main(['restore-artifact-routing', '--intent', str(fixture.intent_path)])
+    assert code == (0 if host_valid else 2)
+    assert alias.exists() == host_valid
+    if host_valid:
+        expected = fixture.intent['terminal_delivery_intent']['records']['registration']
+        assert alias.read_bytes() == Path(expected['path']).read_bytes()
+    assert fixture.events == []
+
+
 def test_readiness_verifies_exact_registration_alias_and_direct_operator_root(fixture):
     alias = fixture.root / 'website-operator-registration.json'
     source = Path(fixture.intent['terminal_delivery_intent']['records']['registration']['path'])

@@ -9,8 +9,10 @@ import time
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
-from .native_task_arena_policy_canary_session import PROVIDER_RESULT_FILENAME
 from .policy_canary_media_integrity import bound_media_artifact as _bound_media_artifact
+
+# Also shipped in standalone policy bundles, which have no paired-session module.
+PROVIDER_RESULT_FILENAME = "native_task_arena_policy_canary_session_result.v1.json"
 
 
 def _digest(value):

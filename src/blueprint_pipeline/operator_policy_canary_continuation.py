@@ -28,6 +28,7 @@ from .operator_policy_canary_handoff import (
 )
 from .operator_policy_canary_terminal_delivery import (
     OperatorTerminalDeliveryAdapters, file_record, finalize_operator_policy_canary, _seal,
+    materialize_operator_registration_alias,
 )
 from .provider_output_range_ingestion import ingest_provider_output
 from .task_evaluation_artifact_manifest import build_task_evaluation_artifact_manifest
@@ -458,7 +459,7 @@ def run_existing_watchdog(intent, *, intent_path, host_reader=host_identity):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("run", "readiness", "watchdog", "process-identity", "commit-handoff", "host-identity"))
+    parser.add_argument("action", choices=("run", "readiness", "watchdog", "process-identity", "commit-handoff", "host-identity", "restore-artifact-routing"))
     parser.add_argument("--intent", type=Path)
     parser.add_argument("--pid", type=int)
     parser.add_argument("--marker")
@@ -478,6 +479,11 @@ def main(argv=None):
                 result = cloud_readiness(intent, inventory_reader=live_inventory)
             elif args.action == "watchdog":
                 result = run_existing_watchdog(intent, intent_path=args.intent)
+            elif args.action == "restore-artifact-routing":
+                validate_control_plane_host(intent)
+                validate_continuation_intent(intent)
+                alias = materialize_operator_registration_alias(intent['terminal_delivery_intent'])
+                result = {'status':'registered_artifact_root_restored','registration_alias':alias}
             else:
                 result = commit_owner_handoff(intent, read_json(args.readiness))
         if args.output:

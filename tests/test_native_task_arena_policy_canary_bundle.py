@@ -158,9 +158,11 @@ def test_provider_worker_has_one_simulation_launch_outside_episode_loop() -> Non
     assert source.count("run_policy_episode=run_policy_episode,") == 1
     assert "execute_paired_session(" in source
     assert "provider_closeout_pending=True" in source
-    assert "policy_canary_telemetry.jsonl" in source
-    assert "from mcap.writer import Writer" in source
-    assert "mcap_unavailable:" in source
+    assert "_write_policy_canary_telemetry(" in source
+    evidence = Path(bundle.__file__).with_name("policy_canary_worker_evidence.py").read_text()
+    assert "policy_canary_telemetry.jsonl" in evidence
+    assert "from mcap.writer import Writer" in evidence
+    assert "mcap_unavailable:" in evidence
 
 
 def test_provider_result_is_durable_before_isaac_close_can_exit(

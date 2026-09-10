@@ -1103,6 +1103,15 @@ def _finish_policy_canary_delivery(
     sync_path = root / PERSISTED_WEBAPP_SYNC_RELATIVE_PATH
     _write_exclusive(projection_path, projection)
     _persist_until_sealed(root, sync_path, sync)
+    from .task_evaluation_owner_delivery_readback import verify_owner_policy_delivery
+    owner_delivery = verify_owner_policy_delivery(root=root, setup=setup, runtime_inputs=runtime_inputs,
+        delivery=website_delivery, projection=projection, publication=sync)
+    if owner_delivery['status'] == 'pending':
+        pending = {'schema_version': SCHEMA_VERSION, 'status': 'awaiting_website_download_readback',
+            'run_id': joined['run_id'], 'allocator_invoked': allocator_invoked,
+            'automatic_retry_performed': False, 'blockers': owner_delivery['blockers']}
+        write_json(root / 'dispatch_pending.json', pending)
+        return pending
     receipt = {
         "schema_version": SCHEMA_VERSION,
         "status": joined["status"],
@@ -1116,6 +1125,7 @@ def _finish_policy_canary_delivery(
         "policy_canary_projection_digest": projection["projection_digest"],
         "policy_canary_result_projection": _record(projection_path),
         "policy_canary_webapp_sync": _record(sync_path),
+        **({'owner_delivery_readback': owner_delivery['receipt']} if owner_delivery['status'] == 'verified' else {}),
         "notification_delivery": sync["notification_delivery"],
         "official_billing": closure["billing"],
         "teardown": closure["teardown"],

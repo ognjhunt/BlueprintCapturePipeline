@@ -22,7 +22,7 @@ def fixture(root, count=2):
     projection = {'projection_digest':'sha256:'+'3'*64}
     publication = {'status':'succeeded','run_id':'run-1','result_delivery_digest':delivery['delivery_digest'],
                    'policy_canary_projection_digest':projection['projection_digest']}
-    state = {'gets':[], 'posts':[], 'corrupt':False, 'wrong_inbox':False, 'foreign_ticket':False}
+    state = {'gets':[], 'posts':[], 'corrupt':False, 'wrong_inbox':False, 'foreign_ticket':False, 'wrong_owner':False}
     def opener(call, *, timeout):
         if call.method == 'POST':
             body=json.loads(call.data)
@@ -35,8 +35,10 @@ def fixture(root, count=2):
                           '/api/task-evaluation-result-downloads/record/'+key+'?signature=PRIVATE-TICKET'}
                        for key in body['artifact_ids']]
             response={'schema_version':'task_evaluation_delivery_readback.v1','status':'verified',
-                **{k:body[k]for k in ('run_id','operator_registration_digest','result_delivery_digest','policy_canary_projection_digest')},
+                **{k:body[k]for k in ('run_id','operator_registration_digest','request_digest','configuration_digest',
+                    'owner_user_id','team_namespace','result_delivery_digest','policy_canary_projection_digest') if k in body},
                 'inbox':{'status':'verified','run_id':'different' if state['wrong_inbox'] else 'run-1',
+                    **({'owner_user_id':'wrong-owner' if state['wrong_owner'] else body['owner_user_id']} if 'owner_user_id' in body else {}),
                     'projection_digest':projection['projection_digest'],'team_namespace':'team-1',
                     'source':'website_owner_run_index_readback'},'ephemeral_downloads':tickets}
             return Response(json.dumps(response).encode())
@@ -69,3 +71,24 @@ def test_bad_bytes_or_wrong_owner_or_redirect_target_prevents_completion(tmp_pat
     with pytest.raises(DeliveryReadbackError,match=reason):
         verify_website_delivery(**args)
     assert not list(tmp_path.rglob('*.json'))
+
+
+@pytest.mark.parametrize('wrong_owner', [False, True])
+def test_normal_owner_readback_binds_original_owner_request_and_downloads(tmp_path, wrong_owner):
+    args, state = fixture(tmp_path)
+    args.pop('registration')
+    args['owner_execution'] = {'run_id':'run-1','capture_session_id':'capture-1',
+        'request_digest':'sha256:'+'4'*64,'configuration_digest':'sha256:'+'5'*64,
+        'owner_user_id':'owner-1','team_namespace':'team-1'}
+    args['publication'].update({key:args['owner_execution'][key] for key in ('request_digest','configuration_digest')})
+    state['wrong_owner'] = wrong_owner
+    if wrong_owner:
+        with pytest.raises(DeliveryReadbackError, match='owner_inbox_unverified'):
+            verify_website_delivery(**args)
+        assert not state['gets']
+    else:
+        result = verify_website_delivery(**args)
+        assert result['status'] == 'verified' and len(state['gets']) == 2
+        assert state['posts'][0]['schema_version'] == 'task_evaluation_delivery_readback_request.v2'
+        assert 'operator_registration_digest' not in state['posts'][0]
+        assert result['owner_user_id'] == 'owner-1'
