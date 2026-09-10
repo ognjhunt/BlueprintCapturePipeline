@@ -404,6 +404,8 @@ def sync_task_evaluation_policy_canary_to_webapp(
         "policy_canary_projection_digest": payload["policy_canary_result"][
             "projection_digest"
         ],
+        **({key: payload[key] for key in ("plan_digest", "operator_registration_digest")}
+           if "operator_registration_digest" in payload else {}),
     }
     if not resolved_url or not resolved_token:
         return {

@@ -17,7 +17,7 @@ import time
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
-from .operator_policy_canary_terminal_delivery import file_record, _seal
+from .operator_policy_canary_terminal_delivery import file_record, _seal, materialize_operator_registration_alias
 
 INTENT_SCHEMA = "operator_existing_policy_canary_continuation_intent.v1"
 READY_SCHEMA = "operator_existing_policy_canary_cloud_readiness.v1"
@@ -187,6 +187,13 @@ def cloud_readiness(intent, *, inventory_reader, process_reader=process_identity
     from .provider_output_range_ingestion import validate_ingestion_binding
     validate_ingestion_binding(intent["ingestion_binding"], intent["signed_get_url_file"])
     host = validate_control_plane_host(intent, host_reader=host_reader)
+    registration_alias = materialize_operator_registration_alias(intent['terminal_delivery_intent'])
+    from .live_pipeline_result_artifact_resolution import _registered_operator_run_root
+    run_root = Path(intent['terminal_delivery_intent']['run_root'])
+    routed = _registered_operator_run_root(activation_root=run_root.parent / (intent['run_id'] + '-activation'),
+                                         run_id=intent['run_id'])
+    if routed != run_root.resolve():
+        raise ContinuationError('continuation_operator_artifact_root_unproven')
     watchdog_path = Path(intent["watchdog_root"]) / "groot_oscar_runpod_canary_watchdog.json"
     watchdog = read_json(watchdog_path)
     started = Path(intent["watchdog_root"]) / "started_vast_instance_id.txt"
@@ -223,6 +230,7 @@ def cloud_readiness(intent, *, inventory_reader, process_reader=process_identity
         "instance_id": intent["instance_id"], "resource_name": intent["resource_name"],
         "deadline_epoch": intent["deadline_epoch"], "hard_cap_usd": intent["hard_cap_usd"],
         "scientific_commit": intent["scientific_commit"], "immutable_inputs_readable": True,
+        "operator_artifact_run_root_verified": True, "operator_registration_alias": registration_alias,
         "watchdog": file_record(snapshot), "watchdog_live_evidence_path": str(watchdog_path), "started_instance": file_record(started),
         "watchdog_process": process, "watchdog_process_adoption": adoption, "inventory": inventory,
         "original_watchdog": intent["original_watchdog"], "cp_watchdog_armed_before_original_allocation": False,

@@ -9,7 +9,7 @@ import pytest
 
 from blueprint_pipeline import operator_policy_canary_continuation as coordinator
 from blueprint_pipeline import operator_policy_canary_handoff as handoff
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.operator_policy_canary_terminal_delivery import file_record
 from blueprint_pipeline.provider_output_range_ingestion import ingest_provider_output
 from tests.test_provider_output_range_ingestion import _binding, store as store  # shared real HTTP fixture
@@ -23,7 +23,7 @@ def write(path, value):
 
 @pytest.fixture
 def fixture(tmp_path, store):  # noqa: F811 - imported shared pytest fixture
-    root = tmp_path / "cloud"
+    root = tmp_path / "run-1"
     root.mkdir()
     binding, url = _binding(tmp_path, store)
     staging = Path(binding["staging_manifest"]["path"])
@@ -46,6 +46,10 @@ def fixture(tmp_path, store):  # noqa: F811 - imported shared pytest fixture
         "provider_zero_path": str(root / "post_teardown_global_provider_zero.json"),
         "native_result_path": str(root / "provider_output/native/runtime/result.json"),
         "official_billing_path": str(root / "billing.json"), "billing_audit_root": str(root / "billing-audit")}
+    registration = {'schema_version': 'task_evaluation_operator_policy_canary_registration.v1',
+        'run_id': 'run-1', 'run_kind': 'internal_policy_canary', 'claim_ceiling': 'diagnostic_policy_execution'}
+    registration['registration_digest'] = cross_runtime_canonical_digest(registration, digest_field='registration_digest')
+    terminal['records'] = {'registration': file_record(write(root / 'immutable-inputs/registration.json', registration))}
     values = {"session_authority": {"run_id": "run-1", "hard_cap_usd": 3., "resource_name": name, "retry_cap": 0},
         "operator_authorization": {"policy_cap_usd": 3.}, "bundle": {"implementation_commit": "c" * 40,
         "bundle_sha256": "sha256:" + "a" * 64, "retry_cap": 0},
@@ -126,6 +130,16 @@ def test_no_collection_or_mutation_before_explicit_owner_handoff(fixture):
     assert result["status"] == "pending"
     assert result["blockers"] == ["continuation_explicit_owner_handoff_pending"]
     assert fixture.events == []
+
+
+def test_readiness_verifies_exact_registration_alias_and_direct_operator_root(fixture):
+    alias = fixture.root / 'website-operator-registration.json'
+    source = Path(fixture.intent['terminal_delivery_intent']['records']['registration']['path'])
+    assert alias.read_bytes() == source.read_bytes()
+    assert fixture.readiness['operator_artifact_run_root_verified'] is True
+    assert fixture.readiness['operator_registration_alias'] == file_record(alias)
+    from blueprint_pipeline.live_pipeline_result_artifact_resolution import _registered_operator_run_root
+    assert _registered_operator_run_root(activation_root=fixture.root.parent / 'run-1-activation', run_id='run-1') == fixture.root
 
 
 def test_existing_run_stages_are_ordered_and_completed_resume_is_noop(fixture):

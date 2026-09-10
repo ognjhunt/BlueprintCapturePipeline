@@ -150,6 +150,49 @@ def _seal(path: Path, value: Mapping[str, Any]) -> dict[str, Any]:
     return body
 
 
+def materialize_operator_registration_alias(intent: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain the verified registration's exact bytes at the artifact-router path.
+
+    Call only after full intent validation. A conflicting alias is never replaced.
+    Relocation changes custody, not registration bytes, owner or authorization.
+    """
+    expected = intent['records']['registration']
+    source = _record_path(expected, intent.get('artifact_locations', {}))
+    payload = source.read_bytes()
+    if ('sha256:' + hashlib.sha256(payload).hexdigest() != expected['sha256']
+            or len(payload) != expected['size_bytes']):
+        raise OperatorTerminalDeliveryError('operator_terminal_registration_source_changed')
+    root = Path(intent['run_root'])
+    if not root.is_absolute() or root.is_symlink():
+        raise OperatorTerminalDeliveryError('operator_terminal_run_root_invalid')
+    root.mkdir(parents=True, exist_ok=True)
+    destination = root / 'website-operator-registration.json'
+    if not destination.exists() and not destination.is_symlink():
+        descriptor, name = tempfile.mkstemp(prefix='.operator-registration-', dir=root)
+        temporary = Path(name)
+        try:
+            with os.fdopen(descriptor, 'wb') as stream:
+                os.fchmod(stream.fileno(), source.stat().st_mode & 0o777)
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary, destination)
+            except FileExistsError:
+                pass
+            directory = os.open(root, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            temporary.unlink(missing_ok=True)
+    actual = file_record(destination)
+    if any(actual[key] != expected[key] for key in ('sha256', 'size_bytes')):
+        raise OperatorTerminalDeliveryError('operator_terminal_registration_alias_conflict')
+    return actual
+
+
 def _control_plane_path(value: str | Path) -> str:
     """Validate a remote POSIX path without consulting the author's filesystem."""
     path = os.fspath(value)
@@ -522,6 +565,10 @@ def finalize_operator_policy_canary(intent: Mapping[str, Any], *,
             return {'schema_version': RESULT_SCHEMA, 'status': 'pending', 'run_id': intent['run_id'],
                     'all_required_phases_done': False, 'blockers': ['operator_terminal_finalization_in_progress']}
         _seal(metadata/'intent.json', dict(intent))
+        # The authenticated artifact router admits operator runs through this
+        # canonical registration alias. Preserve exact relocated input bytes,
+        # including when resuming an already sealed publication or completion.
+        materialize_operator_registration_alias(intent)
         final = metadata/'completed.json'
         if final.is_file():
             receipt = _read(final)
