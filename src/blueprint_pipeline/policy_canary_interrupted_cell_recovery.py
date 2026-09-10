@@ -312,12 +312,72 @@ def _source_inventory(root: Path) -> list[dict[str, Any]]:
             raise ValueError("interrupted_cell_artifact_symlink_forbidden")
         if not path.is_file():
             continue
-        role = ("exact_policy_request" if "policy-requests" in relative.parts else
+        typed_role = next((role for role in ("episode_receipt", "reset_state", "policy_query_receipt",
+            "action_sequence", "action_delivery_readback", "state_trace", "contact_force_trace",
+            "task_object_trajectory", "score_receipt") if path.name.endswith(f".{role}.json")), None)
+        role = (typed_role if typed_role else "exact_policy_request" if "policy-requests" in relative.parts else
                 "lossless_frame_manifest" if "manifest" in path.name and "frame" in path.name else
                 "review_video" if path.suffix == ".mp4" else "retained_lossless_frame" if path.suffix == ".png"
                 else "retained_interrupted_cell_evidence")
         records.append(_artifact(root, path, role))
     return records
+
+
+def _retained_terminal_receipt(root: Path, episode_id: str, candidate: str, spec: dict, binding: dict) -> tuple[dict, dict, str] | None:
+    path = root / "episodes" / f"{episode_id}.episode_receipt.json"
+    if not path.exists():
+        return None
+    receipt = _read(path)
+    core = dict(receipt)
+    scope = "whole_receipt"
+    if receipt.get("receipt_digest") != canonical_digest(core, digest_field="receipt_digest"):
+        # Current worker appends this diagnostic after run_policy_episode seals
+        # its receipt. Verify the existing core seal without rewriting its bytes
+        # or treating the appended diagnostic as an adjudicated completion.
+        core.pop("embodiment_parity_diagnostic", None)
+        scope = "before_worker_embodiment_parity_attachment"
+    if receipt.get("receipt_digest") != canonical_digest(core, digest_field="receipt_digest"):
+        raise ValueError("interrupted_cell_terminal_receipt_digest_mismatch")
+    if (core.get("schema_version") != "adp009d_policy_episode.v4"
+            or core.get("candidate_id") != candidate or core.get("episode_id") != episode_id
+            or core.get("task_spec_digest") != binding["task_spec_digest"]
+            or core.get("task_spec_digest") != canonical_digest(core.get("task_spec") or {})
+            or core.get("max_policy_queries") != spec["max_policy_queries"]
+            or core.get("open_loop_horizon") != spec["open_loop_horizon"]
+            or core.get("prompt") != spec["prompt"]):
+        raise ValueError("interrupted_cell_terminal_receipt_binding_mismatch")
+    for row in [*(core.get("media_artifacts") or []), *(core.get("policy_request_artifacts") or [])]:
+        _verify_artifact(root / "episodes", row)
+    return receipt, _artifact(root, path, "episode_receipt"), scope
+
+
+def _unadjudicated_terminal_row(root: Path, *, terminal: tuple, original: dict | None,
+        original_ref: dict | None, requests: list, cell: dict, spec: dict, binding: dict) -> dict:
+    receipt, reference, scope = terminal
+    evidence = {"episode_receipt": {**reference, "media_root_relative": "episodes"}}
+    for media in receipt.get("media_artifacts") or []:
+        role = str(media.get("role") or "")
+        key = "frame_manifest" if "frame" in role and "manifest" in role else "review_video" if "video" in role else None
+        if key is not None and key not in evidence:
+            evidence[key] = _artifact(root, root / "episodes" / media["relative_path"],
+                "lossless_frame_manifest" if key == "frame_manifest" else "review_video")
+    row = dict(original) if original is not None else {
+        "status": "blocked", "candidate_policy_queried": False, "candidate_action_returned": False,
+        "actions_reached_robot": False, "arm_moved": False, "policy_outcome_interpretable": False,
+        "scoring_authority": None, "typed_harness_failure": "retained_terminal_receipt_unadjudicated",
+        "visual_evidence": receipt.get("visual_evidence"), "episode": receipt,
+        "scientific_reset": receipt.get("scientific_reset"), "reset_state_digest": None}
+    row.update(**cell, run_kind=RUN_KIND, claim_ceiling=CLAIM_CEILING, candidate_id=binding["candidate_id"],
+        checkpoint_digest=spec["checkpoint_digest"], runtime_identity_digest=spec["runtime_identity_digest"],
+        execution_spec_digest=spec["execution_spec_digest"], task_success_contract_digest=spec["task_success_contract_digest"],
+        candidate_policy_query_attempted=bool(requests), retained_policy_request_count=len(requests),
+        ranking_eligible=False, recovery_binding=binding, original_failure_receipt=original_ref,
+        terminal_evidence_status="retained_pending_adjudication",
+        retained_terminal_episode_receipt={**reference, "identity_verified": True, "core_receipt_digest_verified": True,
+            "receipt_digest_scope": scope, "completion_claim_promoted": False},
+        recovery_evidence_gaps=["retained_terminal_receipt_not_adjudicated"])
+    row["evidence_artifacts"] = {**evidence, **dict(row.get("evidence_artifacts") or {})}
+    return row
 
 
 def recover_interrupted_cell_result(
@@ -369,6 +429,11 @@ def recover_interrupted_cell_result(
                            "execution_spec_digest": spec["execution_spec_digest"]}
         original, original_ref = _original_failure(child_root, episode_id, candidate, binding, spec)
         requests, images = _request_records(child_root, episode_id, candidate, spec, binding)
+        terminal = _retained_terminal_receipt(child_root, episode_id, candidate, spec, binding)
+        if terminal is not None:
+            episodes.append(_unadjudicated_terminal_row(child_root, terminal=terminal, original=original,
+                original_ref=original_ref, requests=requests, cell=cell, spec=spec, binding=episode_binding))
+            continue
         composites, streams, media_gaps = _recover_frames(child_root, episode_id, candidate, images)
         first_observation = bool(composites)
         candidate_root = recovery_root / candidate
