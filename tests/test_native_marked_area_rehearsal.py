@@ -81,7 +81,8 @@ def test_control_search_declares_many_options_without_rewriting_task():
     assert feedback["allocator_retry_cap"] == 0
 
 
-def test_direct_policy_omission_preserves_all_task_scoring_criteria():
+@pytest.mark.parametrize("marked_area", [False, True])
+def test_direct_policy_omission_preserves_all_task_scoring_criteria(marked_area):
     from tests.test_native_task_arena_policy_canary_session import _activation
     from blueprint_pipeline.native_marked_area_rehearsal import direct_policy_request
     original_contract = _activation()['task_success_contract']
@@ -91,17 +92,24 @@ def test_direct_policy_omission_preserves_all_task_scoring_criteria():
     contract['contract_digest'] = cross_runtime_canonical_digest(contract, digest_field='contract_digest')
     request = {'schema_version': 'native_task_arena_packet_request.v1',
         'task_spec': {'task_success_contract': contract,
+            'task_success_contract_digest': contract['contract_digest'],
             'target_position_world_m': [1.,2.,3.], 'destination_orientation_xyzw': [0.,0.,0.,1.],
-            'visible_target_marker': {'schema_version': 'native_task_target_marker.v1'},
+            'destination_pose_world': [1.,2.,2.97,0.,0.,0.,1.],
             'configured_success_criteria': {'per_cell_controls_required': True, 'minimum_lift_m': .1},
             'success_criteria': {'per_cell_controls_required': True}},
-        'assets': [], 'native_construction_feedback': {'enabled': True}}
+        'assets': [{'semantic_role': 'task_support', 'asset_id': 'original-tray'}],
+        'native_construction_feedback': {'enabled': True}}
+    if marked_area:
+        request['task_spec']['visible_target_marker'] = {'schema_version': 'native_task_target_marker.v1'}
     request['request_digest'] = canonical_digest(request, digest_field='request_digest')
     original = copy.deepcopy(request)
     result = direct_policy_request(source_request=request, authorized_by='owner', authorization_reference='user:skip-controls')
     assert request == original
     assert result['task_spec']['task_success_contract']['criteria'] == original_contract['criteria']
-    assert result['task_spec']['destination_pose_world'] == [1.,2.,3.,0.,0.,0.,1.]
+    assert result['task_spec']['task_success_contract_digest'] == result['task_spec']['task_success_contract']['contract_digest']
+    assert result['task_spec']['task_success_contract_digest'] != contract['contract_digest']
+    assert result['task_spec']['destination_pose_world'] == ([1.,2.,3.,0.,0.,0.,1.] if marked_area else original['task_spec']['destination_pose_world'])
+    assert result['assets'] == original['assets']
     assert result['task_spec']['configured_success_criteria']['minimum_lift_m'] == .1
     assert result['task_spec']['configured_success_criteria']['per_cell_controls_required'] is False
     assert 'native_construction_feedback' not in result
