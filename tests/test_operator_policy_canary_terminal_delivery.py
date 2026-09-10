@@ -501,6 +501,7 @@ def test_registration_ack_mismatch_is_refused_before_transport(tmp_path, monkeyp
         terminal.finalize_operator_policy_canary(intent)
 
 
+@pytest.mark.external_data
 @pytest.mark.skipif(
     not os.getenv("BLUEPRINT_OPERATOR_TERMINAL_REPLAY_ROOT"),
     reason="explicit retained-job replay only",
