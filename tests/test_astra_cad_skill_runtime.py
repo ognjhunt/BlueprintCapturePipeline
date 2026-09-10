@@ -121,7 +121,7 @@ def fake_graph(monkeypatch, tmp_path):
     def invoke(state, config):
         assert graph._MAX_SELF_RETRIES == 1 and config["recursion_limit"] == 8
         assert nodes._CFG_MAX_EXEC_RETRIES == 0
-        assert nodes._node_python_coder_deterministic() is None
+        assert callable(nodes._node_python_coder_deterministic)
         assert nodes._optimize_print_orientation(Path("same.stl"))[0] == Path("same.stl")
         for name in ("OpenAI", "_fill_unsupported_with_aider", "generate_initial_solution", "_run_direct_repair_fallback"):
             with pytest.raises(runtime.AstraCADRuntimeBlocked, match="bypass_denied"):
@@ -334,3 +334,67 @@ def test_source_change_after_graph_cannot_leave_a_passing_receipt(tmp_path, fake
     receipt = json.loads((output / "candidate-receipt.json").read_text())
     assert receipt["passed"] is False and receipt["source_unchanged_after"] is False
     assert len(calls) == 2
+
+
+def test_adoption_requires_matching_completed_sdk_output_and_exact_parameters(tmp_path):
+    from pydantic import BaseModel
+
+    class Brief(BaseModel):
+        part_name: str
+        user_request_raw: str
+
+    class Plan(BaseModel):
+        width: float
+
+    source = tmp_path / 'prior'
+    source.mkdir()
+    budget = tmp_path / 'budget'
+    completions = budget / 'inference_reservations/completed'
+    completions.mkdir(parents=True)
+    parameters = {'brief': 'exact 12.34567 mm', 'expected_dimensions_mm': [12.34567, 20, 30],
+                  'run_id': 'same-global-run', 'object_label': 'book'}
+    runtime._save(source / 'parameters.json', parameters)
+    for index, (node, field, output) in enumerate((
+        ('node_spec_planner', 'cad_brief', {'part_name': 'book', 'user_request_raw': 'book'}),
+        ('node_geometric_architect', 'architect_plan', {'width': 12.34567}),
+    )):
+        raw = json.dumps(output)
+        (source / f'invocation-{index:02d}-output.txt').write_text(raw)
+        retained = dict(output)
+        if index == 0:
+            retained['user_request_raw'] = parameters['brief']
+        runtime._save(source / f'node-{node}.json', {field: retained})
+        completion = {'run_id': parameters['run_id'], 'model': 'gpt-6-astra', 'provider': 'openai',
+                      'capability': 'astra_cad_candidate:book',
+                      'structured_output_digest': canonical_digest({'content': raw})}
+        completion['inference_completion_digest'] = canonical_digest(completion, digest_field='inference_completion_digest')
+        runtime._save(completions / f'{index}.json', completion)
+    nodes = SimpleNamespace(CADBrief=Brief, ArchitectPlan=Plan)
+    result, receipt = runtime._adopt_completed_phases(source, budget, parameters, nodes)
+    assert result['node_spec_planner']['cad_brief'].user_request_raw == parameters['brief']
+    assert len(receipt['phases']) == 2
+    with pytest.raises(runtime.AstraCADRuntimeBlocked, match='parameters_mismatch'):
+        runtime._adopt_completed_phases(source, budget, {**parameters, 'brief': 'changed'}, nodes)
+    (source / 'invocation-01-output.txt').write_text('{"width":12.35}')
+    with pytest.raises(runtime.AstraCADRuntimeBlocked, match='missing_sdk_completion'):
+        runtime._adopt_completed_phases(source, budget, parameters, nodes)
+
+
+def test_compact_coder_prompt_preserves_curved_geometry_and_no_duplicate_brief():
+    prompt = runtime._compact_coder_prompt(plan_json=json.dumps({'radius': None, 'control_points': [],
+        'notes': 'degree-five Bezier, no overshoot', 'width': 12.34567}), previous_feedback='',
+        user_request='giant duplicated brief', step_path='/scratch/model.step', stl_path='/scratch/model.stl')
+    result = json.loads(prompt)
+    assert result['architect_plan'] == {'notes': 'degree-five Bezier, no overshoot', 'width': 12.34567}
+    assert result['step_path'] == '/scratch/model.step'
+    assert 'giant duplicated brief' not in prompt
+
+
+def test_step_readback_rejects_disconnected_solids_even_with_exact_envelope(tmp_path):
+    build123d = pytest.importorskip('build123d')
+    shape = build123d.Compound(children=[build123d.Box(1, 1, 1),
+        build123d.Pos(2, 0, 0) * build123d.Box(1, 1, 1)])
+    path = tmp_path / 'disconnected.step'
+    build123d.export_step(shape, str(path))
+    result = runtime._read_step(path, (3, 1, 1), 0.01)
+    assert result['solid_count'] == 2 and result['valid'] and not result['passed']
