@@ -180,6 +180,11 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.timer",
 )
+
+CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
+    "blueprint-task-evaluation-configured-controls-progression.timer",
+    "blueprint-task-evaluation-configured-controls-progression.path",
+)
 #: JSON under these roots names the commits that a launch may still need; a
 #: commit named anywhere here is never retired by the deploy that supersedes it.
 DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS = (
@@ -1709,6 +1714,7 @@ def _restore_installed_path_units(
     always_arm_units: Sequence[str] = (),
     always_arm_authority_gated_units: Sequence[str] = (),
     always_arm_timer_units: Sequence[str] = (),
+    preserve_configured_controls_state: bool = False,
 ) -> list[dict[str, Any]]:
     """Restore path/timer intent without widening arbitrary launch authority.
 
@@ -1719,6 +1725,8 @@ def _restore_installed_path_units(
     progression authority instead of misreporting it as no-spend.
     """
 
+    if preserve_configured_controls_state and arm_path_units:
+        raise ControlPlaneDeployError("deploy_conflicting_configured_controls_intent")
     receipts: list[dict[str, Any]] = []
     for entry in installed_units:
         unit = str(entry.get("unit") or "")
@@ -1727,7 +1735,10 @@ def _restore_installed_path_units(
         prior = dict(before.get(unit) or {"enabled": "disabled", "state": "inactive"})
         arm_no_spend = unit in always_arm_units
         arm_authority_gated = unit in always_arm_authority_gated_units
-        arm_progression = unit in always_arm_timer_units
+        arm_progression = unit in always_arm_timer_units and not (
+            preserve_configured_controls_state
+            and unit in CONFIGURED_CONTROLS_AUTOMATION_UNITS
+        )
         if sum((arm_no_spend, arm_authority_gated, arm_progression)) > 1:
             raise ControlPlaneDeployError(
                 f"deploy_automation_unit_authority_ambiguous:{unit}"
@@ -2149,6 +2160,7 @@ def deploy_control_plane_commit(
     scene_preparation_bootstrap_file: str | Path = "/etc/blueprint/task-evaluation-scene-preparation-bootstrap.json",
     controls_autoprovision_bootstrap_file: str | Path = "/etc/blueprint/task-evaluation-controls-autoprovision-bootstrap.json",
     arm_path_units: bool = False,
+    preserve_configured_controls_state: bool = False,
     disk_reservation_root: str | Path | None = None,
     release_retirement_reference_roots: Sequence[str] = (
         DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS
@@ -2157,6 +2169,8 @@ def deploy_control_plane_commit(
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both."""
 
+    if preserve_configured_controls_state and arm_path_units:
+        raise ControlPlaneDeployError("deploy_conflicting_configured_controls_intent")
     source = Path(source_repo).expanduser().resolve()
     active = Path(active_link).expanduser()
     releases = Path(release_root).expanduser().resolve()
@@ -2487,6 +2501,7 @@ def deploy_control_plane_commit(
                 DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS
             ),
             always_arm_timer_units=DEFAULT_ALWAYS_ARM_TIMER_UNITS,
+            preserve_configured_controls_state=preserve_configured_controls_state,
         )
         # Last, with the new release proven live: retire the trees this deploy
         # superseded, so per-commit growth is bounded by keep_last instead of
@@ -2504,6 +2519,7 @@ def deploy_control_plane_commit(
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "deployed",
+        "preserve_configured_controls_state": preserve_configured_controls_state,
         "release_retirement": release_retirement,
         "unit_sandbox_paths": unit_sandbox_paths,
         "stage_timings_seconds": stage_timings,
@@ -2694,6 +2710,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--preserve-configured-controls-state",
+        action="store_true",
+        help=(
+            "Preserve the current enabled and active state of the configured-controls "
+            "progression timer and path, including an operator pause. Other automation "
+            "retains its normal deployment behavior. Incompatible with --arm-path-units."
+        ),
+    )
+    parser.add_argument(
         "--arm-path-units",
         action="store_true",
         help=(
@@ -2736,6 +2761,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.configured_controls_autostart_intent or ()
             ),
             arm_path_units=args.arm_path_units,
+            preserve_configured_controls_state=args.preserve_configured_controls_state,
             disk_reservation_root=(
                 Path(args.state_root).expanduser() / "disk-reservations"
             ),
