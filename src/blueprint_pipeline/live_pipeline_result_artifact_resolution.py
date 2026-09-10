@@ -90,6 +90,7 @@ def resolve_live_pipeline_result_artifact(
     policy_canary_result_root: str | Path | None,
     run_id: str,
     artifact_id: str,
+    retain_read_lease: bool = False,
 ) -> tuple[Path, dict[str, Any]]:
     """Resolve legacy, queued-canary, or registered operator run stores."""
 
@@ -108,11 +109,29 @@ def resolve_live_pipeline_result_artifact(
         selected_root = _registered_operator_run_root(
             activation_root=activation_root, run_id=run
         ) or activation_root or legacy_root
-    return resolve_task_evaluation_result_artifact(
-        run_root=selected_root,
-        run_id=run,
-        artifact_id=artifact_id,
-    )
+    release = None
+    if retain_read_lease and (selected_root / "artifacts/result_delivery/artifact_registry.json").is_file():
+        from .task_evaluation_result_artifact_store import acquire_artifact_read_lease
+        release = acquire_artifact_read_lease(selected_root)
+    try:
+        path, record = resolve_task_evaluation_result_artifact(
+            run_root=selected_root, run_id=run, artifact_id=artifact_id,
+        )
+    except BaseException:
+        if release is not None:
+            release()
+        raise
+    if release is not None:
+        temporary_cleanup = record.get("_artifact_cleanup")
+        def cleanup():
+            try:
+                if temporary_cleanup is not None:
+                    temporary_cleanup()
+            finally:
+                release()
+        record = {**record, "_artifact_cleanup": cleanup}
+    return path, record
+
 
 
 __all__ = [

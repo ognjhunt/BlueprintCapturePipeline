@@ -161,7 +161,9 @@ def test_headroom_projects_refused_roles_without_paths(tmp_path) -> None:
         "launch_dispatch",
         "policy_canary_dispatch",
         "evidence_offload",
+        "result_artifact_download",
         "stage_replay",
+        "semantic_pretraining",
     }
     assert str(tmp_path) not in json.dumps(report)
 

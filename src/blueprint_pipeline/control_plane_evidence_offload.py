@@ -88,6 +88,11 @@ def _terminal_receipt(directory: Path) -> str | None:
     return None
 
 
+def _has_result_registry(directory: Path) -> bool:
+    registry = directory / "artifacts/result_delivery/artifact_registry.json"
+    return registry.exists() or registry.is_symlink()
+
+
 def _valid_window(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
@@ -130,6 +135,11 @@ def build_evidence_offload_manifest(
                 continue
             if child.is_symlink() or not child.is_dir():
                 retained["unsafe"] += 1
+                continue
+            # Published downloads retain their registry and closure metadata.
+            # Their bulk payloads use per-artifact offload, never whole-run removal.
+            if _has_result_registry(child):
+                retained["active_or_unsealed"] += 1
                 continue
             if (root / f"{child.name}{POINTER_SUFFIX}").exists():
                 retained["already_offloaded"] += 1
@@ -338,6 +348,7 @@ def apply_evidence_offload(
             or directory.is_symlink()
             or not directory.is_dir()
             or pointer.exists()
+            or _has_result_registry(directory)
             or not _candidate_still_sealed(directory, row, abandoned_after, now)
             or (protection_checker is not None and protection_checker(directory))
         ):
@@ -383,7 +394,8 @@ def apply_evidence_offload(
                 raise ControlPlaneEvidenceOffloadError(
                     "control_plane_evidence_offload_publication_mismatch"
                 )
-            if (not _candidate_still_sealed(directory, row, abandoned_after, now)
+            if (_has_result_registry(directory)
+                    or not _candidate_still_sealed(directory, row, abandoned_after, now)
                     or (protection_checker is not None and protection_checker(directory))
                     or not _members_unchanged(directory, members)):
                 skipped.append({"name": name, "reason": "candidate_changed_during_archive"})
