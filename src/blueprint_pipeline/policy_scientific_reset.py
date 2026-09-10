@@ -96,6 +96,13 @@ def compare_reset_readbacks(left: Mapping[str, Any], right: Mapping[str, Any]) -
 
 
 def _native(value: Any) -> Any:
+    # Gf vectors and matrices implement Python's indexed sequence protocol
+    # without exposing __iter__. Convert their elements before the one strict
+    # JSON round trip, including nested vectors in Vt geometry arrays.
+    return _json(_native_value(value))
+
+
+def _native_value(value: Any) -> Any:
     if value is None:
         raise ValueError("native_value_missing")
     if hasattr(value, "detach"):
@@ -104,11 +111,74 @@ def _native(value: Any) -> Any:
         value = value.numpy()
     if hasattr(value, "tolist"):
         value = value.tolist()
+    if type(value).__module__ == "pxr.Gf" and type(value).__name__ in {"Quatd", "Quatf", "Quath"}:
+        return {"real": _native_value(value.GetReal()),
+                "imaginary": _native_value(value.GetImaginary())}
+    if type(value).__module__ in {"pxr.Gf", "pxr.Vt"}:
+        import numpy as np
+
+        # Vt mesh arrays expose a numeric buffer. Read the same values in bulk
+        # instead of constructing a Python-wrapped Gf vector for every vertex.
+        array = np.asarray(value)
+        if array.dtype.kind in "biuf":
+            value = array.tolist()
     if isinstance(value, Mapping):
-        value = {str(key): _native(item) for key, item in value.items()}
-    elif not isinstance(value, (str, int, float, bool, list)) and hasattr(value, "__iter__"):
-        value = [_native(item) for item in value]
-    return _json(value)
+        return {str(key): _native_value(item) for key, item in value.items()}
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    try:
+        items = iter(value)
+    except TypeError:
+        # Preserve strict JSON rejection of unsupported native types. Never
+        # replace an unreadable measurement with repr(), str(), or plan data.
+        return value
+    return [_native_value(item) for item in items]
+
+
+def _native_usd_attribute(attribute: Any) -> Any:
+    from pxr import Usd
+
+    value = attribute.Get()
+    name, usd_type = attribute.GetName(), str(attribute.GetTypeName())
+    source = attribute.GetResolveInfo().GetSource()
+    # UsdPhysicsMassAPI defines this exact nonnumeric fallback. Retain the
+    # loaded USD configuration explicitly; it is not a measured center of mass.
+    # This COM exception remains fallback-only; an authored nonfinite COM fails.
+    if (name == "physics:centerOfMass" and usd_type == "point3f"
+            and source == Usd.ResolveInfoSourceFallback
+            and tuple(value) == (-math.inf, -math.inf, -math.inf)):
+        return {"source": "usd_schema_fallback", "usd_type": "point3f",
+                "value_tokens": ["-inf", "-inf", "-inf"], "measured_numeric_value": False}
+    # Exact configuration sentinels in installed PhysX 110.1.13's schema.
+    # These are solver settings, never measured infinite distances/velocities.
+    # An authored setting stays distinguishable from the schema fallback.
+    sentinels = {
+        "physxScene:maxBiasCoefficient": ("PhysxSceneAPI", math.inf, "unbounded_solver_bias_limit"),
+        "physxCollision:contactOffset": ("PhysxCollisionAPI", -math.inf, "simulation_selected_contact_offset"),
+        "physxCollision:restOffset": ("PhysxCollisionAPI", -math.inf, "simulation_selected_rest_offset"),
+    }
+    declared = sentinels.get(name)
+    if (declared is not None and usd_type == "float" and value == declared[1]
+            and source in (Usd.ResolveInfoSourceFallback, Usd.ResolveInfoSourceDefault)
+            and attribute.GetPrim().HasAPI(declared[0])):
+        return {"source": "usd_schema_fallback" if source == Usd.ResolveInfoSourceFallback else "usd_authored_configuration",
+                "schema_identifier": declared[0], "usd_type": usd_type,
+                "value_tokens": ["inf" if declared[1] > 0 else "-inf"],
+                "configuration_semantics": declared[2], "measured_numeric_value": False}
+    try:
+        return _native(value)
+    except (TypeError, ValueError) as exc:
+        # Retain the failing attribute's identity, never its value or an SDK
+        # exception message that could include data. Existing receipts are not rewritten.
+        raise _NativeUsdAttributeError(attribute, source=source, error_type=type(exc).__name__) from exc
+
+
+class _NativeUsdAttributeError(ValueError):
+    def __init__(self, attribute: Any, *, source: Any, error_type: str):
+        self.error_type = error_type
+        self.detail = (f"usd_attribute_unreadable:{attribute.GetPath()}:"
+                       f"usd_type={attribute.GetTypeName()}:source={source}:error={error_type}")
+        super().__init__(self.detail)
 
 
 def read_native_reset_channels(built: Any, episode_environment: Any) -> dict[str, Any]:
@@ -127,7 +197,9 @@ def read_native_reset_channels(built: Any, episode_environment: Any) -> dict[str
             observed[name] = _json(reader())
             sources[name] = source
         except (AttributeError, KeyError, TypeError, ValueError, IndexError, ImportError, RuntimeError) as exc:
-            gaps.append(name + ":" + type(exc).__name__)
+            gaps.append(name + ":" + (exc.error_type if isinstance(exc, _NativeUsdAttributeError) else type(exc).__name__))
+            if isinstance(exc, _NativeUsdAttributeError):
+                gaps.append(name + ":" + exc.detail)
 
     def robot():
         data = scene["robot"].data
@@ -162,7 +234,7 @@ def read_native_reset_channels(built: Any, episode_environment: Any) -> dict[str
         values = {}
         for prim in stage.Traverse():
             if prim.IsA(UsdPhysics.Scene):
-                values[str(prim.GetPath())] = {attr.GetName(): _native(attr.Get()) for attr in prim.GetAttributes()
+                values[str(prim.GetPath())] = {attr.GetName(): _native_usd_attribute(attr) for attr in prim.GetAttributes()
                     if attr.GetName().startswith(("physics:", "physxScene:")) and attr.Get() is not None}
         if not values:
             raise ValueError("native_physics_scene_missing")
@@ -176,7 +248,7 @@ def read_native_reset_channels(built: Any, episode_environment: Any) -> dict[str
         values = {}
         for prim in stage.Traverse():
             if prim.HasAPI(UsdPhysics.CollisionAPI):
-                properties = {attr.GetName(): _native(attr.Get()) for attr in prim.GetAttributes()
+                properties = {attr.GetName(): _native_usd_attribute(attr) for attr in prim.GetAttributes()
                     if attr.GetName().startswith(("physics:", "physxCollision:")) and attr.Get() is not None}
                 geometry = {attr.GetName(): canonical_digest({"value": _native(attr.Get())}) for attr in prim.GetAttributes()
                     if (attr.GetName() in {"points", "faceVertexCounts", "faceVertexIndices", "radius", "height", "size", "axis"}) and attr.Get() is not None}
@@ -193,7 +265,7 @@ def read_native_reset_channels(built: Any, episode_environment: Any) -> dict[str
         values = {}
         for prim in stage.Traverse():
             if prim.HasAPI(UsdLux.LightAPI):
-                values[str(prim.GetPath())] = {"inputs": {attr.GetName(): _native(attr.Get()) for attr in prim.GetAttributes()
+                values[str(prim.GetPath())] = {"inputs": {attr.GetName(): _native_usd_attribute(attr) for attr in prim.GetAttributes()
                     if attr.GetName() in {"inputs:intensity", "inputs:exposure", "inputs:color", "inputs:colorTemperature", "inputs:enableColorTemperature"} and attr.Get() is not None},
                     "world_transform": _native(UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()))}
         if not values:
