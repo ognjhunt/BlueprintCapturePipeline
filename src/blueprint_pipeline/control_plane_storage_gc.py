@@ -851,12 +851,33 @@ def run_storage_gc(
     if evidence_present:
         def evidence_protected(directory: Path) -> bool:
             from .completed_replay_cache_retention import active_reference
-            if active_reference(directory):
+            if active_reference(directory, ignored_process_ids=(os.getpid(),)):
                 return True
             pinned = live_pinned_paths(pins_root, now=clock)
             if any(Path(p) == directory or directory in Path(p).parents or Path(p) in directory.parents for p in pinned):
                 return True
             return directory.name in _queue_reference_text(queue_roots)
+        # Keep authenticated downloads usable after cold evidence reclamation.
+        from .task_evaluation_result_artifact_store import (
+            APPLY_ACK as RESULT_ARTIFACT_ACK, offload_result_artifacts,
+        )
+        report["result_artifact_offload"] = []
+        for evidence_root in evidence_present:
+            classifier(str(evidence_root), expected="evidence_cold", code="result_artifact_offload_root_class")
+            for registry_path in sorted(Path(evidence_root).glob("*/artifacts/result_delivery/artifact_registry.json")):
+                try:
+                    result = offload_result_artifacts(
+                        run_root=registry_path.parents[2],
+                        apply=apply and offload_enabled,
+                        ack=RESULT_ARTIFACT_ACK if apply and offload_enabled else "",
+                        hot_window_seconds=hot_window_seconds,
+                        protection_checker=evidence_protected, now=clock,
+                        publisher=publisher,
+                    )
+                except Exception as exc:
+                    result = {"status": "retained", "run_directory": registry_path.parents[2].name,
+                              "reason": type(exc).__name__}
+                report["result_artifact_offload"].append(result)
         offload = build_evidence_offload_manifest(
             evidence_roots=evidence_present,
             hot_window_seconds=hot_window_seconds,

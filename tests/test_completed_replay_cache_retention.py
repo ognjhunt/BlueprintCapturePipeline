@@ -107,3 +107,15 @@ def test_unknown_process_inventory_fails_closed(tmp_path):
     root, child, data, proc = setup(tmp_path)
     with pytest.raises(ValueError, match="process_inventory_unavailable"):
         plan(root, tmp_path / "absent-proc")
+
+
+def test_gc_ignores_its_own_reference_but_retains_other_live_readers(tmp_path):
+    root, child, data, proc = setup(tmp_path)
+    for pid in (101, 202):
+        process = proc / str(pid)
+        (process / "fd").mkdir(parents=True)
+        (process / "cmdline").write_bytes(str(child).encode())
+        (process / "environ").write_bytes(b"")
+    assert gc.active_reference(child, process_root=proc, ignored_process_ids=(101,))
+    assert not gc.active_reference(child, process_root=proc, ignored_process_ids=(101, 202))
+    assert gc.active_reference(child, process_root=proc)
