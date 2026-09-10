@@ -39,7 +39,7 @@ Process defect: the pre-paid lifecycle rehearsal covered per-cell orchestration
 but did not exercise exact-zero typed native root-pose comparisons for the frozen
 translation variants. The new regressions exercise both translations, both yaw
 angles, q/-q equivalence, one-ULP errors, unapplied translations, float64 behavior,
-positive tolerance behavior and real worker failure sealing before policy query.
+positive tolerance behavior and real worker failure sealing before policy query in package and standalone provider entrypoints.
 The independent ten-cell CPU replay confirms supported applications without
 claiming that native execution has rerun. The existing unsupported friction and
 material-cousin coverage gaps in cells06/07/09 remain explicit and are not promoted
@@ -53,7 +53,7 @@ Validation:
   and retained refusal measurements.
 - `python -m pytest -q -m 'not gpu'
   tests/test_native_task_arena_policy_canary_lifecycle_rehearsal.py
-  tests/test_provider_runtime_import_closure.py`: 20 passed; protects real
+  tests/test_provider_runtime_import_closure.py`: 18 passed; protects real
   per-cell/client/close orchestration and sealed provider-bundle imports.
 - Changed-file Ruff and `git diff --check` passed.
 
