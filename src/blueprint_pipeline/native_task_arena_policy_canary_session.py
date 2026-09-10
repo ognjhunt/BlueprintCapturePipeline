@@ -187,6 +187,7 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         "resource_authority",
         "capture_contract",
         "runtime_inputs_digest",
+        "diagnostic_continuation_protocol",
     }
     if (
         not set(payload).issubset(allowed_fields)
@@ -269,6 +270,9 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         payload, digest_field="runtime_inputs_digest"
     ):
         raise PolicyCanarySessionError("policy_canary_runtime_input_self_digest_invalid")
+    if "diagnostic_continuation_protocol" in payload:
+        from .native_policy_canary_diagnostic_continuation import validate_diagnostic_continuation_protocol
+        validate_diagnostic_continuation_protocol(payload)
     return payload
 
 

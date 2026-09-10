@@ -41,6 +41,7 @@ CANARY_SHIPPED_MODULES = sorted(
         "native_task_arena_policy_worker.py",
         "native_task_arena_policy_canary_session.py",
         "policy_canary_interrupted_cell_recovery.py",
+        "native_policy_canary_diagnostic_continuation.py",
         "native_task_arena_policy_canary_worker.py",
     }
 )
@@ -312,6 +313,7 @@ def test_real_canary_bundle_passes_vast_preflight_and_imports_in_isolation(
     shipped = sorted(path.name for path in package.glob("*.py") if path.name != "__init__.py")
     assert "adp009d_groot_worker_identity.py" in shipped
     assert "policy_canary_interrupted_cell_recovery.py" in shipped
+    assert "native_policy_canary_diagnostic_continuation.py" in shipped
     assert "native_task_arena_policy_canary_worker.py" in shipped
     assert (runtime / "adp009d_groot_worker_identity.py").is_file()
     assert (

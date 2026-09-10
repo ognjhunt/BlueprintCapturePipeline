@@ -2645,6 +2645,7 @@ def test_real_policy_bundles_pass_preflight_and_import_cleanly(
     )
     assert "provider_runtime/blueprint_pipeline/policy_ranking_thesis.py" not in names
     assert not any(Path(name).name == "policy_canary_interrupted_cell_recovery.py" for name in names)
+    assert not any(Path(name).name == "native_policy_canary_diagnostic_continuation.py" for name in names)
 
 
 @pytest.mark.parametrize(
