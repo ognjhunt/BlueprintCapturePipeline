@@ -14,6 +14,8 @@ import base64
 import dataclasses
 import hashlib
 import json
+import math
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +43,9 @@ SERVER_METADATA_SCHEMA_VERSION = "openpi_droid_policy_server_metadata.v1"
 SUPPORTED_ACTION_SPACES = frozenset({"joint_position"})
 SUPPORTED_ACTION_CHUNK_ROWS = frozenset({10, 15})
 OPENPI_INFERENCE_RESPONSE_KEYS = frozenset({"actions", "policy_timing", "server_timing"})
+OPENPI_STARTUP_TIMEOUT_SECONDS = 30.0
+OPENPI_INFERENCE_TIMEOUT_SECONDS = 300.0
+OPENPI_CLOSE_TIMEOUT_SECONDS = 5.0
 LOCAL_VERIFICATION_FIELDS = frozenset(
     {
         "local_checkpoint_verified",
@@ -407,6 +412,73 @@ def verify_local_checkpoint(
     }
 
 
+class _InferenceDeadlineWebsocket:
+    """Bound the pinned vendor's otherwise unbounded response receive."""
+
+    def __init__(self, connection: Any, timeout_seconds: float) -> None:
+        self._connection = connection
+        self._timeout_seconds = timeout_seconds
+        self._deadline: float | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    def send(self, message: Any, *args: Any, **kwargs: Any) -> Any:
+        self._deadline = time.monotonic() + self._timeout_seconds
+        return self._connection.send(message, *args, **kwargs)
+
+    def recv(self, timeout: float | None = None, **kwargs: Any) -> Any:
+        if self._deadline is None:
+            raise RuntimeError("openpi_policy_receive_without_request")
+        remaining = max(0.0, self._deadline - time.monotonic())
+        if timeout is not None:
+            remaining = min(remaining, timeout)
+        return self._connection.recv(timeout=remaining, **kwargs)
+
+
+def _bounded_openpi_client_type(
+    vendor_client: type,
+    wire_decoder: Callable[[bytes], Any],
+    *,
+    startup_timeout_seconds: float = OPENPI_STARTUP_TIMEOUT_SECONDS,
+    inference_timeout_seconds: float = OPENPI_INFERENCE_TIMEOUT_SECONDS,
+    close_timeout_seconds: float = OPENPI_CLOSE_TIMEOUT_SECONDS,
+) -> type:
+    """Keep OpenPI's pinned codec/inference path; bound its transport lifecycle."""
+
+    for value in (startup_timeout_seconds, inference_timeout_seconds, close_timeout_seconds):
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("openpi_policy_transport_timeout_invalid")
+
+    class BoundedOpenPIClient(vendor_client):
+        def _wait_for_server(self) -> tuple[Any, Any]:
+            from websockets.sync.client import connect
+
+            deadline = time.monotonic() + startup_timeout_seconds
+            headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
+            # The pinned server performs synchronous cold inference on its
+            # asyncio loop, so pong latency isn't a valid inference deadline.
+            # Retain keepalive traffic, but use the bounded application receive.
+            connection = connect(
+                self._uri, compression=None, max_size=None, additional_headers=headers,
+                open_timeout=startup_timeout_seconds, ping_timeout=None,
+                close_timeout=close_timeout_seconds,
+            )
+            try:
+                metadata = wire_decoder(connection.recv(
+                    timeout=max(0.0, deadline - time.monotonic()),
+                ))
+            except BaseException:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                raise
+            return _InferenceDeadlineWebsocket(connection, inference_timeout_seconds), metadata
+
+    return BoundedOpenPIClient
+
+
 class OpenPIWebsocketDroidPolicyClient:
     """OpenPI websocket client with per-operation identity verification.
 
@@ -416,6 +488,8 @@ class OpenPIWebsocketDroidPolicyClient:
     query.  Keep only immutable endpoint inputs between operations; every
     readiness handshake and inference opens a fresh connection, verifies the
     exact server/checkpoint identity, and closes that connection immediately.
+    Startup and inference receives have explicit deadlines; a delayed pong
+    during synchronous cold inference must not override the inference deadline.
     """
 
     learned_policy = True
@@ -439,8 +513,10 @@ class OpenPIWebsocketDroidPolicyClient:
                 from openpi_client import msgpack_numpy
             except ImportError as exc:  # pragma: no cover - exercised on GPU runtime
                 raise RuntimeError("openpi_client_not_installed") from exc
-            client_factory = websocket_client_policy.WebsocketClientPolicy
             wire_decoder = msgpack_numpy.unpackb
+            client_factory = _bounded_openpi_client_type(
+                websocket_client_policy.WebsocketClientPolicy, wire_decoder,
+            )
         self._wire_decoder = wire_decoder
         self.policy_id = spec.policy_id
         self.action_space = spec.action_space
