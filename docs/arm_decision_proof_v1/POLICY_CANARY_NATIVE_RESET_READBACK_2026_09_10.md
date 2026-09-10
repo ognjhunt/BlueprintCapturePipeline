@@ -28,6 +28,10 @@ Verification:
   and detection of a changed light in a real in-memory USD stage: 25 passed.
 - CPU readback of the retained book and all 166 source collision prims succeeds
   with their original bytes; no model, GPU, or provider call is involved.
+- Bulk numeric-buffer conversion preserves the exact canonical digest of the
+  largest 63,382-vertex collider. Full collision-asset value conversion took
+  5.56 seconds, down from 27.67 seconds with per-element Gf iteration, on the
+  same CPU. This is a readback timing, not simulator performance evidence.
 - Changed-file Ruff and `git diff --check` pass.
 
 The next paid attempt must bind this repair to its immutable source and run the
