@@ -1266,6 +1266,8 @@ def _write_episode_failure_gap(
         "seed": context.get("seed"),
         "episode_failure_stage": failure_stage,
         "scientific_reset": progress.get("scientific_reset"),
+        "prestart_readiness": progress.get("prestart_readiness"),
+        "policy_inference_evidence": progress.get("policy_inference_evidence"),
         "first_observation_retained": first_observation_retained,
         "reset_state_digest": canonical_digest(
             {
@@ -1715,6 +1717,7 @@ def _run_isolated_cell_processes(
             construction_lineage_mode=construction_lineage_mode, transfer_pair=transfer_paired_witness,
             stage=os.environ.get("BLUEPRINT_POLICY_CANARY_MATRIX_STAGE", "all"))
     child_results: list[Mapping[str, Any]] = []
+    diagnostic_continuation_gate = None
     for index in range(len(inputs["cells"])):
         child_root = output_root / "cell_runs" / f"{index:02d}"
         child_root.mkdir(parents=True, exist_ok=False)
@@ -1762,7 +1765,13 @@ def _run_isolated_cell_processes(
                 f"exit_{exit_code}"
             )
         child_results.append(_read(child_result_path))
-        if index == 0:
+        if index == 0 and inputs.get("diagnostic_continuation_protocol") is not None:
+            from blueprint_pipeline.native_policy_canary_diagnostic_continuation import assess_diagnostic_first_cell, GATE_FILENAME
+            diagnostic_continuation_gate = assess_diagnostic_first_cell(runtime_root=runtime, child_root=child_root)
+            _seal_result(result_path=output_root / GATE_FILENAME, result=diagnostic_continuation_gate)
+            if diagnostic_continuation_gate["status"] != "passed":
+                raise RuntimeError("diagnostic_continuation_first_cell_blocked:" + ",".join(diagnostic_continuation_gate["blockers"]))
+        elif index == 0:
             diagnostics = [
                 row.get("embodiment_parity_diagnostic")
                 for row in child_results[-1].get("episodes") or []
@@ -1783,6 +1792,9 @@ def _run_isolated_cell_processes(
         output_root=output_root,
         construction_lineage_mode=construction_lineage_mode,
     )
+    if diagnostic_continuation_gate is not None:
+        result["diagnostic_continuation_gate"] = diagnostic_continuation_gate
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     _seal_result(
         result_path=output_root / PROVIDER_RESULT_FILENAME,
         result=result,
