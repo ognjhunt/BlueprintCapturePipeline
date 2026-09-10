@@ -692,6 +692,57 @@ def test_configured_controls_timer_is_installed_and_armed_by_default(
     ]
 
 
+@pytest.mark.parametrize("unit", deploy.CONFIGURED_CONTROLS_AUTOMATION_UNITS)
+@pytest.mark.parametrize("enabled", ["disabled", "enabled"])
+def test_explicit_controls_pause_survives_default_progression_arming(
+    monkeypatch, unit: str, enabled: str,
+) -> None:
+    calls = []
+    before = {"enabled": enabled, "state": "inactive"}
+
+    def completed(argv, **kwargs):
+        calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit: dict(before))
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit}], before={unit: before}, arm_path_units=False,
+        always_arm_timer_units=deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS,
+        preserve_configured_controls_state=True,
+    )
+    assert calls == [
+        ("systemctl", "enable" if enabled == "enabled" else "disable", unit),
+        ("systemctl", "stop", unit),
+    ]
+    assert restored[0]["after"] == before
+    assert restored[0]["requested_intent"] == "preserve"
+    assert restored[0]["operator_freeze_preserved"] is True
+
+
+def test_conflicting_controls_intent_refuses_before_any_host_action(tmp_path, monkeypatch):
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host action"))
+    with pytest.raises(deploy.ControlPlaneDeployError, match="conflicting_configured_controls_intent"):
+        deploy.deploy_control_plane_commit(
+            source_repo=tmp_path, source_commit="a" * 40,
+            release_root=tmp_path / "releases", state_root=tmp_path / "state",
+            active_link=tmp_path / "active", arm_path_units=True,
+            preserve_configured_controls_state=True,
+        )
+
+
+def test_cli_forwards_explicit_controls_state_preservation(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", lambda **kwargs: calls.append(kwargs) or {"status": "deployed"})
+    assert deploy.main([
+        "--source-repo", str(tmp_path), "--source-commit", "a" * 40,
+        "--release-root", str(tmp_path / "releases"), "--state-root", str(tmp_path / "state"),
+        "--active-link", str(tmp_path / "active"), "--preserve-configured-controls-state",
+    ]) == 0
+    assert calls[0]["preserve_configured_controls_state"] is True
+    assert calls[0]["arm_path_units"] is False
+
+
 def test_authority_gated_paid_dispatch_watcher_is_armed_by_default(
     monkeypatch,
 ) -> None:
