@@ -199,3 +199,54 @@ def test_proxy_float64_storage_is_not_guessed_float32_from_wrapper_name():
     row = report['parameters'][0]
     assert row['native_storage_provenance']['canonical_scalar_dtype'] == 'float64'
     assert 'native_storage_comparison' not in row
+
+
+@pytest.mark.parametrize('cell', ['08', '09'])
+def test_retained_composed_cells_preserve_precision_and_independent_parameter_checks(cell):
+    """Native cell 08 combines y/light; 09 combines yaw/external camera offset."""
+    yaw = -5.0
+    orientation = [0., 0., math.sin(math.radians(yaw) / 2), math.cos(math.radians(yaw) / 2)]
+    values = np.asarray([[0., -3.426138, 1., *orientation]], dtype=np.float32)
+    translation = cell == '08'
+    primary = {
+        'parameter_id': 'object_start_y_delta_m' if translation else 'object_yaw_delta_degrees',
+        'readback_kind': 'task_subject_root_position_y_m' if translation else 'task_subject_root_orientation_xyzw',
+        'application_tolerance': 0., 'expected_native_value': -3.426138 if translation else orientation,
+        'runtime_name': 'task_object', 'runtime_target': 'root_pose_w',
+        'unit': 'm' if translation else 'degrees', 'resolved_value': .015 if translation else yaw,
+    }
+    companion = {
+        'parameter_id': 'task_light_intensity_scale' if translation else 'external_camera_x_delta_m',
+        'readback_kind': 'task_light_intensity_scale' if translation else 'camera_offset_position_x_m',
+        'application_tolerance': 1e-6 if translation else 0.,
+        'expected_native_value': 1.1 if translation else .065,
+        'runtime_target': 'task_light_intensity_scale' if translation else 'camera_offset_position_x_m',
+        'unit': 'ratio' if translation else 'm', 'resolved_value': 1.1 if translation else -.015,
+        'camera_role': 'external',
+    }
+    config = {'scenario_parameters': {'task_light_intensity_scale': {'observed_intensity_scale': 1.1}},
+              'cameras': {'external': {'offset_position_m': [.065, 0., 0.]}}}
+    built = NS(plan={'scenario': {'parameter_applications': [primary, companion]}},
+        env=NS(unwrapped=NS(scene={'task_object': NS(data=NS(root_pose_w=_IsaacProxyArray(values)))})),
+        scene_asset_names={'task_object': 'task_object'}, native_configuration_readback=config)
+    result = read_native_task_arena_scenario_parameters(built)
+    assert result['passed'] is True
+    assert result['requested_parameter_count'] == 2
+    assert result['parameters'][0]['absolute_error_native_unit'] > 0
+    assert result['parameters'][0]['application_tolerance_native_unit'] == 0
+    assert result['parameters'][0]['native_storage_comparison']['absolute_error_stored_value'] == 0
+    assert 'native_storage_comparison' not in result['parameters'][1]
+    coordinate = 1 if translation else 5
+    original = values[0, coordinate]
+    values[0, coordinate] = np.nextafter(original, np.float32(np.inf))
+    drifted = read_native_task_arena_scenario_parameters(built)
+    assert not drifted['passed'] and not drifted['parameters'][0]['passed']
+    assert drifted['parameters'][1]['passed']
+    values[0, coordinate] = original
+    if translation:
+        config['scenario_parameters']['task_light_intensity_scale']['observed_intensity_scale'] += .01
+    else:
+        config['cameras']['external']['offset_position_m'][0] += .01
+    drifted = read_native_task_arena_scenario_parameters(built)
+    assert not drifted['passed'] and not drifted['parameters'][1]['passed']
+    assert drifted['parameters'][0]['passed']
