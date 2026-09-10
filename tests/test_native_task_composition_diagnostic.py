@@ -178,3 +178,26 @@ def test_composition_payload_has_complete_import_closure_without_loading_policy(
     result=subprocess.run([sys.executable,'-I','-c',probe,str(tmp_path)],capture_output=True,text=True,timeout=30)
     assert result.returncode==0,result.stderr
     assert Path(worker.__file__).name=='native_task_composition_worker.py'
+
+
+def test_native_semantic_ids_and_depth_dtype_are_not_narrowed_by_shared_writer(native):
+    original = native.camera.update
+    exact_id = 2**40 + 7
+    exact_depth = np.nextafter(np.float64(1), np.float64(2))
+    native.camera.data.info['semantic_segmentation']['idToLabels'][str(exact_id)] = {'class':'task_support'}
+    del native.camera.data.info['semantic_segmentation']['idToLabels']['7']
+    def precise(*args, **kwargs):
+        original(*args, **kwargs)
+        outputs = native.camera.data.output
+        outputs['semantic_segmentation'][outputs['semantic_segmentation']==7] = exact_id
+        outputs['distance_to_camera'] = torch.full((1,8,12,1),exact_depth,dtype=torch.float64)
+    native.camera.update = precise
+    result = diagnostic.run_composition_diagnostic(request(),output_root=native.output,adapters=native.adapters)
+    assert result['status']=='captured',result
+    assert result['pixel_comparison']['target_semantic_ids']==[exact_id]
+    full=result['passes'][0]['camera']
+    labels=np.load(native.output/'full'/full['semantic_segmentation']['path'])
+    depth=np.load(native.output/'full'/full['metric_depth']['path'])
+    assert labels.dtype==np.int64 and (labels==exact_id).all()
+    assert depth.dtype==np.float64 and (depth==exact_depth).all()
+    assert full['semantic_segmentation']['pixel_counts_by_id']=={str(exact_id):96}

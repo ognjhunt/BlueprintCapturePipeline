@@ -131,12 +131,24 @@ def make_native_adapters(*, built, stage, request):
             sim_time=float(env.sim.current_time), require_metric_depth=False)
         if 'distance_to_camera' not in data.output:
             raise CompositionDiagnosticError('composition_native_metric_depth_channel_missing')
-        raw = np.asarray(data.output['distance_to_camera'][0].detach().cpu().numpy(), dtype=np.float32)
-        if row['metric_depth']['status'] != 'valid':
-            path = output / 'camera_frames' / request['camera_role'] / '000000.distance_to_camera.npy'
-            np.save(path, raw, allow_pickle=False)
-            row['metric_depth'] = {'status': 'invalid_native_aov', 'aov': 'distance_to_camera',
-                'units': 'meter', 'path': str(path.relative_to(output)), **file_record(path)}
+        raw = data.output['distance_to_camera'][0].detach().cpu().numpy()
+        path = output / 'camera_frames' / request['camera_role'] / '000000.distance_to_camera.npy'
+        np.save(path, raw, allow_pickle=False)
+        finite = np.isfinite(raw)
+        row['metric_depth'] = {'status': 'valid' if finite.any() and not (raw[finite] < 0).any() else 'invalid_native_aov',
+            'aov': 'distance_to_camera', 'units': 'meter', 'dtype': str(raw.dtype),
+            'path': str(path.relative_to(output)), **file_record(path)}
+        # Preserve native label IDs/dtype (the shared episode writer historically
+        # narrows to int32). Its paths, labels and camera-calibration conventions
+        # remain shared; every diagnostic AOV retains its actual sensor values.
+        semantic = data.output['semantic_segmentation'][0].detach().cpu().numpy()
+        if semantic.ndim == 3 and semantic.shape[-1] == 1:
+            semantic = semantic[..., 0]
+        path = output / row['semantic_segmentation']['path']
+        np.save(path, semantic, allow_pickle=False)
+        ids, counts = np.unique(semantic, return_counts=True)
+        row['semantic_segmentation'].update(**file_record(path), dtype=str(semantic.dtype),
+            pixel_counts_by_id={str(int(label)): int(count) for label, count in zip(ids, counts, strict=True)})
         return row
 
     return CompositionAdapters(snapshot, apply, restore, fixed_state, capture, generation)
