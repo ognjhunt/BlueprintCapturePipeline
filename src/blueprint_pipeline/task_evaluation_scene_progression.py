@@ -284,7 +284,7 @@ def _activation(*, intent, link, config, output, now, provisioner):
 
 def _clear_attempt(state):
     for key in ("attempt_id", "attempt_commit", "attempt", "factory", "publication", "submission",
-                "preparation_state", "preparation_link", "preparation_result", "activation", "failure"):
+                "preparation_state", "preparation_link", "preparation_result", "activation", "failure", "preparation_failure"):
         state.pop(key, None)
 
 
@@ -297,6 +297,8 @@ def _release_successor(*, directory, intent, state, config, release, now):
     calls = list((old_output / "submission-attempts").glob("*.json"))
     lineage = {"attempt": record(previous_path),
                "new_source_commit": release["source_commit"]}
+    if state.get("preparation_failure"):
+        lineage["preparation_failure"] = state["preparation_failure"]
     if previous.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1":
         require(config.get("activation_enabled") is False and not state.get("activation")
                 and previous.get("maximum_spend_usd") == 0
@@ -454,6 +456,7 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     if state.get("binding_digest") is not None:
         require(state["binding_digest"] == binding["binding_digest"], "source_binding_changed")
     state["binding_digest"] = binding["binding_digest"]
+    state["source_binding"] = record(resolution.binding_path)
     active_id = state.get("attempt_id")
     if active_id and state.get("attempt_commit") != release["source_commit"]:
         # Do not replace an old in-flight attempt merely because a deploy moved.
@@ -658,13 +661,19 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
                         activation_provisioner=activation_provisioner, now=moment)
                 except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
                     progress = load_progression(directory, intent)
+                    failure_state = dict(progress.get("state", {}) if progress else {})
+                    if getattr(exc, "failure_reference", None) is not None:
+                        _reference(exc.failure_reference)
+                        failure_state["preparation_failure"] = exc.failure_reference
                     code = str(exc).split(":", 1)[0] if isinstance(exc, ValueError) else "scene_progression_dependency_unavailable"
                     if not code or not all(c.islower() or c.isdigit() or c == "_" for c in code):
                         code = "scene_progression_dependency_unavailable"
                     progress = advance(directory, intent, progress, status="blocked", phase="preparation",
-                        state=progress.get("state", {}) if progress else {}, blockers=[code], now=moment)
+                        state=failure_state, blockers=[code], now=moment)
                 rows.append({"intent_id": directory.name, "status": progress["status"], "phase": progress["phase"],
                              "blockers": progress.get("blockers", []),
+                             **({"source_binding": progress["state"]["source_binding"]}
+                                if (progress.get("state") or {}).get("source_binding") else {}),
                              "progression_digest": progress["progression_digest"]})
         except (OSError, ValueError, KeyError, TypeError):
             rows.append({"intent_id": directory.name, "status": "blocked", "blockers": ["scene_progression_state_invalid"]})

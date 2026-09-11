@@ -222,6 +222,33 @@ def test_real_public_factory_accepts_green_region_without_a_destination_receipt(
     assert factory.materialize_public_scene_attempt(**args) == receipt
 
 
+def test_deterministic_camera_failure_is_retained_and_not_recomputed(context, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_configuration_submission as submission
+    from blueprint_pipeline import sam31_provider_launch_packet as provider
+    from blueprint_pipeline.sam31_camera_geometry import CameraGeometryScreenError
+    args, source = context
+    calls = []
+    def fail(**kwargs):
+        calls.append(kwargs)
+        raise CameraGeometryScreenError("sam31_camera_geometry_insufficient_clear_candidates", {
+            "schema_version": "sam31_camera_geometry_screen.v1", "status": "blocked",
+            "blocker": "sam31_camera_geometry_insufficient_clear_candidates",
+            "source_files": {"retained_task": ref(source["task_request"])},
+            "candidates": [], "rendered_visibility_qualified": False})
+    monkeypatch.setattr(submission, "materialize_scene_configuration_submission", fail)
+    with pytest.raises(CameraGeometryScreenError) as first:
+        factory.materialize_public_scene_attempt(**args)
+    path = args["output_root"] / "camera_preparation_failure.json"
+    assert first.value.failure_reference == ref(path)
+    retained = path.read_bytes()
+    monkeypatch.setattr(provider, "materialize_sam31_provider_profile",
+        lambda **kwargs: pytest.fail("recomputed a frozen deterministic failure"))
+    with pytest.raises(CameraGeometryScreenError) as second:
+        factory.materialize_public_scene_attempt(**args)
+    assert second.value.failure_reference == ref(path)
+    assert len(calls) == 1 and path.read_bytes() == retained
+
+
 def test_prior_queue_jobs_are_discovered_without_operator_prefix_opt_in(context, tmp_path):
     from blueprint_pipeline.task_evaluation_sam31_phase_queue import enqueue_sam31_phase
     args, _ = context

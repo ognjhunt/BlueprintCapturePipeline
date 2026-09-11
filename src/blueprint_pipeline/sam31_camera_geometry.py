@@ -12,10 +12,17 @@ from typing import Any, Sequence
 
 from .decision_evidence_contracts import canonical_digest
 from .scene_placement.interiorgs_index import InteriorGSSceneSpatialIndex
-from .task_evaluation_scene_configuration_submission_inputs import read, require, sha
+from .task_evaluation_scene_configuration_submission_inputs import SceneConfigurationSubmissionError, read, require, sha
 
 SCREEN_SCHEMA = "sam31_camera_geometry_screen.v1"
-GENERATOR = "interiorgs_room_occlusion_screen_v1"
+GENERATOR = "interiorgs_room_occlusion_screen_v2"
+
+
+class CameraGeometryScreenError(SceneConfigurationSubmissionError):
+    """A deterministic failure with retained evidence for bounded view recovery."""
+    def __init__(self, code: str, screen: dict[str, Any]):
+        super().__init__("scene_configuration_submission_" + code)
+        self.code, self.screen = code, screen
 
 
 def _record(path: Path) -> dict[str, Any]:
@@ -120,6 +127,27 @@ def select_geometry_aware_camera_policy(
     # sample must have clear conservative sight lines, not just the center point.
     targets = [(x, y, upper[2]) for x, y in itertools.product(
         (lower[0], center[0], upper[0]), (lower[1], center[1], upper[1]))]
+    # A neighboring annotation may overlap a corner of this conservative AABB.
+    # That corner is not an observed target surface: every ray ending there
+    # would be rejected regardless of camera pose. Keep the ambiguity explicit
+    # and screen the unambiguous face samples; rendered SAM coverage still gates
+    # acceptance. A mostly hidden target or hidden center remains refused.
+    ambiguous = [{"point_world_m": list(point), "overlapping_obstacle_ids": sorted(
+        box.id for box in obstacles if all(box.bbox_min[i] <= point[i] <= box.bbox_max[i] for i in range(3)))}
+        for point in targets]
+    ambiguous = [row for row in ambiguous if row["overlapping_obstacle_ids"]]
+    hidden = {tuple(row["point_world_m"]) for row in ambiguous}
+    screened_targets = [point for point in targets if tuple(point) not in hidden]
+    def refuse(code, candidates=()):
+        screen = {"schema_version": SCREEN_SCHEMA, "generator": GENERATOR, "status": "blocked",
+            "blocker": code, "source_files": sources, "target_instance_id": str(target_instance_id),
+            "ambiguous_target_samples": ambiguous, "visibility_sample_count": len(screened_targets),
+            "requested_visibility_sample_count": len(targets), "candidates": list(candidates),
+            "rendered_visibility_qualified": False, "candidate_policy_queried": False}
+        screen["screen_digest"] = canonical_digest(screen, digest_field="screen_digest")
+        raise CameraGeometryScreenError(code, screen)
+    if len(screened_targets) < 5 or tuple([center[0], center[1], upper[2]]) in hidden:
+        refuse("sam31_camera_geometry_target_samples_ambiguous")
     clearance = max(0.01, extent * 0.1)
     candidates = _offset_inventory(extent)
     accepted: list[dict[str, Any]] = []
@@ -138,7 +166,7 @@ def select_geometry_aware_camera_policy(
         if not _fits_frame(position, center, corners):
             reasons.append("target_bounds_outside_calibrated_frame")
         # Do not waste ray tests on poses already rejected by containment.
-        occluders = sorted({box.id for point in targets for box in obstacles
+        occluders = sorted({box.id for point in screened_targets for box in obstacles
                             if _segment_hits(position, point, box.bbox_min, box.bbox_max)}) if not reasons else []
         if occluders:
             reasons.append("target_sight_line_intersects_observed_bounds")
@@ -148,15 +176,16 @@ def select_geometry_aware_camera_policy(
                     "occluding_obstacle_ids": occluders})
         if not reasons:
             accepted.append(row)
-    require(len(accepted) >= 16, "sam31_camera_geometry_insufficient_clear_candidates")
+    if len(accepted) < 16:
+        refuse("sam31_camera_geometry_insufficient_clear_candidates", candidates)
     # Deterministic farthest-point sampling retains translation/elevation diversity
     # within the actually clear sector rather than forcing a full 360-degree orbit.
     def radius(row: dict[str, Any]) -> float:
         return round(math.sqrt(sum(v * v for v in row["position_offset_m"])), 3)
 
-    require(len({round(r["position_offset_m"][2], 3) for r in accepted}) >= 3
-            and len({radius(r) for r in accepted}) >= 3,
-            "sam31_camera_geometry_translation_baselines_insufficient")
+    if (len({round(r["position_offset_m"][2], 3) for r in accepted}) < 3
+            or len({radius(r) for r in accepted}) < 3):
+        refuse("sam31_camera_geometry_translation_baselines_insufficient", candidates)
     selected = [min(accepted, key=lambda r: (sum(v * v for v in r["position_offset_m"]), r["candidate_id"]))]
     remaining = [r for r in accepted if r is not selected[0]]
     while len(selected) < min(32, len(accepted)):
@@ -177,7 +206,8 @@ def select_geometry_aware_camera_policy(
               "target_instance_id": str(target_instance_id), "target_room_index": room,
               "target_bounds_min_m": lower, "target_bounds_max_m": upper,
               "camera_clearance_m": clearance, "vertical_fov_deg": 55.0,
-              "visibility_sample_count": len(targets), "candidates": candidates,
+              "visibility_sample_count": len(screened_targets), "requested_visibility_sample_count": len(targets),
+              "ambiguous_target_samples": ambiguous, "candidates": candidates,
               "selected_candidate_ids": [r["candidate_id"] for r in selected[:16]],
               "replacement_candidate_ids": [r["candidate_id"] for r in selected[16:]],
               "claim_boundary": {"appearance_fidelity_qualified": False,

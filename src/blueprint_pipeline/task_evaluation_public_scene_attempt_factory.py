@@ -78,6 +78,32 @@ def _produce(function, output, **kwargs):
         return value
 
 
+def _camera_failure(path, identity, commit):
+    from .sam31_camera_geometry import CameraGeometryScreenError
+    failure = read(path, digest_field="failure_digest")
+    require(failure.get("identity") == identity and failure.get("source_commit") == commit,
+            "public_factory_failure_binding_changed")
+    for ref in failure["screen"]["source_files"].values():
+        _reference(ref)
+    error = CameraGeometryScreenError(failure["screen"]["blocker"], failure["screen"])
+    error.failure_reference = record(path)
+    raise error
+
+
+def _scene_submission(function, *, failure_path, identity, commit, **kwargs):
+    from .sam31_camera_geometry import CameraGeometryScreenError
+    try:
+        return function(**kwargs)
+    except CameraGeometryScreenError as exc:
+        failure = {"schema_version": "task_evaluation_camera_preparation_failure.v1",
+                   "source_commit": commit, "identity": identity, "screen": exc.screen,
+                   "provider_mutation_performed": False}
+        failure["failure_digest"] = canonical_digest(failure, digest_field="failure_digest")
+        _write(failure_path, failure)
+        exc.failure_reference = record(failure_path)
+        raise
+
+
 def public_source_content_digest(installation):
     rows = [{key: row[key] for key in ("role", "sha256", "size_bytes")}
             for row in installation.get("files", []) if row.get("role") in SOURCE_ROLES]
@@ -381,6 +407,9 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
         else:
             identity["factory_started_at_epoch"] = moment
             _write(identity_path, identity)
+        camera_failure_path = output / "camera_preparation_failure.json"
+        if camera_failure_path.exists():
+            _camera_failure(camera_failure_path, identity, commit)
         task = deepcopy(seed)
         for key in ("robot_binding_id", "episode_interpretation"):
             if key in request["task"]:
@@ -552,7 +581,8 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
         submission_root = output / "submission"
         manifest_path = submission_root / "bundle_manifest.v1.json"
         if not manifest_path.exists():
-            materialize_scene_configuration_submission(task_request_path=task_path,
+            _scene_submission(materialize_scene_configuration_submission,
+                failure_path=camera_failure_path, identity=identity, commit=commit, task_request_path=task_path,
                 installation_receipt_path=paths["installation_receipt"], publisher_intake_path=paths["publisher_intake"],
                 source_preparation_receipt_path=paths["source_preparation_receipt"],
                 destination_simready_result_path=paths.get("destination_simready_result"),

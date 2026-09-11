@@ -444,7 +444,8 @@ def test_robot_binding_refusal_leaves_no_visible_intent(retained, tmp_path, kwar
     assert not (tmp_path / "public-source-bindings" / "public-scene-841757.json").exists()
 
 
-def test_owned_service_resolves_retained_public_source_without_legacy_unit_environment(retained, tmp_path, monkeypatch):
+@pytest.mark.parametrize("binding_location", ["legacy", "per_intent"])
+def test_owned_service_resolves_retained_public_source_without_legacy_unit_environment(retained, tmp_path, monkeypatch, binding_location):
     import os
     import pwd
     from blueprint_pipeline.task_evaluation_scene_preparation_service import installed_source_environment
@@ -452,8 +453,15 @@ def test_owned_service_resolves_retained_public_source_without_legacy_unit_envir
     retained_paths, authority, extras = retained
     result, intents, bindings, _ = _provision(tmp_path, retained_paths, authority, now=extras["now"])
     monkeypatch.delenv(BINDINGS_ENV, raising=False)
+    row = {"intent_id": result["intent_id"]}
+    if binding_location == "per_intent":
+        from blueprint_pipeline.task_evaluation_public_scene_attempt_factory import record
+        original = next(bindings.glob("*.json"))
+        path = tmp_path / "owner-source-binding.json"
+        original.rename(path)
+        row["source_binding"] = record(path)
     environment = installed_source_environment({"intent_root": str(intents),
-        "public_source_binding_root": str(bindings)}, [{"intent_id": result["intent_id"]}])
+        "public_source_binding_root": str(bindings)}, [row])
     publisher = json.loads(Path(retained_paths["publisher_intake"]).read_text())
     raw = publisher["artifacts"][0]
     resolved = load_installed_source_bindings(expected_source_commit=extras["commit"],
@@ -461,3 +469,15 @@ def test_owned_service_resolves_retained_public_source_without_legacy_unit_envir
         approved_roots=(tmp_path,), requested_uris=[raw["publisher_url"]])
     assert resolved.resolve(raw["publisher_url"], raw["sha256"], raw["size_bytes"]) is not None
     assert BINDINGS_ENV not in os.environ
+
+
+def test_unsubmitted_public_factory_failure_does_not_crash_owned_service(retained, tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_preparation_service import installed_source_environment
+    from blueprint_pipeline.task_evaluation_installed_source_bindings import BINDINGS_ENV
+    retained_paths, authority, extras = retained
+    result, intents, bindings, _ = _provision(tmp_path, retained_paths, authority, now=extras["now"])
+    next(bindings.glob("*.json")).unlink()
+    monkeypatch.delenv(BINDINGS_ENV, raising=False)
+    environment = installed_source_environment({"intent_root": str(intents), "public_source_binding_root": str(bindings)},
+        [{"intent_id": result["intent_id"], "phase": "factory", "status": "blocked"}])
+    assert BINDINGS_ENV not in environment
