@@ -18,7 +18,7 @@ def recovery_edge(previous_ref, current_ref, previous_link_ref, state, directory
     _require(len(edges) == 1 and recovery.get("prior_attempt_id") == before["attempt_id"]
              and recovery.get("prior_attempt_digest") == before["attempt_digest"]
              and all(before.get(key) == after.get(key) for key in
-                     ("source_commit", "input_digest", "provider", "maximum_spend_usd"))
+                     ("source_commit", "runtime_digest", "input_digest", "provider", "maximum_spend_usd"))
              and after["provider"] in execution.get("allowed_providers", [])
              and 0 < after["maximum_spend_usd"] <= execution["max_total_spend_usd"], "recorded_recovery_required")
     paths = sorted((directory / "attempts").glob("*.json"))

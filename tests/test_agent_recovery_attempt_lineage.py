@@ -36,6 +36,7 @@ def same_release_case(tmp_path, *, defect=None):
     old = {"schema_version": "task_evaluation_scene_attempt.v1", "intent_id": intent["intent_id"],
         "intent_digest": intent["intent_digest"], "attempt_id": "source-old", "source_commit": "a" * 40,
         "input_digest": "sha256:" + "d" * 64, "provider": "vast", "maximum_spend_usd": 4.5,
+        "runtime_digest": "sha256:" + "e" * 64,
         "reserved_at_epoch": now}
     old_ref = sealed(directory / "attempts/source-old.json", old, "attempt_digest", cross=True)
     old = json.loads(Path(old_ref["path"]).read_text())
@@ -89,6 +90,8 @@ def same_release_case(tmp_path, *, defect=None):
     new = {**old, "attempt_id": "source-new", "reserved_at_epoch": now + 10,
         "recovery": {"prior_attempt_id": old["attempt_id"], "prior_attempt_digest": old["attempt_digest"],
             "failure_digest": json.loads(Path(failure_ref["path"]).read_text())["failure_digest"], "evidence": evidence}}
+    if defect == "runtime":
+        new["runtime_digest"] = "sha256:" + "f" * 64
     new_ref = sealed(directory / "attempts/source-new.json", new, "attempt_digest", cross=True)
     new = json.loads(Path(new_ref["path"]).read_text())
     new_link, new_request = parent("new-parent", new)
@@ -117,7 +120,7 @@ def test_same_release_recovery_reopens_canonical_grant_and_keeps_original_record
     assert all(p.read_bytes() == raw for p, raw in before.items())
 
 
-@pytest.mark.parametrize("defect", ["retry_limit", "producer", "child_parent", "stale_zero", "history"])
+@pytest.mark.parametrize("defect", ["retry_limit", "producer", "child_parent", "stale_zero", "history", "runtime"])
 def test_same_release_recovery_refuses_unadmitted_or_unrelated_evidence(tmp_path, defect):
     service, anchor, _, queue, request = same_release_case(tmp_path, defect=defect)
     with pytest.raises((AgentExecutionError, ValueError)):
