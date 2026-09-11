@@ -169,6 +169,8 @@ def execute_cpu_stage(job: Mapping[str, Any], *, prepare_hardware_render: bool =
             "warmup_ms": 2500, "settle_frames": 6, "settle_ms": 100, "timeout_seconds": 3600,
             **dict(plan.get("rendering") or {}),
         }
+        mask_policy = plan.get("mask_policy", {})
+        _require(isinstance(mask_policy, Mapping), "mask_policy_invalid")
         render_request = build_public_scene_inpainting_input_request({
             "schema_version": "public_scene_interiorgs_edit_input_request.v2",
             "program_id": "arm-decision-proof-v1", "adp_item": "ADP-009D",
@@ -186,7 +188,8 @@ def execute_cpu_stage(job: Mapping[str, Any], *, prepare_hardware_render: bool =
             # cutout is selected later from reviewed SAM masks/contributions.
             "mask_policy": {"authority": "publisher_target_obb_plus_contained_gaussians",
                             "minimum_contained_gaussians": 16, "dilation_pixels": 0,
-                            "support_threshold_8bit": 24, "minimum_support_inside_final_fraction": 0.99},
+                            "support_threshold_8bit": 24, "minimum_support_inside_final_fraction": 0.99,
+                            **dict(mask_policy)},
         })
         output.mkdir(parents=True)
         request_path = output / "public_scene_interiorgs_edit_input_request.v2.json"
