@@ -57,7 +57,9 @@ def main(argv=None):
             read_native_reset_channels,
             seal_reset_readback,
         )
-        from blueprint_pipeline.native_task_composition_worker import make_native_adapters, _plain
+        from blueprint_pipeline.native_task_composition_worker import (
+            make_native_adapters, _plain, native_physics_clock,
+        )
 
         manifest = _load_and_verify_manifest(runtime, expected_execution_mode="runtime_preflight")
         for row in [*manifest["bound_runtime_inputs"], *manifest["runtime_modules"]]:
@@ -172,8 +174,7 @@ def main(argv=None):
                 "all_native_joint_positions": _plain(data.joint_pos),
                 "all_native_joint_limits": _plain(data.joint_limits),
                 "native_body_pose_world": _plain(data.body_pose_w),
-                "physics_time_seconds": float(env.unwrapped.sim.current_time),
-                "physics_step_index": int(env.unwrapped.sim.current_time_step_index),
+                **native_physics_clock(env.unwrapped.sim),
                 "native_storage_type": type(data.joint_pos).__module__
                 + "."
                 + type(data.joint_pos).__name__,

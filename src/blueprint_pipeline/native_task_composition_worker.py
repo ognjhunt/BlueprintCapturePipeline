@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import argparse
 from pathlib import Path
@@ -30,6 +31,20 @@ def _plain(value):
     if hasattr(value, "detach"):
         return value.detach().cpu().tolist()
     return value
+
+
+def native_physics_clock(sim):
+    """Read the pinned Isaac Lab public clock, never legacy Isaac Sim fields."""
+    step = sim.get_physics_step_count()
+    dt = float(sim.get_physics_dt())
+    if type(step) is not int or step < 0 or not math.isfinite(dt) or dt <= 0:
+        raise CompositionDiagnosticError("composition_native_physics_clock_invalid")
+    return {
+        "physics_step_index": step,
+        "physics_dt_seconds": dt,
+        "physics_time_seconds": step * dt,
+        "physics_time_basis": "derived_from_native_physics_step_count_times_fixed_dt",
+    }
 
 
 def _geometry_visibility_targets(stage, env_path, appearance_path):
@@ -135,8 +150,7 @@ def make_native_adapters(*, built, stage, request):
             }
         return {
             "native_objects": objects,
-            "physics_time_seconds": float(env.sim.current_time),
-            "physics_step_index": int(env.sim.current_time_step_index),
+            **native_physics_clock(env.sim),
             "renderer_settings": {key: settings.get(key) for key in setting_names},
             "lights": {
                 str(p.GetPath()): {
@@ -175,14 +189,16 @@ def make_native_adapters(*, built, stage, request):
             quat_w_opengl=_array(native.quat_w_opengl),
         )
         wrapped = SimpleNamespace(data=data, prim_path=getattr(camera, "prim_path", None))
+        clock = native_physics_clock(env.sim)
         row = _save_camera(
             output,
             request["camera_role"],
             wrapped,
             frame_index=0,
-            sim_time=float(env.sim.current_time),
+            sim_time=clock["physics_time_seconds"],
             require_metric_depth=False,
         )
+        row["native_physics_clock"] = clock
         if "distance_to_camera" not in data.output:
             raise CompositionDiagnosticError("composition_native_metric_depth_channel_missing")
         raw = data.output["distance_to_camera"][0].detach().cpu().numpy()

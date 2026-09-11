@@ -23,6 +23,7 @@ from blueprint_pipeline.native_task_composition_diagnostic import file_record, s
 from tests import test_native_task_composition_diagnostic as composition_fixture
 from tests.test_native_task_composition_diagnostic import request as composition_request
 from tests.test_native_task_retained_command_replay import request as replay_request
+from tests.native_task_pinned_clock_fixture import PinnedSimulationClock
 
 native = composition_fixture.native
 
@@ -109,15 +110,19 @@ def test_real_children_reach_render_and_174_command_bodies(tmp_path, monkeypatch
     initial = req["expected_reset"]["observed"]["robot"]
     robot = NS(joint_names=[f"joint{i}" for i in range(9)], data=NS(
         joint_pos=deepcopy(initial["joint_pos"]), joint_limits=deepcopy(initial["joint_limits"]), body_pose_w=[]))
-    sim = NS(current_time=0., current_time_step_index=0)
+    sim = PinnedSimulationClock()
     env = NS(scene={"robot": robot}, sim=sim, reset=lambda **kw: events.append("env_reset"),
              close=lambda: events.append("env_close"))
     env.unwrapped = env
     built = NS(env=env)
+    def step(action):
+        actions.append(list(action))
+        sim._physics_step_count += 1
+
     adapter = NS(_arm_joint_indices=list(range(7)), reset=lambda: events.append("adapter_reset"),
         joint_limits=lambda: initial["joint_limits"][0][:7],
         read_arm_joint_positions=lambda: list(actions[-1][:7]) if actions else initial["joint_pos"][0][:7],
-        _arm_vector=lambda name: [0.] * 7, step=lambda action: actions.append(list(action)))
+        _arm_vector=lambda name: [0.] * 7, step=step)
     from blueprint_pipeline import native_task_arena_construction_worker as construction
     from blueprint_pipeline import native_task_arena_preconstruction as preconstruction
     from blueprint_pipeline import native_task_arena_runtime as arena
@@ -171,6 +176,7 @@ def test_real_children_reach_render_and_174_command_bodies(tmp_path, monkeypatch
     assert [row["pass"] for row in documents[0]["composition_diagnostic"]["passes"]] == ["full", "appearance_only", "native_meshes_only"]
     assert documents[1]["replay"]["executed_commands"] == 174
     assert actions == [row["isaac_action"] for row in req["commands"]]
+    assert documents[1]["replay"]["native_states"][-1]["after"]["physics_step_index"] == 174
     assert events.count("env_close") == events.count("app_close") == 2
     assert events.index("app_close") < events.index("launch:command_replay")
     assert all(row["runtime_source_provisioning"]["sha256"] == file_record(output / RECEIPT_NAME)["sha256"] for row in result["children"])

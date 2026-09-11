@@ -12,6 +12,7 @@ from pxr import Usd, UsdGeom, UsdLux
 from blueprint_pipeline import native_task_composition_diagnostic as diagnostic
 from blueprint_pipeline import native_task_composition_worker as worker
 from blueprint_pipeline import adp009d_isaac_runtime as aov
+from tests.native_task_pinned_clock_fixture import PinnedSimulationClock
 
 
 def request():
@@ -68,7 +69,7 @@ def native(tmp_path, monkeypatch):
     scene = Scene(external_camera=camera, robot=NS(data=NS(root_pose_w=pose.clone(), joint_pos=torch.zeros(1,7))))
     for name in ('scene_appearance','scene_collision','task_object','task_support'):
         scene[name] = NS(data=NS(root_pose_w=pose.clone()))
-    sim = NS(current_time=0., current_time_step_index=0, render=lambda: None)
+    sim = PinnedSimulationClock()
     env = NS(scene=scene, sim=sim)
     env.unwrapped = env
     built = NS(env=env, plan={'objects':[{'semantic_role':'scene_appearance','prim_path':'{ENV_REGEX_NS}/scene_appearance'}]},
@@ -96,7 +97,7 @@ def test_three_native_passes_retain_exact_aovs_calibration_and_restore_light_pre
     assert native.stage.GetRootLayer().ExportToString() == native.before_layer
     assert UsdGeom.Imageable(native.stage.GetPrimAtPath(native.root+'/scene_collision')).ComputeVisibility()=='invisible'
     assert native.stage.GetPrimAtPath(native.root+'/task_support/embedded_light').GetAttribute('inputs:intensity').Get()==2
-    assert native.sim.current_time_step_index == 0
+    assert native.sim.get_physics_step_count() == 0
 
 
 @pytest.mark.parametrize('failure', ['capture', 'pose', 'settings', 'stale', 'physics'])
@@ -111,7 +112,7 @@ def test_scope_restores_on_capture_failure_or_fixed_state_change(native, failure
             if failure == 'settings':
                 native.config['/rtx/rendermode'] = 'different'
             if failure == 'physics':
-                native.sim.current_time_step_index += 1
+                native.sim._physics_step_count += 1
         return original(label, output)
     adapters = replace(native.adapters, render_and_capture=capture)
     if failure == 'stale':
