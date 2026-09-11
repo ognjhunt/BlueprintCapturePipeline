@@ -317,6 +317,14 @@ def materialize_policy_canary_episode_interpretations(
     profile: dict[str, Any] | None = None
     unavailable_reason: str | None = None
     selected_runner = runner
+    managed_profile = None
+    if selected_runner is None and env.get("BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETER_PROFILE_FILE"):
+        try:
+            candidate_profile = _read(Path(env["BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETER_PROFILE_FILE"]))
+        except (OSError, ValueError):
+            candidate_profile = {}
+        if candidate_profile.get("schema_version") == "policy_canary_episode_interpreter_profile.v2":
+            managed_profile = candidate_profile
     rights = (
         Path(rights_root).expanduser().resolve()
         if rights_root is not None
@@ -324,7 +332,7 @@ def materialize_policy_canary_episode_interpretations(
         if env.get("BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETATION_RIGHTS_ROOT")
         else None
     )
-    if selected_runner is None:
+    if selected_runner is None and managed_profile is None:
         profile, unavailable_reason = _load_profile(env)
         unavailable_reason = unavailable_reason or _production_prerequisite_reason(
             env, rights_root=rights
@@ -400,6 +408,13 @@ def materialize_policy_canary_episode_interpretations(
         receipt_path = interpretation_root / "receipts" / f"{token}.json"
         marker_path = interpretation_root / "attempted" / f"{token}.json"
         requests.append((row, request, plan_path, receipt_path, marker_path))
+
+    if managed_profile is not None:
+        from .agent_execution.episode_producer import schedule_episode_batch
+        from .agent_execution.production import configured_service
+        managed_authority = batch_authority or _read(Path(env[BATCH_AUTHORITY_ENV]))
+        return schedule_episode_batch(requests=requests, result=result, evidence_root=evidence,
+            profile=managed_profile, authority=managed_authority, service=configured_service(), unavailable=receipts)
 
     identity: InterpreterIdentity | None = getattr(selected_runner, "identity", None)
     interpreter: OpenAIMultimodalEpisodeInterpreter | None = None

@@ -1253,7 +1253,7 @@ def materialize_policy_canary_result_delivery(
             if (
                 not isinstance(interpretation_receipt, Mapping)
                 or interpretation_receipt.get("schema_version")
-                != "episode_interpretation_receipt.v1"
+                not in {"episode_interpretation_receipt.v1", "episode_interpretation_receipt.v2"}
                 or interpretation_receipt.get("episode_id") != episode_id
                 or interpretation_receipt.get("candidate_policy_id") != candidate_id
                 or interpretation_receipt.get("receipt_digest")
@@ -1272,6 +1272,16 @@ def materialize_policy_canary_result_delivery(
                 raise TaskEvaluationResultDeliveryError(
                     "policy_canary_episode_interpretation_receipt_invalid"
                 )
+            if interpretation_receipt["schema_version"] == "episode_interpretation_receipt.v2":
+                from .agent_execution.contracts import digest as agent_digest
+                execution = interpretation_receipt.get("interpreter_execution") or {}
+                task_result = json.loads(interpretation_path.with_name("agent_task_result.v1.json").read_text())
+                inspection = json.loads(interpretation_path.with_name("inspection.v1.json").read_text())
+                if (execution.get("runtime") != interpretation_receipt["interpreter"]["runtime"]
+                        or execution.get("task_result_digest") != agent_digest({k: v for k, v in task_result.items() if k != "result_digest"})
+                        or execution.get("inspection_digest") != canonical_digest(inspection, digest_field="inspection_digest")
+                        or task_result.get("output") != interpretation_receipt["learned_interpretation"]):
+                    raise TaskEvaluationResultDeliveryError("policy_canary_managed_interpretation_evidence_invalid")
             learned = interpretation_receipt.get("learned_interpretation") or {}
             interpretation_projection = {
                 "status": interpretation_receipt.get("status"),
@@ -1477,6 +1487,10 @@ def materialize_policy_canary_result_delivery(
             if key
             in {
                 "schema_version",
+                "runtime",
+                "pending_count",
+                "batch_authority_digest",
+                "official_cost_reconciliation",
                 "status",
                 "episode_count",
                 "receipt_count",

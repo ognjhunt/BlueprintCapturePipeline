@@ -143,6 +143,14 @@ def run_sam31_ai_visual_review(
         raise Sam31AIVisualReviewError("sam31_ai_review_requires_exactly_16_overlays")
     run_id = f"sam31-ai-visual-review-{candidate['candidate_digest'].removeprefix('sha256:')[:16]}"
     input_digest = canonical_digest({"input": input_value})
+    from .agent_execution.visual_producer import best_effort_visual_investigation
+    investigation = best_effort_visual_investigation(review_kind="sam31", run_id=run_id,
+        candidate_digest=candidate["candidate_digest"], final_review_input_digest=input_digest,
+        source_rights_admission_digest=_record(rights_path)["sha256"],
+        frames=[{"path": row["overlay"]["path"], "sha256": row["overlay_sha256"],
+                 "camera_id": row["camera_id"], "role": "sam_overlay"} for row in frame_inventory])
+    if investigation is not None:
+        write_json(destination / "managed_visual_investigation.json", investigation)
     cost_gate = build_openai_official_cost_run_gate(
         scope_attestation_path=openai_cost_scope_attestation_path,
         admin_api_key_file=openai_admin_api_key_file,

@@ -197,7 +197,7 @@ def build_policy_canary_episode_interpretation_sidecar(
     )
     if (
         summary.get("schema_version")
-        != "policy_canary_episode_interpretation_closeout.v1"
+        not in {"policy_canary_episode_interpretation_closeout.v1", "policy_canary_episode_interpretation_closeout.v2"}
         or summary.get("episode_count") != 20
         or summary.get("receipt_count") != 20
         or summary.get("completed_count", 0) + summary.get("abstained_count", 0)

@@ -6,6 +6,8 @@ from collections.abc import Mapping
 import json
 from pathlib import Path
 import re
+import math
+import time
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
@@ -18,6 +20,7 @@ from .episode_interpretation import (
 
 
 SCHEMA_VERSION = "policy_canary_episode_interpretation_batch_authority.v1"
+MANAGED_SCHEMA_VERSION = "policy_canary_episode_interpretation_batch_authority.v2"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 ALLOWED_ARTIFACT_ROLES = frozenset(
     {
@@ -38,15 +41,29 @@ def validate_episode_interpretation_batch_authority_shape(
     authority = dict(value)
     allowed = authority.get("allowed_artifact_roles")
     identity = authority.get("interpreter")
+    managed = authority.get("schema_version") == MANAGED_SCHEMA_VERSION
+    if managed:
+        policy = authority.get("agent_runtime_policy")
+        if (not isinstance(policy, Mapping)
+                or policy.get("budget_policy") != "project_guard_accepted_uncertainty"
+                or policy.get("session_retention") != "until_deleted"
+                or policy.get("trace_retention") != "provider_default" or policy.get("region") != "us"
+                or not _DIGEST.fullmatch(str(policy.get("project_guard_receipt_digest") or ""))
+                or policy.get("disclosure_scope") != "rights_admitted_episode_evidence"
+                or type(authority.get("expires_at")) not in {float, int}
+                or not math.isfinite(authority["expires_at"]) or time.time() >= authority["expires_at"]
+                or type(authority.get("maximum_episodes")) is not int
+                or not 1 <= authority["maximum_episodes"] <= 20):
+            raise EpisodeInterpretationError("episode_interpretation_managed_batch_policy_invalid")
     if (
-        authority.get("schema_version") != SCHEMA_VERSION
+        authority.get("schema_version") not in {SCHEMA_VERSION, MANAGED_SCHEMA_VERSION}
         or authority.get("status") != "approved"
         or not str(authority.get("run_id") or "").strip()
         or not isinstance(identity, Mapping)
         or identity.get("principal_kind") != "independent_interpreter"
         or identity.get("provider_id") != "openai"
         or identity.get("execution_site") != "external_provider"
-        or identity.get("runtime") != "openai_agents_sdk"
+        or identity.get("runtime") != ("openai_agents_api" if managed else "openai_agents_sdk")
         or not str(identity.get("model") or "").strip()
         or not str(identity.get("model_version") or "").strip()
         or not _DIGEST.fullmatch(
@@ -61,6 +78,7 @@ def validate_episode_interpretation_batch_authority_shape(
         or not isinstance(authority.get("maximum_cost_usd"), (int, float))
         or isinstance(authority.get("maximum_cost_usd"), bool)
         or float(authority["maximum_cost_usd"]) <= 0
+        or not math.isfinite(float(authority["maximum_cost_usd"]))
         or not _DIGEST.fullmatch(
             str(authority.get("source_rights_admission_digest") or "")
         )
@@ -128,6 +146,7 @@ def derive_episode_interpretation_rights(
             authority["source_rights_admission_digest"]
         ),
         output_path=destination,
+        agent_runtime_policy=authority.get("agent_runtime_policy") if authority.get("schema_version") == MANAGED_SCHEMA_VERSION else None,
     )
 
 
