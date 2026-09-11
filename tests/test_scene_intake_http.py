@@ -49,3 +49,30 @@ def test_signed_intake_and_nonce_replay(tmp_path, monkeypatch):
     assert inspected.json()["request_digest"] == response.json()["request_digest"]
     assert inspected.json()["owner"] == value["owner"]
     assert inspected.json()["status"] == "accepted"
+
+
+def test_registered_public_source_catalog_is_signed_and_does_not_install_source(tmp_path, monkeypatch):
+    from tests.test_task_evaluation_public_scene_bootstrap import source_fixture
+    from blueprint_pipeline.task_evaluation_public_scene_catalog import CATALOG_ENV
+    _values, choice, _intent, config = source_fixture(tmp_path)
+    monkeypatch.setenv(CATALOG_ENV, config['public_source_catalog_path'])
+    monkeypatch.setenv(service.INTAKE_TOKEN_ENV, 'test-token')
+    monkeypatch.delenv(service.INTAKE_CLIENT_SECRETS_ENV, raising=False)
+    monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(tmp_path / 'nonces'))
+    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / 'admission'))
+    monkeypatch.setenv(intake.CLIENTS_ENV, 'webapp')
+    monkeypatch.setattr(service, 'deployment_identity_payload', lambda: {})
+    service._INTAKE_NONCE_CACHE.clear()
+    client = TestClient(service.create_app())
+    endpoint = '/api/live-pipeline/task-evaluation-public-scene-sources'
+    assert client.get(endpoint).status_code == 401
+    timestamp = datetime.now(timezone.utc).isoformat()
+    nonce = 'public-source-catalog-nonce'
+    signature = hmac.new(b'test-token', f'{timestamp}.webapp.{nonce}.'.encode(), 'sha256').hexdigest()
+    headers = {'x-blueprint-pipeline-client-id': 'webapp', 'x-blueprint-pipeline-timestamp': timestamp,
+               'x-blueprint-pipeline-nonce': nonce, 'x-blueprint-pipeline-signature': 'sha256=' + signature}
+    response = client.get(endpoint, headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()['sources'][0]['binding_id'] == choice['binding_id']
+    assert response.json()['provider_mutation_performed'] is False
+    assert not (tmp_path / 'controller').exists()

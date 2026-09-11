@@ -57,6 +57,7 @@ def _write(path: Path, value: Mapping[str, Any]) -> None:
 
 def _cached_result(
     output: Path, *, source_commit: str, installation_digest: str, task_digest: str,
+    source_files: Mapping[str, Path],
 ) -> dict[str, Any]:
     try:
         path = _resident(output / (SCHEMA_VERSION + ".json"), (output,))
@@ -71,6 +72,15 @@ def _cached_result(
             artifact = _resident(output / record["relative_path"], (output,))
             if _record(artifact, output) != record:
                 raise ValueError("artifact")
+        if value.get("collision_partition") is not None:
+            from .sage_collision_partition import validate_partition
+            ref = value["effective_collision"]
+            derived = _resident(output / ref["relative_path"], (output,))
+            if _record(derived, output) != ref:
+                raise ValueError("derived_collision")
+            partition = json.loads((output / value["collision_partition"]["relative_path"]).read_text())
+            validate_partition(partition, source_path=source_files["collision_usd"],
+                labels_path=source_files["semantic_metadata"], output_path=derived)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise PublicSceneSourcePreparationError("source_preparation_output_conflict") from exc
     return dict(value)
@@ -171,7 +181,7 @@ def materialize_public_scene_source_preparation(
     if output.exists():
         return _cached_result(
             output, source_commit=expected_source_commit,
-            installation_digest=installation["receipt_digest"], task_digest=task_digest,
+            installation_digest=installation["receipt_digest"], task_digest=task_digest, source_files=files,
         )
     output.mkdir(parents=True, mode=0o750)
     survey = build_room_viewpoint_survey(
@@ -202,6 +212,39 @@ def materialize_public_scene_source_preparation(
         observed_objects.append(obj)
         if result["whole_object_collision_identity_passed"] is not True:
             blockers.append("source_preparation_whole_object_match_not_unique:" + obj["source_instance_id"])
+    partition_reference = None
+    effective_collision = files["collision_usd"]
+    if len(identities) == 2 and any(not row["whole_object_collision_identity_passed"] for row in identities):
+        # Preserve the raw whole-prim refusals above. A publisher furniture
+        # prim may contain separate object/table components; deleting that
+        # entire prim is never an admissible substitute for a face partition.
+        from .sage_collision_partition import materialize_sage_collision_partition
+        try:
+            partition = materialize_sage_collision_partition(
+                source_path=files["collision_usd"], labels_path=files["semantic_metadata"],
+                instance_ids=[row["source_instance_id"] for row in selected],
+                output_root=output / "collision_partition")
+            effective_collision = Path(partition["output"]["path"])
+            partition_path = output / "collision_partition/collision_partition.json"
+            partition_reference = _record(partition_path, output)
+            artifacts.append(partition_reference)
+            measured = []
+            for index, obj in enumerate(selected):
+                result = inspect_sage_collision_identity(
+                    labels_path=files["semantic_metadata"], target_instance_id=obj["source_instance_id"],
+                    sage_collision_usd_path=effective_collision)
+                artifact = output / f"partitioned_source_identity_{index:02d}.json"
+                _write(artifact, result)
+                artifacts.append(_record(artifact, output))
+                measured.append(result)
+            if all(row["whole_object_collision_identity_passed"] for row in measured):
+                identities = measured
+                blockers = []
+        except ValueError as exc:
+            failure = output / "collision_partition_failure.json"
+            _write(failure, {"status": "blocked", "blocker": str(exc),
+                             "raw_source_unchanged": True, "whole_prim_deletion_authorized": False})
+            artifacts.append(_record(failure, output))
     if not blockers and len({
         row["whole_object_matches"][0]["prim_path"] for row in identities
     }) != len(identities):
@@ -237,6 +280,9 @@ def materialize_public_scene_source_preparation(
         },
         "receipt_digest": "",
     }
+    if partition_reference is not None:
+        receipt["collision_partition"] = partition_reference
+        receipt["effective_collision"] = _record(effective_collision, output)
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     _write(output / (SCHEMA_VERSION + ".json"), receipt)
     return receipt

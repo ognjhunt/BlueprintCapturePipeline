@@ -89,3 +89,38 @@ consumers. Model/GPU child handlers are not executed. A fetch boundary does not
 count as reaching the rendering boundary. The same interface is available to
 deployment validation; an accepted report is preparation evidence, never a paid
 execution or scientific completion receipt.
+
+## Registered fresh public sources
+
+ADP-009D/day-28 source preparation also accepts a registered publisher choice
+through the existing signed intake. `task_evaluation_public_scene_catalog.v1`
+pins the five InteriorGS/SAGE source files, publisher terms, and a reviewable
+one-object task proposal. The signed read endpoint is
+`GET /api/live-pipeline/task-evaluation-public-scene-sources`. Registration is
+selection evidence; it asserts neither installed bytes nor native qualification.
+
+With `public_source_bootstrap_enabled`, the existing scene progression worker
+fetches missing publisher bytes, verifies hashes, calls the canonical atomic
+installer, and derives the source context. It retains progress and resumes
+verified downloads under the same owner intent. This CPU source phase takes an
+explicit shared-ledger disk reservation; the whole-chain capacity gate remains
+mandatory before any execution attempt is reserved. The bootstrap stops at an
+honest `public_scene_configuration_binding_required` boundary until the next
+producer can supply a valid configuration binding. It never fabricates a tray,
+qualified destination, or provider receipt.
+
+A combined SAGE furniture mesh can be partitioned into separate source-object
+and support components using `sage_collision_partition`. Original publisher
+bytes remain immutable. The partition accounts for every original face, preserves
+world-space geometry and collision settings, and is re-read against the original
+source before submission. Its native collision cooking remains unqualified.
+The scene manifest distinguishes the original publisher collision file from the
+derived collision candidate; the submission and its excision stage bind the
+latter's exact bytes and provenance.
+
+`only_intent_id` scopes progression and controller recovery before any owner
+state is changed, preserves the shared cursor, and gives the preparation worker
+an isolated queue. The existing installation CLI can retain this scope and the
+public catalog through compatible deployments using `--only-intent-id`,
+`--public-source-bootstrap-enabled`, and `--public-source-catalog`. These flags
+confer no new spending, disclosure, or dataset rights.

@@ -285,6 +285,12 @@ def materialize_scene_configuration_submission(
     stage.copy(Path(source_preparation_receipt_path), "provenance/source_preparation.v1.json")
     for path, _ in inputs["artifacts"]:
         stage.copy(path, f"validation/{path.name}")
+    collision_ref = raw_refs["collision_usd"]
+    partition_ref = None
+    if inputs["effective_collision"].get("partition_path") is not None:
+        collision_ref = stage.copy(inputs["effective_collision"]["path"], "geometry/partitioned_collision.usd")
+        partition_file = stage.files[stage.prefix + "validation/collision_partition.json"]
+        partition_ref = {k: partition_file[k] for k in ("uri", "digest", "size_bytes")}
     subject_validation = stage.files[stage.prefix + f"validation/{source['path'].name}"]
     validation_ref = {k: subject_validation[k] for k in ("uri", "digest", "size_bytes")}
     source_ref = stage.json("configuration/source_object_selection.v1.json", source_object)
@@ -321,6 +327,13 @@ def materialize_scene_configuration_submission(
             "aabb_max_xyz_m": source["match"]["world_aabb_max_m"],
             "point_count": source["match"]["point_count"], "face_count": source["match"]["face_count"]},
     }
+    if partition_ref is not None:
+        original_collision = next(row for row in manifest["artifacts"] if row["role"] == "sage_collision_source")
+        original_collision["role"] = "sage_collision_publisher_source"
+        manifest["artifacts"].append({"role": "sage_collision_source",
+            "sha256": collision_ref["digest"], "size_bytes": collision_ref["size_bytes"],
+            "origin": "connected_component_partition", "upstream_source_sha256": original_collision["sha256"],
+            "partition_receipt": partition_ref})
     manifest_ref = stage.json("scene/source_scene_manifest.v1.json", manifest)
     dest_refs = {key: stage.copy(path, f"destination/{key}{path.suffix}")
                  for key, path in destination_paths.items()}
@@ -336,7 +349,7 @@ def materialize_scene_configuration_submission(
         records.stage_one_configuration(scene_id=scene_id, source_object=source_object,
             support_label=support_target["semantic_label"], human_authority=task["human_authority"]),
         records.stage_two_configuration(scene_id=scene_id,
-            collision_source_digest=raw_refs["collision_usd"]["digest"], target_match=source["match"],
+            collision_source_digest=collision_ref["digest"], target_match=source["match"],
             support_prim_path=support["sage_prim_path"]),
         records.stage_three_configuration(scene_id=scene_id, replacement_identity=replacement,
             source_instance_id=str(task["subject"]["source_instance_id"]),
@@ -390,8 +403,9 @@ def materialize_scene_configuration_submission(
             "appearance": {"kind": "interiorgs", "representation": raw_refs["appearance_3dgs"],
                 "renderer_qualification": stage.json("configuration/renderer_qualification_plan.v1.json",
                                                      records.renderer_qualification_plan())},
-            "geometry": {"kind": "sage_derived", "collision": raw_refs["collision_usd"],
-                         "validation": validation_ref},
+            "geometry": {"kind": "sage_derived", "collision": collision_ref,
+                         "validation": validation_ref,
+                         **({"source_derivation": partition_ref} if partition_ref is not None else {})},
             "registration": {
                 "metric_registration": stage.json("configuration/metric_registration_input.v1.json",
                     records.metric_registration_input(scene_id=scene_id)),

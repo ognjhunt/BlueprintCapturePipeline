@@ -112,7 +112,7 @@ def _identity_receipt(*, labels: Path, collision: Path, instance: str, label: st
     return _digested(receipt, "receipt_digest")
 
 
-def production_fixture(tmp_path: Path, *, room_topology: bool = False) -> dict:
+def production_fixture(tmp_path: Path, *, room_topology: bool = False, grouped_source: bool = False) -> dict:
     root = tmp_path / "production"
     inputs = root / "task-evaluation-inputs" / "scene-841757-raw-v2"
     inputs.mkdir(parents=True)
@@ -128,7 +128,31 @@ def production_fixture(tmp_path: Path, *, room_topology: bool = False) -> dict:
         {"profile": [[-3., -5.], [1., -5.], [1., 2.], [-3., 2.]]}
     ] if room_topology else []})
     collision = inputs / "841757_collision.usd"
-    collision.write_bytes(b"PXR-USDC-fixture-collision-bytes")
+    if grouped_source:
+        from pxr import Usd, UsdGeom, UsdPhysics
+        from tests.test_sage_collision_identity import _mesh
+        world = Usd.Stage.CreateNew(str(collision))
+        UsdGeom.SetStageMetersPerUnit(world, 1.)
+        UsdGeom.SetStageUpAxis(world, "Z")
+        points, counts, indices = [], [], []
+        for corners in (BOOK_CORNERS, CABINET_CORNERS):
+            lo = tuple(min(p[k] for p in corners) for k in "xyz")
+            hi = tuple(max(p[k] for p in corners) for k in "xyz")
+            _mesh(world, "/temporary", lo, hi)
+            mesh = UsdGeom.Mesh(world.GetPrimAtPath("/temporary"))
+            indices.extend(int(i) + len(points) for i in mesh.GetFaceVertexIndicesAttr().Get())
+            counts.extend(mesh.GetFaceVertexCountsAttr().Get())
+            points.extend(mesh.GetPointsAttr().Get())
+            world.RemovePrim("/temporary")
+        mesh = UsdGeom.Mesh.Define(world, "/Root/Furniture")
+        mesh.CreatePointsAttr(points)
+        mesh.CreateFaceVertexCountsAttr(counts)
+        mesh.CreateFaceVertexIndicesAttr(indices)
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        world.GetRootLayer().Save()
+        world = None
+    else:
+        collision.write_bytes(b"PXR-USDC-fixture-collision-bytes")
     usdz = inputs / "841757.usdz"
     usdz.write_bytes(b"PK-fixture-usdz")
     files = [
@@ -789,3 +813,31 @@ def test_sam31_submission_binds_real_source_geometry_before_any_render(tmp_path:
     assert screen["source_files"]["labels"]["path"].endswith("labels.json")
     assert screen["source_files"]["collision_identity"]["path"].endswith("source_identity_00.json")
     assert screen["source_files"]["structure"]["sha256"] == _sha(Path(screen["source_files"]["structure"]["path"]))
+
+
+def test_grouped_publisher_mesh_partition_reaches_real_submission_preflight(tmp_path: Path) -> None:
+    from blueprint_pipeline.public_scene_host_input_intake import _verified_checkout_head
+    from blueprint_pipeline.public_scene_source_preparation import materialize_public_scene_source_preparation
+
+    fixture = production_fixture(tmp_path, room_topology=True, grouped_source=True)
+    prepared = Path(fixture['source_preparation']).parent.with_name('grouped-source-prepared')
+    result = materialize_public_scene_source_preparation(
+        installation_receipt_path=fixture['installation_receipt'],
+        task_objects=[{'role': 'movable_subject', 'source_instance_id': '115'},
+                      {'role': 'source_support', 'source_instance_id': '85'}],
+        expected_source_commit=_verified_checkout_head(), approved_roots=[tmp_path], output_root=prepared)
+    assert result['status'] == 'source_context_prepared_pending_calibrated_views'
+    fixture['source_preparation'] = prepared / 'public_scene_source_preparation.v1.json'
+    submission = _materialize(fixture)
+    staging = Path(submission['staging_root'])
+    request = json.loads((staging / 'scene_configuration_preparation_request.v1.json').read_text())
+    assert validate_launch_preparation_request(request) == request
+    manifest = json.loads((staging / 'scene/source_scene_manifest.v1.json').read_text())
+    original = next(row for row in manifest['artifacts'] if row['role'] == 'sage_collision_publisher_source')
+    derived = next(row for row in manifest['artifacts'] if row['role'] == 'sage_collision_source')
+    assert derived['sha256'] != original['sha256']
+    assert derived['upstream_source_sha256'] == original['sha256']
+    assert 'publisher_url' not in derived
+    assert request['scene']['geometry']['collision']['digest'] == derived['sha256']
+    assert request['scene']['geometry']['source_derivation'] == derived['partition_receipt']
+    assert json.loads((staging / 'bundle_manifest.v1.json').read_text())['provider_allocated'] is False

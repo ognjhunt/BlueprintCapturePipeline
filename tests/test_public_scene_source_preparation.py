@@ -13,7 +13,8 @@ from tests.test_public_scene_raw_input_intake import _request as raw_request
 from tests.test_sage_collision_identity import _box, _mesh
 
 
-def _installed_scene(root: Path, *, shared_collider: bool = False, external_reference: bool = False) -> Path:
+def _installed_scene(root: Path, *, shared_collider: bool = False, external_reference: bool = False,
+                     grouped_colliders: bool = False) -> Path:
     request_path = raw_request(root)
     request = json.loads(request_path.read_text())
     by_role = {row["role"]: Path(row["path"]) for row in request["files"]}
@@ -33,6 +34,20 @@ def _installed_scene(root: Path, *, shared_collider: bool = False, external_refe
     _mesh(stage, "/Root/Subject", subject[:3], subject[3:])
     if not shared_collider:
         _mesh(stage, "/Root/Support", support[:3], support[3:])
+    if grouped_colliders:
+        from pxr import UsdPhysics
+        points, counts, indices = [], [], []
+        for path in ("/Root/Subject", "/Root/Support"):
+            mesh = UsdGeom.Mesh(stage.GetPrimAtPath(path))
+            indices.extend(int(i) + len(points) for i in mesh.GetFaceVertexIndicesAttr().Get())
+            counts.extend(mesh.GetFaceVertexCountsAttr().Get())
+            points.extend(mesh.GetPointsAttr().Get())
+            stage.RemovePrim(path)
+        mesh = UsdGeom.Mesh.Define(stage, "/Root/Furniture")
+        mesh.CreatePointsAttr(points)
+        mesh.CreateFaceVertexCountsAttr(counts)
+        mesh.CreateFaceVertexIndicesAttr(indices)
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
     stage.GetRootLayer().Save()
     stage = None
     if external_reference:
@@ -98,6 +113,22 @@ def test_shared_furniture_collider_is_retained_as_a_failure(tmp_path: Path) -> N
     assert result["shared_frame_receipt_digest"] is None
     assert len(result["source_identities"]) == 2
     assert (tmp_path / "prepared/public_scene_source_preparation.v1.json").is_file()
+
+
+def test_source_producer_partitions_separate_components_without_removing_the_table(tmp_path: Path) -> None:
+    installed = _installed_scene(tmp_path, grouped_colliders=True)
+    before = {p.name: p.read_bytes() for p in installed.parent.iterdir() if p.is_file()}
+    result = _prepare(tmp_path, installed, _objects(explicit_support=True))
+    assert result["status"] == "source_context_prepared_pending_calibrated_views"
+    assert result["collision_partition"]["sha256"].startswith("sha256:")
+    assert result["effective_collision"]["relative_path"].endswith("partitioned_collision.usd")
+    assert json.loads((tmp_path / "prepared/source_identity_00.json").read_text())["whole_object_collision_identity_passed"] is False
+    assert {p.name: p.read_bytes() for p in installed.parent.iterdir() if p.is_file()} == before
+    assert _prepare(tmp_path, installed, _objects(explicit_support=True)) == result
+    derived = tmp_path / "prepared" / result["effective_collision"]["relative_path"]
+    derived.write_bytes(derived.read_bytes() + b"changed")
+    with pytest.raises(preparation.PublicSceneSourcePreparationError, match="output_conflict"):
+        _prepare(tmp_path, installed, _objects(explicit_support=True))
 
 
 def test_supplemental_object_cannot_acquire_fake_source_identity(tmp_path: Path) -> None:

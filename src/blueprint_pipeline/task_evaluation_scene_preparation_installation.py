@@ -80,7 +80,8 @@ def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
                     capture_store_root="/var/lib/blueprint/capture-intake",
                     running_repo_root="/opt/blueprint/task-evaluation-control-plane", service_account="blueprint",
                     public_scene_enabled=False, activation_authorized=False,
-                    project_spend_reconciliation_path=None):
+                    project_spend_reconciliation_path=None, public_source_bootstrap_enabled=False,
+                    public_source_catalog_path=None, only_intent_id=None):
     rows = validate_destination_catalog(destination_catalog)
     roots = {key: str(safe_path(value)) for key, value in {
         "config_root": config_root, "state_root": state_root, "inputs_root": inputs_root,
@@ -112,6 +113,16 @@ def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
         "supported_source_kinds": PUBLIC_SCENE_SOURCE_KINDS if public_scene_enabled else OWNER_UPLOAD_SOURCE_KINDS}
     if project_spend_seed is not None:
         value["project_spend_seed"] = project_spend_seed
+    if public_source_bootstrap_enabled:
+        require(public_scene_enabled, "public_source_bootstrap_requires_public_scene")
+        value["public_source_bootstrap_enabled"] = True
+    if public_source_catalog_path is not None:
+        value["public_source_catalog_path"] = str(safe_path(public_source_catalog_path))
+    if only_intent_id is not None:
+        from .task_evaluation_scene_intake import _identifier
+        require(isinstance(only_intent_id, str) and only_intent_id.startswith("scene-") and _identifier(only_intent_id),
+                "scoped_intent_invalid")
+        value["only_intent_id"] = only_intent_id
     value["bootstrap_digest"] = canonical_digest(value, digest_field="bootstrap_digest")
     return value
 
@@ -145,6 +156,11 @@ def install_scene_preparation(*, bootstrap_path):
     account = pwd.getpwnam(bootstrap["service_account"])
     state, inputs, config_root = (safe_path(bootstrap[key]) for key in ("state_root", "inputs_root", "config_root"))
     owner_queue = state / "task-evaluation-owned-scene-preparations"
+    if bootstrap.get("only_intent_id") is not None:
+        from .task_evaluation_scene_intake import _identifier
+        owner = bootstrap["only_intent_id"]
+        require(isinstance(owner, str) and owner.startswith("scene-") and _identifier(owner), "scoped_intent_invalid")
+        owner_queue = owner_queue / owner
     public_scene_enabled = "public_scene" in bootstrap["supported_source_kinds"]
     public_binding_root = inputs / "public-source-bindings"
     project_spend_seed = bootstrap.get("project_spend_seed")
@@ -224,6 +240,11 @@ def install_scene_preparation(*, bootstrap_path):
         # worker only reads machinery_path once a public_scene intent exists.
         config["public_source_binding_root"] = str(public_binding_root)
         config["machinery_path"] = str(config_root / "task-evaluation-public-scene-machinery.json")
+        for key in ("public_source_bootstrap_enabled", "public_source_catalog_path"):
+            if key in bootstrap:
+                config[key] = bootstrap[key]
+    if bootstrap.get("only_intent_id") is not None:
+        config["only_intent_id"] = bootstrap["only_intent_id"]
     if bool(bootstrap.get("activation_authorized")):
         # A3: the separately-admitted activation on-ramp. The production progression
         # timer (blueprint-task-evaluation-scene-progression.service) execs
@@ -273,6 +294,8 @@ def install_scene_preparation(*, bootstrap_path):
         "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS": "blueprint-webapp",
         "BLUEPRINT_TASK_EVALUATION_OWNER_SOURCE_STORE_ROOT": str(inputs / "owner-source-store"),
         "PIPELINE_CAPTURE_INTAKE_STORE_ROOT": bootstrap["capture_store_root"]}
+    if bootstrap.get("public_source_catalog_path"):
+        environment["BLUEPRINT_TASK_EVALUATION_PUBLIC_SCENE_CATALOG_FILE"] = bootstrap["public_source_catalog_path"]
     if project_spend_seed is not None:
         environment["BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG"] = config["project_spend_monitor_config_path"]
     require(all(not any(c.isspace() for c in value) for value in environment.values()), "scene_preparation_environment_path_invalid")
@@ -314,6 +337,10 @@ def main(argv=None):
                              "Off by default keeps the service preparation-only. Never arms paid dispatch.")
     parser.add_argument("--project-spend-reconciliation",
                         help="Digest-bound retained project-spend reconciliation used by the no-spend monitor.")
+    parser.add_argument("--public-source-bootstrap-enabled", action="store_true",
+                        help="Enable publisher download and source preparation under existing owner intents; grants no paid authority.")
+    parser.add_argument("--public-source-catalog", help="Registered, digest-bound publisher choices.")
+    parser.add_argument("--only-intent-id", help="Scope progression, recovery and its preparation queue to one retained intent.")
     args = parser.parse_args(argv)
     if args.destination_simready:
         path = safe_path(args.destination_simready)
@@ -321,7 +348,28 @@ def main(argv=None):
         bootstrap = build_bootstrap(destination_catalog=[{"binding_id": identity["id"] + "-" + identity["version"],
             "owner_description_aliases": args.destination_alias, "simready_result": record(path)}],
             public_scene_enabled=args.public_scene_enabled, activation_authorized=args.activation_authorized,
-            project_spend_reconciliation_path=args.project_spend_reconciliation)
+            project_spend_reconciliation_path=args.project_spend_reconciliation,
+            public_source_bootstrap_enabled=args.public_source_bootstrap_enabled,
+            public_source_catalog_path=args.public_source_catalog, only_intent_id=args.only_intent_id)
+        _managed_json(safe_path(args.bootstrap), bootstrap, pwd.getpwnam(bootstrap["service_account"]))
+    elif args.public_source_bootstrap_enabled or args.public_source_catalog or args.only_intent_id:
+        bootstrap = read(safe_path(args.bootstrap), digest_field="bootstrap_digest")
+        require(bootstrap.get("managed_by") == MANAGED_BY and bootstrap.get("schema_version") == BOOTSTRAP_SCHEMA,
+                "scene_preparation_unmanaged_file")
+        if args.public_source_bootstrap_enabled:
+            require(args.public_scene_enabled or "public_scene" in bootstrap["supported_source_kinds"],
+                    "public_source_bootstrap_requires_public_scene")
+            bootstrap["supported_source_kinds"] = PUBLIC_SCENE_SOURCE_KINDS
+            bootstrap["public_source_bootstrap_enabled"] = True
+        if args.public_source_catalog:
+            from .task_evaluation_public_scene_catalog import load_catalog
+            load_catalog(safe_path(args.public_source_catalog))
+            bootstrap["public_source_catalog_path"] = str(safe_path(args.public_source_catalog))
+        if args.only_intent_id:
+            from .task_evaluation_scene_intake import _identifier
+            require(args.only_intent_id.startswith("scene-") and _identifier(args.only_intent_id), "scoped_intent_invalid")
+            bootstrap["only_intent_id"] = args.only_intent_id
+        bootstrap["bootstrap_digest"] = canonical_digest(bootstrap, digest_field="bootstrap_digest")
         _managed_json(safe_path(args.bootstrap), bootstrap, pwd.getpwnam(bootstrap["service_account"]))
     result = install_scene_preparation(bootstrap_path=args.bootstrap) if args.install else {"bootstrap": record(args.bootstrap)}
     print(json.dumps(result, sort_keys=True))
