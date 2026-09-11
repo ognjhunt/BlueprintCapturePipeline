@@ -28,7 +28,7 @@ Hermetic rehearsal is necessary but does not establish live service behavior.
 | ID | Requirement | Required evidence | State |
 | --- | --- | --- | --- |
 | A01 | Provider-neutral task, tool, result and runtime identity | Contract tests; legacy receipt compatibility | pending |
-| A02 | Real Agents API session adapter | Official-schema fixtures and admitted live request/readback | pending |
+| A02 | Real Agents API session adapter | Official-schema fixtures and admitted live request/readback | live protocol verified; operational job proof pending |
 | A03 | Durable ownership, operation deduplication and uncertain-outcome reconciliation | Crash, duplicate event and concurrent owner tests | pending |
 | A04 | Continue, inspect, cancel and cleanup across process restarts | Fake and live session lifecycle receipts | pending |
 | A05 | Enforce disclosure and accepted retention/trace policy | Negative admission tests and exact account configuration | pending |
@@ -54,6 +54,36 @@ rerun an unchanged rejection merely to obtain an acceptance. Candidate authors
 cannot alter their validators or see withheld physical outcomes. Runtime success
 is separate from scientific acceptance, billing closeout, resource release,
 notification and recipient delivery.
+
+## September 11 integration checkpoint
+
+Foundation PR #1834 and worker/replay PR #1835 are merged on protected main.
+An admitted synthetic Agents API session on source `a521bb18d4c16e9949fd885fad069980d281eaec`
+returned the required structured output, retained result digest
+`sha256:5879928c7d8774278f455bd42c4ff8b1fa10701c0f4ec7b046e0c76371e2ce73`,
+and completed deletion with readback. Two scoped SDK calls also completed with
+validated output. Their combined model-price estimate was USD 0.03002; this is
+not official billing. The owner set the dedicated inference project limit to
+USD 30, and the dashboard's hard-enforcement switch was observed enabled.
+Billing delay and the absence of an exact managed-task cost cap remain explicit.
+
+The next integration publishes server-admitted task references through the
+existing signed WebApp interface. A durable outbox survives lost responses;
+WebApp retains task state and polls the same Pipeline owner. Browser actions
+select admitted tasks and cannot supply a prompt, path, tool or authority.
+Cancellation before enqueue is committed atomically with task registration.
+The managed project observation is checked for current scope and expiry.
+
+The producer uses `PIPELINE_SYNC_TOKEN` and the origin of
+`PIPELINE_SYNC_WEBAPP_URL`; an optional `BLUEPRINT_AGENT_WEBAPP_ADMISSION_URL`
+must name `/api/internal/pipeline/agent-execution/admissions`. WebApp uses
+`BLUEPRINT_AGENT_PIPELINE_BASE_URL` with the `/api/live-pipeline` prefix and its
+existing `CAPTURE_UPLOAD_INTAKE_FORWARD_TOKEN`. These are controller settings,
+never request fields or model tools. No raw prompt or source bytes enter this
+admission publication.
+
+Actual retained-job execution, production deployment, browser readback,
+specialist integration and the frozen comparison corpus are still incomplete.
 
 The current public beta lacks a documented exact per-run inference cost cap and
 does not support ZDR or configurable tracing. Managed execution must bind an

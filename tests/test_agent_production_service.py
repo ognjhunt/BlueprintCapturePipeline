@@ -189,6 +189,102 @@ def test_config_is_release_bound_and_has_no_managed_default(tmp_path):
     assert production.CONFIG_ENV == "BLUEPRINT_AGENT_EXECUTION_CONFIG"
 
 
+def test_cancel_before_enqueue_is_durable_and_never_invokes_provider(tmp_path, monkeypatch):
+    service, task, record_path, _ = fixture(tmp_path)
+    calls = []
+    result = service.act(task.task_id, "fixture-client", "cancel")
+    assert result["cancel_requested"] is True
+    assert result["state"] == "queued"
+    assert service.autostart() == 0
+    original = service.runtime_for_task
+    def runtime(current):
+        value = original(current)
+        value._hermetic_transport = httpx.MockTransport(lambda request: calls.append(request))
+        return value
+    service.service.runtime_for_task = runtime
+    assert service.service.tick()["state"] == "cancelled"
+    assert calls == []
+    assert service.status(task.task_id, "fixture-client")["cancel_requested"] is True
+
+
+def test_cancel_before_enqueue_checks_owner_without_consuming_authority(tmp_path):
+    service, task, record_path, _ = fixture(tmp_path)
+    with pytest.raises(AgentExecutionError, match="client_not_authorized"):
+        service.act(task.task_id, "foreign-client", "cancel")
+    assert service.journal.tasks(active_only=False) == []
+    record = json.loads(record_path.read_text())
+    record["enabled"] = False
+    write(record_path, record)
+    assert service.act(task.task_id, "fixture-client", "cancel")["cancel_requested"] is True
+
+
+def test_crash_after_cancel_registration_cannot_recover_an_executable_task(tmp_path, monkeypatch):
+    service, task, _, config_path = fixture(tmp_path)
+    original = service.journal.register
+    def crash_after_commit(current, **kwargs):
+        original(current, **kwargs)
+        raise SystemExit("injected crash at former registration/cancellation gap")
+    monkeypatch.setattr(service.journal, "register", crash_after_commit)
+    with pytest.raises(SystemExit):
+        service.act(task.task_id, "fixture-client", "cancel")
+    restarted = ProductionAgentService(config_path, source_commit="a" * 40)
+    assert restarted.status(task.task_id, "fixture-client")["cancel_requested"] is True
+    calls = []
+    real_runtime = restarted.runtime_for_task
+    def runtime(current):
+        value = real_runtime(current)
+        value._hermetic_transport = httpx.MockTransport(lambda request: calls.append(request))
+        return value
+    restarted.service.runtime_for_task = runtime
+    restarted.service.recover()
+    assert restarted.autostart() == 0
+    assert restarted.service.tick()["state"] == "cancelled"
+    assert calls == []
+
+
+@pytest.mark.parametrize("changed", [None, "expired", "project", "limit", "disabled", "disclosure", "digest"])
+def test_managed_project_observation_is_checked_against_live_task_scope(tmp_path, changed):
+    service, task, record_path, config_path = fixture(tmp_path)
+    guard = {
+        "schema_version": "blueprint_agent_project_admission_observation.v1",
+        "project_id": "proj_fixture", "credential_id": "key_fixture",
+        "observed_at": time.time() - 5, "expires_at": time.time() + 600,
+        "dashboard_hard_limit_enabled": True, "disclosure_scope": "sanitized_operations",
+        "budget_policy": "project_guard_accepted_uncertainty", "session_retention": "until_deleted",
+        "trace_retention": "provider_default", "provider_api_region": "us",
+        "spend_limit": {"object": "project.spend_limit", "threshold_amount": 3000, "currency": "USD", "interval": "month"},
+    }
+    if changed == "expired":
+        guard["expires_at"] = time.time() - 1
+    if changed == "project":
+        guard["project_id"] = "different_project"
+    if changed == "limit":
+        guard["spend_limit"]["threshold_amount"] = 5000
+    if changed == "disabled":
+        guard["dashboard_hard_limit_enabled"] = False
+    if changed == "disclosure":
+        guard["disclosure_scope"] = "different_scope"
+    guard_path = tmp_path / "project-guard.json"
+    write(guard_path, guard)
+    config = json.loads(config_path.read_text())
+    config.update(managed_api_enabled=True, project_guard_receipt_digest=digest(guard),
+                  project_guard_receipt_file=str(guard_path), max_project_budget_usd=30)
+    write(config_path, config)
+    record = json.loads(record_path.read_text())
+    record["task"]["admission"].update(runtime="openai_agents_api", budget_policy="project_guard_accepted_uncertainty",
+        session_retention="until_deleted", trace_retention="provider_default", region="us", project_guard_receipt_digest=digest(guard))
+    write(record_path, record)
+    if changed == "digest":
+        guard["observed_at"] -= 1
+        write(guard_path, guard)
+    service = ProductionAgentService(config_path, source_commit="a" * 40)
+    if changed:
+        with pytest.raises(AgentExecutionError, match="agent_project_guard_"):
+            service.validate_admission(service.record(task.task_id).task)
+    else:
+        service.validate_admission(service.record(task.task_id).task)
+
+
 @pytest.mark.parametrize("change_task", [False, True])
 def test_replacement_server_owner_cannot_read_or_cancel_saved_task(tmp_path, change_task):
     service, task, record_path, _ = fixture(tmp_path)

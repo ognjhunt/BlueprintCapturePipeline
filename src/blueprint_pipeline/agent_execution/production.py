@@ -32,6 +32,7 @@ from .sdk_runtime import OpenAIAgentsSDKRuntime, SDKCredential
 from .service import AgentTaskService
 from .supervisor_bridge import SupervisorCapabilityBridge, context_revision
 from .stage_recovery import StageReplayBinding, StageReplayTools
+from .webapp_delivery import WebappAdmissionOutbox
 
 
 CONFIG_ENV = "BLUEPRINT_AGENT_EXECUTION_CONFIG"
@@ -60,6 +61,8 @@ class ProductionConfig(BaseModel):
     max_task_budget_usd: float = Field(gt=0, le=100, allow_inf_nan=False)
     managed_api_enabled: bool = False
     project_guard_receipt_digest: str | None = Field(default=None, pattern=DIGEST)
+    project_guard_receipt_file: str | None = None
+    max_project_budget_usd: float | None = Field(default=None, gt=0, le=100, allow_inf_nan=False)
     webhook_secret_file: str | None = None
     poll_seconds: float = Field(default=5, ge=0.1, le=60)
 
@@ -109,6 +112,7 @@ class ProductionAgentService:
         self.config_digest = digest(self.config.model_dump(mode="json"))
         self.journal = AgentJournal(self.config.state_root)
         self.registry = ToolRegistry.default()
+        self.webapp_outbox = WebappAdmissionOutbox(self.journal)
         self.service = AgentTaskService(
             journal=self.journal, runtime_for_task=self.runtime_for_task,
             validate_admission=self.validate_admission, poll_seconds=self.config.poll_seconds,
@@ -149,6 +153,8 @@ class ProductionAgentService:
             or task.admission.project_guard_receipt_digest != self.config.project_guard_receipt_digest
         ):
             raise AgentExecutionError("agent_managed_project_policy_not_admitted")
+        if task.admission.runtime == RUNTIME_API:
+            self._validate_project_guard(task)
         current = self._context(task.run_id, task.task_id)
         authority = AuthorityEnvelope.from_mapping(current.authority_envelope).to_mapping()
         if (context_revision(current) != task.context_revision
@@ -158,6 +164,36 @@ class ProductionAgentService:
                 or not authority.get("agent_inference_allowed")
                 or task.admission.inference_budget_usd > authority["agent_inference_budget_usd"]):
             raise AgentExecutionError("agent_server_context_or_authority_invalid")
+
+    def _validate_project_guard(self, task: AgentTask) -> None:
+        path = self.config.project_guard_receipt_file
+        if not path or not Path(path).is_absolute() or self.config.max_project_budget_usd is None:
+            raise AgentExecutionError("agent_project_guard_observation_missing")
+        guard = json.loads(_read_private(Path(path)))
+        if not isinstance(guard, dict) or digest(guard) != task.admission.project_guard_receipt_digest:
+            raise AgentExecutionError("agent_project_guard_digest_mismatch")
+        limit = guard.get("spend_limit")
+        now = time.time()
+        if (not isinstance(limit, dict)
+                or guard.get("schema_version") != "blueprint_agent_project_admission_observation.v1"
+                or guard.get("project_id") != self.config.project_id
+                or guard.get("credential_id") != self.config.credential_id
+                or guard.get("dashboard_hard_limit_enabled") is not True
+                or type(guard.get("observed_at")) not in {int, float}
+                or not 0 < guard["observed_at"] <= now
+                or type(guard.get("expires_at")) not in {int, float}
+                or not now < task.deadline <= guard["expires_at"]
+                or guard["expires_at"] - guard["observed_at"] > 86_401
+                or guard.get("disclosure_scope") != task.admission.disclosure_scope
+                or guard.get("budget_policy") != task.admission.budget_policy
+                or guard.get("session_retention") != task.admission.session_retention
+                or guard.get("trace_retention") != task.admission.trace_retention
+                or guard.get("provider_api_region") != task.admission.region
+                or limit.get("object") != "project.spend_limit"
+                or limit.get("currency") != "USD" or limit.get("interval") != "month"
+                or type(limit.get("threshold_amount")) is not int
+                or limit["threshold_amount"] != round(self.config.max_project_budget_usd * 100)):
+            raise AgentExecutionError("agent_project_guard_scope_invalid")
 
     def _credential(self, task: AgentTask) -> SDKCredential:
         if task.admission.project_id != self.config.project_id:
@@ -228,15 +264,31 @@ class ProductionAgentService:
             "run_id": record.task.run_id, "source_commit": record.task.source_commit,
             "runtime": record.task.admission.runtime, "task_digest": state["task_digest"],
             **{key: state[key] for key in ("state", "error_code", "cancel_requested", "cleanup_state", "updated_at")},
+            "cancel_requested": bool(state["cancel_requested"]),
             "result": state["result"], "usage": state["usage"],
             "resource_closeout": "not_established_by_agent_completion", "proof_effect": "none",
         }
 
     def act(self, task_id: str, client_id: str, action: str) -> dict:
-        self.status(task_id, client_id)
         if action == "cancel":
+            record = self.authorize_client(task_id, client_id)
+            try:
+                self.status(task_id, client_id)
+            except AgentExecutionError as exc:
+                if str(exc) != "agent_task_missing":
+                    raise
+                # Persist cancellation before a racing autostart can admit a
+                # provider invocation. This action requires no fresh inference
+                # authority and remains available after expiry or revocation.
+                with self.journal.own_task(task_id):
+                    self.journal.register(record.task, cancellation=(
+                        "agent_cancel_requested", "server_admission_" + digest(task_id)[7:], self._ownership(record),
+                    ))
+                    self.journal.wake(task_id, due_at=time.time())
+                return self.status(task_id, client_id)
             self.service.cancel(task_id)
         elif action == "cleanup":
+            self.status(task_id, client_id)
             self.service.request_cleanup(task_id)
         else:
             raise AgentExecutionError("agent_task_action_invalid")
@@ -247,6 +299,7 @@ class ProductionAgentService:
         for path in sorted(Path(self.config.task_store_root).glob("*.json")):
             try:
                 record = self.record(path.stem)
+                self.webapp_outbox.queue(record)
                 if record.enabled and record.autostart:
                     try:
                         self.journal.task(record.task.task_id)
@@ -289,6 +342,7 @@ def main(argv=None) -> int:
     while not stopped.is_set():
         service.autostart()
         receipt = service.service.tick()
+        service.webapp_outbox.flush()
         heartbeat = {**service.health(), "observed_at": time.time(), "last_step": receipt}
         write_json(service.journal.root / "worker_health.json", heartbeat)
         if receipt:
