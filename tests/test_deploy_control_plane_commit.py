@@ -2433,12 +2433,13 @@ def test_admitted_agent_worker_is_enabled_started_and_proven(tmp_path, monkeypat
     assert ['systemctl', 'is-active', unit] in calls
 
 
-def test_unconfigured_or_wrong_release_never_activates_agent(tmp_path, monkeypatch):
+def test_unconfigured_or_undrained_release_never_activates_agent(tmp_path, monkeypatch):
     from tests.test_agent_production_service import fixture
-    _, _, _, config_path = fixture(tmp_path)
+    service, task, _, config_path = fixture(tmp_path)
+    service.enqueue(task.task_id, "fixture-client")
     calls = []
     monkeypatch.setattr(deploy.subprocess, 'run', lambda *args, **kwargs: calls.append(args))
     assert deploy._activate_agent_execution(expected_commit='a' * 40, config_path=tmp_path / 'absent')['activated'] is False
-    with pytest.raises(deploy.ControlPlaneDeployError, match='agent_configuration_release_mismatch'):
+    with pytest.raises(deploy.ControlPlaneDeployError, match='agent_configuration_requires_clean_drain'):
         deploy._activate_agent_execution(expected_commit='b' * 40, config_path=config_path)
     assert calls == []
