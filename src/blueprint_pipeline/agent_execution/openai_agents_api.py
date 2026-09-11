@@ -135,12 +135,20 @@ class OpenAIAgentsRuntime:
         return session_id
 
     def _create_payload(self, task: AgentTask) -> dict[str, Any]:
+        from copy import deepcopy
+        from agents.strict_schema import ensure_strict_json_schema
+
+        # The provider requires strict Structured Outputs even when the
+        # application schema has defaulted fields. Normalize a detached copy;
+        # the admitted application schema and task digest remain immutable.
+        provider_schema = ensure_strict_json_schema(deepcopy(task.output_schema))
         tools = []
         for name in task.tool_ids:
             tool = self.operations.tools[name]
             tools.append({
                 "type": "function", "name": tool.tool_id,
-                "description": tool.description, "parameters": dict(tool.input_schema),
+                "description": tool.description,
+                "parameters": ensure_strict_json_schema(deepcopy(tool.input_schema)),
             })
         return {
             "agent": {
@@ -149,7 +157,7 @@ class OpenAIAgentsRuntime:
                 "reasoning": {"effort": task.reasoning_effort},
                 "service_tier": "default",
                 "text": {
-                    "format": {"type": "json_schema", "schema": task.output_schema},
+                    "format": {"type": "json_schema", "schema": provider_schema},
                     "verbosity": "low",
                 },
                 "multi_agent": {"enabled": False},
@@ -162,6 +170,7 @@ class OpenAIAgentsRuntime:
                 "blueprint_task_digest": task.task_digest,
                 "blueprint_run_id": task.run_id,
                 "blueprint_source_commit": task.source_commit,
+                "blueprint_provider_schema_digest": digest(provider_schema),
             },
             "stream": False,
         }
@@ -193,6 +202,9 @@ class OpenAIAgentsRuntime:
                 self.journal.bind_session(task.task_id, session_id)
             except AgentTransportError as exc:
                 rejected = exc.definitively_rejected
+                if exc.diagnostics:
+                    self.journal.record_event("api_creation_rejection_" + task.task_id, {
+                        "task_id": task.task_id, "task_digest": task.task_digest, **exc.diagnostics})
                 self.journal.set_state(
                     task.task_id, "failed" if rejected else "creation_unresolved",
                     error_code=exc.code,
