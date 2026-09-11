@@ -182,12 +182,15 @@ def _verified_provenance(commit: str) -> tuple[bytes, dict[str, object]]:
     return json.dumps(receipt).encode(), receipt
 
 
+@pytest.mark.parametrize("status", ["iteration", "canary"])
 def test_verified_provenance_supersedes_same_commit_iteration_once(
-    tmp_path: Path,
+    tmp_path: Path, status: str,
 ) -> None:
     commit = "a" * 40
     state_root = tmp_path / "state"
     iteration_payload, iteration_receipt = _iteration_provenance(commit)
+    iteration_receipt["status"] = status
+    iteration_payload = json.dumps(iteration_receipt).encode()
     verified_payload, verified_receipt = _verified_provenance(commit)
 
     deploy._install_release_provenance(
@@ -214,7 +217,7 @@ def test_verified_provenance_supersedes_same_commit_iteration_once(
     assert installed["superseded_iteration_provenance"]["path"] == str(
         superseded
     )
-    assert installed["superseded_iteration_provenance"]["status"] == "iteration"
+    assert installed["superseded_iteration_provenance"]["status"] == status
 
     # A repeated promotion is idempotent and does not rewrite history.
     repeated = deploy._install_release_provenance(

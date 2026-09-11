@@ -7,7 +7,7 @@ reused; this module does not allocate, invoke a model, or claim qualification.
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
@@ -131,6 +131,23 @@ def _machinery(*, intent, scene_id, base_path, provider_terms_path, root, releas
     value["preparation"].pop("completed_review_execution_path", None)
     value["preparation"]["runtime_root"] = str(Path(release["runtime_publication_root"]) / "splat-render" / release["source_commit"])
     owner = _owner(intent)
+    from .task_evaluation_supervisor.openai_cost_authority import derive_operator_scope_attestation
+    preparation = value["preparation"]
+    prior_scope = Path(preparation["sam31_review_cost_scope_attestation_path"])
+    key_binding_path = prior_scope.parent / "openai_key_binding_sam31_visual_review.v1.json"
+    key_binding = read(key_binding_path)
+    require(key_binding.get("schema_version") == "openai_project_service_key_binding.v1"
+            and key_binding.get("paid_resource_class") == "sam31_ai_visual_review"
+            and key_binding.get("project_id") == preparation["openai_project_id"]
+            and key_binding.get("api_key_id") == preparation["openai_api_key_id"]
+            and Path(key_binding.get("key_file", "")).is_file(), "public_source_review_key_binding_invalid")
+    preparation["openai_api_key_file"] = key_binding["key_file"]
+    scope = derive_operator_scope_attestation(provider_id="openai", paid_resource_class="sam31_ai_visual_review",
+        project_id=key_binding["project_id"], api_key_id=key_binding["api_key_id"], operator_id=owner["accepted_by"],
+        exclusive_from=datetime.fromtimestamp(intent["request"]["consent"]["accepted_at_epoch"], timezone.utc)-timedelta(hours=1),
+        exclusive_until=datetime.fromtimestamp(intent["request"]["execution"]["expires_at_epoch"], timezone.utc)+timedelta(days=1))
+    preparation["sam31_review_cost_scope_attestation_path"] = str(_write(root / "sam31_review_cost_scope.json", scope))
+    value["sam31_review_key_binding"] = record(key_binding_path)
     for role in ("privacy_use_authorization", "trade_controls_review"):
         ref = base["provider_references"][role]
         prior = read(checked_file(ref["path"], ref), digest_field="receipt_digest")

@@ -380,7 +380,7 @@ def _install_release_provenance(
                     isinstance(existing_receipt, Mapping)
                     and existing_receipt.get("schema_version")
                     == "blueprint.deploy_release_provenance.v1"
-                    and existing_receipt.get("status") == "iteration"
+                    and existing_receipt.get("status") in {"iteration", "canary"}
                     and existing_receipt.get("git_sha") == source_commit
                     and existing_receipt.get("promotion_eligible") is False
                     and isinstance(existing_claim, Mapping)
@@ -439,7 +439,7 @@ def _install_release_provenance(
                     "sha256": _sha256_bytes(existing_payload),
                     "size_bytes": len(existing_payload),
                     "git_sha": source_commit,
-                    "status": "iteration",
+                    "status": existing_receipt["status"],
                     "mode": "0440",
                 }
         else:

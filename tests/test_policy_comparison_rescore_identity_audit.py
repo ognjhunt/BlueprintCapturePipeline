@@ -7,13 +7,14 @@ import pytest
 from blueprint_pipeline import task_evaluation_policy_canary_rescore as rescore
 
 
-@pytest.mark.parametrize("changed", ["adp_rigid_task_scoring.py", "adp_rigid_retreat_scoring.py"])
+@pytest.mark.parametrize("changed", ["adp_rigid_task_scoring.py", "adp_rigid_retreat_scoring.py", "task_evaluation_surface_target.py"])
 def test_dirty_rigid_scorer_cannot_reuse_clean_correction_identity(tmp_path, monkeypatch, changed):
     root = Path(rescore.__file__).resolve().parents[2]
     sources = [
         "adp_task_scoring.py", "adp009d_task_scoring.py",
         "articulation_graph_contract.py", "decision_evidence_contracts.py",
         "adp_rigid_task_scoring.py", "adp_rigid_retreat_scoring.py",
+        "task_evaluation_surface_target.py",
     ]
     package = tmp_path / "src/blueprint_pipeline"
     package.mkdir(parents=True)

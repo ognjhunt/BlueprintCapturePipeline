@@ -54,6 +54,13 @@ def test_fresh_source_binding_reaches_actual_factory_and_reuses_conversion(conte
     release = json.loads(args["release_binding_path"].read_text())
     (Path(release["runtime_publication_root"]) / "splat-render" / release["source_commit"]).mkdir()
     machinery = json.loads(args["machinery_path"].read_text())
+    key_file = tmp_path / "sam31-review.key"
+    key_file.write_text("fixture-only-not-a-provider-key")
+    key_file.chmod(0o600)
+    preparation = machinery["preparation"]
+    write(Path(preparation["sam31_review_cost_scope_attestation_path"]).parent / "openai_key_binding_sam31_visual_review.v1.json",
+        {"schema_version": "openai_project_service_key_binding.v1", "paid_resource_class": "sam31_ai_visual_review",
+         "project_id": preparation["openai_project_id"], "api_key_id": preparation["openai_api_key_id"], "key_file": str(key_file)})
     machinery["preparation"]["completed_review_execution_path"] = "/old-scene/review.json"
     for key in ("privacy_use_authorization", "trade_controls_review"):
         path = Path(machinery["provider_references"][key]["path"])
@@ -90,6 +97,9 @@ def test_fresh_source_binding_reaches_actual_factory_and_reuses_conversion(conte
     active_machinery = json.loads(resolved.machinery_path.read_text())
     assert "completed_review_execution_path" not in active_machinery["preparation"]
     assert active_machinery["preparation"]["runtime_root"].endswith(release["source_commit"])
+    assert active_machinery["preparation"]["openai_api_key_file"] == str(key_file)
+    scope = json.loads(Path(active_machinery["preparation"]["sam31_review_cost_scope_attestation_path"]).read_text())
+    assert scope["issued_by_agent"] is scope["derived_from_operator_scope_binding"] is True
     for key in ("privacy_use_authorization", "trade_controls_review"):
         scoped = json.loads(Path(active_machinery["provider_references"][key]["path"]).read_text())
         assert scoped["publisher_scene_id"] == "841757"

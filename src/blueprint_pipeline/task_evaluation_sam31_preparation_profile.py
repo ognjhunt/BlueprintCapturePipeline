@@ -252,6 +252,7 @@ def materialize_sam31_preparation_profile(
     calibrated_views_machine_avoidlist_path: str | Path | None = None,
     completed_prefix_adoption_path: str | Path | None = None,
     completed_review_execution_path: str | Path | None = None,
+    openai_api_key_file: str | Path | None = None,
 ) -> dict[str, Any]:
     """Derive the exact operator profile without allocating or authorizing work."""
 
@@ -352,6 +353,10 @@ def materialize_sam31_preparation_profile(
     flashsplat_identity = _validate_flashsplat(flashsplat)
     dependency_identity = _validate_dependency_wheelhouse(wheelhouse, dependency_manifest)
 
+    review_key = (_safe_path(openai_api_key_file, kind="file", code="openai_review_key_file_invalid")
+                  if openai_api_key_file is not None else None)
+    if review_key is not None:
+        _beneath_any(review_key, roots, code="openai_review_key_outside_approved_roots")
     profile: dict[str, Any] = {
         "schema_version": PROFILE_SCHEMA,
         "source_commit": source_commit,
@@ -380,6 +385,7 @@ def materialize_sam31_preparation_profile(
             "profile_digest": provider_profile["profile_digest"],
         },
         "sam31_visual_review": {
+            **({"openai_api_key_file": str(review_key)} if review_key is not None else {}),
             "model": AI_REVIEW_MODEL,
             "maximum_cost_usd": AI_REVIEW_MAX_COST_USD,
             "rights_attestation": _file_record(rights_path),

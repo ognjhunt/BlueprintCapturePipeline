@@ -245,13 +245,13 @@ def release_inputs(*, deploy_path: Path, provenance_path: Path,
     if release_admission_mode == "development_iteration":
         claim = provenance.get("claim_boundary")
         require(binding.get("sha256") == sha(provenance_path)
-                and binding.get("provenance_status") == "iteration"
+                and binding.get("provenance_status") in {"iteration", "canary"}
                 and binding.get("promotion_eligible") is False
                 and binding.get("canonical_full_lane_verified") is False
                 and binding.get("run_id") is None and binding.get("run_url") is None
                 and set(provenance) == {"schema_version", "status", "git_sha", "promotion_eligible", "claim_boundary"}
                 and provenance.get("schema_version") == "blueprint.deploy_release_provenance.v1"
-                and provenance.get("status") == "iteration"
+                and provenance.get("status") == binding.get("provenance_status")
                 and provenance.get("promotion_eligible") is False
                 and isinstance(claim, dict)
                 and set(claim) == {"canonical_full_lane_verified", "promotion_eligible", "evidence_grade"}

@@ -90,6 +90,21 @@ def _record(path: Path) -> dict[str, Any]:
     }
 
 
+def _scoped_review_model_provider(key_file: str | Path, project_id: str):
+    """Bind inference to the same operator-provisioned key that billing meters."""
+    from openai import AsyncOpenAI
+    from agents.models.openai_provider import OpenAIProvider
+    key_path = Path(key_file)
+    if (not key_path.is_absolute() or any(p.is_symlink() for p in (key_path, *key_path.parents))
+            or not key_path.is_file() or key_path.stat().st_mode & 0o027):
+        raise Sam31AIVisualReviewError("sam31_ai_review_key_file_invalid")
+    api_key = key_path.read_text().strip()
+    if not api_key:
+        raise Sam31AIVisualReviewError("sam31_ai_review_key_file_empty")
+    return OpenAIProvider(openai_client=AsyncOpenAI(api_key=api_key, project=project_id,
+        base_url="https://api.openai.com/v1"), use_responses=True, use_responses_websocket=False)
+
+
 def run_sam31_ai_visual_review(
     *,
     candidate_path: str | Path,
@@ -103,6 +118,7 @@ def run_sam31_ai_visual_review(
     openai_admin_api_key_file: str | Path | None = None,
     openai_project_id: str = "",
     openai_api_key_id: str = "",
+    openai_api_key_file: str | Path | None = None,
     openai_cost_transport: Callable[..., Mapping[str, Any]] | None = None,
     openai_cost_wall_clock: Callable[[], datetime] = lambda: datetime.now(
         timezone.utc
@@ -168,6 +184,9 @@ def run_sam31_ai_visual_review(
         transport=openai_cost_transport,
         wall_clock=openai_cost_wall_clock,
     )
+    invoker_options = {}
+    if openai_api_key_file is not None:
+        invoker_options["model_provider"] = _scoped_review_model_provider(openai_api_key_file, openai_project_id)
     cost_reservation = cost_gate.reserve()
     audit = InferenceReservationAudit(run_root=destination, run_id=run_id)
     selected_invoker = OpenAIAgentsSDKInvoker(
@@ -178,7 +197,7 @@ def run_sam31_ai_visual_review(
             allow_live_invocation=True,
             tracing_disabled=True,
             max_inference_cost_usd=max_cost_usd,
-        )
+        ), **invoker_options
     )
     selected_invoker.configure_reservation_audit(
         record_reservation=audit.record_reservation,

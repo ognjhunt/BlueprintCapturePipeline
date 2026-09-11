@@ -36,7 +36,6 @@ def accepted_provider_terms(intent, path):
 def derive_review_terms(*, intent, provider_terms_path):
     from .public_scene_sam31_track_selection_review import AI_RIGHTS_SCHEMA_VERSION
     from .task_evaluation_sam31_preparation_review_authority import TERMS
-    from .task_evaluation_public_scene_attempt_factory import record
     from datetime import datetime, timezone
 
     accepted_provider_terms(intent, provider_terms_path)
@@ -46,7 +45,8 @@ def derive_review_terms(*, intent, provider_terms_path):
              "accepted_by": consent["accepted_by"],
              "accepted_on": datetime.fromtimestamp(consent["accepted_at_epoch"], timezone.utc).isoformat(),
              "human_authority_reference": "scene-intent:" + intent["intent_digest"],
-             "source_provider_terms": record(provider_terms_path),
+             "source_provider_terms": {"path": str(provider_terms_path), "sha256": sha(Path(provider_terms_path)),
+                                       "size_bytes": Path(provider_terms_path).stat().st_size},
              "intent_digest": intent["intent_digest"],
              "artifact_prepared_by": "durable_scene_controller"}
     terms["attestation_digest"] = canonical_digest(terms, digest_field="attestation_digest")
