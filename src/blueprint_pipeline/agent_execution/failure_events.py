@@ -78,17 +78,20 @@ def discover_retained_failures(service):
                 if ownership_event(service, policy.run_id) is not None:
                     results.append({"subscription_id": policy.subscription_id, "state": "owned_by_persistent_supervisor"})
                     continue
+                if service.config.automatic_run_supervision:
+                    # Startup must not race the controller's registration and
+                    # create a second inference owner with a separate budget.
+                    results.append({"subscription_id": policy.subscription_id, "state": "waiting_for_persistent_supervisor"})
+                    continue
                 for job_path in sorted((Path(policy.child_queue_root) / "failed").glob("*.json")):
                     raw = _read_private(job_path)
                     job = json.loads(raw)
                     if (job.get("parent_preparation_id") != policy.parent_preparation_id
                             or job.get("parent_request_digest") != policy.parent_request_digest):
                         continue
-                    recoveries = [binding for binding in service.config.automatic_recovery_bindings
-                        if binding.parent_request_digest == policy.parent_request_digest and binding.intent_id == policy.run_id]
-                    if len(recoveries) > 1:
-                        raise AgentExecutionError("agent_automatic_recovery_binding_ambiguous")
-                    recovery = recoveries[0] if recoveries else None
+                    from .recovery_lineage import resolve_recovery_binding
+                    recovery = resolve_recovery_binding(service, intent_id=policy.run_id,
+                        parent_request_digest=policy.parent_request_digest, parent_queue_root=policy.parent_queue_root)
                     job_sha256 = "sha256:" + hashlib.sha256(raw).hexdigest()
                     identity = {"subscription": state["subscription_digest"], "job": job_sha256,
                                 "source_commit": service.config.source_commit}

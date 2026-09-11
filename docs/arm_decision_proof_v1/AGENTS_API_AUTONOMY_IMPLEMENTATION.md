@@ -197,6 +197,22 @@ and consumes the existing subscription cap. Removing a binding revokes pending
 automatic recovery, including after service restart. In-flight operations remain
 owned by the original controller and must be reconciled.
 
+An operator may opt one exact recovery binding into `allow_controller_successors`
+(default false). Compatible release successors must appear in the same owner's
+verified progression event chain, retain the frozen task/source and spend bounds,
+and carry terminal-parent and ownership reconciliation evidence. Each successor
+gets an exact immutable binding and derivation receipt under the agent journal;
+arbitrary replacement parents and unrelated queues remain refused. Current
+consent, configuration, anchor, allowance and parent hashes are checked again at
+admission. A later approved allowance creates a distinct derivation identity and
+revokes the older scope without overwriting its receipt.
+
+When persistent supervision is enabled, failure discovery waits for its owner
+instead of racing startup with a second inference producer. The lifetime budget
+also imports historical failure-subscription holds as append-only events keyed
+by task identity. Original rows and all reservations remain intact; migration
+does not refund estimates or increase authority.
+
 This configuration grants no new owner authority and is empty in the live
 assessment pilot. No paid retry is enabled by deployment. The selected live
 recovery/adoption proof remains open until an already-authorized owner intent
