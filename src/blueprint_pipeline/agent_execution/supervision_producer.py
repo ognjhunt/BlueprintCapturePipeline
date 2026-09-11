@@ -93,7 +93,7 @@ def register_run_supervision(*, intent, directory, source_commit, service=None):
             admission=admission, deadline=deadline, max_model_turns=2, max_input_tokens=120_000,
             max_output_tokens=2000, max_tool_calls=4, max_tool_output_bytes=10_000)
         template = TaskRecord(schema_version="blueprint_agent_admitted_task.v1", enabled=True, autostart=False,
-            owner_client_ids=("blueprint-webapp",), task=task, context=asdict(context))
+            owner_client_ids=("blueprint-internal-supervision",), task=task, context=asdict(context))
         template_path = Path(service.config.task_store_root) / (template_id + ".json")
         if template_path.exists() and json.loads(_read_private(template_path)) != template.model_dump(mode="json"):
             raise AgentExecutionError("automatic_supervision_template_conflict")
