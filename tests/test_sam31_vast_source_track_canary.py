@@ -19,6 +19,7 @@ from blueprint_pipeline.sam31_gpu_admission import (
     OPERATION,
     SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
     SAM31_PREFERRED_GEOLOCATION_REGEX,
+    sam31_capacity_request,
 )
 from blueprint_pipeline.sam31_source_track_canary_worker import RUNTIME_RESULT_SCHEMA_VERSION
 from blueprint_pipeline.scene_placement.semantic_gaussian_lifting import (
@@ -81,7 +82,7 @@ def _bound_request() -> dict:
         "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
         "request_digest": D1,
         "bound_provider": "vast",
-        "bound_preflight_digest": D1,
+        "bound_preflight_digest": canonical_digest(_preflight()),
         "bound_checkout_source_commit": SHA,
         "bound_checkout_clean": True,
         "provider_mutation_authorized": True,
@@ -93,6 +94,7 @@ def _bound_request() -> dict:
 def _preflight() -> dict:
     return {
         "provider": "vast",
+        "capacity_request": sam31_capacity_request(container_disk_bytes=80 * 1024**3, max_hourly_rate_usd=0.5),
         "watchdog": {
             "status": "armed",
             "independent_process": True,
@@ -101,9 +103,9 @@ def _preflight() -> dict:
             "deadline_epoch": 2000,
             "name_prefix": "blueprint-sam31-source-tracks-",
         },
-        "gpu_memory_bytes": 48 * 1024**3,
+        "gpu_memory_bytes": 65_536_000_000,
         "container_disk_bytes": 80 * 1024**3,
-        "on_demand_price_usd_per_hour": 0.5,
+        "on_demand_price_usd_per_hour": 0.4022222222222222,
     }
 
 
@@ -231,6 +233,9 @@ class _Provider:
         assert spec.name.startswith("blueprint-sam31-source-tracks-")
         assert spec.image == IMAGE
         assert spec.requires_rtx is False
+        assert spec.min_gpu_ram_mb == 25_770
+        assert spec.max_hourly_rate_usd == 0.5
+        assert spec.container_disk_gb == 80
         assert spec.allowed_geolocation_country_codes == ("US",)
         assert spec.preferred_geolocation_regex == SAM31_PREFERRED_GEOLOCATION_REGEX
         assert spec.env["HF_TOKEN"] == TOKEN
@@ -308,6 +313,9 @@ def test_one_instance_canary_tears_down_and_persists_no_secrets(tmp_path: Path) 
         == _runtime_result()["normalized_source_tracks"]["result_digest"]
     )
     assert provider.requests[0]["create_payload"]["env"]
+    assert provider.requests[0]["require_avx"] is True
+    assert provider.requests[0]["min_reliability"] == .98
+    assert provider.requests[0]["required_provider_disk_gb"] == 80
     teardown = json.loads((tmp_path / "teardown_receipt.json").read_text())
     assert teardown["allowed_geolocation_country_codes"] == ["US"]
     assert teardown["preferred_geolocation_regex"] == SAM31_PREFERRED_GEOLOCATION_REGEX
