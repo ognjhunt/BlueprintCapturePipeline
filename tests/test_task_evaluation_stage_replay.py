@@ -165,6 +165,32 @@ def test_replay_reports_completion_and_the_outcome(tmp_path: Path, monkeypatch) 
     assert report["fired_predicates"] == []
 
 
+def test_calibration_replay_passes_validated_request_to_cpu_only_continuation(tmp_path, monkeypatch):
+    from blueprint_pipeline import source_calibration_finalization_reuse as continuation
+    root, job_path, job = _queue(tmp_path)
+    job["phase"] = "calibrated_views"
+    job["job_digest"] = canonical_digest(job, digest_field="job_digest")
+    job_path.write_text(json.dumps(job))
+    _fake_validation(monkeypatch)
+    monkeypatch.setattr(stages, "execute_stage", lambda *_: pytest.fail("replay entered GPU stage"))
+    seen = []
+    def cpu_only(**kwargs):
+        assert kwargs["job"]["request"]["preparation_id"] == "prep-1"
+        assert kwargs["job"]["plan"] == kwargs["plan"]
+        assert kwargs["job_path"] == job_path
+        assert Path(kwargs["run_root"]).is_relative_to(tmp_path / "replays")
+        seen.append(kwargs)
+        return {"status": "completed", "provider_mutation_performed": False, "artifacts": {}}
+    monkeypatch.setattr(continuation, "replay_retained_calibration", cpu_only)
+    before = job_path.read_bytes()
+    report = replay.replay_child(queue_root=root, child_id=CHILD, parent_queue_root=tmp_path / "parent",
+        input_root=tmp_path / "inputs", replay_root=tmp_path / "replays", approved_roots=(tmp_path,))
+    assert report["status"] == "completed" and len(seen) == 1
+    assert report["retained_gpu_return_cpu_finalization_only"] is True
+    assert report["paid_execution_requested"] is False and report["provider_mutation_performed"] is False
+    assert job_path.read_bytes() == before
+
+
 def test_a_job_the_current_contract_refuses_is_reported_not_raised(tmp_path: Path, monkeypatch) -> None:
     root, _, _ = _queue(tmp_path)
 
