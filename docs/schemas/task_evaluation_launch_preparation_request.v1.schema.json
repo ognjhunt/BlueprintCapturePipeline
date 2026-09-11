@@ -133,6 +133,9 @@
                 },
                 "validation": {
                   "$ref": "#/$defs/reference"
+                },
+                "source_derivation": {
+                  "$ref": "#/$defs/reference"
                 }
               }
             },

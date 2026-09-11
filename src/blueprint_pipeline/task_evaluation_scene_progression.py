@@ -52,6 +52,9 @@ def _source(intent, config, release, resolver):
     if intent["request"]["source"]["kind"] == "public_scene":
         path = safe_path(Path(config["public_source_binding_root"]) / (intent["request"]["source"]["binding_id"] + ".json"))
         if not path.is_file():
+            if config.get("public_source_bootstrap_enabled") is True:
+                from .task_evaluation_public_scene_bootstrap import prepare_registered_public_scene
+                return prepare_registered_public_scene(intent=intent, config=config, release=release)
             return SourceResolution("awaiting_source", blockers=("public_source_binding_missing",))
         return SourceResolution("resolved", path, Path(config["machinery_path"]), materialize_public_scene_attempt)
     if resolver is None:
@@ -402,7 +405,10 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     from .task_evaluation_scene_policy_capability import policy_capability_blockers
     if capability_blockers := policy_capability_blockers(intent["request"]):
         return emit("needs_input", "policy_capability", capability_blockers)
-    if config.get("require_whole_chain_capacity", False) and not state.get("attempt_id"):
+    source_bootstrap = (config.get("public_source_bootstrap_enabled") is True
+        and intent["request"]["source"]["kind"] == "public_scene"
+        and not (Path(config["public_source_binding_root"]) / (intent["request"]["source"]["binding_id"] + ".json")).is_file())
+    if config.get("require_whole_chain_capacity", False) and not state.get("attempt_id") and not source_bootstrap:
         from .control_plane_capacity_controller import whole_chain_admission
         admission = whole_chain_admission(
             config["factory_output_root"],
@@ -412,6 +418,9 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
         state["capacity_admission"] = admission
         if admission["status"] != "admitted":
             return emit("awaiting_execution", "capacity", ["scene_whole_chain_capacity_insufficient"])
+    if (config.get("public_source_bootstrap_enabled") is True
+            and intent["request"]["source"]["kind"] == "public_scene" and not state.get("source_analysis")):
+        emit("preparing", "source_preparation")
     resolution = _source(intent, config, release, resolver)
     if resolution.analysis_reference is not None:
         _reference(resolution.analysis_reference)
@@ -567,18 +576,23 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
 
 def process_scene_intents(*, config_path, source_resolver=None, publisher=None, submitter=None,
                           status_reader=None, activation_provisioner=None, now=None, only_intent_id=None):
+    config_path = safe_path(config_path)
+    require(config_path.stat().st_mode & 0o002 == 0, "config_world_writable")
+    config = read(config_path, digest_field="config_digest")
+    scope = config.get("only_intent_id")
+    require(scope is None or (isinstance(scope, str) and scope.startswith("scene-") and intake._identifier(scope)),
+            "scoped_intent_invalid")
+    require(scope is None or only_intent_id is None or scope == only_intent_id, "scoped_intent_mismatch")
     if only_intent_id is None:
         from .agent_execution.controller_recovery import consume_controller_requests
         try:
-            consume_controller_requests(controller_config_path=config_path)
+            consume_controller_requests(controller_config_path=config_path, only_intent_id=scope)
         except (OSError, ValueError, RuntimeError) as exc:
             # The reasoning sidecar cannot disable the existing deterministic
             # controller. Its pending requests remain available for reconciliation.
             import logging
             logging.getLogger(__name__).warning("agent_controller_requests_unavailable:%s", type(exc).__name__)
-    config_path = safe_path(config_path)
-    require(config_path.stat().st_mode & 0o002 == 0, "config_world_writable")
-    config = read(config_path, digest_field="config_digest")
+    only_intent_id = only_intent_id or scope
     require(config.get("schema_version") == CONFIG_SCHEMA, "config_schema_invalid")
     root = safe_path(config["intent_root"])
     require(root.is_dir(), "intent_root_missing")

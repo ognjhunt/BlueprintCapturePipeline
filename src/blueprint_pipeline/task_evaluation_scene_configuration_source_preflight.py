@@ -164,6 +164,32 @@ def _validate_scene_configuration_source_inputs(
         for row in source_artifacts
         if isinstance(row, Mapping) and row.get("role") == "interiorgs_source_splat"
     ]
+    partitioned = len(collision_artifacts) == 1 and collision_artifacts[0].get("origin") == "connected_component_partition"
+    derivation_ref = request.get("scene", {}).get("geometry", {}).get("source_derivation")
+    if partitioned or derivation_ref is not None:
+        derivation_row, derivation_path = _reference(envelope, "scene.geometry.source_derivation")
+        derivation = _json(derivation_path, code="scene_configuration_source_partition_invalid")
+        upstream = [row for row in source_artifacts if isinstance(row, Mapping)
+                    and row.get("role") == "sage_collision_publisher_source"]
+        target_parts = [row for row in derivation.get("face_partitions", [])
+                        if row.get("instance_id") == str(source_object.get("publisher_instance_id"))]
+        if (not partitioned or len(upstream) != 1
+                or not _request_reference_matches(request, ("scene", "geometry", "source_derivation"), derivation_row)
+                or collision_artifacts[0].get("partition_receipt") != derivation_ref
+                or derivation.get("schema_version") != "interiorgs_sage_collision_partition.v1"
+                or derivation.get("status") != "geometry_partitioned_pending_native_validation"
+                or derivation.get("receipt_digest") != canonical_digest(derivation, digest_field="receipt_digest")
+                or derivation.get("source_bytes_changed") is not False
+                or derivation.get("source_faces_deleted") != 0
+                or derivation.get("native_collision_cooking_qualified") is not False
+                or derivation.get("source", {}).get("sha256") != upstream[0].get("sha256")
+                or derivation.get("source", {}).get("size_bytes") != upstream[0].get("size_bytes")
+                or collision_artifacts[0].get("upstream_source_sha256") != upstream[0].get("sha256")
+                or derivation.get("output", {}).get("sha256") != collision_row.get("digest")
+                or derivation.get("output", {}).get("size_bytes") != collision_row.get("size_bytes")
+                or len(target_parts) != 1 or target_parts[0].get("output_prim") != source_collision.get("prim_path")
+                or len(target_parts[0].get("source_face_indices", [])) != source_collision.get("face_count")):
+            raise TaskEvaluationSceneConfigurationSourcePreflightError("scene_configuration_source_partition_invalid")
     render = envelope.get("render_inputs_result") or {}
     stage_one_source = stage_one.get("source_object") or {}
     masks = render.get("source_object_masks") or {}

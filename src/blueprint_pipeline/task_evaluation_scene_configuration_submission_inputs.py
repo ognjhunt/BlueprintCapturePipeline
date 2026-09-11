@@ -152,6 +152,26 @@ def source_inputs(*, installation_path: Path, publisher_path: Path,
     for row in preparation["artifacts"]:
         path = checked_file(beneath(preparation_path.parent, row["relative_path"]), row)
         artifacts.append((path, read(path)))
+    collision = raw["collision_usd"]
+    partition_reference = preparation.get("collision_partition")
+    require((partition_reference is None) == (preparation.get("effective_collision") is None),
+            "source_collision_partition_incomplete")
+    if partition_reference is not None:
+        from .sage_collision_partition import validate_partition
+        partition_path = checked_file(beneath(preparation_path.parent, partition_reference["relative_path"]),
+                                      partition_reference)
+        require(sum(path == partition_path for path, _ in artifacts) == 1,
+                "source_collision_partition_not_in_inventory")
+        partition = read(partition_path, digest_field="receipt_digest")
+        ref = preparation["effective_collision"]
+        collision_path = checked_file(beneath(preparation_path.parent, ref["relative_path"]), ref)
+        validate_partition(partition, source_path=raw["collision_usd"]["path"],
+            labels_path=raw["semantic_metadata"]["path"], output_path=collision_path)
+        require(partition.get("selected_instance_ids") == [
+            str(task["subject"]["source_instance_id"]), str(task["support"]["source_instance_id"])],
+            "source_collision_partition_task_mismatch")
+        collision = {"path": collision_path, "sha256": ref["sha256"], "size_bytes": ref["size_bytes"],
+                     "partition_path": partition_path}
     identities = {}
     for role, key in (("movable_subject", "subject"), ("source_support", "support")):
         instance = str(task[key]["source_instance_id"])
@@ -169,7 +189,8 @@ def source_inputs(*, installation_path: Path, publisher_path: Path,
         for field, raw_role in (("interiorgs_labels", "semantic_metadata"),
                                 ("sage_collision_usd", "collision_usd")):
             source = value["source_files"][field]
-            require(all(source.get(k) == raw[raw_role][k] for k in ("sha256", "size_bytes")),
+            expected = collision if raw_role == "collision_usd" else raw[raw_role]
+            require(all(source.get(k) == expected[k] for k in ("sha256", "size_bytes")),
                     "source_identity_bytes_mismatch")
         require(value.get("coordinate_frame") == {
             "up_axis": "Z", "meters_per_unit": 1.0, "transform_applied": "identity"
@@ -202,7 +223,7 @@ def source_inputs(*, installation_path: Path, publisher_path: Path,
         identities[key] = {"path": path, "receipt": value, "match": match}
     require(identities["subject"]["match"]["prim_path"] !=
             identities["support"]["match"]["prim_path"], "subject_support_collider_shared")
-    return {"scene_id": scene_id, "raw": raw, "identities": identities,
+    return {"scene_id": scene_id, "raw": raw, "identities": identities, "effective_collision": collision,
             "preparation": preparation, "artifacts": artifacts}
 
 

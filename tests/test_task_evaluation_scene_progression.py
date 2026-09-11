@@ -179,3 +179,20 @@ def test_accepted_intent_registers_supervision_without_blocking_factory(context,
     assert seen[0]["intent"]["intent_id"] == context[0]["intent_path"].parent.name
     assert seen[0]["directory"] == context[0]["intent_path"].parent
     assert seen[0]["source_commit"] == result["source_commit"]
+
+
+def test_configured_owner_scope_does_not_touch_other_intents_or_shared_cursor(context, monkeypatch):
+    config = configuration(context, monkeypatch)
+    value = json.loads(config.read_text())
+    selected = context[0]['intent_path'].parent.name
+    other = Path(value['intent_root']) / 'scene-unrelated-owner'
+    other.mkdir()
+    marker = other / 'preserve.txt'
+    marker.write_text('unrelated owner state')
+    value['only_intent_id'] = selected
+    write(config, value, 'config_digest')
+    result = engine.process_scene_intents(config_path=config)
+    assert [row['intent_id'] for row in result['results']] == [selected]
+    assert list(other.iterdir()) == [marker]
+    assert marker.read_text() == 'unrelated owner state'
+    assert not (Path(value['intent_root']) / 'progression-cursor.json').exists()

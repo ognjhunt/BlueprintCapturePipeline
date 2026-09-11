@@ -126,7 +126,8 @@ class ControllerRecoveryTools:
             "external_side_effect", self.invoke, self.reconcile),)
 
 
-def consume_controller_requests(*, controller_config_path, agent_config_path="/etc/blueprint/agent-execution.json"):
+def consume_controller_requests(*, controller_config_path, agent_config_path="/etc/blueprint/agent-execution.json",
+                                only_intent_id=None):
     """Run inside the existing scene progression service, not the model worker."""
     from .production import ProductionAgentService, ProductionConfig, _read_private
     from ..task_evaluation_scene_progression import process_scene_intents
@@ -145,6 +146,8 @@ def consume_controller_requests(*, controller_config_path, agent_config_path="/e
             continue
         request = json.loads(_read_private(request_path))
         binding = ControllerRecoveryBinding.model_validate(request["binding"])
+        if only_intent_id is not None and binding.intent_id != only_intent_id:
+            continue
         if Path(binding.controller_config_path).resolve() != Path(controller_config_path).resolve():
             continue
         with service.journal.own_task("controller-request:" + request_path.stem):

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,6 +44,15 @@ def _installed(tmp_path, monkeypatch):
     from blueprint_pipeline import control_plane_capacity_controller as capacity
     monkeypatch.setattr(capacity, "measure_mount", lambda *a, **kw:
         {"status": "measured", "available_bytes": 64 * 1024**3})
+    from blueprint_pipeline import control_plane_disk_budget as disk
+    real_reserve = disk.reserve_control_plane_disk
+    def roomy(_path):
+        return SimpleNamespace(total=100 * disk.GIB, free=64 * disk.GIB, used=36 * disk.GIB)
+    # The per-operation ledger must observe the same simulated capacity as the
+    # whole-chain probe above; local workstation occupancy is not this fixture.
+    monkeypatch.setattr(disk, "reserve_control_plane_disk", lambda *a, **kw:
+        real_reserve(*a, **kw, disk_usage=roomy))
+    monkeypatch.setattr(worker, "reserve_control_plane_disk", disk.reserve_control_plane_disk)
     for line in Path(receipt["environment"]["path"]).read_text().splitlines():
         if line and not line.startswith("#"):
             key, value = line.split("=", 1)
