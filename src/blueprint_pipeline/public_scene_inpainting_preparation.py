@@ -130,7 +130,8 @@ def validate_prepared_inputs(preparation_path: str | Path) -> dict[str, Any]:
 
 
 def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
-        returned_group_path: str | Path, _adopt_existing: bool = False) -> dict[str, Any]:
+        returned_group_path: str | Path, _adopt_existing: bool = False,
+        retained_render_binding_path: str | Path | None = None) -> dict[str, Any]:
     from .public_scene_inpainting_inputs import PublicSceneInpaintingInputError, _sha256
     from .public_scene_inpainting_finalize import finish_prepared_inputs
     from .source_calibration_render_return import (
@@ -139,17 +140,26 @@ def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
 
     prepared = validate_prepared_inputs(preparation_path)
     returned_path = Path(returned_group_path).expanduser()
-    groups = verify_source_calibration_return(prepared, returned_path)
-    returned = require_source_calibration_closure(prepared, returned_path)
+    render_prepared = prepared
+    retained_binding = None
+    if retained_render_binding_path is None:
+        groups = verify_source_calibration_return(prepared, returned_path)
+        returned = require_source_calibration_closure(prepared, returned_path)
+    else:
+        from .source_calibration_finalization_reuse import validate_retained_render_binding
+        render_prepared, groups, returned, retained_binding = validate_retained_render_binding(
+            retained_render_binding_path, current_prepared=prepared)
+        if _artifact(returned_path) != retained_binding["original_closed_return"]:
+            raise PublicSceneInpaintingInputError(["edit_input_reused_return_changed"])
     if set(groups) != set(ROLES):
         raise PublicSceneInpaintingInputError(["edit_input_returned_render_groups_incomplete"])
     import copy
     from .source_calibration_camera_resolution import resolve_verified_cameras
     effective, camera_resolution = prepared, None
-    if prepared.get("camera_recovery") is not None:
+    if render_prepared.get("camera_recovery") is not None:
         provider_result = Path(returned["provider_result"]["path"])
         effective, camera_resolution = resolve_verified_cameras(
-            prepared, json.loads(provider_result.read_text()), provider_result.parent)
+            render_prepared, json.loads(provider_result.read_text()), provider_result.parent)
     context = copy.deepcopy(prepared["context"])
     output = Path(context["paths"]["output"])
     if camera_resolution is not None:
@@ -158,6 +168,8 @@ def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
             "python", "-m", "blueprint_pipeline.public_scene_inpainting_preparation",
             "--prepared-inputs", str(preparation_path), "--returned-group", str(returned_path),
             "--verify-existing"])
+        if retained_render_binding_path is not None:
+            context["replay_command"] += " --retained-render-binding " + shlex.quote(str(retained_render_binding_path))
         selected_file = Path(effective["camera_file"]["path"])
         selected_copy = output / "resolved_cameras.json"
         if selected_copy.exists():
@@ -221,7 +233,11 @@ def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
             "full_source_scene_content_transferred": True,
             "original_downloaded_file_uploaded": False, "private_only": True,
             "execution_closure": returned["execution_closure"],
-            **({"camera_resolution": camera_resolution} if camera_resolution is not None else {})},
+            **({"camera_resolution": camera_resolution} if camera_resolution is not None else {}),
+            **({"retained_render_binding": _artifact(Path(retained_render_binding_path)),
+                "original_preparation_digest": render_prepared["preparation_digest"],
+                "original_render_commit": render_prepared["repository"]["commit"]}
+               if retained_binding is not None else {})},
         validate_only=_adopt_existing)
     if _adopt_existing and receipt != existing:
         raise PublicSceneInpaintingInputError(["edit_input_retained_receipt_binding_mismatch"])
@@ -229,10 +245,11 @@ def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
 
 
 def adopt_finalized_public_scene_inpainting_inputs(*, preparation_path: str | Path,
-        returned_group_path: str | Path) -> dict[str, Any]:
+        returned_group_path: str | Path, retained_render_binding_path: str | Path | None = None) -> dict[str, Any]:
     """Verify an existing terminal receipt against source bytes, closed renders and original mask logic."""
     return finalize_public_scene_inpainting_inputs(preparation_path=preparation_path,
-        returned_group_path=returned_group_path, _adopt_existing=True)
+        returned_group_path=returned_group_path, _adopt_existing=True,
+        retained_render_binding_path=retained_render_binding_path)
 
 
 def main(argv=None) -> int:
@@ -242,9 +259,11 @@ def main(argv=None) -> int:
     parser.add_argument("--prepared-inputs", required=True)
     parser.add_argument("--returned-group", required=True)
     parser.add_argument("--verify-existing", action="store_true")
+    parser.add_argument("--retained-render-binding")
     args = parser.parse_args(argv)
     receipt = finalize_public_scene_inpainting_inputs(preparation_path=args.prepared_inputs,
-        returned_group_path=args.returned_group, _adopt_existing=args.verify_existing)
+        returned_group_path=args.returned_group, _adopt_existing=args.verify_existing,
+        retained_render_binding_path=args.retained_render_binding)
     print(canonical_json({"status": receipt["status"], "receipt_digest": receipt["receipt_digest"]}))
     return 0
 
