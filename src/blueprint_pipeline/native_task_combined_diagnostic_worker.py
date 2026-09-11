@@ -8,7 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from blueprint_pipeline.native_task_composition_diagnostic import file_record, seal
+from blueprint_pipeline.native_task_composition_diagnostic import file_record, seal, verify_record
 
 CHILDREN = (
     (
@@ -57,10 +57,30 @@ def run_diagnostic_children(*, runtime_root, output_root, runner=subprocess.run)
         environment = {
             **os.environ,
             "BLUEPRINT_ADP_ARENA_OUTPUT_DIR": str(child),
-            "PYTHONPATH": str(runtime),
+            # sys.executable bypasses python.sh; preserve the search paths that
+            # the simulator wrapper established before launching this parent.
+            "PYTHONPATH": os.pathsep.join(
+                value for value in (str(runtime), os.environ.get("PYTHONPATH")) if value
+            ),
         }
         entry = {"name": name, "module": module, "timeout_seconds": 600, "fresh_process": True}
         try:
+            # Provisioning ran once in the parent output directory. Each child
+            # still uses the canonical launcher and its unchanged verifier;
+            # give it the same receipt bytes at its own canonical output path.
+            receipt_name = "native_task_runtime_source_provisioning.v1.json"
+            source = output / receipt_name
+            receipt_record = file_record(source)
+            destination = child / receipt_name
+            with destination.open("xb") as stream:
+                stream.write(source.read_bytes())
+            verify_record(destination, receipt_record)
+            entry["runtime_source_provisioning"] = {
+                **receipt_record,
+                "parent_relative_path": receipt_name,
+                "child_relative_path": name + "/" + receipt_name,
+                "handoff": "exact_parent_receipt_bytes_reverified_by_child_launcher",
+            }
             with (child / "process.log").open("xb") as log:
                 completed = runner(
                     command,

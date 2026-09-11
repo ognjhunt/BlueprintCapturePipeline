@@ -196,6 +196,11 @@ def test_two_native_children_exit_in_order_on_same_resource_without_false_no_mot
             }
         )
     )
+    output = tmp_path / "out"
+    output.mkdir()
+    (output / "native_task_runtime_source_provisioning.v1.json").write_bytes(
+        (Path(__file__).parent / "fixtures/native_task_combined_bootstrap_v28d/native_task_runtime_source_provisioning.v1.json").read_bytes()
+    )
     calls = []
 
     def runner(command, **kwargs):
@@ -236,6 +241,11 @@ def test_isaac_timeout_does_not_start_another_child(tmp_path):
                 "input_digest": "sha256:" + "b" * 64,
             }
         )
+    )
+    output = tmp_path / "out"
+    output.mkdir()
+    (output / "native_task_runtime_source_provisioning.v1.json").write_bytes(
+        (Path(__file__).parent / "fixtures/native_task_combined_bootstrap_v28d/native_task_runtime_source_provisioning.v1.json").read_bytes()
     )
     calls = []
 

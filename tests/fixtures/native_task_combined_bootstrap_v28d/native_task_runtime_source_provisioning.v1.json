@@ -1,0 +1,587 @@
+{
+  "all_sources_verified_before_install": true,
+  "blockers": [],
+  "candidate_policy_queried": false,
+  "dependencies_installed": true,
+  "extraction_dir": "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources",
+  "install_roots": [
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/source/isaaclab",
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/source/isaaclab_assets",
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/source/isaaclab_contrib",
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/source/isaaclab_experimental",
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/source/isaaclab_mimic",
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/source/isaaclab_newton",
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/source/isaaclab_ov",
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/source/isaaclab_physx",
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/source/isaaclab_rl",
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/source/isaaclab_tasks",
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/source/isaaclab_tasks_experimental",
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/source/isaaclab_teleop",
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/source/isaaclab_visualizers",
+    "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/arena"
+  ],
+  "installation_method": "verified_source_roots_pth",
+  "isaac_sim_link": {
+    "path": "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/_isaac_sim",
+    "target": "/isaac-sim"
+  },
+  "package_path_probe_command": [
+    "/isaac-sim/python.sh",
+    "-P",
+    "-c",
+    "import importlib.util,json;names=['torch', 'triton', 'cuda', 'filelock', 'fsspec', 'jinja2', 'markupsafe', 'mpmath', 'networkx', 'setuptools', 'sympy', 'warp', 'cloudpickle', 'farama_notifications', 'gymnasium', 'lazy_loader', 'packaging', 'prettytable', 'typing_extensions', 'wcwidth', 'h5py', 'msgpack', 'zmq', 'rsl_rl', 'tensordict', 'importlib_metadata', 'zipp', 'orjson', 'pyvers', 'git', 'gitdb', 'smmap', 'lightwheel_sdk', 'requests', 'charset_normalizer', 'idna', 'urllib3', 'certifi', 'tqdm', 'termcolor', 'yaml', 'click', 'isaaclab', 'isaaclab_assets', 'isaaclab_contrib', 'isaaclab_experimental', 'isaaclab_mimic', 'isaaclab_newton', 'isaaclab_ov', 'isaaclab_physx', 'isaaclab_rl', 'isaaclab_tasks', 'isaaclab_tasks_experimental', 'isaaclab_teleop', 'isaaclab_visualizers', 'isaaclab_arena'];found={name:importlib.util.find_spec(name) is not None for name in names};print(json.dumps(found,sort_keys=True));raise SystemExit(0 if all(found.values()) else 3)"
+  ],
+  "package_path_probe_returncode": 0,
+  "package_path_probe_stderr": "",
+  "package_path_probe_stdout": "{\"certifi\": true, \"charset_normalizer\": true, \"click\": true, \"cloudpickle\": true, \"cuda\": true, \"farama_notifications\": true, \"filelock\": true, \"fsspec\": true, \"git\": true, \"gitdb\": true, \"gymnasium\": true, \"h5py\": true, \"idna\": true, \"importlib_metadata\": true, \"isaaclab\": true, \"isaaclab_arena\": true, \"isaaclab_assets\": true, \"isaaclab_contrib\": true, \"isaaclab_experimental\": true, \"isaaclab_mimic\": true, \"isaaclab_newton\": true, \"isaaclab_ov\": true, \"isaaclab_physx\": true, \"isaaclab_rl\": true, \"isaaclab_tasks\": true, \"isaaclab_tasks_experimental\": true, \"isaaclab_teleop\": true, \"isaaclab_visualizers\": true, \"jinja2\": true, \"lazy_loader\": true, \"lightwheel_sdk\": true, \"markupsafe\": true, \"mpmath\": true, \"msgpack\": true, \"networkx\": true, \"orjson\": true, \"packaging\": true, \"prettytable\": true, \"pyvers\": true, \"requests\": true, \"rsl_rl\": true, \"setuptools\": true, \"smmap\": true, \"sympy\": true, \"tensordict\": true, \"termcolor\": true, \"torch\": true, \"tqdm\": true, \"triton\": true, \"typing_extensions\": true, \"urllib3\": true, \"warp\": true, \"wcwidth\": true, \"yaml\": true, \"zipp\": true, \"zmq\": true}\n",
+  "path_file": "/isaac-sim/kit/python/lib/python3.12/site-packages/blueprint_native_task_runtime_sources.pth",
+  "path_file_sha256": "sha256:6b27a3d69f7933acc9f4229f7e4931becdd09dafe7151c198a711d6c647a7b19",
+  "python_executable": "/isaac-sim/python.sh",
+  "python_executable_source": "simulator_python_launcher",
+  "python_probe_flag": "-P",
+  "python_probe_mode": "simulator_wrapper_safe_path",
+  "receipt_digest": "sha256:4d12e560013483b214f5374e27c1ae6ce8bd0853d1186ed3cf263687cae46486",
+  "runtime_dependencies_installed": [
+    {
+      "license_spdx": "Apache-2.0",
+      "package": "warp-lang",
+      "pure_python": false,
+      "version": "1.13.0",
+      "wheel_sha256": "sha256:ac2479c70ad410d58deb088c2a64168792be588efc1bec22dc51f92238e8c8c3",
+      "wheel_tag": "py3-none-manylinux_2_28_x86_64"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "antlr4-python3-runtime",
+      "pure_python": true,
+      "version": "4.9.3",
+      "wheel_sha256": "sha256:fb202be9f441339c23cb883fa18e61638da863ee198ea56da3e288ad2dc6c6b3",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "omegaconf",
+      "pure_python": true,
+      "version": "2.3.0",
+      "wheel_sha256": "sha256:7b4df175cdb08ba400f45cae3bdcae7ba8365db4d165fc65fd04b050ab63b46b",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "MIT",
+      "package": "hydra-core",
+      "pure_python": true,
+      "version": "1.3.2",
+      "wheel_sha256": "sha256:fa0238a9e31df3373b35b0bfb672c34cc92718d21f81311d8996a16de1141d8b",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "Apache-2.0",
+      "package": "msgpack",
+      "pure_python": false,
+      "version": "1.2.1",
+      "wheel_sha256": "sha256:020e881a764b20d8d7ca1a54fc01b8175519d108e3c3f194fddc200bda95951a",
+      "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "pyzmq",
+      "pure_python": false,
+      "version": "27.1.0",
+      "wheel_sha256": "sha256:43ad9a73e3da1fab5b0e7e13402f0b2fb934ae1c876c51d0afff0e7c052eca31",
+      "wheel_tag": "cp312-abi3-manylinux_2_28_x86_64"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "rsl-rl-lib",
+      "pure_python": true,
+      "version": "5.0.1",
+      "wheel_sha256": "sha256:2f71a4f753537faf7826d0b74815160e37c409b39ab80a4581524b7ef7bd8539",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "tensordict",
+      "pure_python": false,
+      "version": "0.13.0",
+      "wheel_sha256": "sha256:343cf19838f6cb6be9db28d164338a399c269171854a6d688cb42f82be796e1c",
+      "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64"
+    },
+    {
+      "license_spdx": "Apache-2.0",
+      "package": "importlib-metadata",
+      "pure_python": true,
+      "version": "9.0.0",
+      "wheel_sha256": "sha256:2d21d1cc5a017bd0559e36150c21c830ab1dc304dedd1b7ea85d20f45ef3edd7",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "MIT",
+      "package": "zipp",
+      "pure_python": true,
+      "version": "4.1.0",
+      "wheel_sha256": "sha256:25ad4e16390cd314347dd8f1de67a2ac538ae658ed4ab9db16029c07c188e97f",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "Apache-2.0 OR MIT",
+      "package": "orjson",
+      "pure_python": false,
+      "version": "3.11.9",
+      "wheel_sha256": "sha256:be4fa4f0af7fa18951f7ab3fc2148e223af211bf03f59e1c6034ec3f97f21d61",
+      "wheel_tag": "cp312-cp312-manylinux_2_17_x86_64"
+    },
+    {
+      "license_spdx": "MIT",
+      "package": "pyvers",
+      "pure_python": true,
+      "version": "0.2.3",
+      "wheel_sha256": "sha256:6f5b5612f2f4bd08caa49baa70fc5f875fc7da701a5385c13e244eea6b8114dd",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "GitPython",
+      "pure_python": true,
+      "version": "3.1.58",
+      "wheel_sha256": "sha256:d331e722577f0fd7fc1f857419b3ecc07af66282b933d2a4d95f84a042fdd50f",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "gitdb",
+      "pure_python": true,
+      "version": "4.0.12",
+      "wheel_sha256": "sha256:67073e15955400952c6565cc3e707c554a4eea2e428946f7a4c162fab9bd9bcf",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "smmap",
+      "pure_python": true,
+      "version": "5.0.3",
+      "wheel_sha256": "sha256:c106e05d5a61449cf6ba9a1e650227ecfb141590d2a98412103ff35d89fc7b2f",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "Apache-2.0",
+      "package": "lightwheel-sdk",
+      "pure_python": true,
+      "version": "1.0.3",
+      "wheel_sha256": "sha256:841ec064ab21a403de024e1e860541e9949e0ea2330d51961b1fdf49d0ec21cd",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "Apache-2.0",
+      "package": "requests",
+      "pure_python": true,
+      "version": "2.34.2",
+      "wheel_sha256": "sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "MIT",
+      "package": "charset-normalizer",
+      "pure_python": false,
+      "version": "3.4.9",
+      "wheel_sha256": "sha256:5e226f6218febc71f6c1fc2fafb91c226f75bdc1d8fb12d66823716e891608fd",
+      "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "idna",
+      "pure_python": true,
+      "version": "3.18",
+      "wheel_sha256": "sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "MIT",
+      "package": "urllib3",
+      "pure_python": true,
+      "version": "2.7.0",
+      "wheel_sha256": "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "MPL-2.0",
+      "package": "certifi",
+      "pure_python": true,
+      "version": "2026.7.22",
+      "wheel_sha256": "sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "MPL-2.0 AND MIT",
+      "package": "tqdm",
+      "pure_python": true,
+      "version": "4.70.0",
+      "wheel_sha256": "sha256:7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "MIT",
+      "package": "termcolor",
+      "pure_python": true,
+      "version": "3.3.0",
+      "wheel_sha256": "sha256:cf642efadaf0a8ebbbf4bc7a31cec2f9b5f21a9f726f4ccbb08192c9c26f43a5",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "MIT",
+      "package": "PyYAML",
+      "pure_python": false,
+      "version": "6.0.3",
+      "wheel_sha256": "sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc",
+      "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "click",
+      "pure_python": true,
+      "version": "8.4.2",
+      "wheel_sha256": "sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "MIT",
+      "package": "gymnasium",
+      "pure_python": true,
+      "version": "1.2.1",
+      "wheel_sha256": "sha256:85cd1c16351db0b89f73be54e952ddfece97b56d1e5400d2dcd59f58b7707963",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "lazy_loader",
+      "pure_python": true,
+      "version": "0.4",
+      "wheel_sha256": "sha256:342aa8e14d543a154047afb4ba8ef17f5563baad3fc610d7b15b213b0f119efc",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "cloudpickle",
+      "pure_python": true,
+      "version": "3.1.1",
+      "wheel_sha256": "sha256:c8c5a44295039331ee9dad40ba100a9c7297b6f988e50e87ccdf3765a668350e",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "MIT",
+      "package": "farama-notifications",
+      "pure_python": true,
+      "version": "0.0.4",
+      "wheel_sha256": "sha256:14de931035a41961f7c056361dc7f980762a143d05791ef5794a751a2caf05ae",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "Apache-2.0 OR BSD-2-Clause",
+      "package": "packaging",
+      "pure_python": true,
+      "version": "25.0",
+      "wheel_sha256": "sha256:29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "PSF-2.0",
+      "package": "typing-extensions",
+      "pure_python": true,
+      "version": "4.15.0",
+      "wheel_sha256": "sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "prettytable",
+      "pure_python": true,
+      "version": "3.3.0",
+      "wheel_sha256": "sha256:d1c34d72ea2c0ffd6ce5958e71c428eb21a3d40bf3133afe319b24aeed5af407",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "MIT",
+      "package": "wcwidth",
+      "pure_python": true,
+      "version": "0.2.13",
+      "wheel_sha256": "sha256:3da69048e4540d84af32131829ff948f1e022c1c6bdb8d6102117aac784f6859",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "h5py",
+      "pure_python": false,
+      "version": "3.16.0",
+      "wheel_sha256": "sha256:dfc21898ff025f1e8e67e194965a95a8d4754f452f83454538f98f8a3fcb207e",
+      "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "torch",
+      "pure_python": false,
+      "version": "2.10.0+cu128",
+      "wheel_sha256": "sha256:628e89bd5110ced7debee2a57c69959725b7fbc64eab81a39dd70e46c7e28ba5",
+      "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64"
+    },
+    {
+      "license_spdx": "MIT",
+      "package": "triton",
+      "pure_python": false,
+      "version": "3.6.0",
+      "wheel_sha256": "sha256:6f5928e6d44c34a97bbe164cceddc0ef2007121c89ebcfba5415cf452de7ee9f",
+      "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64"
+    },
+    {
+      "license_spdx": "Apache-2.0",
+      "package": "cuda-pathfinder",
+      "pure_python": true,
+      "version": "1.6.0",
+      "wheel_sha256": "sha256:1503af579d8379c24bdd65528379bc57039b0455be9f5f9686cf8e473a1fce51",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-SOFTWARE-LICENSE",
+      "package": "cuda-bindings",
+      "pure_python": false,
+      "version": "12.9.4",
+      "wheel_sha256": "sha256:fda147a344e8eaeca0c6ff113d2851ffca8f7dfc0a6c932374ee5c47caa649c8",
+      "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64"
+    },
+    {
+      "license_spdx": "MIT",
+      "package": "filelock",
+      "pure_python": true,
+      "version": "3.32.3",
+      "wheel_sha256": "sha256:7f0ca4bcc0e181c60dbbd8aa9ab5b120ebb99e4e064e83636340056f833a1f09",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "fsspec",
+      "pure_python": true,
+      "version": "2026.7.0",
+      "wheel_sha256": "sha256:b57ddbafedfaef7018c1ecab32aa200a9d7ca26b77965f64e48b70061249d279",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "Jinja2",
+      "pure_python": true,
+      "version": "3.1.6",
+      "wheel_sha256": "sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "MarkupSafe",
+      "pure_python": false,
+      "version": "3.0.3",
+      "wheel_sha256": "sha256:d6dd0be5b5b189d31db7cda48b91d7e0a9795f31430b7f271219ab30f1d3ac9d",
+      "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "mpmath",
+      "pure_python": true,
+      "version": "1.3.0",
+      "wheel_sha256": "sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "networkx",
+      "pure_python": true,
+      "version": "3.6.1",
+      "wheel_sha256": "sha256:d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "MIT",
+      "package": "setuptools",
+      "pure_python": true,
+      "version": "78.1.0",
+      "wheel_sha256": "sha256:3e386e96793c8702ae83d17b853fb93d3e09ef82ec62722e61da5cd22376dcd8",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "sympy",
+      "pure_python": true,
+      "version": "1.14.0",
+      "wheel_sha256": "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5",
+      "wheel_tag": "py3-none-any"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-Proprietary",
+      "package": "nvidia-cublas-cu12",
+      "pure_python": true,
+      "version": "12.8.4.1",
+      "wheel_sha256": "sha256:8ac4e771d5a348c551b2a426eda6193c19aa630236b418086020df5ba9667142",
+      "wheel_tag": "py3-none-manylinux_2_27_x86_64"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-Proprietary",
+      "package": "nvidia-cuda-cupti-cu12",
+      "pure_python": true,
+      "version": "12.8.90",
+      "wheel_sha256": "sha256:ea0cb07ebda26bb9b29ba82cda34849e73c166c18162d3913575b0c9db9a6182",
+      "wheel_tag": "py3-none-manylinux_2_17_x86_64"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-Proprietary",
+      "package": "nvidia-cuda-nvrtc-cu12",
+      "pure_python": true,
+      "version": "12.8.93",
+      "wheel_sha256": "sha256:a7756528852ef889772a84c6cd89d41dfa74667e24cca16bb31f8f061e3e9994",
+      "wheel_tag": "py3-none-manylinux_2_12_x86_64"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-Proprietary",
+      "package": "nvidia-cuda-runtime-cu12",
+      "pure_python": true,
+      "version": "12.8.90",
+      "wheel_sha256": "sha256:adade8dcbd0edf427b7204d480d6066d33902cab2a4707dcfc48a2d0fd44ab90",
+      "wheel_tag": "py3-none-manylinux_2_17_x86_64"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-Proprietary",
+      "package": "nvidia-cudnn-cu12",
+      "pure_python": true,
+      "version": "9.10.2.21",
+      "wheel_sha256": "sha256:949452be657fa16687d0930933f032835951ef0892b37d2d53824d1a84dc97a8",
+      "wheel_tag": "py3-none-manylinux_2_27_x86_64"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-Proprietary",
+      "package": "nvidia-cufft-cu12",
+      "pure_python": true,
+      "version": "11.3.3.83",
+      "wheel_sha256": "sha256:4d2dd21ec0b88cf61b62e6b43564355e5222e4a3fb394cac0db101f2dd0d4f74",
+      "wheel_tag": "py3-none-manylinux_2_17_x86_64"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-Proprietary",
+      "package": "nvidia-cufile-cu12",
+      "pure_python": true,
+      "version": "1.13.1.3",
+      "wheel_sha256": "sha256:1d069003be650e131b21c932ec3d8969c1715379251f8d23a1860554b1cb24fc",
+      "wheel_tag": "py3-none-manylinux_2_17_x86_64"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-Proprietary",
+      "package": "nvidia-curand-cu12",
+      "pure_python": true,
+      "version": "10.3.9.90",
+      "wheel_sha256": "sha256:b32331d4f4df5d6eefa0554c565b626c7216f87a06a4f56fab27c3b68a830ec9",
+      "wheel_tag": "py3-none-manylinux_2_27_x86_64"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-Proprietary",
+      "package": "nvidia-cusolver-cu12",
+      "pure_python": true,
+      "version": "11.7.3.90",
+      "wheel_sha256": "sha256:4376c11ad263152bd50ea295c05370360776f8c3427b30991df774f9fb26c450",
+      "wheel_tag": "py3-none-manylinux_2_27_x86_64"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-Proprietary",
+      "package": "nvidia-cusparse-cu12",
+      "pure_python": true,
+      "version": "12.5.8.93",
+      "wheel_sha256": "sha256:1ec05d76bbbd8b61b06a80e1eaf8cf4959c3d4ce8e711b65ebd0443bb0ebb13b",
+      "wheel_tag": "py3-none-manylinux_2_17_x86_64"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-Proprietary",
+      "package": "nvidia-cusparselt-cu12",
+      "pure_python": true,
+      "version": "0.7.1",
+      "wheel_sha256": "sha256:f1bb701d6b930d5a7cea44c19ceb973311500847f81b634d802b7b539dc55623",
+      "wheel_tag": "py3-none-manylinux2014_x86_64"
+    },
+    {
+      "license_spdx": "BSD-3-Clause",
+      "package": "nvidia-nccl-cu12",
+      "pure_python": true,
+      "version": "2.27.5",
+      "wheel_sha256": "sha256:ad730cf15cb5d25fe849c6e6ca9eb5b76db16a80f13f425ac68d8e2e55624457",
+      "wheel_tag": "py3-none-manylinux_2_17_x86_64"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-Proprietary",
+      "package": "nvidia-nvjitlink-cu12",
+      "pure_python": true,
+      "version": "12.8.93",
+      "wheel_sha256": "sha256:81ff63371a7ebd6e6451970684f916be2eab07321b73c9d244dc2b4da7f73b88",
+      "wheel_tag": "py3-none-manylinux_2_12_x86_64"
+    },
+    {
+      "license_spdx": "LicenseRef-NVIDIA-Proprietary",
+      "package": "nvidia-nvshmem-cu12",
+      "pure_python": true,
+      "version": "3.4.5",
+      "wheel_sha256": "sha256:042f2500f24c021db8a06c5eec2539027d57460e1c1a762055a6554f72c369bd",
+      "wheel_tag": "py3-none-manylinux_2_17_x86_64"
+    },
+    {
+      "license_spdx": "Apache-2.0",
+      "package": "nvidia-nvtx-cu12",
+      "pure_python": true,
+      "version": "12.8.90",
+      "wheel_sha256": "sha256:5b17e2001cc0d751a5bc2c6ec6d26ad95913324a4adb86788c944f8ce9ba441f",
+      "wheel_tag": "py3-none-manylinux_2_17_x86_64"
+    }
+  ],
+  "runtime_dependency_target": "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_python_dependencies",
+  "runtime_experience": {
+    "path": "/workspace/adp_arena_provider_bundle/provider_runtime/provisioned_runtime_sources/runtime_sources/isaaclab/apps/isaaclab.python.headless.rendering.kit",
+    "relative_path": "runtime_sources/isaaclab/apps/isaaclab.python.headless.rendering.kit",
+    "repository": "https://github.com/isaac-sim/IsaacLab.git",
+    "sha256": "sha256:97c33b410d81c4e95ccea680ca892f10179a1f26d74c4513ddfe4688cff6a88a",
+    "source_revision": "ffff603eafc6b74264a5261cc0183d6a65390d78",
+    "source_tree": "2f82f1afb2cfaf6816b328e03c7b3ddc12069658",
+    "upstream_fix_revisions": [
+      "ffff603eafc6b74264a5261cc0183d6a65390d78"
+    ]
+  },
+  "runtime_import_probe_command": [
+    "/isaac-sim/python.sh",
+    "-P",
+    "-c",
+    "import importlib\nimport json\n\ncontracts = [{'module': 'warp', 'expected_version': '1.13.0'}, {'module': 'torch', 'expected_version': '2.10.0+cu128', 'cuda_required': True, 'expected_cuda_version': '12.8'}]\nrows = []\nfor contract in contracts:\n    module = importlib.import_module(contract[\"module\"])\n    observed = str(getattr(module, \"__version__\", \"unreported\"))\n    row = {\n        \"module\": contract[\"module\"],\n        \"available\": True,\n        \"expected_version\": contract[\"expected_version\"],\n        \"observed_version\": observed,\n        \"version_matches\": observed == contract[\"expected_version\"],\n    }\n    if contract.get(\"cuda_required\"):\n        row[\"cuda_required\"] = True\n        row[\"cuda_available\"] = bool(module.cuda.is_available())\n        row[\"expected_cuda_version\"] = contract[\"expected_cuda_version\"]\n        row[\"observed_cuda_version\"] = str(module.version.cuda or \"\")\n        row[\"cuda_version_matches\"] = (\n            row[\"observed_cuda_version\"] == contract[\"expected_cuda_version\"]\n        )\n        tensor = module.arange(4, dtype=module.float32, device=\"cuda:0\")\n        row[\"cuda_tensor_device\"] = str(tensor.device)\n        row[\"cuda_tensor_sum\"] = float(tensor.sum().item())\n        row[\"cuda_tensor_operation_passed\"] = (\n            row[\"cuda_tensor_device\"] == \"cuda:0\" and row[\"cuda_tensor_sum\"] == 6.0\n        )\n    rows.append(row)\nprint(json.dumps(rows, sort_keys=True))\nvalid = all(row[\"version_matches\"] for row in rows)\nvalid = valid and all(\n    not row.get(\"cuda_required\")\n    or (\n        row.get(\"cuda_available\")\n        and row.get(\"cuda_version_matches\")\n        and row.get(\"cuda_tensor_operation_passed\")\n    )\n    for row in rows\n)\nraise SystemExit(0 if valid else 4)"
+  ],
+  "runtime_import_probe_returncode": 0,
+  "runtime_import_probe_stderr": "",
+  "runtime_import_probe_stdout": "[{\"available\": true, \"expected_version\": \"1.13.0\", \"module\": \"warp\", \"observed_version\": \"1.13.0\", \"version_matches\": true}, {\"available\": true, \"cuda_available\": true, \"cuda_required\": true, \"cuda_tensor_device\": \"cuda:0\", \"cuda_tensor_operation_passed\": true, \"cuda_tensor_sum\": 6.0, \"cuda_version_matches\": true, \"expected_cuda_version\": \"12.8\", \"expected_version\": \"2.10.0+cu128\", \"module\": \"torch\", \"observed_cuda_version\": \"12.8\", \"observed_version\": \"2.10.0+cu128\", \"version_matches\": true}]\n",
+  "runtime_import_probes": [
+    {
+      "available": true,
+      "expected_version": "1.13.0",
+      "module": "warp",
+      "observed_version": "1.13.0",
+      "version_matches": true
+    },
+    {
+      "available": true,
+      "cuda_available": true,
+      "cuda_required": true,
+      "cuda_tensor_device": "cuda:0",
+      "cuda_tensor_operation_passed": true,
+      "cuda_tensor_sum": 6.0,
+      "cuda_version_matches": true,
+      "expected_cuda_version": "12.8",
+      "expected_version": "2.10.0+cu128",
+      "module": "torch",
+      "observed_cuda_version": "12.8",
+      "observed_version": "2.10.0+cu128",
+      "version_matches": true
+    }
+  ],
+  "scene_bytes_processed": false,
+  "schema_version": "native_task_runtime_source_provisioning.v1",
+  "source_packages_made_importable": true,
+  "source_packet_path": "/workspace/native_task_runtime_dependency_cache/b7bbb7ae3064ad581a710d57121131eca776aabcab3ce2593b4ef396c6a3d3f1.zip",
+  "source_packet_sha256": "sha256:b7bbb7ae3064ad581a710d57121131eca776aabcab3ce2593b4ef396c6a3d3f1",
+  "source_receipt_digest": "sha256:62ebe98ee9fc5ec2c291029b265207b9d13b74d3eb6fd922f384f0e00dce5bba",
+  "source_receipt_path": "/workspace/adp_arena_provider_bundle/provider_runtime/native_task_runtime_sources/native_task_runtime_source_packet.v1.json",
+  "status": "completed"
+}
