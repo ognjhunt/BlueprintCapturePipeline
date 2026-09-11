@@ -619,6 +619,9 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
                 require(intent.get("intent_id") == directory.name
                         and intent.get("authenticated_issuer") in config["trusted_clients"], "intent_issuer_invalid")
                 intake.validate_request(intent["request"], now=intent["accepted_at_epoch"])
+                from .agent_execution.supervision_producer import best_effort_register_run_supervision
+                best_effort_register_run_supervision(intent=intent, directory=directory,
+                    source_commit=release["source_commit"])
                 try:
                     progress = _advance_intent(directory, intent, config, release, resolver=source_resolver,
                         publisher=publisher, submitter=submitter, status_reader=status_reader,

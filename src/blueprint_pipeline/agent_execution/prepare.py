@@ -36,6 +36,7 @@ def prepare_retained_failure(
     input_root: Path = DEFAULT_INPUT_ROOT, approved_roots: tuple[Path, ...] = DEFAULT_APPROVED_ROOTS,
     ttl_seconds: int = 600, autostart: bool = True,
     controller_recovery: ControllerRecoveryBinding | None = None,
+    persist: bool = True,
 ) -> TaskRecord:
     if (not math.isfinite(inference_budget_usd) or not 0 < inference_budget_usd <= service.config.max_task_budget_usd
             or not 1 <= ttl_seconds <= 1800 or (model and model not in service.config.allowed_models)
@@ -129,6 +130,8 @@ def prepare_retained_failure(
                         cleanup_when_terminal=True,
                         owner_client_ids=(owner_client_id,), task=task, context=asdict(context), stage_replays=(binding,),
                         controller_recoveries=recovery)
+    if not persist:
+        return record
     destination = Path(service.config.task_store_root) / (task_id + ".json")
     document = record.model_dump(mode="json")
     with service.journal.own_task(task_id):

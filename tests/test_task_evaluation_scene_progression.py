@@ -160,3 +160,22 @@ def test_registered_terminal_adoption_does_not_restart_completed_scene_factory(c
     result = engine.process_scene_intents(config_path=config_path)
     assert result['results'][0]['phase'] == ('configured_controls' if installed else 'configured_controls_adoption')
     assert result['provider_allocation_performed'] is False
+
+
+@pytest.mark.parametrize("registration_refused", [False, True])
+def test_accepted_intent_registers_supervision_without_blocking_factory(context, monkeypatch, registration_refused):
+    from blueprint_pipeline.agent_execution import supervision_producer
+    config = configuration(context, monkeypatch)
+    seen = []
+    def register(**kwargs):
+        assert not (config.parent / "progression-output").exists()
+        seen.append(kwargs)
+        if registration_refused:
+            raise ValueError("fixture_optional_reasoning_refused")
+    monkeypatch.setattr(supervision_producer, "register_run_supervision", register)
+    result = engine.process_scene_intents(config_path=config)
+    assert result["results"][0]["phase"] == "publication_ready"
+    assert len(seen) == 1
+    assert seen[0]["intent"]["intent_id"] == context[0]["intent_path"].parent.name
+    assert seen[0]["directory"] == context[0]["intent_path"].parent
+    assert seen[0]["source_commit"] == result["source_commit"]

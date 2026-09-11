@@ -37,7 +37,7 @@ def register_preparation_failure_subscription(*, preparation_link, controller_co
     if not path.exists():
         return None
     config = ProductionConfig.model_validate_json(_read_private(path))
-    if not config.automatic_failure_investigation:
+    if not (config.automatic_failure_investigation or config.automatic_run_supervision):
         return None
     from ..task_evaluation_stage_replay import DEFAULT_INPUT_ROOT, DEFAULT_APPROVED_ROOTS, DEFAULT_QUEUE_ROOT, DEFAULT_PARENT_QUEUE_ROOT
     policy_id = "preparation-" + digest({"id": preparation_link["preparation_id"], "request": preparation_link["request_digest"]})[7:]
@@ -73,6 +73,10 @@ def discover_retained_failures(service):
                     "subscription_digest": digest(policy.model_dump(mode="json")), "tasks": []}
                 if state["subscription_digest"] != digest(policy.model_dump(mode="json")):
                     raise AgentExecutionError("agent_failure_subscription_changed")
+                from .supervision import ownership_key
+                if service.journal.event(ownership_key(service.config.source_commit, policy.run_id)) is not None:
+                    results.append({"subscription_id": policy.subscription_id, "state": "owned_by_persistent_supervisor"})
+                    continue
                 for job_path in sorted((Path(policy.child_queue_root) / "failed").glob("*.json")):
                     raw = _read_private(job_path)
                     job = json.loads(raw)
