@@ -1,5 +1,5 @@
 {
-  "baseline_date": "2026-08-14",
+  "baseline_date": "2026-09-10",
   "characterization_tests": {
     "src/blueprint_pipeline/adp009d_control_episode.py": [
       "tests/test_adp009d_control_episode.py"
@@ -253,6 +253,15 @@
     ],
     "src/blueprint_pipeline/wam_provider_poll_state.py": [
       "tests/test_wam_provider_poll_state.py"
+    ],
+    "src/blueprint_pipeline/task_evaluation_configured_controls_progression_worker.py": [
+      "tests/test_task_evaluation_configured_controls_progression_worker.py"
+    ],
+    "src/blueprint_pipeline/task_evaluation_scene_configuration_artifixer_driver.py": [
+      "tests/test_task_evaluation_scene_configuration_artifixer_driver.py"
+    ],
+    "src/blueprint_pipeline/task_evaluation_scene_configuration_vast.py": [
+      "tests/test_task_evaluation_scene_configuration_diagnostic_vast.py"
     ]
   },
   "claim_boundary": {
@@ -306,7 +315,7 @@
     "src/blueprint_pipeline/native_task_arena_controls_worker.py": 5066,
     "src/blueprint_pipeline/native_task_arena_construction_worker.py": 2006,
     "src/blueprint_pipeline/native_task_arena_paid_authority.py": 2283,
-    "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py": 2176,
+    "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py": 2297,
     "src/blueprint_pipeline/native_task_construction_plan.py": 2281,
     "src/blueprint_pipeline/object_index_stage.py": 2369,
     "src/blueprint_pipeline/official_g1_policy_handoff.py": 2942,
@@ -341,13 +350,16 @@
     "src/blueprint_pipeline/site_package_orchestrator.py": 5604,
     "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py": 2049,
     "src/blueprint_pipeline/task_evaluation_launch_dispatcher.py": 2109,
-    "src/blueprint_pipeline/task_evaluation_policy_canary_dispatcher.py": 2460,
+    "src/blueprint_pipeline/task_evaluation_policy_canary_dispatcher.py": 2662,
     "src/blueprint_pipeline/task_evaluation_supervisor/tools.py": 4166,
     "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": 10104,
-    "src/blueprint_pipeline/vast_provider_adapter.py": 10372,
+    "src/blueprint_pipeline/vast_provider_adapter.py": 10374,
     "src/blueprint_pipeline/wam_derived_observation_harness.py": 3066,
     "src/blueprint_pipeline/wam_fixture_evaluator.py": 4605,
-    "src/blueprint_pipeline/wam_generated_video_review.py": 2412
+    "src/blueprint_pipeline/wam_generated_video_review.py": 2412,
+    "src/blueprint_pipeline/task_evaluation_configured_controls_progression_worker.py": 2009,
+    "src/blueprint_pipeline/task_evaluation_scene_configuration_artifixer_driver.py": 2322,
+    "src/blueprint_pipeline/task_evaluation_scene_configuration_vast.py": 2048
   },
   "grandfathered_personal_path_files": [
     "docs/arm_decision_proof_v1/ADP_009D_FRANKA_PUBLIC_SCENE_SIM_GOAL_PROMPT.md",
@@ -427,5 +439,18 @@
   "max_project_scripts": 175,
   "policy_owner": "@ognjhunt",
   "review_by": "2026-10-12",
-  "schema_version": "blueprint.source_governance_policy.v1"
+  "schema_version": "blueprint.source_governance_policy.v1",
+  "baseline_adjustment_2026_09_10": {
+    "source_commit": "3e6164430915b6023db61959800f1559cc573d83",
+    "unchanged_module_line_counts": {
+      "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py": 2297,
+      "src/blueprint_pipeline/task_evaluation_configured_controls_progression_worker.py": 2009,
+      "src/blueprint_pipeline/task_evaluation_policy_canary_dispatcher.py": 2662,
+      "src/blueprint_pipeline/task_evaluation_scene_configuration_artifixer_driver.py": 2322,
+      "src/blueprint_pipeline/task_evaluation_scene_configuration_vast.py": 2048,
+      "src/blueprint_pipeline/vast_provider_adapter.py": 10374
+    },
+    "reason": "Reconcile already-merged protected-main growth; no changes to these modules in the agent-runtime production integration. Exact caps admit no further growth; decomposition remains required.",
+    "review_by_unchanged": "2026-10-12"
+  }
 }

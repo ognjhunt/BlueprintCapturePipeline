@@ -279,9 +279,18 @@ class OpenAIAgentsSDKRuntime:
                 self._ensure_active(task)
                 call_id = f"sdk_call_{ordinal}"
                 ordinal += 1
-                outcome = await _tool_thread(lambda: self.operations.execute(
-                    task, turn_id="sdk_turn", call_id=call_id, name=selected, arguments=arguments,
-                ))
+                while True:
+                    self._ensure_active(task)
+                    try:
+                        outcome = await _tool_thread(lambda: self.operations.execute(
+                            task, turn_id="sdk_turn", call_id=call_id, name=selected, arguments=arguments,
+                        ))
+                        break
+                    except OperationPending:
+                        # A queued deterministic worker is still producing this
+                        # tool's result. Keep the same call/operation identity;
+                        # do not make another model call or abandon the run.
+                        await asyncio.sleep(0.2)
                 self._ensure_active(task)
                 if outcome["success"] and isinstance(outcome["output"], list):
                     raise AgentExecutionError("agents_sdk_multimodal_tool_output_not_qualified")

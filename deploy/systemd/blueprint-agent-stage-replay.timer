@@ -1,0 +1,11 @@
+[Unit]
+Description=Wake Blueprint offline retained-stage replay worker
+
+[Timer]
+OnBootSec=20s
+OnUnitInactiveSec=5s
+AccuracySec=1s
+Unit=blueprint-agent-stage-replay.service
+
+[Install]
+WantedBy=timers.target
