@@ -267,7 +267,7 @@ def replay_child(
     try:
         if phase == "calibrated_views" and not allow_paid:
             from .source_calibration_finalization_reuse import replay_retained_calibration
-            outcome = replay_retained_calibration(job=job, plan=plan, job_path=located.job_path,
+            outcome = replay_retained_calibration(job=context, plan=plan, job_path=located.job_path,
                 run_root=run_root, queue_root=queue_root, approved_roots=approved_roots)
             report["retained_gpu_return_cpu_finalization_only"] = True
         else:
