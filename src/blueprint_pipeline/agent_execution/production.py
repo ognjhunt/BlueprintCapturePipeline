@@ -34,6 +34,7 @@ from .supervisor_bridge import SupervisorCapabilityBridge, context_revision
 from .stage_recovery import StageReplayBinding, StageReplayTools
 from .webapp_delivery import WebappAdmissionOutbox
 from .episode_tasks import EpisodeTaskBinding
+from .supervision import SupervisionBinding
 
 
 CONFIG_ENV = "BLUEPRINT_AGENT_EXECUTION_CONFIG"
@@ -66,6 +67,7 @@ class ProductionConfig(BaseModel):
     max_project_budget_usd: float | None = Field(default=None, gt=0, le=100, allow_inf_nan=False)
     webhook_secret_file: str | None = None
     poll_seconds: float = Field(default=5, ge=0.1, le=60)
+    supervision_store_root: str | None = None
 
 
 class TaskRecord(BaseModel):
@@ -78,6 +80,7 @@ class TaskRecord(BaseModel):
     context: dict
     stage_replays: tuple[StageReplayBinding, ...] = ()
     episode_investigation: EpisodeTaskBinding | None = None
+    supervision: SupervisionBinding | None = None
 
 
 def _read_private(path: Path, *, limit: int = 4_000_000, secret: bool = False) -> bytes:
@@ -111,6 +114,8 @@ class ProductionAgentService:
         for name in ("state_root", "task_store_root", "credential_file"):
             if not Path(getattr(self.config, name)).is_absolute():
                 raise AgentExecutionError("agent_configuration_requires_absolute_path")
+        if self.config.supervision_store_root and not Path(self.config.supervision_store_root).is_absolute():
+            raise AgentExecutionError("agent_configuration_requires_absolute_path")
         self.config_digest = digest(self.config.model_dump(mode="json"))
         self.journal = AgentJournal(self.config.state_root)
         self.registry = ToolRegistry.default()
@@ -160,6 +165,9 @@ class ProductionAgentService:
         if record.episode_investigation is not None:
             from .episode_tasks import validate_binding
             validate_binding(record.episode_investigation, task)
+        if record.supervision is not None:
+            from .supervision import validate_current_observation
+            validate_current_observation(self, record.supervision)
         current = self._context(task.run_id, task.task_id)
         authority = AuthorityEnvelope.from_mapping(current.authority_envelope).to_mapping()
         if (context_revision(current) != task.context_revision
@@ -256,7 +264,14 @@ class ProductionAgentService:
     def _ownership(record):
         return {"task_digest": record.task.task_digest, "owner_client_ids": list(record.owner_client_ids)}
 
-    def _enqueue_record(self, record):
+    def _enqueue_record(self, record, *, _run_lock_held=False):
+        if not _run_lock_held:
+            with self.journal.own_task("supervision-run:" + record.task.run_id):
+                return self._enqueue_record(record, _run_lock_held=True)
+        owner = self.journal.event("supervision_owner_" + digest(record.task.run_id)[7:])
+        if owner is not None and (record.supervision is None
+                or record.supervision.watch_digest != owner["watch_digest"]):
+            raise AgentExecutionError("agent_run_owned_by_persistent_supervisor")
         self.validate_admission(record.task)
         self.journal.record_event("server_admission_" + digest(record.task.task_id)[7:], self._ownership(record))
         return self.service.enqueue(record.task)
@@ -393,10 +408,13 @@ def main(argv=None) -> int:
     service = configured_service()
     service.service.recover()
     while not stopped.is_set():
+        from .supervision import progress_supervision
+        supervision = progress_supervision(service)
         service.autostart()
         receipt = service.service.tick()
         service.webapp_outbox.flush()
-        heartbeat = {**service.health(), "observed_at": time.time(), "last_step": receipt}
+        heartbeat = {**service.health(), "observed_at": time.time(), "last_step": receipt,
+                     "supervision": supervision}
         write_json(service.journal.root / "worker_health.json", heartbeat)
         if receipt:
             print(json.dumps(receipt, sort_keys=True), flush=True)
