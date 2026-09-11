@@ -48,7 +48,8 @@ def register_preparation_failure_subscription(*, preparation_link, controller_co
         parent_preparation_id=preparation_link["preparation_id"], parent_request_digest=preparation_link["request_digest"],
         child_queue_root=str(controller_config.get("child_queue_root") or DEFAULT_QUEUE_ROOT),
         parent_queue_root=str(controller_config.get("preparation_queue_root") or DEFAULT_PARENT_QUEUE_ROOT),
-        input_root=str(DEFAULT_INPUT_ROOT), approved_roots=tuple(str(path) for path in DEFAULT_APPROVED_ROOTS),
+        input_root=str((controller_config.get("preparation_worker") or {}).get("input_root") or DEFAULT_INPUT_ROOT),
+        approved_roots=tuple(str(path) for path in DEFAULT_APPROVED_ROOTS),
         per_task_budget_usd=min(1.0, config.max_task_budget_usd), expires_at=time.time() + 86400)
     write_json(destination, policy.model_dump(mode="json"))
     destination.chmod(0o640)
