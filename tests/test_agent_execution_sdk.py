@@ -176,8 +176,16 @@ def test_inflight_abort_preserves_reservation_no_retry(tmp_path, monkeypatch, re
     assert len(errors) == 1
     assert runtime.inspect(task.task_id)["state"] == "reconciling"
     assert runtime._audit(task).manifest()["in_flight_unknown_count"] == 1
-    runtime.step(task.task_id)
+    assert runtime.step(task.task_id)["state"] == "cancelled"
     assert len(calls) == 1
+    held = runtime._audit(task).manifest()
+    assert held["in_flight_unknown_count"] == 1
+    assert runtime.cleanup(task.task_id)["cleanup_state"] == "deleted"
+    assert runtime._audit(task).manifest() == held
+    receipt = runtime.journal.event("sdk_local_cancellation_" + task.task_digest[7:])
+    assert receipt["unknown_cost_reserved"] is True
+    assert receipt["cancellation_released_inference_reservation"] is False
+    assert receipt["provider_response_completion_claimed"] is False
 
 
 def test_real_tool_loop_reuses_durable_side_effect(tmp_path, monkeypatch):
@@ -212,6 +220,10 @@ def test_actual_cost_overrun_cannot_be_reported_success(tmp_path, monkeypatch):
         runtime.step(task.task_id)
     assert runtime.inspect(task.task_id)["state"] == "reconciling"
     assert runtime._audit(task).manifest()["in_flight_unknown_count"] == 1
+    runtime.cancel(task.task_id)
+    assert runtime.step(task.task_id)["state"] == "reconciling"
+    with pytest.raises(AgentExecutionError, match="cleanup_before_reconciliation"):
+        runtime.cleanup(task.task_id)
 
 
 def test_cancellation_at_result_commit_cannot_be_accepted(tmp_path, monkeypatch):
@@ -280,3 +292,22 @@ def test_cancel_during_blocking_tool_keeps_operation_owned(tmp_path, monkeypatch
         time.sleep(0.01)
     assert len(effects) == len(calls) == len(errors) == 1
     assert not runtime.journal.unsettled_operations(task.task_id)
+    assert runtime.step(task.task_id)["state"] == "cancelled"
+    assert runtime.cleanup(task.task_id)["cleanup_state"] == "deleted"
+
+
+def test_transport_failure_waits_until_deadline_then_closes_local_execution(tmp_path, monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        raise httpx.ReadError("fixture interrupted response")
+    runtime = setup_runtime(tmp_path, monkeypatch, handler)
+    task = make_task(max_model_turns=1)
+    runtime.start(task)
+    with pytest.raises(Exception):
+        runtime.step(task.task_id)
+    assert runtime.step(task.task_id)["state"] == "reconciling"
+    runtime.clock = lambda: task.deadline + 1
+    assert runtime.step(task.task_id)["state"] == "cancelled"
+    assert len(calls) == 1
+    assert runtime._audit(task).manifest()["in_flight_unknown_count"] == 1
