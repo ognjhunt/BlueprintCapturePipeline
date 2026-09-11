@@ -28,23 +28,56 @@ Hermetic rehearsal is necessary but does not establish live service behavior.
 | ID | Requirement | Required evidence | State |
 | --- | --- | --- | --- |
 | A01 | Provider-neutral task, tool, result and runtime identity | Contract tests; legacy receipt compatibility | implemented; contract and compatibility tests pass |
-| A02 | Real Agents API session adapter | Official-schema fixtures and admitted live request/readback | live protocol verified; operational job proof pending |
+| A02 | Real Agents API session adapter | Official-schema fixtures and admitted live request/readback | implemented; live retained-job investigation completed with signed Website readback |
 | A03 | Durable ownership, operation deduplication and uncertain-outcome reconciliation | Crash, duplicate event and concurrent owner tests | implemented; crash and duplicate-owner rehearsals pass |
-| A04 | Continue, inspect, cancel and cleanup across process restarts | Fake and live session lifecycle receipts | implemented; live basic lifecycle verified, live continuation drill pending |
+| A04 | Continue, inspect, cancel and cleanup across process restarts | Fake and live session lifecycle receipts | implemented; live same-session continuation across processes and cleanup verified |
 | A05 | Enforce disclosure and accepted retention/trace policy | Negative admission tests and exact account configuration | implemented; operational project policy observed, specialist live admissions pending |
 | A06 | Preserve strict SDK budgets; honestly admit managed-budget uncertainty | Reservation tests, project guard verification, official cost closeout | implemented; scoped SDK and project guard verified, official comparison cost closeout pending |
 | A07 | Existing supervisor capabilities callable through the runtime bridge | Real registry-to-handler-to-worker-to-receipt rehearsal | implemented; production registry and deferred replay rehearsals pass |
-| A08 | Persistent supervision and permitted capability revisitation | New-evidence revision tests without duplicate completed work | implemented; revision-driven continuation and automatic failure discovery tested |
-| A09 | Autonomous failure investigation and preauthorized recovery | Retained-job replay, adoption, refusal and recovery receipts | implemented controller connection; deployed retained-job/recovery proof pending |
+| A08 | Persistent supervision and permitted capability revisitation | New-evidence revision tests without duplicate completed work | implemented and deployed; automatic SDK discovery, completion and cleanup observed |
+| A09 | Autonomous failure investigation and preauthorized recovery | Retained-job replay, adoption, refusal and recovery receipts | implemented; real saved CPU stage now replays to completion; live preauthorized recovery/adoption proof pending |
 | A10 | CAD author/compile/inspect/repair loop | Actual CAD kernel fixtures, bounded repair and independent validation | existing CAD repair loop adopted from main PR #1833; comparative pilot pending |
-| A11 | Episode evidence investigation | Synchronized interval/crop retrieval with digest and rights validation | implemented and worker-to-receipt rehearsed; live specialist/producer rollout pending |
-| A12 | SAM and appearance evidence inspection with independent final acceptance | Mandatory coverage, localized defect and disclosure tests | implemented mandatory-view investigation; live specialist/producer rollout pending |
+| A11 | Episode evidence investigation | Synchronized interval/crop retrieval with digest and rights validation | implemented for SDK and API; real-SDK image tool and receipt rehearsal passes; live admitted specialist pilot pending |
+| A12 | SAM and appearance evidence inspection with independent final acceptance | Mandatory coverage, localized defect and disclosure tests | implemented for SDK and API; required full views and independent final acceptance preserved; live admitted pilot pending |
 | A13 | Preserve placement/native feedback, parameter and variation contracts | Existing focused regressions and runtime parity | incumbent paths retained; regression coverage preserved |
-| A14 | WebApp ADP operator integration and runtime status | Authenticated route tests, mocked browser coverage, live readback | operator core deployed; specialist Website PR #566 merged, configured live task proof pending |
-| A15 | Hands-off event progression and terminal delivery | Restart/outage drill and signed consumer/media readback | durable progression implemented; deployed outage and terminal delivery proof pending |
-| A16 | Existing Paperclip execution record retained | Selected ADP worker integration and duplicate-owner tests | selected-worker bridge implemented and bundled; live configuration/readback pending |
+| A14 | WebApp ADP operator integration and runtime status | Authenticated route tests, mocked browser coverage, live readback | deployed through Website PR #571; authenticated live SDK/API task, cleanup and source readback verified |
+| A15 | Hands-off event progression and terminal delivery | Restart/outage drill and signed consumer/media readback | automatic diagnosis and signed consumer delivery observed; full-run outage/terminal-media proof pending |
+| A16 | Existing Paperclip execution record retained | Selected ADP worker integration and duplicate-owner tests | selected-worker binding and bounded engineering handoff implemented; active Paperclip instance unavailable |
 | A17 | Frozen comparative corpus and promotion decision | Independent quality/cost/intervention/latency measurements | 60 paired runs complete; SDK retained as incumbent; official cost and intervention measurement pending |
-| A18 | Complete release and rollback | Protected-main checks, exact deployment, resource closeout, rollback drill | drain/adoption/rollback implemented and rehearsed; production promotion and live proof pending |
+| A18 | Complete release and rollback | Protected-main checks, exact deployment, resource closeout, rollback drill | production promotion and exact deployment observed for prior integration; latest release and live rollback proof pending |
+
+## Current implementation checkpoint
+
+Website PR #571 is deployed at `47700a2464724faecc87bc69d7a4c1da6c004b08`
+on both web and worker; deployment `34585076235` verified exact identity and
+both health endpoints. Pipeline PR #1849 is merged at
+`c2b90c7612773954b1f091193adff238a70691a7`; its production promotion is running.
+The retained `sam31-0d64ff5c54c39d461b338ba6bf9a0a9818bd688abf7e80de12f1bf825538d021`
+source-selection job now completes in the isolated offline replay against the
+candidate code. Its diagnostic phase receipt cannot be adopted as production
+execution evidence. No model call, provider mutation or GPU execution occurred.
+
+The episode and visual producers now admit either runtime explicitly. Existing
+managed tasks keep their original runtime. SDK investigations use the same image,
+trace, interval and crop tools, `store=False`, disabled tracing, and an inference
+reservation before execution. Their bounded default is three model turns,
+100,000 input tokens and 4,000 output tokens; managed defaults remain unchanged.
+These different bounds must be reported in comparative pilots. Missing managed
+admission never silently switches an already-created task to another runtime.
+
+The installed SDK receives typed image content, not a textual base64 surrogate.
+A separate cumulative context ceiling counts text conservatively by UTF-8 bytes
+and admitted PNG images by their unresized 32-pixel patches plus framing headroom.
+The qualified model list and 1.2 image multiplier follow the September 11
+[official image-input specification](https://developers.openai.com/api/docs/guides/images-vision).
+Unsupported models, remote image URLs and over-budget tool context stop before
+the next request. Wire-size and task-operation limits remain separately enforced.
+The original one-pass SDK reviewers and summary path remain available.
+
+Live full-run recovery/adoption, an outage/rollback rehearsal, admitted specialist
+comparisons, official per-task cost and operator-intervention measurement, and
+Paperclip issue/worker readback remain open. The older checkpoints below describe
+their recorded releases; their original pending statements are historical.
 
 ## September 11 deployed integration and comparison
 

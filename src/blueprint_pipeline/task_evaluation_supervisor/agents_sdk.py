@@ -114,6 +114,8 @@ class AgentsSDKAgentSpec:
     max_output_tokens: int
     max_input_tokens: int | None = None
     max_tool_output_bytes: int = 0
+    # Opt-in typed image tools with a separately enforced cumulative token bound.
+    max_tool_context_tokens: int = 0
     reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     tool_bindings: tuple[RegisteredToolBinding, ...] = ()
     output_type: type[BaseModel] = AgentsSDKCapabilityOutput
@@ -440,6 +442,10 @@ class OpenAIAgentsSDKInvoker:
                 spec.max_output_tokens + spec.max_tool_output_bytes
                 + (4096 if self._strict_context_accounting else 0)
             )
+            if spec.max_tool_context_tokens:
+                if not self._strict_context_accounting or not 0 < spec.max_tool_context_tokens <= spec.max_input_tokens:
+                    raise AgentsSDKInvocationBlocked("agents_sdk_tool_context_bound_invalid")
+                maximum_growth_tokens = spec.max_tool_context_tokens + (spec.max_turns - 1) * (spec.max_output_tokens + 4096)
             if initial_input_token_ceiling + maximum_growth_tokens > spec.max_input_tokens:
                 raise AgentsSDKInvocationBlocked(
                     "agents_sdk_multi_turn_context_growth_exceeds_declared_ceiling"
@@ -519,6 +525,7 @@ class OpenAIAgentsSDKInvoker:
 
         tool_observations: list[Mapping[str, Any]] = []
         cumulative_tool_output_bytes = 0
+        cumulative_tool_context_tokens = 0
         sdk_tools: list[Any] = []
         for binding in spec.tool_bindings:
 
@@ -527,7 +534,7 @@ class OpenAIAgentsSDKInvoker:
                 input_json: str,
                 *,
                 selected: RegisteredToolBinding = binding,
-            ) -> str:
+            ) -> Any:
                 try:
                     arguments = json.loads(input_json)
                 except json.JSONDecodeError as exc:
@@ -539,7 +546,15 @@ class OpenAIAgentsSDKInvoker:
                 observed = selected.invoke(arguments)
                 if inspect.isawaitable(observed):
                     observed = await observed
-                observation = dict(observed)
+                structured_output = None
+                nonlocal cumulative_tool_context_tokens
+                if spec.max_tool_context_tokens:
+                    from .sdk_image_tools import encode_tool_output
+                    structured_output, context_tokens = encode_tool_output(observed, model=spec.model)
+                    cumulative_tool_context_tokens += context_tokens
+                    if cumulative_tool_context_tokens > spec.max_tool_context_tokens:
+                        raise ValueError("agents_sdk_tool_context_ceiling_exceeded")
+                observation = {"content": observed} if isinstance(observed, list) else dict(observed)
                 serialized_observation = json.dumps(observation, sort_keys=True)
                 nonlocal cumulative_tool_output_bytes
                 cumulative_tool_output_bytes += len(serialized_observation.encode("utf-8"))
@@ -552,7 +567,7 @@ class OpenAIAgentsSDKInvoker:
                 ):
                     raise ValueError("agents_sdk_tool_output_ceiling_exceeded")
                 tool_observations.append(observation)
-                return serialized_observation
+                return structured_output if structured_output is not None else serialized_observation
 
             sdk_tools.append(
                 FunctionTool(

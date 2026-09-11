@@ -37,6 +37,9 @@ def schedule_visual_investigation(*, review_kind, run_id, candidate_digest, fina
             or not math.isfinite(authority["expires_at"])
             or type(authority.get("maximum_tasks")) is not int or not 1 <= authority["maximum_tasks"] <= 10):
         raise AgentExecutionError("managed_visual_batch_authority_invalid")
+    runtime = authority.get("runtime", "openai_agents_api")
+    if runtime not in {"openai_agents_api", "openai_agents_sdk"}:
+        raise AgentExecutionError("visual_batch_runtime_invalid")
     service = service or configured_service()
     budget = float(authority["per_task_budget_usd"])
     if not 0 < budget <= service.config.max_task_budget_usd:
@@ -65,7 +68,7 @@ def schedule_visual_investigation(*, review_kind, run_id, candidate_digest, fina
             service.journal.record_event(reservation_id, {"task_id": task_id, "input_manifest_digest": binding.input_manifest_digest,
                 "nominal_inference_budget_usd": budget, "batch_authority_digest": authority["authority_digest"]})
         rights = {"schema_version": "blueprint_visual_investigation_rights.v1", "input_manifest_digest": binding.input_manifest_digest,
-            "candidate_digest": candidate_digest, "runtime": "openai_agents_api", "model": authority["model"],
+            "candidate_digest": candidate_digest, "runtime": runtime, "model": authority["model"],
             "agent_runtime_policy": authority["agent_runtime_policy"], "allowed_image_sha256": sorted({view.sha256 for view in views}),
             "external_disclosure_authorized": True, "provider_training_authorized": False, "public_redistribution_authorized": False,
             "accepted_by": authority["accepted_by"], "source_rights_admission_digest": source_rights_admission_digest,
@@ -80,11 +83,11 @@ def schedule_visual_investigation(*, review_kind, run_id, candidate_digest, fina
         record_path = Path(service.config.task_store_root) / (task_id + ".json")
         if record_path.exists():
             record = service.record(task_id)
-            if record.visual_investigation != binding or record.task.run_id != run_id:
+            if record.visual_investigation != binding or record.task.run_id != run_id or record.task.admission.runtime != runtime:
                 raise AgentExecutionError("managed_visual_existing_task_conflict")
         else:
             record = prepare_visual_task(service, binding=binding, task_id=task_id, run_id=run_id,
-                owner_client_id="blueprint-webapp", inference_budget_usd=budget, model=authority["model"],
+                owner_client_id="blueprint-webapp", inference_budget_usd=budget, model=authority["model"], runtime=runtime,
                 ttl_seconds=min(900, max(1, int(authority["expires_at"] - time.time()))))
         service.webapp_outbox.queue(record)
         return {"task_id": task_id, "task_digest": record.task.task_digest,

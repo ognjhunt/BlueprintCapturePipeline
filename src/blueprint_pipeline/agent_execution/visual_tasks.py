@@ -124,7 +124,7 @@ def validate_visual_binding(binding, task):
             or rights.get("rights_digest") != digest({key: value for key, value in rights.items() if key != "rights_digest"})):
         raise AgentExecutionError("visual_investigation_rights_not_admitted")
     if (task.capability != CAPABILITY or task.instructions != INSTRUCTIONS
-            or task.admission.runtime != "openai_agents_api"
+            or task.admission.runtime not in {"openai_agents_api", "openai_agents_sdk"}
             or task.input_digests != (binding.input_manifest_digest, binding.rights_sha256)
             or not {view.sha256 for view in binding.views} <= set(task.admission.allowed_input_digests)):
         raise AgentExecutionError("visual_investigation_task_scope_invalid")
@@ -140,10 +140,10 @@ def tools_for_visual_task(binding, task):
 
 def prepare_visual_task(service, *, binding: VisualTaskBinding, task_id: str, run_id: str,
                         owner_client_id: str, inference_budget_usd: float, model: str | None = None,
-                        ttl_seconds: int = 900):
+                        ttl_seconds: int = 900, runtime: str = "openai_agents_api"):
     from .production import TaskRecord
 
-    if not 1 <= ttl_seconds <= 1800:
+    if runtime not in {"openai_agents_api", "openai_agents_sdk"} or not 1 <= ttl_seconds <= 1800:
         raise AgentExecutionError("visual_investigation_ttl_invalid")
     tools = _catalog(binding).tools()
     admitted = sorted({binding.input_manifest_digest, binding.rights_sha256, *(view.sha256 for view in binding.views)})
@@ -159,18 +159,22 @@ def prepare_visual_task(service, *, binding: VisualTaskBinding, task_id: str, ru
         "candidate_digest": binding.candidate_digest, "input_manifest_digest": binding.input_manifest_digest,
         "mandatory_view_ids": binding.mandatory_view_ids, "final_review_input_digest": binding.final_review_input_digest}, sort_keys=True)}]
     deadline = time.time() + ttl_seconds
+    managed = runtime == "openai_agents_api"
     admission = AgentAdmission(authority_digest=authority["authority_digest"], authority_reference="server-admitted-task:" + task_id,
-        project_id=service.config.project_id, runtime="openai_agents_api", disclosure_scope="rights_admitted_visual_review_evidence",
+        project_id=service.config.project_id, runtime=runtime, disclosure_scope="rights_admitted_visual_review_evidence",
         allowed_input_digests=tuple(sorted({*admitted, digest(payload)})), allowed_tool_ids=tuple(tool.tool_id for tool in tools),
-        budget_policy="project_guard_accepted_uncertainty", session_retention="until_deleted", trace_retention="provider_default",
-        region="us", project_guard_receipt_digest=service.managed_guard_digest("rights_admitted_visual_review_evidence"),
+        budget_policy="project_guard_accepted_uncertainty" if managed else "strict_per_call",
+        session_retention="until_deleted" if managed else "not_admitted", trace_retention="provider_default" if managed else "not_admitted",
+        region="us" if managed else "default",
+        project_guard_receipt_digest=service.managed_guard_digest("rights_admitted_visual_review_evidence") if managed else None,
         inference_budget_usd=inference_budget_usd, expires_at=deadline)
     task = AgentTask(task_id=task_id, run_id=run_id, capability=CAPABILITY, context_revision=context_revision(context),
         source_commit=service.config.source_commit, instructions=INSTRUCTIONS, model=model or service.config.allowed_models[0],
         input=payload, input_digests=(binding.input_manifest_digest, binding.rights_sha256), admission=admission,
         output_schema=VisualInvestigationOutput.model_json_schema(), tool_ids=tuple(tool.tool_id for tool in tools),
         tool_digests={tool.tool_id: tool.tool_digest for tool in tools}, deadline=deadline,
-        max_model_turns=12, max_tool_calls=128, max_tool_output_bytes=64_000_000, max_output_tokens=8000)
+        max_model_turns=12 if managed else 3, max_tool_calls=128, max_tool_output_bytes=64_000_000,
+        max_input_tokens=120_000 if managed else 100_000, max_output_tokens=8000 if managed else 4000)
     validate_visual_binding(binding, task)
     record = TaskRecord(schema_version="blueprint_agent_admitted_task.v1", enabled=True, autostart=True,
                         cleanup_when_terminal=True,
@@ -247,6 +251,7 @@ def main(argv=None):
     prepare.add_argument("--run-id", required=True)
     prepare.add_argument("--owner-client-id", required=True)
     prepare.add_argument("--model")
+    prepare.add_argument("--runtime", choices=("openai_agents_api", "openai_agents_sdk"), default="openai_agents_api")
     prepare.add_argument("--inference-budget-usd", required=True, type=float)
     collect = sub.add_parser("collect")
     collect.add_argument("--task-id", required=True)
@@ -255,7 +260,7 @@ def main(argv=None):
     if args.action == "prepare":
         record = prepare_visual_task(service, binding=VisualTaskBinding.model_validate_json(_read_private(args.binding)),
             task_id=args.task_id, run_id=args.run_id, owner_client_id=args.owner_client_id,
-            model=args.model, inference_budget_usd=args.inference_budget_usd)
+            model=args.model, runtime=args.runtime, inference_budget_usd=args.inference_budget_usd)
         result = {"task_id": record.task.task_id, "task_digest": record.task.task_digest, "status": "admitted"}
     else:
         receipt = collect_visual_task(service, args.task_id)

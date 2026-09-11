@@ -153,6 +153,13 @@ class OpenAIAgentsSDKRuntime:
             )
             if has_images and (task.tool_ids or task.max_model_turns != 1):
                 raise AgentExecutionError("agents_sdk_multimodal_loop_not_qualified")
+            adaptive_images = task.capability in {"episode_investigation", "visual_evidence_investigation"}
+            # Hold a conservative portion for fixed prompt/schema/tool context.
+            # The canonical invoker verifies the complete fixed context again.
+            image_context_limit = (task.max_input_tokens - 40_000
+                - (task.max_model_turns - 1) * (task.max_output_tokens + 4096)) if adaptive_images else 0
+            if adaptive_images and image_context_limit <= 0:
+                raise AgentExecutionError("agents_sdk_specialist_context_budget_insufficient")
             audit = self._audit(task)
             from agents import OpenAIProvider
             from openai import AsyncOpenAI
@@ -193,7 +200,8 @@ class OpenAIAgentsSDKRuntime:
                         instructions=task.instructions, model=task.model,
                         max_turns=task.max_model_turns, max_input_tokens=task.max_input_tokens,
                         max_output_tokens=task.max_output_tokens,
-                        max_tool_output_bytes=min(task.max_tool_output_bytes, 1_000_000),
+                        max_tool_output_bytes=task.max_tool_output_bytes if adaptive_images else min(task.max_tool_output_bytes, 1_000_000),
+                        max_tool_context_tokens=image_context_limit,
                         reasoning_effort=task.reasoning_effort,
                         tool_bindings=self._tool_bindings(task), output_type=output_model,
                         privacy_scope=task.admission.disclosure_scope,
@@ -292,7 +300,8 @@ class OpenAIAgentsSDKRuntime:
                         # do not make another model call or abandon the run.
                         await asyncio.sleep(0.2)
                 self._ensure_active(task)
-                if outcome["success"] and isinstance(outcome["output"], list):
+                if (outcome["success"] and isinstance(outcome["output"], list)
+                        and task.capability not in {"episode_investigation", "visual_evidence_investigation"}):
                     raise AgentExecutionError("agents_sdk_multimodal_tool_output_not_qualified")
                 return outcome["output"] if outcome["success"] else outcome
 
