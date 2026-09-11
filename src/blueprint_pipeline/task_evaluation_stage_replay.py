@@ -12,8 +12,9 @@ fresh scratch root, and reports the outcome with the predicate that refused
 
 Rules the command enforces:
 
-- Paid phases and the hardware calibration render are not replayed unless
-  ``--allow-paid`` is passed; a replay is for the CPU and review boundaries.
+- Paid phases are not replayed unless ``--allow-paid`` is passed. A failed
+  hardware calibration with a closed retained return replays CPU finalization
+  only; its GPU render and original failure remain untouched.
 - ``--isolate`` re-executes under ``systemd-run`` as the service user with
   ``PrivateNetwork=yes``, so a review replay stops at the model call and a
   paid lane cannot reach a provider even by mistake.
@@ -233,7 +234,7 @@ def replay_child(
         "paid_execution_requested": False,
         "provider_mutation_performed": False,
     }
-    paid = phase in stages.PAID_PHASES or phase == "calibrated_views"
+    paid = phase in stages.PAID_PHASES
     if paid and not allow_paid:
         report.update(status="paid_stage_not_replayed", blocker="replay_refuses_paid_phase_without_allow_paid")
         report["report_path"] = _write_report(run_root, report)
@@ -264,7 +265,13 @@ def replay_child(
     if not allow_paid:
         context["diagnostic_replay_code_root"] = str(Path(stages.__file__).resolve().parents[2])
     try:
-        outcome = stages.execute_stage(context)
+        if phase == "calibrated_views" and not allow_paid:
+            from .source_calibration_finalization_reuse import replay_retained_calibration
+            outcome = replay_retained_calibration(job=context, plan=plan, job_path=located.job_path,
+                run_root=run_root, queue_root=queue_root, approved_roots=approved_roots)
+            report["retained_gpu_return_cpu_finalization_only"] = True
+        else:
+            outcome = stages.execute_stage(context)
     except Exception as exc:  # noqa: BLE001 - the refusal is the finding
         _explained(report, "refused", exc)
     else:

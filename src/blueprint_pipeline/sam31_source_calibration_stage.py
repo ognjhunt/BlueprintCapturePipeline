@@ -63,6 +63,12 @@ def validate_retained_source_calibration_stage(outcome: Mapping[str, Any]) -> No
             and result.get('independent_watchdog',{}).get('provider_absence_confirmed') is True,
             'retained_execution_invalid')
     prepared=read(checked_file(artifacts['source_calibration_prepared_inputs']['path'],artifacts['source_calibration_prepared_inputs']))
+    if artifacts.get('source_calibration_retained_render_binding'):
+        from .source_calibration_finalization_reuse import validate_retained_render_binding
+        binding=artifacts['source_calibration_retained_render_binding']
+        original, _, _, value=validate_retained_render_binding(checked_file(binding['path'],binding),current_prepared=prepared)
+        require(value['original_closed_return']==artifacts['source_calibration_return'],'retained_return_binding_changed')
+        prepared=original
     require_source_calibration_closure(prepared,checked_file(artifacts['source_calibration_return']['path'],artifacts['source_calibration_return']))
     charge=read(checked_file(artifacts['source_calibration_official_charge']['path'],artifacts['source_calibration_official_charge']),digest_field='charge_digest')
     require(charge.get('provider_instance_id')==result['vast_instance_ids'][0]
@@ -98,6 +104,14 @@ def execute_source_calibration_stage(job: Mapping[str, Any], *, allocator_runner
     prepared_outcome=read(preparation_record)
     prepared_path=checked_file(prepared_outcome['prepared_inputs']['path'],prepared_outcome['prepared_inputs'])
     prepared=read(prepared_path,digest_field='preparation_digest')
+    # A saved successful GPU return can outlive a failed CPU finalizer. Its
+    # original failure stays in the old queue; a new child publishes explicit
+    # CPU-only continuation evidence before any fresh allocator boundary.
+    from .source_calibration_finalization_reuse import select_retained_render
+    retained_binding=select_retained_render(job=job,prepared_path=prepared_path,output_root=root)
+    if retained_binding is not None:
+        return finalize_retained_source_calibration(job=job,prepared_outcome=prepared_outcome,
+            binding_path=retained_binding)
     bundle_receipt=root/'bundle'/RECEIPT_NAME
     task_ref=job['plan']['host_inputs']['task_request']
     task_path=checked_file(task_ref['path'],task_ref)
@@ -181,5 +195,34 @@ def execute_source_calibration_stage(job: Mapping[str, Any], *, allocator_runner
     outcome={'status':'completed','stage_id':'calibrated_views','source_commit':job['expected_source_commit'],
              'artifacts':artifacts,'candidate_policy_queried':False,'evaluation_authorized':False,
              'provider_mutation_performed':True,**owner_metadata}
+    validate_retained_source_calibration_stage(outcome)
+    return outcome
+
+
+def finalize_retained_source_calibration(*,job,prepared_outcome,binding_path):
+    from .public_scene_inpainting_preparation import (
+        finalize_public_scene_inpainting_inputs,adopt_finalized_public_scene_inpainting_inputs,
+    )
+    from .source_calibration_finalization_reuse import validate_retained_render_binding
+    prepared_path=checked_file(prepared_outcome['prepared_inputs']['path'],prepared_outcome['prepared_inputs'])
+    prepared=read(prepared_path,digest_field='preparation_digest')
+    _,_,closed,binding=validate_retained_render_binding(binding_path,current_prepared=prepared)
+    return_ref=binding['original_closed_return']
+    output=prepared_path.parent
+    receipt_path=output/'public_scene_interiorgs_edit_input_receipt.v2.json'
+    finalize=adopt_finalized_public_scene_inpainting_inputs if receipt_path.exists() else finalize_public_scene_inpainting_inputs
+    receipt=finalize(preparation_path=prepared_path,returned_group_path=return_ref['path'],
+        retained_render_binding_path=binding_path)
+    closure=closed['execution_closure']
+    artifacts={'calibrated_view_request':prepared_outcome['calibrated_view_request'],
+        'calibrated_view_receipt':record(receipt_path),
+        'camera_contract':record(output/receipt['derived_artifacts']['cameras']['relative_path']),
+        'source_calibration_execution':closure['provider_execution'],
+        'source_calibration_prepared_inputs':record(prepared_path),
+        'source_calibration_return':return_ref,'source_calibration_official_charge':closure['official_billing'],
+        'source_calibration_retained_render_binding':record(Path(binding_path))}
+    outcome={'status':'completed','stage_id':'calibrated_views','source_commit':job['expected_source_commit'],
+        'artifacts':artifacts,'candidate_policy_queried':False,'evaluation_authorized':False,
+        'provider_mutation_performed':False,'retained_gpu_render_reused':True}
     validate_retained_source_calibration_stage(outcome)
     return outcome
