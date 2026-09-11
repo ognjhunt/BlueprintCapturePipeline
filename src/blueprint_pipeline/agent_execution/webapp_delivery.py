@@ -29,8 +29,8 @@ def admission_payload(record):
             "enabled": record.enabled, "autostart": record.autostart, "proof_effect": "none"}
 
 
-def _endpoint():
-    explicit = os.environ.get("BLUEPRINT_AGENT_WEBAPP_ADMISSION_URL", "").strip()
+def _endpoint(endpoint=None):
+    explicit = endpoint if endpoint is not None else os.environ.get("BLUEPRINT_AGENT_WEBAPP_ADMISSION_URL", "").strip()
     configured = explicit or os.environ.get("PIPELINE_SYNC_WEBAPP_URL", "").strip()
     if not configured:
         return None
@@ -45,9 +45,9 @@ class _NoRedirect(request.HTTPRedirectHandler):
         return None
 
 
-def post_admission(payload):
-    endpoint = _endpoint()
-    token = os.environ.get("PIPELINE_SYNC_TOKEN", "").strip()
+def post_admission(payload, *, endpoint=None, token=None):
+    endpoint = _endpoint(endpoint)
+    token = os.environ.get("PIPELINE_SYNC_TOKEN", "").strip() if token is None else token
     if not endpoint or not token:
         raise AgentExecutionError("agent_webapp_admission_not_configured")
     body = canonical_json(payload).encode()

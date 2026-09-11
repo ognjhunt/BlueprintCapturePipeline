@@ -10,6 +10,41 @@ from blueprint_pipeline.agent_execution.webapp_delivery import WebappAdmissionOu
 from tests.test_agent_production_service import fixture
 
 
+def test_worker_publishes_with_private_config_without_inheriting_intake_environment(tmp_path, monkeypatch):
+    from blueprint_pipeline.agent_execution import production, webapp_delivery
+    service, task, _, config_path = fixture(tmp_path)
+    token_path = tmp_path / "sync-token"
+    token_path.write_text("fixture-sync-token")
+    token_path.chmod(0o600)
+    config = json.loads(config_path.read_text())
+    endpoint = "https://example.com/api/internal/pipeline/agent-execution/admissions"
+    config.update(webapp_admission_url=endpoint, webapp_sync_token_file=str(token_path))
+    config_path.write_text(json.dumps(config))
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
+    monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
+    observed = []
+    def post(payload, **kwargs):
+        observed.append(kwargs)
+        return acknowledgement(payload)
+    monkeypatch.setattr(webapp_delivery, "post_admission", post)
+    restarted = production.ProductionAgentService(config_path, source_commit="a" * 40)
+    restarted.webapp_outbox.queue(owned_record(service, task))
+    assert restarted.webapp_outbox.flush()[0]["status"] == "stored_in_webapp"
+    assert observed == [{"endpoint": endpoint, "token": "fixture-sync-token"}]
+    assert "fixture-sync-token" not in json.dumps(restarted.health())
+
+
+def test_intake_and_worker_discover_same_canonical_admission(tmp_path, monkeypatch):
+    from blueprint_pipeline.agent_execution import production
+    from blueprint_pipeline import live_pipeline_intake_service
+    _, task, _, config_path = fixture(tmp_path)
+    monkeypatch.delenv(production.CONFIG_ENV, raising=False)
+    monkeypatch.setattr(production, "DEFAULT_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(live_pipeline_intake_service, "running_source_commit", lambda _: "a" * 40)
+    service = production.configured_service()
+    assert service.record(task.task_id).task.task_digest == task.task_digest
+
+
 def owned_record(service, task):
     value = service.record(task.task_id).model_dump(mode="json")
     value["owner_client_ids"] = ["blueprint-webapp"]

@@ -82,6 +82,16 @@ existing `CAPTURE_UPLOAD_INTAKE_FORWARD_TOKEN`. These are controller settings,
 never request fields or model tools. No raw prompt or source bytes enter this
 admission publication.
 
+The canonical private configuration is `/etc/blueprint/agent-execution.json`.
+Both intake and the worker discover it; an explicit
+`BLUEPRINT_AGENT_EXECUTION_CONFIG` override remains supported. Set
+`webapp_admission_url` to the exact HTTPS admission endpoint and
+`webapp_sync_token_file` to the existing private Pipeline sync token under
+`/etc/blueprint/provider-secrets/`. The worker reads that file only for signed
+publication, without inheriting the intake environment. The offline replay
+worker refuses execution if this token or any configured model/webhook secret
+is accessible inside its sandbox.
+
 Actual retained-job execution, production deployment, browser readback,
 specialist integration and the frozen comparison corpus are still incomplete.
 
