@@ -16,7 +16,10 @@ from .task_evaluation_scene_configuration_submission_inputs import checked_file,
 SCHEMA = "source_calibration_retained_finalization_binding.v1"
 FILENAME = SCHEMA + ".json"
 RENDERER_FILES = ("tools/splat_render/render_splat.mjs", "tools/splat_render/src/render_entry.mjs",
-                  "tools/splat_render/package.json", "tools/splat_render/package-lock.json")
+                  "tools/splat_render/package.json", "tools/splat_render/package-lock.json",
+                  "scripts/run_adp_retained_scene_render_provider_runtime.sh",
+                  "scripts/adp_retained_scene_render_provider_runner.mjs",
+                  "scripts/source_calibration_camera_recovery.mjs")
 
 
 def _ref(value):
