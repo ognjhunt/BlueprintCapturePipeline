@@ -87,6 +87,40 @@ to raw logs. Neither change bypasses the original disk or execution gates.
 
 ## Scientific and operational boundaries
 
+### Bounded engineering handoff (ADP-009D, day-28)
+
+An unresolved technical replay can now become a bounded task for the existing
+Paperclip engineering lane. This closes the gap between returning diagnostic
+advice and creating work with a saved reproduction and acceptance requirements.
+The private `engineering_policy_file` selects exact allowed source paths,
+mandatory test paths, run-id prefixes, handoff count, patch/file limits, an
+existing-worker budget reference and a finite worker timeout. It defaults off.
+Capacity/authority admission refusals do not authorize code changes.
+
+The producer retains one handoff per diagnosis/replay identity, reserves before
+publication, and sends only machine evidence references and the admitted policy.
+Model prose does not become engineering instructions. Website admission binds
+the existing verified task result; dispatch rechecks current Pipeline authority,
+the exact repository workspace, remaining worker budget and timeout. It creates
+one Paperclip issue using supported `billingCode`, isolated-worktree and review
+policy fields. A separate agent owns review. An uncertain creation is looked up
+by exact identity and never blindly posted again.
+
+The trusted controller can bind ordinary existing issues through
+`python -m blueprint_pipeline.agent_execution.engineering bind-issue`. Paperclip
+selects the task through that server-owned association, not unsupported issue
+metadata or model-controlled task parameters. The candidate verifier reads Git
+objects to check ancestry, bounded changed paths/patch size, regular file types,
+and unchanged required baseline tests. It grants neither test passage nor
+production promotion. The original release process remains required.
+
+Completion artifacts for this dependency are the signed handoff receipt, exact
+Paperclip issue/readback, candidate scope receipt, independent review and
+release evidence. Hermetic dispatch tests or an assigned issue alone do not
+prove a completed repair. Deploy the companion Website receiver before enabling
+the Pipeline policy; a live Paperclip host and accepted worker policy are still
+required for live dispatch.
+
 One final verdict may follow several tool-assisted steps. Keep all required
 review views, freeze candidate identity before final acceptance, and do not
 rerun an unchanged rejection merely to obtain an acceptance. Candidate authors

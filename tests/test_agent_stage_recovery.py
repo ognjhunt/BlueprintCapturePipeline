@@ -94,16 +94,16 @@ def test_sdk_waits_for_same_pending_operation_without_second_dispatch(tmp_path, 
     assert set(reconciliations) == set(invocations)
 
 
-def prepare_fixture(tmp_path):
+def prepare_fixture(tmp_path, owner_client_id="fixture-client"):
     service, _, _, _ = production_fixture(tmp_path)
     root, job_path, _ = _queue(tmp_path / "retained")
     record = prepare_retained_failure(
         service, task_id="recovery_task", run_id="recovery_run", child_id=CHILD,
-        owner_client_id="fixture-client", inference_budget_usd=1,
+        owner_client_id=owner_client_id, inference_budget_usd=1,
         queue_root=root, parent_queue_root=tmp_path / "retained" / "parents",
         input_root=tmp_path / "retained" / "inputs", approved_roots=(tmp_path,),
     )
-    service.enqueue(record.task.task_id, "fixture-client")
+    service.enqueue(record.task.task_id, owner_client_id)
     runtime = service.runtime_for_task(record.task)
     with pytest.raises(OperationPending):
         runtime.operations.execute(record.task, turn_id="fixture_turn", call_id="fixture_call",
