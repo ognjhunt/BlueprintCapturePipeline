@@ -193,6 +193,9 @@ class OpenAIAgentsRuntime:
                 self.journal.bind_session(task.task_id, session_id)
             except AgentTransportError as exc:
                 rejected = exc.definitively_rejected
+                if exc.diagnostics:
+                    self.journal.record_event("api_creation_rejection_" + task.task_id, {
+                        "task_id": task.task_id, "task_digest": task.task_digest, **exc.diagnostics})
                 self.journal.set_state(
                     task.task_id, "failed" if rejected else "creation_unresolved",
                     error_code=exc.code,
