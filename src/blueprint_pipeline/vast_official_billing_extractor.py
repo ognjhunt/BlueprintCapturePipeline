@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
-import hashlib
 import json
 import math
 import os
@@ -23,6 +22,7 @@ from .provider_billing_reconciler import (
 )
 from .policy_canary_official_billing import policy_canary_terminal_evidence
 from .runtime_preflight_official_billing import runtime_preflight_terminal_evidence
+from .vast_official_billing_serialization import _canonical_json, _record, _sha256_bytes
 RECONCILIATION_SCHEMA_VERSION = "blueprint.vast_official_same_goal_reconciliation.v1"
 ENTRY_SCHEMA_VERSION = "blueprint.vast_official_instance_charge.v1"
 RECONCILIATION_STATUS = "reconciled_official_posted_charges"
@@ -67,14 +67,6 @@ _ARENA_JOB_DIRS = frozenset(
 )
 
 
-def _canonical_json(value: Mapping[str, Any]) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
-
-def _sha256_bytes(payload: bytes) -> str:
-    return "sha256:" + hashlib.sha256(payload).hexdigest()
-
-
 def _strict_file(path: str | Path, *, code: str) -> tuple[Path, bytes]:
     candidate = Path(path).expanduser()
     absolute = Path(os.path.abspath(candidate))
@@ -103,14 +95,6 @@ def _json_file(path: str | Path, *, code: str) -> tuple[Path, dict[str, Any], by
     if not isinstance(value, dict):
         raise VastOfficialBillingExtractionError(code)
     return source, value, payload
-
-
-def _record(path: Path, payload: bytes) -> dict[str, Any]:
-    return {
-        "path": str(path),
-        "size_bytes": len(payload),
-        "sha256": _sha256_bytes(payload),
-    }
 
 
 def _prepare_output(path: str | Path) -> Path:
