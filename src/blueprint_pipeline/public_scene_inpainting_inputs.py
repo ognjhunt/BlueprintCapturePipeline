@@ -25,6 +25,7 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 from .validation_file_digests import sha256_file
 from .public_scene_removal_selection import (
     ADAPTER as REMOVAL_SELECTION_ADAPTER,
+    SCENE_SCHEMA as REMOVAL_SCENE_SCHEMA,
     validate_source_preparation_scene_selection as validate_scene_freeze,
     validate_source_preparation_task_selection as validate_task_freeze,
 )
@@ -445,6 +446,18 @@ def _git_identity(repo: Path) -> dict[str, Any]:
     }
 
 
+def _frame_collision_join(scene_freeze, frame, frame_path):
+    if scene_freeze.get("schema_version") == REMOVAL_SCENE_SCHEMA:
+        # validate_scene_freeze already reopened the raw source, validated any
+        # partition, and joined its effective collider to this exact frame.
+        # Rebind these bytes rather than comparing derived geometry to raw USD.
+        bound = scene_freeze["registered_frame"]
+        return (frame_path.stat().st_size == bound["size_bytes"]
+                and _sha256(frame_path) == bound["sha256"])
+    return (frame.get("source_digests", {}).get("sage_collision_usd")
+            == scene_freeze["source_components"]["sage_collision"].get("sha256"))
+
+
 def _verified_dual_task_scene_source(
     *, scene: Mapping[str, Any], repo: Path, data: Path
 ) -> dict[str, Any]:
@@ -560,8 +573,7 @@ def _verified_dual_task_scene_source(
         != "interiorgs_sage_shared_frame_candidate.v1"
         or frame.get("source_digests", {}).get("interiorgs_labels")
         != support_records.get("labels", {}).get("sha256")
-        or frame.get("source_digests", {}).get("sage_collision_usd")
-        != scene_freeze["source_components"]["sage_collision"].get("sha256")
+        or not _frame_collision_join(scene_freeze, frame, frame_path)
     ):
         raise PublicSceneInpaintingInputError(
             ["edit_input_registered_frame_join_invalid"]

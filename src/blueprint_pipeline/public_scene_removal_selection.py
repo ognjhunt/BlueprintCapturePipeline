@@ -104,7 +104,9 @@ def _source_context(evidence: Mapping[str, Any], commit: str) -> tuple[dict, dic
     _require(frame.get("receipt_digest") == canonical_digest(frame, digest_field="receipt_digest")
              and frame.get("source_digests") == {
                  "interiorgs_labels": context["raw"]["semantic_metadata"]["sha256"],
-                 "sage_collision_usd": context["raw"]["collision_usd"]["sha256"],
+                 # source_inputs verifies the partition's raw-source lineage,
+                 # exact output bytes and selected identities before exposing it.
+                 "sage_collision_usd": context["effective_collision"]["sha256"],
              }, "shared_frame_source_mismatch")
     for key in ("subject", "support"):
         identity = context["identities"][key]

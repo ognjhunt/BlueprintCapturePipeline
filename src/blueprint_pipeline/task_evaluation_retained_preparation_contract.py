@@ -13,6 +13,8 @@ from .decision_evidence_contracts import canonical_digest
 SCHEMA_PATH = (Path(__file__).resolve().parents[2] / 'docs/schemas/'
                'task_evaluation_retained_scene_preparation.v1.schema.json')
 ASTRA_SCHEMA_PATH = SCHEMA_PATH.with_name('task_evaluation_retained_astra_scene_preparation.v1.schema.json')
+SOURCE_SCHEMA_PATH = SCHEMA_PATH.with_name('task_evaluation_retained_source_scene_preparation.v1.schema.json')
+SOURCE_ASTRA_SCHEMA_PATH = SCHEMA_PATH.with_name('task_evaluation_retained_source_astra_scene_preparation.v1.schema.json')
 
 
 @dataclass(frozen=True)
@@ -44,11 +46,22 @@ RETAINED_ASTRA = ScenePreparationBudget(
     'scene_preparation_27000_astra.v1', 27000, 4.8, .96, 5., 20.76, 26.76, '')
 
 
+def _schema_path(value):
+    value = value or {}
+    astra = value.get('replacement_authoring_backend') == 'astra_cad_blender_v1'
+    scene, task = value.get('scene'), value.get('task')
+    geometry = scene.get('geometry') if isinstance(scene, dict) else None
+    if ((isinstance(geometry, dict) and geometry.get('source_derivation') is not None)
+            or (isinstance(task, dict) and task.get('surface_target') is not None)):
+        return SOURCE_ASTRA_SCHEMA_PATH if astra else SOURCE_SCHEMA_PATH
+    return ASTRA_SCHEMA_PATH if astra else SCHEMA_PATH
+
+
 def retained_schema(value=None):
     """Read the frozen scene-only schema rather than today's intake schema."""
     from .task_evaluation_launch_preparation_contract import TaskEvaluationLaunchPreparationContractError
     try:
-        path = ASTRA_SCHEMA_PATH if (value or {}).get('replacement_authoring_backend') == 'astra_cad_blender_v1' else SCHEMA_PATH
+        path = _schema_path(value)
         schema = json.loads(path.read_text())
     except (OSError, ValueError) as exc:
         raise TaskEvaluationLaunchPreparationContractError(
@@ -80,13 +93,14 @@ def retained_budget(value):
 def retained_contract_identity(value):
     """Bind the recognized contract in new adoption records without changing parents."""
     budget = retained_budget(value)
-    if budget == RETAINED_ASTRA:
+    path = _schema_path(value)
+    if path != SCHEMA_PATH:
         identity = {'schema_version': 'task_evaluation_retained_preparation_contract_identity.v2',
             'request_schema_version': value['schema_version'],
             'request_source_commit': value['expected_production_commit'],
             'contract_id': budget.contract_id,
-            'schema_sha256': 'sha256:' + hashlib.sha256(ASTRA_SCHEMA_PATH.read_bytes()).hexdigest(),
-            'policy_source_path': 'docs/schemas/' + ASTRA_SCHEMA_PATH.name,
+            'schema_sha256': 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest(),
+            'policy_source_path': 'docs/schemas/' + path.name,
             'new_execution_authorized': False, 'new_spend_authorized': False}
         identity['contract_digest'] = canonical_digest(identity, digest_field='contract_digest')
         return identity
