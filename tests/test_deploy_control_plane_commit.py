@@ -182,12 +182,15 @@ def _verified_provenance(commit: str) -> tuple[bytes, dict[str, object]]:
     return json.dumps(receipt).encode(), receipt
 
 
+@pytest.mark.parametrize("status", ["iteration", "canary"])
 def test_verified_provenance_supersedes_same_commit_iteration_once(
-    tmp_path: Path,
+    tmp_path: Path, status: str,
 ) -> None:
     commit = "a" * 40
     state_root = tmp_path / "state"
     iteration_payload, iteration_receipt = _iteration_provenance(commit)
+    iteration_receipt["status"] = status
+    iteration_payload = json.dumps(iteration_receipt).encode()
     verified_payload, verified_receipt = _verified_provenance(commit)
 
     deploy._install_release_provenance(
@@ -214,7 +217,7 @@ def test_verified_provenance_supersedes_same_commit_iteration_once(
     assert installed["superseded_iteration_provenance"]["path"] == str(
         superseded
     )
-    assert installed["superseded_iteration_provenance"]["status"] == "iteration"
+    assert installed["superseded_iteration_provenance"]["status"] == status
 
     # A repeated promotion is idempotent and does not rewrite history.
     repeated = deploy._install_release_provenance(
@@ -2435,11 +2438,41 @@ def test_admitted_agent_worker_is_enabled_started_and_proven(tmp_path, monkeypat
 
 def test_unconfigured_or_undrained_release_never_activates_agent(tmp_path, monkeypatch):
     from tests.test_agent_production_service import fixture
+    from blueprint_pipeline.agent_execution import release
     service, task, _, config_path = fixture(tmp_path)
     service.enqueue(task.task_id, "fixture-client")
     calls = []
+    monkeypatch.setattr(release, 'drain', lambda *args, **kwargs: {'status': 'reconciliation_pending'})
+    monkeypatch.setattr(deploy, '_systemd_unit_state', lambda unit: {'state': 'active'})
     monkeypatch.setattr(deploy.subprocess, 'run', lambda *args, **kwargs: calls.append(args))
     assert deploy._activate_agent_execution(expected_commit='a' * 40, config_path=tmp_path / 'absent')['activated'] is False
     with pytest.raises(deploy.ControlPlaneDeployError, match='agent_configuration_requires_clean_drain'):
         deploy._activate_agent_execution(expected_commit='b' * 40, config_path=config_path)
     assert calls == []
+
+
+@pytest.mark.parametrize('terminal', [False, True])
+def test_deploy_drains_prior_agent_tasks_before_adopting_release(tmp_path, monkeypatch, terminal):
+    from tests.test_agent_production_service import fixture
+    from blueprint_pipeline.agent_execution import release
+    service, task, _, config_path = fixture(tmp_path)
+    service.enqueue(task.task_id, "fixture-client")
+    if terminal:
+        service.journal.set_state(task.task_id, 'completed', result={'output': {'summary': 'Retained observation'}})
+    calls = []
+    def systemctl(argv, **kwargs):
+        calls.append(argv)
+        state = 'enabled' if argv[1] == 'is-enabled' else 'active'
+        return SimpleNamespace(returncode=0, stdout=state + '\n', stderr='')
+    monkeypatch.setattr(deploy.subprocess, 'run', systemctl)
+    # The installed worker runs independently under its own service account.
+    monkeypatch.setattr(release.time, 'sleep', lambda seconds: service.service.tick())
+    result = deploy._activate_agent_execution(expected_commit='b' * 40, config_path=config_path)
+    assert result['release_cleanup']['status'] == 'drained'
+    assert result['configuration_adoption']['status'] == 'adopted'
+    state = service.journal.task(task.task_id)
+    assert state['state'] == ('completed' if terminal else 'cancelled') and state['cleanup_state'] == 'deleted'
+    if terminal:
+        assert state['result']['output']['summary'] == 'Retained observation'
+    assert json.loads(config_path.read_text())['source_commit'] == 'b' * 40
+    assert ['systemctl', 'restart', 'blueprint-agent-execution.service'] in calls

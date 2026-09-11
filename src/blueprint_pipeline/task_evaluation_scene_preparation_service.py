@@ -30,11 +30,17 @@ def installed_source_environment(config, results):
         source = intent["request"]["source"]
         if source["kind"] != "public_scene":
             continue
-        binding_path = safe_path(Path(config["public_source_binding_root"]) / (source["binding_id"] + ".json"))
-        if result.get("phase") == "source" and not binding_path.exists():
-            continue  # A fresh publisher source has not submitted a child job yet.
+        retained_binding = result.get("source_binding") or (result.get("state") or {}).get("source_binding")
+        if retained_binding is not None:
+            binding_path = checked_file(retained_binding["path"], retained_binding)
+        else:
+            binding_path = safe_path(Path(config["public_source_binding_root"]) / (source["binding_id"] + ".json"))
+            if not binding_path.exists():
+                require(not (result.get("state") or {}).get("submission"), "submitted_source_binding_missing")
+                continue  # No child can consume a source until its binding exists.
         binding = read(binding_path, digest_field="binding_digest")
         require(binding.get("schema_version") == BINDING_SCHEMA
+                and binding.get("binding_id") == source["binding_id"]
                 and binding.get("source_content_digest") == source["content_digest"]
                 and binding.get("owner") == intent["request"]["owner"], "installed_source_owner_mismatch")
         refs = binding["references"]

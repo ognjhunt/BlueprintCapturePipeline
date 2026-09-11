@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://tryblueprint.io/schemas/task_evaluation_launch_preparation_request.v1.schema.json",
-  "title": "Task Evaluation launch preparation request v1",
-  "description": "Customer-neutral, immutable input contract for preparing one production Task Evaluation Run. Host paths, provider credentials, catalog paths, and shell commands are deliberately not accepted.",
+  "$id": "task_evaluation_retained_source_astra_scene_preparation.v1.schema.json",
+  "title": "Frozen retained Astra scene preparation contract v1 with partitioned sources and surface targets",
+  "description": "Frozen retained scene-preparation contract with validated collision derivation and noncolliding surface targets. Offline evidence interpretation only; never new execution authority.",
   "type": "object",
   "required": [
     "schema_version",
@@ -18,7 +18,8 @@
     "runtime",
     "execution_adapter",
     "publication",
-    "spend"
+    "spend",
+    "replacement_authoring_backend"
   ],
   "additionalProperties": false,
   "properties": {
@@ -31,11 +32,7 @@
       "const": "task_evaluation_launch_preparation_request.v1"
     },
     "run_mode": {
-      "enum": [
-        "scene_configuration",
-        "destination_qualification",
-        "episode_evaluation"
-      ]
+      "const": "scene_configuration"
     },
     "expected_production_commit": {
       "type": "string",
@@ -1252,11 +1249,7 @@
       }
     },
     "replacement_authoring_backend": {
-      "type": "string",
-      "enum": [
-        "content_agents",
-        "astra_cad_blender_v1"
-      ]
+      "const": "astra_cad_blender_v1"
     }
   },
   "allOf": [
@@ -1786,7 +1779,8 @@
         },
         "radius_m": {
           "type": "number",
-          "exclusiveMinimum": 0, "maximum": 0.5
+          "exclusiveMinimum": 0,
+          "maximum": 0.5
         },
         "surface_position_world_m": {
           "type": "array",

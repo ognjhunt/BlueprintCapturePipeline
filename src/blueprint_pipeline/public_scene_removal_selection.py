@@ -104,7 +104,9 @@ def _source_context(evidence: Mapping[str, Any], commit: str) -> tuple[dict, dic
     _require(frame.get("receipt_digest") == canonical_digest(frame, digest_field="receipt_digest")
              and frame.get("source_digests") == {
                  "interiorgs_labels": context["raw"]["semantic_metadata"]["sha256"],
-                 "sage_collision_usd": context["raw"]["collision_usd"]["sha256"],
+                 # source_inputs verifies the partition's raw-source lineage,
+                 # exact output bytes and selected identities before exposing it.
+                 "sage_collision_usd": context["effective_collision"]["sha256"],
              }, "shared_frame_source_mismatch")
     for key in ("subject", "support"):
         identity = context["identities"][key]
@@ -266,6 +268,7 @@ def materialize_public_scene_removal_selections(
         stream.write(canonical_json(selection) + "\n")
     return {"scene_selection": _record(scene_path), "task_selection": _record(task_path),
             "registered_frame": context["registered_frame"],
+            "source_collision": _record(Path(context["effective_collision"]["path"])),
             "scene_freeze_digest": scene["scene_freeze_digest"],
             "task_freeze_digest": selection["task_freeze_digest"], **BOUNDARIES}
 

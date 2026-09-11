@@ -793,6 +793,7 @@ def publish_configured_scene_revision(
             "definition": dict(task["definition"]),
             "success_criteria": dict(task["success_criteria"]),
             "execution": dict(task["execution"]),
+            **({"surface_target": dict(task["surface_target"])} if "surface_target" in task else {}),
             **(
                 {
                     "destination": {
@@ -909,6 +910,8 @@ def publish_configured_scene_revision(
             "kind": task["kind"],
             "strategy": task["strategy"],
             "subject_identity": dict(revision["replacement"]["identity"]),
+            **({"surface_target": dict(revision["task_template"]["surface_target"])}
+               if "surface_target" in revision["task_template"] else {}),
             **(
                 {"destination": dict(revision["task_template"]["destination"])}
                 if isinstance(revision["task_template"].get("destination"), Mapping)

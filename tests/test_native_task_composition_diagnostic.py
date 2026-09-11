@@ -128,6 +128,35 @@ def test_prepolicy_composition_gate_uses_both_views_and_restores_policy_buffers(
         assert result['automatic_gaussian_deletion_authorized'] is False
 
 
+@pytest.mark.parametrize('target_class', ['task_object', 'task_target_marker'])
+@pytest.mark.parametrize('intrusion', [False, True])
+def test_green_region_and_manipulated_object_are_checked_without_a_tray(native, target_class, intrusion):
+    from blueprint_pipeline.native_task_asset_composition_gate import run_native_asset_composition_gate
+    if target_class == 'task_object':
+        native.built.plan['objects'].append({'semantic_role': 'replacement', 'task_subject': True})
+    else:
+        from tests.test_task_evaluation_surface_target import target_fixture
+        native.built.plan['task_spec'] = {'surface_target': target_fixture()}
+    native.camera.data.info['semantic_segmentation']['idToLabels']['7']['class'] = target_class
+    native.built.camera_scene_names['overview'] = 'external_camera'
+    original = native.camera.update
+    def update(*args, **kwargs):
+        original(*args, **kwargs)
+        for key, value in native.camera.data.output.items():
+            native.camera.data.output[key] = value.repeat_interleave(2, dim=1).repeat_interleave(2, dim=2)
+        appearance = native.stage.GetPrimAtPath(native.root + '/scene_appearance/Gaussians').GetAttribute('visibility').Get() != 'invisible'
+        if intrusion and appearance:
+            native.camera.data.output['semantic_segmentation'][0, 5, 8, 0] = 9
+    native.camera.update = update
+    result = run_native_asset_composition_gate(built=native.built, plan=native.built.plan,
+        output_root=native.output, stage=native.stage)
+    assert result['status'] != 'not_applicable'
+    assert result['passed'] is not intrusion, result
+    assert result['target_semantic_classes'] == [target_class]
+    assert len(result['views']) == 2
+    assert result['full_scene_sensor_buffers_refreshed'] and result['physics_steps'] == 0
+
+
 def test_composition_gate_retains_edge_differences_without_promoting_them_to_interior_intrusion(tmp_path):
     from blueprint_pipeline.native_task_asset_composition_gate import assess_composition_pixels
     root = tmp_path / 'pixel_comparison'

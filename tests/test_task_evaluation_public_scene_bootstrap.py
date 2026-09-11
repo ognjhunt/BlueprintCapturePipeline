@@ -150,3 +150,20 @@ def test_capacity_failure_precedes_all_publisher_reads(tmp_path, monkeypatch):
             release={"source_commit": _verified_checkout_head()},
             downloader=lambda *_args: pytest.fail("read publisher before storage admission"))
     assert not Path(config["factory_output_root"]).exists()
+
+
+def test_owner_can_select_a_valid_task_different_from_the_catalog_default(tmp_path):
+    values, _choice, intent, config = source_fixture(tmp_path, scene_id="112233")
+    path = Path(config["public_source_catalog_path"])
+    catalog = json.loads(path.read_text())
+    proposal = catalog["sources"][0]["task_proposal"]
+    proposal["subject"]["source_instance_id"] = "unselected-catalog-default"
+    catalog["sources"][0]["task_proposal_digest"] = cross_runtime_canonical_digest(proposal)
+    _seal(catalog["sources"][0], "choice_digest")
+    path.write_text(json.dumps(_seal(catalog, "catalog_digest")))
+    result = prepare_registered_public_scene(intent=intent, config=config,
+        release={"source_commit": _verified_checkout_head()},
+        downloader=lambda row, output: output.write_bytes(values[row["role"]]))
+    receipt = json.loads(Path(result.analysis_reference["path"]).read_text())
+    prepared = json.loads(Path(receipt["references"]["source_preparation_receipt"]["path"]).read_text())
+    assert {row["source_instance_id"] for row in prepared["source_identities"]} == {"subject", "support"}

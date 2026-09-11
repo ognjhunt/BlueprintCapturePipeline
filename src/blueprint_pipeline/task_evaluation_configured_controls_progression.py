@@ -498,6 +498,7 @@ def stage_configured_controls_episode_preparation(
             "binding_mode": "reuse_configured_template",
             "kind": task["kind"],
             "strategy": task["strategy"],
+            **({"surface_target": dict(task["surface_target"])} if "surface_target" in task else {}),
             "configured_scene_revision_digest": revision["revision_digest"],
             "subject": {
                 "mode": "configured_scene_object",

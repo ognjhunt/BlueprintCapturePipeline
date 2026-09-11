@@ -74,3 +74,30 @@ def test_unavailable_retained_schema_refuses_without_falling_back_to_current(tmp
     with pytest.raises(ValueError, match='retained_schema_invalid'):
         contract.validate_retained_preparation_request(configuration_request())
     assert contract.validate_launch_preparation_request(configuration_request())
+
+
+@pytest.mark.parametrize('partitioned,surface', [(True, False), (False, True), (True, True)])
+def test_retained_partition_and_surface_contract_is_frozen_and_digest_bound(monkeypatch, partitioned, surface):
+    from tests.test_task_evaluation_launch_preparation_contract import ref
+    from tests.test_task_evaluation_surface_target import target_fixture
+    value = configuration_request()
+    if partitioned:
+        value['scene']['geometry']['source_derivation'] = ref(46)
+    if surface:
+        value['task'].pop('destination', None)
+        value['task']['strategy'] = 'pick_and_place'
+        value['task']['surface_target'] = target_fixture()
+    before = deepcopy(value)
+    monkeypatch.setattr(contract, 'preparation_request_schema',
+        lambda: pytest.fail('retained replay consulted live schema'))
+    assert contract.validate_retained_preparation_request(value) == before
+    identity = retained_contract_identity(value)
+    assert 'retained_source_' in identity['policy_source_path']
+    assert identity['new_execution_authorized'] is False
+    assert identity['new_spend_authorized'] is False
+    if partitioned:
+        value['scene']['geometry']['source_derivation']['digest'] = 'unverified'
+    else:
+        value['task']['surface_target']['radius_m'] = 100
+    with pytest.raises(ValueError):
+        contract.validate_retained_preparation_request(value)

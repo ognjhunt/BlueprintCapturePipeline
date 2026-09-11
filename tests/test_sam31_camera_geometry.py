@@ -96,6 +96,39 @@ def test_source_identity_drift_is_rejected(tmp_path):
         select_geometry_aware_camera_policy(**args)
 
 
+def test_adjacent_annotation_overlap_does_not_make_every_view_impossible(tmp_path):
+    args = geometry_fixture(tmp_path)
+    labels = json.loads(args["labels_path"].read_text())
+    labels.append({"ins_id": "neighbor", "label": "another rigid object", "bounding_box": [
+        dict(zip("xyz", p, strict=True)) for p in itertools.product((-.79, -.62), (.19, .32), (.27, .6))]})
+    args["labels_path"].write_text(json.dumps(labels))
+    receipt = json.loads(args["collision_identity_path"].read_text())
+    receipt["source_files"]["interiorgs_labels"]["sha256"] = sha(args["labels_path"])
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    args["collision_identity_path"].write_text(json.dumps(receipt))
+    policy = select_geometry_aware_camera_policy(**args)
+    screen = policy["geometry_screen"]
+    assert len(policy["views"]) == len(policy["replacement_views"]) == 16
+    assert screen["visibility_sample_count"] == 8
+    assert screen["ambiguous_target_samples"] == [{"point_world_m": [-.65, .2, .32],
+                                                   "overlapping_obstacle_ids": ["neighbor"]}]
+    assert not any(screen["claim_boundary"].values())
+
+
+def test_overlapping_center_requires_more_evidence_instead_of_ignoring_obstacle(tmp_path):
+    args = geometry_fixture(tmp_path)
+    labels = json.loads(args["labels_path"].read_text())
+    labels[2]["bounding_box"] = [dict(zip("xyz", p, strict=True))
+        for p in itertools.product((-1., -.6), (-.3, .3), (.3, .6))]
+    args["labels_path"].write_text(json.dumps(labels))
+    receipt = json.loads(args["collision_identity_path"].read_text())
+    receipt["source_files"]["interiorgs_labels"]["sha256"] = sha(args["labels_path"])
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    args["collision_identity_path"].write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="target_samples_ambiguous"):
+        select_geometry_aware_camera_policy(**args)
+
+
 def test_all_selected_cameras_use_existing_room_topology(tmp_path):
     args = geometry_fixture(tmp_path)
     policy = select_geometry_aware_camera_policy(**args)

@@ -729,21 +729,22 @@ def test_submission_preserves_scoped_full_source_authority_references(tmp_path: 
     assert stage["provider_disclosure"]["source_appearance_bytes"] is False
 
 
-def _iteration_fixture(tmp_path: Path) -> dict:
+def _iteration_fixture(tmp_path: Path, status: str = "iteration") -> dict:
     fixture = production_fixture(tmp_path)
-    provenance = {"schema_version": "blueprint.deploy_release_provenance.v1", "status": "iteration",
+    provenance = {"schema_version": "blueprint.deploy_release_provenance.v1", "status": status,
         "git_sha": SHA, "promotion_eligible": False, "claim_boundary": {
             "canonical_full_lane_verified": False, "promotion_eligible": False, "evidence_grade": "development_only"}}
     _write_json(fixture["release_provenance"], provenance)
     deploy = json.loads(fixture["deploy_receipt"].read_text())
-    deploy["release_provenance"].update(provenance_status="iteration", promotion_eligible=False,
+    deploy["release_provenance"].update(provenance_status=status, promotion_eligible=False,
         canonical_full_lane_verified=False, run_id=None, run_url=None, sha256=_sha(fixture["release_provenance"]))
     _write_json(fixture["deploy_receipt"], deploy)
     return fixture
 
 
-def test_iteration_release_requires_explicit_development_admission(tmp_path: Path) -> None:
-    fixture = _iteration_fixture(tmp_path)
+@pytest.mark.parametrize("status", ["iteration", "canary"])
+def test_iteration_release_requires_explicit_development_admission(tmp_path: Path, status: str) -> None:
+    fixture = _iteration_fixture(tmp_path, status=status)
     with pytest.raises(SceneConfigurationSubmissionError, match="release_provenance_unproven"):
         _materialize(fixture)
     assert not fixture["staging_root"].exists()
@@ -751,7 +752,7 @@ def test_iteration_release_requires_explicit_development_admission(tmp_path: Pat
     binding = json.loads((Path(result["staging_root"]) / "release/exact_production_release_binding.v1.json").read_text())
     assert binding["release_admission_mode"] == "development_iteration"
     assert binding["claim_ceiling"] == binding["promotion"]["evidence_grade"] == "development_only"
-    assert binding["promotion"] == {"workflow": None, "provenance_status": "iteration",
+    assert binding["promotion"] == {"workflow": None, "provenance_status": status,
         "promotion_eligible": False, "canonical_full_lane_verified": False, "evidence_grade": "development_only",
         "run_id": None, "test_count": None, "skip_count": None, "provenance_sha256": _sha(fixture["release_provenance"])}
     manifest = json.loads((Path(result["staging_root"]) / "bundle_manifest.v1.json").read_text())
@@ -760,15 +761,15 @@ def test_iteration_release_requires_explicit_development_admission(tmp_path: Pat
     assert manifest["native_qualification_claimed"] is manifest["provider_allocated"] is False
 
 
-@pytest.mark.parametrize("defect", ["canary", "claim_upgrade", "numeric_false", "fake_run", "fake_workflow",
+@pytest.mark.parametrize("defect", ["unknown_status", "claim_upgrade", "numeric_false", "fake_run", "fake_workflow",
                                      "digest", "live_commit", "runtime_readback", "unknown_mode"])
 def test_iteration_admission_preserves_exact_release_and_truth_boundaries(tmp_path: Path, defect: str) -> None:
     fixture = _iteration_fixture(tmp_path)
     provenance = json.loads(fixture["release_provenance"].read_text())
     deploy = json.loads(fixture["deploy_receipt"].read_text())
     mode = "development_iteration"
-    if defect == "canary":
-        provenance["status"] = deploy["release_provenance"]["provenance_status"] = "canary"
+    if defect == "unknown_status":
+        provenance["status"] = deploy["release_provenance"]["provenance_status"] = "untrusted"
     elif defect == "claim_upgrade":
         provenance["claim_boundary"]["promotion_eligible"] = True
     elif defect == "numeric_false":

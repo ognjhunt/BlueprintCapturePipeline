@@ -75,6 +75,14 @@ def test_installer_is_idempotent_and_refuses_unmanaged_configuration(tmp_path, m
     assert config["activation_enabled"] is False
     assert config["require_whole_chain_capacity"] is True
     assert config["submission_transport"] == "local_owned_queue"
+    state = Path(config['intent_root']).parent
+    inputs = Path(config['factory_output_root']).parent
+    assert config['child_queue_root'] == str(state / 'sam31-preparation-executions')
+    assert config['launch_queue_root'] == str(state / 'task-evaluation-launches')
+    assert config['provider_guard_path'] == str(state / 'gpu_spend_guard/latest.json')
+    assert config['ownership_roots'] == [str(inputs), str(state)]
+    assert config['child_execution_root'] == str(inputs / 'sam31-preparations')
+    assert config['launch_execution_root'] == str(state / 'task-evaluation-launch-runs')
     assert "source_commit" not in config and "release_binding_path" not in config
     config_path = Path(receipt["config"]["path"])
     config_path.write_text('{"user_owned":true}')

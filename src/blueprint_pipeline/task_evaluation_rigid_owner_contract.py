@@ -59,6 +59,14 @@ def _derive_configured_owner_success_contract(
         maximum_regrasps=configured["maximum_regrasps"],
     )
     criteria["retreat"] = _derive_retreat_criterion(task_spec)
+    if "surface_target" in task_spec:
+        from .task_evaluation_surface_target import validate_surface_target
+        criteria["surface_target"] = validate_surface_target(task_spec["surface_target"])
+        if criteria["surface_target"] != configured.get("surface_target"):
+            raise TaskNeutralScoringError(["configured_owner_surface_target_mismatch"])
+        # Circular targets constrain tilt through their explicit criterion;
+        # upright yaw is irrelevant to a flat disk.
+        criteria["orientation"]["mode"] = "ignored"
     if configured.get("per_cell_controls_required") is True:
         criteria["controls"] = {"mode": "required_per_cell", "control_ids": [
             "zero_action_negative", "deterministic_scripted_positive"]}

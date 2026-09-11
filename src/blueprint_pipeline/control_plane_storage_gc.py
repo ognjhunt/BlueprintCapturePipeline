@@ -814,6 +814,10 @@ def run_storage_gc(
                 "status": "skipped",
                 "reason": "running_commit_unknown",
             }
+    from .control_plane_terminal_cache_pins import reconcile_terminal_cache_pins
+    report["terminal_cache_pins"] = reconcile_terminal_cache_pins(
+        pins_root=pins_root, queue_roots=queue_roots, evidence_roots=evidence_roots,
+        now=observed_at, apply=apply, classifier=classifier)
     derived_present, absent = _existing(derived_roots)
     report["skipped_roots"].extend(absent)
     if derived_present:

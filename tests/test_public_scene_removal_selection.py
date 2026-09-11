@@ -26,8 +26,8 @@ def _write(path: Path, value: dict, field: str | None = None) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def _source_fixture(root: Path) -> dict:
-    fixture = _fixture(root)
+def _source_fixture(root: Path, *, grouped_source: bool = False) -> dict:
+    fixture = _fixture(root, grouped_source=True, room_topology=True) if grouped_source else _fixture(root)
     install_path = fixture["installation_receipt"]
     install = json.loads(install_path.read_text())
     rights = install_path.parent / "rights.json"
@@ -86,7 +86,62 @@ def _source_fixture(root: Path) -> dict:
         row["sha256"], row["size_bytes"] = _sha(path), path.stat().st_size
     prepared["source_installation_digest"] = install["receipt_digest"]
     _write(prepared_path, prepared, "receipt_digest")
+    if grouped_source:
+        from blueprint_pipeline import public_scene_source_preparation as preparation
+        output = root / 'partitioned-preparation'
+        with patch.object(preparation, '_verified_checkout_head', return_value=SHA):
+            preparation.materialize_public_scene_source_preparation(
+                installation_receipt_path=install_path,
+                task_objects=[{'role': 'movable_subject', 'source_instance_id': '115'},
+                              {'role': 'source_support', 'source_instance_id': '85'}],
+                expected_source_commit=SHA, approved_roots=[root], output_root=output)
+        fixture['source_preparation'] = output / 'public_scene_source_preparation.v1.json'
     return fixture
+
+
+@pytest.mark.parametrize('wrong_original_digest', [False, True])
+def test_partitioned_source_selection_binds_exact_derived_collision(tmp_path, wrong_original_digest):
+    fixture = _source_fixture(tmp_path, grouped_source=True)
+    prepared_path = fixture['source_preparation']
+    prepared = json.loads(prepared_path.read_text())
+    original = next(row for row in json.loads(fixture['installation_receipt'].read_text())['files']
+                    if row.get('role') == 'collision_usd')['sha256']
+    assert prepared['effective_collision']['sha256'] != original
+    if wrong_original_digest:
+        frame_path = prepared_path.parent / 'shared_frame_candidate.json'
+        frame = json.loads(frame_path.read_text())
+        frame['source_digests']['sage_collision_usd'] = original
+        frame_path.chmod(0o600)
+        _write(frame_path, frame, 'receipt_digest')
+        for row in prepared['artifacts']:
+            if row['relative_path'] == frame_path.name:
+                row.update(sha256=_sha(frame_path), size_bytes=frame_path.stat().st_size)
+        prepared_path.chmod(0o600)
+        _write(prepared_path, prepared, 'receipt_digest')
+    def materialize():
+        return materialize_public_scene_removal_selections(
+            task_request_path=fixture['task_request'], installation_receipt_path=fixture['installation_receipt'],
+            publisher_intake_path=fixture['publisher_intake'], source_preparation_receipt_path=prepared_path,
+            expected_production_commit=SHA, output_root=tmp_path / 'partitioned-selections')
+    if wrong_original_digest:
+        with pytest.raises(ValueError, match='shared_frame_source_mismatch'):
+            materialize()
+    else:
+        result = materialize()
+        scene = validate_removal_scene_selection(json.loads(Path(result['scene_selection']['path']).read_text()))
+        task = validate_removal_task_selection(json.loads(Path(result['task_selection']['path']).read_text()))
+        # Publisher provenance remains raw, while the selected collider is derived.
+        assert scene['source_components']['sage_collision']['sha256'] == original
+        frame = json.loads(Path(scene['registered_frame']['path']).read_text())
+        subject = next(row for row in frame['correspondences'] if row['interiorgs_instance_id'] == '115')
+        assert task['removal_plan']['source_collider_prim_path'] == subject['sage_prim_path']
+        from blueprint_pipeline.public_scene_inpainting_inputs import _frame_collision_join
+        frame_path = Path(scene['registered_frame']['path'])
+        assert _frame_collision_join(scene, frame, frame_path)
+        changed = tmp_path / 'resigned-frame.json'
+        frame['source_digests']['sage_collision_usd'] = original
+        _write(changed, frame, 'receipt_digest')
+        assert not _frame_collision_join(scene, frame, changed)
 
 
 def _selections(root: Path) -> tuple[dict, dict, dict]:

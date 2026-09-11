@@ -190,6 +190,8 @@ def execute_review_stage(job: Mapping[str, Any]) -> dict[str, Any]:
                 openai_cost_scope_attestation_path=scope, openai_admin_api_key_file=admin,
                 openai_project_id=str(review_profile.get("openai_project_id") or ""),
                 openai_api_key_id=str(review_profile.get("openai_api_key_id") or ""),
+                **({"openai_api_key_file": _secret_path(review_profile["openai_api_key_file"])}
+                   if review_profile.get("openai_api_key_file") else {}),
             )
             for key, result_key in (("track_selection_review", "review_receipt"),
                                     ("review_execution", "execution_receipt")):

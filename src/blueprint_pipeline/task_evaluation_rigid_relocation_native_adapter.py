@@ -982,6 +982,15 @@ def adapt_rigid_relocation_task_template(
         native_task_spec["push_contact_max_displacement_m"] = (
             PUSH_CONTACT_MAX_DISPLACEMENT_M
         )
+    if "surface_target" in template:
+        from .task_evaluation_surface_target import bind_native_surface_target
+        surface = template["surface_target"]
+        if (surface != success.get("surface_target") or configured_revision is None
+                or surface != configured_revision["task_template"].get("surface_target")
+                or (request is not None and surface != request["task"].get("surface_target"))):
+            raise TaskEvaluationRigidRelocationNativeAdapterError("rigid_relocation_surface_target_binding_mismatch")
+        native_task_spec = bind_native_surface_target(task_spec=native_task_spec, target=surface,
+            static=documents[STATIC_QUALIFICATION_CONTRACT_PATH], support=documents[SUPPORT_PLANE_CONTRACT_PATH])
     native_definition = {
         "schema_version": "task_evaluation_native_task_definition.v1",
         "identity": dict(task["identity"]),

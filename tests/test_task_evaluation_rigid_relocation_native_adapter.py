@@ -414,6 +414,54 @@ def test_pick_and_place_preserves_explicit_grasp_and_builds_native_phases(
     assert phase_ids[:3] == ["pregrasp", "grasp_contact", "lift_clearance"]
     assert "place" in phase_ids
     assert "release" in phase_ids
+def test_surface_region_reaches_native_adapter_and_sealed_owner_contract(tmp_path: Path) -> None:
+    from blueprint_pipeline.task_evaluation_surface_target import derive_surface_target, surface_execution_limits
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import pick_and_place_task_records
+    from blueprint_pipeline.task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
+    launch, configured, references, docs = _case(tmp_path)
+    start = docs[DEFINITION]["start_center_xyz_m"]
+    source, support = docs[SOURCE_OBJECT], docs[SUPPORT]
+    target = derive_surface_target(destination={"kind": "green_region", "relation": "on", "visible_label": "green spot",
+        "position_world_m": [start[0]+.5, start[1], support["top_z_m"]],
+        "orientation_xyzw": [0, 0, 0, 1], "radius_m": .15}, support=support,
+        source_min=source["aabb_min_xyz_m"], source_max=source["aabb_max_xyz_m"], support_instance_id="support")
+    success = surface_execution_limits(success={"control_frequency_hz": 20, "maximum_episode_seconds": 12,
+        "minimum_lift_m": .05, "pregrasp_clearance_m": .1, "minimum_planar_displacement_m": .2,
+        "maximum_final_planar_target_error_m": .02, "maximum_retries": 0, "maximum_regrasps": 0}, support=support)
+    definition, criteria, execution = pick_and_place_task_records(task_identity=launch["task"]["identity"],
+        object_identity=configured["replacement"]["identity"], start_center=start,
+        target_center=[start[0]+.5, start[1], start[2]], source_min=source["aabb_min_xyz_m"],
+        source_max=source["aabb_max_xyz_m"], grasp_axis=2, grasp_sign=1., jaw_axis=1,
+        success=success, resolved_seed=839873104)
+    definition["surface_target"] = target
+    definition["success"]["surface_target"] = target
+    criteria["surface_target"] = target
+    definition["owner_success_contract_authority"] = {"confirmation_status": "confirmed", "accepted_by": "fixture-owner",
+                                                     "authority_reference": "fixture-only-owner-intent"}
+    static = copy.deepcopy(docs[STATIC])
+    center = static["observed_structure"]["center_of_mass_m"]
+    static["observed_structure"]["collision_bounds_body_frame_m"] = {
+        "minimum": [source["aabb_min_xyz_m"][i] - start[i] + center[i] for i in range(3)],
+        "maximum": [source["aabb_max_xyz_m"][i] - start[i] + center[i] for i in range(3)]}
+    static["result_digest"] = canonical_digest(static, digest_field="result_digest")
+    for key, doc in ((DEFINITION, definition), (SUCCESS, criteria), (EXECUTION, execution), (STATIC, static)):
+        _rewrite(tmp_path=tmp_path, configured=configured, references=references, contract_path=key, document=doc)
+    configured["task_template"]["surface_target"] = target
+    configured["revision_digest"] = canonical_digest(configured, digest_field="revision_digest")
+    launch["task"].update(strategy="pick_and_place", surface_target=target,
+                         configured_scene_revision_digest=configured["revision_digest"])
+    result = adapt_rigid_relocation_task_template(request=launch, configured_revision=configured,
+                                                  materialized_references=references)
+    spec = result["native_task_definition"]["task_spec"]
+    assert spec["visible_target_marker"]["radius_m"] == .15
+    assert spec["interaction_affordance"]["intended_support_prim_paths"] == [support["sage_prim_path"]]
+    contract = _derive_configured_owner_success_contract(spec, site_id="fixture-scene", task_id=launch["task"]["identity"]["id"])
+    assert contract["criteria"]["surface_target"] == target
+    assert contract["criteria"]["controls"]["mode"] == "required_per_cell"
+    assert contract["criteria"]["retreat"]["mode"] == "required"
+    assert spec["settle_window_samples"] == 21
+
+
 def test_rigid_root_cannot_begin_below_registered_support(tmp_path: Path) -> None:
     launch, configured, references, docs = _case(tmp_path)
     source = copy.deepcopy(docs[SOURCE_OBJECT])
