@@ -1,4 +1,4 @@
-"""Derive exact recovery bindings only across recorded compatible releases.
+"""Derive exact recovery bindings across recorded compatible releases/retries.
 
 The operator's exact binding is the immutable opt-in anchor. This module writes
 only its own derivation receipts; the existing controller still owns retries,
@@ -178,7 +178,13 @@ def _derive(service, anchor, *, parent_request_digest, parent_queue_root):
     for event, _ in rows[first + 1:last + 1]:
         next_ref = event.get("state", {}).get("attempt")
         if next_ref is not None and next_ref != prior_ref:
-            edges.append(_release_edge(prior_ref, next_ref, prior_link_ref, event["state"], directory, anchor, config))
+            before, after = (_attempt(ref, directory, anchor) for ref in (prior_ref, next_ref))
+            if before["source_commit"] == after["source_commit"]:
+                from .recovery_attempt_lineage import recovery_edge
+                edge = recovery_edge(prior_ref, next_ref, prior_link_ref, event["state"], directory, anchor, config, intent)
+            else:
+                edge = _release_edge(prior_ref, next_ref, prior_link_ref, event["state"], directory, anchor, config)
+            edges.append(edge)
             prior_ref = next_ref
         if event.get("state", {}).get("preparation_link") is not None:
             prior_link_ref = event["state"]["preparation_link"]
