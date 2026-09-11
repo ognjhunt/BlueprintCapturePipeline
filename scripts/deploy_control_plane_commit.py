@@ -1876,10 +1876,22 @@ def _activate_agent_execution(*, expected_commit: str, config_path: str | Path =
     path = Path(config_path)
     if not path.exists():
         return {"status": "not_configured", "activated": False}
-    from blueprint_pipeline.agent_execution.production import ProductionConfig, _read_private
-    ProductionConfig.model_validate_json(_read_private(path))
-    from blueprint_pipeline.agent_execution.release import adopt_drained_config
+    from blueprint_pipeline.agent_execution.production import ProductionAgentService, ProductionConfig, _read_private
+    config = ProductionConfig.model_validate_json(_read_private(path))
+    from blueprint_pipeline.agent_execution.release import adopt_drained_config, drain, pending_cleanup
+    from blueprint_pipeline.agent_execution.journal import AgentJournal
+    cleanup = {"status": "not_required"}
     try:
+        if config.source_commit != expected_commit and pending_cleanup(AgentJournal(config.state_root)):
+            # A completed observer can still own its provider session. Drain
+            # through the journal's normal cancellation/cleanup protocol; never
+            # rewrite terminal records or infer provider deletion from completion.
+            if _systemd_unit_state("blueprint-agent-execution.service").get("state") != "active":
+                raise ControlPlaneDeployError("deploy_agent_cleanup_worker_not_active")
+            service = ProductionAgentService(path, source_commit=config.source_commit)
+            cleanup = drain(service, target_source_commit=expected_commit, timeout_seconds=30, drive_worker=False)
+            if cleanup["status"] != "drained":
+                raise ControlPlaneDeployError("deploy_agent_cleanup_reconciliation_pending")
         adoption = adopt_drained_config(path, expected_commit=expected_commit)
     except Exception as exc:
         raise ControlPlaneDeployError("deploy_agent_configuration_requires_clean_drain") from exc
@@ -1890,7 +1902,8 @@ def _activate_agent_execution(*, expected_commit: str, config_path: str | Path =
     if observed.get("enabled") != "enabled" or observed.get("state") != "active":
         raise ControlPlaneDeployError("deploy_agent_worker_not_enabled_and_active")
     return {"status": "active", "activated": True, "unit": unit, "source_commit": expected_commit,
-            "enabled": observed["enabled"], "state": observed["state"], "configuration_adoption": adoption}
+            "enabled": observed["enabled"], "state": observed["state"], "configuration_adoption": adoption,
+            "release_cleanup": cleanup}
 
 
 def _require_terminal_controls_quiescence() -> None:

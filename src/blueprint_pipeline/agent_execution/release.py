@@ -22,7 +22,7 @@ def pending_cleanup(journal):
     return [journal.task(row["task_id"]) for row in rows]
 
 
-def drain(service, *, target_source_commit: str, timeout_seconds: float = 30):
+def drain(service, *, target_source_commit: str, timeout_seconds: float = 30, drive_worker: bool = True):
     if not 0 < timeout_seconds <= 1800:
         raise AgentExecutionError("agent_release_drain_timeout_invalid")
     import re
@@ -50,7 +50,11 @@ def drain(service, *, target_source_commit: str, timeout_seconds: float = 30):
                     service.service.request_cleanup(task_id)
             except AgentExecutionError as exc:
                 errors[task_id] = str(exc)
-        service.service.tick()
+        # The root deployment controller must let the installed service account
+        # read its private task records and provider credential. Root may queue
+        # cleanup through the journal, but is not an admitted task-record owner.
+        if drive_worker:
+            service.service.tick()
         time.sleep(0.1)
     value = {**marker, "status": "drained" if not remaining else "reconciliation_pending",
              "remaining_task_ids": [task["task_id"] for task in remaining], "errors": errors,
