@@ -100,6 +100,12 @@ def validate_configured_scene_revision(
             "configured_scene_revision_task_scene_identity_conflict"
         )
     destination = task.get("destination")
+    if "surface_target" in task:
+        from .task_evaluation_surface_target import validate_surface_target
+        try:
+            validate_surface_target(task["surface_target"])
+        except (ValueError, KeyError, TypeError) as exc:
+            raise TaskEvaluationConfiguredSceneRevisionError("configured_scene_revision_surface_target_invalid") from exc
     if isinstance(destination, Mapping) and (
         destination.get("identity") == revision["replacement"]["identity"]
         or "placement_qualification" in destination

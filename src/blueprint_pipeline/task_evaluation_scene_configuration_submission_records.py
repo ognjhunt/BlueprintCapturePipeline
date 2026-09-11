@@ -597,15 +597,17 @@ def pick_and_place_task_records(
     grasp_sign: float,
     success: Mapping[str, Any],
     resolved_seed: int,
+    jaw_axis: int = 2,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Template, success criteria, and execution spec for one pick-and-place task.
 
-    The grasp is authored on the subject face that points away from the
-    destination along the support's long axis (``grasp_sign`` is the sign of that
-    face's offset in the scoring frame), with a vertical parallel-jaw axis so the
-    thin subject is pinched across its thickness.
+    The selected face and orthogonal jaw axis are explicit task geometry.
+    The default vertical jaw axis preserves the historical thin-object grasp;
+    surface tasks use a top approach with horizontal jaws.
     """
 
+    if grasp_axis not in (0, 1, 2) or jaw_axis not in (0, 1, 2) or jaw_axis == grasp_axis:
+        raise ValueError("pick_and_place_grasp_axes_invalid")
     frequency = float(success["control_frequency_hz"])
     seconds = float(success["maximum_episode_seconds"])
     steps = int(round(frequency * seconds))
@@ -675,7 +677,7 @@ def pick_and_place_task_records(
         "interaction_affordance": {
             "contact_point_scoring_frame_m": contact,
             "approach_unit_scoring_frame": outward,
-            "jaw_unit_scoring_frame": [0.0, 0.0, 1.0],
+            "jaw_unit_scoring_frame": [1.0 if i == jaw_axis else 0.0 for i in range(3)],
             "lift_unit_world": [0.0, 0.0, 1.0],
             "pregrasp_clearance_m": float(success["pregrasp_clearance_m"]),
             "minimum_lift_m": float(success["minimum_lift_m"]),

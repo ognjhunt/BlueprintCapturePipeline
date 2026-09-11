@@ -50,6 +50,14 @@ def _put(path, value):
 
 def _source(intent, config, release, resolver):
     if intent["request"]["source"]["kind"] == "public_scene":
+        if config.get("public_source_bootstrap_enabled") is True:
+            from .task_evaluation_public_scene_catalog import load_catalog
+            registered = load_catalog(config.get("public_source_catalog_path"))["sources"]
+            if any(row["binding_id"] == intent["request"]["source"]["binding_id"] for row in registered):
+                from .task_evaluation_public_scene_bootstrap import prepare_registered_public_scene
+                # Registered sources bind per intent, so two owners/tasks may
+                # use the same publisher scene without sharing consent or state.
+                return prepare_registered_public_scene(intent=intent, config=config, release=release)
         path = safe_path(Path(config["public_source_binding_root"]) / (intent["request"]["source"]["binding_id"] + ".json"))
         if not path.is_file():
             if config.get("public_source_bootstrap_enabled") is True:
@@ -428,6 +436,14 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     if resolution.status != "resolved":
         require(resolution.status in {"awaiting_source", "needs_input", "blocked"}, "source_status_invalid")
         return emit(resolution.status, "source", resolution.blockers)
+    if source_bootstrap and config.get("require_whole_chain_capacity", False) and not state.get("attempt_id"):
+        from .control_plane_capacity_controller import whole_chain_admission
+        admission = whole_chain_admission(config["factory_output_root"],
+            reservation_root=(config.get("preparation_worker") or {}).get(
+                "disk_reservation_root", "/var/lib/blueprint/pipeline-control-plane/disk-reservations"), now=now)
+        state["capacity_admission"] = admission
+        if admission["status"] != "admitted":
+            return emit("awaiting_execution", "capacity", ["scene_whole_chain_capacity_insufficient"])
     require(resolution.binding_path is not None and resolution.machinery_path is not None and callable(resolution.materializer),
             "source_resolution_incomplete")
     binding = read(resolution.binding_path, digest_field="binding_digest")

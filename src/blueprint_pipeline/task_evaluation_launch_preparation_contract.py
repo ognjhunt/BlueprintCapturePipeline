@@ -176,7 +176,12 @@ def _validate_launch_preparation_request(
             "launch_preparation_task_strategy_kind_mismatch"
         )
     destination = task.get("destination")
-    if task["strategy"] == "pick_and_place":
+    if "surface_target" in task:
+        from .task_evaluation_surface_target import validate_surface_target
+        validate_surface_target(task["surface_target"])
+        if destination is not None or task["strategy"] != "pick_and_place":
+            raise TaskEvaluationLaunchPreparationContractError("launch_preparation_surface_target_invalid")
+    elif task["strategy"] == "pick_and_place":
         pose = destination.get("pose_world") if isinstance(destination, Mapping) else None
         orientation = (
             pose.get("orientation_xyzw") if isinstance(pose, Mapping) else None

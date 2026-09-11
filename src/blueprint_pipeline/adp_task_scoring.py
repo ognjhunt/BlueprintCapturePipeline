@@ -365,6 +365,7 @@ def validate_rigid_task_success_contract(
                 "temporal_invariants",
                 *({"retreat"} if "retreat" in criteria else set()),
                 *({"controls"} if "controls" in criteria else set()),
+                *({"surface_target"} if "surface_target" in criteria else set()),
             },
             label="criteria",
             errors=errors,
@@ -379,6 +380,13 @@ def validate_rigid_task_success_contract(
         from .adp_rigid_retreat_scoring import validate_retreat_criterion
 
         errors.extend(validate_retreat_criterion(criteria["retreat"]))
+
+    if "surface_target" in criteria:
+        from .task_evaluation_surface_target import validate_surface_target
+        try:
+            validate_surface_target(criteria["surface_target"])
+        except (ValueError, TypeError, KeyError):
+            errors.append("rigid_task_success_contract_surface_target_invalid")
 
     destination = criteria.get("destination_containment")
     if not isinstance(destination, Mapping):

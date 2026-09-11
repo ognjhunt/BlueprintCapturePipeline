@@ -61,7 +61,9 @@ def _validate_task(task: dict[str, Any]) -> None:
                 "identity_invalid")
         slug(identity["id"])
         slug(identity["version"])
-    require(task["destination"].get("relation") == "inside", "task_request_invalid")
+    require(task["destination"].get("relation") == "inside"
+            or (task["destination"].get("kind") == "green_region"
+                and task["destination"].get("relation") == "on"), "task_request_invalid")
     physics = task["subject"].get("physics_bounds")
     require(isinstance(physics, dict), "task_subject_physics_bounds_invalid")
     for field in ("mass_kg_bounds", "static_friction_bounds", "dynamic_friction_bounds",
@@ -156,7 +158,7 @@ def _destination(path: Path, subject_min: list, subject_max: list) -> tuple[dict
 def materialize_scene_configuration_submission(
     *, task_request_path: str | Path, installation_receipt_path: str | Path,
     publisher_intake_path: str | Path, source_preparation_receipt_path: str | Path,
-    destination_simready_result_path: str | Path, deploy_receipt_path: str | Path,
+    destination_simready_result_path: str | Path | None, deploy_receipt_path: str | Path,
     release_provenance_path: str | Path, release_environment_path: str | Path,
     runtime_publication_root: str | Path, rights_evidence: dict[str, Any],
     staging_root: str | Path, expected_production_commit: str,
@@ -197,34 +199,54 @@ def materialize_scene_configuration_submission(
         scene_id=scene_id, instance_id=str(task["support"]["source_instance_id"]),
         semantic_label=support_target["semantic_label"], sage_prim_path=support_source["match"]["prim_path"],
         bounds_min=support_target["world_aabb_min_m"], bounds_max=support_target["world_aabb_max_m"])
-    destination, static, destination_paths = _destination(
-        Path(destination_simready_result_path), lower, upper)
-    proposal = derive_passive_destination_placement_proposal(
-        support_plane=support, subject_selection=source_object,
-        destination_identity=destination["destination_identity"],
-        destination_static_qualification=static,
-        clearance_gap_m=task["destination"]["clearance_gap_m"],
-        support_edge_margin_m=task["destination"]["support_edge_margin_m"])
-    # A rotated destination needs a separately authored subject orientation;
-    # never silently reuse the source-aligned grasp/template in that case.
-    require(abs(proposal["derivation"]["yaw_rad"]) < 1e-9,
-            "rotated_destination_subject_orientation_not_authored")
     start = source_object["center_xyz_m"]
-    target = list(proposal["pose_world"]["position_world_m"])
-    interior = destination["interior_bounds_body_frame_m"]
-    for axis in range(2):
-        target[axis] += (interior["minimum"][axis] + interior["maximum"][axis]) / 2.0
-    target[2] += interior["minimum"][2] + (upper[2] - lower[2]) / 2.0
-    grasp_axis = "xyz".index(proposal["derivation"]["long_axis"])
-    grasp_sign = -1.0 if proposal["derivation"]["side"] == "positive" else 1.0
+    surface_target = None
+    if task["destination"].get("kind") == "green_region":
+        from .task_evaluation_surface_target import derive_surface_target
+        require(destination_simready_result_path is None, "surface_target_destination_asset_forbidden")
+        surface_target = derive_surface_target(destination=task["destination"], support=support,
+            source_min=lower, source_max=upper, support_instance_id=task["support"]["source_instance_id"])
+        target = list(surface_target["surface_position_world_m"])
+        target[2] += (upper[2] - lower[2]) / 2.0
+        grasp_axis, grasp_sign = 2, 1.0
+    else:
+        require(destination_simready_result_path is not None, "destination_asset_required")
+        destination, static, destination_paths = _destination(Path(destination_simready_result_path), lower, upper)
+        proposal = derive_passive_destination_placement_proposal(
+            support_plane=support, subject_selection=source_object,
+            destination_identity=destination["destination_identity"], destination_static_qualification=static,
+            clearance_gap_m=task["destination"]["clearance_gap_m"],
+            support_edge_margin_m=task["destination"]["support_edge_margin_m"])
+        require(abs(proposal["derivation"]["yaw_rad"]) < 1e-9,
+                "rotated_destination_subject_orientation_not_authored")
+        target = list(proposal["pose_world"]["position_world_m"])
+        interior = destination["interior_bounds_body_frame_m"]
+        for axis in range(2):
+            target[axis] += (interior["minimum"][axis] + interior["maximum"][axis]) / 2.0
+        target[2] += interior["minimum"][2] + (upper[2] - lower[2]) / 2.0
+        grasp_axis = "xyz".index(proposal["derivation"]["long_axis"])
+        grasp_sign = -1.0 if proposal["derivation"]["side"] == "positive" else 1.0
+    effective_success = task["success"]
+    if surface_target:
+        from .task_evaluation_surface_target import surface_execution_limits
+        effective_success = surface_execution_limits(success=task["success"], support=support)
     template, success, execution = records.pick_and_place_task_records(
         task_identity=task["task_identity"], object_identity=task["subject"]["replacement_identity"],
         start_center=start, target_center=target, source_min=lower, source_max=upper,
-        grasp_axis=grasp_axis, grasp_sign=grasp_sign, success=task["success"],
-        resolved_seed=task.get("resolved_seed", 1))
+        grasp_axis=grasp_axis, grasp_sign=grasp_sign, success=effective_success,
+        resolved_seed=task.get("resolved_seed", 1),
+        jaw_axis=min(range(2), key=lambda i: upper[i] - lower[i]) if surface_target else 2)
     instruction = (f"Pick up the {task['subject']['review_label'].replace('_', ' ')}, "
-                   f"place it fully inside the {task['destination']['visible_label']}, "
+                   f"place it {'on' if surface_target else 'fully inside'} the {task['destination']['visible_label']}, "
                    "release it, and move the gripper clear.")
+    if surface_target:
+        template["surface_target"] = surface_target
+        template["success"]["surface_target"] = surface_target
+        success["surface_target"] = surface_target
+        template["execution_limits_provenance"] = {
+            "profile": "fixed_arm_surface_region_v1", "owner_task_preserved": True,
+            "derived_fields": sorted(set(effective_success) - set(task["success"])),
+            "measured_physics_claimed": False, "native_trajectory_qualification_required": True}
     require(task.get("instruction", instruction) == instruction, "instruction_semantics_mismatch")
     # Confirmation refers to the retained owner task request. Do not invent
     # confirmation for a request that contains only provider-processing rights.
@@ -335,13 +357,14 @@ def materialize_scene_configuration_submission(
             "origin": "connected_component_partition", "upstream_source_sha256": original_collision["sha256"],
             "partition_receipt": partition_ref})
     manifest_ref = stage.json("scene/source_scene_manifest.v1.json", manifest)
-    dest_refs = {key: stage.copy(path, f"destination/{key}{path.suffix}")
-                 for key, path in destination_paths.items()}
-    dest_result_ref = stage.copy(Path(destination_simready_result_path),
-                                "destination/simready_result.v1.json")
-    stage.json("configuration/destination_placement_proposal.v1.json", proposal)
-    supplemental = {"identity": destination["destination_identity"], "relation": "inside",
-                    **dest_refs, "simready_result": dest_result_ref}
+    supplemental = None
+    if surface_target is None:
+        dest_refs = {key: stage.copy(path, f"destination/{key}{path.suffix}")
+                     for key, path in destination_paths.items()}
+        dest_result_ref = stage.copy(Path(destination_simready_result_path), "destination/simready_result.v1.json")
+        stage.json("configuration/destination_placement_proposal.v1.json", proposal)
+        supplemental = {"identity": destination["destination_identity"], "relation": "inside",
+                        **dest_refs, "simready_result": dest_result_ref}
     tolerance = records.metric_envelope_tolerance(
         source_min=lower, source_max=upper, target_match=source["match"])
     replacement = task["subject"]["replacement_identity"]
@@ -436,13 +459,13 @@ def materialize_scene_configuration_submission(
                  "definition": stage.json("configuration/task_template.v1.json", template),
                  "success_criteria": stage.json("configuration/task_success_criteria.v1.json", success),
                  "execution": stage.json("configuration/task_execution_spec.v1.json", execution),
-                 "destination": {
+                 **({"surface_target": surface_target} if surface_target else {"destination": {
                      "schema_version": "task_evaluation_rigid_destination_asset.v1",
                      "identity": destination["destination_identity"], "relation": "inside",
                      "visible_label": task["destination"]["visible_label"],
                      **{k: dest_refs[k] for k in ("asset", "rights_admission", "static_qualification")},
                      "pose_world": proposal["pose_world"], "native_probe": proposal["native_probe"],
-                     "provider_disclosure_allowed": True}},
+                     "provider_disclosure_allowed": True}})},
         "sensors": {"configuration": camera_ref},
         "runtime": {
             "identity": {"id": "task-evaluation-scene-configuration-provider", "version": commit[:8]},

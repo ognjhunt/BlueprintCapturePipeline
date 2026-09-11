@@ -266,6 +266,8 @@ def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     )
     raw_success_contract = spec.get("task_success_contract")
     if raw_success_contract is None:
+        if spec.get("surface_target") is not None:
+            raise TaskNeutralScoringError(["rigid_task_surface_target_contract_required"])
         normalized["task_success_contract"] = _default_rigid_task_success_contract(
             normalized
         )
@@ -288,6 +290,14 @@ def _normalize_rigid_task_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
             raise TaskNeutralScoringError(
                 ["rigid_task_success_contract_default_criteria_mismatch"]
             )
+        surface = validated_success_contract["criteria"].get("surface_target")
+        if surface is not None or spec.get("surface_target") is not None:
+            from .task_evaluation_surface_target import marker_for_surface_target
+            if (surface != spec.get("surface_target") or surface is None
+                    or marker_for_surface_target(surface) != spec.get("visible_target_marker")
+                    or not spec.get("subject_collision_bounds_scoring_frame_m")):
+                raise TaskNeutralScoringError(["rigid_task_surface_target_binding_mismatch"])
+            normalized["subject_collision_bounds_scoring_frame_m"] = spec["subject_collision_bounds_scoring_frame_m"]
         if "retreat" in validated_success_contract["criteria"]:
             retreat_errors = validate_retreat_binding(spec, validated_success_contract)
             if retreat_errors:
@@ -938,6 +948,13 @@ def score_rigid_task_episode(
             release_width_m=spec["release_gripper_width_min_m"],
         )
         criterion_results["retreat"] = retreat["satisfied"]
+    surface = None
+    if "surface_target" in criteria:
+        from .task_evaluation_surface_target import score_surface_target
+        surface = score_surface_target(target=criteria["surface_target"],
+            bounds=spec["subject_collision_bounds_scoring_frame_m"], samples=samples,
+            frequency_hz=spec["control_frequency_hz"], minimum_lift_m=spec["minimum_lift_m"])
+        criterion_results["surface_target"] = surface["satisfied"]
     succeeded = all(criterion_results.values())
     planar_push = spec["manipulation_strategy"] == "planar_push"
     required_task_contact_readback = task_contact_mode != "ignored"
@@ -949,6 +966,7 @@ def score_rigid_task_episode(
         or (required_task_contact_readback and not task_contact_complete)
         or temporal_readback_gaps
         or (retreat is not None and not retreat["readback_complete"])
+        or (surface is not None and not surface["readback_complete"])
     ):
         status = "undetermined"
         if not destination_pose_readback_complete:
@@ -961,6 +979,8 @@ def score_rigid_task_episode(
             outcome = "native_task_contact_readback_missing"
         elif retreat is not None and not retreat["readback_complete"]:
             outcome = "native_retreat_readback_missing"
+        elif surface is not None and not surface["readback_complete"]:
+            outcome = "native_surface_target_readback_missing"
         else:
             outcome = "native_temporal_event_readback_missing"
     elif not safety_ok:
@@ -999,6 +1019,7 @@ def score_rigid_task_episode(
         name for name, satisfied in criterion_results.items() if not satisfied
     ]
     plain_reasons = {
+        "surface_target": "The object did not complete a grasped lift and stable upright release wholly inside the marked region.",
         "retreat": "The released gripper did not maintain the authored withdrawal clearance from the object.",
         "destination_containment": "The object did not remain inside the authored destination.",
         "destination_pose_stability": "The destination moved beyond its qualified pose tolerance.",
@@ -1048,6 +1069,7 @@ def score_rigid_task_episode(
         "task_succeeded": succeeded,
         "outcome": outcome,
         "criteria_satisfied": criterion_results,
+        **({"surface_target_measurements": surface} if surface is not None else {}),
         "failed_criteria": failed_criteria,
         "failure_reason_plain_english": (
             None

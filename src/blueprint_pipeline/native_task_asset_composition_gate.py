@@ -46,7 +46,15 @@ def assess_composition_pixels(diagnostic, *, output_root):
 def run_native_asset_composition_gate(*, built, plan, output_root, stage=None):
     """Use the already-warm renderer; change visibility only, with no physics step."""
     roles = {row.get("semantic_role") for row in plan.get("objects", [])}
-    if not {"scene_appearance", "task_support"}.issubset(roles):
+    targets = []
+    if "task_support" in roles:
+        targets.append("task_support")
+    if any(row.get("task_subject") is True or row.get("semantic_role") == "task_object"
+           for row in plan.get("objects", [])):
+        targets.append("task_object")
+    if (plan.get("task_spec") or {}).get("surface_target") is not None:
+        targets.append("task_target_marker")
+    if "scene_appearance" not in roles or not targets:
         return seal({"schema_version": "native_task_asset_composition_gate.v1",
             "status": "not_applicable", "passed": True,
             "reason": "no_mesh_support_and_appearance_composition", "blockers": []})
@@ -59,24 +67,25 @@ def run_native_asset_composition_gate(*, built, plan, output_root, stage=None):
     env = built.env.unwrapped
     initial_step = env.sim.get_physics_step_count()
     try:
-        for role in ("external", "overview"):
+        from itertools import product
+        for role, target_class in product(("external", "overview"), targets):
             if role not in built.camera_scene_names:
                 blockers.append("composition_required_camera_missing:" + role)
                 continue
             request = seal({"schema_version": REQUEST_SCHEMA, "passes": list(PASSES),
-                "camera_role": role, "target_semantic_class": "task_support",
+                "camera_role": role, "target_semantic_class": target_class,
                 "policy_queries_permitted": 0, "physics_steps_between_passes_permitted": 0,
                 "source_asset_mutation_permitted": False, "render_refresh_count": 4,
                 "resolved_scene_plan_digest": canonical_digest(plan)}, "request_digest")
-            output = root / role
+            output = root / role / target_class
             result = run_composition_diagnostic(request, output_root=output,
                 adapters=make_native_adapters(built=built, stage=stage, request=request))
             assessment = assess_composition_pixels(result, output_root=output)
-            rows.append({"camera_role": role, "assessment": assessment,
+            rows.append({"camera_role": role, "target_semantic_class": target_class, "assessment": assessment,
                 "diagnostic": {"path": str(output / "composition_diagnostic.json"),
                     **file_record(output / "composition_diagnostic.json")},
                 "diagnostic_digest": result["receipt_digest"]})
-            blockers.extend(role + ":" + item for item in assessment["blockers"])
+            blockers.extend(role + ":" + target_class + ":" + item for item in assessment["blockers"])
     except Exception as exc:
         blockers.append("composition_gate_capture_failed:" + type(exc).__name__ + ":" + str(exc))
     finally:
@@ -90,7 +99,8 @@ def run_native_asset_composition_gate(*, built, plan, output_root, stage=None):
         blockers.append("composition_gate_physics_advanced")
     receipt = seal({"schema_version": "native_task_asset_composition_gate.v1",
         "status": "blocked" if blockers else "passed", "passed": not blockers,
-        "scope": "exact_reset_external_and_overview_support_coverage",
+        "scope": "exact_reset_external_and_overview_opaque_task_asset_coverage",
+        "target_semantic_classes": targets,
         "resolved_scene_plan_digest": canonical_digest(plan), "views": rows,
         "policy_queries": 0, "physics_steps": env.sim.get_physics_step_count() - initial_step,
         "full_scene_sensor_buffers_refreshed": True, "source_assets_mutated": False,

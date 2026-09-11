@@ -716,6 +716,9 @@
         },
         "execution": {
           "$ref": "#/$defs/reference"
+        },
+        "surface_target": {
+          "$ref": "#/$defs/surface_target"
         }
       },
       "allOf": [
@@ -789,8 +792,17 @@
             ]
           },
           "then": {
-            "required": [
-              "destination"
+            "oneOf": [
+              {
+                "required": [
+                  "destination"
+                ]
+              },
+              {
+                "required": [
+                  "surface_target"
+                ]
+              }
             ]
           }
         },
@@ -828,6 +840,28 @@
             "properties": {
               "strategy": {
                 "const": "articulated_open_close"
+              }
+            }
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "destination",
+              "surface_target"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "surface_target"
+            ]
+          },
+          "then": {
+            "properties": {
+              "strategy": {
+                "const": "pick_and_place"
               }
             }
           }
@@ -1715,6 +1749,81 @@
         },
         "authorization_digest": {
           "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "surface_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "shape",
+        "non_colliding",
+        "visible_label",
+        "radius_m",
+        "surface_position_world_m",
+        "support_prim_path",
+        "support_source_instance_id",
+        "maximum_tilt_rad",
+        "stable_seconds",
+        "maximum_linear_speed_m_s",
+        "maximum_angular_speed_rad_s",
+        "target_digest"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "task_evaluation_surface_target.v1"
+        },
+        "shape": {
+          "const": "flat_green_disc"
+        },
+        "non_colliding": {
+          "const": true
+        },
+        "visible_label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "radius_m": {
+          "type": "number",
+          "exclusiveMinimum": 0, "maximum": 0.5
+        },
+        "surface_position_world_m": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "number"
+          }
+        },
+        "support_prim_path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "support_source_instance_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "maximum_tilt_rad": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1.5707963267948966
+        },
+        "stable_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "maximum_linear_speed_m_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "maximum_angular_speed_rad_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "target_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
         }
       }
     }

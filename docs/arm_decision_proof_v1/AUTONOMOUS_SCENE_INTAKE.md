@@ -104,10 +104,12 @@ fetches missing publisher bytes, verifies hashes, calls the canonical atomic
 installer, and derives the source context. It retains progress and resumes
 verified downloads under the same owner intent. This CPU source phase takes an
 explicit shared-ledger disk reservation; the whole-chain capacity gate remains
-mandatory before any execution attempt is reserved. The bootstrap stops at an
-honest `public_scene_configuration_binding_required` boundary until the next
-producer can supply a valid configuration binding. It never fabricates a tray,
-qualified destination, or provider receipt.
+mandatory before any execution attempt is reserved. Registered public sources
+continue through local standard-splat conversion and the existing attempt
+factory. The controller retains bindings per intent, so different owners and
+tasks do not share consent or mutable state. A completed conversion is reopened
+and reused after a deployment. Missing exact provider terms or source evidence
+still refuses before execution; no tray or qualification receipt is fabricated.
 
 A combined SAGE furniture mesh can be partitioned into separate source-object
 and support components using `sage_collision_partition`. Original publisher
@@ -124,3 +126,28 @@ an isolated queue. The existing installation CLI can retain this scope and the
 public catalog through compatible deployments using `--only-intent-id`,
 `--public-source-bootstrap-enabled`, and `--public-source-catalog`. These flags
 confer no new spending, disclosure, or dataset rights.
+
+For fresh sources, install the exact previously accepted combined provider terms
+at `/etc/blueprint/task-evaluation-private-scene-provider-terms.json`. Its canonical
+digest must match the retained intent. The controller projects task-bound SAM
+review and private source-processing authorities from that consent, retains the
+publisher terms, and binds the current renderer. Historical scene review results
+are not inherited. Catalog task proposals are UI defaults; the authenticated
+owner's selected subject and support IDs must resolve against the actual source.
+
+`destination.kind=green_region` and `relation=on` compile to the first-class
+`task.surface_target` contract. Exactly one of a physical destination asset or a
+surface target is allowed. The region binds its support, position, radius,
+uprightness and settling limits to both the non-colliding marker and the scorer.
+The native adapter rechecks fit against the qualified collider, and scoring
+requires measured lift, full conservative footprint containment, release,
+support contact, velocity bounds and the native marker transform. Missing
+readback is undetermined. Both per-cell controls remain required.
+
+The versioned fixed-arm surface profile supplies visible, preregistered runtime
+safety constraints when the task does not supply them; these are not measured
+physics or reachability claims. Different geometry and explicit task limits use
+the same compiler. The composition gate checks the manipulated object and
+surface marker in addition to any physical destination support, restores full
+sensor buffers, and executes before policies load. Passing the hermetic handoff
+tests does not establish native rendering, manipulation, or end-to-end delivery.

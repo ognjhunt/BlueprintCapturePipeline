@@ -39,6 +39,11 @@ PROVIDER_OPTIONS = {"runtime_image_identity", "method_version", "output_probabil
                     "async_loading_frames"}
 
 
+def source_reference_names(task):
+    return SOURCE_REFS - ({"destination_simready_result"}
+        if task.get("destination", {}).get("kind") == "green_region" else set())
+
+
 def record(path):
     path = Path(path)
     return {"path": str(path), "sha256": sha(path), "size_bytes": path.stat().st_size}
@@ -301,7 +306,7 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
                 "public_factory_retained_numeric_proposal_changed")
     require(str(seed.get("publisher_scene_id")) == str(binding.get("publisher_scene_id"))
             and seed.get("appearance_removal_method") == "sam31", "public_factory_task_source_mismatch")
-    require(set(binding.get("references", {})) == SOURCE_REFS, "public_factory_source_references_invalid")
+    require(set(binding.get("references", {})) == source_reference_names(seed), "public_factory_source_references_invalid")
     refs = binding["references"]
     paths = {name: _reference(ref) for name, ref in refs.items()}
     require(public_source_content_digest(read(paths["installation_receipt"], digest_field="receipt_digest"))
@@ -411,7 +416,7 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
         _source_authorities(task=task, seed=seed, refs=refs, conversion_path=conversion,
             original_source=inputs["raw"]["appearance_3dgs"]["path"], output=output, roots=roots, commit=commit)
         task.setdefault("source_input_references", {}).update({key: refs[key] for key in (
-            "installation_receipt", "source_preparation_receipt", "destination_simready_result")})
+            "installation_receipt", "source_preparation_receipt", "destination_simready_result") if key in refs})
         task["source_input_references"]["standard_splat_conversion_receipt"] = record(conversion)
         task.setdefault("configuration_provenance", {})["execution_release_rebinding"] = {
             "prior_task_request": seed_ref, "prior_execution_commit": seed.get("expected_production_commit"),
@@ -550,7 +555,7 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
             materialize_scene_configuration_submission(task_request_path=task_path,
                 installation_receipt_path=paths["installation_receipt"], publisher_intake_path=paths["publisher_intake"],
                 source_preparation_receipt_path=paths["source_preparation_receipt"],
-                destination_simready_result_path=paths["destination_simready_result"],
+                destination_simready_result_path=paths.get("destination_simready_result"),
                 deploy_receipt_path=release_paths["deploy_receipt"], release_provenance_path=release_paths["release_provenance"],
                 release_environment_path=release_paths["release_environment"],
                 runtime_publication_root=release["runtime_publication_root"],

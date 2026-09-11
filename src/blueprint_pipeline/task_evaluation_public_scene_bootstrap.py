@@ -94,9 +94,11 @@ def _prepare_registered_public_scene(*, intent, config, release, downloader=None
             and request["consent"]["private_processing_authorized"] is True,
             "public_source_choice_or_consent_mismatch")
     require(_verified_checkout_head() == release["source_commit"], "public_source_execution_commit_mismatch")
-    for role in ("subject", "support"):
-        require(str(request["task"][role].get("source_instance_id"))
-                == str(choice["task_proposal"][role]["source_instance_id"]), "public_source_task_selection_mismatch")
+    selected = [request["task"][role].get("source_instance_id") for role in ("subject", "support")]
+    require(all(type(value) in (str, int) and str(value).strip() for value in selected)
+            and str(selected[0]) != str(selected[1]), "public_source_task_selection_invalid")
+    # Catalog proposals are UI defaults. The authenticated owner selects the
+    # task; the source producer below resolves those exact IDs against bytes.
     root = safe_path(Path(config["factory_output_root"]) / intent["intent_id"] / "public-source")
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
     state_path = root / "bootstrap_progress.json"
@@ -191,6 +193,14 @@ def _prepare_registered_public_scene(*, intent, config, release, downloader=None
         value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
         atomic_json(completion, value)
     progress("source_prepared", preparation_receipt=_ref(completion))
+    if config.get("machinery_path"):
+        from .task_evaluation_public_scene_configuration_binding import bind_registered_public_configuration
+        progress("source_configuration_binding", preparation_receipt=_ref(completion))
+        result = bind_registered_public_configuration(intent=intent, choice=choice, config=config,
+            release=release, prepared_path=completion)
+        progress("source_bound", preparation_receipt=_ref(completion),
+                 source_binding=_ref(result.binding_path), machinery=_ref(result.machinery_path))
+        return result
     # The same resolver will consume the installed binding as soon as the
     # configuration producer can honestly supply it. No invented tray/result.
     return SourceResolution("awaiting_source", blockers=("public_scene_configuration_binding_required",),

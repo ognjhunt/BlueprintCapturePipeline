@@ -176,7 +176,6 @@ def validate_task_scene_owner(task, *, provider_terms_path=None, now=None):
             and consent["task_confirmed"] is True and consent["spend_authorized"] is True
             and "openai" in request["execution"]["allowed_providers"], "scene_owner_review_not_authorized")
     if provider_terms_path is not None:
-        from .task_evaluation_scene_configuration_submission_inputs import sha
-        require(consent["provider_terms_reference"] == sha(Path(provider_terms_path)),
-                "scene_owner_provider_terms_not_bound")
+        from .task_evaluation_scene_provider_terms import validate_review_terms_binding
+        validate_review_terms_binding(intent=intent, provider_terms_path=provider_terms_path)
     return intent

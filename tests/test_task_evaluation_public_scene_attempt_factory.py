@@ -40,6 +40,11 @@ def ref(path):
 @pytest.fixture
 def context(tmp_path, monkeypatch, request):
     options = getattr(request, "param", {})
+    if options.get("green_region"):
+        from itertools import product
+        from tests import test_task_evaluation_scene_configuration_submission as submission_fixture
+        monkeypatch.setattr(submission_fixture, "BOOK_CORNERS", [dict(zip("xyz", p, strict=True))
+            for p in product([-2.07, -1.99], [-3.47, -3.41], [.275, .415])])
     machine_root = tmp_path / "machine"
     machine_root.mkdir()
     profile = profile_fixtures.inputs.__wrapped__(machine_root, monkeypatch)
@@ -50,6 +55,11 @@ def context(tmp_path, monkeypatch, request):
     source = source_fixtures._source_fixture(raw_root)
     seed = json.loads(source["task_request"].read_text())
     seed.update(expected_production_commit=commit, appearance_removal_method="sam31")
+    if options.get("green_region"):
+        seed["destination"] = {"kind": "green_region", "relation": "on", "visible_label": "green spot",
+            "position_world_m": [-2.03, -2.95, .275], "orientation_xyzw": [0, 0, 0, 1], "radius_m": .07}
+        seed["instruction"] = (f"Pick up the {seed['subject']['review_label'].replace('_', ' ')}, "
+                               "place it on the green spot, release it, and move the gripper clear.")
     installation = json.loads(source["installation_receipt"].read_text())
     raw_row = next(r for r in installation["files"] if r.get("role") == "appearance_3dgs")
     raw_path = source["installation_receipt"].parent / raw_row["relative_path"]
@@ -130,6 +140,8 @@ def context(tmp_path, monkeypatch, request):
         "destination_simready_result": ref(source["destination_simready"]),
         "standard_splat_conversion_receipt": ref(conversion_path),
         **{key: ref(path) for key, path in source["rights_evidence"].items()}}
+    if options.get("green_region"):
+        references.pop("destination_simready_result")
     binding = {"schema_version": factory.BINDING_SCHEMA, "status": "admitted_for_private_processing",
         "binding_id": "public-scene-1", "source_content_digest": owner["source"]["content_digest"],
         "publisher_scene_id": "841757", "owner": owner["owner"], "rights_reference": owner["consent"]["rights_reference"],
@@ -195,6 +207,18 @@ def test_real_producers_materialize_then_revalidate_same_attempt_without_raw_rei
     request = json.loads(Path(receipt["submission_request"]["path"]).read_text())
     assert request["scene_intent_digest"] == receipt["intent_digest"]
     assert len(receipt["frozen_policy_candidates"]) == 2
+    assert factory.materialize_public_scene_attempt(**args) == receipt
+
+
+@pytest.mark.parametrize("context", [{"green_region": True}], indirect=True)
+def test_real_public_factory_accepts_green_region_without_a_destination_receipt(context):
+    args, _ = context
+    receipt = factory.materialize_public_scene_attempt(**args)
+    assert receipt["status"] == "publication_ready"
+    request = json.loads(Path(receipt["submission_request"]["path"]).read_text())
+    assert request["task"]["surface_target"]["radius_m"] == .07
+    assert "destination" not in request["task"]
+    assert not (args["output_root"] / "submission/destination").exists()
     assert factory.materialize_public_scene_attempt(**args) == receipt
 
 

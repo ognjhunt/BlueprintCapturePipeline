@@ -45,7 +45,7 @@ def validate_request(request):
             or request.get('request_digest') != canonical_digest(request, digest_field='request_digest')
             or request.get('passes') != list(PASSES)
             or request.get('camera_role') not in {'external', 'overview'}
-            or request.get('target_semantic_class') != 'task_support'
+            or request.get('target_semantic_class') not in {'task_support', 'task_object', 'task_target_marker'}
             or request.get('policy_queries_permitted') != 0
             or request.get('physics_steps_between_passes_permitted') != 0
             or request.get('source_asset_mutation_permitted') is not False
