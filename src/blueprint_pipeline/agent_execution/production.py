@@ -40,6 +40,7 @@ from .controller_recovery import ControllerRecoveryBinding, ControllerRecoveryTo
 
 
 CONFIG_ENV = "BLUEPRINT_AGENT_EXECUTION_CONFIG"
+DEFAULT_CONFIG_PATH = "/etc/blueprint/agent-execution.json"
 
 
 class OperationalDiagnosis(BaseModel):
@@ -72,6 +73,8 @@ class ProductionConfig(BaseModel):
     poll_seconds: float = Field(default=5, ge=0.1, le=60)
     supervision_store_root: str | None = None
     automatic_failure_investigation: bool = False
+    webapp_admission_url: str | None = None
+    webapp_sync_token_file: str | None = None
 
 
 class TaskRecord(BaseModel):
@@ -122,17 +125,31 @@ class ProductionAgentService:
                 raise AgentExecutionError("agent_configuration_requires_absolute_path")
         if self.config.supervision_store_root and not Path(self.config.supervision_store_root).is_absolute():
             raise AgentExecutionError("agent_configuration_requires_absolute_path")
+        if bool(self.config.webapp_admission_url) != bool(self.config.webapp_sync_token_file):
+            raise AgentExecutionError("agent_webapp_configuration_incomplete")
+        if self.config.webapp_sync_token_file and not Path(self.config.webapp_sync_token_file).is_absolute():
+            raise AgentExecutionError("agent_configuration_requires_absolute_path")
+        if self.config.webapp_admission_url:
+            from .webapp_delivery import _endpoint
+            _endpoint(self.config.webapp_admission_url)
         if any(re.fullmatch(DIGEST, identity) is None or not Path(path).is_absolute()
                for identity, path in self.config.project_guard_receipts.items()):
             raise AgentExecutionError("agent_project_guard_registry_invalid")
         self.config_digest = digest(self.config.model_dump(mode="json"))
         self.journal = AgentJournal(self.config.state_root)
         self.registry = ToolRegistry.default()
-        self.webapp_outbox = WebappAdmissionOutbox(self.journal)
+        self.webapp_outbox = WebappAdmissionOutbox(self.journal, post=self._publish_admission)
         self.service = AgentTaskService(
             journal=self.journal, runtime_for_task=self.runtime_for_task,
             validate_admission=self.validate_admission, poll_seconds=self.config.poll_seconds,
         )
+
+    def _publish_admission(self, payload):
+        from .webapp_delivery import post_admission
+        if self.config.webapp_sync_token_file:
+            token = _read_private(Path(self.config.webapp_sync_token_file), limit=16_000, secret=True).decode().strip()
+            return post_admission(payload, endpoint=self.config.webapp_admission_url, token=token)
+        return post_admission(payload)
 
     def record(self, task_id: str) -> TaskRecord:
         if re.fullmatch(IDENTIFIER, task_id) is None:
@@ -465,7 +482,7 @@ class ProductionAgentService:
 def configured_service() -> ProductionAgentService:
     from ..live_pipeline_intake_service import running_source_commit
 
-    path = os.environ.get(CONFIG_ENV, "")
+    path = os.environ.get(CONFIG_ENV, DEFAULT_CONFIG_PATH)
     if not path or not Path(path).exists():
         raise AgentExecutionError("agent_production_not_configured")
     return ProductionAgentService(path, source_commit=running_source_commit(__file__))

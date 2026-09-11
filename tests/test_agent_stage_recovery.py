@@ -160,3 +160,6 @@ def test_offline_worker_refuses_configured_secret_outside_canonical_directory(tm
     key.chmod(0o600)
     with pytest.raises(replay.AgentExecutionError, match="configured_secret_accessible"):
         replay.require_secret_isolation(SimpleNamespace(credential_file=str(key), webhook_secret_file=None))
+    with pytest.raises(replay.AgentExecutionError, match="configured_secret_accessible"):
+        replay.require_secret_isolation(SimpleNamespace(credential_file="/missing", webhook_secret_file=None,
+                                                        webapp_sync_token_file=str(key)))

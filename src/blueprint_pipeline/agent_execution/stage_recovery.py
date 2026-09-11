@@ -157,7 +157,7 @@ class StageReplayTools:
 
 
 def require_secret_isolation(config):
-    for value in (config.credential_file, config.webhook_secret_file):
+    for value in (config.credential_file, config.webhook_secret_file, getattr(config, "webapp_sync_token_file", None)):
         if value and os.access(value, os.R_OK):
             raise AgentExecutionError("agent_replay_configured_secret_accessible")
 
