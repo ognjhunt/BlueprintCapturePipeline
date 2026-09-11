@@ -187,6 +187,11 @@ def grade_case(case, state, operations):
 
 
 def run_comparison(config_path, corpus_path, output_root):
+    # Both cohorts must be eligible before spending on either runtime. The
+    # SDK's opt-in is process-local and is not implied by managed admission.
+    from ..agent_operator_runtime import LIVE_AGENTS_SDK_ENV, env_truthy
+    if not env_truthy(LIVE_AGENTS_SDK_ENV):
+        raise AgentExecutionError("comparison_sdk_runtime_not_admitted")
     config_path, corpus_path, output_root = Path(config_path), Path(corpus_path), Path(output_root)
     repo = Path(__file__).resolve().parents[3]
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()

@@ -43,3 +43,14 @@ def test_model_input_and_tool_output_do_not_contain_expected_answer(tmp_path):
     assert not grade_case(case, state, [])["schema_valid_and_evidence_bound"]
     operations = [{"request": {"tool_id": "read_case_evidence"}, "outcome": {"success": True}}]
     assert grade_case(case, state, operations)["cause_and_action_correct"]
+
+
+def test_both_runtimes_must_be_admitted_before_comparison_starts(tmp_path, monkeypatch):
+    from blueprint_pipeline.agent_execution.comparison import run_comparison
+    from blueprint_pipeline.agent_operator_runtime import LIVE_AGENTS_SDK_ENV
+    monkeypatch.delenv(LIVE_AGENTS_SDK_ENV, raising=False)
+    # No config read, journal creation or provider request is needed to refuse
+    # a comparison whose incumbent is disabled in this process.
+    with pytest.raises(AgentExecutionError, match="comparison_sdk_runtime_not_admitted"):
+        run_comparison(tmp_path / "absent-config", tmp_path / "absent-corpus", tmp_path / "output")
+    assert not (tmp_path / "output").exists()
