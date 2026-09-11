@@ -2,6 +2,8 @@
 from copy import deepcopy
 import json
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -78,7 +80,6 @@ def _case(tmp_path, monkeypatch):
     original_root.rename(old_output)
     # The fixture execution checkpoint moved with its folder; retain an exact
     # checkpoint copy at the original path referenced by its closed receipt.
-    import shutil
     shutil.copytree(old_output, original_root)
     closed = json.loads((old_output / "source_calibration_closed_return.v1.json").read_text())
     closed["execution_closure"]["provider_execution"] = record(old_output / "allocator_result.json")
@@ -90,11 +91,20 @@ def _case(tmp_path, monkeypatch):
     current_root.mkdir()
     current_request_path = current_root / "corrected-request.json"
     current_request_path.write_text(json.dumps(inputs.build_public_scene_inpainting_input_request(current_request)))
+    current_repo = tmp_path / "corrected-release"
+    shutil.copytree(old["context"]["paths"]["repo"], current_repo)
+    (current_repo / "cpu-policy-fix.txt").write_text("different CPU release; identical renderer bytes")
+    subprocess.run(["git", "-C", str(current_repo), "add", "cpu-policy-fix.txt"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(current_repo), "commit", "-qm", "fixture CPU policy forwarding fix"],
+                   check=True, capture_output=True)
     current = inputs.prepare_public_scene_inpainting_inputs(request_path=current_request_path,
-        repo_root=old["context"]["paths"]["repo"], data_root=old["context"]["paths"]["data"],
+        repo_root=current_repo, data_root=old["context"]["paths"]["data"],
         output_root=current_root / "views")
+    current_plan_path = tmp_path / "current-plan.json"
+    current_plan = _seal(current_plan_path, {**plan, "source_commit": current["repository"]["commit"]}, "plan_digest")
     current_job = {**old_job, "child_id": "sam31-successor", "queue_root": str(queue),
-        "retained_execution_root": str(execution_root), "plan": plan, "plan_ref": record(plan_path),
+        "retained_execution_root": str(execution_root), "plan": current_plan, "plan_ref": record(current_plan_path),
+        "expected_source_commit": current["repository"]["commit"], "repo_root": str(current_repo),
         "output_root": str(current_root), "resume_only": True}
     current_job["server_profile"]["approved_paid_input_roots"] = [str(tmp_path)]
     prepared_outcome = {"prepared_inputs": record(Path(current["preparation_path"])),
@@ -119,6 +129,8 @@ def test_production_successor_reuses_closed_return_and_preserves_failed_history(
     receipt = json.loads(Path(outcome["artifacts"]["calibrated_view_receipt"]["path"]).read_text())
     assert receipt["mask_policy"]["maximum_image_fraction"] == .85
     assert receipt["mask_policy"]["dilation_pixels"] == 8
+    assert receipt["repository"]["commit"] != old["repository"]["commit"]
+    assert receipt["source_calibration_render"]["original_render_commit"] == old["repository"]["commit"]
     binding = outcome["artifacts"]["source_calibration_retained_render_binding"]["path"]
     assert preparation.adopt_finalized_public_scene_inpainting_inputs(preparation_path=current["preparation_path"],
         returned_group_path=old_output / "source_calibration_closed_return.v1.json", retained_render_binding_path=binding) == receipt
