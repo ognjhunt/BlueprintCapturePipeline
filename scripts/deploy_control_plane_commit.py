@@ -98,6 +98,9 @@ DEFAULT_PAID_LAUNCH_LOCKS = (
 )
 DEFAULT_RESTART_UNITS = ("blueprint-pipeline-intake.service",)
 DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
+    "blueprint-agent-execution.service",
+    "blueprint-agent-stage-replay.service",
+    "blueprint-agent-stage-replay.timer",
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-task-evaluation-launch-dispatcher.path",
     "blueprint-task-evaluation-launch-preparation.service",
@@ -173,6 +176,7 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
 #: moment a no-spend canary compiles, so it carries the same progression
 #: authority rather than the no-spend watcher category.
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
+    "blueprint-agent-stage-replay.timer",
     "blueprint-task-evaluation-scene-progression.timer",
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
     "blueprint-task-evaluation-configured-controls-progression.timer",
@@ -1867,6 +1871,25 @@ def _required_restart_units(units: Sequence[str]) -> tuple[str, ...]:
     return tuple(required)
 
 
+def _activate_agent_execution(*, expected_commit: str, config_path: str | Path = "/etc/blueprint/agent-execution.json") -> dict[str, Any]:
+    """An admitted config activates the worker; absent config never grants inference."""
+    path = Path(config_path)
+    if not path.exists():
+        return {"status": "not_configured", "activated": False}
+    from blueprint_pipeline.agent_execution.production import ProductionConfig, _read_private
+    config = ProductionConfig.model_validate_json(_read_private(path))
+    if config.source_commit != expected_commit:
+        raise ControlPlaneDeployError("deploy_agent_configuration_release_mismatch")
+    unit = "blueprint-agent-execution.service"
+    subprocess.run(["systemctl", "enable", unit], check=True, capture_output=True, text=True, timeout=20)
+    _restart_units((unit,))
+    observed = _systemd_unit_state(unit)
+    if observed.get("enabled") != "enabled" or observed.get("state") != "active":
+        raise ControlPlaneDeployError("deploy_agent_worker_not_enabled_and_active")
+    return {"status": "active", "activated": True, "unit": unit, "source_commit": expected_commit,
+            "enabled": observed["enabled"], "state": observed["state"]}
+
+
 def _require_terminal_controls_quiescence() -> None:
     """Refuse a live materializer before moving any release surface."""
     for suffix in ('service', 'path', 'timer'):
@@ -2495,6 +2518,7 @@ def deploy_control_plane_commit(
             intake_version_url, expected_commit=commit
         )
         _mark_stage("intake_restarted_and_proven")
+        agent_execution = _activate_agent_execution(expected_commit=commit)
         # Last inside the held locks: the queue watcher only starts watching
         # once the restarted intake has proven the new commit, and no launch
         # can slip in between the watcher restart and the lock release.
@@ -2540,6 +2564,7 @@ def deploy_control_plane_commit(
         "release_provenance": installed_provenance,
         "created_release_checkout": release["created_release_checkout"],
         "restarted_units": restarted,
+        "agent_execution": agent_execution,
         "installed_systemd_units": installed_systemd_units,
         "scene_object_discovery_runtime_directories": (
             scene_object_discovery_runtime_directories

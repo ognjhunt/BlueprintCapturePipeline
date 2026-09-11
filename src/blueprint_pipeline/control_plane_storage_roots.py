@@ -72,6 +72,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(_INPUTS, "container", "blueprint", "immutable and derived launch inputs"),
     StorageRoot("/var/lib/blueprint-staging", "staging", "blueprint", "isolated staging intake"),
     # --- evidence that live services read; never evicted or offloaded
+    StorageRoot(f"{_CONTROL_PLANE}/agent-execution", "evidence_hot", "blueprint", "durable agent task and operation journals with inference budget evidence"),
     StorageRoot(f"{_CONTROL_PLANE}/gpu_spend_guard", "evidence_hot", "blueprint", "spend ledger, billing audit, admission lock"),
     StorageRoot(f"{_CONTROL_PLANE}/deploy-receipts", "evidence_hot", "root", "deploy receipts"),
     StorageRoot(f"{_CONTROL_PLANE}/standing-authorizations", "evidence_hot", "blueprint", "standing launch authorizations"),

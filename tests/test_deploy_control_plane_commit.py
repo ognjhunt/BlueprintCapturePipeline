@@ -472,6 +472,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     )
     additional_sources = []
     for name in (
+        "blueprint-agent-execution.service", "blueprint-agent-stage-replay.service", "blueprint-agent-stage-replay.timer",
         "blueprint-task-evaluation-scene-progression.service", "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-launch-supervisor.service", "blueprint-task-evaluation-launch-supervisor.timer",
         "blueprint-task-evaluation-launch-reconciler.service", "blueprint-task-evaluation-launch-reconciler.timer",
@@ -501,6 +502,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
 
     expected = []
     for source in (
+        *additional_sources[:3],
         service,
         path_unit,
         preparation_service,
@@ -519,7 +521,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         progression_service,
         progression_timer,
         progression_path,
-        *additional_sources,
+        *additional_sources[3:],
         storage_gc_service,
         storage_gc_timer,
         capacity_service,
@@ -554,6 +556,9 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     """
 
     assert deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS == (
+        "blueprint-agent-execution.service",
+        "blueprint-agent-stage-replay.service",
+        "blueprint-agent-stage-replay.timer",
         "blueprint-task-evaluation-launch-dispatcher.service",
         "blueprint-task-evaluation-launch-dispatcher.path",
         "blueprint-task-evaluation-launch-preparation.service",
@@ -603,6 +608,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-object-discovery.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
+        "blueprint-agent-stage-replay.timer",
         "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-sam31-preparation-execution.timer",
         "blueprint-task-evaluation-configured-controls-progression.timer",
@@ -2407,3 +2413,32 @@ def test_unit_sandbox_provisioning_skips_absent_release_units_and_needs_an_accou
         deploy.ControlPlaneDeployError, match="deploy_unit_sandbox_account_missing:blueprint"
     ):
         deploy._install_unit_sandbox_paths(release_path=release, root_prefix=tmp_path / "host2")
+
+
+def test_admitted_agent_worker_is_enabled_started_and_proven(tmp_path, monkeypatch):
+    from tests.test_agent_production_service import fixture
+    _, _, _, config_path = fixture(tmp_path)
+    calls = []
+    def systemctl(argv, **kwargs):
+        calls.append(argv)
+        state = 'enabled' if argv[1] == 'is-enabled' else 'active'
+        return SimpleNamespace(returncode=0, stdout=state + '\n', stderr='')
+    monkeypatch.setattr(deploy.subprocess, 'run', systemctl)
+    result = deploy._activate_agent_execution(expected_commit='a' * 40, config_path=config_path)
+    assert result['activated'] and result['enabled'] == 'enabled' and result['state'] == 'active'
+    unit = 'blueprint-agent-execution.service'
+    assert ['systemctl', 'enable', unit] in calls
+    assert ['systemctl', 'restart', unit] in calls
+    assert ['systemctl', 'is-enabled', unit] in calls
+    assert ['systemctl', 'is-active', unit] in calls
+
+
+def test_unconfigured_or_wrong_release_never_activates_agent(tmp_path, monkeypatch):
+    from tests.test_agent_production_service import fixture
+    _, _, _, config_path = fixture(tmp_path)
+    calls = []
+    monkeypatch.setattr(deploy.subprocess, 'run', lambda *args, **kwargs: calls.append(args))
+    assert deploy._activate_agent_execution(expected_commit='a' * 40, config_path=tmp_path / 'absent')['activated'] is False
+    with pytest.raises(deploy.ControlPlaneDeployError, match='agent_configuration_release_mismatch'):
+        deploy._activate_agent_execution(expected_commit='b' * 40, config_path=config_path)
+    assert calls == []

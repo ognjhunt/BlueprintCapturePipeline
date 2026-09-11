@@ -1,0 +1,42 @@
+[Unit]
+Description=Blueprint durable Task Evaluation agent worker
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/blueprint/agent-execution.json
+
+[Service]
+Type=simple
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/agent-execution
+ReadOnlyPaths=/etc/blueprint
+MemoryMax=2G
+TasksMax=128
+CPUQuota=100%
+Environment=BLUEPRINT_AGENT_EXECUTION_CONFIG=/etc/blueprint/agent-execution.json
+Environment=BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=1
+Environment=PYTHONPATH=/opt/blueprint/task-evaluation-control-plane/src
+WorkingDirectory=/opt/blueprint/task-evaluation-control-plane
+ExecStart=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python -m blueprint_pipeline.agent_execution.production
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

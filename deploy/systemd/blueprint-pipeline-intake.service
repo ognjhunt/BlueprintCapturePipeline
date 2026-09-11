@@ -35,6 +35,7 @@ MemoryMax=8G
 CPUQuota=200%
 Type=simple
 Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
+Environment=BLUEPRINT_AGENT_EXECUTION_CONFIG=/etc/blueprint/agent-execution.json
 Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production
 Environment=PRIVACY_PIPELINE_ENABLED=true
 Environment=PRIVACY_FAIL_CLOSED=true

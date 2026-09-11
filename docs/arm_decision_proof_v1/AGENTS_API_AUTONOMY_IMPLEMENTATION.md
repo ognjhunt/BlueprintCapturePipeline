@@ -116,3 +116,30 @@ The regression-tested correction retains module/path and literal file-loader
 matches, mandatory sentinels and the existing time/breadth limits. A deadline
 fixture now advances its clock after the request begins, so SDK import time
 cannot substitute for the intended in-flight cancellation test.
+
+## Production integration checkpoint
+
+The intake now registers authenticated agent enqueue/status/cancel/cleanup
+routes. Callers select a server-admitted task id; they cannot supply prompts,
+paths, tools, credentials or authority. Task owners are durably bound to the
+admitted task revision. The production factory rechecks the current config,
+release, model, project, budget, evidence and tool scope before execution.
+Secrets require private file permissions. Managed API execution defaults off
+until its separate retention/project policy is admitted; the SDK path retains
+its reservation gate.
+
+Release-owned systemd units run the durable agent worker and a separate offline
+retained-stage replay worker. The latter checks its actual service identity and
+isolation settings, has no network/GPU or provider-secret access, and invokes
+the existing saved-child replay command with an explicit clean environment.
+Queued replay requests bind the existing operation and saved job bytes. An
+interrupted child is preserved rather than silently rerun. SDK callers can wait
+for that same operation without another model request. A trusted preparation
+entrypoint builds a sanitized diagnostic task from a retained terminal child.
+
+The focused production/runtime/replay/deployment selection passed 125 tests in
+13.76 seconds. This includes the real SDK and registry loop through a fake HTTP
+provider, HTTP HMAC/client ownership, cancellation and revocation, deferred
+operation deduplication, offline-worker handoff, saved-input preservation and
+the existing stage-replay/deployment contracts. These are hermetic checks;
+deployment, actual isolated-host execution and live inference remain pending.
