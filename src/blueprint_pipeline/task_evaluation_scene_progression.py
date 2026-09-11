@@ -525,6 +525,12 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
         state["preparation_link"] = _link(intent=intent, attempt=attempt, observed=observed,
                                           directory=directory, config=config, now=now)
     link = read(_reference(state["preparation_link"]), digest_field="link_digest")
+    try:
+        from .agent_execution.failure_events import register_preparation_failure_subscription
+        register_preparation_failure_subscription(preparation_link=link, controller_config=config)
+    except (OSError, ValueError, RuntimeError) as exc:
+        import logging
+        logging.getLogger(__name__).warning("agent_failure_subscription_unavailable:%s", type(exc).__name__)
     if observed.get("result_reference"):
         state["preparation_result"] = observed["result_reference"]
     if observed["status"] in {"blocked", "awaiting_source_preparation"}:

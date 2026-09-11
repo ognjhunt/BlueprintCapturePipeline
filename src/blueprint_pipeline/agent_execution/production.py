@@ -71,6 +71,7 @@ class ProductionConfig(BaseModel):
     webhook_secret_file: str | None = None
     poll_seconds: float = Field(default=5, ge=0.1, le=60)
     supervision_store_root: str | None = None
+    automatic_failure_investigation: bool = False
 
 
 class TaskRecord(BaseModel):
@@ -482,11 +483,13 @@ def main(argv=None) -> int:
     while not stopped.is_set():
         from .supervision import progress_supervision
         supervision = progress_supervision(service)
+        from .failure_events import discover_retained_failures
+        failures = discover_retained_failures(service)
         service.autostart()
         receipt = service.service.tick()
         service.webapp_outbox.flush()
         heartbeat = {**service.health(), "observed_at": time.time(), "last_step": receipt,
-                     "supervision": supervision}
+                     "supervision": supervision, "failure_investigations": failures}
         write_json(service.journal.root / "worker_health.json", heartbeat)
         if receipt:
             print(json.dumps(receipt, sort_keys=True), flush=True)
