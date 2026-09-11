@@ -10,7 +10,7 @@ change action admission, or supply physical proof.
 ## Read-only V22 finding
 
 V22 used source `277a01c668d74193c6b99b8467e24f1e9cf6e594`. Its pi05 receipt is
-`/Users/nijelhunt_1/workspace/scene841757-direct-policy-20260909/preparation-v22/cell00-pi05-live-failure-evidence.json`,
+`$HOME/workspace/scene841757-direct-policy-20260909/preparation-v22/cell00-pi05-live-failure-evidence.json`,
 with file SHA-256 `f8bad661a684216a065d356fed26ea0acc77e1dddac22469f9d762a76da20001`.
 The failure seal and all three retained response digests verify. Query index 2,
 row 0, joint dimension 3 is the only violation in the eight-row executable
@@ -111,14 +111,14 @@ This command reads the retained receipt and frozen arithmetic only; it does not
 query a policy, load a model, start a simulator, or write evidence:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/private/tmp/bcp-policy-canary-bounded-deadlines-20260910/src /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.venv/bin/python - <<'PY'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/private/tmp/bcp-policy-canary-bounded-deadlines-20260910/src "$HOME/workspace/BlueprintCapturePipeline/.venv/bin/python" - <<'PY'
 import json
 from pathlib import Path
 from blueprint_pipeline.adp009d_droid_action_execution import (
     DroidActionExecutionError, validate_candidate_action_bounds,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-p = Path('/Users/nijelhunt_1/workspace/scene841757-direct-policy-20260909/preparation-v22/cell00-pi05-live-failure-evidence.json')
+p = Path('$HOME/workspace/scene841757-direct-policy-20260909/preparation-v22/cell00-pi05-live-failure-evidence.json')
 r = json.loads(p.read_text())
 assert r['gap_digest'] == canonical_digest(r, digest_field='gap_digest')
 q = r['candidate_policy_action_queries'][2]

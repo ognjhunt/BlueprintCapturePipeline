@@ -144,6 +144,23 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
         "CPUQuota=200%",
     )
     for unit in SYSTEMD_DIR.glob("*.service"):
+        if unit.name in {"blueprint-agent-execution.service", "blueprint-agent-stage-replay.service"}:
+            text = unit.read_text(encoding="utf-8")
+            narrower = ("RestrictAddressFamilies=", "ReadWritePaths=", "TasksMax=", "MemoryMax=", "CPUQuota=")
+            for control in required_controls:
+                if not control.startswith(narrower):
+                    assert control in text, (unit.name, control)
+            assert "TasksMax=128" in text and "CPUQuota=100%" in text
+            assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/agent-execution\n" in text
+            assert "ReadWritePaths=/var/lib/blueprint\n" not in text
+            if unit.name == "blueprint-agent-stage-replay.service":
+                assert "PrivateNetwork=true" in text and "RestrictAddressFamilies=AF_UNIX\n" in text
+                assert "MemoryMax=4G" in text
+                assert "InaccessiblePaths=-/etc/blueprint/provider-secrets" in text
+            else:
+                assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n" in text
+                assert "MemoryMax=2G" in text
+            continue
         if unit.name in {"blueprint-completed-replay-cache-gc.service", "blueprint-scene-project-spend-refresh.service"}:
             text = unit.read_text(encoding="utf-8")
             for control in ("NoNewPrivileges=true", "PrivateDevices=true", "PrivateNetwork=true",
