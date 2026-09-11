@@ -216,11 +216,12 @@ def test_composition_payload_has_complete_import_closure_without_loading_policy(
     import subprocess
     import shutil
     from pathlib import Path
-    from blueprint_pipeline.native_task_composition_bundle import composition_runtime_sources
+    from blueprint_pipeline.native_task_arena_execution_contract import POLICY_RUNTIME_MODULE_NAMES
     package=tmp_path/'blueprint_pipeline'
     package.mkdir()
     (package/'__init__.py').write_text('')
-    for source in composition_runtime_sources():
+    for name in POLICY_RUNTIME_MODULE_NAMES:
+        source = Path(worker.__file__).parent / name
         shutil.copyfile(source,package/source.name)
     probe="import sys; sys.path.insert(0, sys.argv[1]); import blueprint_pipeline.native_task_composition_worker; from blueprint_pipeline.adp009d_isaac_runtime import _save_camera; assert not any('groot_n17' in k for k in sys.modules)"
     result=subprocess.run([sys.executable,'-I','-c',probe,str(tmp_path)],capture_output=True,text=True,timeout=30)
