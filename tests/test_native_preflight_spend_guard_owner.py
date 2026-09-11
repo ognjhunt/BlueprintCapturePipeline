@@ -88,6 +88,7 @@ def test_retained_v28b_owner_lookup_preserves_orphan_rule(tmp_path, monkeypatch,
     assert reason == (None if fault is None else "unbooted_dud_past_boot_ttl")
 
 
+@pytest.mark.slow
 def test_real_watchdog_subprocess_arms_is_owned_and_cancels_without_allocation(
     tmp_path, monkeypatch
 ):
