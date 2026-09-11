@@ -224,3 +224,21 @@ def test_box_shell_interior_is_measured_not_inferred_from_outer_extents():
         validate_box_shell_interior(filled,interior)
     with pytest.raises(AssetAuthoringError,match='solid_volume_mismatch'):
         validate_box_shell_interior(mesh,{'minimum':[-.16,-.235,.008],'maximum':[.16,.235,.035]})
+
+
+def test_asset_environment_lights_are_excluded_without_changing_geometry_or_physics(tmp_path):
+    from pxr import UsdLux
+    request, result, _ = _fixture(tmp_path)
+    source = Usd.Stage.Open(str(tmp_path/'candidate.usdc'))
+    UsdLux.DomeLight.Define(source, '/Asset/env_light').CreateIntensityAttr(1.)
+    source.GetRootLayer().Save()
+    _reseal(tmp_path, result, candidate_usd_sha256=file_record(tmp_path/'candidate.usdc')['sha256'])
+    original = file_record(tmp_path/'candidate.usdc')
+    packaged = _package(tmp_path, request, result)
+    stage = Usd.Stage.Open(packaged['asset']['path'])
+    assert not [p for p in stage.Traverse() if p.HasAPI(UsdLux.LightAPI)]
+    assert Usd.Stage.Open(original['path']).GetPrimAtPath('/Asset/env_light')
+    assert file_record(tmp_path/'candidate.usdc') == original
+    assert packaged['physics_completion']['excluded_asset_lighting'][0]['path'] == '/Asset/env_light'
+    assert packaged['physics_completion']['illumination_authority'] == 'site_scene_only'
+    assert UsdPhysics.MassAPI(stage.GetDefaultPrim()).GetMassAttr().Get() == pytest.approx(1.92)

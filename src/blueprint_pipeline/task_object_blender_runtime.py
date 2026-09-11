@@ -189,6 +189,7 @@ def main(root: Path) -> None:
     # Export the asset before adding studio cameras, lights, and the floor.
     bpy.ops.wm.usd_export(filepath=str(root / 'candidate.usdc'),
                           selected_objects_only=True, export_materials=True,
+                          export_lights=False, export_cameras=False, convert_world_material=False,
                           generate_preview_surface=True, export_textures_mode='NEW',
                           relative_paths=True, root_prim_path='/Asset')
     mesh_receipt = {'schema_version': 'final_visual_mesh_receipt.v1',

@@ -144,7 +144,7 @@ def _final_mass_consistency(review: PhysicalPropertyReviewResult, mesh: Any) -> 
 def package_astra_candidate(*, request: AuthoringRequest,
                             authoring_result: Mapping[str, Any], output_root: Path,
                             physics_bounds: Mapping[str, list[float]]) -> dict[str, Any]:
-    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade, UsdUtils
     import numpy as np
     from .task_evaluation_scene_configuration_content_agents_driver import _complete_candidate_physics
 
@@ -199,6 +199,18 @@ def package_astra_candidate(*, request: AuthoringRequest,
     # Flatten resolves source texture paths before writing a new root layer.
     source.Flatten().Export(str(authored))
     stage = Usd.Stage.Open(str(authored))
+    # Asset-local world/studio illumination must not become scene illumination.
+    # Preserve the original author export; remove only non-geometry prims from
+    # this separately derived physics package and retain their exact specs.
+    excluded_lighting = []
+    for prim in list(stage.Traverse()):
+        if not prim.HasAPI(UsdLux.LightAPI) and not prim.IsA(UsdGeom.Camera):
+            continue
+        if any(child.IsA(UsdGeom.Gprim) for child in Usd.PrimRange(prim)):
+            raise AssetAuthoringError('authoring_asset_light_contains_geometry')
+        excluded_lighting.append({'path': str(prim.GetPath()), 'type': prim.GetTypeName(),
+                                  'attributes': {a.GetName(): str(a.Get()) for a in prim.GetAttributes()}})
+        stage.RemovePrim(prim.GetPath())
     root = UsdGeom.Xform.Define(stage, '/Asset').GetPrim()
     stage.SetDefaultPrim(root)
     rigid = UsdPhysics.RigidBodyAPI.Apply(root)
@@ -253,6 +265,8 @@ def package_astra_candidate(*, request: AuthoringRequest,
     completion['collision_approximation'] = approximation
     completion['collision_source_matches_final_visual_mesh'] = True
     completion['native_collision_cooking_qualified'] = False
+    completion['excluded_asset_lighting'] = excluded_lighting
+    completion['illumination_authority'] = 'site_scene_only'
     completion['completion_digest'] = canonical_digest(completion, digest_field='completion_digest')
     asset = output_root / 'astra_replacement_candidate.usdz'
     if not UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(authored)), str(asset)):
