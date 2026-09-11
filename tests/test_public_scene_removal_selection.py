@@ -27,7 +27,7 @@ def _write(path: Path, value: dict, field: str | None = None) -> None:
 
 
 def _source_fixture(root: Path, *, grouped_source: bool = False) -> dict:
-    fixture = _fixture(root, grouped_source=grouped_source, room_topology=grouped_source)
+    fixture = _fixture(root, grouped_source=True, room_topology=True) if grouped_source else _fixture(root)
     install_path = fixture["installation_receipt"]
     install = json.loads(install_path.read_text())
     rights = install_path.parent / "rights.json"
