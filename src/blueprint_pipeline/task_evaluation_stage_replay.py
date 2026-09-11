@@ -34,6 +34,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from contextlib import ExitStack
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -44,7 +45,7 @@ from . import task_evaluation_scene_configuration_sam31_preparation_driver as dr
 from .task_evaluation_launch_preparation_queue import QUEUE_STATES as PARENT_QUEUE_STATES
 from .fail_closed_blocker_explainer import explain_blocker, fired_predicates
 from .task_evaluation_scene_configuration_sam31_plan import PROFILE_ENV
-from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
+from .control_plane_disk_budget import ControlPlaneDiskBudgetError, DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
 from .validation_file_digests import file_digest_scope
 
 SCHEMA = "task_evaluation_stage_replay_report.v1"
@@ -163,14 +164,27 @@ def _write_report(run_root: Path, report: Mapping[str, Any]) -> str:
 
 def _reserved_replay(function):
     @wraps(function)
-    def run(**kwargs):
+    def run(*, report_admission_refusal=False, **kwargs):
         # Diagnostics compete for the same filesystem as production. Reserve
         # their working set before making a scratch directory, and release on
         # every success or failure. Retained output still counts in free space.
-        with reserve_control_plane_disk(
-            "stage_replay", target_root=kwargs["replay_root"],
-            reservation_root=DEFAULT_RESERVATION_ROOT,
-        ) as reservation, file_digest_scope():
+        with ExitStack() as stack:
+            try:
+                reservation = stack.enter_context(reserve_control_plane_disk(
+                    "stage_replay", target_root=kwargs["replay_root"], reservation_root=DEFAULT_RESERVATION_ROOT,
+                ))
+            except ControlPlaneDiskBudgetError as exc:
+                if not report_admission_refusal:
+                    raise
+                # Only pre-execution admission reaches this catch. A later
+                # stage error must never be relabelled as work not started.
+                return {"schema_version": SCHEMA if "child_id" in kwargs else PARENT_SCHEMA,
+                    "status": "admission_refused", "phase": "replay_admission",
+                    "blocker": "control_plane_disk_budget_exceeded" if str(exc).startswith(
+                        "control_plane_disk_budget_exceeded:") else "control_plane_disk_admission_refused",
+                    "fired_predicates": [], "stage_handler_started": False,
+                    "provider_mutation_performed": False, "proof_effect": "none"}
+            stack.enter_context(file_digest_scope())
             report = function(**kwargs)
             report["disk_reservation"] = reservation.receipt()
             if report.get("report_path"):
@@ -681,6 +695,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         os.environ[PROFILE_ENV] = str(discovered)
                         break
         report = replay_parent(
+            report_admission_refusal=True,
             parent_queue_root=args.parent_queue_root, preparation_id=args.parent, child_queue_root=args.queue_root,
             input_root=args.input_root, replay_root=args.replay_root, allowed_uri_prefixes=prefixes,
             service_account=args.service_account,
@@ -703,6 +718,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if discovered is not None:
             os.environ[PROFILE_ENV] = str(discovered)
     report = replay_child(
+        report_admission_refusal=True,
         queue_root=args.queue_root, child_id=args.child, parent_queue_root=args.parent_queue_root,
         input_root=args.input_root, replay_root=args.replay_root,
         approved_roots=tuple(args.approved_root) or DEFAULT_APPROVED_ROOTS, allow_paid=args.allow_paid,

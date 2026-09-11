@@ -471,3 +471,20 @@ def test_real_low_space_probe_refuses_without_scratch_or_leaked_reservation(tmp_
         replay.replay_child(replay_root=tmp_path / "scratch")
     assert not (tmp_path / "scratch").exists()
     assert not list((tmp_path / "disk-reservations").glob("*.json"))
+
+
+def test_cli_writes_typed_capacity_refusal_before_starting_saved_stage(tmp_path, monkeypatch):
+    from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk
+    monkeypatch.setattr(replay, "reserve_control_plane_disk", partial(
+        reserve_control_plane_disk,
+        disk_usage=lambda _path: SimpleNamespace(total=512 * 2**30, used=504 * 2**30, free=8 * 2**30),
+    ))
+    output = tmp_path / "report.json"
+    assert replay.main(["--child", "sam31-missing", "--queue-root", str(tmp_path / "queue"),
+                        "--replay-root", str(tmp_path / "scratch"), "--json-out", str(output)]) == 2
+    report = json.loads(output.read_text())
+    assert report["blocker"] == "control_plane_disk_budget_exceeded"
+    assert report["phase"] == "replay_admission"
+    assert report["stage_handler_started"] is False
+    assert report["provider_mutation_performed"] is False
+    assert not (tmp_path / "scratch").exists()

@@ -112,3 +112,23 @@ def test_crash_after_reservation_recovers_same_task_without_new_budget(tmp_path,
     assert len(state["revisions"]) == 1 and state["reserved_inference_usd"] == 10
     assert service.journal.task(state["active_task_id"])["state"] == "queued"
     assert not api.calls
+
+
+def test_supervision_retains_context_until_revoked_then_cleans_the_whole_lineage(tmp_path):
+    service, plan, api, source = setup(tmp_path)
+    first = progress_plan(service, plan)
+    parent = complete(service, first, api)
+    assert service.record(parent.task_id).cleanup_when_terminal is False
+    service.autostart()
+    assert service.journal.task(parent.task_id)["cleanup_state"] == "not_requested"
+    value = json.loads(source.read_text())
+    value["phase"] = "second"
+    write(source, value)
+    child = complete(service, progress_plan(service, plan), api)
+    revoked = plan.model_copy(update={"enabled": False})
+    write(tmp_path / "plans/watch.json", revoked.model_dump(mode="json"))
+    assert progress_plan(service, revoked)["status"] == "revoked"
+    assert service.journal.task(child.task_id)["cleanup_state"] == "pending"
+    assert service.service.tick()["cleanup_state"] == "deleted"
+    assert service.journal.task(parent.task_id)["cleanup_state"] == "deleted"
+    assert service.journal.task(parent.task_id)["result"] is not None

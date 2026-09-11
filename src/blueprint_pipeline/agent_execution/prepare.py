@@ -126,6 +126,7 @@ def prepare_retained_failure(
         max_tool_calls=4, max_tool_output_bytes=24_000,
     )
     record = TaskRecord(schema_version="blueprint_agent_admitted_task.v1", enabled=True, autostart=autostart,
+                        cleanup_when_terminal=True,
                         owner_client_ids=(owner_client_id,), task=task, context=asdict(context), stage_replays=(binding,),
                         controller_recoveries=recovery)
     destination = Path(service.config.task_store_root) / (task_id + ".json")

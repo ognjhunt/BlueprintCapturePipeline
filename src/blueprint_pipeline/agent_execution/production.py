@@ -82,6 +82,7 @@ class TaskRecord(BaseModel):
     schema_version: Literal["blueprint_agent_admitted_task.v1"]
     enabled: bool
     autostart: bool = False
+    cleanup_when_terminal: bool = False
     owner_client_ids: tuple[str, ...] = Field(min_length=1)
     task: AgentTask
     context: dict
@@ -366,6 +367,8 @@ class ProductionAgentService:
             "result": state["result"], "usage": state["usage"],
             "resource_closeout": "not_established_by_agent_completion", "proof_effect": "none",
         }
+        if record.cleanup_when_terminal:
+            result["cleanup_when_terminal"] = True
         if record.episode_investigation is not None or record.visual_investigation is not None:
             from ..decision_evidence_contracts import cross_runtime_canonical_digest
             kind = "visual" if record.visual_investigation is not None else "episode"
@@ -412,6 +415,18 @@ class ProductionAgentService:
                     self._collect_episode(record)
                 if record.visual_investigation is not None:
                     self._collect_visual(record)
+                if record.cleanup_when_terminal and record.supervision is None:
+                    from .journal import TERMINAL_STATES
+                    try:
+                        state = self.journal.task(record.task.task_id)
+                    except AgentExecutionError as exc:
+                        if str(exc) != "agent_task_missing":
+                            raise
+                    else:
+                        if (state["state"] in TERMINAL_STATES and state["cleanup_state"] == "not_requested"
+                                and self.journal.successor(record.task.task_id) is None
+                                and not self.journal.unsettled_operations(record.task.task_id)):
+                            self.service.request_cleanup(record.task.task_id)
                 self.webapp_outbox.queue(record)
                 if record.enabled and record.autostart:
                     try:

@@ -156,6 +156,10 @@ def progress_plan(service, plan: SupervisionPlan):
         if not plan.enabled or not template.enabled or time.time() >= plan.expires_at:
             if active is not None and active["state"] not in TERMINAL_STATES:
                 service.service.cancel(active_id)
+            elif (active is not None and active["cleanup_state"] == "not_requested"
+                    and not service.journal.unsettled_operations(active_id)
+                    and service.journal.successor(active_id) is None):
+                service.service.request_cleanup(active_id)
             state["status"] = "revoked" if not plan.enabled or not template.enabled else "expired"
             _write_state(service, plan, state)
             return state
@@ -224,7 +228,7 @@ def progress_plan(service, plan: SupervisionPlan):
         values["admission"]["expires_at"] = deadline
         task = AgentTask.model_validate(values)
         record = TaskRecord(**{**template.model_dump(mode="json"), "task": task,
-            "autostart": False, "context": asdict(context), "supervision": SupervisionBinding(
+            "autostart": False, "cleanup_when_terminal": False, "context": asdict(context), "supervision": SupervisionBinding(
                 watch_id=plan.watch_id, watch_digest=plan.plan_digest,
                 observation_digest=observation["observation_digest"], sources=plan.sources)})
         event_id = "supervision_revision_" + task_id

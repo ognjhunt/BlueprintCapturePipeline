@@ -43,8 +43,42 @@ Hermetic rehearsal is necessary but does not establish live service behavior.
 | A14 | WebApp ADP operator integration and runtime status | Authenticated route tests, mocked browser coverage, live readback | operator core deployed; specialist Website PR #566 merged, configured live task proof pending |
 | A15 | Hands-off event progression and terminal delivery | Restart/outage drill and signed consumer/media readback | durable progression implemented; deployed outage and terminal delivery proof pending |
 | A16 | Existing Paperclip execution record retained | Selected ADP worker integration and duplicate-owner tests | selected-worker bridge implemented and bundled; live configuration/readback pending |
-| A17 | Frozen comparative corpus and promotion decision | Independent quality/cost/intervention/latency measurements | 30 cases frozen; comparison runner implemented, real paired runs pending |
+| A17 | Frozen comparative corpus and promotion decision | Independent quality/cost/intervention/latency measurements | 60 paired runs complete; SDK retained as incumbent; official cost and intervention measurement pending |
 | A18 | Complete release and rollback | Protected-main checks, exact deployment, resource closeout, rollback drill | drain/adoption/rollback implemented and rehearsed; production promotion and live proof pending |
+
+## September 11 deployed integration and comparison
+
+Pipeline `fddae5bc7a731e9541a7bbfdf02d89b5afbc71ca` is deployed with
+verified production provenance from run `34565131545` (19,210 tests). The
+durable agent worker is active. The exact retained-child investigation
+`adp-assessment-retained-replay-20260911` completed through the real managed
+API and isolated replay worker. Its replay was refused for disk capacity before
+the saved stage handler ran; this is preserved as a failed rehearsal. The
+investigation did not confirm or repair the original source-reference failure.
+Its signed admission reached WebApp after correcting the configured HTTPS
+origin from the redirecting `www` alias to `tryblueprint.io`.
+
+Website `8a71a7fd759be33c843e34786f9db904da289421` is live on both web and
+worker services; deployment `34565774036` verified identity and both health
+endpoints. The selected Paperclip bridge now supports instance configuration
+and secret references. A live selected Paperclip worker is still unverified.
+
+The frozen corpus completed 30 SDK and 30 API runs on the same Pipeline release,
+model, effort, cases and tools. SDK produced 29 valid outputs and 16/18 correct
+held-out decisions, at a 4.20-second median. API produced 27 valid outputs and
+15/18 correct held-out decisions, at a 32.70-second median. All 60 sessions were
+cleaned. Summary digest:
+`sha256:1045313eb4e3b3a19952348515cc0f5ad4311e6d56bc32e89583c8e2963494d8`.
+These results retain the SDK as incumbent and keep managed execution in its
+explicit pilot scope. They do not establish intervention savings or final cost.
+Earlier HTTP schema rejections and a trial with missing SDK process opt-in are
+retained separately and are not passing paired comparisons.
+
+The next closeout adds automatic cleanup to newly prepared one-shot tasks,
+retains supervision sessions until revocation/expiry, and keeps Website polling
+until cleanup is observed. A replay CLI admission refusal now writes a typed
+report so the investigator can identify a disk-capacity refusal without access
+to raw logs. Neither change bypasses the original disk or execution gates.
 
 ## Scientific and operational boundaries
 
