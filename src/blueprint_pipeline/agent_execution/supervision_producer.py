@@ -15,6 +15,7 @@ from ..task_evaluation_supervisor.contracts import AuthorityEnvelope, AutonomyMo
 from ..task_evaluation_supervisor.supervisor import default_authority_envelope
 from .contracts import AgentAdmission, AgentExecutionError, AgentTask, RUNTIME_API, digest
 from .supervision import ObservationSource, SupervisionPlan, ownership_key
+from .supervision_authority import current_allowance, allowance_is_current
 from .supervisor_bridge import SupervisorCapabilityBridge, context_revision
 
 INSTRUCTIONS = """Follow this accepted Task Evaluation Run through its existing controller receipts.
@@ -48,10 +49,19 @@ def register_run_supervision(*, intent, directory, source_commit, service=None):
         raise AgentExecutionError("automatic_supervision_intent_binding_invalid")
     deadline = min(float(intent["accepted_at_epoch"]) + 86400,
                    float(intent["request"]["execution"]["expires_at_epoch"]))
+    allowance = current_allowance(service, intent["intent_id"], intent["intent_digest"])
+    if allowance is not None:
+        if (allowance.maximum_reserved_inference_usd > intent["request"]["execution"]["max_total_spend_usd"]
+                or allowance.expires_at > intent["request"]["execution"]["expires_at_epoch"]):
+            raise AgentExecutionError("automatic_supervision_allowance_exceeds_intent")
+        deadline = min(deadline, allowance.expires_at)
     if time.time() >= deadline:
         return None
     run_id = intent["intent_id"]
-    watch_id = "scene-watch-" + digest({"intent": intent["intent_digest"], "source_commit": source_commit})[7:]
+    identity = {"intent": intent["intent_digest"], "source_commit": source_commit}
+    if allowance is not None:
+        identity["allowance_digest"] = allowance.allowance_digest
+    watch_id = "scene-watch-" + digest(identity)[7:]
     plan_path = Path(service.config.supervision_store_root or service.journal.root / "supervision-plans") / (watch_id + ".json")
     with service.journal.own_task("supervision-run:" + run_id):
         if plan_path.exists():
@@ -104,10 +114,12 @@ def register_run_supervision(*, intent, directory, source_commit, service=None):
             sources=(ObservationSource(source_id="controller", path=str(directory / "progression.json"),
                 schema_version="task_evaluation_scene_progression.v1", identity_field="intent_id", identity_value=run_id,
                 eligible_statuses=("blocked", "needs_input", "awaiting_execution", "completed", "cancelled", "failed", "ready")),),
-            maximum_revisions=3, maximum_reserved_inference_usd=3 * budget, expires_at=deadline,
-            automatic_intent_digest=intent["intent_digest"])
+            maximum_revisions=allowance.maximum_revisions if allowance else 3,
+            maximum_reserved_inference_usd=allowance.maximum_reserved_inference_usd if allowance else 3 * budget,
+            expires_at=deadline, automatic_intent_digest=intent["intent_digest"],
+            automatic_allowance_digest=allowance.allowance_digest if allowance else None)
         # Claim the run before another failure subscriber can enqueue a rival owner.
-        service.journal.record_event(ownership_key(source_commit, run_id),
+        service.journal.record_event(ownership_key(source_commit, run_id, plan.automatic_allowance_digest),
             {"watch_id": watch_id, "watch_digest": plan.plan_digest, "run_id": run_id})
         write_json(plan_path, plan.model_dump(mode="json"))
         plan_path.chmod(0o640)
@@ -126,6 +138,8 @@ def best_effort_register_run_supervision(**kwargs):
 
 def reserve_automatic_revision(service, plan, task_id, budget):
     """Lifetime reservation across releases; a restart cannot reset an intent's cap."""
+    if not allowance_is_current(service, plan):
+        raise AgentExecutionError("automatic_supervision_allowance_revoked")
     prefix = "automatic_supervision_budget_" + plan.automatic_intent_digest[7:] + "_"
     event_id = prefix + digest(task_id)[7:]
     with service.journal.own_task("automatic-supervision-budget:" + plan.automatic_intent_digest):
@@ -134,14 +148,18 @@ def reserve_automatic_revision(service, plan, task_id, budget):
         with service.journal._connect() as connection:
             rows = connection.execute("SELECT payload_json FROM events WHERE event_id LIKE ?", (prefix + "%",)).fetchall()
         values = [json.loads(row["payload_json"]) for row in rows]
-        if any(row["maximum_revisions"] != plan.maximum_revisions
-               or row["maximum_reserved_inference_usd"] != plan.maximum_reserved_inference_usd for row in values):
+        amended = plan.automatic_allowance_digest is not None
+        if any((row["maximum_revisions"] > plan.maximum_revisions
+                or row["maximum_reserved_inference_usd"] > plan.maximum_reserved_inference_usd) if amended else (
+                    row["maximum_revisions"] != plan.maximum_revisions
+                    or row["maximum_reserved_inference_usd"] != plan.maximum_reserved_inference_usd) for row in values):
             raise AgentExecutionError("automatic_supervision_lifetime_budget_changed")
         if (len(values) >= plan.maximum_revisions
                 or sum(row["reserved_inference_usd"] for row in values) + budget > plan.maximum_reserved_inference_usd):
             return False
         service.journal.record_event(event_id, {"task_id": task_id, "reserved_inference_usd": budget,
-            "maximum_revisions": plan.maximum_revisions, "maximum_reserved_inference_usd": plan.maximum_reserved_inference_usd})
+            "maximum_revisions": plan.maximum_revisions, "maximum_reserved_inference_usd": plan.maximum_reserved_inference_usd,
+            **({"allowance_digest": plan.automatic_allowance_digest} if amended else {})})
         return True
 
 

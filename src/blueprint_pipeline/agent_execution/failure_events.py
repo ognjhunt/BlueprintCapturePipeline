@@ -73,8 +73,8 @@ def discover_retained_failures(service):
                     "subscription_digest": digest(policy.model_dump(mode="json")), "tasks": []}
                 if state["subscription_digest"] != digest(policy.model_dump(mode="json")):
                     raise AgentExecutionError("agent_failure_subscription_changed")
-                from .supervision import ownership_key
-                if service.journal.event(ownership_key(service.config.source_commit, policy.run_id)) is not None:
+                from .supervision import ownership_event
+                if ownership_event(service, policy.run_id) is not None:
                     results.append({"subscription_id": policy.subscription_id, "state": "owned_by_persistent_supervisor"})
                     continue
                 for job_path in sorted((Path(policy.child_queue_root) / "failed").glob("*.json")):
