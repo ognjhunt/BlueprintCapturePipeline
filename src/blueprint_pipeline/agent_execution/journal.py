@@ -515,6 +515,29 @@ class AgentJournal:
                 )
         return self.operation(operation_id)
 
+    def task_operations(self, task_id: str) -> list[dict[str, Any]]:
+        """Read the exact operation outcomes used by this task's tool calls."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT operation_id FROM calls WHERE task_id=? ORDER BY operation_id", (task_id,),
+            ).fetchall()
+        return [self.operation(row["operation_id"]) for row in rows]
+
+    def claim_controller_request(self, task: AgentTask, operation_id: str, payload: Mapping[str, Any]) -> bool:
+        """Commit controller handoff against cancellation before external work."""
+        event_id = "controller_started_" + operation_id[7:]
+        with self._transaction() as connection:
+            row = connection.execute("SELECT task_digest,cancel_requested FROM tasks WHERE task_id=?", (task.task_id,)).fetchone()
+            if row is None or row["task_digest"] != task.task_digest:
+                raise AgentExecutionError("agent_controller_task_identity_invalid")
+            if row["cancel_requested"] or time.time() >= task.deadline:
+                raise AgentExecutionError("agent_controller_cancelled_before_handoff")
+            if connection.execute("SELECT 1 FROM events WHERE event_id=?", (event_id,)).fetchone():
+                return False
+            text = canonical_json(payload)
+            connection.execute("INSERT INTO events VALUES (?,?,?,?)", (event_id, digest(payload), text, time.time()))
+            return True
+
     def operation(self, operation_id: str) -> dict[str, Any]:
         with self._connect() as connection:
             row = connection.execute(

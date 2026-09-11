@@ -1877,9 +1877,12 @@ def _activate_agent_execution(*, expected_commit: str, config_path: str | Path =
     if not path.exists():
         return {"status": "not_configured", "activated": False}
     from blueprint_pipeline.agent_execution.production import ProductionConfig, _read_private
-    config = ProductionConfig.model_validate_json(_read_private(path))
-    if config.source_commit != expected_commit:
-        raise ControlPlaneDeployError("deploy_agent_configuration_release_mismatch")
+    ProductionConfig.model_validate_json(_read_private(path))
+    from blueprint_pipeline.agent_execution.release import adopt_drained_config
+    try:
+        adoption = adopt_drained_config(path, expected_commit=expected_commit)
+    except Exception as exc:
+        raise ControlPlaneDeployError("deploy_agent_configuration_requires_clean_drain") from exc
     unit = "blueprint-agent-execution.service"
     subprocess.run(["systemctl", "enable", unit], check=True, capture_output=True, text=True, timeout=20)
     _restart_units((unit,))
@@ -1887,7 +1890,7 @@ def _activate_agent_execution(*, expected_commit: str, config_path: str | Path =
     if observed.get("enabled") != "enabled" or observed.get("state") != "active":
         raise ControlPlaneDeployError("deploy_agent_worker_not_enabled_and_active")
     return {"status": "active", "activated": True, "unit": unit, "source_commit": expected_commit,
-            "enabled": observed["enabled"], "state": observed["state"]}
+            "enabled": observed["enabled"], "state": observed["state"], "configuration_adoption": adoption}
 
 
 def _require_terminal_controls_quiescence() -> None:

@@ -264,7 +264,9 @@ def test_cancel_during_blocking_tool_keeps_operation_owned(tmp_path, monkeypatch
     worker = threading.Thread(target=run)
     worker.start()
     try:
-        assert entered.wait(5)
+        # Tool readiness includes SDK/client initialization on a cold CI host.
+        # The cancellation responsiveness assertion below remains two seconds.
+        assert entered.wait(15), f"tool was not reached; worker errors: {errors!r}"
         runtime.cancel(task.task_id)
         worker.join(2)
         assert not worker.is_alive()

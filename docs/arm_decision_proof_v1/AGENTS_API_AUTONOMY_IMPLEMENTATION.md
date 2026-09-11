@@ -85,6 +85,22 @@ admission publication.
 Actual retained-job execution, production deployment, browser readback,
 specialist integration and the frozen comparison corpus are still incomplete.
 
+Website PR #565 is merged and deployed as
+`34f4b57fe195efe38b7f542936638c04d59ad12b`. CI and Render deploy workflow
+`34552970789` passed: both web and worker records are live at that commit,
+`/version.json` matches, and `/health` and `/health/ready` returned 200.
+The admitted-task browser fixture passes; a live Pipeline task/result readback
+is still required before declaring end-to-end delivery.
+
+Pipeline production-promotion run `34547561826` exposed 11 failures. The repair
+batch registers the new service modules and storage roots, separates receipt
+and mesh-configuration validation from execution imports, preserves omitted
+installed-source environment semantics, exposes five retained closeout
+materializers and the teacher view-selection argument, and rehashes the expired
+historical quality ledger. Ledger reevaluation preserves its 30-day window,
+disabled closure authority, null release bindings, and open/partial statuses.
+No GPU stage was launched to discover or validate these fixes.
+
 The current public beta lacks a documented exact per-run inference cost cap and
 does not support ZDR or configurable tracing. Managed execution must bind an
 explicitly admitted retention and budget policy; strict per-call work can use the
