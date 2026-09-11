@@ -22,6 +22,7 @@ from .provider_billing_reconciler import (
     VAST_CHARGES_URL,
 )
 from .policy_canary_official_billing import policy_canary_terminal_evidence
+from .runtime_preflight_official_billing import runtime_preflight_terminal_evidence
 RECONCILIATION_SCHEMA_VERSION = "blueprint.vast_official_same_goal_reconciliation.v1"
 ENTRY_SCHEMA_VERSION = "blueprint.vast_official_instance_charge.v1"
 RECONCILIATION_STATUS = "reconciled_official_posted_charges"
@@ -943,6 +944,11 @@ def _terminal_evidence(
     result_path, result, result_bytes = _json_file(
         terminal_result_path, code="vast_official_terminal_result_invalid"
     )
+    preflight = runtime_preflight_terminal_evidence(instance_id=instance_id, result_path=result_path,
+        result=result, result_bytes=result_bytes, json_file=_json_file, record=_record,
+        error_factory=VastOfficialBillingExtractionError)
+    if preflight is not None:
+        return preflight
     if result.get("schema_version") == (
         "task_evaluation_native_direct_execution_adoption.v1"
     ):
@@ -1384,6 +1390,8 @@ def _entry(
         or row.get("type") != "instance"
         or not isinstance(metadata, Mapping)
         or metadata.get("label") != launch_label
+        or (terminal_evidence.get("financial_closeout_kind") == "native_task_arena_runtime_preflight.v1"
+            and terminal_evidence.get("launch_label") != launch_label)
     ):
         raise VastOfficialBillingExtractionError("vast_official_charge_identity_invalid")
     _validate_charge_period(row, source_receipt)
