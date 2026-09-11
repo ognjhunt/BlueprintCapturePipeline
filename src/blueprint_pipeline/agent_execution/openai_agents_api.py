@@ -135,6 +135,13 @@ class OpenAIAgentsRuntime:
         return session_id
 
     def _create_payload(self, task: AgentTask) -> dict[str, Any]:
+        from copy import deepcopy
+        from agents.strict_schema import ensure_strict_json_schema
+
+        # The provider requires strict Structured Outputs even when the
+        # application schema has defaulted fields. Normalize a detached copy;
+        # the admitted application schema and task digest remain immutable.
+        provider_schema = ensure_strict_json_schema(deepcopy(task.output_schema))
         tools = []
         for name in task.tool_ids:
             tool = self.operations.tools[name]
@@ -149,7 +156,7 @@ class OpenAIAgentsRuntime:
                 "reasoning": {"effort": task.reasoning_effort},
                 "service_tier": "default",
                 "text": {
-                    "format": {"type": "json_schema", "schema": task.output_schema},
+                    "format": {"type": "json_schema", "schema": provider_schema},
                     "verbosity": "low",
                 },
                 "multi_agent": {"enabled": False},
@@ -162,6 +169,7 @@ class OpenAIAgentsRuntime:
                 "blueprint_task_digest": task.task_digest,
                 "blueprint_run_id": task.run_id,
                 "blueprint_source_commit": task.source_commit,
+                "blueprint_provider_schema_digest": digest(provider_schema),
             },
             "stream": False,
         }
