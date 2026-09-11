@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import time
 
 from ..common import write_json
 from ..decision_evidence_contracts import canonical_digest
 from ..episode_interpretation_batch_authority import (
-    MANAGED_SCHEMA_VERSION, derive_episode_interpretation_rights,
+    MANAGED_SCHEMA_VERSION, SCHEMA_VERSION, derive_episode_interpretation_rights,
     validate_episode_interpretation_batch_authority,
 )
 from .contracts import AgentExecutionError, digest
@@ -20,16 +21,21 @@ def schedule_episode_batch(*, requests, result, evidence_root, profile, authorit
     from .production import _read_private
     from ..policy_canary_episode_interpretation_closeout import _artifact
 
+    runtime = profile.get("runtime")
     if (profile.get("schema_version") != "policy_canary_episode_interpreter_profile.v2"
-            or profile.get("runtime") != "openai_agents_api" or profile.get("status") != "configured"
+            or runtime not in {"openai_agents_api", "openai_agents_sdk"} or profile.get("status") != "configured"
             or profile.get("profile_digest") != canonical_digest(profile, digest_field="profile_digest")):
         raise AgentExecutionError("managed_episode_profile_invalid")
     model = profile["model"]
-    identity = _IdentityScope("openai_agents_api", model)
+    identity = _IdentityScope(runtime, model)
     authority = validate_episode_interpretation_batch_authority(authority,
         run_id=result["run_id"], interpreter=identity, interpreter_profile_digest=profile["profile_digest"],
         maximum_cost_usd=profile["max_cost_usd"])
-    if authority["schema_version"] != MANAGED_SCHEMA_VERSION or len(requests) > authority["maximum_episodes"]:
+    expected_schema = MANAGED_SCHEMA_VERSION if runtime == "openai_agents_api" else SCHEMA_VERSION
+    if (authority["schema_version"] != expected_schema
+            or type(authority.get("maximum_episodes")) is not int or not 1 <= authority["maximum_episodes"] <= 20
+            or type(authority.get("expires_at")) not in {int, float} or not math.isfinite(authority["expires_at"])
+            or time.time() >= authority["expires_at"] or len(requests) > authority["maximum_episodes"]):
         raise AgentExecutionError("managed_episode_batch_scope_invalid")
     per_task = float(profile["per_episode_budget_usd"])
     if not 0 < per_task <= service.config.max_task_budget_usd or len(requests) * per_task > authority["maximum_cost_usd"]:
@@ -61,11 +67,11 @@ def schedule_episode_batch(*, requests, result, evidence_root, profile, authorit
                 reused += 1
                 record = service.record(task_id)
                 if (record.episode_investigation is None or record.episode_investigation.input_receipt != request.input_receipt
-                        or record.task.model != model or record.task.run_id != result["run_id"]):
+                        or record.task.model != model or record.task.run_id != result["run_id"] or record.task.admission.runtime != runtime):
                     raise AgentExecutionError("managed_episode_existing_task_conflict")
             else:
                 record = prepare_episode_task(service, task_id=task_id, run_id=result["run_id"], request=request,
-                    rights_path=rights_path, owner_client_id="blueprint-webapp", model=model, inference_budget_usd=per_task,
+                    rights_path=rights_path, owner_client_id="blueprint-webapp", model=model, runtime=runtime, inference_budget_usd=per_task,
                     ttl_seconds=min(900, max(1, int(authority["expires_at"] - time.time()))))
             service.webapp_outbox.queue(record)
             try:
@@ -126,7 +132,7 @@ def schedule_episode_batch(*, requests, result, evidence_root, profile, authorit
     pending = sum(row["status"] == "pending" for row in receipts)
     completed = sum(row["status"] == "completed" for row in receipts)
     abstained = sum(row["status"] == "abstained" for row in receipts)
-    summary = {"schema_version": "policy_canary_episode_interpretation_closeout.v2", "runtime": "openai_agents_api",
+    summary = {"schema_version": "policy_canary_episode_interpretation_closeout.v2", "runtime": runtime,
         "status": "pending" if pending else "abstained" if abstained == len(receipts) else "partial" if abstained else "completed",
         "episode_count": len(output["episodes"]), "pending_count": pending,
         "completed_count": completed, "abstained_count": abstained,

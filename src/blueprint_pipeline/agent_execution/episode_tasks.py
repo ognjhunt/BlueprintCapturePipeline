@@ -24,7 +24,7 @@ from ..episode_investigation import EpisodeEvidenceTools
 from ..task_evaluation_supervisor.capabilities import SupervisorContext
 from ..task_evaluation_supervisor.contracts import AuthorityEnvelope, AutonomyMode
 from ..task_evaluation_supervisor.supervisor import default_authority_envelope
-from .contracts import AgentAdmission, AgentExecutionError, AgentTask, DIGEST, RUNTIME_API, digest
+from .contracts import AgentAdmission, AgentExecutionError, AgentTask, DIGEST, RUNTIME_API, RUNTIME_SDK, digest
 from .supervisor_bridge import context_revision
 
 CAPABILITY = "episode_investigation"
@@ -144,7 +144,7 @@ def prepare_episode_task(service, *, task_id: str, run_id: str, request,
     from .production import TaskRecord, _read_private
     from ..common import write_json
 
-    if runtime != RUNTIME_API or not 1 <= ttl_seconds <= 1800:
+    if runtime not in {RUNTIME_API, RUNTIME_SDK} or not 1 <= ttl_seconds <= 1800:
         raise AgentExecutionError("episode_task_runtime_or_ttl_invalid")
     selected_model = model or service.config.allowed_models[0]
     if selected_model == request.candidate_policy_id:
@@ -194,8 +194,8 @@ def prepare_episode_task(service, *, task_id: str, run_id: str, request,
         input_digests=(request.input_receipt["input_bundle_digest"], binding.rights_sha256),
         output_schema=EpisodeInterpreterOutput.model_json_schema(),
         tool_ids=tuple(tool.tool_id for tool in tools), tool_digests={tool.tool_id: tool.tool_digest for tool in tools},
-        admission=admission, deadline=deadline, max_model_turns=12, max_tool_calls=48,
-        max_input_tokens=120_000, max_output_tokens=8_000, max_tool_output_bytes=64_000_000)
+        admission=admission, deadline=deadline, max_model_turns=12 if managed else 3, max_tool_calls=48,
+        max_input_tokens=120_000 if managed else 100_000, max_output_tokens=8_000 if managed else 4_000, max_tool_output_bytes=64_000_000)
     validate_binding(binding, task)
     record = TaskRecord(schema_version="blueprint_agent_admitted_task.v1", enabled=True, autostart=autostart,
                         cleanup_when_terminal=True,
@@ -343,6 +343,7 @@ def main(argv=None):
     prepare.add_argument("--run-id", required=True)
     prepare.add_argument("--owner-client-id", required=True)
     prepare.add_argument("--model")
+    prepare.add_argument("--runtime", choices=("openai_agents_api", "openai_agents_sdk"), default="openai_agents_api")
     prepare.add_argument("--inference-budget-usd", type=float, required=True)
     prepare.add_argument("--ttl-seconds", type=int, default=900)
     collect = sub.add_parser("collect")
@@ -352,7 +353,7 @@ def main(argv=None):
     if args.action == "prepare":
         request = build_episode_interpretation_request(**json.loads(_read_private(args.request)))
         record = prepare_episode_task(service, task_id=args.task_id, run_id=args.run_id, request=request,
-            rights_path=args.rights, owner_client_id=args.owner_client_id, model=args.model,
+            rights_path=args.rights, owner_client_id=args.owner_client_id, model=args.model, runtime=args.runtime,
             inference_budget_usd=args.inference_budget_usd, ttl_seconds=args.ttl_seconds)
         value = {"task_id": record.task.task_id, "task_digest": record.task.task_digest, "status": "admitted"}
     else:
