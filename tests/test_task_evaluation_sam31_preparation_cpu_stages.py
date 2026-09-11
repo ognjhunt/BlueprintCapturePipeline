@@ -49,10 +49,18 @@ def _fixture(root: Path, *, grouped_source: bool = False) -> dict:
     }
 
 
+@pytest.mark.parametrize("frozen_mask_policy", [None, {
+    "authority": "publisher_target_obb_plus_contained_gaussians",
+    "minimum_contained_gaussians": 16, "dilation_pixels": 8,
+    "maximum_image_fraction": 0.85, "visual_contribution_threshold_8bit": 8,
+    "minimum_visible_target_fraction": 0.01,
+}])
 def test_cpu_stages_reuse_typed_producers_and_never_invoke_models(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_mask_policy,
 ) -> None:
     job = _fixture(tmp_path)
+    if frozen_mask_policy is not None:
+        job["plan"]["mask_policy"] = frozen_mask_policy
     calls = []
 
     def convert(**kwargs):
@@ -76,6 +84,17 @@ def test_cpu_stages_reuse_typed_producers_and_never_invoke_models(
         request = json.loads(Path(kwargs["request_path"]).read_text())
         assert request["scene"]["source_adapter"] == module.ADAPTER
         assert len(request["camera_policy"]["views"]) == 16
+        if frozen_mask_policy is not None:
+            # The live failure was a 20.836% mask rejected by an accidental
+            # 20% default despite the already frozen 85% allowance.
+            assert all(request["mask_policy"][key] == value for key, value in frozen_mask_policy.items())
+            assert 0.2 < 0.2083648681640625 < request["mask_policy"]["maximum_image_fraction"]
+            assert request["mask_policy"]["dilation_pixels"] == 8
+        else:
+            assert "maximum_image_fraction" not in request["mask_policy"]
+            assert request["mask_policy"]["dilation_pixels"] == 0
+        assert request["mask_policy"]["support_threshold_8bit"] == 24
+        assert request["mask_policy"]["minimum_support_inside_final_fraction"] == 0.99
         assert kwargs["production_runtime_root"] == Path(job["runtime_root"])
         selection = json.loads(Path(request["scene"]["task_freeze_path"]).read_text())
         output = Path(kwargs["output_root"])
