@@ -21,7 +21,7 @@ from tests.test_agent_stage_recovery import prepare_fixture
 from tests.test_agent_production_service import write
 
 
-def setup(tmp_path, monkeypatch, *, status="job_refused"):
+def setup(tmp_path, monkeypatch, *, status="refused"):
     service, record, runtime, _ = prepare_fixture(tmp_path, owner_client_id="blueprint-webapp")
     monkeypatch.setattr(stage_recovery, "require_offline_isolation", lambda _: None)
 
@@ -117,8 +117,9 @@ def test_verified_replay_queues_once_and_lost_ack_reuses_exact_packet(tmp_path, 
     assert calls[0] == calls[1]
 
 
-def test_capacity_refusal_does_not_authorize_a_code_repair(tmp_path, monkeypatch):
-    service, record, _ = setup(tmp_path, monkeypatch, status="admission_refused")
+@pytest.mark.parametrize("status", ["admission_refused", "job_refused", "paid_stage_not_replayed"])
+def test_capacity_or_owner_admission_refusal_does_not_authorize_a_code_repair(tmp_path, monkeypatch, status):
+    service, record, _ = setup(tmp_path, monkeypatch, status=status)
     assert queue_engineering_handoff(service, record) is None
 
 

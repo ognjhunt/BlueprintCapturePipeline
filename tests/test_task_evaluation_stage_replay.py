@@ -135,6 +135,21 @@ def test_replay_runs_the_saved_job_in_a_fresh_root_and_names_the_refusing_predic
     assert written["blocker"] == report["blocker"]
 
 
+@pytest.mark.parametrize("allow_paid,purpose", [(False, "retained_offline_replay"), (True, "new_execution")])
+def test_replay_selects_retained_contract_only_when_paid_execution_is_disabled(tmp_path, monkeypatch, allow_paid, purpose):
+    root, _, _ = _queue(tmp_path)
+    observed = []
+    def validate(job, **kwargs):
+        observed.append(kwargs["validation_purpose"])
+        return {"expected_production_commit": COMMIT}, {"source_commit": COMMIT}
+    monkeypatch.setattr(execution, "_validated_job", validate)
+    monkeypatch.setattr(stages, "execute_stage", lambda _: {"status": "completed", "artifacts": {}})
+    report = replay.replay_child(queue_root=root, child_id=CHILD, parent_queue_root=tmp_path / "parent",
+        input_root=tmp_path / "inputs", replay_root=tmp_path / "replays", approved_roots=(tmp_path,), allow_paid=allow_paid)
+    assert report["status"] == "completed"
+    assert observed == [purpose]
+
+
 def test_replay_reports_completion_and_the_outcome(tmp_path: Path, monkeypatch) -> None:
     root, _, _ = _queue(tmp_path, state="completed")
     _fake_validation(monkeypatch)
@@ -488,3 +503,16 @@ def test_cli_writes_typed_capacity_refusal_before_starting_saved_stage(tmp_path,
     assert report["stage_handler_started"] is False
     assert report["provider_mutation_performed"] is False
     assert not (tmp_path / "scratch").exists()
+
+
+def test_isolated_cli_pins_the_invoking_code_after_all_environment_files(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHONPATH", "/old-checkout/src")
+    monkeypatch.setattr(replay.subprocess, "run", lambda command, **kwargs: calls.append(command) or SimpleNamespace(returncode=0))
+    assert replay.main(["--child", CHILD, "--isolate", "--no-unit-environment"]) == 0
+    command = calls[0]
+    executable = command[command.index("--") + 1:]
+    root = Path(replay.__file__).resolve().parents[2]
+    assert executable[:2] == ["/usr/bin/env", f"PYTHONPATH={root / 'src'}"]
+    assert f"WorkingDirectory={root}" in command

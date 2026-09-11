@@ -81,6 +81,28 @@ def _mutate_job(intake, **changes):
     path.write_text(json.dumps(job))
 
 
+def test_offline_parent_interpretation_is_explicit_and_execution_keeps_current_admission(setup, monkeypatch):
+    root, args, process = setup
+    intake = execution.enqueue_sam31_phase(**args)
+    job = json.loads(Path(intake["job_path"]).read_text())
+    calls = []
+    current, retained = execution._parent, execution.retained_parent
+    def live_reader(*values):
+        calls.append("new_execution")
+        return current(*values)
+    def retained_reader(*values):
+        calls.append("retained_offline_replay")
+        return retained(*values)
+    monkeypatch.setattr(execution, "_parent", live_reader)
+    monkeypatch.setattr(execution, "retained_parent", retained_reader)
+    kwargs = dict(parent_queue=process["parent_queue_root"], input_root=process["preparation_input_root"],
+                  source_commit=args["expected_source_commit"], approved_roots=(root,))
+    live = execution._validated_job(job, **kwargs)
+    historical = execution._validated_job(job, **kwargs, validation_purpose="retained_offline_replay")
+    assert live == historical
+    assert calls == ["new_execution", "retained_offline_replay"]
+
+
 def test_exact_enqueue_is_idempotent_and_complete_phase_wakes_parent(setup):
     _, args, process = setup
     first = execution.enqueue_sam31_phase(**args)

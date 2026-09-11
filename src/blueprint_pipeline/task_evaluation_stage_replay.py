@@ -245,6 +245,7 @@ def replay_child(
             input_root=Path(input_root),
             source_commit=str(job.get("expected_source_commit") or ""),
             approved_roots=tuple(Path(root) for root in approved_roots),
+            validation_purpose="new_execution" if allow_paid else "retained_offline_replay",
         )
     except Exception as exc:  # noqa: BLE001 - the refusal is the finding
         _explained(report, "job_refused", exc)
@@ -599,9 +600,8 @@ def isolation_command(
         "systemd-run", "--wait", "--pipe", "--collect", "--quiet", "--service-type=exec",
         f"--unit=stage-replay-{os.getpid()}", "-p", "PrivateNetwork=yes", "-p", f"User={user}",
         "-p", "TimeoutStartSec=1800",
-        # The caller's working directory is the code root of the replay: a candidate
-        # checkout's ``src`` resolves the package before any PYTHONPATH an
-        # EnvironmentFile may override (files win over --setenv in systemd).
+        # main supplies its code root and pins PYTHONPATH in the inner command;
+        # systemd EnvironmentFiles cannot redirect that interpreter to old code.
         "-p", f"WorkingDirectory={working_directory or os.getcwd()}",
     ]
     for path in environment_files:
@@ -640,7 +640,10 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.isolate:
-        inner = [sys.executable, "-m", "blueprint_pipeline.task_evaluation_stage_replay",
+        code_root = Path(__file__).resolve().parents[2]
+        # Exec-time env wins over systemd EnvironmentFiles and editable installs.
+        # A replay invoked from a candidate must execute that candidate's code.
+        inner = ["/usr/bin/env", f"PYTHONPATH={code_root / 'src'}", sys.executable, "-m", "blueprint_pipeline.task_evaluation_stage_replay",
                  *(["--child", args.child] if args.child else ["--parent", args.parent]),
                  "--queue-root", args.queue_root, "--parent-queue-root", args.parent_queue_root,
                  "--input-root", args.input_root, "--replay-root", args.replay_root]
@@ -663,7 +666,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             files.extend(path for path in unit_files if path not in files)
             environment = {**unit_env, **environment}
         completed = subprocess.run(
-            isolation_command(inner, user=args.user, environment_files=files, environment=environment),
+            isolation_command(inner, user=args.user, environment_files=files, environment=environment,
+                              working_directory=str(code_root)),
             check=False,
         )
         return completed.returncode
