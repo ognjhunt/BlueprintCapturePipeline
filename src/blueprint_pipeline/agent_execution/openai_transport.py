@@ -8,6 +8,7 @@ installation or adding a second model/tool orchestration implementation.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -17,10 +18,11 @@ from .contracts import AgentExecutionError, canonical_json
 
 
 class AgentTransportError(AgentExecutionError):
-    def __init__(self, code: str, *, status: int | None = None) -> None:
+    def __init__(self, code: str, *, status: int | None = None, diagnostics: Mapping[str, Any] | None = None) -> None:
         super().__init__(code)
         self.code = code
         self.status = status
+        self.diagnostics = dict(diagnostics or {})
 
     @property
     def definitively_rejected(self) -> bool:
@@ -90,8 +92,25 @@ class OpenAIAgentsHTTP:
             with self._opener.open(request, timeout=self.timeout_seconds) as response:
                 raw = response.read(16_000_001)
         except HTTPError as exc:
-            # Never propagate a provider response body, request headers or key.
-            raise AgentTransportError("agents_api_http_error", status=exc.code) from None
+            # Retain safe protocol metadata without reflecting provider prose,
+            # request bodies, URLs, authorization headers or credentials.
+            diagnostics: dict[str, Any] = {"http_status": exc.code}
+            try:
+                error = json.loads(exc.read(64001)).get("error", {})
+                for name in ("type", "code", "param"):
+                    value = error.get(name)
+                    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.\[\]-]{1,160}", value):
+                        diagnostics[name] = value
+                message = str(error.get("message") or "").lower()
+                if "application" in message and "key" in message:
+                    diagnostics["category"] = "application_key_requirement"
+                elif "schema" in message:
+                    diagnostics["category"] = "schema_validation"
+                elif "model" in message and any(word in message for word in ("support", "available", "exist")):
+                    diagnostics["category"] = "model_availability"
+            except (ValueError, TypeError, AttributeError):
+                pass
+            raise AgentTransportError("agents_api_http_error", status=exc.code, diagnostics=diagnostics) from None
         except (URLError, OSError, TimeoutError):
             raise AgentTransportError("agents_api_connection_uncertain") from None
         if len(raw) > 16_000_000:

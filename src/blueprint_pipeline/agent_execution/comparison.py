@@ -264,6 +264,8 @@ def run_comparison(config_path, corpus_path, output_root):
                 "source_commit": commit, "model": task.model, "reasoning_effort": task.reasoning_effort,
                 "task_id": task.task_id, "task_digest": task.task_digest, "state": state["state"],
                 "cleanup_state": state["cleanup_state"], "result": state["result"],
+                "runtime_error_code": state["error_code"],
+                "provider_rejection": service.journal.event("api_creation_rejection_" + task.task_id),
                 "duration_seconds": time.monotonic() - started, "errors": errors,
                 "grade": grade_case(case, state, service.journal.task_operations(task.task_id)),
                 "manual_operator_actions_measured": False, "external_provider_jobs_launched": 0}
@@ -271,6 +273,8 @@ def run_comparison(config_path, corpus_path, output_root):
             write_json(result_path, row)
             records.append(row)
             print(json.dumps({key: row[key] for key in ("case_id", "runtime", "state", "cleanup_state", "grade")}), flush=True)
+            if runtime_id == RUNTIME_API and state["state"] == "failed" and state["session_id"] is None:
+                raise AgentExecutionError("comparison_managed_admission_rejected")
             if state["state"] not in TERMINAL_STATES or state["cleanup_state"] != "deleted":
                 raise AgentExecutionError("comparison_stopped_for_unresolved_runtime")
     summary = {"schema_version": "blueprint_agent_runtime_comparison.v1", "corpus_digest": corpus["corpus_digest"],
