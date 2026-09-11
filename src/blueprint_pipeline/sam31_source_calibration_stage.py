@@ -64,7 +64,7 @@ def validate_retained_source_calibration_stage(outcome: Mapping[str, Any]) -> No
             'retained_execution_invalid')
     prepared=read(checked_file(artifacts['source_calibration_prepared_inputs']['path'],artifacts['source_calibration_prepared_inputs']))
     if artifacts.get('source_calibration_retained_render_binding'):
-        from .source_calibration_finalization_reuse import validate_retained_render_binding
+        from .source_calibration_finalization_evidence import validate_retained_render_binding
         binding=artifacts['source_calibration_retained_render_binding']
         original, _, _, value=validate_retained_render_binding(checked_file(binding['path'],binding),current_prepared=prepared)
         require(value['original_closed_return']==artifacts['source_calibration_return'],'retained_return_binding_changed')
@@ -203,7 +203,7 @@ def finalize_retained_source_calibration(*,job,prepared_outcome,binding_path):
     from .public_scene_inpainting_preparation import (
         finalize_public_scene_inpainting_inputs,adopt_finalized_public_scene_inpainting_inputs,
     )
-    from .source_calibration_finalization_reuse import validate_retained_render_binding
+    from .source_calibration_finalization_evidence import validate_retained_render_binding
     prepared_path=checked_file(prepared_outcome['prepared_inputs']['path'],prepared_outcome['prepared_inputs'])
     prepared=read(prepared_path,digest_field='preparation_digest')
     _,_,closed,binding=validate_retained_render_binding(binding_path,current_prepared=prepared)

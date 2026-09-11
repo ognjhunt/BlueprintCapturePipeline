@@ -86,15 +86,16 @@ def test_offline_parent_interpretation_is_explicit_and_execution_keeps_current_a
     intake = execution.enqueue_sam31_phase(**args)
     job = json.loads(Path(intake["job_path"]).read_text())
     calls = []
-    current, retained = execution._parent, execution.retained_parent
+    from blueprint_pipeline import task_evaluation_sam31_job_admission as admission
+    current, retained = admission._parent, admission.retained_parent
     def live_reader(*values):
         calls.append("new_execution")
         return current(*values)
     def retained_reader(*values):
         calls.append("retained_offline_replay")
         return retained(*values)
-    monkeypatch.setattr(execution, "_parent", live_reader)
-    monkeypatch.setattr(execution, "retained_parent", retained_reader)
+    monkeypatch.setattr(admission, "_parent", live_reader)
+    monkeypatch.setattr(admission, "retained_parent", retained_reader)
     kwargs = dict(parent_queue=process["parent_queue_root"], input_root=process["preparation_input_root"],
                   source_commit=args["expected_source_commit"], approved_roots=(root,))
     live = execution._validated_job(job, **kwargs)

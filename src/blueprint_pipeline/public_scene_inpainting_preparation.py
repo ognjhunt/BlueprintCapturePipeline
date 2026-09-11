@@ -146,7 +146,7 @@ def finalize_public_scene_inpainting_inputs(*, preparation_path: str | Path,
         groups = verify_source_calibration_return(prepared, returned_path)
         returned = require_source_calibration_closure(prepared, returned_path)
     else:
-        from .source_calibration_finalization_reuse import validate_retained_render_binding
+        from .source_calibration_finalization_evidence import validate_retained_render_binding
         render_prepared, groups, returned, retained_binding = validate_retained_render_binding(
             retained_render_binding_path, current_prepared=prepared)
         if _artifact(returned_path) != retained_binding["original_closed_return"]:

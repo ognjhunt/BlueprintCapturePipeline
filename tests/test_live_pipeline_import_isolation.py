@@ -135,3 +135,15 @@ def test_sam_phase_queue_stays_independent_of_execution_services() -> None:
     assert not reachable.intersection({"task_evaluation_sam31_preparation_execution",
                                        "task_evaluation_sam31_preparation_stages",
                                        "task_evaluation_sam31_preparation_paid_stages"})
+
+
+def test_retained_calibration_evidence_cannot_reach_execution_or_replay() -> None:
+    reachable = _transitive_local_modules((
+        "source_calibration_finalization_evidence", "task_evaluation_sam31_job_admission",
+    ))
+    assert "task_evaluation_sam31_parent_evidence" in reachable
+    assert not reachable.intersection(HOT_LANE_MODULES)
+    assert not reachable.intersection({
+        "source_calibration_finalization_reuse", "task_evaluation_stage_replay",
+        "task_evaluation_sam31_preparation_execution", "task_evaluation_sam31_preparation_stages",
+    })
