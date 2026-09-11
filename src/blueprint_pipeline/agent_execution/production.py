@@ -36,6 +36,7 @@ from .webapp_delivery import WebappAdmissionOutbox
 from .episode_tasks import EpisodeTaskBinding
 from .supervision import SupervisionBinding
 from .visual_tasks import VisualTaskBinding
+from .controller_recovery import ControllerRecoveryBinding, ControllerRecoveryTools
 
 
 CONFIG_ENV = "BLUEPRINT_AGENT_EXECUTION_CONFIG"
@@ -84,6 +85,7 @@ class TaskRecord(BaseModel):
     episode_investigation: EpisodeTaskBinding | None = None
     supervision: SupervisionBinding | None = None
     visual_investigation: VisualTaskBinding | None = None
+    controller_recoveries: tuple[ControllerRecoveryBinding, ...] = ()
 
 
 def _read_private(path: Path, *, limit: int = 4_000_000, secret: bool = False) -> bytes:
@@ -182,6 +184,18 @@ class ProductionAgentService:
             validate_current_observation(self, record.supervision)
         current = self._context(task.run_id, task.task_id)
         authority = AuthorityEnvelope.from_mapping(current.authority_envelope).to_mapping()
+        if record.controller_recoveries:
+            from .controller_recovery import validate_controller_binding
+            if (len(record.controller_recoveries) != 1 or authority["mode"] != "execute_preauthorized"
+                    or authority["action_spend_allowed"] is not True):
+                raise AgentExecutionError("agent_recovery_preauthorization_required")
+            _, intent = validate_controller_binding(record.controller_recoveries[0])
+            execution = intent["request"]["execution"]
+            if (authority["preauthorization_receipt_digest"] != intent["intent_digest"]
+                    or authority["max_cost_usd"] > execution["max_total_spend_usd"]
+                    or authority["max_retries"] > execution["max_retries"]
+                    or time.time() >= execution["expires_at_epoch"]):
+                raise AgentExecutionError("agent_recovery_owner_limits_changed")
         if (context_revision(current) != task.context_revision
                 or authority["authority_digest"] != task.admission.authority_digest
                 or not set(authority["immutable_input_digests"]) <= set(task.admission.allowed_input_digests)
@@ -253,21 +267,21 @@ class ProductionAgentService:
         output_model = OperationalDiagnosis
         if record.visual_investigation is not None:
             from .visual_tasks import VisualInvestigationOutput, tools_for_visual_task
-            if record.stage_replays or record.episode_investigation is not None or record.supervision is not None:
+            if record.stage_replays or record.episode_investigation is not None or record.supervision is not None or record.controller_recoveries:
                 raise AgentExecutionError("visual_task_mixed_scope_forbidden")
             tools = tools_for_visual_task(record.visual_investigation, task)
             output_model = VisualInvestigationOutput
         elif record.episode_investigation is not None:
             from .episode_tasks import tools_for_task
             from ..episode_interpretation import EpisodeInterpreterOutput
-            if record.stage_replays:
+            if record.stage_replays or record.controller_recoveries:
                 raise AgentExecutionError("episode_task_replay_scope_forbidden")
             tools = tools_for_task(record.episode_investigation, task)
             output_model = EpisodeInterpreterOutput
         else:
             tools = (*bridge.tools(), *StageReplayTools(
                 journal=self.journal, bindings=record.stage_replays, source_commit=task.source_commit,
-            ).tools())
+            ).tools(), *ControllerRecoveryTools(self.journal, record.controller_recoveries, task.source_commit).tools())
         operations = AgentOperations(
             self.journal, tools,
             authorize=lambda current, _tool, _args: self.validate_admission(current),

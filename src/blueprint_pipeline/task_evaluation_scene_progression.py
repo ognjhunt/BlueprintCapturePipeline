@@ -560,7 +560,16 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
 
 
 def process_scene_intents(*, config_path, source_resolver=None, publisher=None, submitter=None,
-                          status_reader=None, activation_provisioner=None, now=None):
+                          status_reader=None, activation_provisioner=None, now=None, only_intent_id=None):
+    if only_intent_id is None:
+        from .agent_execution.controller_recovery import consume_controller_requests
+        try:
+            consume_controller_requests(controller_config_path=config_path)
+        except (OSError, ValueError, RuntimeError) as exc:
+            # The reasoning sidecar cannot disable the existing deterministic
+            # controller. Its pending requests remain available for reconciliation.
+            import logging
+            logging.getLogger(__name__).warning("agent_controller_requests_unavailable:%s", type(exc).__name__)
     config_path = safe_path(config_path)
     require(config_path.stat().st_mode & 0o002 == 0, "config_world_writable")
     config = read(config_path, digest_field="config_digest")
@@ -586,7 +595,12 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
     cursor = intake._read(cursor_path, "cursor_digest")["last_intent_id"] if cursor_path.exists() else ""
     ordered = [p for p in directories if p.name > cursor] + [p for p in directories if p.name <= cursor]
     chosen = ordered[:config.get("maximum_intents_per_pass", 16)]
-    if chosen:
+    if only_intent_id is not None:
+        require(isinstance(only_intent_id, str) and only_intent_id.startswith("scene-")
+                and intake._identifier(only_intent_id), "scoped_intent_invalid")
+        chosen = [directory for directory in directories if directory.name == only_intent_id]
+        require(len(chosen) == 1, "scoped_intent_missing")
+    if chosen and only_intent_id is None:
         atomic_json(cursor_path, intake._seal({"last_intent_id": chosen[-1].name}, "cursor_digest"))
     rows = []
     for directory in chosen:
