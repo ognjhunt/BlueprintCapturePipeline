@@ -109,7 +109,11 @@ def validate_current_observation(service, binding: SupervisionBinding):
 
 
 def _state_path(service, plan):
-    return service.journal.root / "supervision" / (plan.watch_id + ".json")
+    return service.journal.root / "supervision" / plan.source_commit / (plan.watch_id + ".json")
+
+
+def ownership_key(source_commit, run_id):
+    return "supervision_owner_" + digest({"source_commit": source_commit, "run_id": run_id})[7:]
 
 
 def _write_state(service, plan, state):
@@ -139,7 +143,7 @@ def progress_plan(service, plan: SupervisionPlan):
                 or state.get("watch_digest") != plan.plan_digest or state.get("run_id") != plan.run_id
                 or state.get("template_digest") != template_digest):
             raise AgentExecutionError("agent_supervision_plan_or_state_changed")
-        service.journal.record_event("supervision_owner_" + digest(plan.run_id)[7:],
+        service.journal.record_event(ownership_key(plan.source_commit, plan.run_id),
             {"watch_id": plan.watch_id, "watch_digest": plan.plan_digest, "run_id": plan.run_id})
         active_id = state["active_task_id"]
         active = None
@@ -252,6 +256,9 @@ def progress_plan(service, plan: SupervisionPlan):
 
 def progress_supervision(service):
     from .production import _read_private
+
+    if (service.journal.root / "release_drain.json").exists():
+        return []
 
     root = service.config.supervision_store_root or service.journal.root / "supervision-plans"
     results = []

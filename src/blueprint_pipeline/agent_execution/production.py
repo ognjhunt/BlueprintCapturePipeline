@@ -148,6 +148,8 @@ class ProductionAgentService:
         return current
 
     def validate_admission(self, task: AgentTask) -> None:
+        if (self.journal.root / "release_drain.json").exists():
+            raise AgentExecutionError("agent_release_draining")
         current_config = ProductionConfig.model_validate_json(_read_private(self.config_path))
         if digest(current_config.model_dump(mode="json")) != self.config_digest:
             raise AgentExecutionError("agent_production_configuration_changed")
@@ -302,7 +304,8 @@ class ProductionAgentService:
         if not _run_lock_held:
             with self.journal.own_task("supervision-run:" + record.task.run_id):
                 return self._enqueue_record(record, _run_lock_held=True)
-        owner = self.journal.event("supervision_owner_" + digest(record.task.run_id)[7:])
+        from .supervision import ownership_key
+        owner = self.journal.event(ownership_key(self.config.source_commit, record.task.run_id))
         if owner is not None and (record.supervision is None
                 or record.supervision.watch_digest != owner["watch_digest"]):
             raise AgentExecutionError("agent_run_owned_by_persistent_supervisor")
@@ -367,6 +370,8 @@ class ProductionAgentService:
         return self.status(task_id, client_id)
 
     def autostart(self) -> int:
+        if (self.journal.root / "release_drain.json").exists():
+            return 0
         count = 0
         for path in sorted(Path(self.config.task_store_root).glob("*.json")):
             try:
