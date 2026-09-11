@@ -244,7 +244,8 @@ def test_canary_sync_requires_website_notification_receipt(monkeypatch) -> None:
     assert "sync-secret" not in json.dumps(synced)
 
 
-def test_canary_sync_preserves_report_when_website_notification_fails(monkeypatch) -> None:
+@pytest.mark.parametrize("operator", [False, True])
+def test_canary_sync_preserves_report_when_website_notification_fails(monkeypatch, operator) -> None:
     delivery, result = _projection()
 
     class Response:
@@ -286,6 +287,8 @@ def test_canary_sync_preserves_report_when_website_notification_fails(monkeypatc
         lambda *_args, **_kwargs: Response(),
     )
 
+    operator_binding = ({"plan_digest": "sha256:" + "d" * 64,
+                         "operator_registration_digest": "sha256:" + "e" * 64} if operator else {})
     synced = sync_task_evaluation_policy_canary_to_webapp(
         capture_session_id="capture-839873",
         intake_id="intake-839873",
@@ -295,6 +298,7 @@ def test_canary_sync_preserves_report_when_website_notification_fails(monkeypatc
         result_status="blocked",
         result_delivery=delivery,
         policy_canary_result=result,
+        **operator_binding,
         endpoint_url="https://webapp.example/api/internal/pipeline/task-evaluation-runs",
         token="sync-secret",
         max_attempts=1,
@@ -303,6 +307,18 @@ def test_canary_sync_preserves_report_when_website_notification_fails(monkeypatc
     assert synced["status"] == "succeeded"
     assert synced["notification_delivery"]["status"] == "failed"
     assert synced["notification_delivery"]["failure_reason"] == "email_disabled"
+    if operator:
+        # The production Website v1 acknowledgement has no optional operator
+        # fields. Retain the identity actually sent so closeout can advance to
+        # the separate stored-publication/inbox/download readback.
+        assert all(synced[key] == value for key, value in operator_binding.items())
+        assert "operator_registration_digest" not in synced["response"]
+        from blueprint_pipeline.operator_policy_canary_terminal_delivery import _sync_matches
+        registration = {key:synced[key] for key in ('run_id','capture_session_id','intake_id','request_digest')}
+        registration['registration_digest'] = operator_binding['operator_registration_digest']
+        runtime = {'configuration_digest':result['configuration_digest'],
+                   'plan_digest':operator_binding['plan_digest']}
+        assert _sync_matches(synced, registration, runtime, delivery, result)
 
 
 def test_preprovider_blocked_sync_requires_terminal_email_readback(

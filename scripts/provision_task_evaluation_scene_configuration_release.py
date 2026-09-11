@@ -221,6 +221,7 @@ def provision_scene_configuration_release(
     multi_agent_cad_root: str | Path,
     readback: Readback,
     readback_actor: str,
+    astra_blender_archive_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Publish or reopen the two immutable runtime trees for one release."""
 
@@ -256,6 +257,10 @@ def provision_scene_configuration_release(
             root=toolchain_root,
             expected_source_commit=source_commit,
         )
+        if astra_blender_archive_path is not None:
+            from blueprint_pipeline.task_evaluation_scene_configuration_astra_runtime import declared_python_profile
+            if declared_python_profile(toolchain_root) != 'astra_asset_authoring':
+                raise ValueError('scene_configuration_existing_toolchain_lacks_requested_astra_runtime')
         toolchain_receipt: dict[str, Any] = {
             "status": "reused_validated_immutable_toolchain",
             "toolchain_root": str(toolchain_root),
@@ -279,6 +284,7 @@ def provision_scene_configuration_release(
                 expected_blueprint_commit=source_commit,
                 artifixer_root=artifixer_root,
                 vgg16_weights_path=vgg16_weights,
+                python_runtime_profile=('astra_asset_authoring' if astra_blender_archive_path else 'base'),
                 output_root=component_packages[
                     "artifixer3d_observed_object_removal"
                 ],
@@ -289,6 +295,7 @@ def provision_scene_configuration_release(
                 content_agents_root=content_agents_root,
                 text_to_cad_root=text_to_cad_root,
                 multi_agent_cad_root=multi_agent_cad_root,
+                blender_archive_path=astra_blender_archive_path,
                 output_root=component_packages[
                     "content_agents_rigid_replacement"
                 ],
@@ -357,6 +364,7 @@ def main() -> int:
     parser.add_argument("--content-agents-root", required=True)
     parser.add_argument("--text-to-cad-root", required=True)
     parser.add_argument("--multi-agent-cad-root", required=True)
+    parser.add_argument("--astra-blender-archive")
     parser.add_argument("--readback-user", required=True)
     args = parser.parse_args()
     value = provision_scene_configuration_release(
@@ -371,6 +379,7 @@ def main() -> int:
         content_agents_root=args.content_agents_root,
         text_to_cad_root=args.text_to_cad_root,
         multi_agent_cad_root=args.multi_agent_cad_root,
+        astra_blender_archive_path=args.astra_blender_archive,
         readback=service_account_readback(args.readback_user),
         readback_actor=f"service-account:{args.readback_user}",
     )

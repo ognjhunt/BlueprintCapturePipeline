@@ -792,3 +792,42 @@ def test_explicit_user_omission_is_diagnostic_and_cannot_bypass_strict_contract(
     with pytest.raises(PolicyCanarySessionError, match='control_requirement_mismatch'):
         validate_runtime_input_manifest(inputs)
 
+
+def test_direct_canary_accepts_real_compiled_packet_without_claiming_construction():
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import _construction_lineage_mode
+    plan = {'scene_id': 'scene-a', 'task_id': 'book-to-area'}
+    plan['plan_digest'] = canonical_digest(plan, digest_field='plan_digest')
+    packet = {'schema_version': 'native_task_arena_packet_receipt.v1', 'status': 'construction_packet_completed',
+        'scene_id': 'scene-a', 'task_id': 'book-to-area', 'arena_scene_plan_digest': plan['plan_digest'],
+        'native_application_claimed': False, 'policy_episode_claimed': False}
+    packet['receipt_digest'] = canonical_digest(packet, digest_field='receipt_digest')
+    record = {'path': '/compiled/packet.json', 'sha256': 'sha256:'+'1'*64, 'size_bytes': 100}
+    inputs = {'run_kind': 'internal_policy_canary', 'claim_ceiling': 'diagnostic_policy_execution',
+        'base_native_packet': record, 'construction_result': dict(record)}
+    assert _construction_lineage_mode(inputs=inputs, base_scene_plan=plan, construction=packet) == 'compiled_native_packet_diagnostic'
+    inputs['run_kind'] = 'qualified_evaluation'
+    with pytest.raises(RuntimeError, match='compiled_packet_lineage_invalid'):
+        _construction_lineage_mode(inputs=inputs, base_scene_plan=plan, construction=packet)
+
+
+def test_native_initialization_preserves_only_safe_refusal_codes(tmp_path: Path) -> None:
+    from blueprint_pipeline.native_task_arena_runtime import NativeTaskArenaRuntimeError
+    calls = {"open": 0, "close": 0, "loads": []}
+    kwargs = _preload_gate_session_kwargs(tmp_path, calls)
+    def refuse(_inputs):
+        raise NativeTaskArenaRuntimeError([
+            "native_task_arena_camera_intrinsics_not_representable:overview",
+            "unexpected token=secret-value /private/provider/path",
+        ])
+    kwargs["open_session"] = refuse
+    result = execute_paired_session(**kwargs)
+    assert result["session_failure_codes"] == [
+        "native_task_arena_camera_intrinsics_not_representable:overview"
+    ]
+    assert "secret-value" not in json.dumps(result)
+    assert result["candidate_policy_queried"] is False
+    trace = result["session_failure_source_trace"]
+    assert trace[-1]["function"] == "refuse"
+    assert trace[-1]["file"] == Path(__file__).name
+    assert trace[-1]["line"] > 0
+    assert "/private/provider/path" not in json.dumps(trace)

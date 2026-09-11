@@ -81,9 +81,8 @@ def validate_retained_paid_stage(outcome: Mapping[str, Any], *, stage_id: str) -
         manifest, lane=lane, required_paths=retained,
     ), "replay_terminal_artifacts_changed")
     if "scene_owner_attempt" in outcome:
-        from .task_evaluation_scene_execution_authority import require_scene_execution_authority
+        from .task_evaluation_scene_attempt_binding import require_scene_execution_binding
         reference = outcome["scene_owner_attempt"]
         owner = read(checked_file(reference["path"], reference))
-        require_scene_execution_authority(owner,
-            source_commit=owner["scene_attempt_binding"]["source_commit"], reopen_records=False)
-
+        require_scene_execution_binding(owner,
+            source_commit=owner["scene_attempt_binding"]["source_commit"])

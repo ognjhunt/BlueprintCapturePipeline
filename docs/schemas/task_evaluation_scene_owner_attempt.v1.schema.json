@@ -8,7 +8,7 @@
     "schema_version": {"const": "task_evaluation_scene_owner_attempt.v1"},
     "scene_intent_digest": {"$ref": "#/$defs/digest"},
     "scene_attempt_id": {"$ref": "#/$defs/id"},
-    "phase": {"enum": ["scene_configuration", "construction", "controls"]},
+    "phase": {"enum": ["scene_configuration", "destination", "construction", "controls"]},
     "team_namespace": {"$ref": "#/$defs/id"},
     "scene_id": {"$ref": "#/$defs/id"},
     "task_id": {"$ref": "#/$defs/id"},

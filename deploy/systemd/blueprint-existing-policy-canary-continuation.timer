@@ -1,0 +1,11 @@
+[Unit]
+Description=Resume pending existing-run collection, billing, and Website delivery
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=5s
+Unit=blueprint-existing-policy-canary-continuation.service
+
+[Install]
+WantedBy=timers.target

@@ -48,6 +48,25 @@ def destination_qualification_runtime_sources() -> tuple[Path, ...]:
     )
 
 
+def _collision_binding_matches(binding: Mapping[str, Any], expected_digest: str) -> bool:
+    """Join the configured source to its exact staged static-collision derivative."""
+    source = binding.get("source") or {}
+    if binding.get("staged_sha256") == expected_digest:
+        return True
+    if source.get("sha256") != expected_digest:
+        return False
+    adaptation = binding.get("static_scene_collision_adaptation") or {}
+    return (
+        adaptation.get("adaptation") == "static_convex_to_triangle_mesh"
+        and adaptation.get("derived_from_sha256") == expected_digest
+        and adaptation.get("candidate_bytes_modified") is False
+        and adaptation.get("conversion_scope") == "all_static_convex_collision_meshes"
+        and isinstance(adaptation.get("converted_prim_paths"), list)
+        and bool(adaptation["converted_prim_paths"])
+        and all(isinstance(path, str) and path.startswith("/") for path in adaptation["converted_prim_paths"])
+    )
+
+
 def build_native_task_arena_destination_qualification_bundle(
     *,
     job_dir: str | Path,
@@ -88,8 +107,9 @@ def build_native_task_arena_destination_qualification_bundle(
         request["execution_commit"] != implementation_commit
         or request["container_identity"]
         != {"image": container_image, "digest": manifest_digest}
-        or by_role.get("scene_collision", {}).get("staged_sha256")
-        != request["configured_scene_collision_digest"]
+        or not _collision_binding_matches(
+            by_role.get("scene_collision", {}), request["configured_scene_collision_digest"]
+        )
         or by_role.get("task_support", {}).get("staged_sha256")
         != request["destination_asset_digest"]
         or _sha256(support_plane_path)

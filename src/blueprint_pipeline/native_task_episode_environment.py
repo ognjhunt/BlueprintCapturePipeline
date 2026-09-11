@@ -119,15 +119,20 @@ class NativeRigidScoringEnvironment:
                 self._initial_position = [float(v) for v in task_spec["start_pose_world"][:3]]
                 self._initial_tolerance = float(task_spec["reset_translation_tolerance_m"])
                 self._initial_lift = max(float(task_spec["minimum_lift_m"]), self._initial_tolerance)
-                self._initial_max_force = float(task_spec.get(
-                    "maximum_task_contact_force_n", collision_threshold))
+                # The exact initial support channel is explicitly permitted.
+                # A forbidden-contact threshold is not its force cap, and the
+                # task-robot force criterion remains independently scored.
+                declared_cap = task_spec.get('maximum_task_contact_force_n')
+                self._initial_max_force = float(declared_cap) if declared_cap is not None else None
                 valid = (isinstance(self._initial_support, Mapping)
                     and self._initial_support.get("contact_permission") == "initial_pickup_until_first_separation_or_lift"
                     and bool(self._initial_support.get("scene_prim_paths"))
                     and len(self._initial_position) == 3
                     and all(math.isfinite(v) for v in self._initial_position)
                     and all(math.isfinite(v) and v > 0 for v in (
-                        self._initial_tolerance, self._initial_lift, self._initial_max_force)))
+                        self._initial_tolerance, self._initial_lift))
+                    and (self._initial_max_force is None or
+                         math.isfinite(self._initial_max_force) and self._initial_max_force > 0))
             except (KeyError, TypeError, ValueError):
                 valid = False
             if not valid:
@@ -213,7 +218,7 @@ class NativeRigidScoringEnvironment:
                 self._initial_support_closed = True
             self._initial_support_seen |= initial_contact
             initial_support_failure = (
-                initial_force > self._initial_max_force
+                (self._initial_max_force is not None and initial_force > self._initial_max_force)
                 or (self._initial_support_closed and initial_force >= self._collision_threshold))
             sample.update(
                 initial_source_support_contact_active=initial_contact,

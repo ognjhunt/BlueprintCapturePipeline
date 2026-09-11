@@ -6230,3 +6230,125 @@ def test_agents_cannot_assert_measurement_admission_or_execution_controls() -> N
     for field in ("catalog_mutated", "qualification_created"):
         with pytest.raises(ValueError, match="protected_agent_control_field"):
             _reject_protected_fields({field: False})
+
+
+def _invalid_structured_sdk_fixture(tmp_path, monkeypatch, *, token_usage=True, mode="sdk"):
+    import agents
+    from agents.exceptions import ModelBehaviorError, RunErrorDetails
+    from agents.items import ModelResponse
+    from agents.usage import Usage
+    from types import SimpleNamespace
+
+    usage = Usage(requests=1, input_tokens=8 if token_usage else 0,
+                  output_tokens=4 if token_usage else 0, total_tokens=12 if token_usage else 0)
+    response = ModelResponse(output=[{
+        "id": "msg-invalid", "type": "message", "role": "assistant", "status": "completed",
+        "content": [{"type": "output_text", "text": '{"nested":"DO_NOT_LOG_SECRET', "annotations": []}],
+    }], usage=usage, response_id="resp-invalid", request_id="req-invalid")
+    context = SimpleNamespace(usage=usage)
+    run_data = RunErrorDetails(input="DO_NOT_LOG_PROMPT_SECRET", new_items=[], raw_responses=[response],
+        last_agent=None, context_wrapper=context, input_guardrail_results=[], output_guardrail_results=[])
+    error = ModelBehaviorError("invalid nested JSON DO_NOT_LOG_SECRET")
+    error.run_data = run_data
+    calls = []
+    def fake_run(*args, **kwargs):
+        calls.append(True)
+        if mode == "transport":
+            # Prior completed turns cannot settle a later transport failure.
+            transport = RuntimeError("transport failed")
+            transport.run_data = run_data
+            raise transport
+        if mode == "validation":
+            return SimpleNamespace(final_output={"invalid": True}, context_wrapper=context, raw_responses=[response])
+        raise error
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    monkeypatch.delenv("OPENAI_API_KEY_FILE", raising=False)
+    monkeypatch.setattr(agents.Runner, "run_sync", staticmethod(fake_run))
+    audit = InferenceReservationAudit(run_root=tmp_path, run_id="invalid-structured")
+    invoker = OpenAIAgentsSDKInvoker(OpenAIAgentsSDKConfig(allow_live_invocation=True, max_inference_cost_usd=.02))
+    invoker.configure_reservation_audit(record_reservation=audit.record_reservation,
+        record_completion=audit.record_completion, restored_reserved_cost_usd=0.)
+    spec = AgentsSDKAgentSpec(run_id="invalid-structured", capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
+        name="Invalid structured output accounting", instructions="Typed output", model="gpt-5.6-terra",
+        max_turns=1, max_output_tokens=1000)
+    return invoker, audit, spec, error, run_data, calls
+
+
+@pytest.mark.parametrize("mode", ["sdk", "validation"])
+def test_invalid_structured_provider_response_records_cost_without_output_claim(tmp_path, monkeypatch, mode):
+    from agents.exceptions import ModelBehaviorError
+    from pydantic import ValidationError
+    invoker, audit, spec, error, run_data, calls = _invalid_structured_sdk_fixture(tmp_path, monkeypatch, mode=mode)
+    with pytest.raises((ModelBehaviorError, ValidationError)):
+        invoker.invoke(spec, "fixture")
+    manifest = audit.manifest()
+    assert manifest["in_flight_unknown_count"] == 0
+    completion = json.loads(next(audit.completed_root.glob("*.json")).read_text())
+    assert completion["status"] == completion["provider_outcome"] == "invalid_structured_output"
+    assert completion["reconciled_actual_cost_usd"] == pytest.approx(.000064)
+    assert completion["released_reservation_usd"] > 0
+    assert completion["cost_basis"] == "actual_token_usage"
+    assert completion["usage"]["cost_is_actual"] is True
+    assert completion["raw_response_metadata"][0]["response_id"] == "resp-invalid"
+    assert completion["raw_response_metadata"][0]["raw_response_digest"].startswith("sha256:")
+    assert "structured_output_digest" not in completion
+    assert completion["proof_effect"] == "none"
+    assert "DO_NOT_LOG" not in json.dumps(completion)
+    assert completion["inference_completion_digest"] == canonical_digest(completion, digest_field="inference_completion_digest")
+    with pytest.raises(InferenceReservationError, match="prior_inference_reservation"):
+        invoker.invoke(spec, "fixture")
+    assert len(calls) == 1
+
+
+def test_invalid_structured_response_unknown_usage_is_charged_full_upper_bound(tmp_path, monkeypatch):
+    from agents.exceptions import ModelBehaviorError
+    invoker, audit, spec, error, run_data, calls = _invalid_structured_sdk_fixture(tmp_path, monkeypatch, token_usage=False)
+    with pytest.raises(ModelBehaviorError):
+        invoker.invoke(spec, "fixture")
+    completion = json.loads(next(audit.completed_root.glob("*.json")).read_text())
+    assert completion["reconciled_actual_cost_usd"] == completion["projected_max_cost_usd"] > 0
+    assert completion["observed_actual_cost_usd"] is None
+    assert completion["released_reservation_usd"] == 0
+    assert completion["cost_basis"] == "reserved_upper_bound"
+    assert completion["usage"]["cost_is_actual"] is False
+    with pytest.raises(AgentsSDKInvocationBlocked, match="budget_ceiling_exceeded"):
+        invoker.invoke(spec, "distinct bounded repair")
+    assert len(calls) == 1
+
+
+def test_invalid_structured_accounting_never_settles_transport_or_missing_run_data(tmp_path, monkeypatch):
+    invoker, audit, spec, error, run_data, calls = _invalid_structured_sdk_fixture(tmp_path, monkeypatch, mode="transport")
+    with pytest.raises(RuntimeError, match="transport failed"):
+        invoker.invoke(spec, "fixture")
+    assert audit.manifest()["in_flight_unknown_count"] == 1
+    assert not list(audit.completed_root.glob("*.json"))
+    from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import _invalid_output_completion
+    assert _invalid_output_completion(None, error, {}) is None
+
+
+def test_invalid_structured_cost_overrun_blocks_followup_even_if_audit_refuses_receipt(tmp_path, monkeypatch):
+    invoker, audit, spec, error, run_data, calls = _invalid_structured_sdk_fixture(tmp_path, monkeypatch)
+    usage = run_data.context_wrapper.usage
+    usage.input_tokens, usage.output_tokens, usage.total_tokens = 1_000_000, 1000, 1_001_000
+    with pytest.raises(InferenceReservationError, match="exceeds_reservation"):
+        invoker.invoke(spec, "fixture")
+    assert audit.manifest()["in_flight_unknown_count"] == 1
+    assert invoker._reserved_cost_usd > invoker.config.max_inference_cost_usd
+    with pytest.raises(AgentsSDKInvocationBlocked, match="budget_ceiling_exceeded"):
+        invoker.invoke(spec, "distinct repair")
+    assert len(calls) == 1
+
+
+def test_invalid_structured_partial_aggregate_usage_cannot_release_reservation(tmp_path, monkeypatch):
+    import copy
+    from agents.exceptions import ModelBehaviorError
+    invoker, audit, spec, error, run_data, calls = _invalid_structured_sdk_fixture(tmp_path, monkeypatch)
+    extra_response = copy.deepcopy(run_data.raw_responses[0])
+    extra_response.response_id = "resp-second-unaccounted"
+    run_data.raw_responses.append(extra_response)
+    with pytest.raises(ModelBehaviorError):
+        invoker.invoke(spec, "fixture")
+    completion = json.loads(next(audit.completed_root.glob("*.json")).read_text())
+    assert completion["cost_basis"] == "reserved_upper_bound"
+    assert completion["released_reservation_usd"] == 0
+    assert completion["reconciled_actual_cost_usd"] == completion["projected_max_cost_usd"]

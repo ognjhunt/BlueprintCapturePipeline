@@ -80,11 +80,16 @@ def test_mesh_upload_reaches_real_construction_consumer_and_static_qualification
     from blueprint_pipeline.task_evaluation_scene_configuration_provider_preflight import scene_configuration_bundle_contract
     from blueprint_pipeline.provider_archive import extract_provider_archive
     from scripts.task_evaluation_scene_configuration_provider_runner import _hydrate_envelope
-    from tests.test_task_evaluation_scene_configuration_bundle import _toolchain
+    from tests.astra_toolchain_fixture import astra_toolchain_fixture
+    from blueprint_pipeline.task_evaluation_scene_configuration_astra_runtime import declared_python_profile
     envelope_path = tmp_path / "consumer-envelope.json"
     envelope_path.write_text(json.dumps(envelope))
+    # Fresh submissions select Astra, so even this CPU-only consumer rehearsal
+    # must carry the sealed Astra profile instead of a legacy base wheelhouse.
+    toolchain = astra_toolchain_fixture(tmp_path / "toolchain", SHA, monkeypatch)
+    assert declared_python_profile(toolchain) == "astra_asset_authoring"
     bundle = build_scene_configuration_provider_bundle(construction_envelope_path=envelope_path,
-        toolchain_root=_toolchain(tmp_path / "toolchain", SHA), repository_root=Path(__file__).resolve().parents[1],
+        toolchain_root=toolchain, repository_root=Path(__file__).resolve().parents[1],
         output_root=tmp_path / "bundle", expected_source_commit=SHA)
     with zipfile.ZipFile(bundle["bundle_path"]) as archive:
         _, _, blockers = scene_configuration_bundle_contract(archive)

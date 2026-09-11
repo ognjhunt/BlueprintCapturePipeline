@@ -10,6 +10,7 @@ import platform
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -22,10 +23,123 @@ MANIFEST_NAME = f"{SCHEMA_VERSION}.json"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _MAX_MEMBER_BYTES = 256 * 1024**2
 _MAX_TOTAL_BYTES = 768 * 1024**2
+DEFAULT_RUNTIME_PROFILE = "base"
+RUNTIME_PROFILE_ROOTS = {
+    "base": ("openai-agents", "usd-core"),
+    "astra_asset_authoring": ("openai-agents", "usd-core", "build123d", "langgraph", "trimesh", "pillow"),
+}
+RUNTIME_PROFILE_IMPORTS = {
+    "base": (),
+    "astra_asset_authoring": ("agents", "pxr.Usd", "build123d", "OCP", "langgraph.graph", "trimesh", "PIL.Image"),
+}
+_ASTRA_SOURCE_ROOT = Path(__file__).resolve().parent.parent
+_ASTRA_STAGE_MODULES = ("blueprint_pipeline.astra_cad_skill_runtime",
+                        "blueprint_pipeline.task_evaluation_scene_configuration_astra_driver",
+                        "blueprint_pipeline.task_object_astra_authoring",
+                        "blueprint_pipeline.task_object_simready_packaging")
+RUNTIME_PROFILE_PLATFORM_TAGS = {
+    "base": ("manylinux_2_17_x86_64", "manylinux2014_x86_64", "manylinux_2_28_x86_64", "manylinux_2_35_x86_64"),
+    "astra_asset_authoring": tuple(f"manylinux_2_{minor}_x86_64" for minor in range(17, 36))
+    + ("manylinux2014_x86_64",),
+}
 
 
 class TaskEvaluationSceneConfigurationPythonRuntimeError(ValueError):
     """The shipped provider dependency closure was unsafe or incompatible."""
+
+
+
+def runtime_profile_roots(profile: str) -> tuple[str, ...]:
+    if profile not in RUNTIME_PROFILE_ROOTS:
+        raise TaskEvaluationSceneConfigurationPythonRuntimeError("scene_configuration_python_runtime_profile_invalid")
+    return RUNTIME_PROFILE_ROOTS[profile]
+
+
+def _compatible_astra_wheel(filename: str) -> bool:
+    parts = filename.removesuffix(".whl").rsplit("-", 3)
+    if len(parts) != 4:
+        return False
+    _, python_tags, abi_tags, platform_tags = parts
+    for platform_tag in platform_tags.split("."):
+        if platform_tag not in {"any", *RUNTIME_PROFILE_PLATFORM_TAGS["astra_asset_authoring"]}:
+            continue
+        for python_tag in python_tags.split("."):
+            if "none" in abi_tags.split(".") and python_tag in {"py3", "py312", "cp312"}:
+                return True
+            if platform_tag != "any" and python_tag == "cp312" and "cp312" in abi_tags.split("."):
+                return True
+            stable = re.fullmatch(r"cp3([0-9]+)", python_tag)
+            if platform_tag != "any" and stable and 2 <= int(stable.group(1)) <= 12 and "abi3" in abi_tags.split("."):
+                return True
+    return False
+
+
+def validate_runtime_profile_inventory(manifest: Mapping[str, Any], profile: str) -> None:
+    roots = runtime_profile_roots(profile)
+    if manifest.get("runtime_profile", DEFAULT_RUNTIME_PROFILE) != profile or manifest.get("root_distributions") != list(roots):
+        raise TaskEvaluationSceneConfigurationPythonRuntimeError("scene_configuration_python_runtime_profile_mismatch")
+    if profile == DEFAULT_RUNTIME_PROFILE:
+        return  # Preserve the existing base manifest/validation contract.
+    rows, requirements = manifest.get("wheels"), manifest.get("requirements")
+    if (manifest.get("required_imports") != list(RUNTIME_PROFILE_IMPORTS[profile])
+            or manifest.get("platform_tags") != list(RUNTIME_PROFILE_PLATFORM_TAGS[profile])
+            or not isinstance(rows, list) or not isinstance(requirements, list)):
+        raise TaskEvaluationSceneConfigurationPythonRuntimeError("scene_configuration_python_profile_inventory_invalid")
+    inventory = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise TaskEvaluationSceneConfigurationPythonRuntimeError("scene_configuration_python_profile_inventory_invalid")
+        name, version, filename = row.get("distribution"), row.get("version"), str(row.get("filename") or "")
+        if (not isinstance(name, str) or not isinstance(version, str) or name in inventory
+                or not filename.startswith(name.replace("-", "_") + "-" + version + "-")
+                or not filename.endswith(".whl") or not _compatible_astra_wheel(filename)):
+            raise TaskEvaluationSceneConfigurationPythonRuntimeError("scene_configuration_python_profile_wheel_abi_or_identity_invalid")
+        inventory[name] = version
+    if (not set(roots) <= inventory.keys()
+            or requirements != [{"name": name, "version": version} for name, version in sorted(inventory.items())]):
+        raise TaskEvaluationSceneConfigurationPythonRuntimeError("scene_configuration_python_profile_inventory_incomplete")
+
+
+def _validate_astra_imports(root: Path) -> None:
+    # -I/-S prevents accidental satisfaction by the host's installed site packages.
+    code = """import importlib, json, pathlib, sys, sysconfig
+root = pathlib.Path(sys.argv[1]).resolve()
+source = pathlib.Path(sys.argv[3]).resolve()
+sys.path[:0] = [str(root), str(source)]
+for name in json.loads(sys.argv[2]):
+    module = importlib.import_module(name)
+    origin = getattr(module, '__file__', None)
+    if not origin or not pathlib.Path(origin).resolve().is_relative_to(root):
+        raise ImportError('sealed_import_origin_mismatch:' + name)
+for name in json.loads(sys.argv[4]):
+    module = importlib.import_module(name)
+    origin = getattr(module, '__file__', None)
+    if not origin or not pathlib.Path(origin).resolve().is_relative_to(source):
+        raise ImportError('shipped_stage_import_origin_mismatch:' + name)
+stdlib = pathlib.Path(sysconfig.get_path('stdlib')).resolve()
+for name, module in list(sys.modules.items()):
+    origin = getattr(module, '__file__', None)
+    if not origin:
+        continue
+    path = pathlib.Path(origin).resolve()
+    if path.is_relative_to(root) or path.is_relative_to(source):
+        continue
+    if path.is_relative_to(stdlib) and not {'site-packages', 'dist-packages'} & set(path.parts):
+        continue
+    raise ImportError('global_python_module_not_admitted:' + name)
+"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", "-B", "-c", code, str(root), json.dumps(RUNTIME_PROFILE_IMPORTS["astra_asset_authoring"]),
+             str(_ASTRA_SOURCE_ROOT), json.dumps(_ASTRA_STAGE_MODULES)],
+            cwd=root, env={"PATH": os.defpath}, capture_output=True, text=True, timeout=90, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise TaskEvaluationSceneConfigurationPythonRuntimeError("scene_configuration_python_import_preflight_failed") from exc
+    if result.returncode:
+        raise TaskEvaluationSceneConfigurationPythonRuntimeError(
+            "scene_configuration_python_import_preflight_failed:" + result.stderr[-1500:]
+        )
 
 
 def _sha256(path: Path) -> str:
@@ -87,9 +201,11 @@ def materialize_scene_configuration_python_runtime(
     runtime_python: tuple[int, int] | None = None,
     runtime_platform: str | None = None,
     runtime_machine: str | None = None,
+    profile: str = DEFAULT_RUNTIME_PROFILE,
 ) -> Path:
     """Verify every wheel and extract it into one read-only import root."""
 
+    roots = runtime_profile_roots(profile)
     observed_python = runtime_python or sys.version_info[:2]
     observed_platform = runtime_platform or sys.platform
     observed_machine = (runtime_machine or platform.machine()).lower()
@@ -121,7 +237,7 @@ def materialize_scene_configuration_python_runtime(
         or manifest.get("python_version") != "3.12"
         or manifest.get("implementation") != "cpython"
         or manifest.get("platform") != "linux-x86_64"
-        or manifest.get("root_distributions") != ["openai-agents", "usd-core"]
+        or manifest.get("root_distributions") != list(roots)
         or manifest.get("sdists_allowed") is not False
         or manifest.get("provider_network_install_required") is not False
         or manifest.get("manifest_digest")
@@ -132,6 +248,7 @@ def materialize_scene_configuration_python_runtime(
         raise TaskEvaluationSceneConfigurationPythonRuntimeError(
             "scene_configuration_python_wheelhouse_manifest_invalid"
         )
+    validate_runtime_profile_inventory(manifest, profile)
     wheels_root = root / "wheels"
     expected: dict[str, tuple[str, int]] = {}
     for row in rows:
@@ -198,7 +315,7 @@ def materialize_scene_configuration_python_runtime(
                             "scene_configuration_python_wheel_expansion_limit_exceeded"
                         )
                     total += member.file_size
-                    if total > _MAX_TOTAL_BYTES:
+                    if total > (_MAX_TOTAL_BYTES if profile == DEFAULT_RUNTIME_PROFILE else 2 * 1024**3):
                         raise TaskEvaluationSceneConfigurationPythonRuntimeError(
                             "scene_configuration_python_wheel_expansion_limit_exceeded"
                         )
@@ -215,6 +332,8 @@ def materialize_scene_configuration_python_runtime(
                             )
                     else:
                         target.write_bytes(body)
+        if profile == "astra_asset_authoring":
+            _validate_astra_imports(staging)
         os.replace(staging, destination)
         for path in sorted(destination.rglob("*")):
             if path.is_symlink():
@@ -239,11 +358,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wheelhouse-root", required=True)
     parser.add_argument("--output-root", required=True)
+    parser.add_argument("--profile", choices=tuple(RUNTIME_PROFILE_ROOTS), default=DEFAULT_RUNTIME_PROFILE)
     args = parser.parse_args(argv)
     try:
         path = materialize_scene_configuration_python_runtime(
             wheelhouse_root=args.wheelhouse_root,
             output_root=args.output_root,
+            profile=args.profile,
         )
     except (OSError, TaskEvaluationSceneConfigurationPythonRuntimeError) as exc:
         print(f"BLUEPRINT_SCENE_CONFIGURATION_BLOCKED:{exc}", file=sys.stderr)
@@ -258,6 +379,12 @@ if __name__ == "__main__":  # pragma: no cover
 
 __all__ = [
     "MANIFEST_NAME",
+    "DEFAULT_RUNTIME_PROFILE",
+    "RUNTIME_PROFILE_ROOTS",
+    "RUNTIME_PROFILE_IMPORTS",
+    "RUNTIME_PROFILE_PLATFORM_TAGS",
+    "runtime_profile_roots",
+    "validate_runtime_profile_inventory",
     "SCHEMA_VERSION",
     "TaskEvaluationSceneConfigurationPythonRuntimeError",
     "materialize_scene_configuration_python_runtime",

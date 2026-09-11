@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from importlib import metadata
 import math
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..agent_operator_runtime import LIVE_AGENTS_SDK_ENV, env_truthy
 from ..common import read_json, write_json
@@ -241,6 +241,73 @@ def _usage_mapping(usage_value: Any) -> dict[str, Any]:
         value = serializer.to_python(usage_value, mode="json")
         return dict(value) if isinstance(value, Mapping) else {}
     return dict(usage_value) if isinstance(usage_value, Mapping) else {}
+
+
+
+def _invalid_output_completion(
+    run_data: Any, exc: Exception, reservation: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Account only SDK-observed completed responses; never serialize run input/errors.
+
+    A missing token partition holds the reservation as an explicit upper bound.
+    This cannot reconstruct historical calls whose SDK run data was lost.
+    """
+    raw = list(getattr(run_data, "raw_responses", ()) or ())
+    usage_value = getattr(getattr(run_data, "context_wrapper", None), "usage", None)
+    if not raw or usage_value is None:
+        return None
+    responses = [_usage_mapping(response) for response in raw]
+    if any(not response.get("response_id") for response in responses):
+        return None
+    usage = asdict(usage_value) if is_dataclass(usage_value) else _usage_mapping(usage_value)
+    counts = [usage.get(key) for key in ("input_tokens", "output_tokens", "total_tokens", "requests")]
+    known = all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in counts)
+    known = known and counts[0] + counts[1] == counts[2] and counts[2] > 0 and counts[3] == len(raw)
+    # Partial aggregate usage must not release reservation for unaccounted calls.
+    known = known and all(
+        all(isinstance(response.get("usage", {}).get(key), int) for response in responses)
+        and sum(response["usage"][key] for response in responses) == usage[key]
+        for key in ("input_tokens", "output_tokens")
+    )
+    usage_receipt: dict[str, Any] = {"cost_status": "usage_unavailable_or_invalid"}
+    if known:
+        try:
+            usage_receipt = usage_and_cost_receipt(usage_value, model=str(reservation["model"]))
+        except (ValueError, TypeError, OverflowError):
+            known = False
+    estimated = usage_receipt.get("estimated_total_cost_usd") if known else None
+    known = (isinstance(estimated, (int, float)) and not isinstance(estimated, bool)
+             and math.isfinite(float(estimated)) and float(estimated) > 0)
+    projected = float(reservation["projected_max_cost_usd"])
+    reconciled = float(estimated) if known else projected
+    usage_receipt.update(
+        provider_response_id=responses[-1]["response_id"],
+        provider_request_id=responses[-1].get("request_id"),
+        cost_basis="actual_token_usage" if known else "reserved_upper_bound",
+        cost_is_actual=known,
+    )
+    usage_receipt["usage_receipt_digest"] = canonical_digest(usage_receipt, digest_field="usage_receipt_digest")
+    completion = {
+        "schema_version": INFERENCE_COMPLETION_SCHEMA_VERSION,
+        **{key: reservation[key] for key in ("reservation_id", "run_id", "capability", "model")},
+        "provider": "openai", "agents_sdk_version": metadata.version("openai-agents"),
+        "status": "invalid_structured_output", "provider_outcome": "invalid_structured_output",
+        "cache_policy": reservation["cache_policy"], "breakpoint_digests": reservation["breakpoint_digests"],
+        "usage": usage_receipt, "cost_basis": usage_receipt["cost_basis"],
+        # Legacy ledger field stores the held amount; cost_basis disambiguates unknown usage.
+        "reconciled_actual_cost_usd": reconciled, "observed_actual_cost_usd": estimated if known else None,
+        "projected_max_cost_usd": projected, "released_reservation_usd": max(0.0, projected - reconciled),
+        "actual_cost_exceeded_reservation": reconciled > projected + 1.0e-12,
+        "error_metadata": {"type": type(exc).__name__, "message_digest": canonical_digest({"message": str(exc)})},
+        "raw_response_metadata": [{
+            "response_id": response["response_id"], "request_id": response.get("request_id"),
+            "raw_response_digest": canonical_digest(response),
+            "output_item_count": len(response.get("output", [])),
+        } for response in responses],
+        "proof_effect": "none",
+    }
+    completion["inference_completion_digest"] = canonical_digest(completion, digest_field="inference_completion_digest")
+    return completion
 
 
 def _breakpoint_digests(
@@ -535,25 +602,39 @@ class OpenAIAgentsSDKInvoker:
             scene_static_prefix=spec.scene_static_prefix,
             dynamic_input=input_value,
         )
-        result = (self._run_agent or Runner.run_sync)(
-            agent,
-            rendered_input,
-            max_turns=spec.max_turns,
-            run_config=RunConfig(
-                **({"model_provider": self._model_provider} if self._model_provider is not None else {}),
-                workflow_name="Blueprint Task Evaluation Supervisor",
-                group_id=spec.run_id,
-                trace_id=f"trace_{trace_id[:32]}",
-                trace_include_sensitive_data=False,
-                tracing_disabled=self.config.tracing_disabled,
-                trace_metadata={
-                    "harness_id": AGENTS_SDK_HARNESS_ID,
-                    "capability": capability_id,
-                },
-            ),
-        )
-        latency = max(0.0, time.monotonic() - started)
-        output = spec.output_type.model_validate(result.final_output)
+        from agents.exceptions import ModelBehaviorError
+
+        result = None
+        try:
+            result = (self._run_agent or Runner.run_sync)(
+                agent,
+                rendered_input,
+                max_turns=spec.max_turns,
+                run_config=RunConfig(
+                    **({"model_provider": self._model_provider} if self._model_provider is not None else {}),
+                    workflow_name="Blueprint Task Evaluation Supervisor",
+                    group_id=spec.run_id,
+                    trace_id=f"trace_{trace_id[:32]}",
+                    trace_include_sensitive_data=False,
+                    tracing_disabled=self.config.tracing_disabled,
+                    trace_metadata={
+                        "harness_id": AGENTS_SDK_HARNESS_ID,
+                        "capability": capability_id,
+                    },
+                ),
+            )
+            latency = max(0.0, time.monotonic() - started)
+            output = spec.output_type.model_validate(result.final_output)
+        except (ModelBehaviorError, ValidationError) as exc:
+            completed_run = result if result is not None else getattr(exc, "run_data", None)
+            completion = _invalid_output_completion(completed_run, exc, reservation)
+            if completion is not None:
+                self._reserved_cost_usd = reserved_before_call + completion["reconciled_actual_cost_usd"]
+                if self._record_completion is not None:
+                    self._record_completion(completion)
+                if completion["actual_cost_exceeded_reservation"]:
+                    raise AgentsSDKInvocationBlocked("agents_sdk_actual_cost_exceeds_reserved_maximum") from exc
+            raise
         sdk_version = metadata.version("openai-agents")
         usage_value = getattr(getattr(result, "context_wrapper", None), "usage", None)
         usage = _usage_mapping(usage_value)

@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+from .task_evaluation_openai_usage_validation import (
+    PROMPT_CACHE_INTENT_FIELDS as PROMPT_CACHE_INTENT_FIELDS,
+    _DIGEST as _DIGEST,
+    OpenAIInferenceUsageError as OpenAIInferenceUsageError,
+    prompt_cache_intent_values as prompt_cache_intent_values,
+    prompt_cache_placement_intent_valid as prompt_cache_placement_intent_valid,
+    placement_prompt_cache_settings as placement_prompt_cache_settings,
+    _artifact_record as _artifact_record,
+    artifact_record_valid as artifact_record_valid,
+    result_projection_valid as result_projection_valid,
+)
+
 import hashlib
 import json
 import os
-import re
-import stat
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,17 +37,6 @@ DEFAULT_WEBAPP_ENDPOINT = (
     "https://tryblueprint.io/api/internal/pipeline/openai-inference-usage"
 )
 WEBAPP_URL_ENV = "PIPELINE_OPENAI_INFERENCE_USAGE_WEBAPP_URL"
-PROMPT_CACHE_INTENT_FIELDS = (
-    "expected_proposal_reuse_probability",
-    "expected_visual_review_reuse_probability",
-    "expected_proposal_reuse_count",
-    "expected_visual_review_reuse_count",
-)
-_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-
-
-class OpenAIInferenceUsageError(ValueError):
-    """The retained usage or cache-policy evidence is incomplete."""
 
 
 def _cache_key_digest(value: object) -> str | None:
@@ -285,85 +284,6 @@ def sync_inference_usage_to_webapp(
     return {**common, "status": "succeeded", "response": dict(response)}
 
 
-def prompt_cache_intent_values(
-    *,
-    proposal_probability: float,
-    visual_review_probability: float,
-    proposal_count: int,
-    visual_review_count: int,
-) -> dict[str, int | float]:
-    return {
-        "expected_proposal_reuse_probability": float(proposal_probability),
-        "expected_visual_review_reuse_probability": float(
-            visual_review_probability
-        ),
-        "expected_proposal_reuse_count": int(proposal_count),
-        "expected_visual_review_reuse_count": int(visual_review_count),
-    }
-
-
-def prompt_cache_placement_intent_valid(placement: Mapping[str, Any]) -> bool:
-    try:
-        return (
-            0
-            <= float(placement.get("expected_proposal_reuse_probability", -1.0))
-            <= 1
-            and 0
-            <= float(
-                placement.get("expected_visual_review_reuse_probability", -1.0)
-            )
-            <= 1
-            and 0 <= int(placement.get("expected_proposal_reuse_count", -1)) <= 20
-            and 0
-            <= int(placement.get("expected_visual_review_reuse_count", -1))
-            <= 20
-        )
-    except (TypeError, ValueError):
-        return False
-
-
-def placement_prompt_cache_settings(
-    placement: Mapping[str, Any],
-) -> dict[str, int | float]:
-    return {
-        "expected_proposal_reuse_probability": float(
-            placement["expected_proposal_reuse_probability"]
-        ),
-        "expected_visual_review_reuse_probability": float(
-            placement["expected_visual_review_reuse_probability"]
-        ),
-        "expected_proposal_reuse_count": int(
-            placement["expected_proposal_reuse_count"]
-        ),
-        "expected_visual_review_reuse_count": int(
-            placement["expected_visual_review_reuse_count"]
-        ),
-    }
-
-
-def _artifact_record(path: Path) -> dict[str, Any]:
-    resolved = path.expanduser()
-    if not resolved.is_absolute() or resolved.is_symlink() or not resolved.is_file():
-        raise OpenAIInferenceUsageError("openai_inference_usage_artifact_invalid")
-    payload = resolved.read_bytes()
-    metadata = resolved.stat()
-    return {
-        "path": str(resolved),
-        "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
-        "size_bytes": metadata.st_size,
-        "mode": f"{stat.S_IMODE(metadata.st_mode):04o}",
-    }
-
-
-def artifact_record_valid(value: Any) -> bool:
-    if not isinstance(value, Mapping):
-        return False
-    try:
-        return dict(value) == _artifact_record(Path(str(value.get("path") or "")))
-    except (OSError, OpenAIInferenceUsageError):
-        return False
-
-
 def _write_immutable_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
     payload = (json.dumps(dict(value), sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -412,24 +332,6 @@ def materialize_placement_usage_projection(
             "call_count": len(packet["calls"]),
         },
     }
-
-
-def result_projection_valid(result: Mapping[str, Any]) -> bool:
-    packet = result.get("openai_inference_usage_packet")
-    sync = result.get("openai_inference_usage_webapp_sync")
-    return bool(
-        artifact_record_valid(packet)
-        and isinstance(sync, Mapping)
-        and isinstance(sync.get("required"), bool)
-        and (
-            sync.get("status") == "succeeded"
-            if sync.get("required") is True
-            else sync.get("status") in {"succeeded", "skipped"}
-        )
-        and artifact_record_valid(sync.get("artifact"))
-        and _DIGEST.fullmatch(str(sync.get("packet_digest") or ""))
-        and 1 <= int(sync.get("call_count") or 0) <= 8
-    )
 
 
 __all__ = [

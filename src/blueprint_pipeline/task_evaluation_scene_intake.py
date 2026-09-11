@@ -207,7 +207,8 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
                           provider: str, maximum_spend_usd: float,
                           now: float | None = None,
                           recovery_from_attempt_id: str | None = None,
-                          recovery_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+                          recovery_evidence: dict[str, Any] | None = None,
+                          visual_review_authority: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Debit maximum exposure before dispatch; retries never reset the owner's cap."""
     _require(_identifier(intent_id) and _identifier(attempt_id), "attempt_id_invalid")
     _require(_COMMIT.fullmatch(source_commit) is not None and _DIGEST.fullmatch(runtime_digest) is not None
@@ -231,8 +232,18 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
                 "source_commit": source_commit, "runtime_digest": runtime_digest,
                 "input_digest": input_digest, "provider": provider,
                 "maximum_spend_usd": maximum_spend_usd, "status": "reserved"}
+        if visual_review_authority is not None:
+            from .task_evaluation_visual_review_authority import read_authority
+            grant = read_authority(directory=directory, source_attempt_id=str(visual_review_authority.get('source_attempt_id')),
+                admission=True, now=moment)
+            _require(grant is not None and grant == dict(visual_review_authority)
+                and provider == 'openai' and maximum_spend_usd <= grant['maximum_cost_usd']
+                and recovery_from_attempt_id is None and recovery_evidence is None,
+                'visual_review_correction_authority_invalid')
+            body['visual_review_correction'] = {'scope':'placement_visual_review_only',
+                'authority_digest':grant['authority_digest'],'source_attempt_id':grant['source_attempt_id']}
         path = attempts / (attempt_id + ".json")
-        from .task_evaluation_controls_cancellation_evidence import validated_cancellation
+        from .task_evaluation_retained_controls_evidence import validated_cancellation
         if path.exists():
             _require(validated_cancellation(directory, _read(path, "attempt_digest")) is None,
                      "attempt_cancelled_before_execution")
@@ -268,8 +279,27 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
                      and ("recovery" in existing) == ("recovery" in body), "attempt_immutable_conflict")
             return existing
         rows = [_read(p, "attempt_digest") for p in attempts.glob("*.json")]
+        if visual_review_authority is not None:
+            _require(not any((row.get('visual_review_correction') or {}).get('authority_digest')
+                == visual_review_authority['authority_digest'] for row in rows), 'visual_review_correction_already_reserved')
         rows = [row for row in rows if validated_cancellation(directory, row) is None]
-        _require(len(rows) < execution["max_paid_attempts"], "attempt_cap_exhausted")
+        # The owner-approved single visual correction is an explicit additional
+        # review, never an extra GPU attempt. All ordinary attempts keep their
+        # original count limit; every hold still counts toward the spend cap.
+        ordinary = []
+        for row in rows:
+            correction = row.get('visual_review_correction')
+            if correction is None:
+                ordinary.append(row)
+                continue
+            from .task_evaluation_visual_review_authority import read_authority
+            grant = read_authority(directory=directory,source_attempt_id=correction['source_attempt_id'])
+            _require(grant is not None and correction.get('authority_digest') == grant['authority_digest']
+                and correction.get('scope') == 'placement_visual_review_only'
+                and row['provider'] == 'openai' and row['maximum_spend_usd'] <= grant['maximum_cost_usd'],
+                'stored_visual_review_correction_invalid')
+        if visual_review_authority is None:
+            _require(len(ordinary) < execution["max_paid_attempts"], "attempt_cap_exhausted")
         exposure = sum((Decimal(str(row["maximum_spend_usd"])) for row in rows), Decimal(0))
         _require(exposure + Decimal(str(maximum_spend_usd))
                  <= Decimal(str(execution["max_total_spend_usd"])), "spend_cap_exhausted")
@@ -324,7 +354,7 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
         attempts.append({key: row[key] for key in (
             "attempt_id", "source_commit", "runtime_digest", "input_digest", "provider",
             "maximum_spend_usd", "status")})
-        from .task_evaluation_controls_cancellation_evidence import validated_cancellation
+        from .task_evaluation_retained_controls_evidence import validated_cancellation
         if validated_cancellation(directory, row) is not None:
             attempts[-1]["status"] = "cancelled_before_execution"
     # Expiry and revocation close the authority to admit *new* execution. They

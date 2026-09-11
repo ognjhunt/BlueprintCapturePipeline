@@ -87,6 +87,7 @@ def build_artifixer_scene_configuration_component(
     artifixer_root: str | Path,
     vgg16_weights_path: str | Path,
     output_root: str | Path,
+    python_runtime_profile: str = "base",
 ) -> dict:
     """Seal exact released source plus the existing Blueprint runtime adapter."""
 
@@ -193,6 +194,7 @@ def build_artifixer_scene_configuration_component(
         build_scene_configuration_python_wheelhouse(
             lockfile_path=repository / "uv.lock",
             output_root=staging / "python_wheelhouse",
+            profile=python_runtime_profile,
         )
         return build_scene_configuration_component_package(
             adapter_id="artifixer3d_observed_object_removal",
@@ -214,6 +216,7 @@ def main() -> int:
     parser.add_argument("--artifixer-root", required=True)
     parser.add_argument("--vgg16-weights-path", required=True)
     parser.add_argument("--output-root", required=True)
+    parser.add_argument("--python-runtime-profile", choices=("base", "astra_asset_authoring"), default="base")
     args = parser.parse_args()
     value = build_artifixer_scene_configuration_component(
         repository_root=args.repository_root,
@@ -221,6 +224,7 @@ def main() -> int:
         artifixer_root=args.artifixer_root,
         vgg16_weights_path=args.vgg16_weights_path,
         output_root=args.output_root,
+        python_runtime_profile=args.python_runtime_profile,
     )
     print(json.dumps(value, sort_keys=True))
     return 0

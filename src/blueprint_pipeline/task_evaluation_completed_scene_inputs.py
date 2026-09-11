@@ -104,7 +104,7 @@ def validate_completed_scene_inputs(*, envelope: dict, configurations: dict,
 
 def materialize_completed_mesh_inputs(*, envelope: dict, stage_one_configuration: dict,
                                       output_root: str | Path) -> dict:
-    from .task_evaluation_scene_configuration_stage_configuration import mesh_appearance_configuration_refusal
+    from .task_evaluation_completed_scene_validation import mesh_appearance_configuration_refusal
     from .task_evaluation_scene_configuration_render_inputs import _materialized
     require(mesh_appearance_configuration_refusal(stage_one_configuration, envelope) is None,
             "completed_scene_mesh_input_configuration_invalid")

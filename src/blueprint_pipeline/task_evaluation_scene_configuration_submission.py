@@ -341,7 +341,8 @@ def materialize_scene_configuration_submission(
         records.stage_three_configuration(scene_id=scene_id, replacement_identity=replacement,
             source_instance_id=str(task["subject"]["source_instance_id"]),
             authoring_target=task["subject"]["authoring_target"], source_min=lower, source_max=upper,
-            dimension_tolerance=tolerance, physics_bounds=task["subject"]["physics_bounds"]),
+            dimension_tolerance=tolerance, physics_bounds=task["subject"]["physics_bounds"],
+            authoring_backend=task["subject"].get("authoring_backend", "astra_cad_blender_v1")),
         records.stage_four_configuration(replacement_identity=replacement, dimension_tolerance=tolerance),
         records.stage_five_configuration(replacement_identity=replacement),
         records.stage_six_configuration(scene_identity=task["scene_identity"], support_plane=support,
@@ -444,8 +445,10 @@ def materialize_scene_configuration_submission(
         "execution_adapter": {"kind": "scene_configuration_pipeline", "version": "v1",
                               "runtime_source_bundle": release_ref},
         "publication": {"input_namespace": namespace, "service_account_readback_required": True},
-        "spend": records.spend_block(),
+        "spend": records.spend_block(configs[2].get("authoring_backend", "content_agents")),
     }
+    if configs[2].get("authoring_backend", "content_agents") != "content_agents":
+        request["replacement_authoring_backend"] = configs[2]["authoring_backend"]
     if sam_plan_ref is not None:
         request["runtime"]["mounts"].append({
             "source": sam_plan_ref, "container_path": "/inputs/sam31-preparation-plan.json",

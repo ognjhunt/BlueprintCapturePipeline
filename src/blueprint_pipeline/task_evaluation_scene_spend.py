@@ -65,7 +65,7 @@ def _publish_current_scene_project_spend_locked(*, scene_root: str | Path, seed_
         raise ValueError("scene_spend_root_unsafe")
     records = []
     cancelled = []
-    from .task_evaluation_controls_cancellation_evidence import validated_cancellation
+    from .task_evaluation_retained_controls_evidence import validated_cancellation
     for path in sorted(root.glob("scene-*/attempts/*.json")):
         cancellation = validated_cancellation(path.parent.parent, read_scene(path, "attempt_digest"))
         if cancellation is not None:

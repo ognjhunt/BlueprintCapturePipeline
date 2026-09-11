@@ -453,6 +453,10 @@ def test_canary_delivery_projects_path_distinct_byte_identical_episode_evidence(
         "task_success_contract_digest"
     ]
 
+    # An absent optional interpretation must stay absent on the wire. The
+    # Website validates any present summary against its complete schema.
+    assert "episode_interpretation" not in projection
+
     for role in ambiguous_roles:
         delivered = [
             next(

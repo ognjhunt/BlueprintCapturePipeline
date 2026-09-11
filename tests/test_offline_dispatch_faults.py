@@ -123,19 +123,31 @@ def test_failed_delivery_after_teardown_resumes_only_publication(tmp_path, monke
 
 
 def test_owner_binding_upgrade_preserves_preexisting_started_authority(tmp_path, monkeypatch):
-    """A release upgrade cannot rewrite an already started run's authority digest."""
+    """An owned legacy attempt needs real delivery proof without new allocation."""
+    import hashlib
+    import io
     import json
+    from functools import partial
+    from pathlib import Path
+    from urllib.parse import urlsplit
     from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
+    from blueprint_pipeline import task_evaluation_owner_delivery_readback as owner_delivery
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-    owner_root = tmp_path / "owner"
-    intent = stage(owner_root)
-    reserved = attempt(owner_root, intent, commit=rehearsal.COMMIT[0], cost=4)
-    monkeypatch.setenv(intake.ROOT_ENV, str(owner_root))
-    monkeypatch.setenv(intake.CLIENTS_ENV, "webapp")
-    monkeypatch.setattr(authority.time, "time", lambda: 102)
+    from tests.test_task_evaluation_owner_delivery_readback import _inputs
+
+    # The earlier test grafted an owner onto a deliberately unowned rehearsal,
+    # whose projection omitted run_id and whose delivery had no artifact rows.
+    # Retain a real completed-scene factory's owner/preparation lineage instead.
+    fixture_root = tmp_path / "owner-fixture"
+    fixture_root.mkdir()
+    owner_inputs, owner_root, intent = _inputs(fixture_root, monkeypatch)
+    reserved = attempt(owner_root, intent, attempt_id="started-compatibility",
+                       commit=rehearsal.COMMIT[0], cost=4, now=intent["accepted_at_epoch"] + 2)
+    monkeypatch.setattr(authority.time, "time", lambda: intent["accepted_at_epoch"] + 3)
     validate = dispatcher.validate_policy_canary_execution_setup
     monkeypatch.setattr(dispatcher, "validate_policy_canary_execution_setup",
-        lambda value: {**validate(value), **authority.bind_scene_attempt(reserved)})
+        lambda value: {**validate(value), **authority.bind_scene_attempt(reserved),
+                       "capture_session_id": owner_inputs["setup"]["capture_session_id"]})
     original_write = dispatcher._write_exclusive
     retained = []
     def simulate_old_producer(path, value):
@@ -147,7 +159,80 @@ def test_owner_binding_upgrade_preserves_preexisting_started_authority(tmp_path,
             return
         return original_write(path, value)
     monkeypatch.setattr(dispatcher, "_write_exclusive", simulate_old_producer)
+
+    payloads = {"a" * 32: b"retained episode evidence", "b" * 32: b"retained native report"}
+    artifacts = [{"artifact_id": key, "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                  "size_bytes": len(raw)} for key, raw in payloads.items()]
+    http_state = {"mode": "wrong_owner", "gets": [], "posts": []}
+    class Response(io.BytesIO):
+        status = 200
+    def opener(call, *, timeout):
+        if call.method == "POST":
+            body = json.loads(call.data)
+            assert body["schema_version"] == "task_evaluation_delivery_readback_request.v2"
+            assert call.get_header("X-blueprint-pipeline-signature").startswith("sha256=")
+            http_state["posts"].append(body)
+            result = {"schema_version": "task_evaluation_delivery_readback.v1", "status": "verified",
+                **{k: body[k] for k in ("run_id", "request_digest", "configuration_digest", "owner_user_id",
+                                       "team_namespace", "result_delivery_digest", "policy_canary_projection_digest")},
+                "inbox": {"status": "verified", "run_id": body["run_id"],
+                    "owner_user_id": "wrong-owner" if http_state["mode"] == "wrong_owner" else body["owner_user_id"],
+                    "team_namespace": body["team_namespace"], "projection_digest": body["policy_canary_projection_digest"],
+                    "source": "website_owner_run_index_readback"},
+                "ephemeral_downloads": [{"artifact_id": row["artifact_id"], "sha256": row["digest"],
+                    "size_bytes": row["size_bytes"], "download_url": "/api/task-evaluation-result-downloads/result/"
+                    + row["artifact_id"] + "?signature=ephemeral-fixture"} for row in artifacts if row["artifact_id"] in body["artifact_ids"]]}
+            return Response(json.dumps(result).encode())
+        key = urlsplit(call.full_url).path.rsplit("/", 1)[-1]
+        http_state["gets"].append((http_state["mode"], key))
+        return Response(b"wrong bytes" if http_state["mode"] == "bad_bytes" else payloads[key])
+    reader = partial(owner_delivery.verify_website_delivery, endpoint_url="https://website.example/readback",
+                     token="fixture-token", opener=opener)
+    monkeypatch.setattr(owner_delivery, "verify_website_delivery", reader)
+    real_dispatch = rehearsal.dispatch_policy_canary_activation
+    dispatch_calls = []
+    def dispatch(**kwargs):
+        dispatch_calls.append(kwargs)
+        if len(dispatch_calls) < 3:
+            return real_dispatch(**kwargs)
+        # Fill the publication/byte contract at the external edges; retain the
+        # real owned-delivery validator and actual streamed SHA-256 verification.
+        monkeypatch.setattr(dispatcher, "_projection", lambda **values: {
+            "run_id": values["result"]["run_id"], "projection_digest": "sha256:" + "e" * 64})
+        monkeypatch.setattr(dispatcher, "materialize_policy_canary_website_delivery",
+            lambda *, run_root, delivery: {**delivery, "artifacts": artifacts})
+        original_sync = kwargs["sync_runner"]
+        def sync(**values):
+            return {**original_sync(**values), **{k: values[k] for k in ("run_id", "request_digest", "configuration_digest")},
+                    "result_delivery_digest": values["result_delivery"]["delivery_digest"],
+                    "policy_canary_projection_digest": values["policy_canary_result"]["projection_digest"]}
+        kwargs = {**kwargs, "sync_runner": sync}
+        root = Path(kwargs["output_root"])
+        for mode in ("wrong_owner", "bad_bytes", "verified"):
+            http_state["mode"] = mode
+            result = real_dispatch(**kwargs)
+            path, original = retained[0]
+            assert path.read_bytes() == original
+            if mode != "verified":
+                assert result["status"] == "awaiting_website_download_readback"
+                assert not (root / "dispatch_receipt.json").exists()
+                assert not (root / "artifacts/result_delivery/owner_delivery_readback.json").exists()
+            else:
+                proof_path = Path(result["owner_delivery_readback"]["path"])
+                proof = json.loads(proof_path.read_text())
+                assert result["owner_delivery_readback"]["sha256"] == "sha256:" + hashlib.sha256(proof_path.read_bytes()).hexdigest()
+                assert proof["every_artifact_downloaded_and_hashed"] is True
+                assert {row["artifact_id"] for row in proof["artifacts"]} == set(payloads)
+                assert "ephemeral-fixture" not in proof_path.read_text()
+        return result
+    monkeypatch.setattr(rehearsal, "dispatch_policy_canary_activation", dispatch)
     rehearsal.test_live_shaped_result_waits_for_billing_and_never_launches_twice(tmp_path, monkeypatch)
     path, original = retained[0]
     assert path.read_bytes() == original
     assert "scene_execution_owner" not in json.loads(original)
+    assert len(http_state["posts"]) == 3
+    assert all(body["owner_user_id"] == "u1" and body["team_namespace"].startswith("scene-")
+               for body in http_state["posts"])
+    assert all(mode != "wrong_owner" for mode, _ in http_state["gets"])
+    assert {(mode, key) for mode, key in http_state["gets"] if mode == "verified"} == {
+        ("verified", key) for key in payloads}

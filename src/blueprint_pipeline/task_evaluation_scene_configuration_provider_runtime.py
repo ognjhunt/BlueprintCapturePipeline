@@ -85,12 +85,25 @@ def execute_scene_configuration_stage_chain(
             "scene_configuration_provider_output_root_invalid"
         )
     results: list[dict[str, Any]] = []
+    astra_resume = None
+    if any(value.get("authoring_backend") == "astra_cad_blender_v1" for value, _ in configurations.values()):
+        from .task_evaluation_astra_stage_resume import bind_same_root_resume
+        astra_resume = bind_same_root_resume(root, envelope, configurations, parent_deadline_epoch)
     for index, stage in enumerate(stages):
         if not isinstance(stage, Mapping):
             raise TaskEvaluationSceneConfigurationProviderRuntimeError(
                 "scene_configuration_provider_stage_set_invalid"
             )
         stage_id = str(stage["stage_id"])
+        configuration, configuration_path = configurations[stage_id]
+        stage_output = root / stage_id
+        if astra_resume is not None:
+            from .task_evaluation_astra_stage_resume import load_completed_stage
+            completed = load_completed_stage(stage_output, stage, astra_resume, results)
+            if completed is not None:
+                results.append(completed)
+                print(f"BLUEPRINT_SCENE_CONFIGURATION_STAGE_ADOPTED: stage_id={stage_id}", flush=True)
+                continue
         print(
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_STARTED:"
             f" index={index + 1}/{len(stages)} stage_id={stage_id}",
@@ -111,21 +124,26 @@ def execute_scene_configuration_stage_chain(
             raise TaskEvaluationSceneConfigurationProviderRuntimeError(
                 f"scene_configuration_provider_dependency_invalid:{stage_id}"
             )
-        configuration, configuration_path = configurations[stage_id]
-        stage_output = root / stage_id
-        stage_output.mkdir(mode=0o750, exist_ok=False)
+        resuming_astra = (astra_resume is not None and stage_output.exists()
+                          and configuration.get("authoring_backend") == "astra_cad_blender_v1")
+        stage_output.mkdir(mode=0o750, exist_ok=resuming_astra)
         execution_class = str(stage.get("execution_class") or "")
         if execution_class == "gpu_canary":
             producer_output = stage_output / "producer"
-            producer_output.mkdir(mode=0o750)
-            produced_artifacts = runtime_producers.execute(
-                stage=stage,
-                envelope=envelope,
-                configuration=configuration,
-                configuration_path=configuration_path,
-                dependency_results=tuple(results),
-                output_root=producer_output,
-            )
+            producer_output.mkdir(mode=0o750, exist_ok=resuming_astra)
+            produced_artifacts = None
+            if resuming_astra:
+                from .task_evaluation_astra_stage_resume import retained_astra_production
+                produced_artifacts = retained_astra_production(producer_output, stage, envelope, configuration_path)
+            if produced_artifacts is None:
+                produced_artifacts = runtime_producers.execute(
+                    stage=stage,
+                    envelope=envelope,
+                    configuration=configuration,
+                    configuration_path=configuration_path,
+                    dependency_results=tuple(results),
+                    output_root=producer_output,
+                )
         elif execution_class == "no_spend":
             produced_artifacts = ()
         else:
@@ -133,6 +151,8 @@ def execute_scene_configuration_stage_chain(
                 f"scene_configuration_provider_execution_class_invalid:{stage_id}"
             )
         adapter_output = stage_output / "adapter"
+        if resuming_astra and adapter_output.exists():
+            adapter_output = stage_output / f"adapter-resume-{len(list(stage_output.glob('adapter-resume-*'))) + 1:04d}"
         adapter_output.mkdir(mode=0o750)
         try:
             value = runtime_registry.execute(
@@ -164,6 +184,9 @@ def execute_scene_configuration_stage_chain(
             raise TaskEvaluationSceneConfigurationProviderRuntimeError(
                 f"scene_configuration_provider_stage_result_invalid:{stage_id}"
             )
+        if astra_resume is not None:
+            from .task_evaluation_astra_stage_resume import save_completed_stage
+            save_completed_stage(stage_output, stage, astra_resume, results, result)
         results.append(result)
         print(
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_COMPLETED:"

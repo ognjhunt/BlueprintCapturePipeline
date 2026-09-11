@@ -61,7 +61,7 @@ def _artifact_id(role: str, relative_path: str, digest: str) -> str:
     return hashlib.sha256(f"{role}\0{relative_path}\0{digest}".encode("utf-8")).hexdigest()[:32]
 
 
-def _inside(root: Path, relative_path: str, *, role: str) -> Path:
+def _inside(root: Path, relative_path: str, *, role: str, require_exists: bool = True) -> Path:
     if not relative_path or relative_path.startswith("/"):
         raise TaskEvaluationResultDeliveryError(f"delivery_artifact_path_invalid:{role}")
     unresolved = root / relative_path
@@ -74,7 +74,7 @@ def _inside(root: Path, relative_path: str, *, role: str) -> Path:
         raise TaskEvaluationResultDeliveryError(
             f"delivery_artifact_outside_evidence_root:{role}"
         ) from exc
-    if not resolved.is_file():
+    if require_exists and not resolved.is_file():
         raise TaskEvaluationResultDeliveryError(f"delivery_artifact_missing:{role}")
     return resolved
 
@@ -814,7 +814,12 @@ def resolve_task_evaluation_result_artifact(
         raise TaskEvaluationResultDeliveryError(
             "result_delivery_evidence_root_outside_run"
         ) from exc
-    path = _inside(evidence_root, str(record.get("relative_path") or ""), role=requested)
+    path = _inside(evidence_root, str(record.get("relative_path") or ""), role=requested, require_exists=False)
+    if not path.exists():
+        from .task_evaluation_result_artifact_store import materialize_result_artifact
+        return materialize_result_artifact(
+            run_root=root, registry=registry, record=dict(record), source_path=path,
+        )
     if _sha256(path) != record.get("sha256") or path.stat().st_size != record.get("size_bytes"):
         raise TaskEvaluationResultDeliveryError("result_delivery_artifact_reverification_failed")
     return path, record
@@ -828,6 +833,7 @@ def materialize_policy_canary_result_delivery(
     session_result: Mapping[str, Any],
     evidence_root: str | Path,
     closure_records: Mapping[str, Mapping[str, Any]],
+    control_omission_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seal a private, artifact-complete internal policy-canary delivery.
 
@@ -1399,6 +1405,12 @@ def materialize_policy_canary_result_delivery(
         public_artifacts=public_artifacts, add_artifact=add_artifact,
         write_immutable=_write_immutable, write_zip=_write_zip_immutable,
         error_factory=TaskEvaluationResultDeliveryError)
+    if control_omission_authority is not None:
+        from .policy_canary_control_result_delivery import materialize_control_omission
+        control_delivery = materialize_control_omission(
+            authority=control_omission_authority, contract=task_success_contract,
+            result=result, delivery_root=delivery_root, add_artifact=add_artifact,
+            write_immutable=_write_immutable, error_factory=TaskEvaluationResultDeliveryError)
 
     evidence_manifest = {
         "schema_version": "task_evaluation_policy_canary_evidence_manifest.v1",

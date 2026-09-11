@@ -1,12 +1,11 @@
 """Installed source-mesh construction adapters; no reconstruction or model call."""
 from __future__ import annotations
 
+from .task_evaluation_completed_scene_validation import mesh_appearance_configuration_refusal as mesh_appearance_configuration_refusal
+
 import json
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
-
-
-from .task_evaluation_scene_configuration_stage_configuration import mesh_appearance_configuration_refusal
 
 
 def _visual_inventory(stage, excluded):

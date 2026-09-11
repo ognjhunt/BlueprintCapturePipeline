@@ -43,7 +43,12 @@ def reserved(tmp_path, monkeypatch):
     auto_sha = put(auto_path, auto)
     # The production intent validator has its own complete inventory suite;
     # this fixture isolates reservation retirement and subsequent paid admission.
+    # This fixture intentionally isolates cancellation accounting from the full
+    # autostart schema. Both the mutation facade and retained reader use the
+    # same contract now, so patch that dependency at both existing call sites.
+    from blueprint_pipeline import task_evaluation_configured_controls_autostart_validation as contract
     monkeypatch.setattr(autostart, 'validate_configured_controls_autostart_intent', lambda v: v)
+    monkeypatch.setattr(contract, 'validate_configured_controls_autostart_intent', lambda v: v)
     run = tmp_path / 'launch'
     profile = {'source_commit': 'd'*40, 'task_evaluation_run': {'run_mode': 'scene_configuration'},
         'immutable_inputs': [{'name': 'configured_controls_autostart_intent', 'path': str(auto_path), 'digest': auto_sha}]}

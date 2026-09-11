@@ -6,13 +6,15 @@ qualified. Preserve its bytes before retiring only its sealed downstream holds.
 """
 from __future__ import annotations
 
+from .task_evaluation_retained_controls_evidence import _read as _read, _file as _file, validated_cancellation as validated_cancellation
+
 from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
-from .task_evaluation_controls_cancellation_evidence import (
-    DIRECTORY, SCHEMA, _file, _read, validated_cancellation,
-)
+
+SCHEMA = "task_evaluation_unstarted_controls_cancellation.v1"
+DIRECTORY = "cancelled-unstarted-controls"
 
 
 def cancel_unstarted_controls_reservations(*, launch_root: str | Path, scene_root: str | Path, dry_run: bool = False) -> dict[str, Any]:

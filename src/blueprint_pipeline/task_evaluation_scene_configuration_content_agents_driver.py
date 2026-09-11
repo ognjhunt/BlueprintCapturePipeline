@@ -900,6 +900,9 @@ def execute_content_agents_component(
         _required_path(values, _INPUT_ENV),
         code="scene_configuration_content_agents_input_invalid",
     )
+    if (stage_input.get("configuration") or {}).get("authoring_backend") == "astra_cad_blender_v1":
+        from .task_evaluation_scene_configuration_astra_driver import execute_astra_component
+        return execute_astra_component(environment=values, runner=runner, cost_gate_factory=cost_gate_factory)
     dependencies_path = _required_path(values, _DEPENDENCIES_ENV)
     try:
         dependencies = json.loads(dependencies_path.read_text(encoding="utf-8"))
@@ -960,6 +963,15 @@ def execute_content_agents_component(
         agent_render_prim_paths=selection["selected_mesh_prim_paths"],
         agent_default_material_path=normalized["default_material_path"],
         reference_image_relpaths=reference_relpaths,
+        authoring_context={
+            "authoring_target": configuration.get("authoring_target"),
+            "source_object_identity": configuration.get("source_object_identity"),
+            "metric_envelope": metric_envelope,
+        },
+        reference_image_uris=[
+            (runtime / "configs" / relative).resolve().as_uri()
+            for relative in reference_relpaths
+        ],
     )
     _validate_remote_configs(
         source=runtime / "content_agents_source",
@@ -980,6 +992,8 @@ def execute_content_agents_component(
         "input_usd_normalization": normalized,
         "agent_dataset_render_selection": selection,
         "reference_image_sha256s": [_sha256(path) for path in references],
+        "source_reference_image_conditioning_required": True,
+        "task_owner_authoring_target": configuration.get("authoring_target"),
         "remote_config_sha256": config_hashes,
         "runtime_input_binding": {
             "relative_path": "input/source_asset.usda",

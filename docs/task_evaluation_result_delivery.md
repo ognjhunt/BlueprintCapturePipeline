@@ -40,3 +40,65 @@ not systems of record.
 The current ADP rehearsal is `development_only`. Its videos are derived review
 evidence, simulator results are not physical success, and successful execution
 does not establish policy superiority, deployment approval, or safety.
+
+## Private result artifact offload
+
+ADP-009D's day-28 replay gate requires retained lossless policy inputs and derived
+review media to remain readable after the control-plane hot window. The existing
+storage GC now offloads registered bulk result payloads through the dedicated
+artifact-store credentials (Backblaze B2 on the control plane). It keeps the
+immutable registry, delivery, closure receipts, reports, and artifact IDs local.
+Whole-directory cold archival excludes roots with a result registry.
+
+Each eviction follows source SHA-256 verification, content-addressed upload,
+complete remote byte readback, an atomic and fsynced registry-bound reference,
+and final source re-verification. Active processes, storage pins, live queue
+references, hot results, unsealed closure, unregistered bytes, and aliases with a
+protected role retain their local payloads. Bulk uploads use four workers and
+reserve space for the references. The existing offload opt-in and hot-window
+settings govern the timer; no additional allocation or policy execution occurs.
+
+The authenticated artifact endpoint retrieves only the requested object, verifies
+its whole-file checksum before returning bytes, and retains the existing HTTP
+range and content headers. A shared disk reservation bounds the temporary file.
+Response completion, errors, and cancellation release it; a later request reaps
+only abandoned download directories owned by dead service processes. No public
+bucket ACL or external redirect is used. The `offloaded_bytes` receipt measures
+logical payload bytes; compare filesystem free space separately because retained
+hardlinks may still own the underlying blocks.
+
+For an explicitly selected, sealed run, first inspect the dry run, then apply the
+same command with `--apply --ack offload-sealed-result-artifacts`. Supply the
+canonical pins and all queue roots; use `--hot-window-seconds 0` only for an
+explicitly authorized immediate migration:
+
+```bash
+python -m blueprint_pipeline.task_evaluation_result_artifact_store \
+  --run-root /var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/RUN_ID \
+  --pins-root /var/lib/blueprint/pipeline-control-plane/storage-pins \
+  --queue-root /var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches \
+  --report-out /var/lib/blueprint/pipeline-control-plane/storage-gc/result-artifacts.json
+```
+
+Validation covers signed full and range downloads after eviction, remote
+corruption, run/registry/bucket substitution, alias handling, source changes,
+interrupted responses, disk refusal, active-run protection, and the GC timer
+integration. These are storage and transport claims; they do not change episode
+validity, qualification, or physical-evidence claims.
+
+## Operator diagnostic run delivery
+
+ADP-009D, day-28 public-scene rehearsal: an operator-authorized run may have a
+new task contract while retaining an earlier offering only as scene provenance.
+The Website registers its immutable run, owner, task, policies, and input
+digests without forwarding another launch. Its v4 publication carries both
+`plan_digest` and `operator_registration_digest`; either without the other is
+refused. The Website validates those values against the retained registration.
+
+For an explicitly authorized omission of controls, the delivery materializer
+accepts the original `control_omission_authority`, validates its task binding,
+and retains it as a downloadable artifact. Delivery and projection carry
+`controls_omitted_by_user`, zero planned/completed control rollouts, and the
+omission digest. Required-controls contracts cannot use this path. Results stay
+`diagnostic_policy_execution`; omission never authorizes policy ranking or
+physical-success claims. Source episode results remain unchanged.

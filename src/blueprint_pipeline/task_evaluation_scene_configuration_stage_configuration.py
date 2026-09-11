@@ -13,26 +13,6 @@ from .task_evaluation_scene_configuration_disclosure import (
 )
 
 
-def mesh_appearance_configuration_refusal(configuration, envelope):
-    rows = [row for row in envelope.get("materialized_references", [])
-            if row.get("contract_path") == "scene.geometry.collision"]
-    first = ((envelope.get("recipe") or {}).get("stage_sequence") or [{}])[0]
-    if (configuration.get("schema_version") != "task_evaluation_provided_mesh_appearance_excision.v1"
-            or first.get("adapter", {}).get("id") != "provided_mesh_appearance_excision"
-            or first.get("execution_class") != "no_spend"
-            or envelope.get("request", {}).get("scene", {}).get("appearance", {}).get("kind") != "other_observed"
-            or configuration.get("source_origin") != "owner_provided_completed_asset"
-            or configuration.get("source_bytes_unchanged_required") is not True
-            or configuration.get("unobserved_surfaces_recovered") is not False
-            or configuration.get("physical_truth_claimed") is not False
-            or configuration.get("generated_appearance") is not False
-            or len(rows) != 1
-            or configuration.get("collision_source_digest") != rows[0].get("digest")
-            or not str(configuration.get("exact_target_prim", "")).startswith("/Root/")):
-        return "provided_mesh_source_binding"
-    return None
-
-
 class TaskEvaluationSceneConfigurationStageConfigurationError(ValueError):
     """One immutable stage configuration would deterministically refuse later."""
 
@@ -240,6 +220,7 @@ def _stage_one_refusal(
     configuration: Mapping[str, Any], envelope: Mapping[str, Any]
 ) -> str | None:
     if configuration.get("schema_version") == "task_evaluation_provided_mesh_appearance_excision.v1":
+        from .task_evaluation_completed_scene_validation import mesh_appearance_configuration_refusal
         return mesh_appearance_configuration_refusal(configuration, envelope)
     source_object = configuration.get("source_object")
     required_views = configuration.get("required_views")
@@ -386,6 +367,11 @@ def _stage_three_refusal(
 ) -> str | None:
     identity = configuration.get("replacement_identity")
     required = configuration.get("required_output")
+    if configuration.get("authoring_backend", "content_agents") not in {"content_agents", "astra_cad_blender_v1"}:
+        return "authoring_backend"
+    declared_backend = (envelope.get("request") or {}).get("replacement_authoring_backend")
+    if declared_backend is not None and configuration.get("authoring_backend", "content_agents") != declared_backend:
+        return "authoring_backend_budget_binding"
     if (
         configuration.get("schema_version")
         != "rigid_replacement_authoring_configuration.v1"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -42,16 +43,44 @@ def verify_files(records: list[Mapping[str, Any]], root: Path) -> bool:
 
 
 
-def validate_strict_camera_gate(gate: Mapping[str, Any]) -> None:
+def _semantic_pixel_count(value: Any, label: str) -> int | None:
+    if type(value) is int:
+        return value if value >= 0 else None
+    if not isinstance(value, Mapping):
+        return None
+    count = value.get("pixel_count")
+    shape = value.get("frame_resolution_hw")
+    if (value.get("target_label") != label
+            or value.get("measurement_authority") != "native_semantic_segmentation_aov"
+            or type(count) is not int or count < 0
+            or not isinstance(shape, (list, tuple)) or len(shape) != 2
+            or any(type(size) is not int or size <= 0 for size in shape)
+            or count > shape[0] * shape[1]):
+        return None
+    return count
+
+
+def validate_strict_camera_gate(gate: Mapping[str, Any], *, scene_plan: Mapping[str, Any] | None = None) -> None:
+    destination_label = "task_support"
+    if scene_plan is not None and (scene_plan.get("task_spec") or {}).get("visible_target_marker") is not None:
+        from .native_task_arena_runtime import visible_target_marker_parameters
+        marker_position, _radius = visible_target_marker_parameters(scene_plan)
+        target = scene_plan["task_spec"].get("target_position_world_m")
+        if (not isinstance(target, (list, tuple)) or len(target) != 3
+                or any(not math.isfinite(float(target[i])) or abs(float(marker_position[i])-float(target[i])) > 1e-6 for i in (0, 1))):
+            raise RuntimeError("strict_controls_target_marker_binding_invalid")
+        if not any(row.get("semantic_role") == "task_support" for row in scene_plan.get("objects", [])):
+            destination_label = "task_target_marker"
     cameras = {row.get("role"): row for row in (gate.get("snapshot") or {}).get("cameras", [])}
     if gate.get("policy_observation_integrity_passed") is not True or set(cameras) != {"external", "wrist", "overview"}:
         raise RuntimeError("strict_controls_native_camera_gate_failed")
     for role, camera in cameras.items():
         minimum = ((camera.get("observability") or {}).get("thresholds") or {}).get("effective_minimum_pixels")
         pixels = camera.get("semantic_label_pixels") or {}
+        counts = [_semantic_pixel_count(pixels.get(label), label)
+                  for label in ("task_object", destination_label)]
         if (type(minimum) is not int or minimum <= 0
-                or any(type(pixels.get(label)) is not int or pixels[label] < minimum
-                       for label in ("task_object", "task_support"))):
+                or any(count is None or count < minimum for count in counts)):
             raise RuntimeError("strict_controls_subject_destination_visibility_failed:" + str(role))
 
 def _control_candidate(scene_plan: Mapping[str, Any], phase_plan: Mapping[str, Any]) -> dict[str, Any]:
@@ -113,7 +142,7 @@ def execute_native_controls(*, cell_runtime: Any, built: Any, scene_plan: Mappin
         "execution_binding": dict(execution_binding or {}),
     }
     try:
-        validate_strict_camera_gate(gate)
+        validate_strict_camera_gate(gate, scene_plan=scene_plan)
         env = built.env
         seed = int(scene_plan["scenario"]["seed"])
         env.reset(seed=seed)
@@ -168,7 +197,7 @@ def execute_native_controls(*, cell_runtime: Any, built: Any, scene_plan: Mappin
 def validate_controls_receipt(receipt: Mapping[str, Any], *, scene_plan: Mapping[str, Any],
                               gate: Mapping[str, Any], root: Path,
                               execution_binding: Mapping[str, Any] | None = None) -> None:
-    validate_strict_camera_gate(gate)
+    validate_strict_camera_gate(gate, scene_plan=scene_plan)
     if (receipt.get("status") != "passed" or receipt.get("candidate_policy_queried") is not False
             or receipt.get("scene_plan_digest") != scene_plan["plan_digest"]
             or (execution_binding is not None and receipt.get("execution_binding") != dict(execution_binding))

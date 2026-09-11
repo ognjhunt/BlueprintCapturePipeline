@@ -69,6 +69,33 @@ def test_current_iteration_ignores_moving_unfetched_main_without_claim_upgrade(d
     assert allocator.release_promotion_eligible(COMMIT) is False
 
 
+@pytest.mark.parametrize('defect', [None, 'claim_upgrade', 'binding_status', 'extra_authority'])
+def test_current_canary_uses_exact_root_receipt_without_promotion(deployed, defect):
+    value = deployed['provenance']
+    value['status'] = 'canary'
+    if defect == 'claim_upgrade':
+        value['promotion_eligible'] = True
+    if defect == 'extra_authority':
+        value['allow_paid'] = True
+    digest = _write(deployed['provenance_path'], value)
+    receipt = deployed['receipt']
+    receipt['release_provenance'].update(
+        sha256=digest, size_bytes=deployed['provenance_path'].stat().st_size,
+        provenance_status='iteration' if defect == 'binding_status' else 'canary',
+    )
+    _write(deployed['receipt_path'], receipt)
+    blockers, _ = allocator._source_checkout_blockers(COMMIT)
+    if defect is not None:
+        assert blockers == ['gpu_canary_deployed_release_receipt_unverified']
+    else:
+        assert blockers == []
+        result = release.inspect_active_deployed_release(deployed['checkout'], COMMIT)
+        assert result['evidence_grade'] == 'development_only'
+        assert result['release_admission_mode'] == 'development_iteration'
+        assert result['promotion_eligible'] is False
+        assert allocator.release_promotion_eligible(COMMIT) is False
+
+
 def test_promoted_active_release_keeps_full_lane_authority(deployed):
     value = deployed['provenance']
     value.update(status='verified', promotion_eligible=True, workflow_name='Full Test Lane',

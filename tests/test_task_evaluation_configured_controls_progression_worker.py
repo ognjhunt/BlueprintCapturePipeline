@@ -429,7 +429,7 @@ def test_one_shot_adoption_registry_targets_only_its_legacy_launch(
     assert observed["intent_path_override"] != automatic_path
 
 
-def test_process_plans_does_not_forward_canary_only_compilation_root_to_controls(
+def test_process_plans_forwards_compilation_root_to_controls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -458,7 +458,7 @@ def test_process_plans_does_not_forward_canary_only_compilation_root_to_controls
 
     assert report["status"] == "completed"
     assert observed["plan_path"] == plan_root / "configured-controls.json"
-    assert "episode_compilation_queue_root" not in observed
+    assert observed["episode_compilation_queue_root"] == tmp_path / "compilations"
 
 
 def _canary_launch_run(tmp_path: Path, *, launch_id: str, source_commit: str) -> Path:
@@ -708,7 +708,6 @@ def test_process_plans_advances_scene_configuration_activations_from_the_intent_
         "scene_configuration_activation_intent_root",
         "profile_dir",
         "standing_authorization_dir",
-        "episode_compilation_queue_root",
     ):
         assert name not in forwarded
 
@@ -2076,3 +2075,102 @@ def test_default_readiness_publication_uses_preparation_admitted_prefix(
     assert observed == {
         "key_prefix": "task-evaluation/production-inputs/configured-controls"
     }
+
+
+@pytest.mark.parametrize('compiled', [False, True])
+def test_destination_waits_before_minting_window_or_queuing_activation(tmp_path, monkeypatch, compiled):
+    launch_root, _ = _source(tmp_path)
+    plan_path = _destination_plan(tmp_path)
+    plan = json.loads(plan_path.read_text())
+    state = tmp_path / 'progressions' / plan['source_launch_id'] / ('franka-controls-' + plan['expected_production_commit'][:12]) / 'destination-qualification'
+    _write(state / 'configured_destination_qualification_progression.v1.json',
+           _sealed_progression('destination_qualification_preparation_queued',
+                               episode_preparation_request={'preparation_id': 'destination-prep', 'run_id': plan['future_outputs']['destination']['expected_activation_id'].removesuffix('-destination')}))
+    prep_root = tmp_path / 'preparations'
+    _write(prep_root / 'identities/destination-prep.json', {'identity': 'destination-prep'})
+    preparation = {'status': 'queued_for_production_episode_compilation',
+                   'episode_compilation_id': 'compile', 'episode_compilation_queue_envelope_digest': 'sha256:' + 'c' * 64,
+                   'run_id': 'run', 'configured_scene_revision_digest': 'sha256:' + 'd' * 64}
+    _write(prep_root / 'results/destination-prep-a.json', preparation)
+    comp_root = tmp_path / 'compilations'
+    if compiled:
+        result = {'schema_version': 'task_evaluation_episode_compilation_result.v1',
+                  'status': 'compiled_for_production_launch', 'compilation_id': 'compile',
+                  'run_id': 'run', 'source_commit': plan['expected_production_commit'],
+                  'configured_scene_revision_digest': preparation['configured_scene_revision_digest']}
+        result['result_digest'] = canonical_digest(result, digest_field='result_digest')
+        _write(comp_root / 'results' / ('compile-' + 'c' * 64 + '.json'), result)
+    def forbidden(**kwargs):
+        raise AssertionError('must wait before creating a release window or activation')
+    monkeypatch.setattr(worker, '_materialize_phase_release_window', forbidden)
+    monkeypatch.setattr(worker, 'stage_configured_controls_activation', forbidden)
+    monkeypatch.setattr(worker, '_activation_capacity_ready', lambda root: False)
+    result = worker.advance_configured_controls_plan(plan_path=plan_path, launch_state_root=launch_root,
+        progression_root=tmp_path / 'progressions', preparation_queue_root=prep_root,
+        activation_queue_root=tmp_path / 'activations', episode_compilation_queue_root=comp_root,
+        publisher_factory=lambda: object())
+    assert result['status'] == ('awaiting_destination_activation_capacity' if compiled else 'awaiting_destination_qualification_compilation')
+    assert not (state / 'destination_activation_progression.json').exists()
+
+
+@pytest.mark.parametrize('defect', ['status', 'source_commit', 'run_id', 'result_digest'])
+def test_controls_compilation_gate_refuses_invalid_result(tmp_path, defect):
+    preparation = {'status': 'queued_for_production_episode_compilation', 'episode_compilation_id': 'compile',
+                   'episode_compilation_queue_envelope_digest': 'sha256:' + 'c' * 64,
+                   'run_id': 'run', 'configured_scene_revision_digest': 'sha256:' + 'd' * 64}
+    result = {'schema_version': 'task_evaluation_episode_compilation_result.v1',
+              'status': 'compiled_for_production_launch', 'compilation_id': 'compile', 'run_id': 'run',
+              'source_commit': 'a' * 40, 'configured_scene_revision_digest': preparation['configured_scene_revision_digest']}
+    result[defect] = 'wrong'
+    if defect != 'result_digest':
+        result['result_digest'] = canonical_digest(result, digest_field='result_digest')
+    _write(tmp_path / 'results' / ('compile-' + 'c' * 64 + '.json'), result)
+    with pytest.raises(worker.TaskEvaluationConfiguredControlsProgressionWorkerError, match='compilation_invalid'):
+        worker._compilation_ready(preparation=preparation, queue_root=tmp_path, source_commit='a' * 40)
+
+
+@pytest.mark.parametrize('available,expected', [(0, False), (2 * 1024**3, True)])
+def test_activation_capacity_wait_uses_live_reserved_headroom(tmp_path, monkeypatch, available, expected):
+    ledger = str(tmp_path / 'ledger')
+    monkeypatch.setenv('BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT', ledger)
+    def headroom(**kwargs):
+        assert kwargs == {'target_root': tmp_path, 'reservation_root': ledger}
+        return {'available_bytes': available}
+    monkeypatch.setattr('blueprint_pipeline.control_plane_disk_budget.disk_headroom', headroom)
+    assert worker._activation_capacity_ready(tmp_path) is expected
+
+
+def test_production_submitter_recovers_exact_accepted_request(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    request = {"launch_id": "marked-area-recovery", "run_id": "marked-area-recovery"}
+    attempts = []
+
+    def transport(argv, **kwargs):
+        attempts.append(argv)
+        assert "--allow-replay" in argv
+        request_path = Path(argv[argv.index("--request") + 1])
+        assert json.loads(request_path.read_text()) == request
+        if len(attempts) == 1:
+            return SimpleNamespace(returncode=1)
+        receipt = Path(argv[argv.index("--receipt-out") + 1])
+        receipt.write_text(json.dumps({
+            "status": "replayed", "launch_id": request["launch_id"],
+            "webapp_receipt": {"provider_mutation_performed_inside_web_request": False},
+        }))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(worker.subprocess, "run", transport)
+    submit = worker._production_submitter(
+        repo_root=tmp_path, secret_file=tmp_path / "secret",
+        endpoint="https://example.invalid/submit", state_root=tmp_path,
+    )
+    with pytest.raises(worker.TaskEvaluationConfiguredControlsProgressionWorkerError,
+                       match="webapp_submission_failed"):
+        submit(request)
+    assert submit(request)["status"] == "accepted"
+    assert submit(request)["status"] == "accepted"
+    assert len(attempts) == 2
+    with pytest.raises(worker.TaskEvaluationConfiguredControlsProgressionWorkerError):
+        submit({**request, "run_id": "different"})
+    assert len(attempts) == 2

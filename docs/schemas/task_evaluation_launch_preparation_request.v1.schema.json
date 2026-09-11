@@ -1117,7 +1117,7 @@
         "hard_cap_usd": {
           "type": "number",
           "exclusiveMinimum": 0,
-          "maximum": 12
+          "maximum": 26.76
         },
         "hard_ttl_seconds": {
           "type": "integer",
@@ -1148,7 +1148,7 @@
                 "maximum_cost_usd": {
                   "type": "number",
                   "minimum": 0,
-                  "maximum": 6
+                  "maximum": 20.76
                 },
                 "maximum_requests": {
                   "type": "integer",
@@ -1177,7 +1177,7 @@
                     "content_agents": {
                       "type": "number",
                       "minimum": 0,
-                      "maximum": 5
+                      "maximum": 15
                     }
                   }
                 }
@@ -1213,6 +1213,13 @@
           }
         }
       }
+    },
+    "replacement_authoring_backend": {
+      "type": "string",
+      "enum": [
+        "content_agents",
+        "astra_cad_blender_v1"
+      ]
     }
   },
   "allOf": [
@@ -1471,6 +1478,54 @@
             "required": [
               "kind"
             ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "replacement_authoring_backend"
+        ],
+        "properties": {
+          "replacement_authoring_backend": {
+            "const": "astra_cad_blender_v1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "run_mode": {
+            "const": "scene_configuration"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "spend": {
+            "properties": {
+              "hard_cap_usd": {
+                "maximum": 12
+              },
+              "external_service_caps": {
+                "properties": {
+                  "openai": {
+                    "properties": {
+                      "maximum_cost_usd": {
+                        "maximum": 6
+                      },
+                      "stage_max_cost_usd": {
+                        "properties": {
+                          "content_agents": {
+                            "maximum": 5
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

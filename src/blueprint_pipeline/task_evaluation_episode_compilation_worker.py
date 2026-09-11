@@ -43,6 +43,7 @@ from .task_evaluation_scene_construction_queue import (
     ensure_scene_construction_queue_root,
 )
 from .task_evaluation_native_arena_episode_compiler import (
+    TaskEvaluationNativeArenaEpisodeCompilerError,
     compile_native_arena_episode,
 )
 from .task_evaluation_native_arena_preparation_adapter import (
@@ -440,6 +441,7 @@ def process_episode_compilation_queue(
                 exc,
                 (
                     TaskEvaluationEpisodeCompilationWorkerError,
+                    TaskEvaluationNativeArenaEpisodeCompilerError,
                     TaskEvaluationNativeArenaAdapterError,
                 ),
             ):

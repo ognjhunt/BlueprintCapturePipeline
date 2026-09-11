@@ -63,6 +63,7 @@ CANARY_NAME_PREFIXES = (
     # labelled paid stages. Each stage arms before create and hands the exact
     # started Vast instance id to this watchdog.
     "blueprint-native-task-arena-",
+    "blueprint-native-task-destination-qualification-",
     "blueprint-native-task-controls-",
     "blueprint-native-task-policy-",
     "blueprint-native-warehouse-camera-",
@@ -81,6 +82,7 @@ CANARY_NAME_PREFIXES = (
     # here (instance_label_prefix=watchdog.pod_name_prefix), so the name-scoped
     # sweep matches the instances this lane actually creates.
     "blueprint-task-evaluation-scene-config-",
+    "blueprint-task-evaluation-native-arena-preflight-",
     # Exact SimReady Isaac probes are independently watched under the same
     # collision-free prefix passed to their Vast adapter.
     "blueprint-adp009b-simready-",

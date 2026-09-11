@@ -1279,12 +1279,24 @@ def test_failed_environment_step_is_attempted_but_not_claimed_applied() -> None:
 
 def test_native_command_validation_is_distinct_from_chunk_validation() -> None:
     class _InvalidNativeLimitsEnvironment(_Environment):
+        limits = [[-2.9, 2.9]] * 7
+
         def joint_limits(self):
-            return [[-2.9, 2.9]] * 6
+            return self.limits
+
+    environment = _InvalidNativeLimitsEnvironment()
+
+    class _LateInvalidLimitsPolicy(_Policy):
+        def infer(self, observation):
+            chunk = super().infer(observation)
+            # Initial/read-input validation has already observed seven valid
+            # limits. Corrupt the command seam separately to test its guard.
+            environment.limits.pop()
+            return chunk
 
     progress: dict = {}
     with pytest.raises(DroidActionExecutionError, match="isaac_joint_limits_invalid"):
-        _run(environment=_InvalidNativeLimitsEnvironment(), progress=progress)
+        _run(environment=environment, policy=_LateInvalidLimitsPolicy(), progress=progress)
 
     assert progress["candidate_action_shape_validated"] is True
     assert progress["candidate_action_finite_validated"] is True

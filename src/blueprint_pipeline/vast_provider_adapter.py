@@ -34,6 +34,10 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from .vast_instance_inventory import instance_inventory_valid, active_instance_rows
+from .vast_provider_log_observations import (
+    _log_result_saw_container_missing,
+    _log_result_container_vanished_after_output,
+)
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .vast_create_failure_diagnosis import diagnose_empty_create_400
@@ -1197,7 +1201,7 @@ def _runtime_discovery(
             "create_instance": "PUT /api/v0/asks/{id}/",
             "show_instance": "GET /api/v0/instances/{id}/",
             "execute_command": "PUT /api/v0/instances/command/{id}/",
-            "show_logs": "PUT /api/v0/instances/request_logs/{id}",
+            "show_logs": "PUT /api/v0/instances/request_logs/{id}/",
             "destroy_instance": "DELETE /api/v0/instances/{id}/",
         },
         "launch_mode_notes": {
@@ -4762,15 +4766,38 @@ def _probe_shell_script(
                 "output_dir = Path(os.environ.get('BLUEPRINT_ADP_ARENA_OUTPUT_DIR', '/workspace/adp_arena_provider_bundle/runtime_output'))\n"
                 "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
                 "output_zip = work_dir / 'adp_arena_provider_runtime_output.zip'\n"
+                # The twenty-row policy canary aggregate exceeded the generic
+                # 100 MB cap in V25. Keep this required record with a bounded
+                # allowance; refusing retention must prevent a success upload.
+                "required_result_name = "
+                + repr(
+                    "native_task_arena_policy_canary_session_result.v1.json"
+                    if provider_bundle_kind == "native_task_arena_policy_canary_session"
+                    else None
+                )
+                + "\n"
+                "required_result_max_bytes = 512 * 1024 * 1024\n"
+                "if required_result_name is not None:\n"
+                "    required_result = output_dir / required_result_name\n"
+                "    if required_result.is_symlink() or not required_result.is_file():\n"
+                "        raise SystemExit('policy_canary_required_terminal_result_missing_or_not_regular')\n"
+                "    required_result_size = required_result.stat().st_size\n"
+                "    if not 0 < required_result_size <= required_result_max_bytes:\n"
+                "        raise SystemExit('policy_canary_required_terminal_result_size_invalid:%d' % required_result_size)\n"
                 "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
                 "    if output_dir.is_dir():\n"
                 "        for path in sorted(output_dir.rglob('*')):\n"
                 "            if path.is_file():\n"
                 "                size = path.stat().st_size\n"
-                "                if size <= 100_000_000:\n"
-                "                    archive.write(path, path.relative_to(output_dir).as_posix())\n"
+                "                relative_name = path.relative_to(output_dir).as_posix()\n"
+                "                size_limit = required_result_max_bytes if relative_name == required_result_name else 100_000_000\n"
+                "                if size <= size_limit:\n"
+                "                    archive.write(path, relative_name)\n"
                 "    else:\n"
                 "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
+                "    if required_result_name is not None:\n"
+                "        if archive.getinfo(required_result_name).file_size != required_result_size:\n"
+                "            raise SystemExit('policy_canary_required_terminal_result_archive_size_mismatch')\n"
                 "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
                 "PY\n"
                 "zip_rc=$?; "
@@ -6290,7 +6317,7 @@ def _request_logs_and_fetch(
         try:
             status_code, response = _api_json(
                 method="PUT",
-                path=f"/instances/request_logs/{instance_id}",
+                path=f"/instances/request_logs/{instance_id}/",
                 api_key=api_key,
                 payload={"tail": str(tail_lines), "daemon_logs": "false"},
                 timeout_seconds=30,
@@ -6630,59 +6657,6 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
         }
         else 60
     )
-
-
-def _log_result_saw_container_missing(log_result: Mapping[str, Any]) -> bool:
-    """Did any poll see "No such container"?
-
-    This answers a transport question -- *should we try another channel* -- and
-    any sighting is the right trigger for that, including one during startup.
-    It deliberately does not answer whether the container died; see
-    `_log_result_container_vanished_after_output`, which is the one a blocker
-    may rely on.
-    """
-
-    attempts = log_result.get("log_poll_attempts")
-    if not isinstance(attempts, Sequence) or isinstance(attempts, (str, bytes)):
-        return False
-    return any(
-        isinstance(item, Mapping) and bool(item.get("container_missing_marker_observed"))
-        for item in attempts
-    )
-
-
-def _log_result_container_vanished_after_output(log_result: Mapping[str, Any]) -> bool:
-    """Did the container go missing *after* we watched it working?
-
-    "No such container" before the first byte of output is a startup race, not
-    a dead container: the poll simply arrived before Docker created it. Treating
-    that as terminal kills runs that are about to work.
-
-    That is not hypothetical. `adp-gaussian-excision-live-20260813T160321Z` was
-    torn down four minutes in on `vast_heartbeat_container_missing`, having
-    compiled and installed three CUDA rasterizer extensions -- the whole log
-    ends on `Successfully installed`, with no error and no terminal marker,
-    because the workload was still going. The final fetched log contains zero
-    occurrences of the marker the blocker is named for.
-
-    So the marker only counts once output has been seen. After that, a missing
-    container is a real one: it was there, and now it is not. The same shape as
-    the transport-failure and instance-exited blockers beside it, both of which
-    were misattributions until they were made to corroborate.
-    """
-
-    attempts = log_result.get("log_poll_attempts")
-    if not isinstance(attempts, Sequence) or isinstance(attempts, (str, bytes)):
-        return False
-    seen_output = False
-    for item in attempts:
-        if not isinstance(item, Mapping):
-            continue
-        if seen_output and bool(item.get("container_missing_marker_observed")):
-            return True
-        if int(item.get("output_size_bytes") or 0) > 0:
-            seen_output = True
-    return False
 
 
 def _log_text_has_success_marker(text: str, markers: Sequence[str]) -> bool:
@@ -9070,6 +9044,28 @@ def run_vast_provider_adapter(
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
             output_probe=_provider_output_probe(_string(provider_output_get_url)),
         )
+        # Result and log transport are independent. Preserve an observed upload
+        # before any startup classification can raise and trigger teardown.
+        # A missing log marker must never erase the worker's diagnostic result.
+        preclassification_transfer = None
+        if enable_blueprint_bundle and onstart_logs.get("output_probe_observed"):
+            transfer = _download_provider_output_with_capacity_guard(
+                url=_string(provider_output_get_url),
+                output_path=output_zip_path,
+                minimum_free_bytes=provider_output_minimum_free_bytes,
+            )
+            preclassification_transfer = transfer
+            write_json(
+                resolved_job_dir / "vast_provider_output_preclassification_receipt.json",
+                {
+                    "schema_version": "vast_provider_output_preclassification.v1",
+                    "generated_at": utc_now_iso(),
+                    "output_probe_observed": True,
+                    "output_zip_path": str(output_zip_path),
+                    "transfer": transfer,
+                    "startup_or_scientific_success_claimed": False,
+                },
+            )
         heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
         observed_marker_text = "\n".join(
             _string_list(onstart_logs.get("observed_blueprint_marker_lines"))
@@ -9484,7 +9480,7 @@ def run_vast_provider_adapter(
             # been fetched. The object's presence is stronger evidence than a
             # line claiming it was written.
             if _string(provider_output_get_url):
-                transfer = _download_provider_output_with_capacity_guard(
+                transfer = preclassification_transfer or _download_provider_output_with_capacity_guard(
                     url=_string(provider_output_get_url),
                     output_path=output_zip_path,
                     minimum_free_bytes=provider_output_minimum_free_bytes,

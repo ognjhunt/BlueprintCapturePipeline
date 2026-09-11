@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess  # nosec B404 - executable is full-byte toolchain-bound
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -396,6 +397,17 @@ def _handler(
             "toolchain_digest": toolchain_digest,
             "construction_envelope": dict(envelope),
         }
+        if configuration.get("authoring_backend") == "astra_cad_blender_v1" and input_path.exists():
+            if (_read(input_path, code="astra_producer_retained_input_invalid") != input_value
+                    or _read(dependency_path, code="astra_producer_retained_dependencies_invalid") != list(dependency_results)):
+                raise TaskEvaluationSceneConfigurationStageProducerError("astra_producer_retained_input_changed")
+            previous = output_root / "retained_producer_attempts"
+            previous.mkdir(exist_ok=True)
+            snapshot = previous / f"attempt-{len(list(previous.iterdir())):04d}"
+            snapshot.mkdir()
+            for path in (input_path, dependency_path, output_root / "stage_producer.log"):
+                if path.exists():
+                    shutil.copyfile(path, snapshot / path.name)
         input_path.write_text(canonical_json(input_value) + "\n", encoding="utf-8")
         dependency_path.write_text(
             canonical_json(list(dependency_results)) + "\n", encoding="utf-8"

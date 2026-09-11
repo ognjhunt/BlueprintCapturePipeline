@@ -115,6 +115,20 @@ dependent step as blocked instead of guessing.
 
 ## Working Rules
 
+- **Execute without serial debugging loops.** When the user asks to reach a
+  concrete stage, keep that stage as the immediate objective. Before an attempt,
+  batch the complete applicable preflight: exact runtime inputs, launch arguments,
+  billing/spend admission, resource identity, watchdog, and teardown. A dry run
+  must not claim launch readiness while leaving deterministic execute-only checks
+  untested. After a blocker, make one focused repair and replay that same complete
+  preflight; reuse unchanged assets and completed stages. Defer unrelated audits,
+  improvements, and broad tests until the requested stage is running or terminal.
+  Every 10 minutes without reaching the stage, report the exact remaining blocker,
+  observed progress, and the concrete next action or necessary user decision.
+  Do not substitute another speculative ETA or an expanding investigation.
+  This checkpoint requires a decision and a status update, not an automatic pause
+  or a new permission request. Preserve the existing rights, spend, evidence,
+  watchdog, and teardown requirements.
 - Work the Arm Decision Proof critical path in order. Prefer changes that turn an
   existing development-only seam into a replayable, fail-closed precursor of the
   partner proof; do not optimize unrelated platform breadth.

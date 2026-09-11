@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
-import hashlib
 import json
 import math
 import os
@@ -22,6 +21,8 @@ from .provider_billing_reconciler import (
     VAST_CHARGES_URL,
 )
 from .policy_canary_official_billing import policy_canary_terminal_evidence
+from .runtime_preflight_official_billing import runtime_preflight_terminal_evidence
+from .vast_official_billing_serialization import _canonical_json, _record, _sha256_bytes
 RECONCILIATION_SCHEMA_VERSION = "blueprint.vast_official_same_goal_reconciliation.v1"
 ENTRY_SCHEMA_VERSION = "blueprint.vast_official_instance_charge.v1"
 RECONCILIATION_STATUS = "reconciled_official_posted_charges"
@@ -66,14 +67,6 @@ _ARENA_JOB_DIRS = frozenset(
 )
 
 
-def _canonical_json(value: Mapping[str, Any]) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
-
-def _sha256_bytes(payload: bytes) -> str:
-    return "sha256:" + hashlib.sha256(payload).hexdigest()
-
-
 def _strict_file(path: str | Path, *, code: str) -> tuple[Path, bytes]:
     candidate = Path(path).expanduser()
     absolute = Path(os.path.abspath(candidate))
@@ -102,14 +95,6 @@ def _json_file(path: str | Path, *, code: str) -> tuple[Path, dict[str, Any], by
     if not isinstance(value, dict):
         raise VastOfficialBillingExtractionError(code)
     return source, value, payload
-
-
-def _record(path: Path, payload: bytes) -> dict[str, Any]:
-    return {
-        "path": str(path),
-        "size_bytes": len(payload),
-        "sha256": _sha256_bytes(payload),
-    }
 
 
 def _prepare_output(path: str | Path) -> Path:
@@ -943,6 +928,11 @@ def _terminal_evidence(
     result_path, result, result_bytes = _json_file(
         terminal_result_path, code="vast_official_terminal_result_invalid"
     )
+    preflight = runtime_preflight_terminal_evidence(instance_id=instance_id, result_path=result_path,
+        result=result, result_bytes=result_bytes, json_file=_json_file, record=_record,
+        error_factory=VastOfficialBillingExtractionError)
+    if preflight is not None:
+        return preflight
     if result.get("schema_version") == (
         "task_evaluation_native_direct_execution_adoption.v1"
     ):
@@ -1384,6 +1374,8 @@ def _entry(
         or row.get("type") != "instance"
         or not isinstance(metadata, Mapping)
         or metadata.get("label") != launch_label
+        or (terminal_evidence.get("financial_closeout_kind") == "native_task_arena_runtime_preflight.v1"
+            and terminal_evidence.get("launch_label") != launch_label)
     ):
         raise VastOfficialBillingExtractionError("vast_official_charge_identity_invalid")
     _validate_charge_period(row, source_receipt)

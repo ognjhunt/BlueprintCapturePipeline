@@ -13,6 +13,8 @@ from collections.abc import Mapping
 
 
 CONSTRUCTION_RUNTIME_MODULE_NAMES = (
+    "native_task_camera_start_configuration.py",
+    "franka_kinematics.py",
     "articulation_graph_contract.py",
     "articulated_control_planner.py",
     "decision_evidence_contracts.py",
@@ -90,6 +92,8 @@ DESTINATION_QUALIFICATION_RUNTIME_MODULE_NAMES = tuple(
 )
 
 CONTROLS_RUNTIME_MODULE_NAMES = (
+    "native_task_camera_start_configuration.py",
+    "franka_kinematics.py",
     "policy_scientific_reset.py",
     "adp009d_control_episode.py",
     "adp009d_contact_envelope.py",
@@ -167,6 +171,9 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
 )
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
+    "policy_canary_worker_evidence.py",
+    "task_object_native_settle_gate.py",
+    "task_object_native_settle_runtime.py",
     "policy_canary_media_integrity.py",
     "policy_scientific_reset.py",
     "policy_request_evidence.py",
@@ -174,6 +181,7 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "policy_paired_summary.py",
     "adp009d_policy_episode.py",
     "adp009d_policy_episode_evidence.py",
+    "adp009d_policy_episode_native_validation.py",
     "adp009d_droid_action_execution.py",
     # Imported as ``.adp009d_groot_worker_identity`` by the GR00T runtime and
     # by the rights module inside the package; the flat root copy used by the

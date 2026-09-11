@@ -102,13 +102,18 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
             # existing fail-closed cross-document validation. An inconsistent
             # or tampered lineage is malformed evidence, not host unavailability.
             blockers = validate_launch_profile(profile)
-            if blockers and set(blockers) != {"scene_execution_owner_revoked"}:
+            inactive_owner_states = {
+                "scene_execution_owner_revoked",
+                "scene_execution_owner_attempt_cancelled_before_execution",
+            }
+            if blockers and not set(blockers).issubset(inactive_owner_states):
                 raise LaunchCatalogError(
                     f"published_profile_invalid:{path.name}:"
                     + ",".join(sorted(set(blockers)))
                 )
             if blockers:
-                # Revoking a real owner is a normal lifecycle transition, not
+                # Revoking an owner or cancelling an unstarted attempt is a
+                # normal lifecycle transition, not
                 # corrupted published evidence. Keep the immutable profile in
                 # history and explicitly disable its catalog projection.
                 inactive_authority = blockers

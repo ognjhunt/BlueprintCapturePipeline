@@ -872,6 +872,9 @@ def execute_paired_session(
                     "provider_zero_confirmed": False,
                     "failure_type": type(exc).__name__,
                 }
+    raw_failure_codes = getattr(open_failure, "errors", ())
+    if not isinstance(raw_failure_codes, (list, tuple)):
+        raw_failure_codes = ()
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "blocked",
@@ -902,6 +905,11 @@ def execute_paired_session(
             if re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", Path(frame.filename).name)
             and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,159}", frame.name)
         ] if open_failure else [],
+        "session_failure_codes": sorted({
+            code for code in raw_failure_codes
+            if isinstance(code, str)
+            and re.fullmatch(r"[a-z][a-z0-9_]*(?::[A-Za-z0-9_.-]{1,80})?", code)
+        }),
         "scene_promotion_performed": False,
         "official_ranking_performed": False,
         "candidate_policy_queried": any(

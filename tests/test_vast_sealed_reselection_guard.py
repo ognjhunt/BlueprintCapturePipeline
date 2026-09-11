@@ -22,7 +22,7 @@ from tests.test_vast_provider_adapter import _configure_live_gates, _created_ins
                                   'inventory_valueerror'])
 def test_sealed_lane_never_reselects_after_ambiguous_or_observed_creation(tmp_path: Path, monkeypatch, lane, case):
     secret = _configure_live_gates(tmp_path, monkeypatch)
-    creates, labels, destroyed, consumptions = [], [], [], []
+    creates, labels, destroyed, consumptions, log_requests = [], [], [], [], []
     live, maximum_live = set(), [0]
     clock = [adapter.time.time()]
     monkeypatch.setattr(adapter.time, 'time', lambda: clock[0])
@@ -73,7 +73,8 @@ def test_sealed_lane_never_reselects_after_ambiguous_or_observed_creation(tmp_pa
             raise urllib.error.HTTPError('https://vast.invalid'+path, 400, 'bad request', {}, BytesIO(body))
         if method == 'GET' and path == '/instances/4020/':
             return 200, _created_instance_detail(dph_total=0.26)
-        if method == 'PUT' and path == '/instances/request_logs/4020':
+        if method == 'PUT' and path == '/instances/request_logs/4020/':
+            log_requests.append(path)
             return 200, {'success': True, 'result_url': 'https://logs.invalid/fake'}
         if method == 'DELETE' and path.startswith('/instances/'):
             identifier = int(path.strip('/').split('/')[-1])
@@ -117,3 +118,4 @@ def test_sealed_lane_never_reselects_after_ambiguous_or_observed_creation(tmp_pa
         manifest = json.loads((tmp_path/'vast_offer_selection_manifest.json').read_text())
         assert len(manifest['create_retry_attempts']) == 1
         assert destroyed == [4020]
+        assert log_requests and set(log_requests) == {'/instances/request_logs/4020/'}

@@ -23,6 +23,7 @@ from blueprint_pipeline.content_agents_model_compatibility import (
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.production_cad_skill_sources import SOURCE_SPECS
+from blueprint_pipeline.task_evaluation_scene_configuration_astra_runtime import stage_blender_runtime_archive
 from scripts.build_task_evaluation_scene_configuration_component_package import (
     build_scene_configuration_component_package,
 )
@@ -65,6 +66,7 @@ def build_content_agents_scene_configuration_component(
     text_to_cad_root: str | Path,
     multi_agent_cad_root: str | Path,
     output_root: str | Path,
+    blender_archive_path: str | Path | None = None,
 ) -> dict:
     """Seal exact released source plus the existing Blueprint runtime adapter."""
 
@@ -225,6 +227,8 @@ def build_content_agents_scene_configuration_component(
             destination=staging
             / "content_agents_model_compatibility_plan.json",
         )
+        if blender_archive_path is not None:
+            stage_blender_runtime_archive(blender_archive_path, staging)
         return build_scene_configuration_component_package(
             adapter_id="content_agents_rigid_replacement",
             source_root=staging,
@@ -233,6 +237,7 @@ def build_content_agents_scene_configuration_component(
             source_commit=expected_blueprint_commit,
             source_license=(
                 "Blueprint adapter; bundled upstream Apache-2.0 and MIT CAD skills"
+                + ("; official Blender distribution with upstream notices" if blender_archive_path is not None else "")
             ),
             output_root=output_root,
         )
@@ -248,6 +253,7 @@ def main() -> int:
     parser.add_argument("--text-to-cad-root", required=True)
     parser.add_argument("--multi-agent-cad-root", required=True)
     parser.add_argument("--output-root", required=True)
+    parser.add_argument("--blender-archive", help="Optional already-downloaded official Blender 5.2.1 Linux archive")
     args = parser.parse_args()
     value = build_content_agents_scene_configuration_component(
         repository_root=args.repository_root,
@@ -256,6 +262,7 @@ def main() -> int:
         text_to_cad_root=args.text_to_cad_root,
         multi_agent_cad_root=args.multi_agent_cad_root,
         output_root=args.output_root,
+        blender_archive_path=args.blender_archive,
     )
     print(json.dumps(value, sort_keys=True))
     return 0

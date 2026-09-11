@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import io
 import math
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
@@ -13,7 +11,6 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
-from PIL import Image, ImageDraw
 from pxr import Usd, UsdGeom
 
 from .decision_evidence_contracts import canonical_digest
@@ -93,10 +90,12 @@ def _triangulate(counts: Sequence[int], indices: Sequence[int]) -> np.ndarray:
     return np.asarray(faces, dtype=np.int64)
 
 
-def _stage_triangles(stage: Usd.Stage) -> tuple[np.ndarray, tuple[str, ...]]:
+def _stage_triangles(stage: Usd.Stage, *, root_prim: Usd.Prim | None = None) -> tuple[np.ndarray, tuple[str, ...]]:
     triangles: list[np.ndarray] = []
     prim_paths: list[str] = []
-    for prim in stage.Traverse():
+    prims = (Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies())
+             if root_prim is not None else stage.Traverse())
+    for prim in prims:
         if not prim.IsA(UsdGeom.Mesh):
             continue
         mesh = UsdGeom.Mesh(prim)
@@ -123,13 +122,18 @@ def _stage_triangles(stage: Usd.Stage) -> tuple[np.ndarray, tuple[str, ...]]:
     return np.concatenate(triangles, axis=0), tuple(prim_paths)
 
 
-def _robot_bounds(stage: Usd.Stage) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+def _robot_root(stage: Usd.Stage) -> Usd.Prim:
     default_prim = stage.GetDefaultPrim()
     if not default_prim.IsValid():
         roots = [prim for prim in stage.GetPseudoRoot().GetChildren() if prim.IsValid()]
         if len(roots) != 1:
             raise RobotPlacementGeometryError("robot_placement_robot_default_prim_missing")
         default_prim = roots[0]
+    return default_prim
+
+
+def _robot_bounds(stage: Usd.Stage) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    default_prim = _robot_root(stage)
     cache = UsdGeom.BBoxCache(
         Usd.TimeCode.Default(),
         [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
@@ -241,7 +245,9 @@ def build_robot_placement_geometry_index(
     valid = norm > 1.0e-12
     normal_abs_z[valid] = np.abs(cross[valid, 2]) / norm[valid]
     robot_minimum, robot_maximum = _robot_bounds(robot_stage)
-    robot_triangles, _robot_prim_paths = _stage_triangles(robot_stage)
+    # Native asset references select the default robot prim. Publisher demo
+    # objects outside it are not robot links; instance proxies inside it are.
+    robot_triangles, _robot_prim_paths = _stage_triangles(robot_stage, root_prim=_robot_root(robot_stage))
     robot_bounds_minimum = np.asarray(robot_minimum, dtype=np.float64) - 1.0e-4
     robot_bounds_maximum = np.asarray(robot_maximum, dtype=np.float64) + 1.0e-4
     inside_robot_bounds = np.all(
@@ -922,170 +928,13 @@ def render_robot_placement_geometry_previews(
     trajectory_waypoints_world_m: Sequence[Sequence[float]] = (),
     image_size: tuple[int, int] = (1000, 720),
 ) -> list[dict[str, Any]]:
-    """Render digest-bound top and side geometry views without a paid GPU."""
+    """Render opaque, depth-tested local views without a paid GPU."""
+    from .robot_placement_preview_rasterizer import render
+    return render(index=index, proposal=proposal,
+                  target_position_world_m=target_position_world_m,
+                  trajectory_waypoints_world_m=trajectory_waypoints_world_m,
+                  image_size=image_size)
 
-    pose = proposal.get("pose") if isinstance(proposal.get("pose"), Mapping) else {}
-    position = np.asarray(pose.get("position_world_m"), dtype=np.float64)
-    quaternion = [float(value) for value in pose.get("orientation_xyzw")]
-    target = np.asarray(target_position_world_m, dtype=np.float64)
-    trajectory = np.asarray(trajectory_waypoints_world_m, dtype=np.float64)
-    if trajectory.size == 0:
-        trajectory = target.reshape(1, 3)
-    if (
-        position.shape != (3,)
-        or target.shape != (3,)
-        or trajectory.ndim != 2
-        or trajectory.shape[1] != 3
-        or not np.all(np.isfinite(trajectory))
-        or len(quaternion) != 4
-    ):
-        raise RobotPlacementGeometryError("robot_placement_preview_pose_invalid")
-    yaw, _ = _yaw_from_quaternion(quaternion)
-    rotation = np.asarray(
-        [
-            [math.cos(yaw), -math.sin(yaw), 0.0],
-            [math.sin(yaw), math.cos(yaw), 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=np.float64,
-    )
-    robot_world_triangles = index.robot_triangles @ rotation.T + position
-    robot_minimum, robot_maximum = _rotated_bounds(
-        index.robot_local_bounds_minimum_m,
-        index.robot_local_bounds_maximum_m,
-        position,
-        yaw,
-    )
-    def draw_projection(axes: tuple[int, int], label: str) -> dict[str, Any]:
-        width, height = image_size
-        margin = 55
-        low = np.minimum(
-            robot_world_triangles[:, :, list(axes)].min(axis=(0, 1)),
-            trajectory[:, list(axes)].min(axis=0),
-        )
-        high = np.maximum(
-            robot_world_triangles[:, :, list(axes)].max(axis=(0, 1)),
-            trajectory[:, list(axes)].max(axis=0),
-        )
-        padding = np.maximum((high - low) * 0.18, 0.18)
-        low -= padding
-        high += padding
-        span = np.maximum(high - low, 1.0e-6)
-
-        def point(value: Sequence[float]) -> tuple[int, int]:
-            normalized = (np.asarray(value, dtype=np.float64) - low) / span
-            return (
-                int(margin + normalized[0] * (width - 2 * margin)),
-                int(height - margin - normalized[1] * (height - 2 * margin)),
-            )
-
-        image = Image.new("RGB", image_size, "white")
-        draw = ImageDraw.Draw(image, "RGBA")
-        selected_surface_id = str(proposal.get("support_surface_id") or "")
-        selected_indices: set[int] = set()
-        surface = next(
-            (surface for surface in index.support_surfaces if surface.surface_id == selected_surface_id),
-            None,
-        )
-        if surface is not None:
-            selected_indices = set(surface.triangle_indices)
-        projected_minimum = index.triangles[:, :, list(axes)].min(axis=1)
-        projected_maximum = index.triangles[:, :, list(axes)].max(axis=1)
-        nearby = np.flatnonzero(
-            (projected_maximum[:, 0] >= low[0])
-            & (projected_minimum[:, 0] <= high[0])
-            & (projected_maximum[:, 1] >= low[1])
-            & (projected_minimum[:, 1] <= high[1])
-        )
-        stride = max(1, len(nearby) // 8_000)
-        for triangle_index in nearby[::stride]:
-            triangle = index.triangles[triangle_index][:, list(axes)]
-            colour = (
-                (55, 130, 230, 95)
-                if int(triangle_index) in selected_indices
-                else (105, 105, 105, 32)
-            )
-            draw.polygon(
-                [point(value) for value in triangle],
-                fill=colour,
-                outline=(95, 95, 95, 45),
-            )
-        robot_depth_axis = next(axis for axis in range(3) if axis not in axes)
-        robot_order = np.argsort(
-            robot_world_triangles[:, :, robot_depth_axis].mean(axis=1)
-        )
-        for triangle_index in robot_order:
-            triangle = robot_world_triangles[int(triangle_index)][:, list(axes)]
-            draw.polygon(
-                [point(value) for value in triangle],
-                fill=(220, 45, 45, 205),
-                outline=(105, 0, 0, 210),
-            )
-        rectangle_min = point(robot_minimum[list(axes)])
-        rectangle_max = point(robot_maximum[list(axes)])
-        draw.rectangle(
-            [
-                min(rectangle_min[0], rectangle_max[0]),
-                min(rectangle_min[1], rectangle_max[1]),
-                max(rectangle_min[0], rectangle_max[0]),
-                max(rectangle_min[1], rectangle_max[1]),
-            ],
-            fill=None,
-            outline=(120, 0, 0, 220),
-            width=2,
-        )
-        base_point = point(position[list(axes)])
-        draw.ellipse(
-            [base_point[0] - 6, base_point[1] - 6, base_point[0] + 6, base_point[1] + 6],
-            fill=(130, 0, 0, 255),
-        )
-        facing_world = position + np.asarray(
-            [0.30 * math.cos(yaw), 0.30 * math.sin(yaw), 0.0],
-            dtype=np.float64,
-        )
-        facing_point = point(facing_world[list(axes)])
-        draw.line([base_point, facing_point], fill=(255, 145, 0, 255), width=6)
-        target_point = point(target[list(axes)])
-        radius = 9
-        draw.ellipse(
-            [target_point[0] - radius, target_point[1] - radius, target_point[0] + radius, target_point[1] + radius],
-            fill=(0, 170, 70, 255),
-            outline=(0, 90, 40, 255),
-            width=2,
-        )
-        trajectory_points = [point(row[list(axes)]) for row in trajectory]
-        if len(trajectory_points) > 1:
-            draw.line(trajectory_points, fill=(0, 120, 210, 255), width=5)
-        for waypoint in trajectory_points:
-            draw.ellipse(
-                [
-                    waypoint[0] - 4,
-                    waypoint[1] - 4,
-                    waypoint[0] + 4,
-                    waypoint[1] + 4,
-                ],
-                fill=(0, 185, 235, 255),
-                outline=(0, 70, 130, 255),
-            )
-        draw.text(
-            (18, 15),
-            (
-                f"{label}: solid red=robot mesh, dark red=reset bounds, "
-                "orange=facing, green=task target, cyan=tool trajectory, blue=support"
-            ),
-            fill=(0, 0, 0, 255),
-        )
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG", optimize=True)
-        payload = buffer.getvalue()
-        return {
-            "label": label,
-            "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
-            "image_url": "data:image/png;base64," + base64.b64encode(payload).decode("ascii"),
-            "detail": "high",
-        }
-
-    return [draw_projection((0, 1), "top_down_xy"), draw_projection((0, 2), "side_xz")]
 
 
 __all__ = [

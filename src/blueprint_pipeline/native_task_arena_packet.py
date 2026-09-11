@@ -622,6 +622,12 @@ def materialize_native_task_arena_packet(
             published_asset_directory="assets",
             destination=plan_path,
         )
+        if frozen.get("policy_canary_camera_start_configuration") is not None:
+            from .native_task_camera_start_configuration import validate_camera_start_configuration
+            binding = validate_camera_start_configuration(plan, frozen["policy_canary_camera_start_configuration"])
+            plan["policy_canary_camera_start_configuration"] = binding
+            plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+            write_json(plan_path, plan)
         write_json(output / "native_task_arena_packet_request.v1.json", frozen)
         artifacts = [
             {

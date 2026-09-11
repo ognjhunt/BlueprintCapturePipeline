@@ -120,9 +120,10 @@ def retain_native_owner_attempt(*, activation_request: Mapping[str, Any],
                  "scene_intent_digest" not in preparation_request, "native_owner_attempt_missing")
         return None
     lane = str(activation_request["lane"])
-    phase = "controls" if lane.startswith("native_task_arena_controls") else "construction"
+    phase = ('destination' if lane == 'native_task_arena_destination_qualification'
+             else 'controls' if lane.startswith('native_task_arena_controls') else 'construction')
     _require(lane in {"native_task_arena_construction", "native_task_arena_construction_after_destination",
-                     "native_task_arena_controls"}, "native_phase_unsupported")
+                     "native_task_arena_controls", "native_task_arena_destination_qualification"}, "native_phase_unsupported")
     spend = preparation_request["spend"]
     validate_owner_attempt_record(record, phase=phase,
         source_commit=activation_request["expected_production_commit"],

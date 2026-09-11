@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,10 @@ BUCKET = "blueprint-production-inputs"
 
 @pytest.fixture(autouse=True)
 def isolated_disk_ledger(tmp_path, monkeypatch):
+    from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk
+    monkeypatch.setattr("blueprint_pipeline.control_plane_evidence_offload.reserve_control_plane_disk",
+                        functools.partial(reserve_control_plane_disk,
+                            disk_usage=lambda _: SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3)))
     monkeypatch.setattr("blueprint_pipeline.control_plane_evidence_offload.DEFAULT_RESERVATION_ROOT",
                         tmp_path / "disk-reservations")
 

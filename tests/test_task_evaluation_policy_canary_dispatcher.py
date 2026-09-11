@@ -517,6 +517,28 @@ def test_terminal_delivery_persists_the_projection_and_website_sync_bound_by_the
     assert "sync-secret" not in sync_path.read_text()
 
 
+def test_owner_download_readback_keeps_dispatch_pending_then_resumes_without_allocator(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_owner_delivery_readback as readback_module
+    calls = []
+    def pending(**kwargs):
+        calls.append(kwargs)
+        return {'status':'pending','blockers':['policy_canary_owner_delivery_readback_pending']}
+    monkeypatch.setattr(readback_module, 'verify_owner_policy_delivery', pending)
+    first = materialize_canary_root(tmp_path, monkeypatch)
+    assert first['receipt']['status'] == 'awaiting_website_download_readback'
+    assert first['receipt']['allocator_invoked'] is False
+    assert not (first['root']/'dispatch_receipt.json').exists()
+    raw_result = first['joined_path'].read_bytes()
+    proof = _write(first['root']/'artifacts/result_delivery/owner_delivery_readback.json', {'verified':True})
+    monkeypatch.setattr(readback_module, 'verify_owner_policy_delivery',
+                        lambda **_kwargs: {'status':'verified','receipt':_record(proof)})
+    second = materialize_canary_root(tmp_path, monkeypatch)
+    assert second['receipt']['owner_delivery_readback'] == _record(proof)
+    assert second['receipt']['allocator_invoked'] is False
+    assert first['joined_path'].read_bytes() == raw_result
+    assert len(calls) == 1
+
+
 def test_provisional_sync_from_a_crashed_attempt_is_replaced_until_the_receipt_seals_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
