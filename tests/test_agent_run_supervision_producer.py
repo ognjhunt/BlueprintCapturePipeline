@@ -239,6 +239,69 @@ def test_lifetime_budget_does_not_reset_for_a_new_release(tmp_path):
     assert not reserve_automatic_revision(service, next_plan, "fourth", 1)
 
 
+def amend_allowance(service, intent, **updates):
+    allowance = {"intent_id": intent["intent_id"], "intent_digest": intent["intent_digest"],
+        "maximum_revisions": 6, "maximum_reserved_inference_usd": 6,
+        "expires_at": intent["request"]["execution"]["expires_at_epoch"],
+        "authorization_reference": "owner-approved-three-dollar-reallocation", **updates}
+    config = service.config.model_dump(mode="json")
+    config["automatic_supervision_allowances"] = [allowance]
+    write(service.config_path, config)
+    return ProductionAgentService(service.config_path, source_commit=service.config.source_commit)
+
+
+def test_explicit_allowance_preserves_prior_holds_and_one_owner_on_same_release(tmp_path):
+    from blueprint_pipeline.agent_execution.supervision import ownership_event
+    service, old_plan, intent, directory = setup(tmp_path)
+    for task_id in ("first", "second", "third"):
+        assert reserve_automatic_revision(service, old_plan, task_id, 1)
+    with service.journal._connect() as connection:
+        before = connection.execute("SELECT event_id, payload_json FROM events WHERE event_id LIKE 'automatic_supervision_budget_%'").fetchall()
+    service = amend_allowance(service, intent)
+    assert progress_plan(service, old_plan)["status"] == "revoked"
+    plan = register_run_supervision(intent=intent, directory=directory, source_commit=service.config.source_commit, service=service)
+    assert plan.watch_id != old_plan.watch_id
+    state = progress_plan(service, plan)
+    assert state["status"] == "executing_revision"
+    assert ownership_event(service, plan.run_id)["watch_digest"] == plan.plan_digest
+    assert service.journal.task(state["active_task_id"])["state"] == "queued"
+    with service.journal._connect() as connection:
+        for row in before:
+            assert connection.execute("SELECT payload_json FROM events WHERE event_id=?", (row["event_id"],)).fetchone()[0] == row["payload_json"]
+    next_plan = plan.model_copy(update={"source_commit": "b" * 40, "watch_id": "next-release"})
+    assert reserve_automatic_revision(service, next_plan, "fifth", 1)
+    assert reserve_automatic_revision(service, next_plan, "sixth", 1)
+    assert not reserve_automatic_revision(service, next_plan, "seventh", 1)
+    config = service.config.model_dump(mode="json")
+    config["automatic_supervision_allowances"] = []
+    write(service.config_path, config)
+    revoked = ProductionAgentService(service.config_path, source_commit=service.config.source_commit)
+    with pytest.raises(AgentExecutionError, match="allowance_revoked"):
+        reserve_automatic_revision(revoked, next_plan, "seventh", 1)
+    assert progress_plan(revoked, plan)["status"] == "revoked"
+    assert revoked.journal.task(state["active_task_id"])["cancel_requested"]
+
+
+@pytest.mark.parametrize("updates,code", [
+    ({"intent_digest": "sha256:" + "f" * 64}, "allowance_scope_invalid"),
+    ({"maximum_reserved_inference_usd": 31}, "allowance_exceeds_intent"),
+    ({"expires_at": time.time() + 90000}, "allowance_exceeds_intent"),
+])
+def test_allowance_cannot_change_owner_or_exceed_accepted_envelope(tmp_path, updates, code):
+    service, _, intent, directory = setup(tmp_path)
+    service = amend_allowance(service, intent, **updates)
+    with pytest.raises(AgentExecutionError, match=code):
+        register_run_supervision(intent=intent, directory=directory, source_commit=service.config.source_commit, service=service)
+
+
+def test_expired_allowance_and_unbound_plan_cannot_admit_inference(tmp_path):
+    service, old_plan, intent, directory = setup(tmp_path)
+    service = amend_allowance(service, intent, expires_at=time.time() - 1)
+    assert register_run_supervision(intent=intent, directory=directory, source_commit=service.config.source_commit, service=service) is None
+    with pytest.raises(AgentExecutionError, match="allowance_revoked"):
+        reserve_automatic_revision(service, old_plan, "first", 1)
+
+
 def test_revoked_automatic_configuration_cancels_the_existing_owner(tmp_path):
     service, plan, _, _ = setup(tmp_path)
     state = progress_plan(service, plan)

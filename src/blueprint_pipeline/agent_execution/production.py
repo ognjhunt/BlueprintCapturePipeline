@@ -35,6 +35,7 @@ from .stage_recovery import StageReplayBinding, StageReplayTools
 from .webapp_delivery import WebappAdmissionOutbox
 from .episode_tasks import EpisodeTaskBinding
 from .supervision import SupervisionBinding
+from .supervision_authority import SupervisionAllowance
 from .visual_tasks import VisualTaskBinding
 from .controller_recovery import ControllerRecoveryBinding, ControllerRecoveryTools
 
@@ -76,6 +77,7 @@ class ProductionConfig(BaseModel):
     automatic_failure_investigation: bool = False
     automatic_failure_runtime: Literal["openai_agents_sdk", "openai_agents_api"] = "openai_agents_sdk"
     automatic_recovery_bindings: tuple[ControllerRecoveryBinding, ...] = Field(default=(), max_length=10)
+    automatic_supervision_allowances: tuple[SupervisionAllowance, ...] = Field(default=(), max_length=10)
     engineering_policy_file: str | None = None
     webapp_admission_url: str | None = None
     webapp_sync_token_file: str | None = None
@@ -346,8 +348,8 @@ class ProductionAgentService:
         if not _run_lock_held:
             with self.journal.own_task("supervision-run:" + record.task.run_id):
                 return self._enqueue_record(record, _run_lock_held=True)
-        from .supervision import ownership_key
-        owner = self.journal.event(ownership_key(self.config.source_commit, record.task.run_id))
+        from .supervision import ownership_event
+        owner = ownership_event(self, record.task.run_id)
         if owner is not None and (record.supervision is None
                 or record.supervision.watch_digest != owner["watch_digest"]):
             raise AgentExecutionError("agent_run_owned_by_persistent_supervisor")

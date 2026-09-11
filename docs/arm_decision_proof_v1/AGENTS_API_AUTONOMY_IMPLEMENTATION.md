@@ -165,6 +165,21 @@ diagnosis and an engineering handoff alone do not establish a completed repair.
 
 ## Automatic recovery configuration
 
+An operator may install an explicitly approved supervision budget amendment in
+`automatic_supervision_allowances`. Each entry binds one exact intent ID and
+digest, an authorization reference, expiry, total lifetime revision limit and
+total lifetime inference reservation limit. Both the amount and expiry must fit
+the accepted intent. This is a reallocation within the owner's aggregate budget,
+not a new aggregate spending grant or a billing reconciliation.
+
+The amendment creates a distinct immutable supervision plan and retains the old
+plan, owner record, tasks and reservation events. Every earlier reservation still
+counts against the amended total across releases. For example, changing a
+three-revision/$3 allowance to six revisions/$6 after three $1 reservations permits
+only three additional $1 reservations. Removing or expiring the amendment revokes
+its pending inference. The default remains three revisions and at most $3; neither
+a restart nor a deployment changes those defaults or releases a hold.
+
 `automatic_failure_investigation` continues to default to diagnosis/replay only.
 The private production configuration can now include up to ten
 `automatic_recovery_bindings`, using the existing `ControllerRecoveryBinding`

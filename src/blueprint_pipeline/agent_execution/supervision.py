@@ -60,11 +60,12 @@ class SupervisionPlan(BaseModel):
     expires_at: float = Field(gt=0, allow_inf_nan=False)
     revision_ttl_seconds: int = Field(default=900, ge=1, le=1800)
     automatic_intent_digest: str | None = Field(default=None, pattern=DIGEST)
+    automatic_allowance_digest: str | None = Field(default=None, pattern=DIGEST)
 
     @property
     def plan_digest(self):
         return digest({key: value for key, value in self.model_dump(mode="json").items()
-            if key != "enabled" and not (key == "automatic_intent_digest" and value is None)})
+            if key != "enabled" and not (key in {"automatic_intent_digest", "automatic_allowance_digest"} and value is None)})
 
 
 def observe(sources: tuple[ObservationSource, ...]):
@@ -101,10 +102,11 @@ def observe(sources: tuple[ObservationSource, ...]):
 
 def validate_current_observation(service, binding: SupervisionBinding, *, controller_recoveries=()):
     from .production import _read_private
+    from .supervision_authority import allowance_is_current
     plan_path = Path(service.config.supervision_store_root or service.journal.root / "supervision-plans") / (binding.watch_id + ".json")
     plan = SupervisionPlan.model_validate_json(_read_private(plan_path))
     if (not plan.enabled or time.time() >= plan.expires_at or plan.plan_digest != binding.watch_digest
-            or plan.sources != binding.sources):
+            or plan.sources != binding.sources or not allowance_is_current(service, plan)):
         raise AgentExecutionError("agent_supervision_authority_revoked")
     if plan.automatic_intent_digest and (not service.config.automatic_run_supervision
             or any(row not in service.config.automatic_recovery_bindings for row in controller_recoveries)):
@@ -117,8 +119,22 @@ def _state_path(service, plan):
     return service.journal.root / "supervision" / plan.source_commit / (plan.watch_id + ".json")
 
 
-def ownership_key(source_commit, run_id):
-    return "supervision_owner_" + digest({"source_commit": source_commit, "run_id": run_id})[7:]
+def ownership_key(source_commit, run_id, allowance_digest=None):
+    value = {"source_commit": source_commit, "run_id": run_id}
+    if allowance_digest is not None:
+        value["allowance_digest"] = allowance_digest
+    return "supervision_owner_" + digest(value)[7:]
+
+
+def ownership_event(service, run_id):
+    allowances = [row for row in service.config.automatic_supervision_allowances if row.intent_id == run_id]
+    if len(allowances) > 1:
+        raise AgentExecutionError("automatic_supervision_allowance_scope_invalid")
+    if allowances:
+        event = service.journal.event(ownership_key(service.config.source_commit, run_id, allowances[0].allowance_digest))
+        if event is not None:
+            return event
+    return service.journal.event(ownership_key(service.config.source_commit, run_id))
 
 
 def _write_state(service, plan, state):
@@ -128,6 +144,7 @@ def _write_state(service, plan, state):
 
 def progress_plan(service, plan: SupervisionPlan):
     from .production import TaskRecord, _read_private
+    from .supervision_authority import allowance_is_current
 
     if plan.source_commit != service.config.source_commit:
         raise AgentExecutionError("agent_supervision_release_mismatch")
@@ -148,7 +165,7 @@ def progress_plan(service, plan: SupervisionPlan):
                 or state.get("watch_digest") != plan.plan_digest or state.get("run_id") != plan.run_id
                 or state.get("template_digest") != template_digest):
             raise AgentExecutionError("agent_supervision_plan_or_state_changed")
-        service.journal.record_event(ownership_key(plan.source_commit, plan.run_id),
+        service.journal.record_event(ownership_key(plan.source_commit, plan.run_id, plan.automatic_allowance_digest),
             {"watch_id": plan.watch_id, "watch_digest": plan.plan_digest, "run_id": plan.run_id})
         active_id = state["active_task_id"]
         active = None
@@ -158,7 +175,8 @@ def progress_plan(service, plan: SupervisionPlan):
             except AgentExecutionError as exc:
                 if str(exc) != "agent_task_missing":
                     raise
-        automatic_revoked = bool(plan.automatic_intent_digest and not service.config.automatic_run_supervision)
+        automatic_revoked = bool(plan.automatic_intent_digest and (
+            not service.config.automatic_run_supervision or not allowance_is_current(service, plan)))
         if not plan.enabled or not template.enabled or time.time() >= plan.expires_at or automatic_revoked:
             if active is not None and active["state"] not in TERMINAL_STATES:
                 service.service.cancel(active_id)
