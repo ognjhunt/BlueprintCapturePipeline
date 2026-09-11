@@ -53,6 +53,10 @@ EVIDENCE_ROOT_FILES = {
     "requirements.txt",
     "uv.lock",
 }
+# This is the retained August 10 snapshot, not a current release attestation.
+# Contract/mutation tests replay that snapshot at its original review window;
+# the validator itself still defaults to the real clock and refuses expiry.
+HISTORICAL_SNAPSHOT_AS_OF = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
 RECORDED_COMMAND_AUTHORITIES: frozenset[str] = frozenset()
 CLAIM_BOUNDARY_TRUE_FIELDS = {
     "code_change_is_not_external_proof",
@@ -1374,13 +1378,13 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
     return sorted(set(errors))
 
 
-def test_current_gap_ledger_maps_all_107_acceptance_criteria_and_derives_status() -> None:
+def test_historical_gap_ledger_snapshot_maps_all_107_acceptance_criteria_and_derives_status() -> None:
     ledger = _load_ledger()
     audit_rows = _audit_rows()
 
     assert len(audit_rows) == 107
     assert len({row["id"] for row in audit_rows}) == 107
-    assert _validate_ledger(ledger) == []
+    assert _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF) == []
     assert ledger["evidence_mapping_sha256"] == (APPROVED_CRITERION_EVIDENCE_MAP_SHA256)
     assert ledger["status_counts"] == {
         "open": 13,
@@ -1397,7 +1401,7 @@ def test_digest_binding_and_non_circular_status_derivation_fail_closed() -> None
     ledger = _load_ledger()
     rel_01 = next(gap for gap in ledger["gaps"] if gap["id"] == "REL-01")
     rel_01["criteria"][0]["evidence_artifacts"][0]["sha256"] = f"sha256:{'0' * 64}"
-    errors = _validate_ledger(ledger)
+    errors = _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF)
     assert any("REL-01-AC-01:artifact_digest_mismatch" in item for item in errors)
 
     ledger = _load_ledger()
@@ -1405,7 +1409,7 @@ def test_digest_binding_and_non_circular_status_derivation_fail_closed() -> None
     artifact = p2_04["criteria"][0]["evidence_artifacts"][0]
     artifact["path"] = "docs/public_launch_sc3_quality_gap_ledger_2026-07-09.json"
     artifact["sha256"] = _sha256(LEDGER)
-    errors = _validate_ledger(ledger)
+    errors = _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF)
     assert any("P2-04-AC-01:circular_remediation_evidence" in item for item in errors)
     assert any("P2-04-AC-01:derived_status_mismatch:open" in item for item in errors)
 
@@ -1417,7 +1421,7 @@ def test_false_closure_stale_evidence_and_malformed_command_result_are_rejected(
     rel_03["derived_status"] = "closed"
     rel_03["criteria"][0]["derived_status"] = "closed"
     assert any(
-        "REL-03:gap_derived_status_mismatch:partial" in item for item in _validate_ledger(ledger)
+        "REL-03:gap_derived_status_mismatch:partial" in item for item in _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF)
     )
 
     ledger = _load_ledger()
@@ -1425,7 +1429,7 @@ def test_false_closure_stale_evidence_and_malformed_command_result_are_rejected(
     for artifact in rel_04["criteria"][0]["evidence_artifacts"]:
         artifact["freshness_status"] = "stale"
     assert any(
-        "REL-04-AC-01:derived_status_mismatch:open" in item for item in _validate_ledger(ledger)
+        "REL-04-AC-01:derived_status_mismatch:open" in item for item in _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF)
     )
 
     ledger = _load_ledger()
@@ -1446,7 +1450,7 @@ def test_false_closure_stale_evidence_and_malformed_command_result_are_rejected(
             "summary": "fabricated passing result",
         }
     )
-    errors = _validate_ledger(ledger)
+    errors = _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF)
     assert "P2-04-AC-01:command_generated_at_future" in errors
     assert "P2-04-AC-01:recorded_command_attestation_disabled" in errors
     assert "P2-04-AC-01:command_output_artifact_missing_or_unsafe" in errors
@@ -1464,6 +1468,26 @@ def test_expired_consistent_freshness_windows_fail_closed() -> None:
     assert "freshness_policy_expired" in errors
     assert "REL-01-AC-01:derived_status_mismatch:open" in errors
     assert "REL-01:gap_derived_status_mismatch:open" in errors
+
+
+def test_default_validation_uses_current_clock_and_rejects_expired_snapshot(monkeypatch) -> None:
+    ledger = _load_ledger()
+    retained_bytes = LEDGER.read_bytes()
+    fresh_until = _parse_timestamp(ledger["freshness_policy"]["fresh_until"])
+    assert fresh_until is not None
+    expired_time = fresh_until + timedelta(seconds=1)
+
+    class ExpiredClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return expired_time.astimezone(tz) if tz is not None else expired_time.replace(tzinfo=None)
+
+    monkeypatch.setitem(_validate_ledger.__globals__, "datetime", ExpiredClock)
+    errors = _validate_ledger(ledger)
+    assert "freshness_policy_expired" in errors
+    assert "REL-01-AC-01:derived_status_mismatch:open" in errors
+    assert errors == _validate_ledger(ledger, as_of=expired_time)
+    assert LEDGER.read_bytes() == retained_bytes
 
 
 def test_forged_commit_release_and_closure_policy_cannot_close_p2_04() -> None:
@@ -1524,7 +1548,7 @@ def test_forged_commit_release_and_closure_policy_cannot_close_p2_04() -> None:
         }
     )
 
-    errors = _validate_ledger(ledger)
+    errors = _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF)
 
     assert "closure_authority_policy_not_fail_closed" in errors
     assert "P2-04:gap_commit_not_current_head" in errors
@@ -1544,7 +1568,7 @@ def test_symlinked_or_out_of_policy_local_evidence_cannot_derive_partial() -> No
     artifact["authority"] = "repository_untracked_worktree_digest"
 
     assert _safe_repository_file(artifact["path"]) is None
-    errors = _validate_ledger(ledger)
+    errors = _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF)
     assert "P2-04-AC-01:artifact_missing_or_unsafe:.venv/bin/python" in errors
     assert "P2-04-AC-01:derived_status_mismatch:open" in errors
 
@@ -1559,7 +1583,7 @@ def test_unrelated_tracked_file_cannot_impersonate_p2_04_banner_evidence() -> No
     artifact["authority"] = "repository_worktree_digest"
 
     assert artifact["path"] in _git_tracked_paths()
-    errors = _validate_ledger(ledger)
+    errors = _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF)
     assert "P2-04-AC-01:independent_evidence_invalid" in errors
     assert "P2-04-AC-01:derived_status_mismatch:open" in errors
 
@@ -1669,6 +1693,6 @@ def test_mutation_fixture_does_not_modify_authoritative_ledger() -> None:
     mutated["gaps"][0]["criteria"][0]["scopes"] = ["LIVE"]
 
     assert any(
-        "REL-01-AC-01:criterion_scopes_mismatch" in item for item in _validate_ledger(mutated)
+        "REL-01-AC-01:criterion_scopes_mismatch" in item for item in _validate_ledger(mutated, as_of=HISTORICAL_SNAPSHOT_AS_OF)
     )
     assert _load_ledger() == original

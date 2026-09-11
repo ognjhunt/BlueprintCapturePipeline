@@ -332,6 +332,31 @@ def test_graph_articulation_readback_uses_interaction_link_and_forbidden_contact
     ] == pytest.approx(2.0)
 
 
+def test_marker_pose_reader_observes_live_usd_transform(monkeypatch) -> None:
+    import sys
+    from types import ModuleType
+    from pxr import Usd, UsdGeom
+    from blueprint_pipeline.native_task_arena_readback import _read_marker_pose_world
+
+    stage = Usd.Stage.CreateInMemory()
+    marker = UsdGeom.Cylinder.Define(stage, "/World/envs/env_0/policy_target_marker")
+    translation = marker.AddTranslateOp()
+    translation.Set((1., 2., .3))
+    omni = ModuleType("omni")
+    usd = ModuleType("omni.usd")
+    usd.get_context = lambda: SimpleNamespace(get_stage=lambda: stage)
+    omni.usd = usd
+    monkeypatch.setitem(sys.modules, "omni", omni)
+    monkeypatch.setitem(sys.modules, "omni.usd", usd)
+    scene = SimpleNamespace(env_prim_paths=["/World/envs/env_0"])
+    assert _read_marker_pose_world(scene) == pytest.approx([1., 2., .3, 0., 0., 0., 1.])
+    translation.Set((3., 4., .5))
+    assert _read_marker_pose_world(scene)[:3] == pytest.approx([3., 4., .5])
+    stage.RemovePrim("/World/envs/env_0/policy_target_marker")
+    with pytest.raises(NativeTaskArenaReadbackError, match="target_marker_missing"):
+        _read_marker_pose_world(scene)
+
+
 def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
     built = _built()
     built.plan["task_kind"] = "rigid_pick_place"
@@ -385,7 +410,7 @@ def test_rigid_readback_applies_explicit_asset_to_scoring_frame_once() -> None:
     )
 
 
-def test_rigid_readback_uses_live_physical_pad_centers_when_available() -> None:
+def test_rigid_readback_uses_live_physical_pad_centers_when_available(monkeypatch) -> None:
     built = _built()
     built.plan["task_kind"] = "rigid_pick_place"
     built.plan["task_sample_binding"] = {"joint_ids": []}
@@ -419,6 +444,17 @@ def test_rigid_readback_uses_live_physical_pad_centers_when_available() -> None:
     assert sample["grasp_frame_position_source"] == (
         "native_franka_pose_servo.live_physical_pad_centers"
     )
+
+    built.plan["task_spec"]["visible_target_marker"] = {"requested": "not_readback"}
+    measured_pose = [3., 4., .2, 0., 0., 0., 1.]
+    calls = []
+    def read_marker(scene):
+        calls.append(scene)
+        return measured_pose
+    monkeypatch.setattr("blueprint_pipeline.native_task_arena_readback._read_marker_pose_world", read_marker)
+    sample = NativeRigidTaskArenaReadback(built).read_task_sample()
+    assert calls == [built.env.unwrapped.scene]
+    assert sample["destination_pose_world"] == measured_pose
 
 
 def test_rigid_articulation_readback_monitors_every_locked_joint_during_motion() -> None:

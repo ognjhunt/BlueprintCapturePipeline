@@ -157,6 +157,8 @@ def build_task_evaluation_policy_canary_webapp_publication(
     result_status: str,
     result_delivery: Mapping[str, Any],
     policy_canary_result: Mapping[str, Any],
+    plan_digest: str | None = None,
+    operator_registration_digest: str | None = None,
 ) -> dict[str, Any]:
     """Build additive v4 publication without inventing a decision envelope."""
 
@@ -211,6 +213,14 @@ def build_task_evaluation_policy_canary_webapp_publication(
             "deployment_or_safety_approved": False,
         },
     }
+    if plan_digest is not None or operator_registration_digest is not None:
+        import re
+
+        if any(re.fullmatch(r"sha256:[0-9a-f]{64}", str(value or "")) is None
+               for value in (plan_digest, operator_registration_digest)):
+            raise ValueError("policy_canary_operator_publication_binding_missing")
+        publication.update(plan_digest=plan_digest,
+                           operator_registration_digest=operator_registration_digest)
     body = json.dumps(publication, separators=(",", ":")).encode("utf-8")
     if (
         len(body) > _CANARY_PUBLICATION_RAW_MAX_BYTES
@@ -356,6 +366,8 @@ def sync_task_evaluation_policy_canary_to_webapp(
     result_status: str,
     result_delivery: Mapping[str, Any],
     policy_canary_result: Mapping[str, Any],
+    plan_digest: str | None = None,
+    operator_registration_digest: str | None = None,
     endpoint_url: str | None = None,
     token: str | None = None,
     max_attempts: int = 3,
@@ -373,6 +385,8 @@ def sync_task_evaluation_policy_canary_to_webapp(
         result_status=result_status,
         result_delivery=result_delivery,
         policy_canary_result=policy_canary_result,
+        plan_digest=plan_digest,
+        operator_registration_digest=operator_registration_digest,
     )
     resolved_url = _text(endpoint_url) or _text(
         os.getenv(TASK_EVALUATION_RUN_WEBAPP_URL_ENV)
@@ -390,6 +404,8 @@ def sync_task_evaluation_policy_canary_to_webapp(
         "policy_canary_projection_digest": payload["policy_canary_result"][
             "projection_digest"
         ],
+        **({key: payload[key] for key in ("plan_digest", "operator_registration_digest")}
+           if "operator_registration_digest" in payload else {}),
     }
     if not resolved_url or not resolved_token:
         return {

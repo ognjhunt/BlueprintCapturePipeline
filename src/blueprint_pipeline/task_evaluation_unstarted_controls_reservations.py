@@ -6,59 +6,15 @@ qualified. Preserve its bytes before retiring only its sealed downstream holds.
 """
 from __future__ import annotations
 
-import hashlib
-import json
+from .task_evaluation_retained_controls_evidence import _read as _read, _file as _file, validated_cancellation as validated_cancellation
+
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
 SCHEMA = "task_evaluation_unstarted_controls_cancellation.v1"
 DIRECTORY = "cancelled-unstarted-controls"
-
-
-def _read(path: Path) -> dict[str, Any]:
-    if not path.is_file() or any(p.is_symlink() for p in (path, *path.parents)):
-        raise ValueError("unstarted_controls_evidence_unsafe")
-    value = json.loads(path.read_text())
-    if not isinstance(value, dict):
-        raise ValueError("unstarted_controls_evidence_invalid")
-    return value
-
-
-def _file(path: Path) -> dict[str, Any]:
-    _read(path)
-    return {"path": str(path), "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
-
-
-def validated_cancellation(directory: Path, attempt: Mapping[str, Any]) -> dict[str, Any] | None:
-    path = directory / DIRECTORY / (str(attempt["attempt_id"]) + ".json")
-    if not path.exists() and not path.is_symlink():
-        return None
-    receipt = _read(path)
-    if receipt.get('schema_version') == 'task_evaluation_unmaterialized_adoption_cancellation.v1':
-        from .task_evaluation_terminal_adoption_retirement import validate_retirement
-        validate_retirement(receipt=receipt, attempt=attempt)
-        return receipt
-    original = receipt.get("original_blocked_launch_receipt") or {}
-    if (
-        receipt.get("schema_version") != SCHEMA
-        or receipt.get("status") != "cancelled_before_controls_eligibility"
-        or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
-        or receipt.get("attempt_digest") != attempt.get("attempt_digest")
-        or receipt.get("intent_digest") != attempt.get("intent_digest")
-        or receipt.get("attempt_id") != attempt.get("attempt_id")
-        or receipt.get("maximum_spend_usd") != attempt.get("maximum_spend_usd")
-        or receipt.get("provider") != attempt.get("provider")
-        or original.get("schema_version") != "task_evaluation_launch_receipt.v1"
-        or original.get("status") != "blocked"
-        or original.get("receipt_digest") != cross_runtime_canonical_digest(original, digest_field="receipt_digest")
-        or original.get("source_commit") != attempt.get("source_commit")
-        or receipt.get("downstream_execution_eligible") is not False
-        or receipt.get("provider_mutation_performed") is not False
-    ):
-        raise ValueError("unstarted_controls_cancellation_invalid")
-    return receipt
 
 
 def cancel_unstarted_controls_reservations(*, launch_root: str | Path, scene_root: str | Path, dry_run: bool = False) -> dict[str, Any]:

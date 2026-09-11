@@ -40,6 +40,7 @@ from .native_task_wrist_camera_mount_sweep import (
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .particlefield_usd import write_particlefield_usd_from_nurec
 from .particlefield_runtime_asset_cache import materialize_cached_particlefield
+from .particlefield_runtime_cache_build import materialize_automatic_particlefield
 from .task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
@@ -788,7 +789,20 @@ def _stage_destination_asset(
         )
     destination_root = output_root / "task-destination"
     destination_root.mkdir(mode=0o750)
-    suffix = asset_source.suffix.lower()
+    # Prepared references are content-addressed files without filename suffixes.
+    # USD chooses its file-format plugin by suffix, so recover it from the bytes.
+    with asset_source.open("rb") as stream:
+        header = stream.read(16)
+    if header.startswith(b"PK\x03\x04"):
+        suffix = ".usdz"
+    elif header.startswith(b"PXR-USDC"):
+        suffix = ".usdc"
+    elif header.startswith(b"#usda"):
+        suffix = ".usda"
+    else:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_destination_usd_format_unrecognized"
+        )
     target = destination_root / f"task_support{suffix}"
     if target.exists() or target.is_symlink():
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
@@ -917,6 +931,10 @@ def _materialize_native_particlefield_appearance(
             source_digest=source_digest,
             output_root=output_root,
         )
+        if cached is None and source_size > MAXIMUM_INLINE_NUREC_CONVERSION_BYTES:
+            cached = materialize_automatic_particlefield(
+                source_path=source_path, source_digest=source_digest, output_root=output_root,
+            )
     except ValueError as exc:
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             f"episode_compiler_official_particlefield_cache_invalid:{exc}"
@@ -954,10 +972,6 @@ def _materialize_native_particlefield_appearance(
                 color_space=receipt.get("upstream_color_space"),
             ),
         }
-    if source_size > MAXIMUM_INLINE_NUREC_CONVERSION_BYTES:
-        raise TaskEvaluationNativeArenaEpisodeCompilerError(
-            "episode_compiler_official_particlefield_cache_required"
-        )
     output_root.mkdir(mode=0o750)
     output_path = output_root / "scene_appearance.usdc"
     receipt_path = output_root / "particlefield_authoring_receipt.v1.json"

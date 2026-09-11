@@ -240,6 +240,7 @@ def test_public_preparation_entrypoint_loads_operator_binding_after_commit_valid
     )
     assert calls == [{
         "expected_source_commit": COMMIT, "service_account": ACCOUNT,
+        "environment": None,
         "requested_uris": [row["uri"] for row in worker.collect_preparation_references(request)],
     }]
     assert any(row.get("host_source_readback") for row in result["references"])
@@ -303,8 +304,8 @@ def test_s3_only_worker_request_ignores_stale_unrelated_installation(
     _write(packet[2], installation, seal=True)
     def configured_loader(**kwargs):
         return binding.load_installed_source_bindings(
-            **kwargs, approved_roots=(packet[0],),
-            environment={binding.BINDINGS_ENV: json.dumps([packet[4]])},
+            **{**kwargs, "approved_roots": (packet[0],),
+               "environment": {binding.BINDINGS_ENV: json.dumps([packet[4]])}},
         )
     monkeypatch.setattr(worker, "load_installed_source_bindings", configured_loader)
     original_collect = worker.collect_preparation_references

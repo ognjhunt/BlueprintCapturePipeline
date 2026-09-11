@@ -220,7 +220,7 @@ def _stage_one_refusal(
     configuration: Mapping[str, Any], envelope: Mapping[str, Any]
 ) -> str | None:
     if configuration.get("schema_version") == "task_evaluation_provided_mesh_appearance_excision.v1":
-        from .task_evaluation_completed_scene_adapters import mesh_appearance_configuration_refusal
+        from .task_evaluation_completed_scene_validation import mesh_appearance_configuration_refusal
         return mesh_appearance_configuration_refusal(configuration, envelope)
     source_object = configuration.get("source_object")
     required_views = configuration.get("required_views")
@@ -367,6 +367,11 @@ def _stage_three_refusal(
 ) -> str | None:
     identity = configuration.get("replacement_identity")
     required = configuration.get("required_output")
+    if configuration.get("authoring_backend", "content_agents") not in {"content_agents", "astra_cad_blender_v1"}:
+        return "authoring_backend"
+    declared_backend = (envelope.get("request") or {}).get("replacement_authoring_backend")
+    if declared_backend is not None and configuration.get("authoring_backend", "content_agents") != declared_backend:
+        return "authoring_backend_budget_binding"
     if (
         configuration.get("schema_version")
         != "rigid_replacement_authoring_configuration.v1"

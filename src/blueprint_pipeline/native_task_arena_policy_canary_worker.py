@@ -22,6 +22,10 @@ import time
 from typing import Any, Callable, Mapping
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.policy_canary_worker_evidence import (
+    _write_episode_failure_gap, _write_episode_json_artifact,
+    _write_indexed_telemetry as _write_policy_canary_telemetry,
+)
 from blueprint_pipeline.appearance_render_backend import (
     BACKEND_ISAAC_NATIVE_NUREC,
     BACKEND_PARTICLEFIELD_3DGRUT_TRANSCODE,
@@ -42,12 +46,15 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 # The independent allocation watchdog remains the total-session hard stop.
 ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS = 2700
 DROID_PARITY_MINIMUM_APPROACH_M = 0.05
+# Preserve the existing helper import surface used by retained tooling.
+_write_indexed_telemetry = _write_policy_canary_telemetry
 
 
 def _policy_camera_visibility_contract(
     snapshot: Mapping[str, Any],
     *,
     preserve_official_droid_calibration: bool,
+    require_task_support: bool = False,
 ) -> dict[str, Any]:
     """Qualify task visibility according to each camera's policy role.
 
@@ -126,6 +133,31 @@ def _policy_camera_visibility_contract(
             "render_passed": render_passed,
             "centroid_within_margin": centroid_within_margin,
         }
+        if require_task_support and role in {"external", "overview"}:
+            labels = row.get("semantic_label_pixels") if isinstance(row, Mapping) else None
+            support_measurement = labels.get("task_support") if isinstance(labels, Mapping) else None
+            support_pixels = (
+                support_measurement.get("pixel_count")
+                if isinstance(support_measurement, Mapping) else None
+            )
+            support_visible = (
+                type(support_pixels) is int
+                and support_measurement.get("target_label") == "task_support"
+                and support_measurement.get("measurement_authority") == "native_semantic_segmentation_aov"
+                and bool(support_measurement.get("target_semantic_ids"))
+                and minimum_pixels > 0
+                and support_pixels >= minimum_pixels
+                and render_passed
+            )
+            qualifications[role].update(
+                destination_pixel_count=support_pixels,
+                minimum_destination_pixels=minimum_pixels,
+                destination_visible=support_visible,
+                passed=bool(passed and support_visible),
+            )
+            if not support_visible:
+                qualifications[role]["status"] = "destination_not_visible"
+                blockers.append(f"policy_canary_{role}_destination_visibility_failed")
     return {
         "passed": not blockers and set(rows) == expected_roles,
         "camera_visibility": {
@@ -186,6 +218,29 @@ def appearance_render_backend_from_plan(
     alignment = dict(plan.get("appearance_frame_alignment") or {})
     variant = (packet_request or {}).get("appearance_variant")
     variant = dict(variant) if isinstance(variant, Mapping) else {}
+    # Configured-scene compilation seals the same provenance in a nested
+    # backend record. Join that producer's identity before adapting its fields.
+    if "render_backend" in variant:
+        configured = variant["render_backend"]
+        if (not isinstance(configured, Mapping)
+                or configured.get("schema_version") != "task_evaluation_appearance_render_backend.v1"
+                or configured.get("backend_digest") != canonical_digest(configured, digest_field="backend_digest")
+                or configured.get("particlefield_digest") != composed_digest
+                or configured.get("source_configured_appearance_digest") != variant.get("source_configured_appearance_digest")
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(configured.get("source_configured_appearance_digest") or ""))
+                or not str(configured.get("kind") or "").strip()):
+            raise RuntimeError("policy_canary_configured_appearance_backend_binding_invalid")
+        converter = configured.get("upstream_converter")
+        if configured["kind"] == OFFICIAL_TRANSCODE_IMPLEMENTATION and (
+            not isinstance(converter, Mapping)
+            or converter.get("module") != "threedgrut.export.scripts.transcode"
+            or converter.get("source_identity_verified") is not True
+            or not re.fullmatch(r"[0-9a-f]{40}", str(converter.get("source_revision") or ""))
+        ):
+            raise RuntimeError("policy_canary_configured_appearance_converter_invalid")
+        variant = {**variant, "source_gaussian_sha256": configured["source_configured_appearance_digest"],
+                   "particlefield_authoring_implementation": configured["kind"],
+                   "upstream_converter": converter}
     try:
         if render_path == "particlefield_3d_gaussian_splat":
             source_digest = str(
@@ -244,6 +299,143 @@ def appearance_render_backend_from_plan(
 
 
 OBSERVATION_INTEGRITY_AUTHORITY_FILENAME = "policy_observation_integrity_authority.v1.json"
+
+
+def policy_observation_gate_mode(
+    packet_request: Mapping[str, Any], resolved_plan: Mapping[str, Any]
+) -> str:
+    """Choose the camera gate from the resolved embodiment, before Isaac starts."""
+    profile = resolved_plan.get("policy_canary_embodiment_profile")
+    if profile is not None:
+        from blueprint_pipeline.droid_policy_canary_embodiment import apply_droid_policy_canary_profile
+        expected = apply_droid_policy_canary_profile(resolved_plan)["policy_canary_embodiment_profile"]
+        if profile != expected:
+            raise RuntimeError("policy_canary_official_camera_profile_invalid")
+        return "native_official_droid_camera"
+    registry = packet_request.get("wrist_camera_mount_registry")
+    if registry is not None:
+        from blueprint_pipeline.native_task_wrist_camera_mount_sweep import validate_wrist_camera_mount_registry
+        validate_wrist_camera_mount_registry(registry)
+        return "native_registered_camera_sweep"
+    return "sealed_reference_and_human_review"
+
+
+def preflight_policy_canary_static_inputs(
+    *, inputs: Mapping[str, Any], authority: Mapping[str, Any],
+    base_scene_plan: Mapping[str, Any], construction: Mapping[str, Any],
+    packet_request: Mapping[str, Any], specs: Mapping[str, Mapping[str, Any]],
+    observation_integrity_authority: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Exercise every cell's static startup path and report all independent refusals."""
+    checks: list[dict[str, Any]] = []
+    blockers: list[str] = []
+
+    def check(name: str, callback: Callable[[], Any]) -> Any:
+        try:
+            value = callback()
+            checks.append({"check": name, "status": "passed"})
+            return value
+        except Exception as exc:
+            reason = str(exc) or type(exc).__name__
+            blockers.append(f"{name}:{reason}")
+            checks.append({"check": name, "status": "blocked", "reason": reason})
+            return None
+
+    check("runtime_input_manifest", lambda: validate_runtime_input_manifest(inputs))
+    check("session_authority", lambda: validate_session_authority(authority))
+    check("construction_lineage", lambda: _construction_lineage_mode(
+        inputs=inputs, base_scene_plan=base_scene_plan, construction=construction))
+    backend = check("appearance_backend", lambda: appearance_render_backend_from_plan(
+        base_scene_plan, packet_request=packet_request))
+    if authority.get("runtime_inputs_digest") != inputs.get("runtime_inputs_digest"):
+        blockers.append("policy_canary_bundle_authority_input_mismatch")
+    if set(specs) != set(inputs.get("candidate_ids") or []):
+        blockers.append("policy_canary_execution_spec_bindings_missing")
+    for candidate, spec in specs.items():
+        def validate_spec(candidate: str = candidate, spec: Mapping[str, Any] = spec) -> None:
+            if (spec.get("candidate_id") != candidate
+                or spec.get("execution_spec_digest") != canonical_digest(spec, digest_field="execution_spec_digest")
+                or spec.get("task_success_contract_digest") != inputs.get("task_success_contract_digest")):
+                raise RuntimeError("policy_canary_frozen_execution_spec_mismatch")
+        check(f"execution_spec.{candidate}", validate_spec)
+    cells: list[dict[str, Any]] = []
+    for index, cell in enumerate(inputs.get("cells") or []):
+        plan = check(f"cell.{index}.resolved_plan", lambda cell=cell: _resolved_scene_plan(
+            base_scene_plan, cell, task_success_contract=inputs.get("task_success_contract")))
+        if plan is None:
+            continue
+        def validate_native_camera_parameters(plan=plan):
+            from blueprint_pipeline.native_task_arena_runtime import camera_runtime_parameters
+            for camera in plan["cameras"]:
+                camera_runtime_parameters(camera)
+        check(f"cell.{index}.native_camera_parameters", validate_native_camera_parameters)
+        if (cell.get("control_diagnostic") or {}).get("mode") == "nonblocking_omitted_by_user":
+            def validate_final_camera_start(plan=plan):
+                from blueprint_pipeline.native_task_camera_start_configuration import validate_camera_start_configuration
+                binding = plan.get("policy_canary_camera_start_configuration")
+                if not isinstance(binding, Mapping):
+                    raise RuntimeError("policy_camera_final_start_configuration_missing")
+                validate_camera_start_configuration(plan, binding)
+            check(f"cell.{index}.final_camera_start", validate_final_camera_start)
+        def validate_cadence(plan: Mapping[str, Any] = plan) -> None:
+            if not (float(plan["task_spec"]["control_frequency_hz"])
+                    == float(plan["cadence"]["control_frequency_hz"]) == 15.0):
+                raise RuntimeError("policy_canary_control_frequency_invalid")
+        check(f"cell.{index}.cadence", validate_cadence)
+        for candidate, spec in specs.items():
+            def validate_episode_budget(plan=plan, spec=spec):
+                from blueprint_pipeline.adp009d_policy_episode import _resolved_task_spec
+                _resolved_task_spec(
+                    task_spec=plan["task_spec"], destination_position_world_m=None,
+                    settle_window_samples=int(plan["task_spec"]["settle_window_samples"]),
+                    max_policy_queries=int(spec["max_policy_queries"]),
+                    open_loop_horizon=int(spec["open_loop_horizon"]),
+                )
+            check(f"cell.{index}.episode_budget.{candidate}", validate_episode_budget)
+        mode = check(f"cell.{index}.observation_route", lambda plan=plan: policy_observation_gate_mode(packet_request, plan))
+        cells.append({"cell_id": cell.get("cell_id"), "observation_gate_mode": mode})
+        if mode == "sealed_reference_and_human_review" and backend is not None:
+            gate = preload_observation_integrity_gate(observation_integrity_authority, appearance_render_backend=backend)
+            blockers.extend(gate["blockers"])
+    return {
+        "schema_version": "policy_canary_static_startup_preflight.v1",
+        "status": "blocked" if blockers else "passed",
+        "run_id": authority.get("run_id"), "runtime_inputs_digest": inputs.get("runtime_inputs_digest"),
+        "checks": checks, "cells": cells, "blockers": sorted(set(blockers)),
+        "provider_mutation_performed": False, "candidate_policy_queried": False,
+        "native_checks_remaining": ["simulator_dependencies_and_device", "appearance_renderer",
+            "camera_frames_and_task_visibility", "robot_and_gripper_readback", "embodiment_motion_parity"],
+    }
+
+
+def preflight_policy_canary_runtime_directory(runtime_root: Path) -> dict[str, Any]:
+    missing: list[str] = []
+    def read(relative: str) -> dict[str, Any]:
+        try:
+            return _read(runtime_root / relative)
+        except (OSError, ValueError) as exc:
+            missing.append(f"{relative}:{type(exc).__name__}")
+            return {}
+    inputs = read("runtime_inputs/policy_canary_runtime_inputs.json")
+    authority = read("runtime_inputs/policy_canary_session_authority.json")
+    manifest = read("adp_arena_provider_manifest.json")
+    observation_path = runtime_root / "runtime_inputs" / OBSERVATION_INTEGRITY_AUTHORITY_FILENAME
+    receipt = preflight_policy_canary_static_inputs(
+        inputs=inputs, authority=authority,
+        base_scene_plan=read("native_task_packet/native_task_arena_scene_plan.v1.json"),
+        packet_request=read("native_task_packet/native_task_arena_packet_request.v1.json"),
+        construction=read("runtime_inputs/native_task_arena_construction_result.v1.json"),
+        specs={candidate: read(f"runtime_inputs/policy_execution_spec.{candidate}.json")
+               for candidate in ("pi05_droid", "groot_n17_droid")},
+        observation_integrity_authority=read(str(observation_path.relative_to(runtime_root))) if observation_path.is_file() else None,
+    )
+    try:
+        _validate_provider_manifest(manifest, runtime_inputs=inputs, authority=authority)
+    except Exception as exc:
+        missing.append("provider_manifest:" + str(exc))
+    receipt["blockers"] = sorted(set([*receipt["blockers"], *missing]))
+    receipt["status"] = "blocked" if receipt["blockers"] else "passed"
+    return receipt
 
 
 def preload_observation_integrity_gate(
@@ -353,6 +545,8 @@ class CellRuntime:
     configure_post_gate_renderer: Callable[..., Mapping[str, Any]] | None = None
     make_rigid_task_readback: Callable[..., Any] | None = None
     wrap_rigid_scoring_environment: Callable[..., Any] | None = None
+    begin_native_asset_monitor: Callable[..., Any] | None = None
+    native_asset_feasibility_gate: Callable[..., Mapping[str, Any]] | None = None
 
 
 def isaac_cell_runtime() -> CellRuntime:
@@ -402,6 +596,9 @@ def isaac_cell_runtime() -> CellRuntime:
     from blueprint_pipeline.native_task_isaaclab_launch import (
         NATIVE_TASK_ARENA_DEVICE,
         launch_native_task_isaaclab,
+    )
+    from blueprint_pipeline.task_object_native_settle_runtime import (
+        NativeAssetPhysicsMonitor, run_isaac_asset_feasibility,
     )
 
     def gripper_probe(*, env: Any, robot: Any, seed: int) -> Mapping[str, Any]:
@@ -528,6 +725,10 @@ def isaac_cell_runtime() -> CellRuntime:
                 isinstance(droid_profile, Mapping)
                 and droid_profile.get("policy_camera_roles") == ["external", "wrist"]
             ),
+            require_task_support=(
+                bool(plan["task_spec"].get("destination_support_asset_id"))
+                or any(row.get("semantic_role") == "task_support" for row in plan["objects"])
+            ),
         )
         visibility = dict(visibility_contract["camera_visibility"])
         blockers = list((selection or {}).get("blockers") or [])
@@ -619,6 +820,8 @@ def isaac_cell_runtime() -> CellRuntime:
         configure_post_gate_renderer=configure_post_gate_rtx_streaming_wait,
         make_rigid_task_readback=NativeRigidTaskArenaReadback,
         wrap_rigid_scoring_environment=NativeRigidScoringEnvironment,
+        begin_native_asset_monitor=NativeAssetPhysicsMonitor,
+        native_asset_feasibility_gate=run_isaac_asset_feasibility,
     )
 
 
@@ -635,6 +838,19 @@ def _construction_lineage_mode(
         != canonical_digest(base_scene_plan, digest_field="plan_digest")
     ):
         raise RuntimeError("policy_canary_scene_plan_invalid")
+    if construction.get("schema_version") == "native_task_arena_packet_receipt.v1":
+        if (inputs.get("run_kind") != "internal_policy_canary"
+                or inputs.get("claim_ceiling") != "diagnostic_policy_execution"
+                or inputs.get("construction_result") != inputs.get("base_native_packet")
+                or construction.get("status") != "construction_packet_completed"
+                or construction.get("arena_scene_plan_digest") != base_scene_plan.get("plan_digest")
+                or construction.get("scene_id") != base_scene_plan.get("scene_id")
+                or construction.get("task_id") != base_scene_plan.get("task_id")
+                or construction.get("native_application_claimed") is not False
+                or construction.get("policy_episode_claimed") is not False
+                or construction.get("receipt_digest") != canonical_digest(construction, digest_field="receipt_digest")):
+            raise RuntimeError("policy_canary_compiled_packet_lineage_invalid")
+        return "compiled_native_packet_diagnostic"
     if construction.get("schema_version") == "native_task_arena_construction_result.v1":
         if (
             construction.get("status") != "completed"
@@ -781,13 +997,18 @@ def _resolved_scene_plan(
     if "external_camera_x_delta_m" in parameters:
         delta = float(parameters["external_camera_x_delta_m"])
         camera = next(row for row in plan["cameras"] if row["role"] == "external")
-        camera["frame_from_camera_matrix"][3] += delta
+        if plan.get("policy_canary_camera_start_configuration") is not None:
+            from blueprint_pipeline.native_task_camera_start_configuration import external_camera_offset_position
+            expected_camera_x = external_camera_offset_position({**plan, "scenario": scenario})[0]
+        else:
+            camera["frame_from_camera_matrix"][3] += delta
+            expected_camera_x = camera["frame_from_camera_matrix"][3]
         applications.append(
             {
                 "parameter_id": "external_camera_x_delta_m",
                 "readback_kind": "camera_offset_position_x_m",
                 "camera_role": "external",
-                "expected_native_value": camera["frame_from_camera_matrix"][3],
+                "expected_native_value": expected_camera_x,
                 "delta_from_nominal": delta,
             }
         )
@@ -915,434 +1136,10 @@ def _seal_result_before_simulation_close(
     close()
 
 
-def _write_episode_failure_gap(
-    *,
-    output_root: Path,
-    run_id: str,
-    context: Mapping[str, Any],
-    failure: Exception,
-    progress: Mapping[str, Any] | None = None,
-) -> Path:
-    """Retain the strongest episode evidence reached before a typed failure."""
-
-    raw_message = str(failure).strip().replace("\n", " ").replace("\r", " ")
-    safe_message = re.sub(r"(?<![A-Za-z0-9])/(?:[^\s/:]+/)*[^\s:]+", "<path>", raw_message)
-    safe_message = safe_message[:512]
-    episode_id = (
-        f"{run_id}--{context.get('cell_id')}--{context.get('candidate_id')}"
-    )
-    progress = progress if isinstance(progress, Mapping) else {}
-    first_observation_retained = progress.get("first_observation_retained") is True
-    candidate_policy_queried = progress.get("candidate_policy_queried") is True
-    query_attempted = candidate_policy_queried or progress.get("candidate_policy_query_attempted") is True
-    query_attempt = {
-        "candidate_policy_query_attempted": query_attempted,
-        "policy_response_status": "received" if candidate_policy_queried else "unproven" if query_attempted else "not_attempted",
-    }
-    candidate_action_returned = progress.get("candidate_action_returned") is True
-    action_applied = progress.get("candidate_action_applied") is True
-    violations = [
-        str(item)
-        for item in getattr(failure, "errors", ())
-        if str(item).startswith("candidate_action_joint_position_bounds_invalid")
-    ]
-    action_rejected = bool(
-        candidate_policy_queried
-        and candidate_action_returned
-        and not action_applied
-        and progress.get("phase") == "policy_action_bounds_refused"
-        and violations
-    )
-    failure_stage = (
-        "action_delivery_rejected"
-        if action_rejected
-        else "after_first_observation"
-        if first_observation_retained
-        else "before_first_observation"
-    )
-    suffix = "failure_evidence" if first_observation_retained else "failure_gap"
-    path = output_root / "episodes" / f"{episode_id}.{suffix}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    visual_evidence: dict[str, Any]
-    media_artifacts: list[dict[str, Any]] = []
-    if first_observation_retained:
-        finalizer = progress.get("_failure_media_finalizer")
-        if callable(finalizer):
-            try:
-                visual, artifacts = finalizer(
-                    failure_reason=f"{type(failure).__name__}:{safe_message}"
-                )
-                visual_evidence = dict(visual)
-                media_artifacts = [
-                    dict(item) for item in artifacts if isinstance(item, Mapping)
-                ]
-            except Exception as exc:  # noqa: BLE001 - preserve the primary failure
-                visual_evidence = {
-                    "status": "incomplete_after_first_observation",
-                    "media_gap": {
-                        "type": "after_first_observation_media_seal_failed",
-                        "reason": type(exc).__name__,
-                    },
-                }
-        else:
-            visual_evidence = {
-                "status": "incomplete_after_first_observation",
-                "media_gap": {
-                    "type": "after_first_observation_media_finalizer_missing",
-                    "reason": "policy_canary_episode_runner_failed",
-                },
-            }
-    else:
-        visual_evidence = {
-            "status": "unavailable_before_first_observation",
-            "media_gap": {
-                "type": "before_first_observation",
-                "reason": "policy_canary_episode_runner_failed",
-            },
-        }
-    raw_queries = [
-        dict(item)
-        for item in progress.get("candidate_policy_action_queries") or []
-        if isinstance(item, Mapping)
-    ]
-    commanded_actions = [
-        dict(item)
-        for item in progress.get("commanded_actions") or []
-        if isinstance(item, Mapping)
-    ]
-    action_rejection = None
-    if action_rejected:
-        action_rejection = {
-            "schema_version": "policy_canary_action_delivery_rejection.v1",
-            "status": "rejected_before_robot",
-            "reason": "hard_joint_limit_violation",
-            "violations": violations,
-            "clamping_performed": False,
-            "delivery_attempted": False,
-            "actions_reached_robot": False,
-            "rejection_digest": "",
-        }
-        action_rejection["rejection_digest"] = canonical_digest(
-            action_rejection, digest_field="rejection_digest"
-        )
-    if progress.get("media_integrity_failure"):
-        visual_evidence = {
-            **visual_evidence,
-            "status": "incomplete_after_first_observation",
-            "media_gap": {
-                "type": "after_first_observation_media_integrity_failed",
-                "reason": progress["media_integrity_failure"],
-            },
-        }
-    evidence_artifacts: dict[str, Any] = {}
-    media_root = output_root / "episodes"
-    if media_artifacts:
-        evidence_artifacts["frame_manifest"] = _bound_media_artifact(
-            output_root,
-            media_root=media_root,
-            artifacts=media_artifacts,
-            role="lossless_frame_manifest",
-            role_match=lambda name: "frame_manifest" in name,
-        )
-        evidence_artifacts["review_video"] = _bound_media_artifact(
-            output_root,
-            media_root=media_root,
-            artifacts=media_artifacts,
-            role="review_video",
-            role_match=lambda name: "video" in name,
-        )
-    if query_attempted:
-        evidence_artifacts["policy_query_receipt"] = _write_episode_json_artifact(
-            output_root,
-            episode_id=episode_id,
-            role="policy_query_receipt",
-            value={
-                **query_attempt,
-                "candidate_policy_queried": candidate_policy_queried,
-                "candidate_action_returned": candidate_action_returned,
-                "policy_request_artifacts": progress.get("policy_request_artifacts") or [],
-                "policy_queries": raw_queries,
-            },
-        )
-    if candidate_action_returned:
-        evidence_artifacts["action_sequence"] = _write_episode_json_artifact(
-            output_root,
-            episode_id=episode_id,
-            role="action_sequence",
-            value=raw_queries,
-        )
-    if action_rejection is not None:
-        evidence_artifacts["action_delivery_readback"] = _write_episode_json_artifact(
-            output_root,
-            episode_id=episode_id,
-            role="action_delivery_readback",
-            value=action_rejection,
-        )
-    value = {
-        "schema_version": "policy_canary_episode_failure_evidence.v2",
-        "status": "blocked",
-        "run_kind": "internal_policy_canary",
-        "claim_ceiling": "diagnostic_policy_execution",
-        "candidate_id": context.get("candidate_id"),
-        "cell_id": context.get("cell_id"),
-        "seed": context.get("seed"),
-        "episode_failure_stage": failure_stage,
-        "scientific_reset": progress.get("scientific_reset"),
-        "prestart_readiness": progress.get("prestart_readiness"),
-        "policy_inference_evidence": progress.get("policy_inference_evidence"),
-        "first_observation_retained": first_observation_retained,
-        "reset_state_digest": canonical_digest(
-            {
-                "resolved_scenario": context.get("resolved_scenario"),
-                "seed": context.get("seed"),
-                "execution_performed": first_observation_retained,
-            }
-        ),
-        "candidate_policy_queried": candidate_policy_queried,
-        **query_attempt,
-        "candidate_action_returned": candidate_action_returned,
-        "candidate_action_shape_validated": (
-            progress.get("candidate_action_shape_validated") is True
-        ),
-        "candidate_action_finite_validated": (
-            progress.get("candidate_action_finite_validated") is True
-        ),
-        "candidate_action_bounds_validated": (
-            progress.get("candidate_action_bounds_validated") is True
-        ),
-        "actions_reached_robot": action_applied,
-        "arm_moved": False,
-        "policy_outcome_interpretable": False,
-        "failure_type": type(failure).__name__,
-        "typed_harness_failure": type(failure).__name__,
-        "failure_message": safe_message or None,
-        "failure_message_digest": _digest(raw_message),
-        "candidate_policy_action_queries": raw_queries,
-        "commanded_actions": commanded_actions,
-        "action_delivery_rejection": action_rejection,
-        "visual_evidence": visual_evidence,
-        "lossless_frame_manifest_digest": (
-            _digest(visual_evidence) if first_observation_retained else None
-        ),
-        "review_video_digest": (
-            _digest(media_artifacts) if media_artifacts else None
-        ),
-        "returned_action_sequence_digest": (
-            _digest(raw_queries) if candidate_action_returned else None
-        ),
-        "action_delivery_readback_digest": (
-            action_rejection["rejection_digest"]
-            if action_rejection is not None
-            else None
-        ),
-        "evidence_artifacts": evidence_artifacts,
-        "episode": {
-            **query_attempt,
-            "episode_id": episode_id,
-            "policy_request_artifacts": progress.get("policy_request_artifacts") or [],
-            "scientific_reset": progress.get("scientific_reset"),
-            "candidate_policy_action_queries": raw_queries,
-            "commanded_actions": commanded_actions,
-            "visual_evidence": visual_evidence,
-            "media_artifacts": media_artifacts,
-            "motion_evidence": {
-                "actions_reached_robot": action_applied,
-                "arm_moved": False,
-                "policy_outcome_interpretable": False,
-                "action_delivery_rejection": action_rejection,
-            },
-            "score": {
-                "status": "not_scored",
-                "blockers": ["policy_outcome_uninterpretable"],
-            },
-        },
-        "gap_digest": "",
-    }
-    value["gap_digest"] = canonical_digest(value, digest_field="gap_digest")
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return path
 
 
-def _write_episode_json_artifact(
-    output_root: Path, *, episode_id: str, role: str, value: Any
-) -> dict[str, Any]:
-    path = output_root / "episodes" / f"{episode_id}.{role}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return {
-        "role": role,
-        "relative_path": path.relative_to(output_root).as_posix(),
-        "size_bytes": path.stat().st_size,
-        "sha256": _sha256(path),
-    }
 
 
-def _write_indexed_telemetry(
-    output_root: Path, episodes: list[Mapping[str, Any]]
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    rows = [
-        {
-            "run_kind": episode.get("run_kind"),
-            "candidate_id": episode.get("candidate_id"),
-            "cell_id": episode.get("cell_id"),
-            "seed": episode.get("seed"),
-            "telemetry": episode.get("telemetry"),
-        }
-        for episode in episodes
-    ]
-    telemetry_path = output_root / "policy_canary_telemetry.jsonl"
-    telemetry_path.write_text(
-        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
-        encoding="utf-8",
-    )
-    channels = {
-        "observations": sum(bool((row.get("telemetry") or {}).get("channels")) for row in rows),
-        "episode_envelopes": len(rows),
-    }
-    schema = {
-        "schema_version": "policy_canary_telemetry_schema.v1",
-        "timebase": "unix_ns",
-        "channels": {
-            "episode_envelopes": "policy_canary_episode_telemetry.v1",
-            "observations": "native_policy_observation_manifest_reference.v1",
-        },
-    }
-    schema_path = output_root / "policy_canary_telemetry_schema.json"
-    schema_path.write_text(json.dumps(schema, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    primary_path = telemetry_path
-    primary_format = "typed_jsonl"
-    mcap_gap: str | None = None
-    try:
-        from mcap.writer import Writer
-
-        mcap_path = output_root / "policy_canary_telemetry.mcap"
-        with mcap_path.open("wb") as stream:
-            writer = Writer(stream)
-            writer.start(profile="blueprint-policy-canary", library="blueprint_pipeline")
-            schema_id = writer.register_schema(
-                name="policy_canary_episode_telemetry.v1",
-                encoding="jsonschema",
-                data=json.dumps(schema, sort_keys=True).encode("utf-8"),
-            )
-            channel_id = writer.register_channel(
-                topic="/blueprint/policy_canary/episode",
-                message_encoding="json",
-                schema_id=schema_id,
-            )
-            for row in rows:
-                telemetry = row.get("telemetry") or {}
-                timestamp = int(telemetry.get("completed_at_unix_ns") or time.time_ns())
-                writer.add_message(
-                    channel_id=channel_id,
-                    log_time=timestamp,
-                    publish_time=timestamp,
-                    data=json.dumps(row, sort_keys=True).encode("utf-8"),
-                )
-            writer.finish()
-        primary_path = mcap_path
-        primary_format = "mcap"
-    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
-        mcap_gap = f"mcap_unavailable:{type(exc).__name__}"
-    index = {
-        "schema_version": "policy_canary_telemetry_index.v1",
-        "format": primary_format,
-        "artifact": {
-            "path": primary_path.name,
-            "size_bytes": primary_path.stat().st_size,
-            "sha256": _sha256(primary_path),
-        },
-        "schema": {
-            "path": schema_path.name,
-            "size_bytes": schema_path.stat().st_size,
-            "sha256": _sha256(schema_path),
-        },
-        "channel_message_counts": channels,
-        "message_count": len(rows),
-        "attachments": [],
-        "calibration_references": [
-            (row.get("telemetry") or {}).get("camera_calibration") for row in rows
-        ],
-        "mcap_gap": mcap_gap,
-        "evidence_gaps": sorted(
-            {
-                gap
-                for row in rows
-                for gap in (row.get("telemetry") or {}).get("evidence_gaps", [])
-            }
-        ),
-        "index_digest": "",
-    }
-    index["index_digest"] = canonical_digest(index, digest_field="index_digest")
-    index_path = output_root / "policy_canary_telemetry_index.json"
-    index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    import mimetypes
-
-    artifacts = []
-    seen: set[str] = set()
-    for path in sorted(output_root.rglob("*")):
-        # The parent process owns this file and keeps the child's stdout stream
-        # open until after the child has sealed its result.  Including it here
-        # races the final interpreter-shutdown writes and produces an inventory
-        # entry whose size/digest no longer match by delivery time.
-        if (
-            not path.is_file()
-            or path.name == PROVIDER_RESULT_FILENAME
-            or path.name == "worker_console.log"
-        ):
-            continue
-        relative = path.relative_to(output_root).as_posix()
-        if relative in seen:
-            continue
-        seen.add(relative)
-        lowered = relative.lower()
-        typed_evidence_role = next(
-            (
-                evidence_role
-                for evidence_role in (
-                    "reset_state",
-                    "policy_query_receipt",
-                    "action_sequence",
-                    "action_delivery_readback",
-                    "state_trace",
-                    "contact_force_trace",
-                    "task_object_trajectory",
-                    "score_receipt",
-                    "episode_receipt",
-                )
-                if f".{evidence_role}.json" in lowered
-            ),
-            None,
-        )
-        role = (
-            "indexed_episode_telemetry"
-            if path in {primary_path, telemetry_path}
-            else "telemetry_schema"
-            if path == schema_path
-            else "telemetry_index"
-            if path == index_path
-            else "review_video"
-            if path.suffix.lower() in {".mp4", ".mov", ".webm"}
-            else "lossless_frame_manifest"
-            if "frame" in lowered and "manifest" in lowered
-            else "exact_policy_request"
-            if "/policy-requests/" in lowered and path.suffix.lower() == ".json"
-            else typed_evidence_role
-            if typed_evidence_role is not None
-            else "episode_evidence"
-            if "episode" in lowered
-            else "runtime_supporting_evidence"
-        )
-        artifacts.append(
-            {
-                "role": role,
-                "media_type": mimetypes.guess_type(path.name)[0]
-                or "application/octet-stream",
-                "relative_path": relative,
-                "size_bytes": path.stat().st_size,
-                "sha256": _sha256(path),
-            }
-        )
-    return index, artifacts
 
 
 def _prefix_episode_evidence_paths(
@@ -1457,11 +1254,11 @@ def _aggregate_isolated_cell_results(
         "matrix_digest": inputs.get("matrix_digest") or _digest(inputs["cells"]),
         "result_digest": "",
     }
-    telemetry_index, telemetry_artifacts = _write_indexed_telemetry(
+    telemetry_index, telemetry_artifacts = _write_policy_canary_telemetry(
         output_root, result["episodes"]
     )
     result["telemetry"] = telemetry_index
-    from .policy_paired_summary import paired_summary
+    from blueprint_pipeline.policy_paired_summary import paired_summary
     result["frozen_cells"] = [{key: cell[key] for key in ("cell_id", "seed", "family", "partition", "cell_spec_digest", "resolved_scenario_digest") if key in cell} for cell in inputs["cells"]]
     result["paired_diagnostic_summary"] = paired_summary(result["episodes"], candidate_ids=candidate_ids,
         planned_cells=result["frozen_cells"])
@@ -1706,6 +1503,15 @@ def _run_selected_cell(
     observation_integrity_authority = (
         _read(authority_path) if authority_path.is_file() else None
     )
+    static_preflight = preflight_policy_canary_static_inputs(
+        inputs=inputs, authority=authority, base_scene_plan=base_scene_plan,
+        construction=construction, packet_request=packet_request, specs=specs,
+        observation_integrity_authority=observation_integrity_authority,
+    )
+    static_preflight["result_digest"] = canonical_digest(static_preflight, digest_field="result_digest")
+    _seal_result(result_path=output_root / "policy_canary_static_startup_preflight.v1.json", result=static_preflight)
+    if static_preflight["status"] != "passed":
+        raise RuntimeError("policy_canary_static_startup_preflight_failed:" + ",".join(static_preflight["blockers"]))
 
     def open_session(_inputs: Mapping[str, Any]) -> dict[str, Any]:
         simulation_app, launch = bound_runtime.launch_isaac(
@@ -1714,6 +1520,10 @@ def _run_selected_cell(
             appearance_render_path=appearance_render_backend["launch_render_path"],
         )
         current_session["simulation_app"] = simulation_app
+        if base_scene_plan.get("task_spec", {}).get("astra_asset_adoption") is not None:
+            if bound_runtime.begin_native_asset_monitor is None:
+                raise RuntimeError("policy_canary_native_asset_monitor_unavailable")
+            current_session["native_asset_monitor"] = bound_runtime.begin_native_asset_monitor()
         return {
             "simulation_app": simulation_app,
             "launch": launch,
@@ -2136,15 +1946,13 @@ def _run_selected_cell(
         }
 
     def prepolicy_observation_gate(session: Mapping[str, Any]) -> dict[str, Any]:
-        if packet_request.get("wrist_camera_mount_registry") is not None:
+        cell = inputs["cells"][selected_cell_index]
+        scene_plan = _resolved_scene_plan(
+            base_scene_plan, cell, task_success_contract=inputs["task_success_contract"],
+        )
+        if policy_observation_gate_mode(packet_request, scene_plan) != "sealed_reference_and_human_review":
             if bound_runtime.prepolicy_camera_gate is None:
                 raise RuntimeError("policy_canary_runtime_camera_gate_unavailable")
-            cell = inputs["cells"][selected_cell_index]
-            scene_plan = _resolved_scene_plan(
-                base_scene_plan,
-                cell,
-                task_success_contract=inputs["task_success_contract"],
-            )
             dependencies = bound_runtime.preflight_dependency_matrix(
                 robot_id=str(scene_plan["robot"]["robot_id"])
             )
@@ -2172,6 +1980,16 @@ def _run_selected_cell(
                 cell_id=str(cell["cell_id"]),
                 appearance_renderer=dict(appearance_renderer),
             )
+            feasibility = None
+            if scene_plan.get("task_spec", {}).get("astra_asset_adoption") is not None:
+                if bound_runtime.native_asset_feasibility_gate is None:
+                    raise RuntimeError("policy_canary_native_asset_feasibility_gate_unavailable")
+                feasibility = dict(bound_runtime.native_asset_feasibility_gate(
+                    built=built, plan=scene_plan, monitor=current_session["native_asset_monitor"],
+                    output_root=output_root / "prepolicy_asset_feasibility"))
+                current_session["native_asset_feasibility_gate"] = feasibility
+                if feasibility.get("status") != "passed":
+                    return {**feasibility, "policy_observation_integrity_passed": False}
             gate = dict(
                 bound_runtime.prepolicy_camera_gate(
                     simulation_app=current_session["simulation_app"],
@@ -2181,6 +1999,14 @@ def _run_selected_cell(
                     output_root=output_root,
                 )
             )
+            if feasibility is not None:
+                gate["native_asset_feasibility"] = feasibility
+                gate["gate_digest"] = canonical_digest(gate, digest_field="gate_digest")
+                (output_root / "prepolicy_asset_feasibility/combined_observation_gate.json").write_text(
+                    json.dumps(gate, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            if gate.get("status") != "passed" or gate.get("policy_observation_integrity_passed") is not True:
+                current_session["policy_observation_runtime_gate"] = gate
+                return gate
             if bound_runtime.configure_post_gate_renderer is None:
                 raise RuntimeError(
                     "policy_canary_post_gate_renderer_guard_unavailable"
@@ -2258,7 +2084,7 @@ def _run_selected_cell(
         prepolicy_control_gate=prepolicy_control_gate,
     )
     result["appearance_render_backend"] = dict(appearance_render_backend)
-    telemetry_index, telemetry_artifacts = _write_indexed_telemetry(
+    telemetry_index, telemetry_artifacts = _write_policy_canary_telemetry(
         output_root, result["episodes"]
     )
     result["telemetry"] = telemetry_index

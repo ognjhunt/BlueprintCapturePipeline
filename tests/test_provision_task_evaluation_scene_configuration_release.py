@@ -4,6 +4,7 @@ import hashlib
 import io
 import os
 from pathlib import Path
+import pytest
 
 from scripts import provision_task_evaluation_scene_configuration_release as subject
 
@@ -116,8 +117,9 @@ def test_reconciliation_validates_every_candidate_before_mutating(
     assert not os.path.samestat(canonical.stat(), candidates[0].stat())
 
 
+@pytest.mark.parametrize("astra", [False, True])
 def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, astra: bool
 ) -> None:
     commit = "a" * 40
     calls: list[tuple[str, dict]] = []
@@ -166,6 +168,7 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
         content_agents_root=tmp_path / "content-agents-source",
         text_to_cad_root=tmp_path / "text-to-cad-source",
         multi_agent_cad_root=tmp_path / "multi-agent-cad-source",
+        astra_blender_archive_path=(tmp_path / "blender.tar.xz" if astra else None),
         readback=lambda path: path.read_bytes(),
         readback_actor="service-account:blueprint",
     )
@@ -178,6 +181,8 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
         "toolchain",
     ]
     assert calls[1][1]["vgg16_weights_path"] == vgg16_weights
+    assert calls[1][1]["python_runtime_profile"] == ("astra_asset_authoring" if astra else "base")
+    assert calls[2][1]["blender_archive_path"] == (tmp_path / "blender.tar.xz" if astra else None)
     assert result["status"] == "ready"
     assert result["scene_specific_artifacts_built"] is False
     assert result["provider_mutation_performed"] is False

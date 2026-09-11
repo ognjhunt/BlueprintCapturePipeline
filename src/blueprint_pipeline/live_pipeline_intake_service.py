@@ -129,10 +129,9 @@ from .task_evaluation_run_state import (
     TaskEvaluationRunStateError,
     TaskEvaluationRunStateStore,
 )
+from .live_pipeline_result_artifact_response import result_artifact_response
 from .live_pipeline_result_artifact_resolution import (
     TASK_EVALUATION_POLICY_CANARY_RESULT_ROOT_ENV,
-    TaskEvaluationResultDeliveryError,
-    resolve_live_pipeline_result_artifact,
 )
 from .task_evaluation_configured_scene_object_store import (
     TaskEvaluationConfiguredSceneObjectStoreError,
@@ -2966,29 +2965,10 @@ def create_app() -> FastAPI:
         dependencies=[Depends(_require_admission)],
     )
     async def read_task_evaluation_result_artifact(run_id: str, artifact_id: str) -> FileResponse:
-        manifest_path = _manifest_path().resolve()
-        try:
-            path, record = resolve_live_pipeline_result_artifact(
-                legacy_state_root=_task_evaluation_run_root(manifest_path),
-                policy_canary_result_root=os.getenv(
-                    TASK_EVALUATION_POLICY_CANARY_RESULT_ROOT_ENV
-                ),
-                run_id=run_id,
-                artifact_id=artifact_id,
-            )
-        except (TaskEvaluationResultDeliveryError, ValueError) as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        disposition = "inline" if record.get("content_type") == "video/mp4" else "attachment"
-        return FileResponse(
-            path,
-            media_type=str(record.get("content_type") or "application/octet-stream"),
-            filename=path.name,
-            content_disposition_type=disposition,
-            headers={
-                "Cache-Control": "private, no-store",
-                "X-Content-Type-Options": "nosniff",
-                "X-Blueprint-Artifact-SHA256": str(record["sha256"]),
-            },
+        return await result_artifact_response(
+            legacy_state_root=_task_evaluation_run_root(_manifest_path().resolve()),
+            policy_canary_result_root=os.getenv(TASK_EVALUATION_POLICY_CANARY_RESULT_ROOT_ENV),
+            run_id=run_id, artifact_id=artifact_id,
         )
 
     @app.post(

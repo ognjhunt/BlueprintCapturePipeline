@@ -72,6 +72,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(_INPUTS, "container", "blueprint", "immutable and derived launch inputs"),
     StorageRoot("/var/lib/blueprint-staging", "staging", "blueprint", "isolated staging intake"),
     # --- evidence that live services read; never evicted or offloaded
+    StorageRoot(f"{_CONTROL_PLANE}/agent-execution", "evidence_hot", "blueprint", "durable agent task and operation journals with inference budget evidence"),
     StorageRoot(f"{_CONTROL_PLANE}/gpu_spend_guard", "evidence_hot", "blueprint", "spend ledger, billing audit, admission lock"),
     StorageRoot(f"{_CONTROL_PLANE}/deploy-receipts", "evidence_hot", "root", "deploy receipts"),
     StorageRoot(f"{_CONTROL_PLANE}/standing-authorizations", "evidence_hot", "blueprint", "standing launch authorizations"),
@@ -79,6 +80,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/live_pipeline_control_plane_manifest.json", "evidence_hot", "blueprint", "control-plane manifest"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-reconciliation", "evidence_hot", "blueprint", "reconciler reports"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-supervision", "evidence_hot", "blueprint", "launch supervisor reports"),
+    StorageRoot(f"{_CONTROL_PLANE}/completed-replay-cache-retention", "evidence_hot", "root", "completed replay cache retention plans and receipts"),
+    StorageRoot(f"{_CONTROL_PLANE}/scene-project-spend", "evidence_hot", "blueprint", "scene project spend reconciliation evidence"),
     StorageRoot(f"{_CONTROL_PLANE}/storage-gc", "evidence_hot", "blueprint", "storage reclaim reports"),
     StorageRoot(f"{_CONTROL_PLANE}/episode-interpretation-rights", "evidence_hot", "blueprint", "human-approved per-episode disclosure rights"),
     # Digest-bound SAM server profiles registered once per release and read by
@@ -87,6 +90,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_INPUTS}/sam31-profile-registry", "evidence_hot", "blueprint", "content-addressed SAM server profile registry"),
     StorageRoot("/var/lib/blueprint/production-gpu-campaigns.sqlite", "evidence_hot", "blueprint", "gpu campaign ledger"),
     StorageRoot("/var/lib/blueprint/production-gpu-worker-pool.sqlite", "evidence_hot", "blueprint", "gpu worker pool ledger"),
+    StorageRoot(f"{_INPUTS}/task-evaluation-terminal-results", "evidence_hot", "blueprint", "sealed terminal result indexes and lineage"),
     # --- sealed run evidence; offloadable after the hot window
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-runs", "evidence_cold", "blueprint", "launch run directories"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-policy-canaries", "evidence_cold", "blueprint", "policy canary run directories"),
@@ -103,6 +107,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-episode-compilations", "work", "blueprint", "compilation queue"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-activations", "work", "blueprint", "activation queue"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-policy-canary-dispatches", "work", "blueprint", "canary dispatch queue"),
+    StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-scene-intents", "work", "blueprint", "owner scene intent queue governed by its lifecycle"),
+    StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-scene-configuration-activation-intents", "work", "blueprint", "configured-scene activation intent queue"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-scene-constructions", "work", "blueprint", "scene construction queue"),
     StorageRoot(f"{_CONTROL_PLANE}/scene-object-discoveries", "work", "blueprint", "scene object discovery queue"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-terminal-resource-releases", "work", "blueprint", "terminal resource release queue"),
@@ -110,6 +116,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-configured-controls", "work", "blueprint", "configured controls progression state"),
     StorageRoot(f"{_CONTROL_PLANE}/capture-reconstruction-queue", "work", "blueprint", "capture reconstruction queue"),
     StorageRoot(f"{_CONTROL_PLANE}/capture-reconstruction-derived", "cache", "blueprint", "derived reconstruction bytes"),
+    StorageRoot(f"{_CONTROL_PLANE}/result-artifact-cache", "cache", "blueprint", "download payload cache rehydrated from verified remote artifacts under disk reservations"),
     StorageRoot(f"{_CONTROL_PLANE}/profile-install-staging", "cache", "blueprint", "reproducible launch-profile installation staging"),
     StorageRoot(f"{_CONTROL_PLANE}/policy-canary-presubmission", "cache", "blueprint", "reproducible policy-canary presubmission packets"),
     StorageRoot("/var/lib/blueprint/pubsub-handoffs", "work", "blueprint", "pubsub handoff spool"),

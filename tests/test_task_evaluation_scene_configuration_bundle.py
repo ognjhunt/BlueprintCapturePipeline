@@ -469,6 +469,41 @@ def _bind_real_stage_three_configuration(
     return payload
 
 
+def test_astra_authoring_refuses_unsealed_runtime_before_bundle_creation(tmp_path):
+    commit = "a" * 40
+    source = tmp_path / "source"
+    source.mkdir()
+    envelope_path = _envelope(source, commit)
+    _bind_real_stage_three_configuration(envelope_path, include_authority_denial=True)
+    envelope = json.loads(envelope_path.read_text())
+    reference = envelope["stage_configuration_references"][2]
+    path = Path(reference["materialized_path"])
+    config = json.loads(path.read_text())
+    config["authoring_backend"] = "astra_cad_blender_v1"
+    path.write_text(json.dumps(config))
+    reference.update(digest=_sha256(path), size_bytes=path.stat().st_size)
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    envelope_path.write_text(json.dumps(envelope))
+    output = tmp_path / "bundle"
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError,
+                       match="provider_python_runtime_invalid"):
+        build_scene_configuration_provider_bundle(
+            construction_envelope_path=envelope_path, toolchain_root=_toolchain(tmp_path / "toolchain", commit),
+            repository_root=_repo(tmp_path / "repo"), output_root=output, expected_source_commit=commit)
+    assert not output.exists()
+
+
+def test_astra_budget_minimum_preserves_completed_authoring_adoption():
+    fresh = authority_module._required_external_stage_minima(
+        diagnostic_only=True, diagnostic_bootstrap_mode=None, carried_stage_count=2,
+        authoring_backend="astra_cad_blender_v1")
+    adopted = authority_module._required_external_stage_minima(
+        diagnostic_only=True, diagnostic_bootstrap_mode=None, carried_stage_count=3,
+        authoring_backend="astra_cad_blender_v1")
+    assert fresh == {"artifixer_semantic_teacher": 0.0, "artifixer_visual_review": 0.0, "content_agents": 5.0}
+    assert all(value == 0.0 for value in adopted.values())
+
+
 def test_bundle_refuses_invalid_stage_configuration_before_output_creation(
     tmp_path: Path,
 ) -> None:

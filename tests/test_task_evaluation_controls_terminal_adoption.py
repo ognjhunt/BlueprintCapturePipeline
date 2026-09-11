@@ -47,6 +47,7 @@ def test_delivered_scene_is_automatically_reprovisioned_without_reconstruction(r
         'project_spend_current_path':str(pointer),'openai_project_id':'project','openai_api_key_id':'key'}
     catalog={'bindings':{owner_doc['request']['task'].get('robot_binding_id'):binding}}
     monkeypatch.setattr(worker, '_configured_scene_preparation_link', lambda **kw: {'result_filename':'retained-preparation.json'})
+    monkeypatch.setattr(producer, '_preparation_context', lambda **kw: {})
     observed=[]
     def provision(**kwargs):
         observed.append(kwargs)

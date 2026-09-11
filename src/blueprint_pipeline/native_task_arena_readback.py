@@ -19,26 +19,65 @@ class NativeTaskArenaReadbackError(ValueError):
         super().__init__(";".join(self.errors))
 
 
-def _native_list(value: Any, *, error: str) -> Any:
+def _read_marker_pose_world(scene: Any) -> list[float]:
+    """Read the static rendered marker from live USD, never the requested pose."""
+    import omni.usd
+    from pxr import Usd, UsdGeom
+
+    paths = scene.env_prim_paths
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(paths[0] + "/policy_target_marker")
+    if not prim.IsValid():
+        raise NativeTaskArenaReadbackError(["native_task_arena_target_marker_missing"])
+    matrix = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    position = matrix.ExtractTranslation()
+    rotation = matrix.ExtractRotationQuat()
+    pose = [*position, *rotation.GetImaginary(), rotation.GetReal()]
+    if not all(math.isfinite(float(value)) for value in pose):
+        raise NativeTaskArenaReadbackError(["native_task_arena_target_marker_pose_invalid"])
+    return [float(value) for value in pose]
+
+
+def _native_list_with_storage(value: Any, *, error: str) -> tuple[Any, dict[str, str]]:
+    """Keep the real scalar storage dtype through Warp's tensor conversion."""
     if value is None:
         raise NativeTaskArenaReadbackError([error])
     module = type(value).__module__
+    source_dtype = str(getattr(value, "dtype", ""))
+    conversion = "none"
     if module == "warp" or module.startswith("warp."):
         import warp as wp
 
         value = wp.to_torch(value)
+        conversion = "warp_to_torch"
     if hasattr(value, "detach"):
         value = value.detach().cpu()
+        conversion = "detach_cpu" if conversion == "none" else conversion + "_detach_cpu"
+    # Isaac Lab ProxyArray forwards detach() to its Torch view, whereas its
+    # dtype attribute belongs to the Warp transform container. Capture the
+    # scalar dtype after conversion, before tolist() erases it.
+    storage_dtype = str(getattr(value, "dtype", ""))
+    storage = {"source_backend": module, "source_dtype": source_dtype,
+               "conversion": conversion, "storage_dtype": storage_dtype,
+               "canonical_scalar_dtype": storage_dtype.removeprefix("torch.")}
     if hasattr(value, "tolist"):
         value = value.tolist()
-    return value
+    return value, storage
+
+
+def _native_list(value: Any, *, error: str) -> Any:
+    return _native_list_with_storage(value, error=error)[0]
+
+
+def _first_environment_with_storage(value: Any, *, error: str) -> tuple[list[Any], dict[str, str]]:
+    rows, storage = _native_list_with_storage(value, error=error)
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], list):
+        raise NativeTaskArenaReadbackError([error])
+    return rows[0], storage
 
 
 def _first_environment(value: Any, *, error: str) -> list[Any]:
-    rows = _native_list(value, error=error)
-    if not isinstance(rows, list) or not rows or not isinstance(rows[0], list):
-        raise NativeTaskArenaReadbackError([error])
-    return rows[0]
+    return _first_environment_with_storage(value, error=error)[0]
 
 
 def _force_vectors(value: Any, *, sensor_id: str) -> list[list[float]]:
@@ -638,6 +677,7 @@ def read_native_task_arena_scenario_parameters(
         tolerance = float(application["application_tolerance"])
         expected = application["expected_native_value"]
         storage_comparison = None
+        native_storage = None
         if kind.startswith("task_subject_root_"):
             if scene is None:
                 raise NativeTaskArenaReadbackError(
@@ -651,11 +691,11 @@ def read_native_task_arena_scenario_parameters(
                     [f"native_task_arena_scenario_asset_missing:{runtime_name}"]
                 ) from exc
             native_pose = getattr(getattr(asset, "data", None), "root_pose_w", None)
-            pose = _first_environment(
+            pose, native_storage = _first_environment_with_storage(
                 native_pose,
                 error=f"native_task_arena_scenario_root_pose_missing:{runtime_name}",
             )
-            dtype = str(getattr(native_pose, "dtype", ""))
+            dtype = native_storage["canonical_scalar_dtype"]
             if kind == "task_subject_root_position_y_m":
                 observed: Any = float(pose[1])
                 error = abs(observed - float(expected))
@@ -738,6 +778,7 @@ def read_native_task_arena_scenario_parameters(
                 "passed": (storage_comparison["absolute_error_stored_value"]
                            if storage_comparison is not None else error) <= tolerance,
                 **({"native_storage_comparison": storage_comparison} if storage_comparison is not None else {}),
+                **({"native_storage_provenance": native_storage} if native_storage is not None else {}),
             }
         )
     return {
@@ -1037,6 +1078,8 @@ class NativeRigidTaskArenaReadback:
                 *[float(value) for value in native_destination_pose[:3]],
                 *_native_xyzw_to_contract_xyzw(native_destination_pose[3:7]),
             ]
+        elif (self._built.plan.get("task_spec") or {}).get("visible_target_marker") is not None:
+            destination_pose = _read_marker_pose_world(scene)
         contact_peaks: dict[str, float] = {}
         for logical_sensor_id in (
             "task_robot_contact",

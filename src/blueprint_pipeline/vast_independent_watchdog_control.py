@@ -296,6 +296,24 @@ def _exact_vast_instance_live(value: Mapping[str, Any], instance_id: int) -> boo
     )
 
 
+def validate_independent_vast_watchdog_names(
+    *, pod_name_prefix: str, resource_name_exact: str | None = None
+) -> tuple[str, str]:
+    """Share the exact launch/watchdog identity check with allocation preflight."""
+    prefix_base = str(pod_name_prefix or "").strip()
+    exact_name = str(resource_name_exact or "").strip()
+    if not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}-", prefix_base):
+        raise ValueError("independent_vast_watchdog_prefix_invalid")
+    if exact_name and not re.fullmatch(
+        r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", exact_name
+    ):
+        raise ValueError("independent_vast_watchdog_exact_resource_name_invalid")
+    from .groot_oscar_runpod_watchdog import CANARY_NAME_PREFIXES
+    if not (exact_name or prefix_base).startswith(CANARY_NAME_PREFIXES):
+        raise ValueError("watchdog_pod_name_prefix_not_canary_scoped")
+    return prefix_base, exact_name
+
+
 def arm_independent_vast_watchdog(
     *,
     job_dir: Path,
@@ -310,15 +328,10 @@ def arm_independent_vast_watchdog(
     """Start a detached name-bound watchdog and prove it is armed before create."""
 
     out_dir = job_dir / WATCHDOG_DIR_NAME
+    prefix_base, exact_name = validate_independent_vast_watchdog_names(
+        pod_name_prefix=pod_name_prefix, resource_name_exact=resource_name_exact
+    )
     ensure_dir(out_dir)
-    prefix_base = str(pod_name_prefix or "").strip()
-    exact_name = str(resource_name_exact or "").strip()
-    if not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}-", prefix_base):
-        raise ValueError("independent_vast_watchdog_prefix_invalid")
-    if exact_name and not re.fullmatch(
-        r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", exact_name
-    ):
-        raise ValueError("independent_vast_watchdog_exact_resource_name_invalid")
     prefix = exact_name or f"{prefix_base}{_safe_suffix(generated_at)}-"
     if int(max_live_minutes) < 2:
         blocked = {

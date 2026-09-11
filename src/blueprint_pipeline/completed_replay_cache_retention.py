@@ -95,13 +95,15 @@ def completed_report(root):
     return None
 
 
-def active_reference(root, *, process_root=Path("/proc")):
+def active_reference(root, *, process_root=Path("/proc"), ignored_process_ids=()):
     """Read process references without ever returning or storing environment values."""
     if not process_root.is_dir():
         raise ValueError("replay_cache_process_inventory_unavailable")
     needle = str(root).encode()
     for process in process_root.iterdir():
         if not process.name.isdigit():
+            continue
+        if int(process.name) in ignored_process_ids:
             continue
         for name in ("cmdline", "environ"):
             try:

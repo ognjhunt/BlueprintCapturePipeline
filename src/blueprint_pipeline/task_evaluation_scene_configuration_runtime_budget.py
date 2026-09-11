@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -56,6 +57,65 @@ MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD = 4.8
 MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD = 0.96
 MIN_CONTENT_AGENTS_SPEND_USD = 0.2
 MIN_EXTERNAL_SERVICE_SPEND_USD = 5.96
+MIN_ASTRA_AUTHORING_SPEND_USD = 5.0
+MAX_ASTRA_AUTHORING_SPEND_USD = 15.0
+
+
+@dataclass(frozen=True)
+class SceneConfigurationBudgetProfile:
+    """Quoting/admission limits, never an owner or project spend authorization."""
+    backend: str
+    content_agents_minimum: float
+    content_agents_maximum: float
+    external_maximum: float
+    attempt_maximum: float
+    default_content_agents_cap: float
+
+    def stage_caps(self, authoring_max_cost_usd: float | None = None) -> dict[str, float]:
+        cap = self.default_content_agents_cap if authoring_max_cost_usd is None else authoring_max_cost_usd
+        if (isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap)
+                or not self.content_agents_minimum <= cap <= self.content_agents_maximum):
+            raise ValueError("scene_configuration_authoring_spend_invalid")
+        values = {"artifixer_semantic_teacher": MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
+                  "artifixer_visual_review": MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
+                  "content_agents": float(cap)}
+        if sum(values.values()) > self.external_maximum + 1e-9:
+            raise ValueError("scene_configuration_external_spend_invalid")
+        return values
+
+
+def scene_configuration_budget_profile(backend: str = "content_agents") -> SceneConfigurationBudgetProfile:
+    """Select only explicit supported backends; absent old declarations stay legacy."""
+    if backend == "content_agents":
+        return SceneConfigurationBudgetProfile(backend, MIN_CONTENT_AGENTS_SPEND_USD, 5.0,
+            MAX_EXTERNAL_SERVICE_SPEND_USD, MAX_ATTEMPT_SPEND_USD,
+            round(MAX_EXTERNAL_SERVICE_SPEND_USD - MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+                  - MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD, 6))
+    if backend != "astra_cad_blender_v1":
+        raise ValueError("scene_configuration_authoring_backend_invalid")
+    maximum_external = round(MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
+                             + MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD + MAX_ASTRA_AUTHORING_SPEND_USD, 6)
+    return SceneConfigurationBudgetProfile(backend, MIN_ASTRA_AUTHORING_SPEND_USD,
+        MAX_ASTRA_AUTHORING_SPEND_USD, maximum_external,
+        round(MAX_PROVIDER_COMPUTE_SPEND_USD + maximum_external, 6), MIN_ASTRA_AUTHORING_SPEND_USD)
+
+
+def scene_configuration_budget_profile_contract() -> dict[str, Any]:
+    """Cross-runtime profile data; selecting a profile grants no spend authority."""
+    profiles = {}
+    for backend in ("content_agents", "astra_cad_blender_v1"):
+        profile = scene_configuration_budget_profile(backend)
+        default_external = round(sum(profile.stage_caps().values()), 6)
+        profiles[backend] = {"authoring_minimum": profile.content_agents_minimum,
+            "authoring_maximum": profile.content_agents_maximum, "external_maximum": profile.external_maximum,
+            "attempt_maximum": profile.attempt_maximum, "default_stage_caps": profile.stage_caps(),
+            "default_external_cap": default_external,
+            "default_attempt_cap": round(MAX_PROVIDER_COMPUTE_SPEND_USD + default_external, 6)}
+    return {"schema_version": "task_evaluation_scene_configuration_budget_profiles.v1",
+            "creates_spend_authority": False, "parent_ttl_seconds": REQUIRED_PARENT_TTL_SECONDS,
+            "provider_compute_cap": MAX_PROVIDER_COMPUTE_SPEND_USD,
+            "semantic_teacher_minimum": MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
+            "visual_review_minimum": MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD, "profiles": profiles}
 
 PARENT_DEADLINE_EPOCH_ENV = "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH"
 OUTPUT_CLOSURE_RESERVE_SECONDS_ENV = (

@@ -820,3 +820,60 @@ def test_factory_rejects_an_ambiguous_gripper_probe() -> None:
             task_readback=None,
             to_tensor=lambda value: value,
         )
+
+
+def _uncapped_permitted_initial_support():
+    spec = _rigid_scoring_task_spec()
+    spec.update(collision_failure_minimum_force_n=1., start_pose_world=[1.1,2.1,.8,0.,0.,0.,1.],
+        minimum_lift_m=.1, reset_translation_tolerance_m=.002,
+        initial_source_support={'scene_prim_paths':['/Scene/cabinet'],
+            'contact_permission':'initial_pickup_until_first_separation_or_lift'},
+        task_success_contract={'criteria':{'temporal_invariants':{'maximum_task_contact_force_n':20.,
+            'forbidden_contact_classes':['robot_background','object_background']}}})
+    native = _RigidNativeReadback(task_initial_support_contact_peak_force_n=0.,task_support_contact_peak_force_n=0.)
+    environment = NativeRigidScoringEnvironment(environment=_RigidEpisodeEnvironment(),task_readback=native,task_spec=spec)
+    return environment,native
+
+
+def test_exact_permitted_initial_support_does_not_inherit_forbidden_contact_threshold():
+    environment,native = _uncapped_permitted_initial_support()
+    assert not environment.read_object_sample()['scene_collision_failure']
+    # Retained V27 book weight: first settling contact is11.732N, while the
+    # separately authored forbidden-contact threshold remains1N.
+    native.overrides.update(task_initial_support_contact_peak_force_n=11.732293128967285,
+                            task_scoring_pose_world=[1.1,2.1,.7980001,0.,0.,0.,1.])
+    sample = environment.read_object_sample()
+    assert sample['initial_source_support_contact_permitted']
+    assert not sample['initial_source_support_collision_failure']
+    assert not sample['scene_collision_failure']
+    assert sample['task_initial_support_contact_peak_force_n']==11.732293128967285
+    assert sample['task_scene_collision_peak_force_n']==0.
+    assert sample['collision_failure_minimum_force_n']==1.
+    assert 'object_background' not in sample['contact_classes_active']
+
+
+@pytest.mark.parametrize('channel,flag', [('task_scene_collision_peak_force_n','scene_collision_failure'),
+                                        ('robot_scene_contact_peak_force_n','robot_collision_failure')])
+def test_permitted_support_never_hides_a_two_newton_forbidden_collision(channel,flag):
+    environment,native = _uncapped_permitted_initial_support()
+    native.overrides.update(task_initial_support_contact_peak_force_n=11.732293128967285,**{channel:2.})
+    sample=environment.read_object_sample()
+    assert sample[flag] is True
+    assert sample['collision_failure_minimum_force_n']==1.
+
+
+@pytest.mark.parametrize('close_permission', ['separation','lift'])
+def test_uncapped_initial_support_becomes_forbidden_after_pickup(close_permission):
+    environment,native = _uncapped_permitted_initial_support()
+    native.overrides['task_initial_support_contact_peak_force_n']=11.732293128967285
+    assert not environment.read_object_sample()['scene_collision_failure']
+    if close_permission=='separation':
+        native.overrides['task_initial_support_contact_peak_force_n']=0.
+    else:
+        native.overrides['task_scoring_pose_world']=[1.1,2.1,.91,0.,0.,0.,1.]
+    assert not environment.read_object_sample()['initial_source_support_contact_permitted']
+    native.overrides.update(task_initial_support_contact_peak_force_n=11.732293128967285,
+                            task_scoring_pose_world=[1.1,2.1,.8,0.,0.,0.,1.])
+    returned=environment.read_object_sample()
+    assert returned['scene_collision_failure']
+    assert returned['task_scene_collision_peak_force_n']==11.732293128967285

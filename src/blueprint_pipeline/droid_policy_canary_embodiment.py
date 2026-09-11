@@ -83,7 +83,13 @@ def apply_droid_policy_canary_profile(plan: Mapping[str, Any]) -> dict[str, Any]
     task_spec = value.get("task_spec")
     if not isinstance(robot, dict) or not isinstance(task_spec, dict):
         raise ValueError("droid_policy_canary_scene_plan_invalid")
-    robot["joint_reset_positions_rad"] = dict(DROID_NATIVE_RESET_JOINTS_RAD)
+    start_binding = value.get("policy_canary_camera_start_configuration")
+    if start_binding is not None:
+        from .native_task_camera_start_configuration import validate_camera_start_configuration
+        start_binding = validate_camera_start_configuration(value, start_binding)
+        robot["joint_reset_positions_rad"] = dict(start_binding["joint_reset_positions_rad"])
+    else:
+        robot["joint_reset_positions_rad"] = dict(DROID_NATIVE_RESET_JOINTS_RAD)
     task_spec["prompt"] = concrete_droid_task_instruction(task_spec)
     target_position = task_spec.get("target_position_world_m")
     marker = (
@@ -121,12 +127,15 @@ def apply_droid_policy_canary_profile(plan: Mapping[str, Any]) -> dict[str, Any]
         },
         "preserve_official_policy_camera_calibration": value.get("operator_wrist_camera_aim") is None,
         "preserve_official_policy_camera_intrinsics": True,
-        "preserve_official_reset_joint_positions": True,
+        "preserve_official_reset_joint_positions": start_binding is None,
         "visible_target_marker": marker,
         "policy_camera_roles": ["external", "wrist"],
         "review_only_camera_roles": ["overview"],
         "profile_digest": "",
     }
+    if start_binding is not None:
+        profile["task_camera_start_configuration_digest"] = start_binding["configuration_digest"]
+        profile["reset_pose_source"] = "sealed_task_camera_start_configuration"
     profile["profile_digest"] = canonical_digest(
         profile, digest_field="profile_digest"
     )

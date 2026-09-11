@@ -12,6 +12,7 @@ from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_PATH = (Path(__file__).resolve().parents[2] / 'docs/schemas/'
                'task_evaluation_retained_scene_preparation.v1.schema.json')
+ASTRA_SCHEMA_PATH = SCHEMA_PATH.with_name('task_evaluation_retained_astra_scene_preparation.v1.schema.json')
 
 
 @dataclass(frozen=True)
@@ -37,13 +38,18 @@ LEGACY_REPAIR = ScenePreparationBudget(
 RETAINED_REPAIR = ScenePreparationBudget(
     'scene_preparation_27000_repair.v1', 27000, 4.8, .64, .2, 6., 12.,
     'ac689e03ab6a7c6fb598f855d4f5bc37b4f87d43')
+# Frozen independently of future live execution profiles. Its schema bytes,
+# rather than an invented source revision, identify this new retained contract.
+RETAINED_ASTRA = ScenePreparationBudget(
+    'scene_preparation_27000_astra.v1', 27000, 4.8, .96, 5., 20.76, 26.76, '')
 
 
-def retained_schema():
+def retained_schema(value=None):
     """Read the frozen scene-only schema rather than today's intake schema."""
     from .task_evaluation_launch_preparation_contract import TaskEvaluationLaunchPreparationContractError
     try:
-        schema = json.loads(SCHEMA_PATH.read_text())
+        path = ASTRA_SCHEMA_PATH if (value or {}).get('replacement_authoring_backend') == 'astra_cad_blender_v1' else SCHEMA_PATH
+        schema = json.loads(path.read_text())
     except (OSError, ValueError) as exc:
         raise TaskEvaluationLaunchPreparationContractError(
             'launch_preparation_retained_schema_unavailable') from exc
@@ -57,6 +63,8 @@ def retained_budget(value):
     """Select only enumerated administrative shapes after structural validation."""
     spend = value['spend']
     ttl = spend['hard_ttl_seconds']
+    if ttl == 27000 and value.get('replacement_authoring_backend') == 'astra_cad_blender_v1':
+        return RETAINED_ASTRA
     if ttl == 27000:
         return RETAINED_REPAIR
     if ttl == 25200:
@@ -72,6 +80,16 @@ def retained_budget(value):
 def retained_contract_identity(value):
     """Bind the recognized contract in new adoption records without changing parents."""
     budget = retained_budget(value)
+    if budget == RETAINED_ASTRA:
+        identity = {'schema_version': 'task_evaluation_retained_preparation_contract_identity.v2',
+            'request_schema_version': value['schema_version'],
+            'request_source_commit': value['expected_production_commit'],
+            'contract_id': budget.contract_id,
+            'schema_sha256': 'sha256:' + hashlib.sha256(ASTRA_SCHEMA_PATH.read_bytes()).hexdigest(),
+            'policy_source_path': 'docs/schemas/' + ASTRA_SCHEMA_PATH.name,
+            'new_execution_authorized': False, 'new_spend_authorized': False}
+        identity['contract_digest'] = canonical_digest(identity, digest_field='contract_digest')
+        return identity
     identity = {'schema_version': 'task_evaluation_retained_preparation_contract_identity.v1',
         'request_schema_version': value['schema_version'],
         'request_source_commit': value['expected_production_commit'],

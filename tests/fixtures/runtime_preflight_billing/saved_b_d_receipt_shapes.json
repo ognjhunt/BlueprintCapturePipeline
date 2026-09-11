@@ -1,0 +1,535 @@
+[
+  {
+    "instance_id": 50534312,
+    "original_root": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28b-flecks-retained-replay",
+    "original_sha256": {
+      "allocator-result.json": "sha256:4bb8e306811fa3b1a54a35df173a49d4178881d6925eb987d18698e05887a3aa",
+      "allocator/attempts/attempt_001/artifact_manifest.json": "sha256:4da8c50b8ffb8014b4a0e6a33f34226d508f2a69a15cb71dab4def7a2041ed09",
+      "allocator/attempts/attempt_001/independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json": "sha256:80fc25c3e225d82e43f62ab17ce27196deff1fca0fa64546740870aaa0432276",
+      "allocator/attempts/attempt_001/object_store_staging/wam_provider_object_store_cleanup.json": "sha256:6ee1762767a735e10a2f30b3c34aede2151043f5337f0ad4dfd79238e01e07ad",
+      "allocator/attempts/attempt_001/object_store_staging/wam_provider_object_store_staging_manifest.json": "sha256:1ae4feeb993f5bf845968f9b31bf5bfeaafef5b74b6caaf2f0ec66250eb1f1fd",
+      "allocator/attempts/attempt_001/vast_provider_run/vast_provider_adapter_result.json": "sha256:78afdfb9634d973bd0ec6b60e5f7ccbc78e69cbc23b8171816098adbd3345c28",
+      "allocator/attempts/attempt_001/vast_provider_run/vast_startup_probe_manifest.json": "sha256:01400a31e703886c37fe82f2c98988b2248b38e0734b73dceb6ddf8c84ac0dfa",
+      "allocator/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json": "sha256:b044a5f996309e22e424939b1c82a1292ce54a8cb24b6415bd7c63833d343ab9",
+      "frozen-bundle/composition_provider_bundle_receipt.json": "sha256:af092e3dc4457f8025c3391fb37b51d9673bf98cde79fc1d4bcc8f2d7ec7a9ae",
+      "operator-diagnostic-authority.json": "sha256:98a79071d676039b6362ae4b52adcf65f9d4230bb4181cdcf97efb8987a001fc"
+    },
+    "records": {
+      "allocator-result.json": {
+        "adapter_result_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28b-flecks-retained-replay/allocator/attempts/attempt_001/vast_provider_run/vast_provider_adapter_result.json",
+        "all_staged_objects_absent": true,
+        "artifact_manifest_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28b-flecks-retained-replay/allocator/attempts/attempt_001/artifact_manifest.json",
+        "attempt_number": 1,
+        "attempt_root": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28b-flecks-retained-replay/allocator/attempts/attempt_001",
+        "bundle_sha256": "sha256:98ee649ab00ba2bc4c12a903c8b5ae0cd496c12dbde52c504343f1de29ff4619",
+        "candidate_policy_query_expected": false,
+        "continuing_spend_from_this_run": false,
+        "estimated_cost_usd": 0.14025,
+        "hard_cap_usd": 0.75,
+        "hard_ttl_seconds": 1800,
+        "independent_watchdog": {
+          "generated_at": "2026-09-10T23:43:25.536981+00:00",
+          "instance_ids": [
+            50534312
+          ],
+          "provider_absence_confirmed": true,
+          "provider_mutations_performed": 0,
+          "raw_secret_values_recorded": false,
+          "schema_version": "vast_independent_watchdog_handoff.v1",
+          "status": "provider_terminal",
+          "watchdog_armed_before_allocation": true,
+          "watchdog_process_exit_code": 0,
+          "watchdog_retention_liveness_confirmed": false
+        },
+        "object_store_cleanup_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28b-flecks-retained-replay/allocator/attempts/attempt_001/object_store_staging/wam_provider_object_store_cleanup.json",
+        "protocol_digest": null,
+        "provider_closeout": {
+          "adapter_result": {
+            "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28b-flecks-retained-replay/allocator/attempts/attempt_001/vast_provider_run/vast_provider_adapter_result.json",
+            "sha256": "sha256:78afdfb9634d973bd0ec6b60e5f7ccbc78e69cbc23b8171816098adbd3345c28",
+            "size_bytes": 18059
+          },
+          "all_staged_objects_absent": true,
+          "estimated_cost_usd": 0.14025,
+          "provider_zero_confirmed": true,
+          "teardown_manifest": {
+            "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28b-flecks-retained-replay/allocator/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json",
+            "sha256": "sha256:b044a5f996309e22e424939b1c82a1292ce54a8cb24b6415bd7c63833d343ab9",
+            "size_bytes": 2680
+          },
+          "warm_session_retained": false
+        },
+        "raw_secret_values_recorded": false,
+        "retry_cap": 0,
+        "schema_version": "native_task_arena_runtime_preflight.v1",
+        "status": "blocked",
+        "teardown_manifest_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28b-flecks-retained-replay/allocator/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json",
+        "watchdog_receipt_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28b-flecks-retained-replay/allocator/attempts/attempt_001/independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json"
+      },
+      "allocator/attempts/attempt_001/artifact_manifest.json": {
+        "binding": {
+          "allocator_lane": "native_task_arena",
+          "attempt_number": 1,
+          "bundle_sha256": "sha256:98ee649ab00ba2bc4c12a903c8b5ae0cd496c12dbde52c504343f1de29ff4619",
+          "protocol_digest": null,
+          "provider": "vast",
+          "result_schema_version": "native_task_arena_runtime_preflight.v1",
+          "retry_cap": 0
+        },
+        "blockers": [
+          "task_evaluation_artifact_role_missing:provider_runtime_evidence"
+        ],
+        "file_count": 2,
+        "files": [
+          {
+            "relative_path": "vast_provider_run/vast_provider_adapter_result.json",
+            "roles": [
+              "allocator_adapter_result"
+            ],
+            "sha256": "sha256:78afdfb9634d973bd0ec6b60e5f7ccbc78e69cbc23b8171816098adbd3345c28",
+            "size_bytes": 18059
+          },
+          {
+            "relative_path": "vast_provider_run/vast_teardown_manifest.json",
+            "roles": [
+              "teardown_manifest"
+            ],
+            "sha256": "sha256:b044a5f996309e22e424939b1c82a1292ce54a8cb24b6415bd7c63833d343ab9",
+            "size_bytes": 2680
+          }
+        ],
+        "observed_roles": [
+          "allocator_adapter_result",
+          "teardown_manifest"
+        ],
+        "raw_secret_values_recorded": false,
+        "required_roles": [
+          "allocator_adapter_result",
+          "provider_runtime_evidence",
+          "teardown_manifest"
+        ],
+        "schema_version": "task_evaluation_artifact_manifest.v1",
+        "status": "blocked",
+        "total_size_bytes": 20739
+      },
+      "allocator/attempts/attempt_001/independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json": {
+        "final_global_inventory": {
+          "api_confirmed": true,
+          "http": 200,
+          "live_resource_count": 0,
+          "name_prefix": "",
+          "provider": "vast",
+          "raw_provider_response_recorded": false,
+          "resource_name_exact": null,
+          "resources": [],
+          "status": "observed"
+        },
+        "initial_global_inventory": {
+          "api_confirmed": true,
+          "http": 200,
+          "live_resource_count": 0,
+          "name_prefix": "",
+          "provider": "vast",
+          "raw_provider_response_recorded": false,
+          "resource_name_exact": null,
+          "resources": [],
+          "status": "observed"
+        },
+        "pod_name_prefix": "blueprint-native-task-arena-preflight-20260910t233211093709000-",
+        "provider": "vast",
+        "provider_absence_confirmed": true,
+        "recorded_vast_instance": {
+          "instance_id": "50534312",
+          "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28b-flecks-retained-replay/allocator/attempts/attempt_001/independent_vast_watchdog/started_vast_instance_id.txt",
+          "pod_name_prefix": "blueprint-native-task-arena-preflight-20260910t233211093709000-",
+          "required": true,
+          "scope_confirmed": true,
+          "status": "recorded"
+        },
+        "recorded_vast_instance_teardown": {
+          "inspect_attempts": [
+            {
+              "api_confirmed": true,
+              "http": 200,
+              "instance_id": "50534312",
+              "provider": "vast",
+              "provider_absence_confirmed": true,
+              "status": "absent"
+            },
+            {
+              "api_confirmed": true,
+              "http": 200,
+              "instance_id": "50534312",
+              "provider": "vast",
+              "provider_absence_confirmed": true,
+              "status": "absent"
+            }
+          ],
+          "instance_id": "50534312",
+          "provider_absence_confirmed": true,
+          "provider_mutations_performed": 0,
+          "status": "absent"
+        },
+        "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
+        "status": "provider_terminal"
+      },
+      "allocator/attempts/attempt_001/object_store_staging/wam_provider_object_store_cleanup.json": {
+        "all_ephemeral_objects_absent": true,
+        "all_objects_absent": true,
+        "blockers": [],
+        "exact_object_count": 2,
+        "objects": [
+          {
+            "absence": {
+              "absence_confirmed": true,
+              "http_status_code": 404,
+              "raw_secret_values_recorded": false,
+              "status": "passed"
+            },
+            "key_sha256": "13e1470b38a0eaabccff5b640fadfeb47c4697c5e330fdc0dae466bc8235c46b"
+          },
+          {
+            "absence": {
+              "absence_confirmed": true,
+              "http_status_code": 404,
+              "raw_secret_values_recorded": false,
+              "status": "passed"
+            },
+            "key_sha256": "2a7a7d0578a0da83af34246ab6e247fb23483df913ef0f33c7b5360a40717178"
+          }
+        ],
+        "schema_version": "wam_provider_object_store_cleanup.v1",
+        "signed_url_files_removed": true,
+        "staging_manifest_sha256": "1ae4feeb993f5bf845968f9b31bf5bfeaafef5b74b6caaf2f0ec66250eb1f1fd",
+        "status": "completed"
+      },
+      "allocator/attempts/attempt_001/object_store_staging/wam_provider_object_store_staging_manifest.json": {
+        "bundle_key": "blueprint/arm-decision-proof-v1/native-task-arena/runtime-preflight/attempts_attempt_001_object_store_staging/bundles/sha256/98ee649ab00ba2bc4c12a903c8b5ae0cd496c12dbde52c504343f1de29ff4619.zip",
+        "bundle_object_retained_for_reuse": false,
+        "bundle_sha256": "98ee649ab00ba2bc4c12a903c8b5ae0cd496c12dbde52c504343f1de29ff4619",
+        "object_store": {
+          "key_prefix": "blueprint/arm-decision-proof-v1/native-task-arena/runtime-preflight"
+        },
+        "output_key": "blueprint/arm-decision-proof-v1/native-task-arena/runtime-preflight/attempts_attempt_001_object_store_staging/runpod_provider_runtime_output_d665526cb96ed49640cc8b408871046e.zip",
+        "paired_witness": {
+          "status": "not_required"
+        }
+      },
+      "allocator/attempts/attempt_001/vast_provider_run/vast_provider_adapter_result.json": {
+        "continuing_spend_from_this_run": false,
+        "provider_bundle_sha256": "sha256:98ee649ab00ba2bc4c12a903c8b5ae0cd496c12dbde52c504343f1de29ff4619",
+        "schema_version": "vast_provider_adapter_result.v1",
+        "status": "failed",
+        "vast_instance_ids": [
+          50534312
+        ]
+      },
+      "allocator/attempts/attempt_001/vast_provider_run/vast_startup_probe_manifest.json": {
+        "create_request_summary": {
+          "label": "blueprint-native-task-arena-preflight-20260910t233211093709000-1789083156"
+        },
+        "instance_id": 50534312
+      },
+      "allocator/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json": {
+        "continuing_spend_from_this_run": false,
+        "retention_authorized": false,
+        "runner_gpu_teardown_completed": true,
+        "schema_version": "vast_teardown_manifest.v1",
+        "status": "completed",
+        "vast_instance_ids": [
+          50534312
+        ]
+      },
+      "frozen-bundle/composition_provider_bundle_receipt.json": {
+        "bundle_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28b-flecks-retained-replay/frozen-bundle/bundle/native_task_arena_provider_bundle.zip",
+        "bundle_sha256": "sha256:98ee649ab00ba2bc4c12a903c8b5ae0cd496c12dbde52c504343f1de29ff4619",
+        "bundle_size_bytes": 112957650,
+        "candidate_outcomes_accessed": false,
+        "candidate_policy_queried": false,
+        "execution_mode": "runtime_preflight",
+        "implementation_commit": "d37f728daf0bf33f1d70668c5f8d1951e2c00439",
+        "native_application_claimed": false,
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "status": "ready"
+      },
+      "operator-diagnostic-authority.json": {
+        "hard_cap_usd": 0.75,
+        "hard_ttl_seconds": 1800,
+        "maximum_provider_allocations": 1,
+        "new_asset_model_calls_authorized": 0,
+        "policy_model_calls_authorized": 0,
+        "retry_cap": 0,
+        "run_id": "operator-native-diagnostic-841757-v28b-flecks-retained-replay",
+        "schema_version": "operator_native_diagnostic_authority.v1",
+        "source_commit": "d37f728daf0bf33f1d70668c5f8d1951e2c00439"
+      }
+    },
+    "variant": "b"
+  },
+  {
+    "instance_id": 50535878,
+    "original_root": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28d-flecks-retained-replay",
+    "original_sha256": {
+      "allocator-result.json": "sha256:1d999d91fb85c4ceffcb8fa933aebdda94fb7d0fbe04707649923cd8585ba95a",
+      "allocator/attempts/attempt_001/artifact_manifest.json": "sha256:a80a5403eac0e321537876b78ffa641f430f592b9791c3d3e77a6a61f8435317",
+      "allocator/attempts/attempt_001/independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json": "sha256:517b0cb56bf415bb1730eaf1afae51b1cb43532cb59cf3905bf79e08f4af6980",
+      "allocator/attempts/attempt_001/object_store_staging/wam_provider_object_store_cleanup.json": "sha256:99e8a9dc58c869a0511a63b65f9bef90cd0f3d22458d8f2eba0446687035b3d4",
+      "allocator/attempts/attempt_001/object_store_staging/wam_provider_object_store_staging_manifest.json": "sha256:8a2e678e759285eeef1d11a5b964a0f3e47c69807ced8a5627873e790d1bb72e",
+      "allocator/attempts/attempt_001/vast_provider_run/vast_provider_adapter_result.json": "sha256:83f11abb64653714786efc8497be6b3c4f3d64d7d8426c9f5277e28963b82d2b",
+      "allocator/attempts/attempt_001/vast_provider_run/vast_startup_probe_manifest.json": "sha256:9f75228425bae14e442443192562fecd6f986c9adcd4e66c1391ca56f6c054a2",
+      "allocator/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json": "sha256:36d4e4a5043e88b00808b42a9664471b7a6984b0d284839164d8249197643cd5",
+      "frozen-bundle/composition_provider_bundle_receipt.json": "sha256:b96c8dfb5e899e2f7eec718667d1c89d40073bcae7bf0520e7ebfde9520b2018",
+      "operator-diagnostic-authority.json": "sha256:523b9c500f3f4dd5b6add2ed2916659ebf2518351bfbd8bfcf11bbe5965792ec"
+    },
+    "records": {
+      "allocator-result.json": {
+        "adapter_result_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28d-flecks-retained-replay/allocator/attempts/attempt_001/vast_provider_run/vast_provider_adapter_result.json",
+        "all_staged_objects_absent": true,
+        "artifact_manifest_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28d-flecks-retained-replay/allocator/attempts/attempt_001/artifact_manifest.json",
+        "attempt_number": 1,
+        "attempt_root": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28d-flecks-retained-replay/allocator/attempts/attempt_001",
+        "bundle_sha256": "sha256:c86751cfd53457d68a7aaea4d0fd51731bb71e64ec4e5fc23a262adc888a4e65",
+        "candidate_policy_query_expected": false,
+        "continuing_spend_from_this_run": false,
+        "estimated_cost_usd": 0.144726,
+        "hard_cap_usd": 0.75,
+        "hard_ttl_seconds": 1800,
+        "independent_watchdog": {
+          "generated_at": "2026-09-11T00:25:54.466713+00:00",
+          "instance_ids": [
+            50535878
+          ],
+          "provider_absence_confirmed": true,
+          "provider_mutations_performed": 0,
+          "raw_secret_values_recorded": false,
+          "schema_version": "vast_independent_watchdog_handoff.v1",
+          "status": "provider_terminal",
+          "watchdog_armed_before_allocation": true,
+          "watchdog_process_exit_code": 0,
+          "watchdog_retention_liveness_confirmed": false
+        },
+        "object_store_cleanup_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28d-flecks-retained-replay/allocator/attempts/attempt_001/object_store_staging/wam_provider_object_store_cleanup.json",
+        "protocol_digest": null,
+        "provider_closeout": {
+          "adapter_result": {
+            "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28d-flecks-retained-replay/allocator/attempts/attempt_001/vast_provider_run/vast_provider_adapter_result.json",
+            "sha256": "sha256:83f11abb64653714786efc8497be6b3c4f3d64d7d8426c9f5277e28963b82d2b",
+            "size_bytes": 17941
+          },
+          "all_staged_objects_absent": true,
+          "estimated_cost_usd": 0.144726,
+          "provider_zero_confirmed": true,
+          "teardown_manifest": {
+            "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28d-flecks-retained-replay/allocator/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json",
+            "sha256": "sha256:36d4e4a5043e88b00808b42a9664471b7a6984b0d284839164d8249197643cd5",
+            "size_bytes": 2621
+          },
+          "warm_session_retained": false
+        },
+        "raw_secret_values_recorded": false,
+        "retry_cap": 0,
+        "schema_version": "native_task_arena_runtime_preflight.v1",
+        "status": "blocked",
+        "teardown_manifest_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28d-flecks-retained-replay/allocator/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json",
+        "watchdog_receipt_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28d-flecks-retained-replay/allocator/attempts/attempt_001/independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json"
+      },
+      "allocator/attempts/attempt_001/artifact_manifest.json": {
+        "binding": {
+          "allocator_lane": "native_task_arena",
+          "attempt_number": 1,
+          "bundle_sha256": "sha256:c86751cfd53457d68a7aaea4d0fd51731bb71e64ec4e5fc23a262adc888a4e65",
+          "protocol_digest": null,
+          "provider": "vast",
+          "result_schema_version": "native_task_arena_runtime_preflight.v1",
+          "retry_cap": 0
+        },
+        "blockers": [],
+        "file_count": 9,
+        "files": [
+          {
+            "relative_path": "vast_provider_run/vast_provider_adapter_result.json",
+            "roles": [
+              "allocator_adapter_result"
+            ],
+            "sha256": "sha256:83f11abb64653714786efc8497be6b3c4f3d64d7d8426c9f5277e28963b82d2b",
+            "size_bytes": 17941
+          },
+          {
+            "relative_path": "vast_provider_run/vast_teardown_manifest.json",
+            "roles": [
+              "teardown_manifest"
+            ],
+            "sha256": "sha256:36d4e4a5043e88b00808b42a9664471b7a6984b0d284839164d8249197643cd5",
+            "size_bytes": 2621
+          }
+        ],
+        "observed_roles": [
+          "allocator_adapter_result",
+          "provider_runtime_evidence",
+          "teardown_manifest"
+        ],
+        "raw_secret_values_recorded": false,
+        "required_roles": [
+          "allocator_adapter_result",
+          "provider_runtime_evidence",
+          "teardown_manifest"
+        ],
+        "schema_version": "task_evaluation_artifact_manifest.v1",
+        "status": "completed",
+        "total_size_bytes": 98812
+      },
+      "allocator/attempts/attempt_001/independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json": {
+        "final_global_inventory": {
+          "api_confirmed": true,
+          "http": 200,
+          "live_resource_count": 0,
+          "name_prefix": "",
+          "provider": "vast",
+          "raw_provider_response_recorded": false,
+          "resource_name_exact": null,
+          "resources": [],
+          "status": "observed"
+        },
+        "initial_global_inventory": {
+          "api_confirmed": true,
+          "http": 200,
+          "live_resource_count": 0,
+          "name_prefix": "",
+          "provider": "vast",
+          "raw_provider_response_recorded": false,
+          "resource_name_exact": null,
+          "resources": [],
+          "status": "observed"
+        },
+        "pod_name_prefix": "blueprint-task-evaluation-native-arena-preflight-20260911t000459977445000-",
+        "provider": "vast",
+        "provider_absence_confirmed": true,
+        "recorded_vast_instance": {
+          "instance_id": "50535878",
+          "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28d-flecks-retained-replay/allocator/attempts/attempt_001/independent_vast_watchdog/started_vast_instance_id.txt",
+          "pod_name_prefix": "blueprint-task-evaluation-native-arena-preflight-20260911t000459977445000-",
+          "required": true,
+          "scope_confirmed": true,
+          "status": "recorded"
+        },
+        "recorded_vast_instance_teardown": {
+          "inspect_attempts": [
+            {
+              "api_confirmed": true,
+              "http": 200,
+              "instance_id": "50535878",
+              "provider": "vast",
+              "provider_absence_confirmed": true,
+              "status": "absent"
+            },
+            {
+              "api_confirmed": true,
+              "http": 200,
+              "instance_id": "50535878",
+              "provider": "vast",
+              "provider_absence_confirmed": true,
+              "status": "absent"
+            }
+          ],
+          "instance_id": "50535878",
+          "provider_absence_confirmed": true,
+          "provider_mutations_performed": 0,
+          "status": "absent"
+        },
+        "schema_version": "groot_oscar_runpod_canary_watchdog.v1",
+        "status": "provider_terminal"
+      },
+      "allocator/attempts/attempt_001/object_store_staging/wam_provider_object_store_cleanup.json": {
+        "all_ephemeral_objects_absent": true,
+        "all_objects_absent": true,
+        "blockers": [],
+        "exact_object_count": 2,
+        "objects": [
+          {
+            "absence": {
+              "absence_confirmed": true,
+              "http_status_code": 404,
+              "raw_secret_values_recorded": false,
+              "status": "passed"
+            },
+            "key_sha256": "ab8d4bde4c5e238e15f68703b7d7ce12141d14860da303e79968bda8a70cc2fd"
+          },
+          {
+            "absence": {
+              "absence_confirmed": true,
+              "http_status_code": 404,
+              "raw_secret_values_recorded": false,
+              "status": "passed"
+            },
+            "key_sha256": "c93bac9175a6181e9b5f66766cb61102eee7417846c2a22c3852c649de0a3f34"
+          }
+        ],
+        "schema_version": "wam_provider_object_store_cleanup.v1",
+        "signed_url_files_removed": true,
+        "staging_manifest_sha256": "8a2e678e759285eeef1d11a5b964a0f3e47c69807ced8a5627873e790d1bb72e",
+        "status": "completed"
+      },
+      "allocator/attempts/attempt_001/object_store_staging/wam_provider_object_store_staging_manifest.json": {
+        "bundle_key": "blueprint/arm-decision-proof-v1/native-task-arena/runtime-preflight/attempts_attempt_001_object_store_staging/bundles/sha256/c86751cfd53457d68a7aaea4d0fd51731bb71e64ec4e5fc23a262adc888a4e65.zip",
+        "bundle_object_retained_for_reuse": false,
+        "bundle_sha256": "c86751cfd53457d68a7aaea4d0fd51731bb71e64ec4e5fc23a262adc888a4e65",
+        "object_store": {
+          "key_prefix": "blueprint/arm-decision-proof-v1/native-task-arena/runtime-preflight"
+        },
+        "output_key": "blueprint/arm-decision-proof-v1/native-task-arena/runtime-preflight/attempts_attempt_001_object_store_staging/runpod_provider_runtime_output_ffba5097509c9c2d6c8951d78df040b6.zip",
+        "paired_witness": {
+          "status": "not_required"
+        }
+      },
+      "allocator/attempts/attempt_001/vast_provider_run/vast_provider_adapter_result.json": {
+        "continuing_spend_from_this_run": false,
+        "provider_bundle_sha256": "sha256:c86751cfd53457d68a7aaea4d0fd51731bb71e64ec4e5fc23a262adc888a4e65",
+        "schema_version": "vast_provider_adapter_result.v1",
+        "status": "completed",
+        "vast_instance_ids": [
+          50535878
+        ]
+      },
+      "allocator/attempts/attempt_001/vast_provider_run/vast_startup_probe_manifest.json": {
+        "create_request_summary": {
+          "label": "blueprint-task-evaluation-native-arena-preflight-20260911t000459977445000-1789085137"
+        },
+        "instance_id": 50535878
+      },
+      "allocator/attempts/attempt_001/vast_provider_run/vast_teardown_manifest.json": {
+        "continuing_spend_from_this_run": false,
+        "retention_authorized": false,
+        "runner_gpu_teardown_completed": true,
+        "schema_version": "vast_teardown_manifest.v1",
+        "status": "completed",
+        "vast_instance_ids": [
+          50535878
+        ]
+      },
+      "frozen-bundle/composition_provider_bundle_receipt.json": {
+        "bundle_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28d-flecks-retained-replay/frozen-bundle/bundle/native_task_arena_provider_bundle.zip",
+        "bundle_sha256": "sha256:c86751cfd53457d68a7aaea4d0fd51731bb71e64ec4e5fc23a262adc888a4e65",
+        "bundle_size_bytes": 112957648,
+        "candidate_outcomes_accessed": false,
+        "candidate_policy_queried": false,
+        "execution_mode": "runtime_preflight",
+        "implementation_commit": "1ba4d97c4114873260a5f66735435ed51a54c48d",
+        "native_application_claimed": false,
+        "schema_version": "native_task_arena_provider_bundle.v1",
+        "status": "ready"
+      },
+      "operator-diagnostic-authority.json": {
+        "hard_cap_usd": 0.75,
+        "hard_ttl_seconds": 1800,
+        "maximum_provider_allocations": 1,
+        "new_asset_model_calls_authorized": 0,
+        "policy_model_calls_authorized": 0,
+        "retry_cap": 0,
+        "run_id": "operator-native-diagnostic-841757-v28d-flecks-retained-replay",
+        "schema_version": "operator_native_diagnostic_authority.v1",
+        "source_commit": "1ba4d97c4114873260a5f66735435ed51a54c48d"
+      }
+    },
+    "variant": "d"
+  }
+]

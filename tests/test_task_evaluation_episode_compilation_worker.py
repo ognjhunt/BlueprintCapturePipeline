@@ -19,6 +19,7 @@ from blueprint_pipeline.task_evaluation_launch_preparation_queue import (
 from blueprint_pipeline.task_evaluation_native_arena_preparation_adapter import (
     TaskEvaluationNativeArenaAdapterError,
 )
+from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import TaskEvaluationNativeArenaEpisodeCompilerError
 from blueprint_pipeline.task_evaluation_scene_construction_queue import (
     ensure_scene_construction_queue_root,
 )
@@ -224,15 +225,17 @@ def test_compilation_blocks_before_compiler_on_changed_materialized_bytes(
     ]
 
 
+@pytest.mark.parametrize("error_type,blocker", [
+    (TaskEvaluationNativeArenaAdapterError, "task_evaluation_adapter_bundle_identity_mismatch"),
+    (TaskEvaluationNativeArenaEpisodeCompilerError, "episode_compiler_destination_usd_format_unrecognized"),
+])
 def test_compilation_preserves_typed_native_adapter_blocker(
-    tmp_path: Path,
+    tmp_path: Path, error_type, blocker: str,
 ) -> None:
     queue, inputs, envelope = _stage(tmp_path)
 
     def blocked_adapter(**_kwargs):
-        raise TaskEvaluationNativeArenaAdapterError(
-            "task_evaluation_adapter_bundle_identity_mismatch"
-        )
+        raise error_type(blocker)
 
     run = process_episode_compilation_queue(
         queue_root=queue,
@@ -243,9 +246,7 @@ def test_compilation_preserves_typed_native_adapter_blocker(
     )
 
     assert run["results"][0]["status"] == "blocked"
-    assert run["results"][0]["blockers"] == [
-        "task_evaluation_adapter_bundle_identity_mismatch"
-    ]
+    assert run["results"][0]["blockers"] == [blocker]
 
 
 def test_compilation_reports_errno_and_removes_partial_output(

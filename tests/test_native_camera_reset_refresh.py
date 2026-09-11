@@ -4,15 +4,17 @@ from pathlib import Path
 from types import SimpleNamespace
 import numpy as np
 from blueprint_pipeline.native_task_arena_runtime import build_native_task_arena_environment
+from blueprint_pipeline.native_task_camera_start_configuration import resolved_camera_matrices
 from tests.test_native_task_arena_runtime import _install_fake_native_runtime, _sealed_scene_plan
 
 
 def test_reset_requests_render_after_joint_write_and_forward_without_physics(monkeypatch):
     _install_fake_native_runtime(monkeypatch)
     cfg = build_native_task_arena_environment(_sealed_scene_plan()).cfg
-    old = np.eye(4)
-    target = old.copy()
-    target[:3, 3] = [0.2, -0.1, 0.3]
+    fixture = json.loads((Path(__file__).parent/'fixtures/policy_camera_start_configuration.json').read_text())
+    binding = fixture['policy_canary_camera_start_configuration']
+    old = np.asarray(binding['native_reference']['world_from_wrist_camera_opengl'])
+    target = resolved_camera_matrices(fixture, binding['source_joint_chain'], binding['joint_reset_positions_rad'])['wrist'][0]
     source = json.loads((Path(__file__).parent/'fixtures/isaaclab_reset/manager_reset_method.json').read_text())
     namespace = {}
     exec(compile('from __future__ import annotations\n'+source['reset_method'], source['source_path'], 'exec'), namespace)

@@ -57,6 +57,25 @@ def test_retreat_scored_from_measured_grasp_clearance_for_complete_settle():
     assert report["task_succeeded"] is False
 
 
+def test_marked_area_retreat_keeps_surface_clearance_and_requires_live_frame():
+    spec, samples = _fixture()
+    spec.pop("destination_relation")
+    spec["visible_target_marker"] = {
+        "schema_version": "native_task_target_marker.v1", "shape": "flat_green_disc",
+        "non_colliding": True, "surface_position_world_m": [1.15, 2., .795],
+    }
+    report = score_task_episode_from_spec(task_spec=spec, samples=samples)
+    assert report["task_succeeded"] is True
+    assert report["measurements"]["retreat"]["minimum_observed_clearance_m"] == pytest.approx(.055)
+    samples[-1].pop("destination_pose_world")
+    report = score_task_episode_from_spec(task_spec=spec, samples=samples)
+    assert report["status"] == "undetermined"
+    assert report["task_succeeded"] is False
+    spec["visible_target_marker"]["surface_position_world_m"][0] += .1
+    with pytest.raises(TaskNeutralScoringError, match="retreat_binding_mismatch"):
+        score_task_episode_from_spec(task_spec=spec, samples=samples)
+
+
 @pytest.mark.parametrize("field", ["grasp_frame_position_world_m", "task_contact_active"])
 def test_retreat_missing_readback_is_undetermined_even_with_claimed_or_commanded_success(field):
     spec, samples = _fixture()

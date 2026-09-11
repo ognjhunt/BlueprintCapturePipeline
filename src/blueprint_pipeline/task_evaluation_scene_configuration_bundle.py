@@ -660,8 +660,13 @@ def build_scene_configuration_provider_bundle(
         root=toolchain, expected_source_commit=toolchain_source_commit
     )
     try:
+        from .task_evaluation_scene_configuration_astra_runtime import declared_python_profile
+        python_profile = declared_python_profile(toolchain)
+        if (any(value.get("authoring_backend") == "astra_cad_blender_v1"
+                for value in configuration_values.values()) and python_profile != "astra_asset_authoring"):
+            raise ValueError("scene_configuration_astra_runtime_not_sealed")
         provider_python_runtime = validate_scene_configuration_python_wheelhouse(
-            root=toolchain / _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE
+            root=toolchain / _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE, profile=python_profile,
         )
     except (OSError, ValueError) as exc:
         raise TaskEvaluationSceneConfigurationBundleError(
@@ -1022,7 +1027,8 @@ def build_scene_configuration_provider_bundle(
             "scene_configuration_bundle_toolchain_copy_mismatch"
         )
     copied_python_runtime = validate_scene_configuration_python_wheelhouse(
-        root=portable_toolchain / _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE
+        root=portable_toolchain / _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE,
+        profile=declared_python_profile(portable_toolchain),
     )
     if (
         copied_python_runtime["manifest_digest"]
@@ -1063,6 +1069,9 @@ def build_scene_configuration_provider_bundle(
         "toolchain_source_commit": toolchain_source_commit,
         "toolchain_digest": toolchain_manifest["toolchain_digest"],
         "provider_python_runtime_required": True,
+        "replacement_authoring_backend": next((value["authoring_backend"]
+            for value in configuration_values.values()
+            if value.get("authoring_backend") == "astra_cad_blender_v1"), "content_agents"),
         "provider_python_runtime_manifest": (
             "toolchain/"
             + _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE.as_posix()
@@ -1667,6 +1676,7 @@ def load_scene_configuration_provider_bundle_receipt(
         "portable_construction_envelope_digest",
         "toolchain_digest",
         "provider_python_runtime_required",
+        "replacement_authoring_backend",
         "provider_python_runtime_manifest",
         "provider_python_runtime_digest",
         "provider_python_runtime_python_version",

@@ -10,12 +10,13 @@ an allocator or provider directly.
 
 from __future__ import annotations
 
+from .configured_controls_plan_validation import TaskEvaluationConfiguredControlsProgressionWorkerError as TaskEvaluationConfiguredControlsProgressionWorkerError
+
 import argparse
 import hashlib
 import json
 import os
 import re
-import stat
 import subprocess  # nosec B404 - fixed repository-owned launch-only client
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -27,6 +28,7 @@ from . import (
     task_evaluation_scene_configuration_activation_automation as scene_configuration_activation,
 )
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .configured_controls_plan_validation import load_configured_controls_plan as _load_progression_plan
 from .task_evaluation_configured_controls_progression import (
     PROGRESSION_SCHEMA_VERSION,
     TaskEvaluationConfiguredControlsProgressionError,
@@ -81,10 +83,6 @@ CONFIGURED_CONTROLS_RELEASE_WINDOW_KEY_PREFIX = (
 )
 Submitter = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 PublisherFactory = Callable[[], Callable[..., Mapping[str, Any]]]
-
-
-class TaskEvaluationConfiguredControlsProgressionWorkerError(RuntimeError):
-    """The automatic progression worker refused an unsafe transition."""
 
 
 def configured_controls_object_store_publisher() -> Callable[..., Mapping[str, Any]]:
@@ -152,119 +150,12 @@ def _sealed_progression(path: Path, *, statuses: set[str]) -> dict[str, Any] | N
 
 
 def _plan(path: Path) -> dict[str, Any]:
-    value = _load(path, blocker="configured_controls_worker_plan_invalid")
-    schema = value.get("schema_version")
-    expected_phases = (
-        {"destination", "construction", "controls"}
-        if schema == DESTINATION_PLAN_SCHEMA_VERSION
-        else {"construction", "controls"}
+    return _load_progression_plan(
+        path, load_json=_load, sha256=_sha256,
+        error_factory=TaskEvaluationConfiguredControlsProgressionWorkerError,
+        plan_schema=PLAN_SCHEMA_VERSION, destination_plan_schema=DESTINATION_PLAN_SCHEMA_VERSION,
+        commit_pattern=_COMMIT,
     )
-    first_phase = (
-        "destination" if "destination" in expected_phases else "construction"
-    )
-    if (
-        schema not in {PLAN_SCHEMA_VERSION, DESTINATION_PLAN_SCHEMA_VERSION}
-        or value.get("enabled") is not True
-        or value.get("plan_digest") != canonical_digest(value, digest_field="plan_digest")
-        or not str(value.get("source_launch_id") or "").strip()
-        or not str(value.get("source_launch_receipt_digest") or "").startswith(
-            "sha256:"
-        )
-        or _COMMIT.fullmatch(
-            str(value.get("source_configuration_commit") or "")
-        )
-        is None
-        or _COMMIT.fullmatch(str(value.get("expected_production_commit") or ""))
-        is None
-        or not str(value.get("submitted_by") or "").strip()
-        or set(value.get("phases") or {}) != expected_phases
-        or any(
-            set(value["phases"].get(phase) or {})
-            != {
-                "release_window_template_path",
-                "authorization_path",
-                "launch_authority_path",
-                *({"lineage_path"} if phase == first_phase else set()),
-            }
-            for phase in expected_phases
-        )
-        or not Path(str(value.get("profile_dir") or "")).is_absolute()
-        or Path(str(value.get("profile_dir") or "")).is_symlink()
-        or not Path(str(value.get("profile_dir") or "")).is_dir()
-    ):
-        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
-            "configured_controls_worker_plan_invalid"
-        )
-    inventory = value.get("artifact_inventory")
-    declared_paths: set[str] = set()
-
-    def collect_paths(row: Any, key: str = "") -> None:
-        if isinstance(row, Mapping):
-            for child_key, child in row.items():
-                if child_key.endswith("_path") and isinstance(child, str):
-                    declared_paths.add(child)
-                elif child_key == "lineage_artifact_paths" and isinstance(
-                    child, Mapping
-                ):
-                    declared_paths.update(str(item) for item in child.values())
-                elif child_key not in {"artifact_inventory", "future_outputs"}:
-                    collect_paths(child, child_key)
-
-    collect_paths(value)
-    if not isinstance(inventory, Mapping) or not inventory:
-        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
-            "configured_controls_worker_plan_inventory_invalid"
-        )
-    inventory_paths: set[str] = set()
-    for row in inventory.values():
-        if not isinstance(row, Mapping) or set(row) != {
-            "path",
-            "digest",
-            "size_bytes",
-            "mode",
-        }:
-            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
-                "configured_controls_worker_plan_inventory_invalid"
-            )
-        artifact = Path(str(row.get("path") or ""))
-        try:
-            metadata = artifact.stat()
-        except OSError as exc:
-            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
-                "configured_controls_worker_plan_inventory_invalid"
-            ) from exc
-        if (
-            not artifact.is_absolute()
-            or artifact.is_symlink()
-            or not artifact.is_file()
-            or _sha256(artifact) != row.get("digest")
-            or metadata.st_size != row.get("size_bytes")
-            or f"{stat.S_IMODE(metadata.st_mode):04o}" != row.get("mode")
-        ):
-            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
-                "configured_controls_worker_plan_inventory_invalid"
-            )
-        inventory_paths.add(str(artifact))
-    future = value.get("future_outputs")
-    if not isinstance(future, Mapping) or set(future) != expected_phases:
-        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
-            "configured_controls_worker_plan_future_outputs_invalid"
-        )
-    for phase in expected_phases:
-        row = future.get(phase)
-        if (
-            not isinstance(row, Mapping)
-            or set(row) != {"expected_activation_id"}
-            or not str(row.get("expected_activation_id") or "")
-        ):
-            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
-                "configured_controls_worker_plan_future_outputs_invalid"
-            )
-    if inventory_paths != declared_paths:
-        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
-            "configured_controls_worker_plan_inventory_invalid"
-        )
-    return value
 
 
 def _input(path_value: Any, *, blocker: str) -> dict[str, Any]:
@@ -472,6 +363,39 @@ def _queue_result(queue_root: Path, preparation_id: str) -> dict[str, Any] | Non
             "configured_controls_worker_preparation_result_ambiguous"
         )
     return _load(matches[0], blocker="configured_controls_worker_preparation_result_invalid")
+
+
+def _compilation_ready(*, preparation: Mapping[str, Any], queue_root: Path,
+                       source_commit: str) -> bool:
+    if preparation.get("status") != "queued_for_production_episode_compilation":
+        return True
+    compilation_id = str(preparation.get("episode_compilation_id") or "")
+    digest = str(preparation.get("episode_compilation_queue_envelope_digest") or "")
+    if not compilation_id or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_compilation_binding_invalid")
+    path = queue_root / "results" / f"{compilation_id}-{digest.removeprefix('sha256:')}.json"
+    if not path.is_file():
+        return False
+    result = _load(path, blocker="configured_controls_compilation_invalid")
+    if (result.get("schema_version") != "task_evaluation_episode_compilation_result.v1"
+            or result.get("status") != "compiled_for_production_launch"
+            or result.get("compilation_id") != compilation_id
+            or result.get("run_id") != preparation.get("run_id")
+            or result.get("source_commit") != source_commit
+            or result.get("configured_scene_revision_digest") != preparation.get("configured_scene_revision_digest")
+            or result.get("result_digest") != canonical_digest(result, digest_field="result_digest")):
+        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+            "configured_controls_compilation_invalid")
+    return True
+
+
+def _activation_capacity_ready(queue_root: Path) -> bool:
+    ledger = os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT")
+    if not ledger:
+        return True  # The activation worker always retains its own disk gate.
+    from .control_plane_disk_budget import disk_headroom, footprint_bytes
+    return disk_headroom(target_root=queue_root, reservation_root=ledger)["available_bytes"] >= footprint_bytes("launch_activation")
 
 
 def _policy_canary_activation_id(run_id: str) -> str:
@@ -1213,6 +1137,8 @@ def _production_submitter(
                     "--request", str(request_path),
                     "--secret-file", str(secret_file),
                     "--receipt-out", str(receipt_path),
+                    # The immutable request may already be accepted after a lost response.
+                    "--allow-replay",
                     "--endpoint", endpoint,
                 ],
                 cwd=repo_root,
@@ -1252,6 +1178,7 @@ def advance_configured_controls_plan(
     progression_root: str | Path,
     preparation_queue_root: str | Path,
     activation_queue_root: str | Path,
+    episode_compilation_queue_root: str | Path | None = None,
     publisher_factory: PublisherFactory = configured_controls_object_store_publisher,
     release_window_publisher_factory: PublisherFactory | None = None,
     submitter: Submitter | None = None,
@@ -1269,6 +1196,8 @@ def advance_configured_controls_plan(
         )
 
     plan = _plan(Path(plan_path).expanduser())
+    compilation_queue = Path(episode_compilation_queue_root or
+        Path(preparation_queue_root).parent / "task-evaluation-episode-compilations")
     run_root = Path(launch_state_root).expanduser() / plan["source_launch_id"]
     # Scope progression state to the production commit. The sealed receipt
     # carries the episode preparation id, and preparation results are
@@ -1394,6 +1323,13 @@ def advance_configured_controls_plan(
             statuses={"destination_qualification_activation_queued"},
         )
         if destination_activation is None:
+            if not _compilation_ready(preparation=destination_preparation,
+                    queue_root=compilation_queue, source_commit=plan["expected_production_commit"]):
+                return {"status": "awaiting_destination_qualification_compilation",
+                        "source_launch_id": plan["source_launch_id"]}
+            if not _activation_capacity_ready(Path(activation_queue_root)):
+                return {"status": "awaiting_destination_activation_capacity",
+                        "source_launch_id": plan["source_launch_id"]}
             lineage = _input(
                 destination_phase.get("lineage_path"),
                 blocker="configured_controls_worker_lineage_missing",
@@ -1537,6 +1473,11 @@ def advance_configured_controls_plan(
         construction_activation_path, statuses={"construction_activation_queued"}
     )
     if construction_activation is None:
+        if not _compilation_ready(preparation=preparation, queue_root=compilation_queue,
+                source_commit=plan["expected_production_commit"]):
+            return {"status": "awaiting_construction_compilation", "source_launch_id": plan["source_launch_id"]}
+        if not _activation_capacity_ready(Path(activation_queue_root)):
+            return {"status": "awaiting_construction_activation_capacity", "source_launch_id": plan["source_launch_id"]}
         construction_lane = (
             "native_task_arena_construction_after_destination"
             if destination_enabled
@@ -1620,6 +1561,8 @@ def advance_configured_controls_plan(
         controls_activation_path, statuses={"controls_activation_queued"}
     )
     if controls_activation is None:
+        if not _activation_capacity_ready(Path(activation_queue_root)):
+            return {"status": "awaiting_controls_activation_capacity", "source_launch_id": plan["source_launch_id"]}
         predecessor = _construction_predecessor(
             launch_state_root=Path(launch_state_root),
             construction_launch_id=str(construction_launch["launch_id"]),
@@ -1903,10 +1846,6 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
         ) as exc:
             rows.append({"status": "blocked", "source_launch_id": run_root.name, "blockers": [str(exc)]})
     configured_controls_kwargs = dict(kwargs)
-    # This root belongs only to the policy-canary branch above. Forwarding it
-    # into the older configured-controls transition caused the production CLI
-    # to fail before it could revisit the completed canary compilation.
-    configured_controls_kwargs.pop("episode_compilation_queue_root", None)
     for path in sorted(plan_root.glob("*.json")) if plan_root.is_dir() else []:
         owner_blocker = owner_scope.plan_blocker(path, launch_state_root)
         if owner_blocker:

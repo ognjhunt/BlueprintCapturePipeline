@@ -41,6 +41,15 @@ class OpenAIModelPricing(BaseModel):
 
 
 _GPT56_PRICING: dict[str, OpenAIModelPricing] = {
+    # Standard API rates verified 2026-09-10 against the official model page.
+    # Authoring callers stay below the long-context threshold and use no Fast tier.
+    "astra": OpenAIModelPricing(
+        model_family="gpt-6-astra",
+        uncached_input_per_million_usd=10.0,
+        cache_write_per_million_usd=12.5,
+        cached_read_per_million_usd=1.0,
+        output_per_million_usd=50.0,
+    ),
     "sol": OpenAIModelPricing(
         model_family="gpt-5.6-sol",
         uncached_input_per_million_usd=4.0,
@@ -67,6 +76,8 @@ _GPT56_PRICING: dict[str, OpenAIModelPricing] = {
 
 def pricing_for_model(model: str) -> OpenAIModelPricing | None:
     normalized = model.strip().lower()
+    if normalized == "gpt-6-astra" or normalized.startswith("gpt-6-astra-"):
+        return _GPT56_PRICING["astra"]
     if normalized in {"gpt-5.6", "gpt-5.6-sol"} or normalized.startswith("gpt-5.6-sol-"):
         return _GPT56_PRICING["sol"]
     if normalized == "gpt-5.6-terra" or normalized.startswith("gpt-5.6-terra-"):

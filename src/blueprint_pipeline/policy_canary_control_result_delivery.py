@@ -13,10 +13,38 @@ from .decision_evidence_contracts import canonical_digest, canonical_json
 
 CONTROL_IDS = ("zero_action_negative", "deterministic_scripted_positive")
 WARNINGS = {
+    "controls_omitted_by_user": "Controls omitted at the user's request — diagnostic results remain unqualified.",
     "configured_controls_pending": "Controls pending — results are unqualified.",
     "controls_failed": "Required controls failed — results are unqualified.",
     "controls_verified_development_only": "Controls verified for this simulation matrix — development-only results remain unqualified.",
 }
+
+
+def materialize_control_omission(*, authority, contract, result, delivery_root,
+                                add_artifact, write_immutable, error_factory):
+    from .native_policy_canary_control_gate import controls_required
+    from .native_task_arena_policy_canary_session import validate_control_omission_authority
+
+    try:
+        admitted = validate_control_omission_authority(
+            authority, contract_digest=contract["contract_digest"])
+    except ValueError as exc:
+        raise error_factory("policy_canary_delivery_control_omission_invalid") from exc
+    if controls_required(contract) or result.get("controls") is not None:
+        raise error_factory("policy_canary_delivery_control_omission_conflict")
+    path = delivery_root / "control_omission_authority.json"
+    write_immutable(path, (canonical_json(admitted) + "\n").encode("utf-8"))
+    record = add_artifact(role="control_omission_authority", path=path, artifact_root=delivery_root)
+    return {
+        "scene_controls_status": "controls_omitted_by_user",
+        "warning": WARNINGS["controls_omitted_by_user"],
+        "control_omission": {
+            "authority_digest": admitted["authority_digest"],
+            "task_success_contract_digest": contract["contract_digest"],
+            "qualified_comparison_permitted": False,
+            "artifact": {key: record[key] for key in ("artifact_id", "digest", "size_bytes")},
+        },
+    }
 
 
 def control_summary(controls: list[Mapping[str, Any]], episodes: list[Mapping[str, Any]]) -> dict[str, int]:

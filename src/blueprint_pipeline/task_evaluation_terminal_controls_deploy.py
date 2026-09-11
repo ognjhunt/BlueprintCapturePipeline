@@ -42,8 +42,14 @@ def prepare(*, config_path: str | Path, expected_commit: str, now: float | None 
         binding = state/source['launch_id']/'cpu-robot-binding'
         worker._require(not any(p.is_symlink() for p in (path, binding, *binding.parents)), 'terminal_deploy_path_unsafe')
         if binding.exists():
-            rows.append({'intent_id': intent_id, 'status': 'retained_started_materialization'})
-            continue
+            from .task_evaluation_completed_placement_adoption import discover as discover_completed
+            from .task_evaluation_visual_review_continuation import discover
+            continuation = discover_completed(config=config,intent_id=intent_id,source=source,expected_commit=expected_commit)
+            if continuation is None:
+                continuation = discover(config=config,intent_id=intent_id,source=source,expected_commit=expected_commit)
+            if continuation is None:
+                rows.append({'intent_id': intent_id, 'status': 'retained_started_materialization'})
+                continue
         result = adoption.provision_terminal_controls_adoption(config=config, catalog=catalog,
             intent_id=intent_id, expected_production_commit=expected_commit, now=moment)
         rows.append({'intent_id': intent_id, 'status': result['status'], 'receipt_digest': result['receipt_digest']})

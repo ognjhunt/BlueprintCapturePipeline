@@ -204,7 +204,6 @@ BLOCKER_ENVIRONMENT_CONTRACT = "policy_episode_environment_contract_violated"
 BLOCKER_SOURCE_RESOLUTION_UNMEASURED = (
     "policy_episode_source_resolution_unmeasured_or_mixed"
 )
-BLOCKER_PRESTART_READINESS = "policy_episode_prestart_readiness_failed"
 BLOCKER_POST_START_INFRASTRUCTURE = (
     "policy_episode_post_start_infrastructure_invariant_violation"
 )
@@ -215,13 +214,16 @@ PRESTART_MEDIA_RESERVE_FLOOR_BYTES = 64 * 1024 * 1024
 PRESTART_MEDIA_RESERVE_MULTIPLIER = 3
 
 
-class PolicyEpisodeError(ValueError):
-    """Fail-closed episode contract errors."""
-
-    def __init__(self, errors: Sequence[str]):
-        self.errors = tuple(sorted({str(e) for e in errors if str(e)}))
-        super().__init__(";".join(self.errors))
-
+try:  # flat provider-bundle layout
+    from adp009d_policy_episode_native_validation import (
+        PolicyEpisodeError, NativeJointStateBoundsError, validate_native_joint_state,
+        BLOCKER_PRESTART_READINESS, _validate_task_reset_restoration,
+    )
+except ModuleNotFoundError:
+    from .adp009d_policy_episode_native_validation import (
+        PolicyEpisodeError, NativeJointStateBoundsError, validate_native_joint_state,
+        BLOCKER_PRESTART_READINESS, _validate_task_reset_restoration,
+    )
 
 def _measured_source_hw(observed):
     return _evidence(measured_source_hw, observed=observed)
@@ -395,40 +397,6 @@ _request_storage_bytes = request_storage_bytes
 
 def _project_media_reserve_bytes(**kwargs):
     return project_media_reserve_bytes(**kwargs, frame_stride=EVALUATION_REVIEW_FRAME_STRIDE_STEPS, reserve_floor=PRESTART_MEDIA_RESERVE_FLOOR_BYTES, reserve_multiplier=PRESTART_MEDIA_RESERVE_MULTIPLIER)
-
-
-def _validate_task_reset_restoration(
-    initial: Mapping[str, Any], restored: Mapping[str, Any], task_spec: Mapping[str, Any]
-) -> None:
-    """Compare measured task reset fields, excluding episode bookkeeping.
-
-    Only frozen reset tolerances permit numerical differences. This is a task
-    readback check, not a claim that camera/physics configuration was measured.
-    """
-    fields = {
-        "can_pose_world", "task_object_pose_world", "destination_pose_world",
-        "joint_positions_rad", "joint_velocities_rad_s", "gripper_width_m",
-        "task_contact_active", "support_contact_active", "finger_contact_forces_n",
-        "robot_collision_failure", "scene_collision_failure", "containment_violation",
-        "forbidden_robot_task_collision_failure", "locked_joint_containment_violation",
-    }
-    for field in fields & (set(initial) | set(restored)):
-        left, right = initial.get(field), restored.get(field)
-        matches = field in initial and field in restored and left == right
-        if field.endswith("pose_world") and isinstance(left, list) and isinstance(right, list):
-            if len(left) == len(right) == 7:
-                prefix = "destination_" if field == "destination_pose_world" else ""
-                translation_tolerance = float(task_spec.get(prefix + "reset_translation_tolerance_m", 0.0))
-                rotation_key = "destination_reset_rotation_tolerance_rad" if prefix else "reset_orientation_tolerance_rad"
-                rotation_tolerance = float(task_spec.get(rotation_key, 0.0))
-                finite = all(math.isfinite(float(v)) for v in [*left, *right])
-                # q and -q represent the same physical rotation.
-                dot = abs(sum(float(a) * float(b) for a, b in zip(left[3:], right[3:], strict=True)))
-                matches = finite and math.dist(left[:3], right[:3]) <= translation_tolerance and (
-                    left[3:] == right[3:] or 2 * math.acos(min(1.0, dot)) <= rotation_tolerance
-                )
-        if not matches:
-            raise PolicyEpisodeError([f"{BLOCKER_PRESTART_READINESS}:task_reset_state_mismatch:{field}"])
 
 
 def _validate_initial_task_reset(sample: Mapping[str, Any], spec: Mapping[str, Any]) -> None:
@@ -856,6 +824,7 @@ def run_policy_episode(
                         "candidate_exact_policy_input_frames",
                         "prestart_readiness",
                         "episode_terminal_class",
+                        "native_joint_state_violation",
                     )
                     if key in episode_progress
                 }
@@ -903,8 +872,17 @@ def run_policy_episode(
     }
     phase_started = time.monotonic()
     environment.reset()
+    # Prestart probes retain their own resets. Begin the actual episode only
+    # after its final canonical reset so those probes cannot count as retries.
+    if callable(getattr(environment, 'begin_episode', None)):
+        environment.begin_episode()
     joint_limits = environment.joint_limits()
     joint_trace = [_read_arm_joint_positions(environment)]
+    try:
+        validate_native_joint_state(joint_trace[0], joint_limits, phase='initial_native_state')
+    except NativeJointStateBoundsError as exc:
+        episode_progress['native_joint_state_violation'] = exc.readback
+        raise
 
     samples: list[dict[str, Any]] = []
     previous_index: int | None = None
@@ -1313,6 +1291,14 @@ def run_policy_episode(
     for query_index in range(int(max_policy_queries)):
         phase_started = time.monotonic()
         inputs = environment.read_policy_inputs()
+        try:
+            if 'joint_position' in inputs:
+                validate_native_joint_state(inputs['joint_position'], joint_limits, phase='before_policy_query')
+        except NativeJointStateBoundsError as exc:
+            episode_progress['native_joint_state_violation'] = exc.readback
+            episode_progress['candidate_joint_state_validated'] = False
+            _emit_progress('native_joint_state_bounds_refused')
+            raise
         sensor_freshness.append({"query_index": query_index,
             "cameras": dict(inputs.get("sensor_freshness") or {}),
             "verified": set(inputs.get("sensor_freshness") or {}) == {"external", "wrist"}
@@ -1662,10 +1648,18 @@ def run_policy_episode(
             after = _read_arm_joint_positions(environment)
             timings_seconds["joint_state_read"] += time.monotonic() - phase_started
             action_record["observed_after_rad"] = after
+            joint_trace.append(after)
+            try:
+                validate_native_joint_state(after, joint_limits, phase='after_action')
+            except NativeJointStateBoundsError as exc:
+                action_record['native_joint_state_violation'] = exc.readback
+                episode_progress['native_joint_state_violation'] = exc.readback
+                episode_progress['candidate_joint_state_validated'] = False
+                _emit_progress('native_joint_state_bounds_refused')
+                raise
             action_record["joint_state_after_validated"] = True
             episode_progress["candidate_joint_state_validated"] = True
             _emit_progress("joint_state_validated")
-            joint_trace.append(after)
             target = [float(value) for value in action["joint_position_target_rad"]]
             response_observed = any(
                 abs(after[index] - before[index]) > ARM_MOTION_EPSILON_RAD
@@ -1748,11 +1742,21 @@ def run_policy_episode(
     for _ in range(int(settle_window_samples)):
         phase_started = time.monotonic()
         environment.step(release_action)
-        joint_trace.append(_read_arm_joint_positions(environment))
+        step_index += 1
+        after = _read_arm_joint_positions(environment)
+        joint_trace.append(after)
+        try:
+            validate_native_joint_state(after, joint_limits, phase='terminal_settle')
+        except NativeJointStateBoundsError as exc:
+            exc.readback.update(step_index=step_index, isaac_action=list(release_action),
+                                environment_step_applied=True)
+            episode_progress['native_joint_state_violation'] = exc.readback
+            episode_progress['candidate_joint_state_validated'] = False
+            _emit_progress('native_joint_state_bounds_refused')
+            raise
         timings_seconds["settle_steps_including_render"] += (
             time.monotonic() - phase_started
         )
-        step_index += 1
         if (
             media_root is not None
             and episode_id is not None

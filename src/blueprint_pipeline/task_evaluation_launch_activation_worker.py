@@ -91,12 +91,8 @@ from .task_evaluation_scene_owner_attempt_profiles import record_owner_attempt a
 
 
 QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT"
-PREPARATION_QUEUE_ROOT_ENV = (
-    "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT"
-)
-PREPARATION_INPUT_ROOT_ENV = (
-    "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT"
-)
+PREPARATION_QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT"
+PREPARATION_INPUT_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT"
 EPISODE_COMPILATION_QUEUE_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT"
 )
@@ -121,9 +117,7 @@ RELEASE_WINDOW_PREFIX_ENV = (
 )
 PROFILE_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR"
 WEBAPP_CATALOG_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_CATALOG"
-STANDING_AUTHORIZATION_DIR_ENV = (
-    "BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR"
-)
+STANDING_AUTHORIZATION_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR"
 CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT"
 )
@@ -478,7 +472,7 @@ def _load_verified_preparation(
                 expected_references[f"{SUPPLEMENTAL_DESTINATION_CONTRACT_PREFIX}.{field}"] = (
                     ref["digest"], ref["size_bytes"]
                 )
-    if request["run_mode"] == "episode_evaluation":
+    if request["run_mode"] in {"episode_evaluation", "destination_qualification"}:
         revision_path = materialized_references.get("scene.configured_revision")
         try:
             revision = validate_configured_scene_revision(
@@ -772,7 +766,10 @@ def _build_native_context(
         "revision": activation_request["authorization"]["profile_revision"],
         "authorization_reference": activation_request["authorization"]["reference"],
         "authorized_by": activation_request["authorization"]["authorized_by"],
-        "authorized_on": activation_request["authorization"]["authorized_on"],
+        # The parent consent may precede the provider-zero observation. Issue
+        # this subordinate launch authority now, retaining the consent date.
+        "authorization_recorded_on": activation_request["authorization"]["authorized_on"],
+        "authorized_on": datetime.now(timezone.utc).isoformat(),
         "maximum_hourly_rate_usd": preparation_request["spend"][
             "maximum_hourly_rate_usd"
         ],
@@ -814,6 +811,12 @@ def _build_native_context(
                 "rights_admission": str(rights_admission_path),
                 "rights_admission_digest": rights_admission_digest,
                 "rights_evidence": rights_evidence,
+                **({"destination": {
+                    "identity": preparation_request["task"]["destination"]["identity"],
+                    "asset": preparation_request["task"]["destination"]["asset"],
+                    "rights_admission": str(preparation_materialized["task.destination.rights_admission"]),
+                    "rights_admission_digest": preparation_request["task"]["destination"]["rights_admission"]["digest"],
+                }} if preparation_request.get("task", {}).get("destination") else {}),
                 **(
                     {
                         "configured_scene_revision": str(
@@ -1999,12 +2002,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             episode_compilation_queue_root=args.episode_compilation_queue_root,
             episode_compilation_output_root=args.episode_compilation_output_root,
             scene_construction_queue_root=args.scene_construction_queue_root,
-            scene_configuration_toolchain_root=(
-                args.scene_configuration_toolchain_root
-            ),
-            configured_controls_autostart_intent_root=(
-                args.configured_controls_autostart_intent_root
-            ),
+            scene_configuration_toolchain_root=args.scene_configuration_toolchain_root,
+            configured_controls_autostart_intent_root=args.configured_controls_autostart_intent_root,
             policy_canary_dispatch_queue_root=(
                 args.policy_canary_dispatch_queue_root
             ),
