@@ -96,6 +96,12 @@ The private `engineering_policy_file` selects exact allowed source paths,
 mandatory test paths, run-id prefixes, handoff count, patch/file limits, an
 existing-worker budget reference and a finite worker timeout. It defaults off.
 Capacity/authority admission refusals do not authorize code changes.
+Only the canonical replay's `refused` stage-handler result is eligible;
+`job_refused` remains an owner/input admission result. Offline replay reads
+recognized historical administrative contracts through the existing retained
+validator, while every new or explicitly paid execution keeps current admission.
+The isolated command pins the invoking checkout's interpreter path after all
+systemd environment files, so it cannot silently replay an installed older tree.
 
 The producer retains one handoff per diagnosis/replay identity, reserves before
 publication, and sends only machine evidence references and the admitted policy.

@@ -16,7 +16,7 @@ def _parent(job: dict, root: Path) -> tuple[dict, str, Path]:
 
 
 def retained_parent(job: dict, root: Path) -> tuple[dict, str, Path]:
-    """Resolve historical parent evidence solely for completed-prefix adoption."""
+    """Interpret historical evidence for adoption or offline replay, never new work."""
     return _read_parent(job, root, validator=validate_retained_preparation_request)
 
 

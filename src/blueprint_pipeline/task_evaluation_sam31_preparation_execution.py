@@ -7,12 +7,12 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 from .fail_closed_blocker_explainer import annotate_blocker
 from .decision_evidence_contracts import canonical_digest
 from .public_scene_host_input_intake import _verified_checkout_head
-from .task_evaluation_sam31_parent_evidence import _parent as _parent, configured_parent_route
+from .task_evaluation_sam31_parent_evidence import _parent as _parent, configured_parent_route, retained_parent
 from .task_evaluation_release_reference_lock import release_reference_lock
 from .task_evaluation_sam31_preparation_queue import (
     SAM31_EXECUTION_ROOT, WAITING_STATE, load_progress, stage_resume_signal, verify_evidence_reference,
@@ -78,7 +78,9 @@ def _file_record(path: Path) -> dict:
 
 
 def _validated_job(job: dict, *, parent_queue: Path, input_root: Path,
-                   source_commit: str, approved_roots: Sequence[Path]) -> tuple[dict, dict]:
+                   source_commit: str, approved_roots: Sequence[Path],
+                   validation_purpose: Literal["new_execution", "retained_offline_replay"] = "new_execution") -> tuple[dict, dict]:
+    _require(validation_purpose in {"new_execution", "retained_offline_replay"}, "validation_purpose_invalid")
     _require(set(job) == {"schema_version", "child_id", "parent_preparation_id",
              "parent_request_digest", "plan_digest", "phase", "inputs_digest",
              "expected_source_commit", "plan_ref", "inputs", "job_digest"}
@@ -92,7 +94,11 @@ def _validated_job(job: dict, *, parent_queue: Path, input_root: Path,
              and job["child_id"] == "sam31-" + canonical_digest(key).removeprefix("sha256:"),
              "job_identity_invalid")
     parent_queue, input_root = configured_parent_route(job, parent_queue, input_root)
-    request, _, _ = _parent(job, parent_queue)
+    # This helper reads evidence; production execution always uses its default
+    # current admission. Offline replay alone may interpret a closed historical
+    # administrative contract, retaining all parent/child and byte joins.
+    reader = retained_parent if validation_purpose == "retained_offline_replay" else _parent
+    request, _, _ = reader(job, parent_queue)
     _require(request["expected_production_commit"] == source_commit == job["expected_source_commit"],
              "source_commit_mismatch")
     plan_ref = _ref(job["plan_ref"])

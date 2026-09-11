@@ -103,7 +103,9 @@ def queue_engineering_handoff(service, record):
         replay = outcome.get("output", {})
         # Missing capacity, source views, authority and a deliberately excluded
         # paid boundary are not permission to patch the program's predicates.
-        if (replay.get("status") not in {"failed", "job_refused"}
+        # Canonical replay uses `refused` only after the stage handler starts.
+        # `job_refused` is parent/job admission and cannot authorize code repair.
+        if (replay.get("status") != "refused"
                 or replay.get("external_boundary_reached") is not False
                 or replay.get("blocker_code") in {None, "replay_process_did_not_write_report", "replay_wall_time_exhausted"}):
             continue
