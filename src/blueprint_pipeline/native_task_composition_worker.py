@@ -78,6 +78,30 @@ def _geometry_visibility_targets(stage, env_path, appearance_path):
     return targets
 
 
+def apply_diagnostic_sorting_mode(stage, mode):
+    """Apply an explicitly requested renderer hint in the transient session layer."""
+    if mode is None:
+        return {"status": "unchanged", "source_assets_mutated": False}
+    if mode != "rayHitDistance":
+        raise CompositionDiagnosticError("composition_diagnostic_sorting_mode_invalid")
+    from pxr import Sdf, Usd
+
+    fields = [p for p in stage.Traverse() if p.GetTypeName() == "ParticleField3DGaussianSplat"]
+    if len(fields) != 1:
+        raise CompositionDiagnosticError("composition_diagnostic_sorting_field_count_invalid")
+    prim = fields[0]
+    before = prim.GetAttribute("sortingModeHint").Get()
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        prim.CreateAttribute("sortingModeHint", Sdf.ValueTypeNames.Token, custom=False).Set(mode)
+    after = prim.GetAttribute("sortingModeHint").Get()
+    if after != mode:
+        raise CompositionDiagnosticError("composition_diagnostic_sorting_readback_failed")
+    return {"status": "diagnostic_override_applied", "prim_path": str(prim.GetPath()),
+        "attribute": "sortingModeHint", "before": before, "after": after,
+        "authority": "digest_bound_diagnostic_request_only", "source_assets_mutated": False,
+        "upstream_transcode_equivalence_claimed": False, "rendering_improvement_proven": False}
+
+
 def make_native_adapters(*, built, stage, request):
     import carb
     from pxr import Usd, UsdGeom, UsdLux
@@ -152,6 +176,11 @@ def make_native_adapters(*, built, stage, request):
             "native_objects": objects,
             **native_physics_clock(env.sim),
             "renderer_settings": {key: settings.get(key) for key in setting_names},
+            "particle_field_render_hints": {
+                str(p.GetPath()): {name: p.GetAttribute(name).Get()
+                    for name in ("sortingModeHint", "projectionModeHint")}
+                for p in stage.Traverse() if p.GetTypeName() == "ParticleField3DGaussianSplat"
+            },
             "lights": {
                 str(p.GetPath()): {
                     a.GetName(): str(a.Get())
@@ -343,6 +372,8 @@ def main(argv=None):
         import omni.usd
 
         stage = omni.usd.get_context().get_stage()
+        result["diagnostic_sorting_mode"] = apply_diagnostic_sorting_mode(
+            stage, request.get("diagnostic_sorting_mode"))
         warmup = setup_and_warm_native_nurec_renderer(
             app, stage, require_display_referred_particlefield=True
         )

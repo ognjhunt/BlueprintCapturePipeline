@@ -71,6 +71,7 @@ def prepare_composition_bundle(
     retained_cell_result=None,
     retained_adapter_reset=None,
     require_composition_gate=False,
+    diagnostic_sorting_mode=None,
 ):
     from blueprint_pipeline.native_task_arena_bundle import build_native_task_arena_bundle
     from blueprint_pipeline.native_task_arena_policy_canary_worker import _resolved_scene_plan
@@ -83,6 +84,8 @@ def prepare_composition_bundle(
     job = Path(job_dir)
     if require_composition_gate and (retained_cell_result or retained_adapter_reset):
         raise ValueError("composition_gate_cannot_repeat_retained_command_replay")
+    if diagnostic_sorting_mode is not None and (not require_composition_gate or diagnostic_sorting_mode != "rayHitDistance"):
+        raise ValueError("composition_sorting_override_requires_bounded_gate")
     if job.exists() and any(job.iterdir()):
         raise ValueError("composition_job_directory_must_be_fresh")
     packet = Path(packet_dir)
@@ -127,6 +130,7 @@ def prepare_composition_bundle(
             "resolved_scene_plan_digest": plan["plan_digest"],
             "camera_role": "external",
             "require_composition_gate": bool(require_composition_gate),
+            "diagnostic_sorting_mode": diagnostic_sorting_mode,
             "camera_source": "actual_native_packet_runtime_camera_builder",
             "target_semantic_class": "task_support",
             "passes": list(PASSES),
@@ -263,6 +267,7 @@ def main(argv=None):
     parser.add_argument("--retained-cell-result")
     parser.add_argument("--retained-adapter-reset")
     parser.add_argument("--require-composition-gate", action="store_true")
+    parser.add_argument("--diagnostic-sorting-mode", choices=["rayHitDistance"])
     parser.add_argument(
         "--dry-run",
         action="store_true",

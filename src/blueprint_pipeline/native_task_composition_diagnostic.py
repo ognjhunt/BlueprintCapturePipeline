@@ -49,6 +49,7 @@ def validate_request(request):
             or request.get('policy_queries_permitted') != 0
             or request.get('physics_steps_between_passes_permitted') != 0
             or request.get('source_asset_mutation_permitted') is not False
+            or request.get('diagnostic_sorting_mode') not in {None, 'rayHitDistance'}
             or type(request.get('render_refresh_count')) is not int
             or not 2 <= request['render_refresh_count'] <= 64):
         raise CompositionDiagnosticError('composition_request_invalid')

@@ -147,6 +147,21 @@ def test_composition_gate_retains_edge_differences_without_promoting_them_to_int
     assert result['interior_pixels_occluded_by_appearance'] == 1
 
 
+def test_diagnostic_sorting_override_is_session_only_and_fixed_state_bound(native):
+    field = native.stage.GetPrimAtPath(native.root + '/scene_appearance/Gaussians')
+    field.CreateAttribute('sortingModeHint', __import__('pxr').Sdf.ValueTypeNames.Token).Set('cameraDistance')
+    source = native.stage.GetRootLayer().ExportToString()
+    before = native.adapters.read_fixed_state()
+    result = worker.apply_diagnostic_sorting_mode(native.stage, 'rayHitDistance')
+    assert result['before'] == 'cameraDistance'
+    assert result['after'] == 'rayHitDistance'
+    assert not result['source_assets_mutated']
+    assert native.stage.GetRootLayer().ExportToString() == source
+    assert native.adapters.read_fixed_state() != before
+    with pytest.raises(diagnostic.CompositionDiagnosticError, match='sorting_mode_invalid'):
+        worker.apply_diagnostic_sorting_mode(native.stage, 'invented')
+
+
 @pytest.mark.parametrize('failure', ['capture', 'pose', 'settings', 'stale', 'physics'])
 def test_scope_restores_on_capture_failure_or_fixed_state_change(native, failure):
     original = native.adapters.render_and_capture
