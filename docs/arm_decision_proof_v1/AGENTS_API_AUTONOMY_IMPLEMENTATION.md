@@ -27,24 +27,24 @@ Hermetic rehearsal is necessary but does not establish live service behavior.
 
 | ID | Requirement | Required evidence | State |
 | --- | --- | --- | --- |
-| A01 | Provider-neutral task, tool, result and runtime identity | Contract tests; legacy receipt compatibility | pending |
+| A01 | Provider-neutral task, tool, result and runtime identity | Contract tests; legacy receipt compatibility | implemented; contract and compatibility tests pass |
 | A02 | Real Agents API session adapter | Official-schema fixtures and admitted live request/readback | live protocol verified; operational job proof pending |
-| A03 | Durable ownership, operation deduplication and uncertain-outcome reconciliation | Crash, duplicate event and concurrent owner tests | pending |
-| A04 | Continue, inspect, cancel and cleanup across process restarts | Fake and live session lifecycle receipts | pending |
-| A05 | Enforce disclosure and accepted retention/trace policy | Negative admission tests and exact account configuration | pending |
-| A06 | Preserve strict SDK budgets; honestly admit managed-budget uncertainty | Reservation tests, project guard verification, official cost closeout | pending |
-| A07 | Existing supervisor capabilities callable through the runtime bridge | Real registry-to-handler-to-worker-to-receipt rehearsal | pending |
-| A08 | Persistent supervision and permitted capability revisitation | New-evidence revision tests without duplicate completed work | pending |
-| A09 | Autonomous failure investigation and preauthorized recovery | Retained-job replay, adoption, refusal and recovery receipts | pending |
-| A10 | CAD author/compile/inspect/repair loop | Actual CAD kernel fixtures, bounded repair and independent validation | pending |
-| A11 | Episode evidence investigation | Synchronized interval/crop retrieval with digest and rights validation | pending |
-| A12 | SAM and appearance evidence inspection with independent final acceptance | Mandatory coverage, localized defect and disclosure tests | pending |
-| A13 | Preserve placement/native feedback, parameter and variation contracts | Existing focused regressions and runtime parity | pending |
-| A14 | WebApp ADP operator integration and runtime status | Authenticated route tests, mocked browser coverage, live readback | pending |
-| A15 | Hands-off event progression and terminal delivery | Restart/outage drill and signed consumer/media readback | pending |
-| A16 | Existing Paperclip execution record retained | Selected ADP worker integration and duplicate-owner tests | pending |
-| A17 | Frozen comparative corpus and promotion decision | Independent quality/cost/intervention/latency measurements | pending |
-| A18 | Complete release and rollback | Protected-main checks, exact deployment, resource closeout, rollback drill | pending |
+| A03 | Durable ownership, operation deduplication and uncertain-outcome reconciliation | Crash, duplicate event and concurrent owner tests | implemented; crash and duplicate-owner rehearsals pass |
+| A04 | Continue, inspect, cancel and cleanup across process restarts | Fake and live session lifecycle receipts | implemented; live basic lifecycle verified, live continuation drill pending |
+| A05 | Enforce disclosure and accepted retention/trace policy | Negative admission tests and exact account configuration | implemented; operational project policy observed, specialist live admissions pending |
+| A06 | Preserve strict SDK budgets; honestly admit managed-budget uncertainty | Reservation tests, project guard verification, official cost closeout | implemented; scoped SDK and project guard verified, official comparison cost closeout pending |
+| A07 | Existing supervisor capabilities callable through the runtime bridge | Real registry-to-handler-to-worker-to-receipt rehearsal | implemented; production registry and deferred replay rehearsals pass |
+| A08 | Persistent supervision and permitted capability revisitation | New-evidence revision tests without duplicate completed work | implemented; revision-driven continuation and automatic failure discovery tested |
+| A09 | Autonomous failure investigation and preauthorized recovery | Retained-job replay, adoption, refusal and recovery receipts | implemented controller connection; deployed retained-job/recovery proof pending |
+| A10 | CAD author/compile/inspect/repair loop | Actual CAD kernel fixtures, bounded repair and independent validation | existing CAD repair loop adopted from main PR #1833; comparative pilot pending |
+| A11 | Episode evidence investigation | Synchronized interval/crop retrieval with digest and rights validation | implemented and worker-to-receipt rehearsed; live specialist/producer rollout pending |
+| A12 | SAM and appearance evidence inspection with independent final acceptance | Mandatory coverage, localized defect and disclosure tests | implemented mandatory-view investigation; live specialist/producer rollout pending |
+| A13 | Preserve placement/native feedback, parameter and variation contracts | Existing focused regressions and runtime parity | incumbent paths retained; regression coverage preserved |
+| A14 | WebApp ADP operator integration and runtime status | Authenticated route tests, mocked browser coverage, live readback | operator core deployed; specialist Website PR #566 merged, configured live task proof pending |
+| A15 | Hands-off event progression and terminal delivery | Restart/outage drill and signed consumer/media readback | durable progression implemented; deployed outage and terminal delivery proof pending |
+| A16 | Existing Paperclip execution record retained | Selected ADP worker integration and duplicate-owner tests | selected-worker bridge implemented and bundled; live configuration/readback pending |
+| A17 | Frozen comparative corpus and promotion decision | Independent quality/cost/intervention/latency measurements | 30 cases frozen; comparison runner implemented, real paired runs pending |
+| A18 | Complete release and rollback | Protected-main checks, exact deployment, resource closeout, rollback drill | drain/adoption/rollback implemented and rehearsed; production promotion and live proof pending |
 
 ## Scientific and operational boundaries
 
@@ -189,3 +189,33 @@ provider, HTTP HMAC/client ownership, cancellation and revocation, deferred
 operation deduplication, offline-worker handoff, saved-input preservation and
 the existing stage-replay/deployment contracts. These are hermetic checks;
 deployment, actual isolated-host execution and live inference remain pending.
+
+## September 11 specialist and supervision implementation
+
+Pipeline PR #1838 merged as `b26d73a0a133b9692eed7b395ca56f7fd52cec53`.
+Website PR #566 merged as `99b6c4eb2b408b9f2296dbfc27ec82be9058d5f6`.
+The latter adds typed episode/visual projections and the selected Paperclip
+worker bridge; its hosted CI and plugin bundle build passed. The separate
+plugin typecheck reports compatibility errors in unchanged legacy SDK calls;
+these are not a passing plugin typecheck or live Paperclip proof.
+
+New reasoning tasks can investigate synchronized episode intervals, traces,
+and exact image crops; visual inspection preserves every required full view
+and never substitutes for independent final acceptance. Supervisor revisions
+retain a single owner and can continue the same settled API session. A typed
+recovery request requires a successful same-task replay and delegates to the
+existing scene controller without increasing the original owner limits.
+
+The automatic failure subscription is optional server configuration. The
+existing preparation producer registers its exact parent identity; a new failed
+child is admitted once per input/source revision, with a bounded lifetime
+inference reservation. Default rollout remains off until the operational pilot
+is accepted. No automatic paid retry is enabled by this subscription.
+
+The frozen diagnostic corpus contains 24 retained operational outcomes and six
+explicitly labelled controlled variants, grouped into tuning and held-out
+partitions. Corpus digest:
+`sha256:675bcefa96730c197217aa73170732b5c8c4e6c6115ba7220db5e92dbc717c8e`.
+The model receives only one case's evidence, never the expected answer.
+Operator-time savings and production qualification must be measured rather
+than inferred from a schema-valid response.
