@@ -29,6 +29,23 @@ def test_subscription_pins_configured_owned_input_root_without_rewriting_existin
         controller_config=controller, agent_config_path=config_path) == first
 
 
+def test_startup_waits_for_persistent_owner_without_admitting_parallel_failure_task(tmp_path):
+    service, _, _, config_path = fixture(tmp_path)
+    config = service.config.model_dump(mode="json")
+    config.update(automatic_run_supervision=True, automatic_failure_investigation=True)
+    write(config_path, config)
+    service = ProductionAgentService(config_path, source_commit="a" * 40)
+    queue, _, job = _queue(tmp_path / "saved")
+    policy = FailureSubscription(subscription_id="startup-window", run_id="scene-owner",
+        parent_preparation_id=job["parent_preparation_id"], parent_request_digest=job["parent_request_digest"],
+        child_queue_root=str(queue), parent_queue_root=str(tmp_path / "parents"), input_root=str(tmp_path),
+        approved_roots=(str(tmp_path),), expires_at=time.time() + 600)
+    write(service.journal.root / "failure-subscriptions/startup-window.json", policy.model_dump(mode="json"))
+    assert discover_retained_failures(service) == [{"subscription_id": "startup-window", "state": "waiting_for_persistent_supervisor"}]
+    assert service.journal.tasks(limit=1000) == []
+    assert not (service.journal.root / "failure-subscription-state/startup-window.json").exists()
+
+
 @pytest.mark.parametrize("managed_enabled", [False, True])
 def test_new_failed_child_is_admitted_once_without_model_or_paid_execution(tmp_path, managed_enabled):
     service, _, template_path, config_path = fixture(tmp_path)

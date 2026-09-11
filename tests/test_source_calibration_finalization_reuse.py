@@ -74,14 +74,14 @@ def _case(tmp_path, monkeypatch):
         "blocker": "edit_input_mask_invalid:source-00"}, "result_digest")
     # Only retained parent admission and source-owner packaging are fixture
     # edges. Real prepared-input, render, closure, frame, mask and reuse gates run.
-    from blueprint_pipeline import task_evaluation_sam31_preparation_execution as execution
+    from blueprint_pipeline import task_evaluation_sam31_job_admission as admission
     from blueprint_pipeline import task_evaluation_sam31_prefix_evidence as science
     def validated(job, **kwargs):
         assert kwargs["validation_purpose"] == "retained_offline_replay"
         assert kwargs["parent_queue"] == parent_queue
         assert kwargs["input_root"] == input_root
         return {}, json.loads(Path(job["plan_ref"]["path"]).read_text())
-    monkeypatch.setattr(execution, "_validated_job", validated)
+    monkeypatch.setattr(admission, "_validated_job", validated)
     monkeypatch.setattr(science, "source_science", lambda host, commit: ({"task": "same"}, {}, {"source": "same"}))
     execution_root = tmp_path / "executions"
     old_output = execution_root / parent[7:] / child / "artifacts"

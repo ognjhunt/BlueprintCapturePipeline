@@ -143,6 +143,8 @@ def reserve_automatic_revision(service, plan, task_id, budget):
     prefix = "automatic_supervision_budget_" + plan.automatic_intent_digest[7:] + "_"
     event_id = prefix + digest(task_id)[7:]
     with service.journal.own_task("automatic-supervision-budget:" + plan.automatic_intent_digest):
+        from .supervision_budget import migrate_failure_holds
+        migrate_failure_holds(service, plan)
         if service.journal.event(event_id) is not None:
             return True
         with service.journal._connect() as connection:
@@ -198,15 +200,14 @@ def automatic_failure_revision(service, plan, task_id, deadline):
         raise AgentExecutionError("automatic_supervision_failed_child_ambiguous")
     if not matches:
         return None
-    bindings = [row for row in service.config.automatic_recovery_bindings
-        if row.parent_request_digest == subscription.parent_request_digest and row.intent_id == plan.run_id]
-    if len(bindings) > 1:
-        raise AgentExecutionError("automatic_supervision_recovery_binding_ambiguous")
+    from .recovery_lineage import resolve_recovery_binding
+    recovery = resolve_recovery_binding(service, intent_id=plan.run_id,
+        parent_request_digest=subscription.parent_request_digest, parent_queue_root=subscription.parent_queue_root)
     template = service.record(plan.template_task_id)
     return prepare_retained_failure(service, task_id=task_id, run_id=plan.run_id, child_id=matches[0]["child_id"],
         owner_client_id="blueprint-webapp", inference_budget_usd=template.task.admission.inference_budget_usd,
         runtime=template.task.admission.runtime, model=template.task.model,
         queue_root=Path(subscription.child_queue_root), parent_queue_root=Path(subscription.parent_queue_root),
         input_root=Path(subscription.input_root), approved_roots=tuple(Path(path) for path in subscription.approved_roots),
-        ttl_seconds=min(900, max(1, int(deadline - time.time()))), controller_recovery=bindings[0] if bindings else None,
+        ttl_seconds=min(900, max(1, int(deadline - time.time()))), controller_recovery=recovery,
         autostart=False, persist=False)
