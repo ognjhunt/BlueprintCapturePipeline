@@ -103,13 +103,14 @@ def observe(sources: tuple[ObservationSource, ...]):
 def validate_current_observation(service, binding: SupervisionBinding, *, controller_recoveries=()):
     from .production import _read_private
     from .supervision_authority import allowance_is_current
+    from .recovery_lineage import recovery_binding_authorized
     plan_path = Path(service.config.supervision_store_root or service.journal.root / "supervision-plans") / (binding.watch_id + ".json")
     plan = SupervisionPlan.model_validate_json(_read_private(plan_path))
     if (not plan.enabled or time.time() >= plan.expires_at or plan.plan_digest != binding.watch_digest
             or plan.sources != binding.sources or not allowance_is_current(service, plan)):
         raise AgentExecutionError("agent_supervision_authority_revoked")
     if plan.automatic_intent_digest and (not service.config.automatic_run_supervision
-            or any(row not in service.config.automatic_recovery_bindings for row in controller_recoveries)):
+            or any(not recovery_binding_authorized(service, row) for row in controller_recoveries)):
         raise AgentExecutionError("agent_automatic_supervision_scope_revoked")
     if observe(binding.sources)["observation_digest"] != binding.observation_digest:
         raise AgentExecutionError("agent_supervision_observation_stale")

@@ -30,6 +30,7 @@ class ControllerRecoveryBinding(BaseModel):
     parent_request_digest: str = Field(pattern=DIGEST)
     preparation_link_path: str
     preparation_link_sha256: str = Field(pattern=DIGEST)
+    allow_controller_successors: bool = False
 
 
 def validate_controller_binding(binding):

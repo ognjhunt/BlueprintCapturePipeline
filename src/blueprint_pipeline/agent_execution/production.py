@@ -201,7 +201,8 @@ class ProductionAgentService:
         if task.admission.runtime == RUNTIME_API:
             self._validate_project_guard(task)
         if task.task_id.startswith("auto-failure-") and record.controller_recoveries:
-            if any(binding not in self.config.automatic_recovery_bindings for binding in record.controller_recoveries):
+            from .recovery_lineage import recovery_binding_authorized
+            if any(not recovery_binding_authorized(self, binding) for binding in record.controller_recoveries):
                 raise AgentExecutionError("agent_automatic_recovery_scope_revoked")
         if record.episode_investigation is not None:
             from .episode_tasks import validate_binding
