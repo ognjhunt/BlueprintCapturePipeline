@@ -120,7 +120,9 @@ class WebappAdmissionOutbox:
                 # Only scheduling metadata changes; queued payload bytes stay
                 # immutable and the receiver deduplicates their task identity.
                 try:
-                    os.utime(path, None, follow_symlinks=False)
+                    newest = max(item.stat().st_mtime_ns for item in self.pending.glob("*.json"))
+                    retry_order = max(time.time_ns(), newest + 1)
+                    os.utime(path, ns=(path.stat().st_atime_ns, retry_order), follow_symlinks=False)
                 except OSError:
                     pass
         return results
