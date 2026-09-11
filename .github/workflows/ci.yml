@@ -141,10 +141,13 @@ jobs:
           uv lock --check
           uv sync --frozen --extra dev
           uv pip install -e BlueprintContracts
+          # Native camera/lifecycle rehearsals use real tensors on this CPU
+          # runner. Keep the CUDA runtime out of the ordinary PR dependency set.
+          uv pip install --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
 
       - name: Run impacted tests and always-on sentinels
         run: |
-          uv run python -m blueprint_pipeline.impacted_test_selection \
+          uv run --no-sync python -m blueprint_pipeline.impacted_test_selection \
             --base "${{ github.event.pull_request.base.sha || github.event.before }}" \
             --head "${{ github.event.pull_request.head.sha || github.sha }}" \
             --no-worktree \
