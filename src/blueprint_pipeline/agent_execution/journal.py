@@ -142,11 +142,21 @@ class AgentJournal:
         with self.own_task("operation:" + operation_id):
             yield
 
-    def register(self, task: AgentTask) -> dict[str, Any]:
+    def register(self, task: AgentTask, *, cancellation: tuple[str, str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
         task = task.snapshot()
         now = time.time()
         document = canonical_json(task.model_dump(mode="json"))
+        if cancellation is not None:
+            reason, event_id, payload = cancellation
+            event_text = canonical_json(payload)
+            if not reason or not event_id or len(event_id) > 256 or len(event_text.encode()) > 2_000_000:
+                raise AgentExecutionError("agent_cancellation_admission_invalid")
         with self._transaction() as connection:
+            if cancellation is not None:
+                old_event = connection.execute("SELECT event_digest FROM events WHERE event_id=?", (event_id,)).fetchone()
+                if old_event is not None and old_event["event_digest"] != digest(payload):
+                    raise AgentExecutionError("agent_event_identity_conflict")
+                connection.execute("INSERT OR IGNORE INTO events VALUES (?,?,?,?)", (event_id, digest(payload), event_text, now))
             row = connection.execute(
                 "SELECT * FROM tasks WHERE task_id=?", (task.task_id,)
             ).fetchone()
@@ -158,6 +168,16 @@ class AgentJournal:
                     "INSERT INTO tasks(task_id,parent_task_id,task_digest,task_json,state,created_at,updated_at) "
                     "VALUES (?,?,?,?,'queued',?,?)",
                     (task.task_id, task.parent_task_id, task.task_digest, document, now, now),
+                )
+            if cancellation is not None:
+                # Registration, ownership and cancellation commit together.
+                # A crash cannot leave a newly registered executable task.
+                connection.execute(
+                    "UPDATE tasks SET cancel_requested=1,"
+                    "cancel_reason=CASE WHEN cancel_reason IS NULL OR cancel_reason='agent_task_deadline' THEN ? ELSE cancel_reason END,"
+                    "state=CASE WHEN session_id IS NULL THEN state ELSE 'cancelling' END,updated_at=? "
+                    "WHERE task_id=? AND state NOT IN ('completed','failed','cancelled')",
+                    (reason, now, task.task_id),
                 )
         return self.task(task.task_id)
 
