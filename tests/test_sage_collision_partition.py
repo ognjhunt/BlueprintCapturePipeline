@@ -10,6 +10,7 @@ from blueprint_pipeline.sage_collision_identity import inspect_sage_collision_id
 from blueprint_pipeline.sage_collision_partition import (
     _record, materialize_sage_collision_partition, validate_partition,
 )
+from blueprint_pipeline.validation_file_digests import file_digest_scope
 from tests.test_sage_collision_identity import _box, _mesh
 
 
@@ -101,3 +102,61 @@ def test_external_source_layer_is_not_composed(tmp_path):
     with pytest.raises(ValueError, match="external_dependency_forbidden"):
         materialize_sage_collision_partition(source_path=source, labels_path=labels,
             instance_ids=["subject", "support"], output_root=tmp_path / "partition")
+
+
+def test_geometry_is_measured_once_per_operation_but_receipts_are_revalidated(tmp_path, monkeypatch):
+    from blueprint_pipeline import sage_collision_partition as partition
+    source, labels = combined_scene(tmp_path)
+    receipt = materialize_sage_collision_partition(source_path=source, labels_path=labels,
+        instance_ids=["subject", "support"], output_root=tmp_path / "partition")
+    calls = {"meshes": 0, "selection": 0}
+    for name in calls:
+        original = getattr(partition, "_" + name)
+        def counted(*args, _name=name, _original=original, **kwargs):
+            calls[_name] += 1
+            return _original(*args, **kwargs)
+        monkeypatch.setattr(partition, "_" + name, counted)
+    kwargs = dict(source_path=source, labels_path=labels, output_path=receipt["output"]["path"])
+    with file_digest_scope():
+        validate_partition(receipt, **kwargs)
+        validate_partition(receipt, **kwargs)
+        assert calls == {"meshes": 2, "selection": 1}
+        changed = json.loads(json.dumps(receipt))
+        changed["component_selection"]["subject"]["component_count"] += 1
+        changed["receipt_digest"] = canonical_digest(changed, digest_field="receipt_digest")
+        with pytest.raises(ValueError, match="selection_changed"):
+            validate_partition(changed, **kwargs)
+        validate_partition(receipt, **kwargs)
+    with file_digest_scope():
+        validate_partition(receipt, **kwargs)
+    assert calls == {"meshes": 4, "selection": 2}
+
+
+@pytest.mark.parametrize("reseal", [False, True])
+def test_warm_geometry_measurement_reopens_changed_usd_bytes(tmp_path, reseal):
+    source, labels = combined_scene(tmp_path)
+    receipt = materialize_sage_collision_partition(source_path=source, labels_path=labels,
+        instance_ids=["subject", "support"], output_root=tmp_path / "partition")
+    output = tmp_path / "partition/partitioned_collision.usd"
+    with file_digest_scope():
+        validate_partition(receipt, source_path=source, labels_path=labels, output_path=output)
+        stage = Usd.Stage.Open(str(output))
+        mesh = UsdGeom.Mesh(stage.GetPrimAtPath(receipt["face_partitions"][0]["output_prim"]))
+        points = mesh.GetPointsAttr().Get()
+        points[0] = points[0] + (0.01, 0., 0.)
+        mesh.GetPointsAttr().Set(points)
+        stage.GetRootLayer().Save()
+        if reseal:
+            receipt["output"] = _record(output)
+            receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+        with pytest.raises(ValueError, match="source_face_geometry_changed" if reseal else "bytes_changed"):
+            validate_partition(receipt, source_path=source, labels_path=labels, output_path=output)
+
+
+def test_bulk_face_comparison_preserves_polygon_boundaries_and_order():
+    import numpy as np
+    from blueprint_pipeline.sage_collision_partition import _selected_face_world
+    mesh = {"face_counts": np.asarray([3, 4, 3]), "face_offsets": np.asarray([0, 3, 7, 10]),
+            "face_world": np.arange(30).reshape(10, 3)}
+    assert np.array_equal(_selected_face_world(mesh, [0, 2]), mesh["face_world"][[0, 1, 2, 7, 8, 9]])
+    assert np.array_equal(_selected_face_world(mesh, [1]), mesh["face_world"][3:7])

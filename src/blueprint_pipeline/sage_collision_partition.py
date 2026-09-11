@@ -18,6 +18,7 @@ import numpy as np
 from .decision_evidence_contracts import canonical_digest
 from .sage_collision_identity import _box_metrics, inspect_sage_collision_identity
 from .scene_placement.interiorgs_index import load_interiorgs_labels
+from .validation_file_digests import scoped_measurement
 
 SCHEMA = "interiorgs_sage_collision_partition.v1"
 CONTAINMENT_TOLERANCE_M = 0.003
@@ -75,10 +76,51 @@ def _meshes(stage):
             faces.append(indices[offset:offset + count])
             offset += count
         result[str(prim.GetPath())] = {"points": points, "world": world, "faces": faces,
+            "face_vertex_indices": np.asarray(indices),
+            "face_counts": np.asarray(counts), "face_offsets": np.r_[0, np.cumsum(counts)],
+            "face_world": world[indices],
             "collision": prim.HasAPI(UsdPhysics.CollisionAPI), "prim": prim,
             "collision_enabled": UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get()
                 if prim.HasAPI(UsdPhysics.CollisionAPI) else None}
     return result
+
+
+class _FaceRows:
+    """Read-only row access without copying millions of Python vertex integers."""
+
+    def __init__(self, indices, offsets):
+        self.indices, self.offsets = indices, offsets
+
+    def __len__(self):
+        return len(self.offsets) - 1
+
+    def __getitem__(self, index):
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return self.indices[self.offsets[index]:self.offsets[index + 1]].tolist()
+
+
+def _measured_meshes(stage, source_digest):
+    # The caller has reopened and hashed the USD, including its no-external-
+    # dependencies check. Keep only numeric geometry in this operation's cache;
+    # live USD prims and their physics attributes are always reopened below.
+    def measure():
+        return {path: {key: value for key, value in row.items() if key not in {"prim", "faces"}}
+                for path, row in _meshes(stage).items()}
+    meshes = scoped_measurement(("sage_partition_mesh_geometry", source_digest), measure)
+    for path, row in meshes.items():
+        row["prim"] = stage.GetPrimAtPath(path)
+        row["faces"] = _FaceRows(row["face_vertex_indices"], row["face_offsets"])
+    return meshes
+
+
+def _selected_face_world(mesh, indices):
+    """Flatten selected faces without changing their order or coordinates."""
+    starts = mesh["face_offsets"][indices]
+    counts = mesh["face_counts"][indices]
+    offsets = np.r_[0, np.cumsum(counts)[:-1]]
+    flat = np.repeat(starts - offsets, counts) + np.arange(int(counts.sum()))
+    return mesh["face_world"][flat]
 
 
 def _components(mesh):
@@ -180,16 +222,21 @@ def validate_partition(receipt, *, source_path, labels_path, output_path):
     _require(receipt.get("schema_version") == SCHEMA and receipt.get("status") == "geometry_partitioned_pending_native_validation"
              and receipt.get("receipt_digest") == canonical_digest(receipt, digest_field="receipt_digest"),
              "receipt_invalid")
+    reopened = {}
     for name, path in (("source", source_path), ("labels", labels_path), ("output", output_path)):
         actual = _record(path)
         _require(all(receipt.get(name, {}).get(k) == actual[k] for k in ("sha256", "size_bytes")), "bytes_changed")
+        reopened[name] = actual["sha256"]
     source_stage, output_stage = _stage(source_path), _stage(output_path)
-    original, derived = _meshes(source_stage), _meshes(output_stage)
+    original = _measured_meshes(source_stage, reopened["source"])
+    derived = _measured_meshes(output_stage, reopened["output"])
     objects = load_interiorgs_labels(labels_path)
     requested = receipt.get("selected_instance_ids")
     _require(isinstance(requested, list) and len(requested) == len(set(requested)) == 2,
              "selection_invalid")
-    selected = _selection(original, [next(o for o in objects if o.id == oid) for oid in requested])
+    selected = scoped_measurement(("sage_partition_component_selection", reopened["source"],
+        reopened["labels"], tuple(requested), WELD_DECIMALS, CONTAINMENT_TOLERANCE_M),
+        lambda: _selection(original, [next(o for o in objects if o.id == oid) for oid in requested]))
     _require(selected == receipt.get("component_selection"), "selection_changed")
     coverage = defaultdict(list)
     paths = set()
@@ -204,9 +251,9 @@ def validate_partition(receipt, *, source_path, labels_path, output_path):
         old, new = original[source], derived[dest]
         _require(old["collision"] == new["collision"] and old["collision_enabled"] == new["collision_enabled"]
                  and len(indices) == len(new["faces"]), "collision_state_changed")
-        for source_index, face in zip(indices, new["faces"], strict=True):
-            _require(np.array_equal(old["world"][old["faces"][source_index]], new["world"][face]),
-                     "source_face_geometry_changed")
+        _require(np.array_equal(old["face_counts"][indices], new["face_counts"])
+                 and np.array_equal(_selected_face_world(old, indices), new["face_world"]),
+                 "source_face_geometry_changed")
         # Keep authored collision approximation. Splitting changes cooking
         # inputs, so the receipt explicitly still requires native qualification.
         for attr in old["prim"].GetAttributes():
