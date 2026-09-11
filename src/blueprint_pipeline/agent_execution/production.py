@@ -35,6 +35,7 @@ from .stage_recovery import StageReplayBinding, StageReplayTools
 from .webapp_delivery import WebappAdmissionOutbox
 from .episode_tasks import EpisodeTaskBinding
 from .supervision import SupervisionBinding
+from .visual_tasks import VisualTaskBinding
 
 
 CONFIG_ENV = "BLUEPRINT_AGENT_EXECUTION_CONFIG"
@@ -64,6 +65,7 @@ class ProductionConfig(BaseModel):
     managed_api_enabled: bool = False
     project_guard_receipt_digest: str | None = Field(default=None, pattern=DIGEST)
     project_guard_receipt_file: str | None = None
+    project_guard_receipts: dict[str, str] = Field(default_factory=dict)
     max_project_budget_usd: float | None = Field(default=None, gt=0, le=100, allow_inf_nan=False)
     webhook_secret_file: str | None = None
     poll_seconds: float = Field(default=5, ge=0.1, le=60)
@@ -81,6 +83,7 @@ class TaskRecord(BaseModel):
     stage_replays: tuple[StageReplayBinding, ...] = ()
     episode_investigation: EpisodeTaskBinding | None = None
     supervision: SupervisionBinding | None = None
+    visual_investigation: VisualTaskBinding | None = None
 
 
 def _read_private(path: Path, *, limit: int = 4_000_000, secret: bool = False) -> bytes:
@@ -116,6 +119,9 @@ class ProductionAgentService:
                 raise AgentExecutionError("agent_configuration_requires_absolute_path")
         if self.config.supervision_store_root and not Path(self.config.supervision_store_root).is_absolute():
             raise AgentExecutionError("agent_configuration_requires_absolute_path")
+        if any(re.fullmatch(DIGEST, identity) is None or not Path(path).is_absolute()
+               for identity, path in self.config.project_guard_receipts.items()):
+            raise AgentExecutionError("agent_project_guard_registry_invalid")
         self.config_digest = digest(self.config.model_dump(mode="json"))
         self.journal = AgentJournal(self.config.state_root)
         self.registry = ToolRegistry.default()
@@ -156,8 +162,9 @@ class ProductionAgentService:
             raise AgentExecutionError("agent_server_admission_scope_invalid")
         if task.admission.runtime == RUNTIME_API and (
             not self.config.managed_api_enabled
-            or not self.config.project_guard_receipt_digest
-            or task.admission.project_guard_receipt_digest != self.config.project_guard_receipt_digest
+            or task.admission.project_guard_receipt_digest not in {
+                self.config.project_guard_receipt_digest, *self.config.project_guard_receipts,
+            }
         ):
             raise AgentExecutionError("agent_managed_project_policy_not_admitted")
         if task.admission.runtime == RUNTIME_API:
@@ -165,6 +172,9 @@ class ProductionAgentService:
         if record.episode_investigation is not None:
             from .episode_tasks import validate_binding
             validate_binding(record.episode_investigation, task)
+        if record.visual_investigation is not None:
+            from .visual_tasks import validate_visual_binding
+            validate_visual_binding(record.visual_investigation, task)
         if record.supervision is not None:
             from .supervision import validate_current_observation
             validate_current_observation(self, record.supervision)
@@ -179,7 +189,9 @@ class ProductionAgentService:
             raise AgentExecutionError("agent_server_context_or_authority_invalid")
 
     def _validate_project_guard(self, task: AgentTask) -> None:
-        path = self.config.project_guard_receipt_file
+        path = self.config.project_guard_receipts.get(task.admission.project_guard_receipt_digest or "")
+        if path is None and task.admission.project_guard_receipt_digest == self.config.project_guard_receipt_digest:
+            path = self.config.project_guard_receipt_file
         if not path or not Path(path).is_absolute() or self.config.max_project_budget_usd is None:
             raise AgentExecutionError("agent_project_guard_observation_missing")
         guard = json.loads(_read_private(Path(path)))
@@ -208,6 +220,22 @@ class ProductionAgentService:
                 or limit["threshold_amount"] != round(self.config.max_project_budget_usd * 100)):
             raise AgentExecutionError("agent_project_guard_scope_invalid")
 
+    def managed_guard_digest(self, disclosure_scope: str) -> str:
+        """Choose only a separately admitted current policy for this exact scope."""
+        registry = dict(self.config.project_guard_receipts)
+        if self.config.project_guard_receipt_digest and self.config.project_guard_receipt_file:
+            registry[self.config.project_guard_receipt_digest] = self.config.project_guard_receipt_file
+        matches = []
+        for identity, path in registry.items():
+            guard = json.loads(_read_private(Path(path)))
+            if digest(guard) != identity:
+                raise AgentExecutionError("agent_project_guard_digest_mismatch")
+            if guard.get("disclosure_scope") == disclosure_scope and float(guard.get("expires_at") or 0) > time.time():
+                matches.append((float(guard.get("observed_at") or 0), identity))
+        if not matches:
+            raise AgentExecutionError("agent_managed_disclosure_policy_not_admitted")
+        return max(matches)[1]
+
     def _credential(self, task: AgentTask) -> SDKCredential:
         if task.admission.project_id != self.config.project_id:
             raise AgentExecutionError("agent_credential_project_mismatch")
@@ -221,7 +249,13 @@ class ProductionAgentService:
         )
         record = self.record(task.task_id)
         output_model = OperationalDiagnosis
-        if record.episode_investigation is not None:
+        if record.visual_investigation is not None:
+            from .visual_tasks import VisualInvestigationOutput, tools_for_visual_task
+            if record.stage_replays or record.episode_investigation is not None or record.supervision is not None:
+                raise AgentExecutionError("visual_task_mixed_scope_forbidden")
+            tools = tools_for_visual_task(record.visual_investigation, task)
+            output_model = VisualInvestigationOutput
+        elif record.episode_investigation is not None:
             from .episode_tasks import tools_for_task
             from ..episode_interpretation import EpisodeInterpreterOutput
             if record.stage_replays:
@@ -297,11 +331,12 @@ class ProductionAgentService:
             "result": state["result"], "usage": state["usage"],
             "resource_closeout": "not_established_by_agent_completion", "proof_effect": "none",
         }
-        if record.episode_investigation is not None:
+        if record.episode_investigation is not None or record.visual_investigation is not None:
             from ..decision_evidence_contracts import cross_runtime_canonical_digest
-            collected = self.journal.event("episode_collected_" + record.task.task_digest[7:])
-            failed = self.journal.event("episode_collection_terminal_" + record.task.task_digest[7:])
-            result["interpretation"] = collected or failed or {"status": "pending_validation"}
+            kind = "visual" if record.visual_investigation is not None else "episode"
+            collected = self.journal.event(kind + "_collected_" + record.task.task_digest[7:])
+            failed = self.journal.event(kind + "_collection_terminal_" + record.task.task_digest[7:])
+            result["visual_review" if kind == "visual" else "interpretation"] = collected or failed or {"status": "pending_validation"}
             result["output_cross_runtime_digest"] = (
                 cross_runtime_canonical_digest(state["result"]["output"]) if state["result"] else None)
         return result
@@ -338,6 +373,8 @@ class ProductionAgentService:
                 record = self.record(path.stem)
                 if record.episode_investigation is not None:
                     self._collect_episode(record)
+                if record.visual_investigation is not None:
+                    self._collect_visual(record)
                 self.webapp_outbox.queue(record)
                 if record.enabled and record.autostart:
                     try:
@@ -352,6 +389,22 @@ class ProductionAgentService:
                 # unrelated existing sessions. Never log the private record.
                 continue
         return count
+
+    def _collect_visual(self, record):
+        from .visual_tasks import collect_visual_task
+        identity = record.task.task_digest[7:]
+        if self.journal.event("visual_collected_" + identity) or self.journal.event("visual_collection_terminal_" + identity):
+            return
+        try:
+            collect_visual_task(self, record.task.task_id)
+        except (AgentExecutionError, ValueError, OSError) as exc:
+            code = str(exc) if isinstance(exc, AgentExecutionError) else "visual_investigation_collection_refused"
+            if code == "agent_task_missing":
+                return
+            if self.journal.task(record.task.task_id)["state"] == "completed":
+                self.journal.record_event("visual_collection_terminal_" + identity, {
+                    "task_id": record.task.task_id, "status": "refused", "error_code": code,
+                    "independent_final_review_required": True, "proof_effect": "none"})
 
     def _collect_episode(self, record):
         from .episode_tasks import collect_episode_task

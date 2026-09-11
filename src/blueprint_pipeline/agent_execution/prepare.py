@@ -87,7 +87,7 @@ def prepare_retained_failure(
         session_retention="until_deleted" if managed else "not_admitted",
         trace_retention="provider_default" if managed else "not_admitted", region="us" if managed else "default",
         inference_budget_usd=inference_budget_usd, expires_at=deadline,
-        project_guard_receipt_digest=service.config.project_guard_receipt_digest if managed else None,
+        project_guard_receipt_digest=service.managed_guard_digest("blueprint_sanitized_operational_records") if managed else None,
     )
     task = AgentTask(
         task_id=task_id, run_id=run_id, capability="runtime_failure_recovery",

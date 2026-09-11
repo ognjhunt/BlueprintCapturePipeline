@@ -125,7 +125,7 @@ def progress_plan(service, plan: SupervisionPlan):
     template = service.record(plan.template_task_id)
     template_digest = digest({key: value for key, value in template.model_dump(mode="json").items() if key != "enabled"})
     if (template.task.run_id != plan.run_id or template.autostart or template.supervision is not None
-            or template.episode_investigation is not None):
+            or template.episode_investigation is not None or template.visual_investigation is not None):
         raise AgentExecutionError("agent_supervision_template_not_admitted")
     # A durable workflow owner is separate from any provider session.
     with service.journal.own_task("supervision-run:" + plan.run_id):

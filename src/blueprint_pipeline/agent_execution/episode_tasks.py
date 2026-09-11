@@ -185,7 +185,7 @@ def prepare_episode_task(service, *, task_id: str, run_id: str, request,
         budget_policy="project_guard_accepted_uncertainty" if managed else "strict_per_call",
         session_retention="until_deleted" if managed else "not_admitted",
         trace_retention="provider_default" if managed else "not_admitted", region="us" if managed else "default",
-        project_guard_receipt_digest=service.config.project_guard_receipt_digest if managed else None,
+        project_guard_receipt_digest=service.managed_guard_digest("rights_admitted_episode_evidence") if managed else None,
         inference_budget_usd=inference_budget_usd, expires_at=deadline,
     )
     task = AgentTask(task_id=task_id, run_id=run_id, capability=CAPABILITY,
