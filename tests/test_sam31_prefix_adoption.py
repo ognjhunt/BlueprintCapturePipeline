@@ -59,6 +59,31 @@ def test_automatic_selector_prefers_longest_compatible_and_keeps_rejections(monk
     assert calls == [("segment_cutout", None), ("contribution_sweep", None), ("contribution_sweep", "selected.json")]
 
 
+def test_retained_prefix_parent_uses_owned_queue_and_rejects_duplicate_owner(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_sam31_parent_evidence import retained_parent
+    request, _ = production_request_with_fetchable_bytes()
+    request_digest = canonical_digest(request)
+    job = {"parent_preparation_id": request["preparation_id"], "parent_request_digest": request_digest}
+    filename = request["preparation_id"] + "-" + request_digest[7:] + ".json"
+    owned, legacy = tmp_path / "owned", tmp_path / "legacy"
+    path = owned / "blocked" / filename
+    write(path, {"request": request, "request_digest": request_digest}, "envelope_digest")
+    before = path.read_bytes()
+    config_path = tmp_path / "controller.json"
+    write(config_path, {"schema_version": "task_evaluation_scene_progression_config.v1",
+        "preparation_queue_root": str(owned), "preparation_worker": {"input_root": str(tmp_path / "inputs")}},
+        "config_digest")
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_PROGRESSION_CONFIG", str(config_path))
+    observed, state, found = retained_parent(job, legacy)
+    assert observed == request and state == "blocked" and found == path
+    assert path.read_bytes() == before
+    duplicate = legacy / "blocked" / filename
+    duplicate.parent.mkdir(parents=True)
+    duplicate.write_bytes(before)
+    with pytest.raises(ValueError, match="parent_identity_ambiguous"):
+        retained_parent(job, legacy)
+
+
 def test_automatic_selector_reports_no_compatible_prefix_without_publishing(monkeypatch):
     def materialize(**kwargs):
         assert kwargs["output_path"] is None

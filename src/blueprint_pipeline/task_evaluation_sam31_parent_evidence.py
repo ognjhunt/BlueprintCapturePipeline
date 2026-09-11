@@ -17,6 +17,11 @@ def _parent(job: dict, root: Path) -> tuple[dict, str, Path]:
 
 def retained_parent(job: dict, root: Path) -> tuple[dict, str, Path]:
     """Interpret historical evidence for adoption or offline replay, never new work."""
+    # Prefix adoption may carry the legacy machinery root while this intent's
+    # parent lives in the operator's owned queue. Use the same unambiguous
+    # routing as execution before reopening the exact historical envelope.
+    root, _ = configured_parent_route(job, root,
+        Path("/var/lib/blueprint/task-evaluation-inputs/prepared-references"))
     return _read_parent(job, root, validator=validate_retained_preparation_request)
 
 
