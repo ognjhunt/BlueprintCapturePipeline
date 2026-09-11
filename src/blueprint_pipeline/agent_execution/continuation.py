@@ -75,7 +75,12 @@ def continue_task(runtime, task: AgentTask):
         roots = runtime._root_turns(session_id)
         if any(turn.get("status") not in TERMINAL_STATES for turn in roots) or session.get("required_actions"):
             raise AgentExecutionError("agent_continuation_session_not_idle")
-        if not roots or roots[-1].get("id") != parent["turn_id"]:
+        # Provider turn listings are newest first. Bind the complete owned
+        # lineage by identity instead of depending on a listing's order.
+        root_ids = [_identifier(turn.get("id")) for turn in roots]
+        owned_ids = {row["turn_id"] for row in runtime.journal.lineage_tasks(previous.task_id) if row["turn_id"]}
+        if (not roots or len(root_ids) != len(set(root_ids)) or set(root_ids) != owned_ids
+                or parent["turn_id"] not in owned_ids):
             raise AgentExecutionError("agent_continuation_unowned_turn")
         marker = {"role": "user", "content": [{"type": "input_text", "text": canonical_json({
             "blueprint_task_id": task.task_id, "blueprint_task_digest": task.task_digest,
@@ -120,7 +125,7 @@ def task_turns(runtime, task: AgentTask, session_id: str, roots):
         selected = [turn for turn in roots if turn.get("id") == intent["turn_id"]]
         if len(selected) != 1:
             raise AgentExecutionError("agent_continuation_bound_turn_missing")
-        if roots[-1].get("id") != intent["turn_id"]:
+        if {turn.get("id") for turn in roots} != {*intent["previous_turns"], intent["turn_id"]}:
             raise AgentExecutionError("agent_continuation_unowned_turn")
         return selected
     candidates = [turn for turn in roots if turn.get("id") not in intent["previous_turns"]]
@@ -129,7 +134,8 @@ def task_turns(runtime, task: AgentTask, session_id: str, roots):
     if len(candidates) != 1:
         raise AgentExecutionError("agent_continuation_new_turn_ambiguous")
     turn_id = _identifier(candidates[0]["id"])
-    expected = Counter(canonical_json(message) for message in intent["payload"]["events"][0]["input"])
+    expected_messages = intent["payload"]["events"][0]["input"]
+    expected = Counter(canonical_json(message) for message in expected_messages)
     items = [item for item in runtime._list(f"/agents/sessions/{session_id}/items")
              if item.get("type") == "message" and item.get("role") == "user" and item.get("turn_id") == turn_id]
     identities = [_identifier(item.get("id")) for item in items]
@@ -139,11 +145,18 @@ def task_turns(runtime, task: AgentTask, session_id: str, roots):
         return []
     if any(set(item) - {"id", "type", "role", "content", "phase", "status", "turn_id"} for item in items):
         raise AgentExecutionError("agent_continuation_saved_input_shape_invalid")
-    observed = Counter(canonical_json(message) for message in _input_messages([
+    observed_messages = _input_messages([
         {"role": item["role"], "content": item.get("content")} for item in items
-    ]))
+    ])
+    observed = Counter(canonical_json(message) for message in observed_messages)
     if expected != observed:
-        return []  # Delayed or partial persistence cannot authorize tools/output.
+        # The live API coalesces adjacent user messages into one saved message,
+        # retaining their separate content blocks in order. Accept only that
+        # exact representation; partial, reordered or extra bytes still refuse.
+        coalesced = {"role": "user", "content": [part for message in expected_messages for part in message["content"]]}
+        if (any(message["role"] != "user" for message in expected_messages)
+                or observed_messages != [coalesced]):
+            return []
     runtime.journal.continuation_delivery(task.task_id, "bound", turn_id=turn_id)
     runtime.journal.set_state(task.task_id, "running", turn_id=turn_id)
     return candidates

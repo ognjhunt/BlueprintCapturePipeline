@@ -45,8 +45,8 @@ class ContinuingAPI(FakeAPI):
             return {}
         value = super().request(method, path, body=body, query=query)
         if path.endswith("/turns"):
-            value["data"] = [*self.previous_turns,
-                             {**value["data"][0], "id": self.current_turn}]
+            value["data"] = [{**value["data"][0], "id": self.current_turn},
+                             *reversed(self.previous_turns)]
         if path.endswith("/items"):
             value["data"] = [*self.previous_items, self.final_message(),
                              *([] if self.hide_new_input else self.inputs)]
@@ -90,6 +90,28 @@ def test_continue_uses_same_session_and_new_result_turn(tmp_path):
     assert sum(method == "POST" and path == "/agents/sessions" for method, path, *_ in api.calls) == 1
 
 
+@pytest.mark.parametrize("change", [None, "missing", "reordered", "extra"])
+def test_live_coalesced_input_preserves_every_ordered_content_block(tmp_path, change):
+    run, api, task = completed_parent(tmp_path)
+    followup = successor(task)
+    run.continue_task(followup)
+    blocks = [part for message in api.inputs for part in message["content"]]
+    if change == "missing":
+        blocks = blocks[1:]
+    elif change == "reordered":
+        blocks = list(reversed(blocks))
+    elif change == "extra":
+        blocks = [*blocks, blocks[0]]
+    api.inputs = [{**api.inputs[0], "content": blocks}]
+    api.output, api.turn_status = {"answer": 9}, "completed"
+    state = run.step(followup.task_id)
+    assert state["state"] == ("completed" if change is None else "continuing")
+    if change is None:
+        assert state["result"]["output"] == {"answer": 9}
+        assert state["result"]["turn_id"] == "turn_2"
+        assert run.inspect(task.task_id)["result"]["output"] == {"answer": 7}
+
+
 def test_uncertain_followup_recovers_saved_input_without_resend(tmp_path):
     run, api, task = completed_parent(tmp_path)
     followup = successor(task)
@@ -99,6 +121,17 @@ def test_uncertain_followup_recovers_saved_input_without_resend(tmp_path):
     restarted.continue_task(followup)
     assert restarted.step(followup.task_id)["turn_id"] == "turn_2"
     assert len(api.previous_turns) == 1
+
+
+def test_cancelled_coalesced_followup_settles_and_deletes_its_lineage(tmp_path):
+    run, api, task = completed_parent(tmp_path)
+    followup = successor(task)
+    run.continue_task(followup)
+    api.inputs = [{**api.inputs[0], "content": [part for row in api.inputs for part in row["content"]]}]
+    run.cancel(followup.task_id)
+    assert run.step(followup.task_id)["state"] == "cancelled"
+    assert run.cleanup(followup.task_id)["cleanup_state"] == "deleted"
+    assert run.inspect(task.task_id)["cleanup_state"] == "deleted"
 
 
 def test_partial_saved_input_cannot_authorize_turn_or_reuse_old_answer(tmp_path):
