@@ -81,7 +81,7 @@ def scene_execution_authority_blockers(
     if (intent.get("intent_digest") != binding["intent_digest"]
             or any(attempt.get(k) != binding[k] for k in required - {"schema_version"})):
         return ["scene_execution_owner_record_mismatch"]
-    from .task_evaluation_unstarted_controls_reservations import validated_cancellation
+    from .task_evaluation_controls_cancellation_evidence import validated_cancellation
     try:
         if validated_cancellation(directory, attempt) is not None:
             return ["scene_execution_owner_attempt_cancelled_before_execution"]

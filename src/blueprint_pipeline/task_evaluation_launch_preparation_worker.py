@@ -457,7 +457,8 @@ def materialize_preparation_references(
             expected_source_commit=validated["expected_production_commit"],
             service_account=service_account,
             requested_uris=[reference["uri"] for reference in references],
-            environment=installed_source_environment,
+            **({"environment": installed_source_environment}
+               if installed_source_environment is not None else {}),
         )
     except (InstalledSourceBindingError, OSError, ValueError) as exc:
         raise TaskEvaluationLaunchPreparationWorkerError(str(exc)) from exc
