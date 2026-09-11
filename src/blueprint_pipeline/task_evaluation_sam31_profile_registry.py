@@ -30,7 +30,7 @@ def resolve_sam31_profile(plan: Mapping[str, Any]) -> Path:
     digest = plan.get("server_profile_sha256")
     require(isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is not None,
             "sam31_server_profile_digest_invalid")
-    registry = os.getenv(REGISTRY_ENV, "")
+    registry = os.getenv(REGISTRY_ENV) or DEFAULT_PROFILE_REGISTRY_ROOT
     if registry:
         root = Path(registry)
         require(root.is_absolute() and not any(p.is_symlink() for p in (root, *root.parents)),

@@ -82,6 +82,31 @@ def test_default_registry_root_is_the_fixed_scene_independent_content_registry()
     assert DEFAULT_PROFILE_REGISTRY_ROOT == "/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry"
 
 
+def test_isolated_worker_resolves_default_registry_and_rejects_tampering(tmp_path, monkeypatch):
+    from pathlib import Path
+    from blueprint_pipeline import task_evaluation_sam31_profile_registry as module
+    registry = tmp_path / "canonical-default-registry"
+    source = profile(tmp_path, "retained", "a")
+    record = register_sam31_profile(profile_path=source, registry_root=registry)
+    monkeypatch.setattr(module, "DEFAULT_PROFILE_REGISTRY_ROOT", str(registry))
+    monkeypatch.delenv(REGISTRY_ENV, raising=False)
+    monkeypatch.delenv(PROFILE_ENV, raising=False)
+    plan = {"server_profile_sha256": record["sha256"]}
+    assert str(resolve_sam31_profile(plan)) == record["path"]
+    # An absent exact entry preserves the existing legacy compatibility route.
+    other = profile(tmp_path, "legacy", "b")
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_inputs import sha
+    monkeypatch.setenv(PROFILE_ENV, str(other))
+    assert resolve_sam31_profile({"server_profile_sha256": sha(other)}) == other
+    # A present but corrupt registry entry may never fall back to valid legacy bytes.
+    monkeypatch.setenv(PROFILE_ENV, str(source))
+    target = Path(record["path"])
+    target.chmod(0o640)
+    target.write_text("changed")
+    with pytest.raises(SceneConfigurationSubmissionError, match="server_profile_changed"):
+        resolve_sam31_profile(plan)
+
+
 def test_legacy_profile_still_requires_exact_plan_digest(tmp_path, monkeypatch):
     source = profile(tmp_path, "first", "a")
     record = register_sam31_profile(profile_path=source, registry_root=tmp_path / "registry")
