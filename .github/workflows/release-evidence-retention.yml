@@ -57,7 +57,7 @@ jobs:
       SIGNATURE_RUN_ID: ${{ inputs.signature_run_id }}
     steps:
       - name: Checkout exact release SHA
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
         with:
           ref: ${{ inputs.repository_sha }}
           fetch-depth: 0
