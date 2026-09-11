@@ -171,6 +171,13 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
 )
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
+    "native_task_asset_composition_gate.py",
+    "native_task_composition_diagnostic.py",
+    "native_task_composition_worker.py",
+    "adp009d_isaac_runtime.py",
+    "adp009d_approach_capture.py",
+    "adp009d_hold_trace.py",
+    "adp009d_newton_collision_adapter.py",
     "policy_canary_worker_evidence.py",
     "task_object_native_settle_gate.py",
     "task_object_native_settle_runtime.py",

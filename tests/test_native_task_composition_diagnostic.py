@@ -75,7 +75,7 @@ def native(tmp_path, monkeypatch):
     built = NS(env=env, plan={'objects':[{'semantic_role':'scene_appearance','prim_path':'{ENV_REGEX_NS}/scene_appearance'}]},
         camera_scene_names={'external':'external_camera'}, scene_asset_names={k:k for k in ('scene_appearance','scene_collision','task_object','task_support')})
     adapters = worker.make_native_adapters(built=built, stage=stage, request=request())
-    return NS(stage=stage, root=root, before_layer=before_layer, adapters=adapters, camera=camera,
+    return NS(stage=stage, root=root, before_layer=before_layer, adapters=adapters, camera=camera, built=built,
               config=config, sim=sim, output=tmp_path/'result', scene=scene)
 
 
@@ -98,6 +98,53 @@ def test_three_native_passes_retain_exact_aovs_calibration_and_restore_light_pre
     assert UsdGeom.Imageable(native.stage.GetPrimAtPath(native.root+'/scene_collision')).ComputeVisibility()=='invisible'
     assert native.stage.GetPrimAtPath(native.root+'/task_support/embedded_light').GetAttribute('inputs:intensity').Get()==2
     assert native.sim.get_physics_step_count() == 0
+
+
+@pytest.mark.parametrize('intrusion', [False, True])
+def test_prepolicy_composition_gate_uses_both_views_and_restores_policy_buffers(native, intrusion):
+    from blueprint_pipeline.native_task_asset_composition_gate import run_native_asset_composition_gate
+    native.built.plan['objects'].append({'semantic_role': 'task_support'})
+    native.built.camera_scene_names['overview'] = 'external_camera'
+    original = native.camera.update
+    def update(*args, **kwargs):
+        original(*args, **kwargs)
+        for key, value in native.camera.data.output.items():
+            native.camera.data.output[key] = value.repeat_interleave(2, dim=1).repeat_interleave(2, dim=2)
+        appearance = native.stage.GetPrimAtPath(native.root + '/scene_appearance/Gaussians').GetAttribute('visibility').Get() != 'invisible'
+        if intrusion and appearance:
+            native.camera.data.output['semantic_segmentation'][0, 5, 8, 0] = 9
+    native.camera.update = update
+    result = run_native_asset_composition_gate(built=native.built, plan=native.built.plan,
+        output_root=native.output, stage=native.stage)
+    assert result['passed'] is not intrusion, result
+    assert [row['camera_role'] for row in result['views']] == ['external', 'overview']
+    assert result['physics_steps'] == 0
+    assert result['full_scene_sensor_buffers_refreshed']
+    assert native.stage.GetRootLayer().ExportToString() == native.before_layer
+    # Full-scene appearance must be back in the buffers when the gate returns.
+    assert native.camera.data.output['rgb'][0, 5, 8].tolist() == [110, 70, 40]
+    if intrusion:
+        assert all(row['assessment']['interior_pixels_occluded_by_appearance'] == 1 for row in result['views'])
+        assert result['automatic_gaussian_deletion_authorized'] is False
+
+
+def test_composition_gate_retains_edge_differences_without_promoting_them_to_interior_intrusion(tmp_path):
+    from blueprint_pipeline.native_task_asset_composition_gate import assess_composition_pixels
+    root = tmp_path / 'pixel_comparison'
+    root.mkdir()
+    mask = np.ones((20, 30), dtype=bool)
+    missing = np.zeros_like(mask)
+    missing[0, 10] = True
+    np.save(root / 'native_mesh_target_semantic_mask.npy', mask)
+    np.save(root / 'mesh_target_occluded_in_full.npy', missing)
+    result = assess_composition_pixels({'status': 'captured', 'blockers': []}, output_root=tmp_path)
+    assert result['passed']
+    assert result['silhouette_pixels_occluded_by_appearance'] == 1
+    missing[10, 10] = True
+    np.save(root / 'mesh_target_occluded_in_full.npy', missing)
+    result = assess_composition_pixels({'status': 'captured', 'blockers': []}, output_root=tmp_path)
+    assert not result['passed']
+    assert result['interior_pixels_occluded_by_appearance'] == 1
 
 
 @pytest.mark.parametrize('failure', ['capture', 'pose', 'settings', 'stale', 'physics'])
@@ -202,3 +249,30 @@ def test_native_semantic_ids_and_depth_dtype_are_not_narrowed_by_shared_writer(n
     assert labels.dtype==np.int64 and (labels==exact_id).all()
     assert depth.dtype==np.float64 and (depth==exact_depth).all()
     assert full['semantic_segmentation']['pixel_counts_by_id']=={str(exact_id):96}
+
+
+def test_rgba_semantic_keys_reuse_native_decoder_and_measure_occluded_tray(native):
+    original = native.camera.update
+    tray_id = -1066469  # Retained V28f native RGBA tuple (27, 186, 239, 255).
+    background_id = -16777216
+    native.camera.data.info = {'semantic_segmentation': {'idToLabels': {
+        '(27, 186, 239, 255)': {'class': 'task_support'},
+        '(0, 0, 0, 255)': {'class': 'UNLABELLED'},
+    }}}
+
+    def rgba_update(*args, **kwargs):
+        original(*args, **kwargs)
+        semantic = native.camera.data.output['semantic_segmentation']
+        semantic[semantic == 7] = tray_id
+        semantic[semantic == 9] = background_id
+        appearance = native.stage.GetPrimAtPath('/World/envs/env_0/scene_appearance/Gaussians').GetAttribute('visibility').Get() != 'invisible'
+        if appearance:
+            semantic[:, 2:4, 3:5, :] = background_id
+    native.camera.update = rgba_update
+    result = diagnostic.run_composition_diagnostic(request(), output_root=native.output, adapters=native.adapters)
+    assert result['status'] == 'captured', result['blockers']
+    comparison = result['pixel_comparison']
+    assert comparison['native_mesh_target_pixel_count'] == 96
+    assert comparison['native_mesh_target_pixels_occluded_in_full'] == 4
+    assert comparison['target_pixel_count'] == 92
+    assert result['physics_steps_between_passes'] == 0

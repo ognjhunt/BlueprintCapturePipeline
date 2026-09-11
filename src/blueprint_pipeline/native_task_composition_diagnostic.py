@@ -44,7 +44,7 @@ def validate_request(request):
     if (request.get('schema_version') != REQUEST_SCHEMA
             or request.get('request_digest') != canonical_digest(request, digest_field='request_digest')
             or request.get('passes') != list(PASSES)
-            or request.get('camera_role') != 'external'
+            or request.get('camera_role') not in {'external', 'overview'}
             or request.get('target_semantic_class') != 'task_support'
             or request.get('policy_queries_permitted') != 0
             or request.get('physics_steps_between_passes_permitted') != 0
@@ -88,16 +88,26 @@ def compare_pass_pixels(rows, output_root, *, target_class):
     """Report paired raw pixels; Gaussian distance AOV semantics remain unqualified."""
     import numpy as np
     from PIL import Image
+    from .native_task_camera_observability import measure_native_task_semantic_label_pixels
     by_pass = {row['pass']: row['camera'] for row in rows}
     full = by_pass['full']
     info = full['semantic_segmentation']['id_to_labels'] or {}
     labels = info.get('idToLabels', info)
-    ids = [int(key) for key, value in labels.items() if isinstance(value, dict)
-           and target_class in str(value.get('class', '')).split(',')]
     semantic = np.load(output_root / 'full' / full['semantic_segmentation']['path'], allow_pickle=False)
+    measured = measure_native_task_semantic_label_pixels(
+        semantic_ids=semantic, id_to_labels=labels, target_label=target_class)
+    ids = measured['target_semantic_ids']
     mask = np.isin(semantic, ids)
     if not mask.any():
         raise CompositionDiagnosticError('composition_full_pass_target_semantic_pixels_missing')
+    mesh_camera = by_pass['native_meshes_only']
+    mesh_semantic = np.load(output_root / 'native_meshes_only' / mesh_camera['semantic_segmentation']['path'], allow_pickle=False)
+    mesh_info = mesh_camera['semantic_segmentation']['id_to_labels'] or {}
+    mesh_measurement = measure_native_task_semantic_label_pixels(
+        semantic_ids=mesh_semantic, id_to_labels=mesh_info.get('idToLabels', mesh_info),
+        target_label=target_class)
+    mesh_mask = np.isin(mesh_semantic, mesh_measurement['target_semantic_ids'])
+    occluded = mesh_mask & ~mask
     rgb, depth = {}, {}
     for name, row in by_pass.items():
         rgb[name] = np.asarray(Image.open(output_root / name / row['rgb_png']['path']))
@@ -113,12 +123,16 @@ def compare_pass_pixels(rows, output_root, *, target_class):
     output.mkdir()
     artifacts = []
     for name, values in [('full_target_semantic_mask', mask), ('full_vs_mesh_rgb_changed', changed),
+                         ('native_mesh_target_semantic_mask', mesh_mask),
+                         ('mesh_target_occluded_in_full', occluded),
                          ('appearance_minus_mesh_distance_m', delta)]:
         path = output / (name + '.npy')
         np.save(path, values, allow_pickle=False)
         artifacts.append({'relative_path': str(path.relative_to(output_root)), **file_record(path)})
     return {'target_semantic_class': target_class, 'target_semantic_ids': ids,
         'target_pixel_count': int(mask.sum()), 'rgb_changed_target_pixel_count': int(changed.sum()),
+        'native_mesh_target_pixel_count': int(mesh_mask.sum()),
+        'native_mesh_target_pixels_occluded_in_full': int(occluded.sum()),
         'finite_paired_distance_target_pixel_count': int(valid.sum()),
         'changed_pixels_appearance_distance_nearer': int((changed & valid & (delta < 0)).sum()),
         'changed_pixels_appearance_distance_deeper': int((changed & valid & (delta > 0)).sum()),
