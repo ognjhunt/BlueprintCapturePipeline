@@ -30,8 +30,11 @@ def resolve_sam31_profile(plan: Mapping[str, Any]) -> Path:
     digest = plan.get("server_profile_sha256")
     require(isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is not None,
             "sam31_server_profile_digest_invalid")
-    registry = os.getenv(REGISTRY_ENV) or DEFAULT_PROFILE_REGISTRY_ROOT
-    if registry:
+    configured_registry = os.getenv(REGISTRY_ENV)
+    registry = configured_registry or DEFAULT_PROFILE_REGISTRY_ROOT
+    # A missing canonical store is normal for local legacy callers. Explicit
+    # operator overrides still receive the existing path-safety validation.
+    if configured_registry or Path(registry).exists() or Path(registry).is_symlink():
         root = Path(registry)
         require(root.is_absolute() and not any(p.is_symlink() for p in (root, *root.parents)),
                 "sam31_server_profile_registry_unsafe")
