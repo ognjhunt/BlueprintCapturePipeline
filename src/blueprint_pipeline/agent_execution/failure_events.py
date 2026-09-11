@@ -108,7 +108,7 @@ def discover_retained_failures(service):
                         record = prepare_retained_failure(service, task_id=task_id, run_id=policy.run_id,
                             child_id=job["child_id"], owner_client_id=policy.owner_client_id,
                             inference_budget_usd=policy.per_task_budget_usd,
-                            runtime="openai_agents_api" if service.config.managed_api_enabled else "openai_agents_sdk",
+                            runtime=service.config.automatic_failure_runtime,
                             queue_root=Path(policy.child_queue_root), parent_queue_root=Path(policy.parent_queue_root),
                             input_root=Path(policy.input_root), approved_roots=tuple(Path(path) for path in policy.approved_roots),
                             ttl_seconds=min(600, max(1, int(policy.expires_at - time.time()))))

@@ -73,6 +73,7 @@ class ProductionConfig(BaseModel):
     poll_seconds: float = Field(default=5, ge=0.1, le=60)
     supervision_store_root: str | None = None
     automatic_failure_investigation: bool = False
+    automatic_failure_runtime: Literal["openai_agents_sdk", "openai_agents_api"] = "openai_agents_sdk"
     webapp_admission_url: str | None = None
     webapp_sync_token_file: str | None = None
 
