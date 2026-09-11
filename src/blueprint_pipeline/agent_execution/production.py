@@ -74,6 +74,7 @@ class ProductionConfig(BaseModel):
     supervision_store_root: str | None = None
     automatic_failure_investigation: bool = False
     automatic_failure_runtime: Literal["openai_agents_sdk", "openai_agents_api"] = "openai_agents_sdk"
+    automatic_recovery_bindings: tuple[ControllerRecoveryBinding, ...] = Field(default=(), max_length=10)
     engineering_policy_file: str | None = None
     webapp_admission_url: str | None = None
     webapp_sync_token_file: str | None = None
@@ -196,6 +197,9 @@ class ProductionAgentService:
             raise AgentExecutionError("agent_managed_project_policy_not_admitted")
         if task.admission.runtime == RUNTIME_API:
             self._validate_project_guard(task)
+        if task.task_id.startswith("auto-failure-") and record.controller_recoveries:
+            if any(binding not in self.config.automatic_recovery_bindings for binding in record.controller_recoveries):
+                raise AgentExecutionError("agent_automatic_recovery_scope_revoked")
         if record.episode_investigation is not None:
             from .episode_tasks import validate_binding
             validate_binding(record.episode_investigation, task)
