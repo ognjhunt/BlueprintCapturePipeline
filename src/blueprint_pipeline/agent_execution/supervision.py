@@ -59,10 +59,12 @@ class SupervisionPlan(BaseModel):
     maximum_reserved_inference_usd: float = Field(gt=0, le=100, allow_inf_nan=False)
     expires_at: float = Field(gt=0, allow_inf_nan=False)
     revision_ttl_seconds: int = Field(default=900, ge=1, le=1800)
+    automatic_intent_digest: str | None = Field(default=None, pattern=DIGEST)
 
     @property
     def plan_digest(self):
-        return digest({key: value for key, value in self.model_dump(mode="json").items() if key != "enabled"})
+        return digest({key: value for key, value in self.model_dump(mode="json").items()
+            if key != "enabled" and not (key == "automatic_intent_digest" and value is None)})
 
 
 def observe(sources: tuple[ObservationSource, ...]):
@@ -97,13 +99,16 @@ def observe(sources: tuple[ObservationSource, ...]):
     return observation
 
 
-def validate_current_observation(service, binding: SupervisionBinding):
+def validate_current_observation(service, binding: SupervisionBinding, *, controller_recoveries=()):
     from .production import _read_private
     plan_path = Path(service.config.supervision_store_root or service.journal.root / "supervision-plans") / (binding.watch_id + ".json")
     plan = SupervisionPlan.model_validate_json(_read_private(plan_path))
     if (not plan.enabled or time.time() >= plan.expires_at or plan.plan_digest != binding.watch_digest
             or plan.sources != binding.sources):
         raise AgentExecutionError("agent_supervision_authority_revoked")
+    if plan.automatic_intent_digest and (not service.config.automatic_run_supervision
+            or any(row not in service.config.automatic_recovery_bindings for row in controller_recoveries)):
+        raise AgentExecutionError("agent_automatic_supervision_scope_revoked")
     if observe(binding.sources)["observation_digest"] != binding.observation_digest:
         raise AgentExecutionError("agent_supervision_observation_stale")
 
@@ -153,14 +158,15 @@ def progress_plan(service, plan: SupervisionPlan):
             except AgentExecutionError as exc:
                 if str(exc) != "agent_task_missing":
                     raise
-        if not plan.enabled or not template.enabled or time.time() >= plan.expires_at:
+        automatic_revoked = bool(plan.automatic_intent_digest and not service.config.automatic_run_supervision)
+        if not plan.enabled or not template.enabled or time.time() >= plan.expires_at or automatic_revoked:
             if active is not None and active["state"] not in TERMINAL_STATES:
                 service.service.cancel(active_id)
             elif (active is not None and active["cleanup_state"] == "not_requested"
                     and not service.journal.unsettled_operations(active_id)
                     and service.journal.successor(active_id) is None):
                 service.service.request_cleanup(active_id)
-            state["status"] = "revoked" if not plan.enabled or not template.enabled else "expired"
+            state["status"] = "revoked" if not plan.enabled or not template.enabled or automatic_revoked else "expired"
             _write_state(service, plan, state)
             return state
         observation = observe(plan.sources)
@@ -177,6 +183,14 @@ def progress_plan(service, plan: SupervisionPlan):
         # Recover a crash after durable reservation and task write, before queue admission.
         if active_id and active is None:
             service._enqueue_record(service.record(active_id), _run_lock_held=True)
+            return state
+        if (plan.automatic_intent_digest and active is not None
+                and all(row.get("status") in {"completed", "cancelled"} for row in observation["sources"])
+                and observation["observation_digest"] == state["revisions"][-1]["observation_digest"]):
+            if active["cleanup_state"] != "deleted":
+                service.service.request_cleanup(active_id)
+            state["status"] = "completed" if active["cleanup_state"] == "deleted" else "final_cleanup_pending"
+            _write_state(service, plan, state)
             return state
         if any(row["observation_digest"] == observation["observation_digest"] for row in state["revisions"]):
             state["status"] = "waiting_for_new_evidence"
@@ -231,6 +245,41 @@ def progress_plan(service, plan: SupervisionPlan):
             "autostart": False, "cleanup_when_terminal": False, "context": asdict(context), "supervision": SupervisionBinding(
                 watch_id=plan.watch_id, watch_digest=plan.plan_digest,
                 observation_digest=observation["observation_digest"], sources=plan.sources)})
+        if plan.automatic_intent_digest:
+            from .supervision_producer import automatic_failure_revision, reserve_automatic_revision
+            failure_record = automatic_failure_revision(service, plan, task_id, deadline)
+            if failure_record is not None:
+                record = TaskRecord(**{**failure_record.model_dump(mode="json"),
+                    "supervision": record.supervision.model_dump(mode="json"), "autostart": False,
+                    "cleanup_when_terminal": False})
+                task = record.task
+            # Changing the tool scope starts a new session only after the old
+            # session is cleaned. It never creates a competing reasoning owner.
+            compatible = bool(prior is not None and prior.admission.runtime == RUNTIME_API
+                and task.admission.runtime == RUNTIME_API and active["state"] == "completed"
+                and not active["cancel_requested"] and active["cleanup_state"] == "not_requested"
+                and prior.capability == task.capability
+                and prior.instructions == task.instructions and prior.tool_digests == task.tool_digests
+                and prior.admission.authority_digest == task.admission.authority_digest)
+            if compatible:
+                values = task.model_dump(mode="json")
+                values["parent_task_id"] = prior.task_id
+                values["admission"]["allowed_input_digests"] = sorted(
+                    set(task.admission.allowed_input_digests) | set(prior.admission.allowed_input_digests))
+                task = AgentTask.model_validate(values)
+                record = TaskRecord(**{**record.model_dump(mode="json"), "task": task.model_dump(mode="json")})
+            if prior is not None and (prior.admission.runtime != RUNTIME_API or not compatible):
+                if active["cleanup_state"] != "deleted":
+                    service.service.request_cleanup(active_id)
+                    state["status"] = "settling_prior_scope"
+                    _write_state(service, plan, state)
+                    return state
+                task = AgentTask.model_validate({**task.model_dump(mode="json"), "parent_task_id": None})
+                record = TaskRecord(**{**record.model_dump(mode="json"), "task": task.model_dump(mode="json")})
+            if not reserve_automatic_revision(service, plan, task_id, budget):
+                state["status"] = "reserved_inference_limit_reached"
+                _write_state(service, plan, state)
+                return state
         event_id = "supervision_revision_" + task_id
         intent = service.journal.event(event_id)
         if intent is None:

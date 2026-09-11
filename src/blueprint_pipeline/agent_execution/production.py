@@ -72,6 +72,7 @@ class ProductionConfig(BaseModel):
     webhook_secret_file: str | None = None
     poll_seconds: float = Field(default=5, ge=0.1, le=60)
     supervision_store_root: str | None = None
+    automatic_run_supervision: bool = False
     automatic_failure_investigation: bool = False
     automatic_failure_runtime: Literal["openai_agents_sdk", "openai_agents_api"] = "openai_agents_sdk"
     automatic_recovery_bindings: tuple[ControllerRecoveryBinding, ...] = Field(default=(), max_length=10)
@@ -208,7 +209,7 @@ class ProductionAgentService:
             validate_visual_binding(record.visual_investigation, task)
         if record.supervision is not None:
             from .supervision import validate_current_observation
-            validate_current_observation(self, record.supervision)
+            validate_current_observation(self, record.supervision, controller_recoveries=record.controller_recoveries)
         current = self._context(task.run_id, task.task_id)
         authority = AuthorityEnvelope.from_mapping(current.authority_envelope).to_mapping()
         if record.controller_recoveries:

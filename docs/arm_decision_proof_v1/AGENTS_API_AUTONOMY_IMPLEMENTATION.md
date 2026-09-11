@@ -34,7 +34,7 @@ Hermetic rehearsal is necessary but does not establish live service behavior.
 | A05 | Enforce disclosure and accepted retention/trace policy | Negative admission tests and exact account configuration | implemented; operational project policy observed, specialist live admissions pending |
 | A06 | Preserve strict SDK budgets; honestly admit managed-budget uncertainty | Reservation tests, project guard verification, official cost closeout | implemented; scoped SDK and project guard verified, official comparison cost closeout pending |
 | A07 | Existing supervisor capabilities callable through the runtime bridge | Real registry-to-handler-to-worker-to-receipt rehearsal | implemented; production registry and deferred replay rehearsals pass |
-| A08 | Persistent supervision and permitted capability revisitation | New-evidence revision tests without duplicate completed work | implemented and deployed; automatic SDK discovery, completion and cleanup observed |
+| A08 | Persistent supervision and permitted capability revisitation | New-evidence revision tests without duplicate completed work | accepted-run producer and single-owner failure routing implemented; earlier automatic SDK discovery, completion and cleanup observed |
 | A09 | Autonomous failure investigation and preauthorized recovery | Retained-job replay, adoption, refusal and recovery receipts | implemented; real saved CPU stage now replays to completion; live preauthorized recovery/adoption proof pending |
 | A10 | CAD author/compile/inspect/repair loop | Actual CAD kernel fixtures, bounded repair and independent validation | existing CAD repair loop adopted from main PR #1833; comparative pilot pending |
 | A11 | Episode evidence investigation | Synchronized interval/crop retrieval with digest and rights validation | implemented for SDK and API; real-SDK image tool and receipt rehearsal passes; live admitted specialist pilot pending |
@@ -117,6 +117,34 @@ retains supervision sessions until revocation/expiry, and keeps Website polling
 until cleanup is observed. A replay CLI admission refusal now writes a typed
 report so the investigator can identify a disk-capacity refusal without access
 to raw logs. Neither change bypasses the original disk or execution gates.
+
+## Accepted-run supervision producer
+
+The accepted scene-intent controller can now create its own persistent watch
+when `automatic_run_supervision` is enabled in the private agent configuration.
+Registration occurs after authenticated intake validation and before advancing
+the existing controller. Only sanitized status, phase, blocker and receipt
+references enter the reasoning input. In-progress heartbeat changes do not
+start model calls; intervention and terminal states can create a new revision.
+
+One watch owns the run. The separate failed-child subscription defers to that
+owner, which can select a unique failed child of the current digest-bound
+preparation link. It then uses the existing saved-replay task builder and exact
+configured recovery binding. Multiple matching children or recovery bindings
+are refused. This does not renew an expired intent or create paid authority.
+
+The watch reserves at most three revisions, each capped at the smaller of USD 1
+and the server task limit. A durable lifetime ledger keeps that cap across
+restarts and code releases. Compatible managed revisions continue their owned
+session; a changed tool scope settles and deletes the old session before a new
+one can start. SDK revisions clean their prior execution record before advancing.
+A terminal controller observation closes the final reasoning session while
+preserving the controller's independent execution and delivery receipts.
+
+The flag defaults off and does not change the incumbent controller when absent.
+Disabling it revokes automatic supervision; removing a recovery binding revokes
+that action even after restart. Production-host and full-run proof still require
+an accepted current intent and the exact deployed producer release.
 
 ## Automatic recovery configuration
 
