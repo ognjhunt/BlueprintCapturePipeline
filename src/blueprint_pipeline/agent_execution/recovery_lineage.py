@@ -110,6 +110,12 @@ def _attempt(ref, directory, anchor):
     return value
 
 
+def _attempt_namespace(anchor, attempt):
+    # Match the existing public-scene factory's tenant/attempt namespace.
+    return "scene-" + canonical_digest({"intent_digest": anchor.intent_digest,
+                                       "attempt_digest": attempt["attempt_digest"]})[7:55]
+
+
 def _release_edge(previous_ref, current_ref, previous_link_ref, state, directory, anchor, config):
     before, after = (_attempt(ref, directory, anchor) for ref in (previous_ref, current_ref))
     edges = [row for row in state.get("release_predecessors", [])
@@ -131,6 +137,8 @@ def _release_edge(previous_ref, current_ref, previous_link_ref, state, directory
              and transition.get("attempt_digest") == before["attempt_digest"]
              and prior_envelope.get("request_digest") == prior_link["request_digest"]
              and prior_envelope.get("request", {}).get("expected_production_commit") == before["source_commit"]
+             and prior_envelope.get("request", {}).get("team_namespace") == prior_link["team_namespace"]
+             == _attempt_namespace(anchor, before)
              and transition.get("parent_state") in {"blocked", "completed", "materialized"}
              and ownership.get("schema_version") == "task_evaluation_scene_attempt_ownership.v1"
              and ownership.get("attempt_digest") == before["attempt_digest"]
@@ -153,7 +161,7 @@ def _derive(service, anchor, *, parent_request_digest, parent_queue_root):
              and link["expected_production_commit"] == service.config.source_commit, "current_parent_changed")
     original, anchor_ref = _read(anchor.preparation_link_path, field="link_digest")
     _require(anchor_ref["sha256"] == anchor.preparation_link_sha256
-             and all(link.get(key) == original.get(key) for key in ("scene_id", "task_id", "team_namespace")),
+             and all(link.get(key) == original.get(key) for key in ("scene_id", "task_id")),
              "frozen_task_changed")
     if link["request_digest"] == anchor.parent_request_digest:
         return anchor, None
@@ -175,7 +183,9 @@ def _derive(service, anchor, *, parent_request_digest, parent_queue_root):
         if event.get("state", {}).get("preparation_link") is not None:
             prior_link_ref = event["state"]["preparation_link"]
     _require(bool(edges) and current["state"].get("attempt") == prior_ref, "successor_attempt_not_recorded")
-    _require(_attempt(prior_ref, directory, anchor)["source_commit"] == link["expected_production_commit"],
+    current_attempt = _attempt(prior_ref, directory, anchor)
+    _require(current_attempt["source_commit"] == link["expected_production_commit"]
+             and link["team_namespace"] == _attempt_namespace(anchor, current_attempt),
              "successor_release_changed")
     matches = [queue / state / link["result_filename"] for state in STATES
                if (queue / state / link["result_filename"]).exists()]
@@ -186,6 +196,7 @@ def _derive(service, anchor, *, parent_request_digest, parent_queue_root):
              and envelope.get("request_digest") == canonical_digest(request) == parent_request_digest
              and request.get("preparation_id") == link["preparation_id"]
              and request.get("expected_production_commit") == service.config.source_commit
+             and request.get("team_namespace") == link["team_namespace"]
              and request.get("scene", {}).get("identity", {}).get("id") == link["scene_id"]
              and request.get("task", {}).get("identity", {}).get("id") == link["task_id"], "parent_envelope_invalid")
     identity = {"anchor_digest": digest(anchor.model_dump(mode="json")),

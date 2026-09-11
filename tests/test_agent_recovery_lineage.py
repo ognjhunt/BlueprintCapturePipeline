@@ -45,8 +45,20 @@ def lineage_case(tmp_path):
     controller = tmp_path / "controller.json"
     sealed(controller, config, "config_digest")
 
+    attempts = []
+    for label, commit in (("source-old", "a" * 40), ("source-new", "b" * 40)):
+        attempts.append(sealed(directory / "attempts" / (label + ".json"),
+            {"schema_version": "task_evaluation_scene_attempt.v1", "intent_id": intent["intent_id"],
+             "intent_digest": intent["intent_digest"], "attempt_id": label, "source_commit": commit,
+             "input_digest": "sha256:" + "d" * 64, "provider": "vast", "maximum_spend_usd": 10},
+            "attempt_digest", cross=True))
+
     def parent(label, commit):
-        request = {"preparation_id": label, "expected_production_commit": commit,
+        attempt_value = next(json.loads(Path(ref["path"]).read_text()) for ref in attempts
+                             if json.loads(Path(ref["path"]).read_text())["source_commit"] == commit)
+        namespace = "scene-" + canonical_digest({"intent_digest": intent["intent_digest"],
+            "attempt_digest": attempt_value["attempt_digest"]})[7:55]
+        request = {"preparation_id": label, "expected_production_commit": commit, "team_namespace": namespace,
                    "scene": {"identity": {"id": "scene-frozen"}}, "task": {"identity": {"id": "task-frozen"}}}
         request_digest = canonical_digest(request)
         filename = label + "-" + request_digest[7:] + ".json"
@@ -56,18 +68,11 @@ def lineage_case(tmp_path):
         link = {"schema_version": "task_evaluation_scene_preparation_link.v1", "intent_id": intent["intent_id"],
             "intent_digest": intent["intent_digest"], "request_digest": request_digest, "preparation_id": label,
             "expected_production_commit": commit, "scene_id": "scene-frozen", "task_id": "task-frozen",
-            "team_namespace": "owner-team", "result_filename": filename}
+            "team_namespace": namespace, "result_filename": filename}
         return sealed(directory / "preparations" / (request_digest[7:] + ".json"), link, "link_digest"), envelope, request_digest
 
     old_link, old_envelope, old_request = parent("old-parent", "a" * 40)
     new_link, _, new_request = parent("new-parent", "b" * 40)
-    attempts = []
-    for label, commit in (("source-old", "a" * 40), ("source-new", "b" * 40)):
-        attempts.append(sealed(directory / "attempts" / (label + ".json"),
-            {"schema_version": "task_evaluation_scene_attempt.v1", "intent_id": intent["intent_id"],
-             "intent_digest": intent["intent_digest"], "attempt_id": label, "source_commit": commit,
-             "input_digest": "sha256:" + "d" * 64, "provider": "vast", "maximum_spend_usd": 10},
-            "attempt_digest", cross=True))
     old_attempt = json.loads(Path(attempts[0]["path"]).read_text())
     output = tmp_path / "factory" / intent["intent_id"] / "source-old"
     guard = sealed(output / "guard.json", {"schema_version": "gpu_spend_guard.v1", "status": "passed"}, "guard_digest")
@@ -152,7 +157,7 @@ def test_derived_binding_reaches_real_failure_task_admission_and_revokes(tmp_pat
         revoked.validate_admission(record_value.task)
 
 
-@pytest.mark.parametrize("defect", ["opt_out", "queue", "event", "lineage", "task", "traversal", "guard", "revoked", "expiry", "config"])
+@pytest.mark.parametrize("defect", ["opt_out", "queue", "event", "lineage", "task", "namespace", "traversal", "guard", "revoked", "expiry", "config"])
 def test_unapproved_or_tampered_successors_never_inherit_recovery(tmp_path, defect):
     service, anchor, directory, queue, request = lineage_case(tmp_path)
     if defect == "opt_out":
@@ -167,15 +172,15 @@ def test_unapproved_or_tampered_successors_never_inherit_recovery(tmp_path, defe
     elif defect == "event":
         (directory / "progression-events/000002.json").chmod(0o600)
         (directory / "progression-events/000002.json").write_text("{}")
-    elif defect in {"lineage", "task", "traversal"}:
+    elif defect in {"lineage", "task", "namespace", "traversal"}:
         event_path = directory / "progression-events/000002.json"
         event = json.loads(event_path.read_text())
         if defect == "lineage":
             event["state"]["release_predecessors"] = []
-        elif defect == "task":
+        elif defect in {"task", "namespace"}:
             ref = event["state"]["preparation_link"]
             value = json.loads(Path(ref["path"]).read_text())
-            value["task_id"] = "another-task"
+            value["task_id" if defect == "task" else "team_namespace"] = "another-identity"
             event["state"]["preparation_link"] = sealed(Path(ref["path"]), value, "link_digest")
         else:
             ref = event["state"]["preparation_link"]
