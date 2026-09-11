@@ -268,6 +268,7 @@ def materialize_public_scene_removal_selections(
         stream.write(canonical_json(selection) + "\n")
     return {"scene_selection": _record(scene_path), "task_selection": _record(task_path),
             "registered_frame": context["registered_frame"],
+            "source_collision": _record(Path(context["effective_collision"]["path"])),
             "scene_freeze_digest": scene["scene_freeze_digest"],
             "task_freeze_digest": selection["task_freeze_digest"], **BOUNDARIES}
 

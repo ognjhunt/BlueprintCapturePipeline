@@ -109,6 +109,9 @@ def execute_cpu_stage(job: Mapping[str, Any], *, prepare_hardware_render: bool =
                 checked_file(path, row)
                 artifacts[RAW_ROLES[row["role"]]] = _record(path)
         _require(set(RAW_ROLES.values()).issubset(artifacts), "installed_sources_missing")
+        # The selected prim may live in a validated partition, not the raw
+        # publisher USD. Forward the producer's effective collider to removal.
+        artifacts["source_collision"] = _record(_input(result, "source_collision", root))
     elif stage_id == "standard_splat_conversion":
         source = _input(inputs, "source_appearance", root)
         scene = validate_removal_scene_selection(read(_input(inputs, "scene_selection", root)))

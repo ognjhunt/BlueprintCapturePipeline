@@ -17,8 +17,8 @@ def _record(path: Path) -> dict:
     return {"path": str(path), "sha256": module.sha(path), "size_bytes": path.stat().st_size}
 
 
-def _fixture(root: Path) -> dict:
-    fixture = _source_fixture(root)
+def _fixture(root: Path, *, grouped_source: bool = False) -> dict:
+    fixture = _source_fixture(root, grouped_source=True) if grouped_source else _source_fixture(root)
     runtime, repo = root / "runtime", root / "repo"
     runtime.mkdir()
     repo.mkdir()
@@ -152,6 +152,22 @@ def test_cpu_stage_rejects_output_outside_operator_root_before_writes(tmp_path: 
     with pytest.raises(module.Sam31PreparationCPUStageError, match="path_outside_server_data_root"):
         module.execute_cpu_stage({**job, "stage_id": "source_selections",
                                   "output_root": str(tmp_path.parent / "not-authorized")})
+
+
+def test_partitioned_source_phase_forwards_the_collider_its_frame_and_task_identify(tmp_path):
+    from pxr import Usd
+    job = _fixture(tmp_path, grouped_source=True)
+    result = module.execute_cpu_stage({**job, 'stage_id': 'source_selections',
+                                      'output_root': str(tmp_path / 'source-phase')})
+    artifacts = result['artifacts']
+    frame = json.loads(Path(artifacts['registered_frame']['path']).read_text())
+    scene = json.loads(Path(artifacts['scene_selection']['path']).read_text())
+    task = json.loads(Path(artifacts['task_selection']['path']).read_text())
+    collision = artifacts['source_collision']
+    assert collision['sha256'] == frame['source_digests']['sage_collision_usd']
+    assert collision['sha256'] != scene['source_components']['sage_collision']['sha256']
+    stage = Usd.Stage.Open(collision['path'])
+    assert stage.GetPrimAtPath(task['removal_plan']['source_collider_prim_path']).IsValid()
 
 
 def test_cpu_stage_rejects_changed_host_bytes_before_producers(tmp_path: Path) -> None:
