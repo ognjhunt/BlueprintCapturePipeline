@@ -16,7 +16,8 @@ from .episode_interpretation import EpisodeInterpretationRequest
 class EpisodeEvidenceTools:
     """The agent can inspect sealed evidence but cannot reach the scorer or policy."""
 
-    def __init__(self, request: EpisodeInterpretationRequest, *, admitted_digests: frozenset[str]) -> None:
+    def __init__(self, request: EpisodeInterpretationRequest, *, admitted_digests: frozenset[str],
+                 descriptors_only: bool = False) -> None:
         self.root = request.evidence_root.resolve()
         self.receipt = json.loads(canonical_json(request.input_receipt))
         self._receipt_identity = canonical_json(self.receipt)
@@ -29,7 +30,8 @@ class EpisodeEvidenceTools:
             raise AgentExecutionError("episode_investigation_identity_mismatch")
         self.admitted_digests = frozenset(admitted_digests)
         self.records = self.receipt["artifacts"]
-        manifest = self._read("frame_manifest")
+        self.descriptors_only = descriptors_only
+        manifest = {} if descriptors_only else self._read("frame_manifest")
         self.required_cameras = tuple(manifest.get("required_camera_ids") or ())
         images = []
         for frame in self.records["lossless_frames"]:
@@ -43,9 +45,12 @@ class EpisodeEvidenceTools:
             ))
         self.images = ImageEvidenceCatalog(
             root=self.root, images=images, admitted_digests=self.admitted_digests,
+            defer_path_validation=descriptors_only,
         )
 
     def _read(self, role: str) -> dict[str, Any]:
+        if self.descriptors_only:
+            raise AgentExecutionError("episode_descriptor_cannot_read_evidence")
         self._check_identity()
         if role not in {"task_success_contract", "deterministic_score", "state_trace",
                         "contact_force_trace", "frame_manifest"}:

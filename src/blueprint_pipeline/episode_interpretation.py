@@ -435,6 +435,7 @@ def materialize_episode_interpretation_rights(
     authority_reference: str,
     source_rights_admission_digest: str,
     output_path: str | Path,
+    agent_runtime_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seal human authority for one exact interpreter input bundle."""
 
@@ -467,6 +468,8 @@ def materialize_episode_interpretation_rights(
         "learned_interpretation_only": True,
         "rights_digest": "",
     }
+    if agent_runtime_policy is not None:
+        value["agent_runtime_policy"] = dict(agent_runtime_policy)
     value["rights_digest"] = canonical_digest(value, digest_field="rights_digest")
     destination = Path(output_path).expanduser().resolve()
     if destination.exists() or destination.is_symlink():
@@ -759,6 +762,18 @@ def interpret_episode(
         },
         "receipt_digest": "",
     }
+    metadata_provider = getattr(interpreter, "execution_metadata", None)
+    if metadata_provider is not None and provider_called:
+        metadata = dict(metadata_provider())
+        if (metadata.get("schema_version") != "episode_interpreter_execution.v1"
+                or metadata.get("runtime") != identity.runtime
+                or not str(metadata.get("prompt_contract_version") or "").strip()
+                or any(not _SHA256.fullmatch(str(metadata.get(key) or "")) for key in (
+                    "prompt_digest", "task_result_digest", "task_digest", "inspection_digest"))):
+            raise EpisodeInterpretationError("episode_interpreter_execution_metadata_invalid")
+        receipt.update(schema_version="episode_interpretation_receipt.v2",
+                       prompt_contract_version=metadata["prompt_contract_version"],
+                       prompt_digest=metadata["prompt_digest"], interpreter_execution=metadata)
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     destination.parent.mkdir(parents=True, exist_ok=True)
     write_json(destination, receipt)

@@ -40,6 +40,7 @@ class ImageEvidenceCatalog:
         admitted_digests: frozenset[str],
         maximum_image_bytes: int = 16_000_000,
         maximum_image_pixels: int = 32_000_000,
+        defer_path_validation: bool = False,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.images = MappingProxyType({image.image_id: image for image in images})
@@ -60,7 +61,8 @@ class ImageEvidenceCatalog:
                 or not math.isfinite(image.time_seconds) or image.time_seconds < 0
             ):
                 raise ValueError("agent_image_timestamp_invalid")
-            self._safe_path(image)
+            if not defer_path_validation:
+                self._safe_path(image)
 
     def _safe_path(self, image: ImageEvidence) -> Path:
         path = image.path.expanduser()

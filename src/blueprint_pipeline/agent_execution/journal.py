@@ -515,6 +515,14 @@ class AgentJournal:
                 )
         return self.operation(operation_id)
 
+    def task_operations(self, task_id: str) -> list[dict[str, Any]]:
+        """Read the exact operation outcomes used by this task's tool calls."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT operation_id FROM calls WHERE task_id=? ORDER BY operation_id", (task_id,),
+            ).fetchall()
+        return [self.operation(row["operation_id"]) for row in rows]
+
     def operation(self, operation_id: str) -> dict[str, Any]:
         with self._connect() as connection:
             row = connection.execute(

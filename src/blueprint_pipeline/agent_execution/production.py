@@ -33,6 +33,7 @@ from .service import AgentTaskService
 from .supervisor_bridge import SupervisorCapabilityBridge, context_revision
 from .stage_recovery import StageReplayBinding, StageReplayTools
 from .webapp_delivery import WebappAdmissionOutbox
+from .episode_tasks import EpisodeTaskBinding
 
 
 CONFIG_ENV = "BLUEPRINT_AGENT_EXECUTION_CONFIG"
@@ -76,6 +77,7 @@ class TaskRecord(BaseModel):
     task: AgentTask
     context: dict
     stage_replays: tuple[StageReplayBinding, ...] = ()
+    episode_investigation: EpisodeTaskBinding | None = None
 
 
 def _read_private(path: Path, *, limit: int = 4_000_000, secret: bool = False) -> bytes:
@@ -155,6 +157,9 @@ class ProductionAgentService:
             raise AgentExecutionError("agent_managed_project_policy_not_admitted")
         if task.admission.runtime == RUNTIME_API:
             self._validate_project_guard(task)
+        if record.episode_investigation is not None:
+            from .episode_tasks import validate_binding
+            validate_binding(record.episode_investigation, task)
         current = self._context(task.run_id, task.task_id)
         authority = AuthorityEnvelope.from_mapping(current.authority_envelope).to_mapping()
         if (context_revision(current) != task.context_revision
@@ -207,14 +212,23 @@ class ProductionAgentService:
             load_context=lambda run_id: self._context(run_id, task.task_id),
         )
         record = self.record(task.task_id)
-        tools = (*bridge.tools(), *StageReplayTools(
-            journal=self.journal, bindings=record.stage_replays, source_commit=task.source_commit,
-        ).tools())
+        output_model = OperationalDiagnosis
+        if record.episode_investigation is not None:
+            from .episode_tasks import tools_for_task
+            from ..episode_interpretation import EpisodeInterpreterOutput
+            if record.stage_replays:
+                raise AgentExecutionError("episode_task_replay_scope_forbidden")
+            tools = tools_for_task(record.episode_investigation, task)
+            output_model = EpisodeInterpreterOutput
+        else:
+            tools = (*bridge.tools(), *StageReplayTools(
+                journal=self.journal, bindings=record.stage_replays, source_commit=task.source_commit,
+            ).tools())
         operations = AgentOperations(
             self.journal, tools,
             authorize=lambda current, _tool, _args: self.validate_admission(current),
         )
-        if digest(task.output_schema) != digest(OperationalDiagnosis.model_json_schema()):
+        if digest(task.output_schema) != digest(output_model.model_json_schema()):
             raise AgentExecutionError("agent_production_output_contract_invalid")
         if task.admission.runtime == RUNTIME_API:
             credential = self._credential(task)
@@ -225,7 +239,7 @@ class ProductionAgentService:
             )
         return OpenAIAgentsSDKRuntime(
             journal=self.journal, operations=operations,
-            output_models={task.capability: OperationalDiagnosis},
+            output_models={task.capability: output_model},
             validate_admission=self.validate_admission, resolve_credential=self._credential,
         )
 
@@ -259,7 +273,7 @@ class ProductionAgentService:
             raise AgentExecutionError("agent_server_and_journal_task_mismatch")
         # No prompts, source evidence, host paths or authority objects leave this
         # status surface. Result text is returned only to this task's owner.
-        return {
+        result = {
             "schema_version": "blueprint_agent_task_status.v1", "task_id": task_id,
             "run_id": record.task.run_id, "source_commit": record.task.source_commit,
             "runtime": record.task.admission.runtime, "task_digest": state["task_digest"],
@@ -268,6 +282,14 @@ class ProductionAgentService:
             "result": state["result"], "usage": state["usage"],
             "resource_closeout": "not_established_by_agent_completion", "proof_effect": "none",
         }
+        if record.episode_investigation is not None:
+            from ..decision_evidence_contracts import cross_runtime_canonical_digest
+            collected = self.journal.event("episode_collected_" + record.task.task_digest[7:])
+            failed = self.journal.event("episode_collection_terminal_" + record.task.task_digest[7:])
+            result["interpretation"] = collected or failed or {"status": "pending_validation"}
+            result["output_cross_runtime_digest"] = (
+                cross_runtime_canonical_digest(state["result"]["output"]) if state["result"] else None)
+        return result
 
     def act(self, task_id: str, client_id: str, action: str) -> dict:
         if action == "cancel":
@@ -299,6 +321,8 @@ class ProductionAgentService:
         for path in sorted(Path(self.config.task_store_root).glob("*.json")):
             try:
                 record = self.record(path.stem)
+                if record.episode_investigation is not None:
+                    self._collect_episode(record)
                 self.webapp_outbox.queue(record)
                 if record.enabled and record.autostart:
                     try:
@@ -313,6 +337,35 @@ class ProductionAgentService:
                 # unrelated existing sessions. Never log the private record.
                 continue
         return count
+
+    def _collect_episode(self, record):
+        from .episode_tasks import collect_episode_task
+        event_id = "episode_collected_" + record.task.task_digest[7:]
+        if self.journal.event(event_id) is not None:
+            return
+        try:
+            receipt = collect_episode_task(self, record.task.task_id)
+            if receipt is not None:
+                self.journal.record_event(event_id, {
+                    "task_id": record.task.task_id, "task_digest": record.task.task_digest,
+                    "receipt_digest": receipt["receipt_digest"], "status": receipt["status"],
+                    "input_bundle_digest": receipt["input_bundle_digest"], "proof_effect": "none",
+                })
+        except (AgentExecutionError, ValueError, OSError) as exc:
+            code = str(exc) if isinstance(exc, AgentExecutionError) else "episode_collection_refused"
+            if code != "agent_task_missing":
+                # Keep invalid output visible without aborting other worker tasks.
+                self.journal.record_event("episode_collection_error_" + digest({
+                    "task": record.task.task_digest, "code": code})[7:], {
+                    "task_id": record.task.task_id, "error_code": code, "proof_effect": "none",
+                })
+                # A completed model answer that fails deterministic collection
+                # is an invalid interpretation, not a valid specialist result.
+                if code.startswith("episode_task_") and self.journal.task(record.task.task_id)["state"] == "completed":
+                    self.journal.record_event("episode_collection_terminal_" + record.task.task_digest[7:], {
+                        "task_id": record.task.task_id, "task_digest": record.task.task_digest,
+                        "status": "refused", "error_code": code, "proof_effect": "none",
+                    })
 
     def health(self) -> dict:
         return {"schema_version": "blueprint_agent_worker_health.v1",
