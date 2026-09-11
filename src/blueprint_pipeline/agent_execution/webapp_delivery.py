@@ -21,12 +21,13 @@ def admission_payload(record):
     if "blueprint-webapp" not in record.owner_client_ids:
         return None
     task = record.task.snapshot()
+    # Supervision owns execution; the Website still starts its result collector.
     return {"schema_version": "blueprint_webapp_agent_admission.v1", "task_id": task.task_id,
             "task_digest": task.task_digest, "run_id": task.run_id, "source_commit": task.source_commit,
             "runtime": task.admission.runtime, "model": task.model,
             "title": "Task Evaluation: " + task.capability.replace("_", " "),
             "owner_client_id": "blueprint-webapp", "expires_at": min(task.deadline, task.admission.expires_at),
-            "enabled": record.enabled, "autostart": record.autostart, "proof_effect": "none"}
+            "enabled": record.enabled, "autostart": record.autostart or record.supervision is not None, "proof_effect": "none"}
 
 
 def _endpoint(endpoint=None, *, expected_path=ADMISSION_PATH):

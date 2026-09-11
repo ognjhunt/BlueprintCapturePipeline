@@ -242,7 +242,9 @@ def progress_plan(service, plan: SupervisionPlan):
         values["admission"]["expires_at"] = deadline
         task = AgentTask.model_validate(values)
         record = TaskRecord(**{**template.model_dump(mode="json"), "task": task,
-            "autostart": False, "cleanup_when_terminal": False, "context": asdict(context), "supervision": SupervisionBinding(
+            "autostart": False, "cleanup_when_terminal": False,
+            "owner_client_ids": ("blueprint-webapp",) if plan.automatic_intent_digest else template.owner_client_ids,
+            "context": asdict(context), "supervision": SupervisionBinding(
                 watch_id=plan.watch_id, watch_digest=plan.plan_digest,
                 observation_digest=observation["observation_digest"], sources=plan.sources)})
         if plan.automatic_intent_digest:

@@ -131,8 +131,12 @@ def test_accepted_run_registers_once_revisits_and_cleans_terminal_sdk(tmp_path, 
         )
         == plan
     )
+    from blueprint_pipeline.agent_execution.webapp_delivery import admission_payload
+    assert admission_payload(service.record(plan.template_task_id)) is None
     state = progress_plan(service, plan)
     record = service.record(state["active_task_id"])
+    assert record.autostart is False
+    assert admission_payload(record)["autostart"] is True
     assert (
         record.task.run_id == intent["intent_id"] and record.supervision.watch_id == plan.watch_id
     )
