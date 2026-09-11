@@ -142,7 +142,8 @@ def validate_render(outcome, artifacts, old_plan, current_repo, through_phase):
     _load("sam31_source_calibration_stage").validate_retained_source_calibration_stage(outcome)
     # Recompute final masks and the complete receipt from all retained pixels.
     adopted = adopt_finalized_public_scene_inpainting_inputs(
-        preparation_path=prepared_ref["path"], returned_group_path=artifacts["source_calibration_return"]["path"])
+        preparation_path=prepared_ref["path"], returned_group_path=artifacts["source_calibration_return"]["path"],
+        retained_render_binding_path=(artifacts.get("source_calibration_retained_render_binding") or {}).get("path"))
     require(adopted == read(artifacts["calibrated_view_receipt"]["path"]), "sam31_adoption_finalized_render_changed")
     scene = validate_removal_scene_selection(read(artifacts["scene_selection"]["path"]))
     task = validate_removal_task_selection(read(artifacts["task_selection"]["path"]))
