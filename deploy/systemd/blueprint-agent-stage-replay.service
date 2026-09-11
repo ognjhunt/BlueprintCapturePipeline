@@ -1,0 +1,35 @@
+[Unit]
+Description=Blueprint offline retained-stage replay worker
+ConditionPathExists=/etc/blueprint/agent-execution.json
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+InaccessiblePaths=-/etc/blueprint/provider-secrets
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/agent-execution
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/disk-reservations
+MemoryMax=4G
+TasksMax=128
+CPUQuota=100%
+Environment=BLUEPRINT_AGENT_EXECUTION_CONFIG=/etc/blueprint/agent-execution.json
+Environment=PYTHONPATH=/opt/blueprint/task-evaluation-control-plane/src
+Environment=PYTHONDONTWRITEBYTECODE=1
+WorkingDirectory=/opt/blueprint/task-evaluation-control-plane
+ExecStart=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python -m blueprint_pipeline.agent_execution.stage_recovery
+TimeoutStartSec=35min
+TimeoutStopSec=15

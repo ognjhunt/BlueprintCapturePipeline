@@ -1721,6 +1721,9 @@ def deployment_identity_payload(module_path: str | Path | None = None) -> Dict[s
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Blueprint Live Pipeline Intake", version=INTAKE_SCHEMA_VERSION)
+    from .agent_execution.http_routes import register_agent_execution_routes
+
+    register_agent_execution_routes(app, require_admission=_require_admission)
 
     @app.get("/api/live-pipeline/version")
     def deployment_identity() -> JSONResponse:
