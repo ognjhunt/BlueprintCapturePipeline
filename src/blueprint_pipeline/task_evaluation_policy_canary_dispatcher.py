@@ -1930,6 +1930,19 @@ def dispatch_policy_canary_activation(
         batch_authority=activation_result.get("episode_interpretation_authority"),
     )
     write_json(joined_path, joined)
+    interpretation = joined.get("episode_interpretation") or {}
+    if (interpretation.get("schema_version") == "policy_canary_episode_interpretation_closeout.v2"
+            and interpretation.get("pending_count", 0) > 0):
+        pending = {
+            "schema_version": SCHEMA_VERSION, "status": "awaiting_episode_interpretation",
+            "run_id": activation["run_id"], "allocator_invoked": allocator_invoked,
+            "automatic_retry_performed": False, "blockers": ["managed_episode_interpretations_pending"],
+            "website_progress_sync": _sync_pending_progress(runner=progress_sync_runner,
+                run_id=activation["run_id"], request_digest=setup["request_digest"],
+                phase="awaiting_episode_interpretation", blocker="managed_episode_interpretations_pending"),
+        }
+        write_json(root / "dispatch_pending.json", pending)
+        return pending
     _event_and_sync(
         root,
         stage="artifacts_syncing",

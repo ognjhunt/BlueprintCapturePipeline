@@ -561,6 +561,22 @@ def run_artifixer_ai_visual_review(
         raise TaskEvaluationArtifixerAIVisualReviewError("artifixer_ai_review_output_not_empty")
     destination.mkdir(parents=True, exist_ok=True)
     input_digest = canonical_digest({"input": input_value})
+    from .agent_execution.visual_producer import best_effort_visual_investigation
+    comparison_frames = []
+    for row in final["tasks"][0]["frames"]:
+        for role in ("source_frame", "exact_repair_mask", "final_frame"):
+            if isinstance(row.get(role), Mapping):
+                frame = row[role]
+                path = Path(str(frame["path"])).expanduser()
+                if not path.is_absolute():
+                    path = Path(final_composite_receipt_path).resolve().parent / path
+                comparison_frames.append({"path": str(path), "sha256": frame["sha256"],
+                    "camera_id": row["camera_id"], "role": role})
+    investigation = best_effort_visual_investigation(review_kind="appearance", run_id=configuration_run_id,
+        candidate_digest=final["receipt_digest"], final_review_input_digest=input_digest,
+        source_rights_admission_digest=_sha256(rights_path), frames=comparison_frames)
+    if investigation is not None:
+        write_json(Path(output_root) / "managed_visual_investigation.json", investigation)
     run_id = "artifixer-ai-review-" + final["receipt_digest"].removeprefix("sha256:")[:16]
     cost_gate = build_openai_official_cost_run_gate(
         scope_attestation_path=openai_cost_scope_attestation_path,
