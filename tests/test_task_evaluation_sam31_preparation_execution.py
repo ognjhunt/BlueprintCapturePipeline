@@ -399,3 +399,36 @@ def test_retained_parent_wake_survives_deployment_without_reexecution(setup, mon
         phase_executor=lambda _: pytest.fail("delivery must never execute old work"))
     assert result["parent_wakeups"] == [queued["child_id"]]
     assert not (queue / "wake-pending" / marker.name).exists()
+
+
+def test_replay_uses_current_code_root_without_rewriting_a_retired_profile(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_sam31_preparation_stages as stages
+    from tests.test_task_evaluation_sam31_preparation_cpu_stages import _fixture
+    job = _fixture(tmp_path)
+    commit = job["request"]["expected_production_commit"]
+    profile = {"schema_version": stages.PROFILE_SCHEMA, "source_commit": commit,
+               "repo_root": str(tmp_path / "retired-code"), "server_data_root": str(tmp_path),
+               "runtime_root": job["runtime_root"]}
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile))
+    original = path.read_bytes()
+    monkeypatch.setenv(stages.PROFILE_ENV, str(path))
+    plan = {**job["plan"], "server_profile_sha256": _ref(path)["sha256"]}
+    live = tmp_path / "live"
+    live.mkdir()
+    context = {**job, "plan": plan, "phase": "source_selections", "expected_source_commit": commit,
+               "job_digest": "sha256:" + "a" * 64, "output_root": str(live)}
+    with pytest.raises(Exception, match="repo_root_invalid"):
+        stages.execute_stage(context)
+    replay_root = tmp_path / "replay"
+    replay_root.mkdir()
+    outcome = stages.execute_stage({**context, "output_root": str(replay_root),
+        "diagnostic_replay_code_root": str(Path(stages.__file__).resolve().parents[2])})
+    assert outcome["status"] == "completed"
+    receipt = json.loads((replay_root / "phase_execution_receipt.v1.json").read_text())
+    assert receipt["schema_version"] == stages.REPLAY_SCHEMA
+    assert receipt["production_execution_authorized"] is False
+    assert path.read_bytes() == original
+    with pytest.raises(Exception, match="sam31_phase_receipt_conflict"):
+        stages.execute_stage({**context, "output_root": str(replay_root)})

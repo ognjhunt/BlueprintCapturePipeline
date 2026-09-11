@@ -14,6 +14,7 @@ from .task_evaluation_sam31_profile_registry import resolve_sam31_profile
 from .task_evaluation_scene_configuration_sam31_plan import PROFILE_ENV as PROFILE_ENV
 
 SCHEMA = "task_evaluation_sam31_phase_execution_receipt.v1"
+REPLAY_SCHEMA = "task_evaluation_sam31_phase_replay_receipt.v1"
 CPU_PHASES = {"source_selections", "standard_splat_conversion", "calibrated_views", "sam31_inputs"}
 REVIEW_PHASES = {"sam31_review", "calibrated_masks", "removal_freezes", "segment_cutout"}
 PAID_PHASES = {"sam31_tracking", "contribution_sweep"}
@@ -45,6 +46,12 @@ def execute_stage(job: Mapping[str, Any]) -> dict[str, Any]:
     phase = job.get("phase")
     require(phase in CPU_PHASES | REVIEW_PHASES | PAID_PHASES, "sam31_phase_not_supported")
     plan = job["plan"]
+    replay_root = job.get("diagnostic_replay_code_root")
+    if replay_root is not None:
+        require(phase not in PAID_PHASES | {"calibrated_views"}
+                and Path(str(replay_root)) == Path(__file__).resolve().parents[2],
+                "sam31_diagnostic_code_root_invalid")
+    receipt_schema = REPLAY_SCHEMA if replay_root is not None else SCHEMA
     profile_path = resolve_sam31_profile(plan)
     profile = read(profile_path, digest_field="profile_digest")
     require(profile.get("schema_version") == PROFILE_SCHEMA and
@@ -56,7 +63,7 @@ def execute_stage(job: Mapping[str, Any]) -> dict[str, Any]:
     receipt_path = root / "phase_execution_receipt.v1.json"
     if receipt_path.exists():
         receipt = read(receipt_path, digest_field="receipt_digest")
-        require(receipt.get("schema_version") == SCHEMA and
+        require(receipt.get("schema_version") == receipt_schema and
                 receipt.get("job_digest") == job["job_digest"] and
                 receipt.get("source_commit") == job["expected_source_commit"] and
                 receipt.get("phase") == phase, "sam31_phase_receipt_conflict")
@@ -72,7 +79,7 @@ def execute_stage(job: Mapping[str, Any]) -> dict[str, Any]:
     context = {
         **job, "stage_id": phase, "server_profile": profile,
         "output_root": str(root / "artifacts"),
-        "repo_root": profile.get("repo_root", "/opt/blueprint/BlueprintCapturePipeline"),
+        "repo_root": str(replay_root) if replay_root is not None else profile.get("repo_root", "/opt/blueprint/BlueprintCapturePipeline"),
         "server_data_root": profile.get("server_data_root", "/var/lib/blueprint/task-evaluation-inputs"),
         "runtime_root": profile.get("runtime_root"),
         "ffmpeg_executable": profile.get("ffmpeg_executable", "/usr/bin/ffmpeg"),
@@ -98,9 +105,11 @@ def execute_stage(job: Mapping[str, Any]) -> dict[str, Any]:
     require(outcome.get("status") in {"completed", "failed", "waiting_for_external_result"},
             "sam31_phase_status_invalid")
     if outcome["status"] != "waiting_for_external_result":
-        receipt = {"schema_version": SCHEMA, "job_digest": job["job_digest"],
+        receipt = {"schema_version": receipt_schema, "job_digest": job["job_digest"],
                    "source_commit": job["expected_source_commit"], "phase": phase,
                    "outcome": outcome, "receipt_digest": ""}
+        if replay_root is not None:
+            receipt.update(diagnostic_replay_code_root=str(replay_root), production_execution_authorized=False)
         receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
         _write(receipt_path, receipt)
     return outcome

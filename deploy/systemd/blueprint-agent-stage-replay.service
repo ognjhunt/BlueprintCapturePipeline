@@ -24,6 +24,7 @@ RestrictAddressFamilies=AF_UNIX
 SystemCallFilter=@system-service
 InaccessiblePaths=-/etc/blueprint/provider-secrets
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/agent-execution
+ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/stage-replays/agent-execution
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 MemoryMax=4G
 TasksMax=128

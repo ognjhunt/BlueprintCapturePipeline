@@ -186,11 +186,12 @@ def require_offline_isolation(config):
 
 
 def replay_command(request: dict, *, output_root: Path) -> list[str]:
+    from ..task_evaluation_stage_replay import DEFAULT_REPLAY_ROOT
     binding = StageReplayBinding.model_validate(request["binding"])
     return [sys.executable, "-m", "blueprint_pipeline.task_evaluation_stage_replay",
             "--child", binding.child_id, "--queue-root", binding.queue_root,
             "--parent-queue-root", binding.parent_queue_root, "--input-root", binding.input_root,
-            "--replay-root", str(output_root / "scratch"), "--json-out", str(output_root / "report.json"),
+            "--replay-root", str(DEFAULT_REPLAY_ROOT / "agent-execution" / output_root.name), "--json-out", str(output_root / "report.json"),
             *[part for root in binding.approved_roots for part in ("--approved-root", root)]]
 
 

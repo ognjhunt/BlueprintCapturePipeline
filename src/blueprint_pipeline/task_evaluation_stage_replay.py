@@ -261,6 +261,8 @@ def replay_child(
         "resume_only": False,
         "previous_progress": None,
     }
+    if not allow_paid:
+        context["diagnostic_replay_code_root"] = str(Path(stages.__file__).resolve().parents[2])
     try:
         outcome = stages.execute_stage(context)
     except Exception as exc:  # noqa: BLE001 - the refusal is the finding
