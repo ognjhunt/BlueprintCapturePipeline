@@ -736,6 +736,11 @@ def isaac_cell_runtime() -> CellRuntime:
         blockers.extend(visibility_contract["blockers"])
         if visibility_contract["passed"] is not True:
             blockers.append("policy_canary_task_semantic_visibility_failed")
+        from blueprint_pipeline.native_task_asset_composition_gate import run_native_asset_composition_gate
+
+        composition = run_native_asset_composition_gate(
+            built=built, plan=plan, output_root=root)
+        blockers.extend(composition["blockers"])
         passed = (
             isinstance(selection, Mapping)
             and selection.get("status") == "selected"
@@ -780,6 +785,7 @@ def isaac_cell_runtime() -> CellRuntime:
             "snapshot": snapshot,
             "reset_observation_readback": reset_observation_readback,
             "visual_gate": visual,
+            "asset_composition_gate": composition,
             "human_visual_review_status": (
                 "not_required_for_internal_diagnostic_policy_execution"
             ),

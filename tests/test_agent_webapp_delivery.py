@@ -1,6 +1,8 @@
 """Admission delivery preserves task identity across loss and independent refusals."""
 
 import json
+import os
+import time
 
 from blueprint_pipeline.agent_execution.contracts import AgentTask
 from blueprint_pipeline.agent_execution.production import TaskRecord
@@ -66,6 +68,12 @@ def test_foreign_readback_is_not_delivery_and_does_not_starve_other_tasks(tmp_pa
     outbox = WebappAdmissionOutbox(service.journal, post=post)
     outbox.queue(record)
     outbox.queue(other)
+    # Queue timestamps can be tied/coarse or ahead of the current wall clock.
+    # A refused entry must still move behind every currently waiting entry.
+    future = time.time_ns() + 60_000_000_000
+    for path in outbox.pending.glob('*.json'):
+        order = 0 if json.loads(path.read_text())['task_id'] == task.task_id else 1
+        os.utime(path, ns=(future, future + order))
     assert outbox.flush()[0]["status"] == "delivery_pending"
     assert outbox.flush()[0]["status"] == "stored_in_webapp"
     assert calls == [task.task_id, other.task.task_id]
