@@ -29,15 +29,18 @@ def admission_payload(record):
             "enabled": record.enabled, "autostart": record.autostart, "proof_effect": "none"}
 
 
-def _endpoint(endpoint=None):
+def _endpoint(endpoint=None, *, expected_path=ADMISSION_PATH):
     explicit = endpoint if endpoint is not None else os.environ.get("BLUEPRINT_AGENT_WEBAPP_ADMISSION_URL", "").strip()
     configured = explicit or os.environ.get("PIPELINE_SYNC_WEBAPP_URL", "").strip()
     if not configured:
         return None
     parts = urlsplit(validated_https_sync_url(configured))
-    if explicit and parts.path != ADMISSION_PATH:
+    if expected_path not in {ADMISSION_PATH, "/api/internal/pipeline/agent-execution/engineering",
+                             "/api/internal/pipeline/agent-execution/paperclip-bindings"}:
         raise AgentExecutionError("agent_webapp_admission_endpoint_invalid")
-    return urlunsplit((parts.scheme, parts.netloc, ADMISSION_PATH, "", ""))
+    if explicit and parts.path != expected_path:
+        raise AgentExecutionError("agent_webapp_admission_endpoint_invalid")
+    return urlunsplit((parts.scheme, parts.netloc, expected_path, "", ""))
 
 
 class _NoRedirect(request.HTTPRedirectHandler):
@@ -45,8 +48,8 @@ class _NoRedirect(request.HTTPRedirectHandler):
         return None
 
 
-def post_admission(payload, *, endpoint=None, token=None):
-    endpoint = _endpoint(endpoint)
+def post_admission(payload, *, endpoint=None, token=None, expected_path=ADMISSION_PATH):
+    endpoint = _endpoint(endpoint, expected_path=expected_path)
     token = os.environ.get("PIPELINE_SYNC_TOKEN", "").strip() if token is None else token
     if not endpoint or not token:
         raise AgentExecutionError("agent_webapp_admission_not_configured")

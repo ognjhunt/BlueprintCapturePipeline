@@ -74,6 +74,7 @@ class ProductionConfig(BaseModel):
     supervision_store_root: str | None = None
     automatic_failure_investigation: bool = False
     automatic_failure_runtime: Literal["openai_agents_sdk", "openai_agents_api"] = "openai_agents_sdk"
+    engineering_policy_file: str | None = None
     webapp_admission_url: str | None = None
     webapp_sync_token_file: str | None = None
 
@@ -126,6 +127,8 @@ class ProductionAgentService:
             if not Path(getattr(self.config, name)).is_absolute():
                 raise AgentExecutionError("agent_configuration_requires_absolute_path")
         if self.config.supervision_store_root and not Path(self.config.supervision_store_root).is_absolute():
+            raise AgentExecutionError("agent_configuration_requires_absolute_path")
+        if self.config.engineering_policy_file and not Path(self.config.engineering_policy_file).is_absolute():
             raise AgentExecutionError("agent_configuration_requires_absolute_path")
         if bool(self.config.webapp_admission_url) != bool(self.config.webapp_sync_token_file):
             raise AgentExecutionError("agent_webapp_configuration_incomplete")
@@ -370,6 +373,9 @@ class ProductionAgentService:
         }
         if record.cleanup_when_terminal:
             result["cleanup_when_terminal"] = True
+        if self.config.engineering_policy_file:
+            from .engineering import engineering_policy_status
+            result["engineering_policy"] = engineering_policy_status(self, record)
         if record.episode_investigation is not None or record.visual_investigation is not None:
             from ..decision_evidence_contracts import cross_runtime_canonical_digest
             kind = "visual" if record.visual_investigation is not None else "episode"
@@ -416,6 +422,13 @@ class ProductionAgentService:
                     self._collect_episode(record)
                 if record.visual_investigation is not None:
                     self._collect_visual(record)
+                if self.config.engineering_policy_file:
+                    from .engineering import queue_engineering_handoff
+                    try:
+                        queue_engineering_handoff(self, record)
+                    except (AgentExecutionError, ValueError, OSError):
+                        self.journal.record_event("engineering_refused_" + record.task.task_digest[7:],
+                            {"task_id": record.task.task_id, "status": "engineering_admission_refused"})
                 if record.cleanup_when_terminal and record.supervision is None:
                     from .journal import TERMINAL_STATES
                     try:
@@ -521,6 +534,9 @@ def main(argv=None) -> int:
         service.autostart()
         receipt = service.service.tick()
         service.webapp_outbox.flush()
+        if service.config.engineering_policy_file:
+            from .engineering import flush_engineering_handoffs
+            flush_engineering_handoffs(service)
         heartbeat = {**service.health(), "observed_at": time.time(), "last_step": receipt,
                      "supervision": supervision, "failure_investigations": failures}
         write_json(service.journal.root / "worker_health.json", heartbeat)
