@@ -28,6 +28,7 @@ def composition_runtime_sources(*, include_replay=False):
     # The shared AOV writer lives in the older Isaac runtime module. Ship its
     # complete import closure, including dormant adapters; no policy is invoked.
     for name in (
+        "native_task_asset_composition_gate.py",
         "native_task_composition_diagnostic.py",
         "native_task_composition_worker.py",
         "native_task_arena_construction_worker.py",
@@ -69,6 +70,7 @@ def prepare_composition_bundle(
     render_refresh_count=8,
     retained_cell_result=None,
     retained_adapter_reset=None,
+    require_composition_gate=False,
 ):
     from blueprint_pipeline.native_task_arena_bundle import build_native_task_arena_bundle
     from blueprint_pipeline.native_task_arena_policy_canary_worker import _resolved_scene_plan
@@ -79,6 +81,8 @@ def prepare_composition_bundle(
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
     job = Path(job_dir)
+    if require_composition_gate and (retained_cell_result or retained_adapter_reset):
+        raise ValueError("composition_gate_cannot_repeat_retained_command_replay")
     if job.exists() and any(job.iterdir()):
         raise ValueError("composition_job_directory_must_be_fresh")
     packet = Path(packet_dir)
@@ -122,6 +126,7 @@ def prepare_composition_bundle(
             "resolved_scene_plan": file_record(plan_path),
             "resolved_scene_plan_digest": plan["plan_digest"],
             "camera_role": "external",
+            "require_composition_gate": bool(require_composition_gate),
             "camera_source": "actual_native_packet_runtime_camera_builder",
             "target_semantic_class": "task_support",
             "passes": list(PASSES),
@@ -204,10 +209,11 @@ def prepare_composition_bundle(
             if replay_request
             else "native_task_composition_worker.py"
         ),
-        runtime_module_sources=composition_runtime_sources(include_replay=bool(replay_request)),
+        runtime_module_sources=composition_runtime_sources(include_replay=bool(replay_request) or require_composition_gate),
         implementation_commit=implementation_commit,
         execution_mode="runtime_preflight",
-        runtime_variant='native_composition_and_retained_command_replay.v1' if replay_request else None,
+        runtime_variant=('native_composition_and_retained_command_replay.v1' if replay_request
+                         else 'native_asset_composition_gate.v1' if require_composition_gate else None),
         expected_output_filename="native_task_arena_runtime_preflight.v1.json",
         container_image=NATIVE_TASK_ARENA_IMAGE,
         runtime_source_packet_receipt=runtime_source_packet_receipt,
@@ -256,6 +262,7 @@ def main(argv=None):
     parser.add_argument("--render-refresh-count", type=int, default=8)
     parser.add_argument("--retained-cell-result")
     parser.add_argument("--retained-adapter-reset")
+    parser.add_argument("--require-composition-gate", action="store_true")
     parser.add_argument(
         "--dry-run",
         action="store_true",

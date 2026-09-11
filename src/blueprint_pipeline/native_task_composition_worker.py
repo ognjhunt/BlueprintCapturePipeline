@@ -352,12 +352,19 @@ def main(argv=None):
         env.reset(seed=request["seed"])
         # One reset establishes the original spawn. There is no settle/controller
         # episode and no reset, simulation step or camera selection between passes.
-        adapters = make_native_adapters(built=built, stage=stage, request=request)
-        diagnostic = run_composition_diagnostic(
-            request, output_root=output / "composition", adapters=adapters
-        )
-        result["composition_diagnostic"] = diagnostic
-        result["status"] = "completed" if diagnostic["status"] == "captured" else "blocked"
+        if request.get("require_composition_gate") is True:
+            from blueprint_pipeline.native_task_asset_composition_gate import run_native_asset_composition_gate
+            diagnostic = run_native_asset_composition_gate(
+                built=built, plan=plan, stage=stage, output_root=output)
+            result["asset_composition_gate"] = diagnostic
+            result["status"] = "completed" if diagnostic["passed"] else "blocked"
+        else:
+            adapters = make_native_adapters(built=built, stage=stage, request=request)
+            diagnostic = run_composition_diagnostic(
+                request, output_root=output / "composition", adapters=adapters
+            )
+            result["composition_diagnostic"] = diagnostic
+            result["status"] = "completed" if diagnostic["status"] == "captured" else "blocked"
         result["blockers"] = diagnostic["blockers"]
     except Exception as exc:
         result["blockers"].append(type(exc).__name__ + ":" + str(exc))

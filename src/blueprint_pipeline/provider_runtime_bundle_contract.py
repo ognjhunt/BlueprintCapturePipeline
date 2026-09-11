@@ -10,6 +10,7 @@ from pathlib import Path
 from .native_task_arena_execution_contract import (
     NATIVE_TASK_ARENA_RESULT_FILENAMES,
     COMBINED_DIAGNOSTIC_VARIANT, combined_diagnostic_runner_valid,
+    COMPOSITION_GATE_VARIANT, composition_gate_runner_valid,
 )
 
 
@@ -276,6 +277,8 @@ def provider_runtime_contract_blockers(
         if native_task_arena_runtime_variant is not None:
             runner_valid = (native_task_arena_runtime_variant == COMBINED_DIAGNOSTIC_VARIANT
                             and combined_diagnostic_runner_valid(runner_text))
+            if native_task_arena_runtime_variant == COMPOSITION_GATE_VARIANT:
+                runner_valid = composition_gate_runner_valid(runner_text)
         runner_blocker = "provider_runner_missing_native_task_arena_runtime_contract"
     elif provider_bundle_kind == "paired_target_native_import":
         entrypoint_valid = all(

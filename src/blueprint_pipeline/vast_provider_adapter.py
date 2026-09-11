@@ -97,6 +97,7 @@ from .task_evaluation_scene_configuration_provider_preflight import (
 from .native_task_arena_execution_contract import (
     execution_contract as native_task_arena_execution_contract,
     COMBINED_DIAGNOSTIC_VARIANT,
+    COMPOSITION_GATE_VARIANT,
     NATIVE_TASK_ARENA_POLICY_CANDIDATES,
     required_archive_entries as native_task_arena_required_archive_entries,
 )
@@ -3002,7 +3003,7 @@ def _blueprint_bundle_preflight(
                                 raise ValueError(
                                     "native_task_arena_mode_contract_invalid"
                                 )
-                            if native_manifest.get('runtime_variant') == COMBINED_DIAGNOSTIC_VARIANT:
+                            if native_manifest.get('runtime_variant') in {COMBINED_DIAGNOSTIC_VARIANT, COMPOSITION_GATE_VARIANT}:
                                 import ast
                                 if len(native_manifest['runtime_modules']) != len(expected_modules):
                                     raise ValueError('native_diagnostic_duplicate_modules')
@@ -3011,13 +3012,21 @@ def _blueprint_bundle_preflight(
                                     if (len(raw) != record['size_bytes'] or
                                             'sha256:' + hashlib.sha256(raw).hexdigest() != record['sha256']):
                                         raise ValueError('native_diagnostic_module_bytes_mismatch')
-                                parent = archive.read('provider_runtime/blueprint_pipeline/native_task_combined_diagnostic_worker.py')
+                                gate_only = native_manifest.get('runtime_variant') == COMPOSITION_GATE_VARIANT
+                                parent_name = 'native_task_composition_worker.py' if gate_only else 'native_task_combined_diagnostic_worker.py'
+                                parent = archive.read('provider_runtime/blueprint_pipeline/' + parent_name)
                                 if (parent.decode('utf-8') != runner_text or
                                         'sha256:' + hashlib.sha256(parent).hexdigest() != native_manifest['worker_source_sha256']):
                                     raise ValueError('native_diagnostic_parent_identity_mismatch')
-                                for child, required_calls in (
+                                child_contracts = (
                                     ('native_task_composition_worker.py', {'launch_native_task_isaaclab', 'build_native_task_arena_environment', 'run_composition_diagnostic'}),
-                                    ('native_task_retained_command_worker.py', {'launch_native_task_isaaclab', 'build_native_task_arena_environment', 'run_retained_command_replay'})):
+                                    ('native_task_retained_command_worker.py', {'launch_native_task_isaaclab', 'build_native_task_arena_environment', 'run_retained_command_replay'}))
+                                if gate_only:
+                                    child_contracts = (('native_task_composition_worker.py', {'launch_native_task_isaaclab', 'build_native_task_arena_environment', 'run_native_asset_composition_gate'}),)
+                                    gate_request = json.loads(archive.read('provider_runtime/runtime_inputs/composition_request.json'))
+                                    if gate_request.get('require_composition_gate') is not True:
+                                        raise ValueError('native_composition_gate_request_missing')
+                                for child, required_calls in child_contracts:
                                     tree = ast.parse(archive.read('provider_runtime/blueprint_pipeline/' + child).decode('utf-8'))
                                     calls = {node.func.id for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
                                     if not required_calls <= calls:

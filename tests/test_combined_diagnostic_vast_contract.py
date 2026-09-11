@@ -9,6 +9,8 @@ import pytest
 from blueprint_pipeline.native_task_arena_bundle import build_native_task_arena_bundle
 from blueprint_pipeline.native_task_arena_execution_contract import (
     COMBINED_DIAGNOSTIC_VARIANT,
+    COMPOSITION_GATE_VARIANT,
+    composition_gate_runner_valid,
     execution_contract,
     combined_diagnostic_runner_valid,
 )
@@ -35,7 +37,7 @@ def preflight(bundle, tmp):
     )
 
 
-@pytest.mark.parametrize("variant", [None, COMBINED_DIAGNOSTIC_VARIANT])
+@pytest.mark.parametrize("variant", [None, COMBINED_DIAGNOSTIC_VARIANT, COMPOSITION_GATE_VARIANT])
 def test_real_builder_bundle_and_verified_loader_share_actual_vast_gate(
     tmp_path, monkeypatch, variant
 ):
@@ -47,7 +49,7 @@ def test_real_builder_bundle_and_verified_loader_share_actual_vast_gate(
     monkeypatch.setattr(urllib.request, "urlopen", forbidden_network)
     package = Path(__file__).resolve().parents[1] / "src/blueprint_pipeline"
     source = tmp_path / "input.json"
-    source.write_text("{}")
+    source.write_text(json.dumps({'require_composition_gate': variant == COMPOSITION_GATE_VARIANT}))
     inputs = {
         name: source
         for name in (
@@ -63,7 +65,8 @@ def test_real_builder_bundle_and_verified_loader_share_actual_vast_gate(
     receipt = build_native_task_arena_bundle(
         job_dir=tmp_path / "bundle",
         packet_dir=_packet(tmp_path, scene_id="840920"),
-        worker_source=package / "native_task_combined_diagnostic_worker.py",
+        worker_source=package / ("native_task_composition_worker.py" if variant == COMPOSITION_GATE_VARIANT
+                                 else "native_task_combined_diagnostic_worker.py"),
         runtime_module_sources=composition_runtime_sources(include_replay=True),
         implementation_commit="e" * 40,
         execution_mode="runtime_preflight",
@@ -95,13 +98,15 @@ def test_real_builder_bundle_and_verified_loader_share_actual_vast_gate(
         )
         with zipfile.ZipFile(receipt["bundle_path"]) as archive:
             parent = archive.read("provider_runtime/adp_arena_provider_runner.py").decode()
-        assert combined_diagnostic_runner_valid(parent)
+        validator = composition_gate_runner_valid if variant == COMPOSITION_GATE_VARIANT else combined_diagnostic_runner_valid
+        assert validator(parent)
 
 
 def test_fake_comments_and_unregistered_variant_never_satisfy_contract():
     assert execution_contract("runtime_preflight", "unknown") is None
     assert execution_contract("policy", COMBINED_DIAGNOSTIC_VARIANT) is None
     assert not combined_diagnostic_runner_valid("# CHILDREN runner run_diagnostic_children\npass\n")
+    assert not composition_gate_runner_valid("# launch_native_task_isaaclab build_native_task_arena_environment run_native_asset_composition_gate\npass\n")
     source = (
         Path(__file__).resolve().parents[1]
         / "src/blueprint_pipeline/native_task_combined_diagnostic_worker.py"

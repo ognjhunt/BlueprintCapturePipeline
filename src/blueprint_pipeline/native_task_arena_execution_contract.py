@@ -258,6 +258,7 @@ EXECUTION_MODE_CONTRACTS = {
 }
 
 COMBINED_DIAGNOSTIC_VARIANT = "native_composition_and_retained_command_replay.v1"
+COMPOSITION_GATE_VARIANT = "native_asset_composition_gate.v1"
 COMBINED_DIAGNOSTIC_MODULE_NAMES = tuple(sorted({
     *CONSTRUCTION_RUNTIME_MODULE_NAMES, *POLICY_RUNTIME_MODULE_NAMES,
     'adp009d_approach_capture.py', 'adp009d_hold_trace.py', 'adp009d_isaac_runtime.py',
@@ -273,10 +274,22 @@ COMBINED_DIAGNOSTIC_MODULE_NAMES = tuple(sorted({
 def execution_contract(execution_mode: str, runtime_variant=None):
     if runtime_variant is None:
         return EXECUTION_MODE_CONTRACTS.get(execution_mode)
-    if execution_mode == 'runtime_preflight' and runtime_variant == COMBINED_DIAGNOSTIC_VARIANT:
+    if execution_mode == 'runtime_preflight' and runtime_variant in {COMBINED_DIAGNOSTIC_VARIANT, COMPOSITION_GATE_VARIANT}:
         return NativeTaskArenaExecutionContract('native_task_arena_runtime_preflight.v1.json',
                                                COMBINED_DIAGNOSTIC_MODULE_NAMES)
     return None
+
+
+def composition_gate_runner_valid(source: str) -> bool:
+    import ast
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    calls = {node.func.id for node in ast.walk(tree)
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    return {'launch_native_task_isaaclab', 'build_native_task_arena_environment',
+            'run_native_asset_composition_gate'} <= calls
 
 
 def combined_diagnostic_runner_valid(source: str) -> bool:
@@ -443,6 +456,9 @@ def required_archive_entries(execution_mode: str, runtime_variant=None) -> set[s
         entries.update('provider_runtime/runtime_inputs/' + name for name in (
             'composition_request.json', 'composition_scene_plan.json', 'original_policy_runtime_inputs.json',
             'replay_request.json', 'replay_scene_plan.json', 'retained_cell_result.json', 'retained_adapter_reset.json'))
+    elif runtime_variant == COMPOSITION_GATE_VARIANT:
+        entries.update('provider_runtime/runtime_inputs/' + name for name in (
+            'composition_request.json', 'composition_scene_plan.json', 'original_policy_runtime_inputs.json'))
     return entries
 
 
