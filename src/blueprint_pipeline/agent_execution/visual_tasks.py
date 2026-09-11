@@ -173,6 +173,7 @@ def prepare_visual_task(service, *, binding: VisualTaskBinding, task_id: str, ru
         max_model_turns=12, max_tool_calls=128, max_tool_output_bytes=64_000_000, max_output_tokens=8000)
     validate_visual_binding(binding, task)
     record = TaskRecord(schema_version="blueprint_agent_admitted_task.v1", enabled=True, autostart=True,
+                        cleanup_when_terminal=True,
         owner_client_ids=(owner_client_id,), task=task, context=asdict(context), visual_investigation=binding)
     with service.journal.own_task(task_id):
         path = Path(service.config.task_store_root) / (task_id + ".json")

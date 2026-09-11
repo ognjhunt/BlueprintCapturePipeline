@@ -198,6 +198,7 @@ def prepare_episode_task(service, *, task_id: str, run_id: str, request,
         max_input_tokens=120_000, max_output_tokens=8_000, max_tool_output_bytes=64_000_000)
     validate_binding(binding, task)
     record = TaskRecord(schema_version="blueprint_agent_admitted_task.v1", enabled=True, autostart=autostart,
+                        cleanup_when_terminal=True,
         owner_client_ids=(owner_client_id,), task=task, context=asdict(context), episode_investigation=binding)
     path = Path(service.config.task_store_root) / (task_id + ".json")
     with service.journal.own_task(task_id):

@@ -324,3 +324,22 @@ def test_production_units_bind_sdk_and_offline_replay_boundaries():
     for boundary in ("User=blueprint", "PrivateNetwork=true", "PrivateDevices=true", "ProtectSystem=strict",
                      "InaccessiblePaths=-/etc/blueprint/provider-secrets"):
         assert boundary in offline
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_one_shot_terminal_cleanup_survives_restart_and_revocation(tmp_path, enabled):
+    service, task, record_path, config_path = fixture(tmp_path)
+    value = json.loads(record_path.read_text())
+    value.update(cleanup_when_terminal=True)
+    write(record_path, value)
+    service.enqueue(task.task_id, "fixture-client")
+    service.journal.set_state(task.task_id, "failed", error_code="fixture_pre_request_refusal")
+    value["enabled"] = enabled
+    write(record_path, value)
+    restarted = ProductionAgentService(config_path, source_commit="a" * 40)
+    assert restarted.autostart() == 0
+    assert restarted.status(task.task_id, "fixture-client")["cleanup_when_terminal"] is True
+    assert restarted.journal.task(task.task_id)["cleanup_state"] == "pending"
+    assert restarted.service.tick()["cleanup_state"] == "deleted"
+    assert restarted.autostart() == 0
+    assert restarted.journal.task(task.task_id)["state"] == "failed"
