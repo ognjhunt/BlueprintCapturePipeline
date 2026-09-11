@@ -71,6 +71,11 @@ cleaned. Summary digest:
 `sha256:1045313eb4e3b3a19952348515cc0f5ad4311e6d56bc32e89583c8e2963494d8`.
 These results retain the SDK as incumbent and keep managed execution in its
 explicit pilot scope. They do not establish intervention savings or final cost.
+`automatic_failure_runtime` therefore defaults to `openai_agents_sdk` separately
+from `managed_api_enabled`. Enabling managed specialist eligibility does not
+select it for routine failure investigations. An explicit API selection still
+requires its independent project/disclosure admission. Existing tasks keep
+their original runtime; a failed or uncertain call never switches providers.
 Earlier HTTP schema rejections and a trial with missing SDK process opt-in are
 retained separately and are not passing paired comparisons.
 
