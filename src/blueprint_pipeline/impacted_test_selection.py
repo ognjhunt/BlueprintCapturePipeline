@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -120,10 +121,23 @@ def _matching_tests(
     if direct in test_sources:
         candidates.add(direct)
 
-    tokens = {changed_path, path.name}
+    # An unanchored basename also matches unrelated longer filenames (for
+    # example service.py inside live_pipeline_intake_service.py). Preserve
+    # literal file-loader references without creating that false dependency.
+    tokens = {changed_path, f'"{path.name}"', f"'{path.name}'"}
+    module_patterns: list[str] = []
     if changed_path.startswith("src/blueprint_pipeline/") and path.suffix == ".py":
         module = changed_path.removeprefix("src/").removesuffix(".py").replace("/", ".")
-        tokens.add(module)
+        if path.name == "__init__.py":
+            # Every package shares this basename. Match consumers of this
+            # package, rather than every unrelated test mentioning __init__.py.
+            tokens = {changed_path}
+            module = module.removesuffix(".__init__")
+        parent, _, module_name = module.rpartition(".")
+        module_patterns = [
+            rf"(?<![A-Za-z0-9_]){re.escape(module)}(?![A-Za-z0-9_])",
+            rf"\bfrom\s+{re.escape(parent)}\s+import\s+(?:\(\s*)?{re.escape(module_name)}(?![A-Za-z0-9_])",
+        ]
     elif changed_path.startswith("scripts/"):
         tokens.add(f"scripts/{path.name}")
         # A script test loads its subject by bare module name --
@@ -139,7 +153,8 @@ def _matching_tests(
     for test_path, source in test_sources.items():
         if test_path == "tests/test_impacted_test_selection.py":
             continue
-        if any(token and token in source for token in tokens):
+        if (any(token and token in source for token in tokens)
+                or any(re.search(pattern, source) for pattern in module_patterns)):
             candidates.add(test_path)
     return candidates
 

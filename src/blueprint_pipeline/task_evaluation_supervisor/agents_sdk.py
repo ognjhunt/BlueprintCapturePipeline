@@ -330,11 +330,18 @@ def _breakpoint_digests(
 class OpenAIAgentsSDKInvoker:
     """Production adapter around ``agents.Agent`` and ``agents.Runner``."""
 
-    def __init__(self, config: OpenAIAgentsSDKConfig | None = None) -> None:
+    def __init__(
+        self, config: OpenAIAgentsSDKConfig | None = None, *,
+        model_provider: Any = None, run_agent: Callable[..., Any] | None = None,
+        strict_context_accounting: bool = False,
+    ) -> None:
         self.config = config or OpenAIAgentsSDKConfig()
         self._reserved_cost_usd = 0.0
         self._record_reservation: Callable[[Mapping[str, Any]], None] | None = None
         self._record_completion: Callable[[Mapping[str, Any]], None] | None = None
+        self._model_provider = model_provider
+        self._run_agent = run_agent
+        self._strict_context_accounting = strict_context_accounting
 
     def configure_reservation_audit(
         self,
@@ -363,7 +370,7 @@ class OpenAIAgentsSDKInvoker:
             raise AgentsSDKInvocationBlocked("live_agents_sdk_invocation_not_authorized")
         if not env_truthy(LIVE_AGENTS_SDK_ENV):
             raise AgentsSDKInvocationBlocked(f"missing_env_{LIVE_AGENTS_SDK_ENV}")
-        file_api_key = _file_based_openai_api_key()
+        file_api_key = _file_based_openai_api_key() if self._model_provider is None else None
         capability_id = (
             spec.capability.value
             if isinstance(spec.capability, CapabilityKind)
@@ -400,6 +407,22 @@ class OpenAIAgentsSDKInvoker:
             input_digest = canonical_digest({"input": input_value})
         else:
             raise AgentsSDKInvocationBlocked("agents_sdk_input_invalid")
+        if self._strict_context_accounting:
+            if pricing is None:
+                raise AgentsSDKInvocationBlocked("agents_sdk_model_pricing_not_registered")
+            fixed_context_ceiling = len(json.dumps({
+                "instructions": spec.instructions,
+                "output_schema": spec.output_type.model_json_schema(),
+                "tools": [{"name": binding.tool_id, "description": binding.description,
+                           "parameters": dict(binding.input_schema)} for binding in spec.tool_bindings],
+            }, ensure_ascii=True).encode()) + 4096
+            if input_kind == "text":
+                initial_input_token_ceiling += fixed_context_ceiling
+                input_token_ceiling = initial_input_token_ceiling
+            elif fixed_context_ceiling >= input_token_ceiling:
+                raise AgentsSDKInvocationBlocked("agents_sdk_multimodal_fixed_context_exceeds_ceiling")
+            if spec.max_input_tokens is None or input_token_ceiling > spec.max_input_tokens:
+                raise AgentsSDKInvocationBlocked("agents_sdk_input_context_exceeds_declared_ceiling")
         if spec.max_turns > 1:
             if input_kind == "multimodal":
                 raise AgentsSDKInvocationBlocked(
@@ -415,6 +438,7 @@ class OpenAIAgentsSDKInvoker:
                 )
             maximum_growth_tokens = (spec.max_turns - 1) * (
                 spec.max_output_tokens + spec.max_tool_output_bytes
+                + (4096 if self._strict_context_accounting else 0)
             )
             if initial_input_token_ceiling + maximum_growth_tokens > spec.max_input_tokens:
                 raise AgentsSDKInvocationBlocked(
@@ -510,7 +534,12 @@ class OpenAIAgentsSDKInvoker:
                     raise ValueError("agents_sdk_tool_input_invalid_json") from exc
                 if not isinstance(arguments, Mapping):
                     raise ValueError("agents_sdk_tool_input_must_be_object")
-                observation = dict(selected.invoke(arguments))
+                import inspect
+
+                observed = selected.invoke(arguments)
+                if inspect.isawaitable(observed):
+                    observed = await observed
+                observation = dict(observed)
                 serialized_observation = json.dumps(observation, sort_keys=True)
                 nonlocal cumulative_tool_output_bytes
                 cumulative_tool_output_bytes += len(serialized_observation.encode("utf-8"))
@@ -577,11 +606,12 @@ class OpenAIAgentsSDKInvoker:
 
         result = None
         try:
-            result = Runner.run_sync(
+            result = (self._run_agent or Runner.run_sync)(
                 agent,
                 rendered_input,
                 max_turns=spec.max_turns,
                 run_config=RunConfig(
+                    **({"model_provider": self._model_provider} if self._model_provider is not None else {}),
                     workflow_name="Blueprint Task Evaluation Supervisor",
                     group_id=spec.run_id,
                     trace_id=f"trace_{trace_id[:32]}",
