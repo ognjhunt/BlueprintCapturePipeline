@@ -147,7 +147,8 @@ class OpenAIAgentsRuntime:
             tool = self.operations.tools[name]
             tools.append({
                 "type": "function", "name": tool.tool_id,
-                "description": tool.description, "parameters": dict(tool.input_schema),
+                "description": tool.description,
+                "parameters": ensure_strict_json_schema(deepcopy(tool.input_schema)),
             })
         return {
             "agent": {
