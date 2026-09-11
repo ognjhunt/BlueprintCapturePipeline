@@ -17,7 +17,8 @@ import time
 
 from ..common import write_json
 from ..task_evaluation_stage_replay import (
-    DEFAULT_APPROVED_ROOTS, DEFAULT_INPUT_ROOT, DEFAULT_PARENT_QUEUE_ROOT, DEFAULT_QUEUE_ROOT, locate_child,
+    DEFAULT_APPROVED_ROOTS, DEFAULT_INPUT_ROOT, DEFAULT_PARENT_QUEUE_ROOT, DEFAULT_QUEUE_ROOT,
+    discover_input_root, locate_child,
 )
 from ..task_evaluation_supervisor.capabilities import SupervisorContext
 from ..task_evaluation_supervisor.contracts import AuthorityEnvelope, AutonomyMode
@@ -49,6 +50,14 @@ def prepare_retained_failure(
     raw_job = located.job_path.read_bytes()
     job_digest = "sha256:" + hashlib.sha256(raw_job).hexdigest()
     job = json.loads(raw_job)
+    # Historical subscriptions may name the legacy CAS even though the saved
+    # plan lives in an owned preparation store. Preserve the subscription and
+    # bind this task to that exact retained store, not the ambient environment.
+    retained_input_root = discover_input_root(job)
+    if retained_input_root is not None:
+        if not any(retained_input_root.resolve().is_relative_to(path.resolve()) for path in approved_roots):
+            raise AgentExecutionError("agent_replay_input_root_outside_server_scope")
+        input_root = retained_input_root
     saved = json.loads(located.result_path.read_text()) if located.result_path.is_file() else {}
     binding = StageReplayBinding(
         replay_id="failed_boundary", child_id=child_id, job_sha256=job_digest,

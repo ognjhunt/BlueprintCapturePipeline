@@ -58,8 +58,15 @@ def _case(tmp_path, monkeypatch):
     queue = tmp_path / "queue"
     child = "sam31-original"
     parent = "sha256:" + "a" * 64
+    parent_queue = tmp_path / "owned-parent-queue"
+    input_root = tmp_path / "owned-parent-inputs"
+    (parent_queue / "blocked").mkdir(parents=True)
+    input_root.mkdir()
+    (parent_queue / "blocked" / ("fixture-parent-" + parent[7:] + ".json")).write_text("{}")
+    monkeypatch.delenv("BLUEPRINT_TASK_EVALUATION_SCENE_PROGRESSION_CONFIG", raising=False)
     job_path = queue / "failed" / (child + ".json")
-    saved_job = {"child_id": child, "parent_request_digest": parent, "phase": "calibrated_views",
+    saved_job = {"child_id": child, "parent_request_digest": parent, "parent_preparation_id": "fixture-parent",
+        "phase": "calibrated_views",
         "expected_source_commit": old["repository"]["commit"], "plan_ref": record(plan_path)}
     saved_job = _seal(job_path, saved_job, "job_digest")
     result_path = queue / "results" / (child + ".json")
@@ -71,6 +78,8 @@ def _case(tmp_path, monkeypatch):
     from blueprint_pipeline import task_evaluation_sam31_prefix_evidence as science
     def validated(job, **kwargs):
         assert kwargs["validation_purpose"] == "retained_offline_replay"
+        assert kwargs["parent_queue"] == parent_queue
+        assert kwargs["input_root"] == input_root
         return {}, json.loads(Path(job["plan_ref"]["path"]).read_text())
     monkeypatch.setattr(execution, "_validated_job", validated)
     monkeypatch.setattr(science, "source_science", lambda host, commit: ({"task": "same"}, {}, {"source": "same"}))
@@ -103,6 +112,7 @@ def _case(tmp_path, monkeypatch):
     current_plan_path = tmp_path / "current-plan.json"
     current_plan = _seal(current_plan_path, {**plan, "source_commit": current["repository"]["commit"]}, "plan_digest")
     current_job = {**old_job, "child_id": "sam31-successor", "queue_root": str(queue),
+        "parent_queue_root": str(parent_queue), "preparation_input_root": str(input_root),
         "retained_execution_root": str(execution_root), "plan": current_plan, "plan_ref": record(current_plan_path),
         "expected_source_commit": current["repository"]["commit"], "repo_root": str(current_repo),
         "output_root": str(current_root), "resume_only": True}
@@ -132,6 +142,9 @@ def test_production_successor_reuses_closed_return_and_preserves_failed_history(
     assert receipt["repository"]["commit"] != old["repository"]["commit"]
     assert receipt["source_calibration_render"]["original_render_commit"] == old["repository"]["commit"]
     binding = outcome["artifacts"]["source_calibration_retained_render_binding"]["path"]
+    binding_value = json.loads(Path(binding).read_text())
+    assert binding_value["parent_queue_root"] == job["parent_queue_root"]
+    assert binding_value["input_root"] == job["preparation_input_root"]
     assert preparation.adopt_finalized_public_scene_inpainting_inputs(preparation_path=current["preparation_path"],
         returned_group_path=old_output / "source_calibration_closed_return.v1.json", retained_render_binding_path=binding) == receipt
 

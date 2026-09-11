@@ -47,7 +47,7 @@ def _intent(plan):
     return authority["intent_digest"]
 
 
-def _original(job_path, *, queue_root, execution_root, approved_roots):
+def _original(job_path, *, queue_root, execution_root, approved_roots, parent_queue_root, input_root):
     from . import task_evaluation_sam31_preparation_execution as execution
     job = read(job_path, digest_field="job_digest")
     queue = Path(queue_root)
@@ -62,8 +62,8 @@ def _original(job_path, *, queue_root, execution_root, approved_roots):
             and result.get("child_id") == job["child_id"]
             and str(result.get("blocker", "")).startswith("edit_input_mask_invalid:"),
             "calibration_reuse_cpu_mask_failure_required")
-    _, plan = execution._validated_job(job, parent_queue=execution.DEFAULT_PARENT_QUEUE,
-        input_root=execution.DEFAULT_INPUT_ROOT, source_commit=job["expected_source_commit"],
+    _, plan = execution._validated_job(job, parent_queue=Path(parent_queue_root),
+        input_root=Path(input_root), source_commit=job["expected_source_commit"],
         approved_roots=approved_roots, validation_purpose="retained_offline_replay")
     root = Path(execution_root) / job["parent_request_digest"][7:] / job["child_id"] / "artifacts"
     cpu = read(root / "cpu_preparation_outcome.json")
@@ -121,7 +121,8 @@ def validate_retained_render_binding(path, *, current_prepared):
             "calibration_reuse_current_preparation_changed")
     job, old_plan, original, closed, groups, result_path = _original(_ref(value["original_failed_job"]),
         queue_root=value["queue_root"], execution_root=value["execution_root"],
-        approved_roots=tuple(Path(root) for root in value["approved_roots"]))
+        approved_roots=tuple(Path(root) for root in value["approved_roots"]),
+        parent_queue_root=value["parent_queue_root"], input_root=value["input_root"])
     current_plan = read(_ref(value["current_plan"]), digest_field="plan_digest")
     require(record(closed) == value["original_closed_return"]
             and record(result_path) == value["original_failed_result"]
@@ -155,22 +156,31 @@ def select_retained_render(*, job, prepared_path, output_root):
     require(len(candidates) <= 1, "calibration_reuse_candidates_ambiguous")
     if not candidates:
         return None
+    # Production resolves the operator's actual route once and seals it into
+    # the binding. Offline agents pass these same explicit roots without any
+    # provider/configuration environment inheritance.
+    parent_queue, input_root = execution.configured_parent_route(read(candidates[0]),
+        Path(job.get("parent_queue_root", execution.DEFAULT_PARENT_QUEUE)),
+        Path(job.get("preparation_input_root", execution.DEFAULT_INPUT_ROOT)))
     return bind_retained_render(original_job_path=candidates[0], job=job,
         prepared_path=prepared_path, output_root=output_root, queue_root=queue,
-        execution_root=execution_root, approved_roots=roots)
+        execution_root=execution_root, approved_roots=roots,
+        parent_queue_root=parent_queue, input_root=input_root)
 
 
 def bind_retained_render(*, original_job_path, job, prepared_path, output_root,
-                         queue_root, execution_root, approved_roots):
+                         queue_root, execution_root, approved_roots, parent_queue_root, input_root):
     from .public_scene_inpainting_preparation import validate_prepared_inputs
     queue, roots = Path(queue_root), tuple(Path(root) for root in approved_roots)
     plan = job["plan"]
     original_job, _, original, closed, _, result_path = _original(Path(original_job_path), queue_root=queue,
-        execution_root=execution_root, approved_roots=roots)
+        execution_root=execution_root, approved_roots=roots,
+        parent_queue_root=parent_queue_root, input_root=input_root)
     path = Path(output_root) / FILENAME
     prepared = validate_prepared_inputs(prepared_path)
     value = {"schema_version": SCHEMA, "status": "closed_render_reused", "intent_digest": _intent(plan),
         "queue_root": str(queue), "execution_root": str(execution_root), "approved_roots": [str(root) for root in roots],
+        "parent_queue_root": str(parent_queue_root), "input_root": str(input_root),
         "original_failed_job": record(Path(original_job_path)), "original_failed_result": record(result_path),
         "original_prepared_inputs": record(Path(original["preparation_path"])),
         "original_closed_return": record(closed), "current_prepared_inputs": record(Path(prepared_path)),
@@ -185,7 +195,7 @@ def bind_retained_render(*, original_job_path, job, prepared_path, output_root,
 
 
 def replay_retained_calibration(*, job, plan, job_path, run_root, queue_root, approved_roots,
-                                execution_root=None):
+                                parent_queue_root, input_root, execution_root=None):
     """Run only preparation and finalization against a closed historical return."""
     from . import task_evaluation_sam31_preparation_execution as execution
     from .task_evaluation_sam31_profile_registry import resolve_sam31_profile
@@ -196,12 +206,14 @@ def replay_retained_calibration(*, job, plan, job_path, run_root, queue_root, ap
     # Refuse before doing even CPU preparation unless the saved GPU return is
     # closed and its exact parent/child/failure can be reopened read-only.
     _original(Path(job_path), queue_root=queue_root, execution_root=execution_root,
-              approved_roots=tuple(Path(root) for root in approved_roots))
+              approved_roots=tuple(Path(root) for root in approved_roots),
+              parent_queue_root=parent_queue_root, input_root=input_root)
     context = {**job, "plan": plan, "stage_id": "calibrated_views", "server_profile": profile,
         "output_root": str(Path(run_root) / "cpu"), "repo_root": profile["repo_root"],
         "server_data_root": profile["server_data_root"], "runtime_root": profile["runtime_root"]}
     prepared = execute_cpu_stage(context, prepare_hardware_render=True)
     binding = bind_retained_render(original_job_path=Path(job_path), job=context,
         prepared_path=prepared["prepared_inputs"]["path"], output_root=Path(run_root),
-        queue_root=queue_root, execution_root=execution_root, approved_roots=approved_roots)
+        queue_root=queue_root, execution_root=execution_root, approved_roots=approved_roots,
+        parent_queue_root=parent_queue_root, input_root=input_root)
     return finalize_retained_source_calibration(job=context, prepared_outcome=prepared,binding_path=binding)
