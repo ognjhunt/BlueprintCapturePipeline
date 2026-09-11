@@ -22,8 +22,9 @@ complete authorized software workflow, not a runtime adapter alone.
 
 ## Requirements and acceptance evidence
 
-Each row remains incomplete until its named evidence exists and has been read.
-Hermetic rehearsal is necessary but does not establish live service behavior.
+Each core requirement remains incomplete until its named evidence exists and has been read.
+Optional integration rows describe their activation gates. Hermetic rehearsal
+is necessary but does not establish live service behavior.
 
 | ID | Requirement | Required evidence | State |
 | --- | --- | --- | --- |
@@ -42,7 +43,7 @@ Hermetic rehearsal is necessary but does not establish live service behavior.
 | A13 | Preserve placement/native feedback, parameter and variation contracts | Existing focused regressions and runtime parity | incumbent paths retained; regression coverage preserved |
 | A14 | WebApp ADP operator integration and runtime status | Authenticated route tests, mocked browser coverage, live readback | deployed through Website PR #571; authenticated live SDK/API task, cleanup and source readback verified |
 | A15 | Hands-off event progression and terminal delivery | Restart/outage drill and signed consumer/media readback | automatic diagnosis and signed consumer delivery observed; full-run outage/terminal-media proof pending |
-| A16 | Existing Paperclip execution record retained | Selected ADP worker integration and duplicate-owner tests | selected-worker binding and bounded engineering handoff implemented; active Paperclip instance unavailable |
+| A16 | Optional Paperclip integration retained | Before enabling: selected-worker linkage and duplicate-owner evidence | adapter and bounded handoff retained; activation disabled and deferred; core Pipeline does not depend on it |
 | A17 | Frozen comparative corpus and promotion decision | Independent quality/cost/intervention/latency measurements | 60 paired runs complete; SDK retained as incumbent; official cost and intervention measurement pending |
 | A18 | Complete release and rollback | Protected-main checks, exact deployment, resource closeout, rollback drill | production promotion and exact deployment observed for prior integration; latest release and live rollback proof pending |
 
@@ -75,9 +76,10 @@ the next request. Wire-size and task-operation limits remain separately enforced
 The original one-pass SDK reviewers and summary path remain available.
 
 Live full-run recovery/adoption, an outage/rollback rehearsal, admitted specialist
-comparisons, official per-task cost and operator-intervention measurement, and
-Paperclip issue/worker readback remain open. The older checkpoints below describe
-their recorded releases; their original pending statements are historical.
+comparisons, official per-task cost and operator-intervention measurement remain open.
+Paperclip issue/worker readback is a separate optional activation gate. The older
+checkpoints below describe their recorded releases; their original pending
+statements are historical.
 
 ## September 11 deployed integration and comparison
 
@@ -146,6 +148,21 @@ Disabling it revokes automatic supervision; removing a recovery binding revokes
 that action even after restart. Production-host and full-run proof still require
 an accepted current intent and the exact deployed producer release.
 
+## Paperclip dependency boundary
+
+Paperclip is optional coordination for engineering issues and worker/reviewer
+assignment. Pipeline already owns reasoning-task execution, persistent
+supervision, saved replay, preauthorized controller recovery and Website
+result delivery. Those core paths have no Paperclip dependency.
+
+The original assessment called for retaining the existing integration. That
+does not require activating an unavailable Paperclip instance before the core
+rollout can finish. Keep its implemented adapters disabled unless that
+engineering-worker workflow is selected. Live issue/worker readback remains a
+gate for enabling that integration, not a core rollout gate. Fully automatic
+source-code repair dispatch still requires an active coding-worker system;
+diagnosis and an engineering handoff alone do not establish a completed repair.
+
 ## Automatic recovery configuration
 
 `automatic_failure_investigation` continues to default to diagnosis/replay only.
@@ -169,6 +186,16 @@ This configuration grants no new owner authority and is empty in the live
 assessment pilot. No paid retry is enabled by deployment. The selected live
 recovery/adoption proof remains open until an already-authorized owner intent
 is available; the supplied expired historical intent is not renewed implicitly.
+
+## SDK cancellation closeout
+
+A cancelled or expired SDK invocation can now close its local execution after
+all issued tool operations have been reconciled. The task retains a cancellation
+receipt with the inference-reservation snapshot. Unknown charges remain held;
+local cancellation does not claim that the provider finished the response or
+released any independent resource. A later revision can proceed within the
+watch's already-reserved lifetime budget, without replaying the old request.
+Known cost-bound violations remain in reconciliation and require cost review.
 
 ## Scientific and operational boundaries
 

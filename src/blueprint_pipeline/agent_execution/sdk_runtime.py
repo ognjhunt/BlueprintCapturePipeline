@@ -135,8 +135,32 @@ class OpenAIAgentsSDKRuntime:
             if state["state"] != "queued":
                 self.journal.set_state(task_id, "reconciling",
                                        error_code="agents_sdk_invocation_outcome_unresolved")
+                if self.clock() >= task.deadline and not state["cancel_requested"]:
+                    self.journal.request_cancel(task_id, "agent_task_deadline")
+                    state = self.journal.task(task_id)
                 if state["cancel_requested"]:
                     self.operations.reconcile_cancelled(task)
+                    if self.journal.unsettled_operations(task_id):
+                        raise OperationPending("agent_tool_outcome_unresolved")
+                    if state["session_id"] is not None:
+                        raise AgentExecutionError("agents_sdk_unexpected_remote_session")
+                    if self.journal.event("sdk_cost_boundary_failed_" + task.task_digest[7:]) is not None:
+                        return self.journal.task(task_id)
+                    event_id = "sdk_local_cancellation_" + task.task_digest[7:]
+                    receipt = self.journal.event(event_id)
+                    if receipt is None:
+                        manifest = self._audit(task).manifest()
+                        receipt = {"task_id": task_id, "task_digest": task.task_digest,
+                            "local_execution_stopped": True, "tool_operations_reconciled": True,
+                            "reservation_manifest": manifest,
+                            "unknown_cost_reserved": bool(manifest["in_flight_unknown_count"]),
+                            "cancellation_released_inference_reservation": False,
+                            "provider_response_completion_claimed": False,
+                            "provider_resource_release_claimed": False}
+                        self.journal.record_event(event_id, receipt)
+                    self.journal.set_state(task_id, "cancelled", error_code=(
+                        "agents_sdk_cancelled_reservation_held" if receipt["unknown_cost_reserved"]
+                        else "agents_sdk_local_execution_cancelled"))
                 return self.journal.task(task_id)
             try:
                 self._ensure_active(task)
@@ -238,7 +262,12 @@ class OpenAIAgentsSDKRuntime:
                 result["result_digest"] = digest(result)
                 self.journal.record_usage(task_id, invocation.usage)
                 self.journal.set_state(task_id, "completed", result=result, turn_id="sdk_turn", clock=self.clock)
-            except BaseException:
+            except BaseException as exc:
+                if str(exc) in {"agents_sdk_actual_cost_exceeds_reserved_maximum",
+                        "inference_completion_reconciled_cost_exceeds_reservation",
+                        "agents_sdk_result_cost_invalid", "agents_sdk_result_or_budget_receipt_invalid"}:
+                    self.journal.record_event("sdk_cost_boundary_failed_" + task.task_digest[7:],
+                        {"task_id": task_id, "task_digest": task.task_digest, "cost_bound_unproven": True})
                 never_dispatched = audit.manifest()["reservation_count"] == 0
                 self.journal.set_state(
                     task_id, "failed" if never_dispatched else "reconciling",
