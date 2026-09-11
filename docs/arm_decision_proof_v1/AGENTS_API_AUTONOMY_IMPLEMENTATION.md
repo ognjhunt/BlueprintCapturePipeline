@@ -118,6 +118,30 @@ until cleanup is observed. A replay CLI admission refusal now writes a typed
 report so the investigator can identify a disk-capacity refusal without access
 to raw logs. Neither change bypasses the original disk or execution gates.
 
+## Automatic recovery configuration
+
+`automatic_failure_investigation` continues to default to diagnosis/replay only.
+The private production configuration can now include up to ten
+`automatic_recovery_bindings`, using the existing `ControllerRecoveryBinding`
+contract. A subscription receives a binding only when both its exact parent
+request digest and intent ID match. Ambiguous matches are refused. The binding
+must identify `failed_boundary` as its required replay and retain the exact
+controller configuration, intent, preparation link and their hashes.
+
+The failure producer then prepares the existing recovery-enabled task without a
+manual enqueue. Its model must obtain a successful same-task replay before it
+can ask the existing controller to progress. That controller retains current
+owner consent, expiration, retries, spend, provider-zero and completed-prefix
+adoption checks. Changing the selected binding creates a distinct task identity
+and consumes the existing subscription cap. Removing a binding revokes pending
+automatic recovery, including after service restart. In-flight operations remain
+owned by the original controller and must be reconciled.
+
+This configuration grants no new owner authority and is empty in the live
+assessment pilot. No paid retry is enabled by deployment. The selected live
+recovery/adoption proof remains open until an already-authorized owner intent
+is available; the supplied expired historical intent is not renewed implicitly.
+
 ## Scientific and operational boundaries
 
 ### Bounded engineering handoff (ADP-009D, day-28)

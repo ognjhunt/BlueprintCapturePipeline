@@ -79,9 +79,17 @@ def discover_retained_failures(service):
                     if (job.get("parent_preparation_id") != policy.parent_preparation_id
                             or job.get("parent_request_digest") != policy.parent_request_digest):
                         continue
+                    recoveries = [binding for binding in service.config.automatic_recovery_bindings
+                        if binding.parent_request_digest == policy.parent_request_digest and binding.intent_id == policy.run_id]
+                    if len(recoveries) > 1:
+                        raise AgentExecutionError("agent_automatic_recovery_binding_ambiguous")
+                    recovery = recoveries[0] if recoveries else None
                     job_sha256 = "sha256:" + hashlib.sha256(raw).hexdigest()
-                    task_id = "auto-failure-" + digest({"subscription": state["subscription_digest"],
-                        "job": job_sha256, "source_commit": service.config.source_commit})[7:]
+                    identity = {"subscription": state["subscription_digest"], "job": job_sha256,
+                                "source_commit": service.config.source_commit}
+                    if recovery is not None:
+                        identity["controller_recovery_digest"] = digest(recovery.model_dump(mode="json"))
+                    task_id = "auto-failure-" + digest(identity)[7:]
                     entry = next((row for row in state["tasks"] if row["task_id"] == task_id), None)
                     if entry is None:
                         if len(state["tasks"]) >= policy.maximum_tasks:
@@ -108,7 +116,7 @@ def discover_retained_failures(service):
                         record = prepare_retained_failure(service, task_id=task_id, run_id=policy.run_id,
                             child_id=job["child_id"], owner_client_id=policy.owner_client_id,
                             inference_budget_usd=policy.per_task_budget_usd,
-                            runtime=service.config.automatic_failure_runtime,
+                            runtime=service.config.automatic_failure_runtime, controller_recovery=recovery,
                             queue_root=Path(policy.child_queue_root), parent_queue_root=Path(policy.parent_queue_root),
                             input_root=Path(policy.input_root), approved_roots=tuple(Path(path) for path in policy.approved_roots),
                             ttl_seconds=min(600, max(1, int(policy.expires_at - time.time()))))
