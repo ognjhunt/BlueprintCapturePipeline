@@ -91,6 +91,28 @@ def test_failure_planner_reopens_owned_cas_even_when_legacy_cas_exists(tmp_path,
     assert not (Path(service.config.task_store_root) / "readback-only.json").exists()
 
 
+@pytest.mark.parametrize("phase,ttl,expected", [
+    ("calibrated_views", 600, 480), ("calibrated_views", 900, 480),
+    ("calibrated_views", 420, 420), ("sam31_review", 900, 300), ("sam31_review", 120, 120),
+])
+def test_calibration_cpu_replay_cap_fits_existing_task_lifetime_without_budget_growth(tmp_path, phase, ttl, expected):
+    service, _, _, _ = production_fixture(tmp_path)
+    root, job_path, job = _queue(tmp_path / "saved")
+    job["phase"] = phase
+    job_path.write_text(json.dumps(job))
+    before = time.time()
+    record = prepare_retained_failure(service, task_id="timeout-readback", run_id="recovery-run", child_id=CHILD,
+        owner_client_id="fixture-client", inference_budget_usd=1, queue_root=root,
+        parent_queue_root=tmp_path / "parents", input_root=tmp_path / "inputs", approved_roots=(tmp_path,),
+        ttl_seconds=ttl, persist=False, autostart=False)
+    assert record.stage_replays[0].timeout_seconds == expected
+    assert before + ttl <= record.task.deadline <= time.time() + ttl
+    assert record.task.admission.expires_at == record.task.deadline
+    assert record.task.admission.inference_budget_usd == 1
+    assert record.controller_recoveries == ()
+    assert not (Path(service.config.task_store_root) / "timeout-readback.json").exists()
+
+
 def test_sdk_waits_for_same_pending_operation_without_second_dispatch(tmp_path, monkeypatch):
     ready = threading.Event()
     invocations = []

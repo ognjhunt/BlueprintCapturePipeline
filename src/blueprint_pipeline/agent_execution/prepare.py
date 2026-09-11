@@ -63,7 +63,10 @@ def prepare_retained_failure(
         replay_id="failed_boundary", child_id=child_id, job_sha256=job_digest,
         queue_root=str(queue_root.resolve()), parent_queue_root=str(parent_queue_root.resolve()),
         input_root=str(input_root.resolve()), approved_roots=tuple(str(path.resolve()) for path in approved_roots),
-        timeout_seconds=min(300, ttl_seconds),
+        # Retained calibration reopens the full source and all 48 closed GPU
+        # frames before CPU finalization. Keep that measured CPU work inside
+        # the existing task lifetime; no inference or paid-resource grant grows.
+        timeout_seconds=min(480 if job.get("phase") == "calibrated_views" else 300, ttl_seconds),
     )
     tools = StageReplayTools(journal=service.journal, bindings=(binding,), source_commit=service.config.source_commit).tools()
     recovery = (controller_recovery,) if controller_recovery is not None else ()
