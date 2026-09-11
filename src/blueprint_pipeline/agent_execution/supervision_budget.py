@@ -8,8 +8,9 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import re
 
-from .contracts import AgentExecutionError, digest
+from .contracts import AgentExecutionError, IDENTIFIER, digest
 
 
 def failure_hold_inventory(service, run_id):
@@ -32,7 +33,8 @@ def failure_hold_inventory(service, run_id):
             raise AgentExecutionError("automatic_supervision_failure_reservation_invalid")
         for entry in state["tasks"]:
             task_id, amount = entry.get("task_id"), entry.get("reserved_inference_usd")
-            if (not isinstance(task_id, str) or not task_id.startswith("auto-failure-")
+            if (not isinstance(task_id, str) or re.fullmatch(IDENTIFIER, task_id) is None
+                    or not task_id.startswith("auto-failure-")
                     or not isinstance(amount, (int, float)) or isinstance(amount, bool)
                     or not math.isfinite(amount) or not 0 < amount == policy.per_task_budget_usd):
                 raise AgentExecutionError("automatic_supervision_failure_reservation_invalid")

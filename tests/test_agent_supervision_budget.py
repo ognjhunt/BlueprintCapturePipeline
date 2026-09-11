@@ -43,7 +43,7 @@ def test_append_only_migration_counts_missing_task_holds_and_deduplicates_by_tas
     assert not any((Path(service.config.task_store_root) / (entry["task_id"] + ".json")).exists() for entry in entries)
 
 
-@pytest.mark.parametrize("defect", ["lower_amount", "task_grant", "subscription_digest"])
+@pytest.mark.parametrize("defect", ["lower_amount", "task_grant", "subscription_digest", "task_path"])
 def test_tampered_cross_producer_holds_cannot_understate_the_reserved_grant(tmp_path, defect):
     service, plan, _, _ = setup(tmp_path)
     path, entries = seed_holds(service, plan.run_id)
@@ -52,6 +52,8 @@ def test_tampered_cross_producer_holds_cannot_understate_the_reserved_grant(tmp_
         state["tasks"][0]["reserved_inference_usd"] = .1
     elif defect == "subscription_digest":
         state["subscription_digest"] = "sha256:" + "0" * 64
+    elif defect == "task_path":
+        state["tasks"][0]["task_id"] = "auto-failure-../../outside"
     else:
         write(Path(service.config.task_store_root) / (entries[0]["task_id"] + ".json"), {"task": {
             "task_id": entries[0]["task_id"], "run_id": plan.run_id, "source_commit": "a" * 40,
