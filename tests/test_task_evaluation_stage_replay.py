@@ -168,6 +168,7 @@ def test_replay_reports_completion_and_the_outcome(tmp_path: Path, monkeypatch) 
 def test_calibration_replay_passes_validated_request_to_cpu_only_continuation(tmp_path, monkeypatch):
     from blueprint_pipeline import source_calibration_finalization_reuse as continuation
     root, job_path, job = _queue(tmp_path)
+    monkeypatch.delenv("BLUEPRINT_TASK_EVALUATION_SCENE_PROGRESSION_CONFIG", raising=False)
     job["phase"] = "calibrated_views"
     job["job_digest"] = canonical_digest(job, digest_field="job_digest")
     job_path.write_text(json.dumps(job))
@@ -178,6 +179,8 @@ def test_calibration_replay_passes_validated_request_to_cpu_only_continuation(tm
         assert kwargs["job"]["request"]["preparation_id"] == "prep-1"
         assert kwargs["job"]["plan"] == kwargs["plan"]
         assert kwargs["job_path"] == job_path
+        assert kwargs["parent_queue_root"] == tmp_path / "parent"
+        assert kwargs["input_root"] == tmp_path / "inputs"
         assert Path(kwargs["run_root"]).is_relative_to(tmp_path / "replays")
         seen.append(kwargs)
         return {"status": "completed", "provider_mutation_performed": False, "artifacts": {}}

@@ -59,6 +59,38 @@ def test_replay_command_cannot_request_paid_phase_or_inherit_model_environment(t
     assert "--isolate" not in command  # Isolation belongs to the qualified systemd worker.
 
 
+@pytest.mark.parametrize("outside_scope", [False, True])
+def test_failure_planner_reopens_owned_cas_even_when_legacy_cas_exists(tmp_path, outside_scope):
+    from blueprint_pipeline.agent_execution.contracts import AgentExecutionError
+    service, _, _, _ = production_fixture(tmp_path)
+    root, job_path, job = _queue(tmp_path / "saved")
+    actual = tmp_path / "owned-inputs"
+    legacy = tmp_path / "legacy-inputs"
+    for directory in (actual, legacy):
+        (directory / "content-addressed/sha256").mkdir(parents=True)
+    plan_path = actual / "preparation-1" / "plan-digest"
+    plan_path.parent.mkdir()
+    plan_path.write_text("{}")
+    job["plan_ref"]["path"] = str(plan_path)
+    job_path.write_text(json.dumps(job))
+    before = job_path.read_bytes()
+    kwargs = dict(task_id="readback-only", run_id="recovery-run", child_id=CHILD,
+        owner_client_id="fixture-client", inference_budget_usd=1, queue_root=root,
+        parent_queue_root=tmp_path / "owned-parents", input_root=legacy,
+        approved_roots=(tmp_path / "other-admitted-root",) if outside_scope else (tmp_path,),
+        persist=False, autostart=False)
+    if outside_scope:
+        with pytest.raises(AgentExecutionError, match="input_root_outside_server_scope"):
+            prepare_retained_failure(service, **kwargs)
+    else:
+        record = prepare_retained_failure(service, **kwargs)
+        assert record.stage_replays[0].input_root == str(actual)
+        assert record.stage_replays[0].parent_queue_root == str(tmp_path / "owned-parents")
+        assert record.stage_replays[0].timeout_seconds == 300
+    assert job_path.read_bytes() == before
+    assert not (Path(service.config.task_store_root) / "readback-only.json").exists()
+
+
 def test_sdk_waits_for_same_pending_operation_without_second_dispatch(tmp_path, monkeypatch):
     ready = threading.Event()
     invocations = []

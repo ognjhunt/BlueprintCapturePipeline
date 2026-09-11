@@ -10,6 +10,25 @@ from tests.test_agent_production_service import fixture, write
 from tests.test_task_evaluation_stage_replay import _queue
 
 
+def test_subscription_pins_configured_owned_input_root_without_rewriting_existing(tmp_path):
+    from blueprint_pipeline.agent_execution.failure_events import register_preparation_failure_subscription
+    service, _, _, config_path = fixture(tmp_path)
+    config = service.config.model_dump(mode="json")
+    config["automatic_failure_investigation"] = True
+    write(config_path, config)
+    link = {"preparation_id": "owned-preparation", "request_digest": "sha256:" + "a" * 64,
+            "intent_id": "scene-owned"}
+    controller = {"preparation_queue_root": str(tmp_path / "owned-queue"),
+                  "preparation_worker": {"input_root": str(tmp_path / "owned-inputs")}}
+    first = register_preparation_failure_subscription(preparation_link=link,
+        controller_config=controller, agent_config_path=config_path)
+    assert first.input_root == str(tmp_path / "owned-inputs")
+    assert first.parent_queue_root == str(tmp_path / "owned-queue")
+    controller["preparation_worker"]["input_root"] = str(tmp_path / "later-inputs")
+    assert register_preparation_failure_subscription(preparation_link=link,
+        controller_config=controller, agent_config_path=config_path) == first
+
+
 @pytest.mark.parametrize("managed_enabled", [False, True])
 def test_new_failed_child_is_admitted_once_without_model_or_paid_execution(tmp_path, managed_enabled):
     service, _, template_path, config_path = fixture(tmp_path)
