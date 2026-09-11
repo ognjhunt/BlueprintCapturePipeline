@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import time
 import urllib.error
 from pathlib import Path
@@ -37,6 +39,7 @@ from .sam31_gpu_admission import (
     OPERATION,
     SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES,
     SAM31_PREFERRED_GEOLOCATION_REGEX,
+    sam31_capacity_request,
 )
 from .sam31_source_track_canary_worker import RUNTIME_RESULT_SCHEMA_VERSION
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
@@ -478,6 +481,43 @@ def validate_sam31_runtime_result(
     return result
 
 
+def frozen_sam31_launch_policy(bound_request: Mapping[str, Any], preflight: Mapping[str, Any]) -> dict[str, Any]:
+    """Reopen the admitted resource policy, not the advisory offer's properties."""
+    if canonical_digest(preflight) != bound_request.get("bound_preflight_digest"):
+        raise Sam31VastCanaryError("sam31_launch_preflight_binding_changed")
+    supplied = preflight.get("capacity_request")
+    if not isinstance(supplied, Mapping):
+        raise Sam31VastCanaryError("sam31_launch_capacity_policy_missing")
+    expected = sam31_capacity_request(container_disk_bytes=preflight.get("container_disk_bytes"),
+        max_hourly_rate_usd=supplied.get("max_hourly_rate_usd"))
+    if dict(supplied) != expected:
+        raise Sam31VastCanaryError("sam31_launch_capacity_policy_changed")
+    if expected["max_hourly_rate_usd"] * bound_request["hard_ttl_seconds"] / 3600 > bound_request["max_spend_usd"]:
+        raise Sam31VastCanaryError("sam31_launch_capacity_exceeds_spend_cap")
+    return expected
+
+
+def _retain_launch_outcome(root, result, request):
+    # Deliberately omit free-form provider messages, request payloads, URLs and
+    # environment values. Stable reason codes and numeric HTTP/offer evidence
+    # are enough to distinguish credit, capacity and rejected-create failures.
+    codes = [value for value in (result.get("blockers") or []) if isinstance(value, str)
+             and re.fullmatch(r"[a-z][a-z0-9_:-]{0,199}", value)]
+    numeric = {"offer_search_status", "offer_count", "create_http_status", "create_status", "ask_id", "hourly_rate_usd"}
+    attempts = [{key: value for key, value in row.items() if key in numeric
+                 and type(value) in (int, float) and math.isfinite(value)}
+                for row in (result.get("attempts") or []) if isinstance(row, Mapping)]
+    value = {"schema_version": "semantic_sam31_provider_launch_outcome.v1",
+        "bound_request_digest": request["bound_request_digest"],
+        "status": result.get("status") if result.get("status") in {"blocked", "launched", "failed"} else "unknown",
+        "blockers": codes, "attempts": attempts,
+        "allocation_outcome_ambiguous": result.get("allocation_outcome_ambiguous") is True,
+        "raw_secret_values_recorded": False}
+    value["launch_outcome_digest"] = canonical_digest(value, digest_field="launch_outcome_digest")
+    write_json(root / "provider_launch_outcome.json", value)
+    return codes
+
+
 def run_sam31_vast_source_track_canary(
     *,
     bound_request: Mapping[str, Any],
@@ -522,6 +562,7 @@ def run_sam31_vast_source_track_canary(
     retry_cap = int(request.get("retry_cap") or 0)
     if retry_cap < 0 or hard_ttl <= 0 or max_spend <= 0:
         raise Sam31VastCanaryError("sam31_execution_bounds_invalid")
+    capacity_policy = frozen_sam31_launch_policy(request, preflight)
 
     root = Path(job_dir)
     pending_dir = root / "pending_teardowns"
@@ -631,10 +672,10 @@ def run_sam31_vast_source_track_canary(
             env=env,
             bootstrap_argv=["-lc", _bootstrap_script()],
             entrypoint=["bash"],
-            container_disk_gb=max(40, int(preflight.get("container_disk_bytes") or 0) // 1024**3),
+            container_disk_gb=capacity_policy["container_disk_gb"],
             volume_gb=0,
-            max_hourly_rate_usd=float(preflight.get("on_demand_price_usd_per_hour") or 0),
-            min_gpu_ram_mb=max(24_000, int(preflight.get("gpu_memory_bytes") or 0) // 1_000_000),
+            max_hourly_rate_usd=capacity_policy["max_hourly_rate_usd"],
+            min_gpu_ram_mb=capacity_policy["min_gpu_ram_mb"],
             requires_rtx=False,
             vast_launch_mode="ssh_direct",
             allowed_geolocation_country_codes=(
@@ -643,6 +684,7 @@ def run_sam31_vast_source_track_canary(
             preferred_geolocation_regex=SAM31_PREFERRED_GEOLOCATION_REGEX,
         )
         provider_request = provider.build_request(spec, root)
+        provider_request.update(capacity_policy)
         provider_request["maximum_create_attempts"] = 1
         provider_request["prelaunch_spend_guard"] = {
             "schema_version": "semantic_sam31_gpu_prelaunch_spend_guard.v1",
@@ -797,9 +839,16 @@ def run_sam31_vast_source_track_canary(
             provider_zero_receipt, digest_field="provider_zero_digest"
         )
         write_json(root / "provider_zero_verification.json", provider_zero_receipt)
+        # Diagnostic I/O must not sit between a successful create and recording
+        # its instance ID: even an ENOSPC here occurs after exact teardown.
+        launch_blockers = _retain_launch_outcome(root, launch_result, request)
+        if instance_id is None:
+            blockers.extend(launch_blockers)
 
     duration = max(0.0, float(clock()) - started_at)
-    hourly = float(preflight.get("on_demand_price_usd_per_hour") or 0)
+    # A fresh search may choose another conforming offer. Reserve the frozen
+    # all-in ceiling here; official billing remains a separate reconciliation.
+    hourly = capacity_policy["max_hourly_rate_usd"]
     cost = hourly * duration / 3600.0 if instance_id else 0.0
     if cost > max_spend:
         blockers.append("sam31_budget_exhausted")

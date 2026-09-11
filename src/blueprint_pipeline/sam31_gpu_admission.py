@@ -74,6 +74,30 @@ def _read(path: str | Path) -> dict[str, Any]:
     return dict(value)
 
 
+def sam31_capacity_request(*, container_disk_bytes: int, max_hourly_rate_usd: float) -> dict[str, Any]:
+    """One resource policy shared by capacity discovery and the actual create."""
+    if (type(container_disk_bytes) is not int or container_disk_bytes < MIN_CONTAINER_DISK_BYTES
+            or not _finite(max_hourly_rate_usd, minimum=0.000001)):
+        raise ValueError("sam31_capacity_bounds_invalid")
+    disk_gb = math.ceil(container_disk_bytes / 1024**3)
+    return {
+        "max_hourly_rate_usd": float(max_hourly_rate_usd),
+        # Provider MB fields use decimal bytes in this admission contract.
+        # Request enough to satisfy the existing byte floor, never an offer's
+        # incidental larger amount of RAM.
+        "min_gpu_ram_mb": math.ceil(MIN_GPU_MEMORY_BYTES / 1_000_000),
+        "container_disk_gb": disk_gb,
+        "required_provider_disk_gb": disk_gb,
+        "min_reliability": 0.98,
+        "require_avx": True,
+        "require_known_supported_isaac_driver": False,
+        "require_direct_port": True,
+        "preferred_gpu_keywords": ["L40S", "L40", "A40", "RTX 6000Ada", "RTX A6000"],
+        "allowed_geolocation_country_codes": list(SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES),
+        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
+    }
+
+
 def collect_sam31_vast_preflight(
     *,
     name_prefix: str,
@@ -87,19 +111,8 @@ def collect_sam31_vast_preflight(
 ) -> dict[str, Any]:
     """Collect mutation-free capacity, watchdog, and provider-zero evidence."""
 
-    capacity_request = {
-        "max_hourly_rate_usd": float(max_hourly_rate_usd),
-        "min_gpu_ram_mb": 24_000,
-        "min_reliability": 0.98,
-        "require_avx": True,
-        "require_known_supported_isaac_driver": False,
-        "require_direct_port": True,
-        "preferred_gpu_keywords": ["L40S", "L40", "A40", "RTX 6000Ada", "RTX A6000"],
-        "allowed_geolocation_country_codes": list(
-            SAM31_ALLOWED_GEOLOCATION_COUNTRY_CODES
-        ),
-        "preferred_geolocation_regex": SAM31_PREFERRED_GEOLOCATION_REGEX,
-    }
+    capacity_request = sam31_capacity_request(container_disk_bytes=container_disk_bytes,
+                                             max_hourly_rate_usd=max_hourly_rate_usd)
     capacity = dict(capacity_probe(capacity_request))
     scoped_inventory = dict(inventory_probe(name_prefix))
     global_inventory = dict(inventory_probe(""))
@@ -352,9 +365,13 @@ def build_sam31_gpu_canary_admission(
     ):
         if supplied != source.get(field):
             blockers.append(blocker)
+    rate_ceiling = capacity_request.get("max_hourly_rate_usd", hourly)
+    if (not _finite(rate_ceiling, minimum=0.000001)
+            or (_finite(hourly) and float(hourly) > float(rate_ceiling))):
+        blockers.append("sam31_gpu_capacity_rate_ceiling_invalid")
     worst_case = (
-        float(hourly) * float(hard_ttl_seconds) / 3600.0
-        if _finite(hourly, minimum=0.000001)
+        float(rate_ceiling) * float(hard_ttl_seconds) / 3600.0
+        if _finite(rate_ceiling, minimum=0.000001)
         and isinstance(hard_ttl_seconds, int)
         and not isinstance(hard_ttl_seconds, bool)
         else math.inf
