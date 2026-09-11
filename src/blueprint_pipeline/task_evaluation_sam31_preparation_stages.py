@@ -12,6 +12,7 @@ from .task_evaluation_scene_configuration_sam31_plan import PROFILE_SCHEMA
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read, require
 from .task_evaluation_sam31_profile_registry import resolve_sam31_profile
 from .task_evaluation_scene_configuration_sam31_plan import PROFILE_ENV as PROFILE_ENV
+from .validation_file_digests import file_digest_scope
 
 SCHEMA = "task_evaluation_sam31_phase_execution_receipt.v1"
 REPLAY_SCHEMA = "task_evaluation_sam31_phase_replay_receipt.v1"
@@ -41,6 +42,7 @@ def _paid_stages():
     )
 
 
+@file_digest_scope()
 def execute_stage(job: Mapping[str, Any]) -> dict[str, Any]:
     """Run a closed phase, with immutable completion and no blind paid retry."""
     phase = job.get("phase")
