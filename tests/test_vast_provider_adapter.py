@@ -2955,6 +2955,7 @@ def test_vast_adapter_researches_empty_capacity_before_authority_or_create(
             "provider_mutation_performed": False,
             "raw_secret_values_recorded": False,
             "status": "no_qualifying_offer_read_only_retry",
+            "wait_seconds": 60.0,
         }
     ]
 
@@ -2965,7 +2966,12 @@ def test_vast_adapter_exhausts_empty_capacity_without_authority_or_create(
 ) -> None:
     _configure_live_gates(tmp_path, monkeypatch)
     monkeypatch.setenv(vpa.VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS_ENV, "2")
-    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda *_: None)
+    # 2026-09-12: a thin marketplace refills over minutes; the wait between
+    # read-only re-searches is configurable and recorded, and no sleep happens
+    # after the final exhausted search.
+    monkeypatch.setenv(vpa.VAST_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS_ENV, "7.5")
+    sleeps: list[float] = []
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda seconds: sleeps.append(seconds))
     search_count = 0
     authority_calls: list[str] = []
 
@@ -3001,8 +3007,19 @@ def test_vast_adapter_exhausts_empty_capacity_without_authority_or_create(
     assert all(
         row["provider_mutation_performed"] is False
         and row["authority_consumed"] is False
+        and row["wait_seconds"] == 7.5
         for row in offer["offer_search_retry_attempts"]
     )
+    assert [s for s in sleeps if s == 7.5] == [7.5, 7.5]
+
+
+def test_empty_offer_search_retry_interval_defaults_to_minutes_of_patience(monkeypatch) -> None:
+    monkeypatch.delenv(vpa.VAST_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS_ENV, raising=False)
+    assert vpa._vast_empty_offer_search_retry_interval_seconds() == 60.0
+    assert vpa._vast_empty_offer_search_retry_attempts() * vpa._vast_empty_offer_search_retry_interval_seconds() >= 300
+    for raw, expected in (("90", 90.0), ("0", 0.0), ("abc", 60.0), ("-5", 60.0), ("inf", 60.0)):
+        monkeypatch.setenv(vpa.VAST_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS_ENV, raw)
+        assert vpa._vast_empty_offer_search_retry_interval_seconds() == expected
 
 
 def test_vast_adapter_exact_campaign_label_and_zero_stale_offer_retry(
