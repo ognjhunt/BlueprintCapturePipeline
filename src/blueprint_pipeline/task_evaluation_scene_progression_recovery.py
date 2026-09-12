@@ -7,6 +7,7 @@ from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_public_scene_attempt_factory import record
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
 from .task_evaluation_scene_progression_state import require, safe_path
+from .task_evaluation_scene_recovery import provider_null_evidence
 from . import task_evaluation_scene_intake as intake
 
 
@@ -20,7 +21,12 @@ def failure_kind(value):
             or ("instance_not_created" in text and value.get("provider_mutations_performed") == 0
                 and value.get("instance_id") in (None, "") and value.get("provider_mutation_outcome_ambiguous") is False)):
         return "create_refused"
+    if provider_null_evidence(value):
+        return "provider_null"
     return None
+
+
+PRODUCER_ARTIFACT_SUFFIXES = ("allocator_result", "provider_adapter_result")
 
 
 def retain_failure(*, attempt, link, child_queue_root, output_root, now):
@@ -41,7 +47,7 @@ def retain_failure(*, attempt, link, child_queue_root, output_root, now):
                 and result.get("child_id") == job["child_id"], "failure_child_binding_invalid")
         paths = [result_path]
         for name, ref in result.get("artifacts", {}).items():
-            if name.endswith("allocator_result"):
+            if name.endswith(PRODUCER_ARTIFACT_SUFFIXES):
                 paths.insert(0, checked_file(ref["path"], ref))
         for producer_path in paths:
             producer = read(producer_path)

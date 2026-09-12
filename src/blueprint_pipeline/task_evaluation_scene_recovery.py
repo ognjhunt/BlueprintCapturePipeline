@@ -12,6 +12,31 @@ from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read, require
 
 
+RECOVERABLE_FAILURE_KINDS = frozenset({"create_refused", "create_null", "create_ambiguous", "provider_null"})
+
+
+def provider_null_evidence(producer) -> bool:
+    """A provider run whose machine never started our container: nothing scientific was consumed.
+
+    2026-09-12, scene 840938: vast machine 38773 accepted the create call but the container never
+    reached the on-start heartbeat; the adapter classified the attempt pre_execution_provider_null,
+    tore the instance down, and the render sealed a bare blocker that no recovery path recognized.
+    """
+    classification = producer.get("provider_attempt_classification") if isinstance(producer, dict) else None
+    return (isinstance(classification, dict)
+            and classification.get("schema_version") == "provider_attempt_classification.v1"
+            and classification.get("classification") == "pre_execution_provider_null"
+            and classification.get("scientific_attempt_consumed") is False
+            and classification.get("provider_bundle_started") is False
+            and classification.get("provider_entrypoint_started") is False
+            and classification.get("provider_output_returned") is False
+            and classification.get("pre_execution_requeue_eligible_in_principle") is True
+            and bool(classification.get("blockers"))
+            and producer.get("retained_owned") is not True
+            and producer.get("allocation_created") is not True
+            and producer.get("status") in {"failed", "blocked", "refused"})
+
+
 def validate_recovery_evidence(evidence, *, prior_attempt, provider, now):
     """Reopen server-retained failure and global guard bytes, never trust labels."""
     require(isinstance(evidence, dict) and set(evidence) == {
@@ -30,7 +55,7 @@ def validate_recovery_evidence(evidence, *, prior_attempt, provider, now):
             and failure.get("failure_digest") == canonical_digest(failure, digest_field="failure_digest")
             and failure.get("attempt_digest") == prior_attempt["attempt_digest"]
             and failure.get("status") == "failed"
-            and failure.get("failure_kind") in {"create_refused", "create_null", "create_ambiguous"},
+            and failure.get("failure_kind") in RECOVERABLE_FAILURE_KINDS,
             "scene_recovery_failure_not_recoverable")
     failed_at = failure.get("observed_at_epoch")
     require(type(failed_at) in (int, float) and prior_attempt["reserved_at_epoch"] <= failed_at <= now,
@@ -58,7 +83,11 @@ def validate_recovery_evidence(evidence, *, prior_attempt, provider, now):
                        or any(marker in blocker for blocker in blockers for marker in (
                            "create_outcome_ambiguous", "create_refused", "create_rejected",
                            "create_returned_null", "started_without_terminal_reconciliation")))
-    require(create_evidence, "scene_recovery_create_failure_evidence_missing")
+    if failure["failure_kind"] == "provider_null":
+        # The label alone proves nothing: the producer must carry the adapter's own classification.
+        require(provider_null_evidence(producer), "scene_recovery_provider_null_evidence_missing")
+    else:
+        require(create_evidence, "scene_recovery_create_failure_evidence_missing")
     from .task_evaluation_launch_reconciler import _guard_provider_zero
     zero, blockers = _guard_provider_zero(
         guard=values["provider_guard"], required_providers=[provider], max_age_seconds=300,

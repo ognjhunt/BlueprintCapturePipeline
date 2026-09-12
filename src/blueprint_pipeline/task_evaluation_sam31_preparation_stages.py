@@ -72,7 +72,8 @@ def execute_stage(job: Mapping[str, Any]) -> dict[str, Any]:
         outcome = receipt["outcome"]
         for row in outcome.get("artifacts", {}).values():
             checked_file(row["path"], row)
-        if phase == "calibrated_views" and profile.get("calibrated_views", {}).get("hardware_required") is True:
+        if (phase == "calibrated_views" and profile.get("calibrated_views", {}).get("hardware_required") is True
+                and outcome.get("status") == "completed"):
             from .sam31_source_calibration_stage import validate_retained_source_calibration_stage
             validate_retained_source_calibration_stage(outcome)
         if phase in PAID_PHASES and outcome.get("status") == "completed":
