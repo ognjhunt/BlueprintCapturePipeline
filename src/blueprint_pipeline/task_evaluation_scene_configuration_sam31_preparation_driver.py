@@ -95,7 +95,8 @@ def advance_sam31_preparation(
         ref = _reference(profile["completed_prefix_adoption"], approved_roots)
         adopted = validate_completed_prefix_adoption(ref["path"], expected_source_commit=commit,
             approved_roots=approved_roots + (DEFAULT_CHILD_QUEUE, Path("/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations")),
-            current_plan=plan, current_provider_profile_path=profile_refs["sam31_provider_profile"]["path"])
+            current_plan=plan, current_provider_profile_path=profile_refs["sam31_provider_profile"]["path"],
+            require_current_tracking_request=True)
         for name, artifact in adopted["artifacts"].items():
             verified = _reference(artifact, approved_roots)
             require(name not in inputs or inputs[name] == verified, "sam31_adoption_input_conflict:" + name)

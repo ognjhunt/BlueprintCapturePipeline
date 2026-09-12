@@ -139,7 +139,10 @@ def prefix(tmp_path):
         job = json.loads(job_path.read_text())
         target = tmp_path / "queue/completed" / job_path.name
         job_path.rename(target)
-        result_artifacts = {names[phase]: write(tmp_path / "artifacts" / f"{phase}.json", {"hermetic_phase": phase})}
+        payload = {"hermetic_phase": phase}
+        if phase == "sam31_inputs":
+            payload["provider_profile"] = json.loads(Path(provider["path"]).read_text())
+        result_artifacts = {names[phase]: write(tmp_path / "artifacts" / f"{phase}.json", payload)}
         if phase == "standard_splat_conversion":
             result_artifacts["standard_splat"] = write(tmp_path / "artifacts/standard.json", {"not_real_splat": True})
         outcome = {"status": "completed", "stage_id": phase, "artifacts": result_artifacts}
@@ -216,6 +219,56 @@ def test_selector_retains_render_when_cpu_request_needs_current_profile(prefix, 
     assert selected == ["calibrated_views"]
     assert result["rejected_candidates"][-1]["blocker"].endswith("sam31_adoption_request_profile_requires_rebuild")
     adoption._require_current_request_profile(profile, old, (tmp_path,))
+
+
+def test_nested_history_keeps_plan_binding_without_new_launch_admission(prefix, tmp_path, monkeypatch):
+    _value, plan, profile, _artifacts = prefix
+    profile["completed_prefix_adoption"] = write(tmp_path / "historical-adoption.json", {"historical": True})
+    calls = []
+    def validate(path, **kwargs):
+        calls.append(kwargs)
+        assert kwargs["current_plan"] == plan
+        assert not kwargs.get("require_current_tracking_request", False)
+        return {"artifacts": {}}
+    monkeypatch.setattr(adoption, "validate_completed_prefix_adoption", validate)
+    adoption._seed(plan, profile, (tmp_path,))
+    assert len(calls) == 1
+
+
+def test_live_driver_requires_current_tracking_request_before_enqueue(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_configuration_sam31_preparation_driver as driver
+    context = {"request": {}, "expected_source_commit": NEW}
+    plan = {"host_inputs": {}}
+    profile = {"artifact_references": {"sam31_provider_profile": {"path": str(tmp_path / "provider")}},
+               "completed_prefix_adoption": {"path": str(tmp_path / "adoption")}}
+    monkeypatch.setattr(driver, "_context_plan", lambda *a, **k: (plan, {}))
+    monkeypatch.setattr(driver, "_server_profile", lambda *a, **k: profile)
+    monkeypatch.setattr(driver, "_reference", lambda ref, roots: ref)
+    def validate(path, **kwargs):
+        assert kwargs["require_current_tracking_request"] is True
+        raise ValueError("sam31_adoption_request_profile_requires_rebuild")
+    monkeypatch.setattr(adoption, "validate_completed_prefix_adoption", validate)
+    def no_enqueue(**kwargs):
+        pytest.fail("stale launch request must not enter the live queue")
+    with pytest.raises(ValueError, match="request_profile_requires_rebuild"):
+        driver.advance_sam31_preparation(context, approved_roots=(tmp_path,), enqueue_phase=no_enqueue)
+
+
+def test_materialization_keeps_digest_scope_for_entire_operation(tmp_path, monkeypatch):
+    from tests.test_validation_file_digests import sealed, count_hashes
+    from blueprint_pipeline import validation_file_digests as digests
+    source = sealed(tmp_path)
+    calls = count_hashes(monkeypatch)
+    def zero(*args, **kwargs):
+        assert digests.sha256_file(source) == digests.sha256_file(source)
+        raise ValueError("end of hermetic admission probe")
+    monkeypatch.setattr(adoption, "_zero", zero)
+    with pytest.raises(ValueError, match="end of hermetic admission probe"):
+        adoption.materialize_completed_prefix_adoption(source_plan_path=source, source_profile_path=source,
+            parent_request_digest="sha256:" + "a" * 64, through_phase="calibrated_views", current_host_inputs={},
+            current_provider_profile_path=source, current_repo_root=tmp_path, expected_source_commit=NEW,
+            provider_zero_path=source, output_path=None, approved_roots=(tmp_path,))
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("fault", ["failed", "partial", "bytes", "job", "camera", "plan_digest"])

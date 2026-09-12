@@ -197,7 +197,8 @@ def _phase_chain(value, roots):
 
 @file_digest_scope()
 def validate_completed_prefix_adoption(path, *, expected_source_commit, approved_roots,
-                                      current_plan=None, current_provider_profile_path=None):
+                                      current_plan=None, current_provider_profile_path=None,
+                                      require_current_tracking_request=False):
     roots = tuple(Path(root) for root in approved_roots)
     value = deepcopy(path) if isinstance(path, dict) else read(path, digest_field="adoption_digest")
     require(value.get("adoption_digest") == canonical_digest(value, digest_field="adoption_digest"), "sam31_adoption_digest_invalid")
@@ -239,7 +240,7 @@ def validate_completed_prefix_adoption(path, *, expected_source_commit, approved
         require(record(current_provider_profile_path) == value["current_sam31_provider_profile"], "sam31_adoption_current_model_changed")
     if PREFIX_LENGTHS[value["through_phase"]] == 4:
         evidence.validate_sam_inputs(artifacts, old_profile, provider_path, value["original_execution_commit"])
-        if current_plan is not None:
+        if require_current_tracking_request:
             # Historical packets remain valid evidence, but a new tracking
             # launch consumes the entire current profile, including authority.
             require(read(artifacts["sam31_run_request"]["path"])["provider_profile"] == read(provider_path),
@@ -327,13 +328,13 @@ def publish_adoption_release_binding(adoption_path, *, binding_root=None):
     return record(target)
 
 
-@file_digest_scope()
 def _require_current_request_profile(old_profile, current_profile_path, roots):
     old_provider = _ref(old_profile["artifact_references"]["sam31_provider_profile"], roots)
     require(read(old_provider) == read(current_profile_path),
             "sam31_adoption_request_profile_requires_rebuild")
 
 
+@file_digest_scope()
 def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_path, parent_request_digest,
     through_phase, current_host_inputs, current_provider_profile_path, current_repo_root,
     expected_source_commit, provider_zero_path, output_path, approved_roots,
