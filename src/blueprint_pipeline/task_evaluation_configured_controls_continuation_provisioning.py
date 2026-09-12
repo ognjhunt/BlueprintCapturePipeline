@@ -439,6 +439,16 @@ def _runtime_source_reference(
         ) from exc
     wrapper = controls_root / "native_task_runtime_source_adapter_bundle.zip"
     receipt_path = controls_root / "native_task_runtime_source_build_receipt.v1.json"
+    # The publisher can only honour URIs under the live artifact-store bucket. A
+    # catalog binding that names another bucket is a misconfiguration; refuse it
+    # here, by name, instead of after building and copying a multi-GB layer.
+    live_bucket = _live_external_layer_bucket()
+    if external_layer_bucket is not None and live_bucket is not None and external_layer_bucket != live_bucket:
+        raise ConfiguredControlsProvisioningError(
+            "configured_controls_provisioning_external_layer_bucket_mismatch:"
+            f"{external_layer_bucket}:{live_bucket}"
+        )
+    receipt = None
     if wrapper.exists() and receipt_path.is_file():
         receipt = _load(
             receipt_path, blocker="configured_controls_provisioning_retained_invalid:runtime_source"
@@ -447,7 +457,14 @@ def _runtime_source_reference(
             raise ConfiguredControlsProvisioningError(
                 "configured_controls_provisioning_retained_invalid:runtime_source"
             )
-    else:
+        stale_bucket = _stale_layer_bucket(receipt, live_bucket)
+        if stale_bucket is not None:
+            # Built before the store moved (or under a wrong binding): its layers
+            # were never publishable, so nothing downstream references it.
+            _supersede_runtime_source(controls_root=controls_root, wrapper=wrapper, receipt_path=receipt_path,
+                reason=f"external_layer_bucket_superseded:{stale_bucket}:{live_bucket}")
+            receipt = None
+    if receipt is None:
         if payload_dir.is_symlink() or not payload_dir.is_dir():
             raise ConfiguredControlsProvisioningError(
                 "configured_controls_provisioning_runtime_payload_invalid"
@@ -473,9 +490,16 @@ def _runtime_source_reference(
                 f"configured_controls_provisioning_runtime_source_build_failed:{exc}"
             ) from exc
         _write_once(receipt_path, receipt)
+    from .task_evaluation_configured_scene_object_store import TaskEvaluationConfiguredSceneObjectStoreError
     layers = receipt.get("external_layers") or []
     if layers:
-        publication = dict(layer_publisher(receipt))
+        try:
+            publication = dict(layer_publisher(receipt))
+        except TaskEvaluationConfiguredSceneObjectStoreError as exc:
+            # A store refusal is this scene's refusal, not a dead controller tick.
+            raise ConfiguredControlsProvisioningError(
+                f"configured_controls_provisioning_runtime_layer_publication_failed:{exc}"
+            ) from exc
         published = publication.get("layers")
         if (
             publication.get("status") != "remote_verified"
@@ -485,12 +509,17 @@ def _runtime_source_reference(
             raise ConfiguredControlsProvisioningError(
                 "configured_controls_provisioning_runtime_layer_publication_invalid"
             )
-    return _publish(
-        path=wrapper,
-        kind=ARTIFACT_KINDS["runtime_source"],
-        publisher=artifact_publisher,
-        reference_path=controls_root / "native-runtime-source-artifact-reference.json",
-    )
+    try:
+        return _publish(
+            path=wrapper,
+            kind=ARTIFACT_KINDS["runtime_source"],
+            publisher=artifact_publisher,
+            reference_path=controls_root / "native-runtime-source-artifact-reference.json",
+        )
+    except TaskEvaluationConfiguredSceneObjectStoreError as exc:
+        raise ConfiguredControlsProvisioningError(
+            f"configured_controls_provisioning_runtime_source_publication_failed:{exc}"
+        ) from exc
 
 
 # ------------------------------------------------------------------ provider zero
@@ -537,9 +566,54 @@ def default_layer_publisher(receipt: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def default_external_layer_bucket() -> str:
-    from .task_evaluation_configured_scene_object_store import _object_store_client
+    """The bucket the layer publisher will honour: the artifact store, not the legacy store.
 
-    return _object_store_client()[1]
+    Until 2026-09-12 this returned the legacy (Spaces) bucket while
+    ``publish_runtime_source_external_layers`` published to the dedicated artifact
+    store, so a wrapper built with the default embedded URIs the publisher could
+    never produce (``configured_scene_runtime_source_layer_uri_mismatch``).
+    """
+    from .task_evaluation_configured_scene_object_store import _artifact_object_store_client
+
+    return _artifact_object_store_client()[1]
+
+
+def _live_external_layer_bucket() -> str | None:
+    """The publisher's bucket, or ``None`` when no store is configured in this process."""
+    from .task_evaluation_configured_scene_object_store import TaskEvaluationConfiguredSceneObjectStoreError
+
+    try:
+        return default_external_layer_bucket()
+    except TaskEvaluationConfiguredSceneObjectStoreError:
+        return None
+
+
+def _stale_layer_bucket(receipt: Mapping[str, Any], live_bucket: str | None) -> str | None:
+    """Return the bucket a retained receipt's layers name when it is not the live one."""
+    if live_bucket is None:
+        return None
+    for row in receipt.get("external_layers") or []:
+        uri = str(row.get("uri") or "") if isinstance(row, Mapping) else ""
+        if not uri.startswith(f"s3://{live_bucket}/"):
+            return uri.split("/", 3)[2] if uri.startswith("s3://") and uri.count("/") >= 3 else uri or "unknown"
+    return None
+
+
+def _supersede_runtime_source(*, controls_root: Path, wrapper: Path, receipt_path: Path, reason: str) -> dict[str, Any]:
+    """Set a wrapper nothing consumed aside, byte for byte, so it can be rebuilt for the live store."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    suffix = f".superseded-{stamp}"
+    moved = []
+    for path in (wrapper, receipt_path, controls_root / "runtime-source-layers",
+                 controls_root / "native-runtime-source-artifact-reference.json"):
+        if path.exists() or path.is_symlink():
+            target = path.with_name(path.name + suffix)
+            os.rename(path, target)
+            moved.append({"from": str(path), "to": str(target)})
+    note = {"schema_version": "task_evaluation_runtime_source_superseded.v1", "reason": reason,
+            "superseded_at": stamp, "moved": moved, "bytes_deleted": False}
+    _write_once(controls_root / f"runtime-source-superseded-{stamp}.json", note)
+    return note
 
 
 # ------------------------------------------------------------------ provisioning
