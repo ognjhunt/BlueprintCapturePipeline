@@ -1,9 +1,15 @@
-"""Transaction-local hashing reuse for sealed large inputs, never validation verdicts.
+"""Transaction-local hashing reuse for retained large inputs, never validation verdicts.
 
 Each outer operation starts empty. Every first read hashes all bytes. Only
-read-only regular files qualify; every hit reopens the file without following
-symlinks and checks inode, ownership, mode, size and nanosecond change times.
-Authority documents and mutable files are deliberately not cached.
+regular files of at least MINIMUM_BYTES qualify; every hit reopens the file
+without following symlinks and checks device, inode, link count, ownership,
+mode, size and nanosecond modification and change times. The change time is
+kernel-owned and cannot be restored from userland, so a write bit on a retained
+artifact is not a change witness and must not disqualify it: producers retain
+PLY, bundle and video artifacts as 0600/0644, and refusing to reuse their
+hashes made one controller restart re-hash the same bytes once per reuse
+candidate per phase (about 70 full passes, 308 GB, 55 minutes for a 4.6 GB
+tree). Authority documents stay below MINIMUM_BYTES and are never cached.
 """
 from __future__ import annotations
 
@@ -55,7 +61,7 @@ def _identity(value):
 
 
 def sha256_file(path: Path) -> str:
-    """Hash a stable regular file; reuse only unchanged sealed bytes in scope."""
+    """Hash a regular file; reuse only bytes whose full stat identity is unchanged in scope."""
     path = Path(path)
     if any(item.is_symlink() for item in (path, *path.parents)):
         raise ValueError("validation_file_digest_symlink_forbidden")
@@ -66,8 +72,7 @@ def sha256_file(path: Path) -> str:
             raise ValueError("validation_file_digest_regular_file_required")
         identity = _identity(before)
         cache = _CACHE.get()
-        eligible = (cache is not None and before.st_size >= MINIMUM_BYTES
-                    and not before.st_mode & 0o222)
+        eligible = cache is not None and before.st_size >= MINIMUM_BYTES
         digest = cache.get(identity) if eligible else None
         if digest is None:
             value = hashlib.sha256()
