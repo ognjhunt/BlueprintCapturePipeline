@@ -160,9 +160,15 @@ def test_reuse_refuses_changed_frozen_policy_frames_or_ambiguous_history(tmp_pat
         manifest = Path(closed["render_groups"]["images"]["path"])
         (manifest.parent / "frames/source-00.png").write_bytes(b"changed")
     elif defect == "ambiguous":
+        # A second REUSABLE same-intent closure (its own sealed mask-failure result) is ambiguous.
         other = json.loads(failed.read_text())
         other["child_id"] = "sam31-other"
         _seal(failed.parent / "sam31-other.json", other, "job_digest")
+        other_job = json.loads((failed.parent / "sam31-other.json").read_text())
+        saved = json.loads((failed.parent.parent / "results" / failed.name).read_text())
+        _seal(failed.parent.parent / "results" / "sam31-other.json",
+              {**{k: v for k, v in saved.items() if k != "result_digest"},
+               "child_id": "sam31-other", "job_digest": other_job["job_digest"]}, "result_digest")
     else:
         Path(current["request_file"]["path"]).write_text("{}")
     with pytest.raises((ValueError, KeyError)):
@@ -183,4 +189,29 @@ def test_unreadable_foreign_failed_history_is_skipped_not_fatal(tmp_path, monkey
     outcome = stage.execute_source_calibration_stage(job, allocator_runner=_no_allocation)
     assert outcome["status"] == "completed" and outcome["retained_gpu_render_reused"] is True
     assert failed.exists() and result.exists()  # this intent's own history untouched
+
+
+def test_own_failure_without_closed_return_is_not_a_candidate(tmp_path, monkeypatch):
+    """Scene 840938, 2026-09-12 19:08: the second fresh child found this intent's first failed
+    child (failed before allocation) as a candidate and refused the whole stage with
+    calibration_reuse_cpu_mask_failure_required instead of rendering fresh."""
+    from blueprint_pipeline.source_calibration_finalization_reuse import select_retained_render
+    job, old, current, old_raw, failed, result, old_output = _case(tmp_path, monkeypatch)
+    queue = Path(job["queue_root"])
+    # A sibling same-intent failure that never allocated (no closed return, no mask blocker).
+    sibling = json.loads(failed.read_text())
+    sibling_id = "sam31-own-pre-allocation-failure"
+    sibling_path = queue / "failed" / (sibling_id + ".json")
+    _seal(sibling_path, {**{k: v for k, v in sibling.items() if k != "job_digest"}, "child_id": sibling_id}, "job_digest")
+    sibling_job = json.loads(sibling_path.read_text())
+    _seal(queue / "results" / (sibling_id + ".json"), {"child_id": sibling_id, "status": "failed",
+        "job_digest": sibling_job["job_digest"], "blocker": "scene_configuration_submission_input_file_invalid"},
+        "result_digest")
+    outcome = stage.execute_source_calibration_stage(job, allocator_runner=_no_allocation)
+    assert outcome["status"] == "completed" and outcome["retained_gpu_render_reused"] is True
+    # With only the non-reusable failure in history, selection yields no candidate at all.
+    failed.unlink()
+    result.unlink()
+    prepared_path = Path(json.loads((Path(job["output_root"]) / "cpu_preparation_outcome.json").read_text())["prepared_inputs"]["path"])
+    assert select_retained_render(job=job, prepared_path=prepared_path, output_root=tmp_path / "fresh-out") is None
 

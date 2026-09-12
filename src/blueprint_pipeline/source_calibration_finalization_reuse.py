@@ -55,6 +55,16 @@ def select_retained_render(*, job, prepared_path, output_root):
             continue
         if previous_task.get("scene_intent_authority", {}).get("intent_digest") == intent:
             require(_intent(previous_plan) == intent, "calibration_reuse_owner_intent_changed")
+            try:
+                saved = read(queue / "results" / path.name, digest_field="result_digest")
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if not str(saved.get("blocker", "")).startswith("edit_input_mask_invalid:"):
+                # This intent's own earlier child failed before or during allocation,
+                # so there is no closed GPU return to reuse: render fresh. Only a CPU
+                # mask failure after a closed return is a reuse candidate; the exact
+                # closure is still proven by _original before any binding.
+                continue
             candidates.append(path)
     require(len(candidates) <= 1, "calibration_reuse_candidates_ambiguous")
     if not candidates:
