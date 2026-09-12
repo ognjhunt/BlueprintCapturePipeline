@@ -200,6 +200,14 @@ VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS_ENV = "BLUEPRINT_VAST_CREATE_STALE_OFFER_
 VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS_ENV = (
     "BLUEPRINT_VAST_EMPTY_OFFER_SEARCH_RETRY_ATTEMPTS"
 )
+VAST_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS_ENV = (
+    "BLUEPRINT_VAST_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS"
+)
+#: A thin marketplace refills over minutes, not seconds. Scene 840938, 2026-09-12:
+#: the same render query returned 27 qualifying offers at 20:49, 3 (none in the
+#: US) at 22:02 and 42 at 22:10; six re-searches 5 s apart gave up inside 30 s and
+#: burned a scene-level retry for $0 of provider evidence.
+DEFAULT_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS = 60.0
 VAST_INLINE_PROVIDER_BUNDLE_BASE64_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_BASE64"
 VAST_INLINE_PROVIDER_BUNDLE_SHA256_ENV = "BLUEPRINT_VAST_PROVIDER_BUNDLE_SHA256"
 VAST_INLINE_PROVIDER_BUNDLE_MAX_RAW_BYTES = 96_000
@@ -2061,6 +2069,21 @@ def _vast_empty_offer_search_retry_attempts() -> int:
         return max(0, int(text))
     except ValueError:
         return 6
+
+
+def _vast_empty_offer_search_retry_interval_seconds() -> float:
+    """Seconds to wait between read-only re-searches; no authority or mutation is involved."""
+
+    text = _string(os.getenv(VAST_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS_ENV))
+    if not text:
+        return DEFAULT_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS
+    try:
+        value = float(text)
+    except ValueError:
+        return DEFAULT_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS
+    if not math.isfinite(value) or value < 0:
+        return DEFAULT_EMPTY_OFFER_SEARCH_RETRY_INTERVAL_SECONDS
+    return value
 
 
 def _is_stale_offer_create_http_error(
@@ -8518,6 +8541,7 @@ def run_vast_provider_adapter(
             else _vast_stale_offer_create_retry_attempts()
         )
         max_empty_offer_search_retries = _vast_empty_offer_search_retry_attempts()
+        empty_offer_search_retry_interval = _vast_empty_offer_search_retry_interval_seconds()
         empty_offer_search_retry_count = 0
         stale_offer_create_retry_count = 0
         create_attempt_index = 0
@@ -8608,6 +8632,7 @@ def run_vast_provider_adapter(
                         "http_status_code": status_code,
                         "offer_count": len(offers),
                         "blockers": list(offer_blockers),
+                        "wait_seconds": empty_offer_search_retry_interval,
                         "authority_consumed": False,
                         "provider_mutation_performed": False,
                         "raw_secret_values_recorded": False,
@@ -8657,7 +8682,7 @@ def run_vast_provider_adapter(
             if not selected_offer:
                 if retry_empty_offer_search:
                     empty_offer_search_retry_count += 1
-                    time.sleep(5)
+                    time.sleep(empty_offer_search_retry_interval)
                     continue
                 raise RuntimeError("no_vast_offer_selected")
 
