@@ -40,11 +40,19 @@ def select_retained_render(*, job, prepared_path, output_root):
     roots = tuple(Path(root) for root in job["server_profile"].get("approved_paid_input_roots", execution.DEFAULT_APPROVED_ROOTS))
     candidates = []
     for path in sorted((queue / "failed").glob("*.json")):
-        previous = read(path)
-        if previous.get("phase") != "calibrated_views" or previous.get("child_id") == job.get("child_id"):
+        try:
+            previous = read(path)
+            if previous.get("phase") != "calibrated_views" or previous.get("child_id") == job.get("child_id"):
+                continue
+            previous_plan = read(_ref(previous["plan_ref"]), digest_field="plan_digest")
+            previous_task = read(_ref(previous_plan["host_inputs"]["task_request"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            # Another scene's or a retired attempt's failed job whose plan or task
+            # bytes are no longer retained is not reuse authority for THIS intent.
+            # Scene 840938, 2026-09-12: one such foreign record failed every fresh
+            # calibrated-views child before any rental. A same-intent candidate
+            # still has to be exact and fully readable below.
             continue
-        previous_plan = read(_ref(previous["plan_ref"]), digest_field="plan_digest")
-        previous_task = read(_ref(previous_plan["host_inputs"]["task_request"]))
         if previous_task.get("scene_intent_authority", {}).get("intent_digest") == intent:
             require(_intent(previous_plan) == intent, "calibration_reuse_owner_intent_changed")
             candidates.append(path)
