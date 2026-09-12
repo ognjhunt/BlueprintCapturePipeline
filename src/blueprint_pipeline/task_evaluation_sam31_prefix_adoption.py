@@ -129,7 +129,7 @@ def _render_artifacts(artifacts, source_profile):
     return {**artifacts, "standard_splat": original}
 
 
-def _phase_chain(value, roots):
+def _phase_chain(value, roots, *, selection_origin=None):
     old_commit = value["original_execution_commit"]
     plan_path = _ref(value["source_plan"], roots)
     plan = validate_sam31_preparation_plan(read(plan_path, digest_field="plan_digest"),
@@ -193,6 +193,15 @@ def _phase_chain(value, roots):
     tracking_origin = (inherited["tracking_origin"]
                        if inherited and inherited["phase_count"] >= PREFIX_LENGTHS["sam31_tracking"]
                        else {"profile": profile, "commit": old_commit})
+    if selection_origin is not None:
+        # The scene/task selection remains byte-identical across inherited
+        # prefixes. Carry its already validated producer, not the most recent
+        # administrative source plan. Never read this provenance from value.
+        selection_origin.update(deepcopy(inherited["selection_origin"] if inherited else {
+            "task_request": plan["host_inputs"]["task_request"], "source_commit": old_commit,
+            "source_plan": value["source_plan"], "source_profile": value["source_profile"],
+            "parent_request_digest": value["original_parent_request_digest"],
+        }))
     return plan, profile, artifacts, outcomes, tracking_origin
 
 
@@ -232,7 +241,9 @@ def validate_completed_prefix_adoption(path, *, expected_source_commit, approved
             and value.get("historical_receipts_modified") is False and value.get("paid_execution_performed") is False
             and value.get("candidate_policy_queried") is False, "sam31_adoption_contract_invalid")
     _zero(_ref(value["provider_zero_at_adoption"], roots), at=value["created_at_epoch"])
-    old_plan, old_profile, artifacts, outcomes, tracking_origin = _phase_chain(value, roots)
+    selection_origin = {}
+    old_plan, old_profile, artifacts, outcomes, tracking_origin = _phase_chain(value, roots,
+        selection_origin=selection_origin)
     current_conversion = _current_sources(value, old_plan, artifacts, roots)
     current_host = value["current_host_inputs"]
     if current_plan is not None:
@@ -303,7 +314,7 @@ def validate_completed_prefix_adoption(path, *, expected_source_commit, approved
     current_artifacts = {**artifacts, **{name: row["successor"] for name, row in rebindings.items()}}
     return {"record": deepcopy(value), "artifacts": current_artifacts,
             "phase_count": PREFIX_LENGTHS[value["through_phase"]], "outcomes": outcomes,
-            "tracking_origin": tracking_origin}
+            "tracking_origin": tracking_origin, "selection_origin": selection_origin}
 
 
 def publish_adoption_release_binding(adoption_path, *, binding_root=None):
