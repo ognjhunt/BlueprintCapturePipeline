@@ -40,6 +40,8 @@ def test_hardware_child_waits_for_posted_billing_without_duplicate_allocator(tmp
     task_path.write_text(json.dumps({'human_authority': {'accepted_by': 'fixture-owner'}}))
     source = tmp_path/'source.ply'
     source.write_bytes(b'hermetic mock allocator input; actual packet tests cover source bytes')
+    avoidlist = tmp_path/'avoidlist.json'
+    avoidlist.write_text('{"machine_ids": []}')  # the frozen snapshot is parsed before allocation
     calls = []
     def prepare(job, **kwargs):
         calls.append('prepare')
@@ -69,7 +71,7 @@ def test_hardware_child_waits_for_posted_billing_without_duplicate_allocator(tmp
            'server_profile': {'approved_paid_input_roots': [str(tmp_path)], 'calibrated_views': {
                'execution_site': 'provider_gpu', 'hardware_required': True, 'max_spend_usd': 1.0,
                'hard_ttl_seconds': 1800, 'max_hourly_rate_usd': .5, 'retry_cap': 0,
-               'maximum_resource_count': 1, 'allowed_geolocation_country_codes': ['US'], 'machine_avoidlist': record(source)}}}
+               'maximum_resource_count': 1, 'allowed_geolocation_country_codes': ['US'], 'machine_avoidlist': record(avoidlist)}}}
     first = stage.execute_source_calibration_stage(job, allocator_runner=allocate)
     second = stage.execute_source_calibration_stage({**job, 'resume_only': True}, allocator_runner=allocate)
     assert first == second and first['status'] == 'waiting_for_external_result'

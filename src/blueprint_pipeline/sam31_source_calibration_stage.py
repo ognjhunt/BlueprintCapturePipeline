@@ -55,6 +55,89 @@ def _posted_charge(result: dict, output: Path) -> Path | None:
     return None
 
 
+PERSISTENT_EXCLUSION_POLICY='exclude_persistently_across_sibling_jobs_until_manual_review'
+ADMITTED_AVOIDLIST_NAME='machine_avoidlist_admitted.json'
+ATTEMPT_AVOIDLIST_RELATIVE_PATH='provider/provider_machine_avoidlist.json'
+SIBLING_SCAN_BOUND=4000
+
+
+def _sibling_exclusions(job: Mapping[str, Any], root: Path) -> tuple[list[dict], list[dict]]:
+    """Collect provider-proven bad machines from sibling calibrated-view children, never fabricating any.
+
+    The adapter records ``exclude_persistently_across_sibling_jobs_until_manual_review`` in the
+    attempt copy it wrote after a machine failed before our container ran (2026-09-12: vast machine
+    38773, ``vast_heartbeat_container_missing``). The frozen profile snapshot cannot absorb that
+    entry without a re-materialization, so every new child unions those sibling entries into its
+    own admitted list. Unreadable or foreign files are skipped and reported, not trusted.
+    """
+    from .provider_machine_avoidlist import load_machine_avoidlist
+    digest=str(job.get('parent_request_digest') or '').removeprefix('sha256:')
+    execution_root=root.parent.parent.parent
+    if not (root.name=='artifacts' and digest and root.parent.parent.name==digest and execution_root.is_dir()):
+        return [], [{'reason':'sibling_layout_unrecognized','root':str(root)}]
+    entries, skipped, seen = [], [], set()
+    candidates=sorted(execution_root.glob('*/*/artifacts/'+ATTEMPT_AVOIDLIST_RELATIVE_PATH))
+    require(len(candidates)<=SIBLING_SCAN_BOUND,'sibling_avoidlist_scan_bound_exceeded')
+    for candidate in candidates:
+        if candidate.is_symlink() or candidate==root/ATTEMPT_AVOIDLIST_RELATIVE_PATH:
+            continue
+        data=load_machine_avoidlist(candidate)
+        if str(data.get('status') or '').startswith('blocked_') or data.get('schema_version')!='vast_machine_avoidlist.v1':
+            skipped.append({'reason':'sibling_avoidlist_unreadable','path':str(candidate)})
+            continue
+        for row in data.get('entries') or []:
+            machine_id=row.get('machine_id') if isinstance(row, Mapping) else None
+            if (row.get('retry_policy')!=PERSISTENT_EXCLUSION_POLICY if isinstance(row, Mapping) else True) \
+                    or isinstance(machine_id, bool) or not isinstance(machine_id, int) or machine_id<=0:
+                continue
+            identity=canonical_json(row)
+            if identity not in seen:
+                seen.add(identity)
+                entries.append({**dict(row),'source_attempt_avoidlist':str(candidate)})
+    return entries, skipped
+
+
+def admitted_machine_avoidlist(*, job: Mapping[str, Any], root: Path, frozen_path: Path) -> Path:
+    """Frozen profile exclusions plus sibling-proven ones, sealed once per child before allocation."""
+    from .provider_machine_avoidlist import load_machine_avoidlist, machine_avoidlist_ids
+    frozen=load_machine_avoidlist(frozen_path)
+    frozen_ids=machine_avoidlist_ids(frozen)
+    admitted=root/ADMITTED_AVOIDLIST_NAME
+    if not admitted.exists():
+        sibling_entries, skipped=_sibling_exclusions(job, root)
+        machine_ids=sorted(frozen_ids|{int(row['machine_id']) for row in sibling_entries})
+        _write(admitted,{'schema_version':'vast_machine_avoidlist.v1','status':'completed',
+            'machine_ids':machine_ids,
+            'entries':[dict(row) for row in frozen.get('entries') or [] if isinstance(row, Mapping)]+sibling_entries,
+            'frozen_snapshot':record(frozen_path),'sibling_exclusions':sibling_entries,'sibling_scan_skipped':skipped,
+            'raw_secret_values_recorded':False})
+    require(frozen_ids.issubset(machine_avoidlist_ids(load_machine_avoidlist(admitted))),
+            'machine_avoidlist_attempt_dropped_exclusions')
+    return admitted
+
+
+def provider_execution_failure(*, root: Path, result_path: Path, result: Mapping[str, Any], source_commit: str,
+                               owner_metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Seal a non-completed allocator run with the evidence scene recovery classifies from.
+
+    The producer documents stay where the allocator wrote them; the outcome only binds them by
+    digest so ``retain_failure`` can reopen the provider classification instead of a bare blocker.
+    """
+    artifacts={'source_calibration_allocator_result':record(result_path)}
+    adapter=Path(str(result.get('provider_adapter_result_path') or ''))
+    if adapter.is_absolute() and adapter.is_file() and not adapter.is_symlink() \
+            and adapter.resolve().is_relative_to(root.resolve()):
+        artifacts['source_calibration_provider_adapter_result']=record(adapter)
+    attempt_avoidlist=root/ATTEMPT_AVOIDLIST_RELATIVE_PATH
+    if attempt_avoidlist.is_file():
+        artifacts['source_calibration_machine_avoidlist']=record(attempt_avoidlist)
+    blockers=['source_calibration_render_gpu_execution_not_complete']
+    blockers.extend(str(b) for b in (result.get('blockers') or []) if str(b) and str(b) not in blockers)
+    return {'status':'failed','stage_id':'calibrated_views','source_commit':source_commit,'blockers':blockers,
+            'artifacts':artifacts,'candidate_policy_queried':False,'evaluation_authorized':False,
+            'provider_mutation_performed':True,**dict(owner_metadata)}
+
+
 def validate_retained_source_calibration_stage(outcome: Mapping[str, Any]) -> None:
     artifacts=outcome['artifacts']
     result=read(checked_file(artifacts['source_calibration_execution']['path'],artifacts['source_calibration_execution']))
@@ -93,9 +176,10 @@ def execute_source_calibration_stage(job: Mapping[str, Any], *, allocator_runner
             and settings.get('retry_cap')==0 and settings.get('maximum_resource_count')==1
             and settings.get('allowed_geolocation_country_codes')==['US'],'hardware_profile_invalid')
     require(isinstance(settings.get('machine_avoidlist'), Mapping),'hardware_machine_avoidlist_required')
-    avoidlist=checked_file(settings['machine_avoidlist']['path'],settings['machine_avoidlist'])
+    frozen_avoidlist=checked_file(settings['machine_avoidlist']['path'],settings['machine_avoidlist'])
     root=Path(job['output_root'])
     root.mkdir(parents=True,exist_ok=True)
+    avoidlist=admitted_machine_avoidlist(job=job,root=root,frozen_path=frozen_avoidlist)
     preparation_record=root/'cpu_preparation_outcome.json'
     if not preparation_record.exists():
         require(not job.get('resume_only'),'prior_preparation_missing')
@@ -150,12 +234,14 @@ def execute_source_calibration_stage(job: Mapping[str, Any], *, allocator_runner
         allocator_runner(argv,cwd=Path(job['repo_root']))
     require(result_path.is_file(),'allocator_result_missing')
     result=read(result_path)
-    require(result.get('status')=='completed' and result.get('render_scope')=='source_calibration','gpu_execution_not_complete')
+    owner_path=root/'scene_owner_attempt.json'
+    owner_metadata={'scene_owner_attempt':record(owner_path)} if owner_path.exists() else {}
+    if not (result.get('status')=='completed' and result.get('render_scope')=='source_calibration'):
+        return provider_execution_failure(root=root,result_path=result_path,result=result,
+            source_commit=job['expected_source_commit'],owner_metadata=owner_metadata)
     return_path=Path(result['source_calibration_return']['return_path'])
     verify_source_calibration_return(prepared,return_path)
     charge=_posted_charge(result,root)
-    owner_path=root/'scene_owner_attempt.json'
-    owner_metadata={'scene_owner_attempt':record(owner_path)} if owner_path.exists() else {}
     if charge is None:
         return {'status':'waiting_for_external_result','stage_id':'calibrated_views',
                 'waiting_reason':'official_vast_billing_not_posted','candidate_policy_queried':False,
