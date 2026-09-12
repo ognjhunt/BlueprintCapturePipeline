@@ -542,10 +542,16 @@ def test_known_corrupt_scene_digest_fails_before_launch_materialization(
     ).exists()
 
 
+@pytest.mark.parametrize("omit_controls", [False, True])
 def test_presubmission_setup_is_activation_independent_and_profile_ready(
     tmp_path: Path,
+    omit_controls: bool,
 ) -> None:
-    kwargs = _kwargs(tmp_path)
+    if omit_controls:
+        kwargs, _, contract, authority = _strict_omission_inputs(tmp_path)
+        kwargs.update(task_success_contract=contract, diagnostic_control_omission_authority=authority)
+    else:
+        kwargs = _kwargs(tmp_path)
     for field in ("activation_digest", "capture_session_id", "intake_id"):
         kwargs.pop(field)
     kwargs["profile_id"] = "scene839873-internal-policy-canary-c412"
@@ -596,6 +602,9 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     emitted = materialize_policy_canary_presubmission_setup(**kwargs)
     setup = emitted["setup"]
     wrapper = emitted["profile_materialization_input"]
+    if omit_controls:
+        assert wrapper["internal_policy_canary_execution_plan"]["activation_automation"][
+            "diagnostic_control_omission_authority"] == authority
 
     assert setup["schema_version"] == "task_evaluation_policy_canary_setup.v1"
     assert validate_policy_canary_setup(setup) == setup
@@ -725,10 +734,16 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
     assert attached["internal_policy_canary_setup"] == setup
 
 
+@pytest.mark.parametrize("omit_controls", [False, True])
 def test_post_activation_template_separates_configured_and_canary_requests(
     tmp_path: Path,
+    omit_controls: bool,
 ) -> None:
-    kwargs = _kwargs(tmp_path)
+    if omit_controls:
+        kwargs, _, contract, authority = _strict_omission_inputs(tmp_path)
+        kwargs.update(task_success_contract=contract, diagnostic_control_omission_authority=authority)
+    else:
+        kwargs = _kwargs(tmp_path)
     for field in ("activation_digest", "capture_session_id", "intake_id"):
         kwargs.pop(field)
     kwargs["profile_id"] = "scene839873-internal-policy-canary-current"
@@ -1051,3 +1066,76 @@ def test_strict_owner_contract_accepts_bound_measured_retreat_criterion(tmp_path
     spec["retreat_clearance_m"] = 0.01
     with pytest.raises(canary_setup_module.TaskNeutralScoringError, match="retreat_binding_mismatch"):
         canary_setup_module._require_strict_owner_success_contract(task_spec=spec, contract=contract)
+
+
+def _strict_omission_inputs(tmp_path):
+    from copy import deepcopy
+    kwargs, source = _strict_owner_setup_inputs(tmp_path)
+    source['criteria']['controls'] = {'mode':'required_per_cell',
+        'control_ids':['zero_action_negative','deterministic_scripted_positive']}
+    source['contract_digest'] = canary_setup_module.cross_runtime_canonical_digest(source, digest_field='contract_digest')
+    scene_path = Path(kwargs['scene_plan_path'])
+    scene = json.loads(scene_path.read_text())
+    scene['task_spec']['task_success_contract'] = source
+    scene['task_spec']['configured_success_criteria']['per_cell_controls_required'] = True
+    scene['plan_digest'] = canonical_digest(scene, digest_field='plan_digest')
+    write_json(scene_path, scene)
+    packet_path = Path(kwargs['packet_receipt_path'])
+    packet = json.loads(packet_path.read_text())
+    packet['arena_scene_plan_digest'] = scene['plan_digest']
+    write_json(packet_path, packet)
+    contract = deepcopy(source)
+    contract['criteria'].pop('controls')
+    contract['contract_digest'] = canary_setup_module.cross_runtime_canonical_digest(contract, digest_field='contract_digest')
+    authority = {'schema_version':'task_evaluation_diagnostic_control_omission_authority.v1',
+        'run_kind':'internal_policy_canary','claim_ceiling':'diagnostic_policy_execution',
+        'authorized_by':'fixture-owner','authorization_reference':'fixture-explicit-omission',
+        'omitted_controls':['zero_action_negative','deterministic_scripted_positive'],
+        'source_task_success_contract_digest':source['contract_digest'],
+        'result_task_success_contract_digest':contract['contract_digest'],
+        'task_scoring_criteria_changed':False,'qualified_comparison_permitted':False}
+    authority['authority_digest'] = canonical_digest(authority,digest_field='authority_digest')
+    return kwargs, source, contract, authority
+
+
+def test_explicit_control_omission_preserves_owner_scoring_for_both_policies(tmp_path):
+    kwargs, source, contract, authority = _strict_omission_inputs(tmp_path)
+    before = Path(kwargs['scene_plan_path']).read_bytes()
+    setup = materialize_scene839873_policy_canary_setup(**kwargs, task_success_contract=contract,
+        diagnostic_control_omission_authority=authority)
+    assert setup['task_success_contract']['criteria'] == {k:v for k,v in source['criteria'].items() if k!='controls'}
+    for role in ('pi05_execution_spec','groot_execution_spec'):
+        assert json.loads(Path(setup['records'][role]['path']).read_text())['task_success_contract'] == contract
+    assert Path(kwargs['scene_plan_path']).read_bytes() == before
+
+
+@pytest.mark.parametrize('fault', ['missing','source','scoring','digest'])
+def test_control_omission_never_weakens_scoring_or_accepts_missing_authority(tmp_path, fault):
+    kwargs, source, contract, authority = _strict_omission_inputs(tmp_path)
+    if fault=='missing':
+        authority = None
+    elif fault=='source':
+        authority['source_task_success_contract_digest']='sha256:'+'0'*64
+    elif fault=='scoring':
+        contract['criteria']['motion']['minimum_lift_m'] = 0.06
+        contract['contract_digest']=canary_setup_module.cross_runtime_canonical_digest(contract,digest_field='contract_digest')
+        authority['result_task_success_contract_digest']=contract['contract_digest']
+    else:
+        authority['authority_digest']='sha256:'+'0'*64
+    if authority is not None and fault!='digest':
+        authority['authority_digest']=canonical_digest(authority,digest_field='authority_digest')
+    with pytest.raises(canary_setup_module.PolicyCanarySetupError, match='controls_required|omission_scope_invalid'):
+        materialize_scene839873_policy_canary_setup(**kwargs,task_success_contract=contract,
+            diagnostic_control_omission_authority=authority)
+    assert not Path(kwargs['output_dir']).exists()
+
+
+def test_explicit_launch_contract_still_requires_its_digest_without_omission(tmp_path):
+    kwargs, source, _, _ = _strict_omission_inputs(tmp_path)
+    path = Path(kwargs['launch_request_path'])
+    launch = json.loads(path.read_text())
+    launch['task_success_contract'] = source
+    launch.pop('task_success_contract_digest', None)
+    write_json(path, launch)
+    with pytest.raises(canary_setup_module.PolicyCanarySetupError, match='task_success_contract_digest_mismatch'):
+        materialize_scene839873_policy_canary_setup(**kwargs, task_success_contract=source)

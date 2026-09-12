@@ -341,13 +341,28 @@ def _quick_cells(
 
 
 def _require_strict_owner_success_contract(
-    *, task_spec: Mapping[str, Any], contract: Mapping[str, Any]
+    *, task_spec: Mapping[str, Any], contract: Mapping[str, Any],
+    diagnostic_control_omission_authority: Mapping[str, Any] | None = None,
 ) -> None:
     """Reject compatibility or weaker scoring for an explicitly strict task.
 
     This joins an already confirmed contract; it never confirms an agent's
     proposed thresholds and never changes deterministic scoring.
     """
+    if diagnostic_control_omission_authority is not None:
+        from .native_task_arena_policy_canary_session import validate_control_omission_authority
+        try:
+            omission = validate_control_omission_authority(
+                diagnostic_control_omission_authority, contract_digest=contract["contract_digest"])
+            source = validate_rigid_task_success_contract(task_spec["task_success_contract"])
+            expected = deepcopy(source)
+            expected["criteria"].pop("controls", None)
+            expected["contract_digest"] = cross_runtime_canonical_digest(expected, digest_field="contract_digest")
+            if (source["contract_digest"] != omission["source_task_success_contract_digest"]
+                    or expected != dict(contract)):
+                raise ValueError("scoring_changed")
+        except (ValueError, KeyError, TypeError) as exc:
+            raise TaskNeutralScoringError(["policy_canary_control_omission_scope_invalid"]) from exc
     configured = _mapping_or_empty(task_spec.get("configured_success_criteria"))
     if configured.get("owner_success_contract_required") is not True:
         return
@@ -358,7 +373,7 @@ def _require_strict_owner_success_contract(
     if configured.get("per_cell_controls_required") is True:
         from .native_policy_canary_control_gate import controls_required
 
-        if not controls_required(contract):
+        if not controls_required(contract) and diagnostic_control_omission_authority is None:
             raise TaskNeutralScoringError(["policy_canary_owner_success_contract_controls_required"])
     criteria = _mapping_or_empty(contract.get("criteria"))
     temporal = _mapping_or_empty(criteria.get("temporal_invariants"))
@@ -536,6 +551,7 @@ def materialize_scene839873_policy_canary_setup(
     hard_cap_usd: float = 4.0,
     hard_ttl_seconds: int = 14_400,
     task_success_contract: Mapping[str, Any] | None = None,
+    diagnostic_control_omission_authority: Mapping[str, Any] | None = None,
     require_confirmed_task_success_contract: bool = True,
     activation_release_window_template: Mapping[str, Any] | None = None,
     activation_lineage: Mapping[str, Any] | None = None,
@@ -654,11 +670,15 @@ def materialize_scene839873_policy_canary_setup(
             expected_task_id=str(scene_plan.get("task_id") or ""),
         )
         _require_strict_owner_success_contract(
-            task_spec=task_spec, contract=task_success_contract
+            task_spec=task_spec, contract=task_success_contract,
+            diagnostic_control_omission_authority=diagnostic_control_omission_authority,
         )
         if launch_request.get("task_success_contract") is not None and (
             launch_request.get("task_success_contract_digest")
             != task_success_contract["contract_digest"]
+            and not (diagnostic_control_omission_authority is not None
+                     and launch_request.get("task_success_contract_digest")
+                     == diagnostic_control_omission_authority["source_task_success_contract_digest"])
         ):
             blockers.append("policy_canary_task_success_contract_digest_mismatch")
     except TaskNeutralScoringError as exc:
@@ -879,6 +899,7 @@ def materialize_policy_canary_presubmission_setup(
     activation_authorization: Mapping[str, Any],
     output_dir: str | Path,
     task_success_contract: Mapping[str, Any] | None = None,
+    diagnostic_control_omission_authority: Mapping[str, Any] | None = None,
     policy_observation_setup: Mapping[str, Any] | None = None,
     maximum_hourly_rate_usd: float = 0.8,
     hard_cap_usd: float = 4.0,
@@ -932,6 +953,7 @@ def materialize_policy_canary_presubmission_setup(
             hard_cap_usd=hard_cap_usd,
             hard_ttl_seconds=hard_ttl_seconds,
             task_success_contract=task_success_contract,
+            diagnostic_control_omission_authority=diagnostic_control_omission_authority,
             require_confirmed_task_success_contract=False,
             scene_id=selected_scene_id,
         )
@@ -1427,6 +1449,9 @@ def materialize_policy_canary_presubmission_setup(
             "policy_campaign_queue": True,
         },
     }
+    if diagnostic_control_omission_authority is not None:
+        activation_automation["diagnostic_control_omission_authority"] = deepcopy(
+            diagnostic_control_omission_authority)
     execution_plan: dict[str, Any] = {
         "schema_version": "task_evaluation_policy_canary_execution_plan.v1",
         "source_commit": source_commit,
@@ -1684,6 +1709,8 @@ def materialize_scene839873_policy_canary_setup_from_template(
         hard_cap_usd=float(template["hard_cap_usd"]),
         hard_ttl_seconds=int(template["hard_ttl_seconds"]),
         task_success_contract=validated_activation_contract,
+        diagnostic_control_omission_authority=(plan.get("activation_automation") or {}).get(
+            "diagnostic_control_omission_authority"),
         require_confirmed_task_success_contract=True,
         scene_id=str(template.get("scene_id") or SCENE_ID),
         **({"scene_policy_binding": binding} if binding is not None else {}),

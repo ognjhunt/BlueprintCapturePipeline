@@ -61,7 +61,7 @@ def _reference(value: Any) -> bool:
     )
 
 
-def _validate_activation_automation(value: Any) -> dict[str, Any]:
+def _validate_activation_automation(value: Any, *, task_success_contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
     automation = _mapping(value)
     lineage = _mapping(automation.get("lineage"))
     authorization = _mapping(automation.get("authorization_template"))
@@ -77,7 +77,7 @@ def _validate_activation_automation(value: Any) -> dict[str, Any]:
         "construction_result",
     }
     if (
-        set(automation)
+        set(automation) - {"diagnostic_control_omission_authority"}
         != {
             "mode",
             "release_window_template",
@@ -110,6 +110,16 @@ def _validate_activation_automation(value: Any) -> dict[str, Any]:
         raise PolicyCanaryPreparationDispatchError(
             "policy_canary_activation_automation_invalid"
         )
+    omission = automation.get("diagnostic_control_omission_authority")
+    if omission is not None:
+        from .native_task_arena_policy_canary_session import validate_control_omission_authority
+        try:
+            contract = _mapping(task_success_contract)
+            validate_control_omission_authority(omission, contract_digest=contract["contract_digest"])
+            if "controls" in contract["criteria"]:
+                raise ValueError("controls_not_omitted")
+        except (ValueError, KeyError, TypeError) as exc:
+            raise PolicyCanaryPreparationDispatchError("policy_canary_control_omission_authority_invalid") from exc
     return automation
 
 
@@ -188,7 +198,8 @@ def validate_policy_canary_execution_plan(
         raise PolicyCanaryPreparationDispatchError(
             "policy_canary_execution_plan_invalid"
         )
-    _validate_activation_automation(plan.get("activation_automation"))
+    _validate_activation_automation(plan.get("activation_automation"),
+                                   task_success_contract=plan.get("task_success_contract"))
     if "scene_policy_binding" in plan:
         bound = scene_policy.validate_binding(plan["scene_policy_binding"])
         scene_policy.validate_setup_pair(setup, bound)
