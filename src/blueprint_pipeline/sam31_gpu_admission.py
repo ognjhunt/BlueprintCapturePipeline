@@ -29,6 +29,11 @@ CHECKPOINT_REPOSITORY_REVISION = "daa63191845a41281374e725f4c9e51c7a824460"
 CHECKPOINT_DIGEST = "sha256:0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6"
 LICENSE_TERMS_DIGEST = "sha256:4dea99bfaa016e21bc860d73f344236bd1e5c4977d1a9a8fd32f822b500ae1be"
 MIN_GPU_MEMORY_BYTES = 24 * 1024**3
+#: Ampere (sm_80) or newer. The SAM 3.1 worker runs its prompt execution in bf16 on
+#: tensor cores; a Volta/Turing offer (Tesla V100 32 GB, 2026-09-12 scene 840938,
+#: instance 50799864, $0.21) has no bf16 path and died with OutOfMemoryError in the
+#: fp32 fallback, while the same worker image passed on an sm_80 CMP 170HX.
+MIN_COMPUTE_CAP = 800
 MIN_CONTAINER_DISK_BYTES = 40 * 1024**3
 MAX_PREFLIGHT_AGE_SECONDS = 300
 MAX_TTL_SECONDS = 3_600
@@ -86,6 +91,9 @@ def sam31_capacity_request(*, container_disk_bytes: int, max_hourly_rate_usd: fl
         # Request enough to satisfy the existing byte floor, never an offer's
         # incidental larger amount of RAM.
         "min_gpu_ram_mb": math.ceil(MIN_GPU_MEMORY_BYTES / 1_000_000),
+        # Architecture floor, enforced in the provider search payload and again
+        # in local offer selection; an offer that cannot prove it is refused.
+        "min_compute_cap": MIN_COMPUTE_CAP,
         "container_disk_gb": disk_gb,
         "required_provider_disk_gb": disk_gb,
         "min_reliability": 0.98,
