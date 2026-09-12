@@ -60,6 +60,11 @@ def scene_execution_authority_blockers(
     if (intent.get("intent_digest") != binding["intent_digest"]
             or any(attempt.get(k) != binding[k] for k in required - {"schema_version"})):
         return ["scene_execution_owner_record_mismatch"]
+    from .task_evaluation_scene_execution_budget import validate_attempt_execution_budget
+    try:
+        validate_attempt_execution_budget(directory, intent, attempt)
+    except (ValueError, OSError, KeyError, TypeError):
+        return ["scene_execution_owner_budget_extension_invalid"]
     from .task_evaluation_retained_controls_evidence import validated_cancellation
     try:
         if validated_cancellation(directory, attempt) is not None:

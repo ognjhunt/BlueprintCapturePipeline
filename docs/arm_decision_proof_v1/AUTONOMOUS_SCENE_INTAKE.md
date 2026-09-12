@@ -160,3 +160,29 @@ the same compiler. The composition gate checks the manipulated object and
 surface marker in addition to any physical destination support, restores full
 sensor buffers, and executes before policies load. Passing the hermetic handoff
 tests does not establish native rendering, manipulation, or end-to-end delivery.
+
+An authenticated intake issuer can record an explicit owner-authorized cumulative
+budget/count amendment through
+`task_evaluation_scene_execution_budget.extend_scene_execution_budget`. Pass the
+exact `queue_root`, `intent_id`, `intent_digest`, `owner`, `authenticated_client`,
+server-selected `trusted_clients`, `max_total_spend_usd`, `max_paid_attempts`, a
+durable `authorization_reference`, and `ack="extend-scene-execution-budget"`.
+Delegated decisions must describe the actual delegation and agent-issued bounds;
+they must not imply that a human typed those exact numeric limits.
+
+The API appends a digest-keyed record in `execution-budget-extensions` under the
+existing intake lock. Each record binds its predecessor, original and prior
+ceilings, exact owner/issuer/intent, and every unchanged execution field. Ceilings
+can only increase, within the existing $1,000/32 limits. Revoked or expired
+consent cannot issue a budget amendment. The original consent and attempt files
+remain byte-identical. This grants future capacity; it does not settle charges,
+refund reservations, change any per-action ceiling, add retries, extend time, or
+change rights, tasks, providers or policies.
+
+New reservations count all existing uncancelled holds and bind the exact active
+grant. Execution, review-owner and policy admission reopen that grant; missing,
+tampered or conflicting grant history refuses use. Older reservations remain
+valid across later grants, and duplicate reservations retain their original
+identity. Status exposes `effective_execution_budget` separately from the
+original immutable request. Existing narrowly typed cancellation proofs keep
+their prior semantics; a failed source stage alone is not a cancellation proof.
