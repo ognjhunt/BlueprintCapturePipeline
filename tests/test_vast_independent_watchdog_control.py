@@ -97,6 +97,81 @@ def _exact_terminal_evidence(
         "raw_secret_values_recorded": False,
     }
 
+BLOCKED_GLOBAL_READ = {
+    "status": "blocked", "provider": "vast", "name_prefix": "", "live_resource_count": None,
+    "resources": [], "api_confirmed": False, "blockers": ["vast_billable_inventory_failed"],
+    "error_type": "HTTPError", "raw_provider_response_recorded": False,
+}
+
+
+def _lane_handle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> control.VastWatchdogHandle:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path, max_live_minutes=3, generated_at="2026-09-12T22:24:52+00:00",
+        pod_name_prefix="blueprint-adp-retained-render-20260912t222452496293000-")
+    assert handle is not None
+    return handle
+
+
+@pytest.mark.parametrize("failed_read", ["final_global_inventory", "initial_global_inventory"])
+def test_terminal_evidence_honors_the_watchdogs_informational_global_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_read: str
+) -> None:
+    """2026-09-12 22:27, scene 840938: the watchdog's final global read hit an HTTPError; it still
+    sealed provider_terminal after two direct absence inspections and a zero lane inventory, and
+    the closer refused it as not exactly bound, stranding a completed render."""
+    handle = _lane_handle(tmp_path, monkeypatch)
+    evidence = _exact_terminal_evidence(handle, 50812297)
+    evidence[failed_read] = dict(BLOCKED_GLOBAL_READ)
+    assert control._terminal_evidence_matches_handle(evidence, handle=handle, instance_id="50812297") is False
+    evidence["global_inventory_informational_only"] = True
+    assert control._terminal_evidence_matches_handle(evidence, handle=handle, instance_id="50812297")
+    # The informational scope never admits a claimed observation of a foreign instance,
+    # a "blocked" read that lists resources, or an unconfirmed direct inspection.
+    foreign = {**evidence, "final_global_inventory": {**evidence["initial_global_inventory"],
+        "status": "observed", "api_confirmed": True, "live_resource_count": 1,
+        "resources": [{"instance_id": "50812298", "name": "someone-else"}]}}
+    assert control._terminal_evidence_matches_handle(foreign, handle=handle, instance_id="50812297") is False
+    listed = {**evidence, failed_read: {**BLOCKED_GLOBAL_READ, "resources": [{"instance_id": "50812298"}]}}
+    assert control._terminal_evidence_matches_handle(listed, handle=handle, instance_id="50812297") is False
+    unproven = {**evidence, "recorded_vast_instance_teardown": {
+        **evidence["recorded_vast_instance_teardown"],
+        "inspect_attempts": [evidence["recorded_vast_instance_teardown"]["inspect_attempts"][0]]}}
+    assert control._terminal_evidence_matches_handle(unproven, handle=handle, instance_id="50812297") is False
+
+
+def test_bound_campaign_evidence_never_uses_the_informational_global_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(control.subprocess, "Popen", _FakeProcess)
+    _handoff, handle = control.arm_independent_vast_watchdog(
+        job_dir=tmp_path, max_live_minutes=3, generated_at="2026-08-25T00:00:00+00:00",
+        pod_name_prefix="blueprint-native-task-policy-diagnostic-",
+        resource_name_exact="blueprint-native-task-policy-pi05-" + "a" * 32,
+        allowed_active_resource_names=["blueprint-native-task-policy-groot-" + "b" * 32])
+    assert handle is not None
+    evidence = _exact_terminal_evidence(handle, 48620000)
+    evidence["final_global_inventory"] = dict(BLOCKED_GLOBAL_READ)
+    evidence["global_inventory_informational_only"] = True  # a bound campaign cannot opt out
+    assert control._terminal_evidence_matches_handle(evidence, handle=handle, instance_id="48620000") is False
+
+
+def test_close_reports_provider_terminal_with_a_blocked_informational_global_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle = _lane_handle(tmp_path, monkeypatch)
+    evidence = _exact_terminal_evidence(handle, 50812297)
+    evidence.update(final_global_inventory=dict(BLOCKED_GLOBAL_READ), global_inventory_informational_only=True)
+    (handle.out_dir / control.EVIDENCE_NAME).write_text(json.dumps(evidence), encoding="utf-8")
+    handle.process.returncode = 0  # the watchdog already exited after sealing its evidence
+    result = control.close_independent_vast_watchdog(job_dir=tmp_path, handle=handle,
+        instance_ids=[50812297], provider_teardown_completed=True, wait_seconds=0.1)
+    assert result["status"] == "provider_terminal"
+    assert result["provider_absence_confirmed"] is True
+    assert result["global_inventory_read_blocked"] is True
+    assert json.loads((tmp_path / control.HANDOFF_NAME).read_text())["status"] == "provider_terminal"
+
+
 def test_watchdog_is_armed_detached_before_allocation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
