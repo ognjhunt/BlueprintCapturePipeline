@@ -120,6 +120,8 @@ def context(tmp_path, monkeypatch, request):
     owner["source"] = {"kind": "public_scene", "binding_id": "public-scene-1",
         "content_digest": factory.public_source_content_digest(installation)}
     owner["task"] = task_contract_projection(seed)
+    if "reuse_completed_stages" in options:
+        owner["task"]["reuse_completed_stages"] = options["reuse_completed_stages"]
     if options.get("descriptive"):
         owner["task"]["task_id"] = "my-book-task"
         owner["task"].update({key: {"description": description, "authority": "owner_confirmed"}
@@ -268,6 +270,30 @@ def test_prior_queue_jobs_are_discovered_without_operator_prefix_opt_in(context,
     assert len(candidates) == 1
     assert candidates[0]["source_plan"] == ref(plan_path)
     assert candidates[0]["parent_request_digest"] == "sha256:" + "a" * 64
+
+
+@pytest.mark.parametrize("context", [{"reuse_completed_stages": False}], indirect=True)
+def test_fresh_owner_request_reaches_real_factory_without_prefix_adoption(context, monkeypatch):
+    args, _ = context
+    original = factory._prefix_candidates
+    calls = []
+    def observed(*values, **kwargs):
+        calls.append(kwargs["allow_reuse"])
+        return original(*values, **kwargs)
+    monkeypatch.setattr(factory, "_prefix_candidates", observed)
+    receipt = factory.materialize_public_scene_attempt(**args)
+    assert receipt["status"] == "publication_ready"
+    assert calls == [False]
+    selection = json.loads((args["output_root"] / "prefix_selection.json").read_text())
+    assert selection["status"] == "no_reusable_prefix"
+    assert not (args["output_root"] / "completed_prefix_adoption.json").exists()
+
+
+def test_fresh_mode_skips_both_retained_hint_and_history_discovery(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("fresh execution must not scan retained stage history")
+    monkeypatch.setattr(Path, "glob", forbidden)
+    assert factory._prefix_candidates({"prefix_candidate": {"old": "hint"}}, {}, {}, {}, allow_reuse=False) == []
 
 
 def test_current_conversion_uses_canonical_cpu_producer_without_reinstalling_raw(tmp_path, monkeypatch):

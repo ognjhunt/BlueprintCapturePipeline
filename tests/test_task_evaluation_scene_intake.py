@@ -58,6 +58,14 @@ def test_untrusted_database_writer_cannot_issue_intent(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize('value', ['false', 0, 1, None, {}])
+def test_reuse_mode_requires_explicit_boolean(tmp_path, value):
+    body = request()
+    body['task']['reuse_completed_stages'] = value
+    with pytest.raises(SceneIntakeError, match='task_reuse_mode_invalid'):
+        stage(tmp_path, body)
+
+
 def test_consent_actor_cannot_be_substituted(tmp_path):
     value = request()
     value["consent"]["accepted_by"] = "admin"

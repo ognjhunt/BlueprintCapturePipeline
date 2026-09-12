@@ -8,6 +8,9 @@ from blueprint_pipeline import task_evaluation_public_scene_attempt_factory as f
 from blueprint_pipeline import task_evaluation_sam31_prefix_adoption as adoption
 from tests.test_task_evaluation_public_scene_attempt_factory import context as context, write, ref
 
+# Imported pytest fixtures are intentionally named by the test parameters.
+# ruff: noqa: F811
+
 
 class RetainedReaderReached(Exception):
     pass
@@ -32,7 +35,7 @@ def test_factory_retry_supplies_the_sealed_adoption_phase(context, tmp_path, mon
         'source_plan': candidate['source_plan'], 'source_profile': candidate['source_profile'],
         'original_parent_request_digest': candidate['parent_request_digest']}, 'adoption_digest')
     before = sealed.read_bytes()
-    monkeypatch.setattr(factory, '_prefix_candidates', lambda *args: [candidate])
+    monkeypatch.setattr(factory, '_prefix_candidates', lambda *args, **kwargs: [candidate])
     zero = write(tmp_path / 'observation.json', {'synthetic_signature_probe_only': True})
     monkeypatch.setattr('blueprint_pipeline.task_evaluation_prefix_observation.selection_observation',
                         lambda root: (zero, 1001.))
@@ -64,7 +67,7 @@ def test_factory_does_not_swallow_verified_pending_billing(context, tmp_path, mo
         execution_root=str(tmp_path / 'executions'), release_retention_binding_root=str(tmp_path / 'pins'))
     path = write(tmp_path / 'pending-machinery.json', machinery, 'machinery_digest')
     output = tmp_path / 'pending-factory'
-    monkeypatch.setattr(factory, '_prefix_candidates', lambda *args: [candidate, candidate])
+    monkeypatch.setattr(factory, '_prefix_candidates', lambda *args, **kwargs: [candidate, candidate])
     zero = write(tmp_path / 'observation.json', {'synthetic_signature_probe_only': True})
     monkeypatch.setattr('blueprint_pipeline.task_evaluation_prefix_observation.selection_observation', lambda root: (zero, 1001.))
     calls = []
@@ -90,7 +93,7 @@ def test_factory_skips_prefixes_that_cannot_improve_verified_winner(context, tmp
     machinery.update(child_queue_root=str(tmp_path / 'children'), parent_queue_root=str(tmp_path / 'parents'),
         execution_root=str(tmp_path / 'executions'), release_retention_binding_root=str(tmp_path / 'pins'))
     path = write(tmp_path / 'selection-machinery.json', machinery, 'machinery_digest')
-    monkeypatch.setattr(factory, '_prefix_candidates', lambda *args: [candidate] * 3)
+    monkeypatch.setattr(factory, '_prefix_candidates', lambda *args, **kwargs: [candidate] * 3)
     zero = write(tmp_path / 'observation.json', {'synthetic_signature_probe_only': True})
     monkeypatch.setattr('blueprint_pipeline.task_evaluation_prefix_observation.selection_observation', lambda root: (zero, 1001.))
     floors = []
