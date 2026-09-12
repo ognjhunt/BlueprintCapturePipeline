@@ -174,6 +174,11 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
                 assert "User=blueprint" in text and "Group=blueprint" in text
                 assert "CapabilityBoundingSet=\n" in text and "AmbientCapabilities=\n" in text
                 assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/scene-project-spend" in text
+                writable = next(line for line in text.splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
+                assert set(writable) == {
+                    "/var/lib/blueprint/pipeline-control-plane/scene-project-spend",
+                    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents/.lock",
+                }
             continue
         if unit.name == "blueprint-control-plane-storage-gc.service":
             text = unit.read_text(encoding="utf-8")
