@@ -19,6 +19,9 @@ from .decision_evidence_contracts import canonical_digest
 from . import task_evaluation_scene_intake as intake
 from . import task_evaluation_configured_controls_continuation_provisioning as producer
 from .project_spend_reconciliation import validate_project_spend_reconciliation
+from .task_evaluation_configured_scene_object_store import (
+    TaskEvaluationConfiguredSceneObjectStoreError as _StoreError,
+)
 
 LINK_SCHEMA = "task_evaluation_scene_preparation_link.v1"
 CATALOG_SCHEMA = "task_evaluation_controls_robot_catalog.v1"
@@ -487,7 +490,8 @@ def process_config(config_path: str | Path, *, expected_production_commit: str) 
                 controls_root=Path(config["controls_root"]), intent_root=Path(config["intent_root"]),
                 profile_dir=Path(config["profile_dir"]), expected_production_commit=expected_production_commit,
                 trusted_clients=set(config["trusted_clients"]), service_group=config.get("service_group", "blueprint")))
-        except (ValueError, OSError, KeyError, TypeError, producer.ConfiguredControlsProvisioningError) as exc:
+        except (ValueError, OSError, KeyError, TypeError, producer.ConfiguredControlsProvisioningError,
+                _StoreError) as exc:
             row = {"status": "controls_autoprovision_refused", "intent_id": intent_id, "blocker": str(exc)}
             key = _configured_scene_key(intent_path, preparation_queue_root)
             if key is not None:
