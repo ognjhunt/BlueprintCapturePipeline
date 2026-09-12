@@ -206,6 +206,11 @@ arbitrary replacement parents and unrelated queues remain refused. Current
 consent, configuration, anchor, allowance and parent hashes are checked again at
 admission. A later approved allowance creates a distinct derivation identity and
 revokes the older scope without overwriting its receipt.
+Controller-recorded same-release recoveries additionally reopen the canonical
+attempt recovery grant at its original reservation time, join the exact failed
+child and producer result, and enforce the unchanged owner retry limit. Historical
+provider-zero evidence proves that recorded grant only; the controller must still
+recheck current admission before any new allocation.
 
 When persistent supervision is enabled, failure discovery waits for its owner
 instead of racing startup with a second inference producer. The lifetime budget

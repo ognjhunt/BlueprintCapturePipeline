@@ -98,8 +98,19 @@ def _queue(preparation, queue_root):
     result_path = queue / "results" / path.name
     if result_path.exists():
         result = read(result_path, digest_field="result_digest")
+        observer_commit = result.get("source_commit")
+        rejected_old_release = (
+            state == "blocked"
+            and result.get("schema_version") == "task_evaluation_launch_preparation_result.v1"
+            and result.get("status") == "blocked"
+            and result.get("blockers") == ["launch_preparation_worker_source_commit_mismatch"]
+            and all(result.get(key) is False for key in
+                    ("paid_execution_requested", "provider_mutation_performed", "catalog_mutation_performed"))
+            and isinstance(observer_commit, str) and len(observer_commit) == 40
+            and all(c in "0123456789abcdef" for c in observer_commit)
+        )
         require(result.get("preparation_id") == preparation["preparation_id"]
-                and result.get("source_commit") == preparation["expected_production_commit"],
+                and (observer_commit == preparation["expected_production_commit"] or rejected_old_release),
                 "preparation_result_mismatch")
         observed.update(result=result, result_reference=record(result_path))
     if state == "awaiting_source_preparation":
