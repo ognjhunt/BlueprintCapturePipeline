@@ -58,16 +58,16 @@ def _argv(args):
 def test_cli_and_public_api_normalize_real_paths_before_hashing(prefix, tmp_path, monkeypatch, route):
     args = _arguments(prefix, tmp_path, monkeypatch)
     calls = []
-    def scientific_boundary(outcome, artifacts, old_plan, current_repo, through_phase):
+    def scientific_boundary(value, old_plan, artifacts, roots):
         assert old_plan["source_commit"] == OLD
-        assert isinstance(current_repo, Path) and through_phase == "calibrated_views"
-        assert outcome["status"] == "completed" and artifacts["standard_splat"]
+        assert roots == (tmp_path,) and value["through_phase"] == "calibrated_views"
+        assert value["current_release_root"] == str(tmp_path) and artifacts["standard_splat"]
         calls.append("all exact prefix paths resolved")
         raise ScientificBoundaryReached
-    monkeypatch.setattr(adoption, "validate_render", scientific_boundary)
+    monkeypatch.setattr(adoption, "_current_sources", scientific_boundary)
     # Run the real public materializer through SHA computation, exact queue
-    # identity lookup and original parent validation. Only the following GPU
-    # evidence validation is stopped; no fabricated completion is returned.
+    # identity lookup and original parent validation. Stop at the first current
+    # scientific-input reader; no fabricated completion is returned.
     with pytest.raises(ScientificBoundaryReached):
         if route == "cli":
             adoption.main(_argv(args))

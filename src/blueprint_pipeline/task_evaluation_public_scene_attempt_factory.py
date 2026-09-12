@@ -501,7 +501,8 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
                 sam31_billing_source_path=(_reference(candidate["sam31_billing_source"])
                     if candidate.get("sam31_billing_source") else None),
                 release_binding_root=machinery["release_retention_binding_root"])
-            result = select_completed_prefix_adoption(**kwargs, output_path=None)
+            result = select_completed_prefix_adoption(**kwargs, output_path=None,
+                minimum_prefix_length=PREFIX_LENGTHS[best["through_phase"]] if best is not None else 0)
             selection_reports.append(result)
             if result["status"] == "reusable_prefix_selected" and (best is None or
                     PREFIX_LENGTHS[result["through_phase"]] > PREFIX_LENGTHS[best["through_phase"]]):
@@ -509,13 +510,17 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
                 if best["through_phase"] == "segment_cutout":
                     break
         if best is not None:
+            from .task_evaluation_sam31_prefix_adoption import materialize_completed_prefix_adoption
             adopted_path = output / "completed_prefix_adoption.json"
             if not adopted_path.exists():
-                best = select_completed_prefix_adoption(**best_kwargs, output_path=adopted_path)
+                # The winner is already selected. Revalidate that exact prefix
+                # before publication; another complete search cannot improve it.
+                persisted = materialize_completed_prefix_adoption(
+                    **best_kwargs, through_phase=best["through_phase"], output_path=adopted_path)
+                best = {**best, "adoption": persisted}
             else:
                 # Revalidate the existing adoption against the fresh current
                 # zero while preserving its original witness and digest.
-                from .task_evaluation_sam31_prefix_adoption import materialize_completed_prefix_adoption
                 retained = read(adopted_path, digest_field="adoption_digest")
                 historical = {"source_plan_path": _reference(retained["source_plan"]),
                     "source_profile_path": _reference(retained["source_profile"]),

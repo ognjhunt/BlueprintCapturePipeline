@@ -106,7 +106,16 @@ immediately before adoption. The resulting digest-bound observation is retained
 under the attempt's output and is deliberately absent from the static release
 binding; a stale release snapshot can never grant reuse or spend authority. A
 discovered SAM/cutout prefix may carry its original `sam31_billing_source`, which
-is reopened and validated only when that longer prefix is selected. Missing,
+is reopened and validated only when that longer prefix is selected. When absent,
+completed tracking can read the canonical billing audit directory selected by
+`BLUEPRINT_PROVIDER_BILLING_AUDIT_ROOT` (default
+`/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit`). Exact
+instance, launch-label, source-receipt, response and official-charge validators
+still apply; the selected existing receipt is bound only into the new adoption.
+Verified completed tracking with unavailable billing reports
+`sam31_adoption_official_billing_pending`; selection and the factory propagate
+that refusal instead of dropping the completed GPU stage and rerunning it.
+Discovery performs no billing refresh, provider request or historical write. Missing,
 stale, nonzero or ambiguous inventory blocks reuse preparation; it does not
 silently authorize redoing paid work. The selector tries the longest
 scientifically compatible prefix and retains rejection evidence. A local format

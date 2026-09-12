@@ -1,7 +1,7 @@
 """ADP-009D/day-28: synthetic immutable reuse boundaries, never paid execution.
 
 These exercise real parent, chain, path and receipt readers. A bookkeeping-only
-prefix deliberately lacks renderer proof; reaching that missing field is NOT
+prefix deliberately lacks scientific input proof; reaching that refusal is NOT
 scientific acceptance. No validator under test is replaced.
 """
 from copy import deepcopy
@@ -115,11 +115,13 @@ def test_old_budget_materializer_reaches_real_science_reader_without_rewriting_p
               for key, ref in row.items() if key != 'phase'}
     parent = Path(value['original_parent_envelope']['path'])
     before[parent] = parent.read_bytes()
-    # Real chain validation precedes the independent renderer proof boundary.
+    # Real chain validation precedes the independent scientific-input boundary.
     assert set(adoption._phase_chain(value, (tmp_path,))[3]) == set(adoption.PHASES[:5])
     zero = write(tmp_path / 'zero.json', dict(provider='vast', status='observed', api_confirmed=True,
         name_prefix='', live_resource_count=0, resources=[], http=200, observed_at_epoch=1000.))
-    with pytest.raises(KeyError, match='source_calibration_prepared_inputs'):
+    # Current source identity now precedes render validation and billing lookup.
+    # This deliberately incomplete fixture has no valid installation receipt.
+    with pytest.raises(ValueError, match='scene_configuration_submission_input_digest_mismatch'):
         adoption.materialize_completed_prefix_adoption(source_plan_path=value['source_plan']['path'],
             source_profile_path=value['source_profile']['path'], parent_request_digest=value['original_parent_request_digest'],
             through_phase='calibrated_views', current_host_inputs=plan['host_inputs'],

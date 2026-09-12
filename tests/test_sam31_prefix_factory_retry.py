@@ -50,3 +50,66 @@ def test_factory_retry_supplies_the_sealed_adoption_phase(context, tmp_path, mon
     with pytest.raises(RetainedReaderReached):
         factory.materialize_public_scene_attempt(**{**args, 'machinery_path': path, 'output_root': output})
     assert sealed.read_bytes() == before
+
+
+def test_factory_does_not_swallow_verified_pending_billing(context, tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_sam31_prefix_billing import Sam31PrefixBillingPending
+    args, _ = context
+    factory.materialize_public_scene_attempt(**args)
+    candidate = {'source_plan': ref(args['output_root'] / 'submission/configuration/sam31_preparation_plan.v1.json'),
+                 'source_profile': ref(args['output_root'] / 'sam31_preparation_profile.json'),
+                 'parent_request_digest': 'sha256:' + 'a' * 64}
+    machinery = json.loads(args['machinery_path'].read_text())
+    machinery.update(child_queue_root=str(tmp_path / 'children'), parent_queue_root=str(tmp_path / 'parents'),
+        execution_root=str(tmp_path / 'executions'), release_retention_binding_root=str(tmp_path / 'pins'))
+    path = write(tmp_path / 'pending-machinery.json', machinery, 'machinery_digest')
+    output = tmp_path / 'pending-factory'
+    monkeypatch.setattr(factory, '_prefix_candidates', lambda *args: [candidate, candidate])
+    zero = write(tmp_path / 'observation.json', {'synthetic_signature_probe_only': True})
+    monkeypatch.setattr('blueprint_pipeline.task_evaluation_prefix_observation.selection_observation', lambda root: (zero, 1001.))
+    calls = []
+    def pending(**kwargs):
+        calls.append(kwargs)
+        raise Sam31PrefixBillingPending('sam31_adoption_official_billing_pending')
+    monkeypatch.setattr(adoption, 'select_completed_prefix_adoption', pending)
+    with pytest.raises(Sam31PrefixBillingPending):
+        factory.materialize_public_scene_attempt(**{**args, 'machinery_path': path, 'output_root': output})
+    assert len(calls) == 1
+    assert not (output / 'prefix_selection.json').exists()
+    assert not (output / 'sam31_preparation_profile.json').exists()
+    assert not (output / 'submission').exists()
+
+
+def test_factory_skips_prefixes_that_cannot_improve_verified_winner(context, tmp_path, monkeypatch):
+    args, _ = context
+    factory.materialize_public_scene_attempt(**args)
+    candidate = {'source_plan': ref(args['output_root'] / 'submission/configuration/sam31_preparation_plan.v1.json'),
+                 'source_profile': ref(args['output_root'] / 'sam31_preparation_profile.json'),
+                 'parent_request_digest': 'sha256:' + 'a' * 64}
+    machinery = json.loads(args['machinery_path'].read_text())
+    machinery.update(child_queue_root=str(tmp_path / 'children'), parent_queue_root=str(tmp_path / 'parents'),
+        execution_root=str(tmp_path / 'executions'), release_retention_binding_root=str(tmp_path / 'pins'))
+    path = write(tmp_path / 'selection-machinery.json', machinery, 'machinery_digest')
+    monkeypatch.setattr(factory, '_prefix_candidates', lambda *args: [candidate] * 3)
+    zero = write(tmp_path / 'observation.json', {'synthetic_signature_probe_only': True})
+    monkeypatch.setattr('blueprint_pipeline.task_evaluation_prefix_observation.selection_observation', lambda root: (zero, 1001.))
+    floors = []
+    def select(**kwargs):
+        assert kwargs.get('output_path') is None
+        floors.append(kwargs['minimum_prefix_length'])
+        if len(floors) == 3:
+            return {'status': 'no_reusable_prefix'}
+        return {'status': 'reusable_prefix_selected',
+                'through_phase': 'calibrated_views' if len(floors) == 1 else 'sam31_tracking'}
+    monkeypatch.setattr(adoption, 'select_completed_prefix_adoption', select)
+    signature = inspect.signature(adoption.materialize_completed_prefix_adoption)
+    def publish(**kwargs):
+        signature.bind(**kwargs)
+        assert kwargs['through_phase'] == 'sam31_tracking'
+        assert kwargs['output_path'].name == 'completed_prefix_adoption.json'
+        assert 'minimum_prefix_length' not in kwargs
+        raise RetainedReaderReached
+    monkeypatch.setattr(adoption, 'materialize_completed_prefix_adoption', publish)
+    with pytest.raises(RetainedReaderReached):
+        factory.materialize_public_scene_attempt(**{**args, 'machinery_path': path, 'output_root': tmp_path / 'selection-factory'})
+    assert floors == [0, 3, 5]

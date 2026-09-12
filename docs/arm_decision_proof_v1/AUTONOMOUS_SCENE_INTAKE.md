@@ -127,6 +127,15 @@ public catalog through compatible deployments using `--only-intent-id`,
 `--public-source-bootstrap-enabled`, and `--public-source-catalog`. These flags
 confer no new spending, disclosure, or dataset rights.
 
+For public-scene credential rotation, optional `public_scene_machinery_path`
+(`--public-scene-machinery-path`) selects an existing absolute, nonsymlink
+machinery file when public scenes are enabled. The installer rechecks that path
+and uses it without rewriting either the previous or selected machinery. This
+allows a new dated base machinery file while old derived records retain their
+original digest-bound source. Omitting the option preserves the canonical
+`task-evaluation-public-scene-machinery.json` path under the configured root;
+activation and budget defaults are unchanged.
+
 For fresh sources, install the exact previously accepted combined provider terms
 at `/etc/blueprint/task-evaluation-private-scene-provider-terms.json`. Its canonical
 digest must match the retained intent. The controller projects task-bound SAM

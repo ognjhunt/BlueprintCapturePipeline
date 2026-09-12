@@ -13,6 +13,7 @@ import time
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .validation_file_digests import file_digest_scope
+from .task_evaluation_sam31_prefix_billing import Sam31PrefixBillingPending
 from .task_evaluation_scene_configuration_submission_inputs import read, require, sha
 from .task_evaluation_scene_configuration_sam31_plan import PHASES, PROFILE_SCHEMA, validate_sam31_preparation_plan
 from . import task_evaluation_sam31_prefix_evidence as evidence
@@ -195,19 +196,9 @@ def _phase_chain(value, roots):
     return plan, profile, artifacts, outcomes, tracking_origin
 
 
-@file_digest_scope()
-def validate_completed_prefix_adoption(path, *, expected_source_commit, approved_roots,
-                                      current_plan=None, current_provider_profile_path=None,
-                                      require_current_tracking_request=False):
-    roots = tuple(Path(root) for root in approved_roots)
-    value = deepcopy(path) if isinstance(path, dict) else read(path, digest_field="adoption_digest")
-    require(value.get("adoption_digest") == canonical_digest(value, digest_field="adoption_digest"), "sam31_adoption_digest_invalid")
-    require(value.get("schema_version") == SCHEMA and value.get("status") == "verified_completed_prefix"
-            and value.get("source_commit") == expected_source_commit and value.get("through_phase") in PREFIX_LENGTHS
-            and value.get("historical_receipts_modified") is False and value.get("paid_execution_performed") is False
-            and value.get("candidate_policy_queried") is False, "sam31_adoption_contract_invalid")
-    _zero(_ref(value["provider_zero_at_adoption"], roots), at=value["created_at_epoch"])
-    old_plan, old_profile, artifacts, outcomes, tracking_origin = _phase_chain(value, roots)
+def _current_sources(value, old_plan, artifacts, roots):
+    """Bind current task/source/rights before any financial-pending outcome."""
+    expected_source_commit = value["source_commit"]
     old_task, old_source, old_science = source_science(old_plan["host_inputs"], value["original_execution_commit"])
     current_host = value["current_host_inputs"]
     require(set(current_host) == set(old_plan["host_inputs"]), "sam31_adoption_current_inputs_invalid")
@@ -223,15 +214,34 @@ def validate_completed_prefix_adoption(path, *, expected_source_commit, approved
     current_conversion = validate_current_rights(task, source, current_host, expected_source_commit, roots)
     require(all(current_conversion["standard"][k] == artifacts["standard_splat"][k] for k in ("sha256", "size_bytes")),
             "sam31_adoption_standard_source_changed")
+    from .public_scene_inpainting_inputs import _git_identity
+    require(_git_identity(Path(value["current_release_root"]))["commit"] == expected_source_commit,
+            "sam31_adoption_current_release_changed")
+    return current_conversion
+
+
+@file_digest_scope()
+def validate_completed_prefix_adoption(path, *, expected_source_commit, approved_roots,
+                                      current_plan=None, current_provider_profile_path=None,
+                                      require_current_tracking_request=False):
+    roots = tuple(Path(root) for root in approved_roots)
+    value = deepcopy(path) if isinstance(path, dict) else read(path, digest_field="adoption_digest")
+    require(value.get("adoption_digest") == canonical_digest(value, digest_field="adoption_digest"), "sam31_adoption_digest_invalid")
+    require(value.get("schema_version") == SCHEMA and value.get("status") == "verified_completed_prefix"
+            and value.get("source_commit") == expected_source_commit and value.get("through_phase") in PREFIX_LENGTHS
+            and value.get("historical_receipts_modified") is False and value.get("paid_execution_performed") is False
+            and value.get("candidate_policy_queried") is False, "sam31_adoption_contract_invalid")
+    _zero(_ref(value["provider_zero_at_adoption"], roots), at=value["created_at_epoch"])
+    old_plan, old_profile, artifacts, outcomes, tracking_origin = _phase_chain(value, roots)
+    current_conversion = _current_sources(value, old_plan, artifacts, roots)
+    current_host = value["current_host_inputs"]
     if current_plan is not None:
         require(current_plan["host_inputs"] == current_host and current_plan["source_commit"] == expected_source_commit
                 and all(current_plan[k] == old_plan[k] for k in
                         ("task_identity", "scene_identity", "publisher_scene_id", "rendering", "mask_policy", "claim_boundary"))
                 and camera_science(current_plan["camera_policy"]) == camera_science(old_plan["camera_policy"]),
                 "sam31_adoption_plan_science_changed")
-    from .public_scene_inpainting_inputs import _git_identity
     current_repo = Path(value["current_release_root"])
-    require(_git_identity(current_repo)["commit"] == expected_source_commit, "sam31_adoption_current_release_changed")
     tracking_phase = "sam31_tracking" if PREFIX_LENGTHS[value["through_phase"]] >= 4 else "calibrated_views"
     release = validate_render(outcomes["calibrated_views"], _render_artifacts(artifacts, old_profile), old_plan, current_repo, tracking_phase)
     require(release == value["retained_release_pin"], "sam31_adoption_retained_release_changed")
@@ -383,6 +393,8 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
     if output_path is not None and Path(output_path).exists():
         output = Path(output_path)
         existing = read(output, digest_field="adoption_digest")
+        if sam31_billing_source_path is None and existing.get("sam31_billing_source") is not None:
+            sam31_billing_source_path = _ref(existing["sam31_billing_source"], roots)
         expected_billing = (
             record(sam31_billing_source_path)
             if sam31_billing_source_path is not None
@@ -457,15 +469,16 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
              "paid_execution_performed": False, "candidate_policy_queried": False}
     roots = tuple(Path(root) for root in approved_roots)
     _, _, artifacts, outcomes, tracking_origin = _phase_chain(value, roots)
+    converted = _current_sources(value, old_plan, artifacts, roots)
     tracking_phase = "sam31_tracking" if PREFIX_LENGTHS[through_phase] >= 4 else "calibrated_views"
     value["retained_release_pin"] = validate_render(outcomes["calibrated_views"], _render_artifacts(artifacts, old_profile), old_plan, Path(current_repo_root), tracking_phase)
     if PREFIX_LENGTHS[through_phase] >= 5:
-        require(sam31_billing_source_path is not None, "sam31_adoption_official_billing_required")
-        value["sam31_billing_source"] = record(sam31_billing_source_path)
+        billing_options = {"billing_audit_roots": roots} if sam31_billing_source_path is None else {}
         value["tracking_identity"] = validate_tracking(outcomes["sam31_tracking"], artifacts, tracking_origin["profile"],
-                                                       current_provider_profile_path, tracking_origin["commit"], sam31_billing_source_path)
-    task, source, _ = source_science(current_host_inputs, expected_source_commit)
-    converted = validate_current_rights(task, source, current_host_inputs, expected_source_commit, roots)
+            current_provider_profile_path, tracking_origin["commit"], sam31_billing_source_path, **billing_options)
+        if sam31_billing_source_path is None:
+            sam31_billing_source_path = value["tracking_identity"]["official_charge"]["provider_billing_source_receipt"]["path"]
+        value["sam31_billing_source"] = record(sam31_billing_source_path)
     value["administrative_rebindings"] = {
         name: {"original": artifacts[name], "successor": converted[key]} for name, key in
         (("standard_splat", "standard"), ("standard_splat_conversion_receipt", "conversion"),
@@ -484,7 +497,7 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
 
 
 @file_digest_scope()
-def select_completed_prefix_adoption(**kwargs):
+def select_completed_prefix_adoption(*, minimum_prefix_length=0, **kwargs):
     """Select the longest scientifically compatible retained prefix by default.
 
     Rejected candidates remain explicit evidence. Validation is exactly the
@@ -492,12 +505,22 @@ def select_completed_prefix_adoption(**kwargs):
     Nothing is published until a candidate has passed every existing gate.
     """
     require("through_phase" not in kwargs, "sam31_adoption_selector_phase_not_accepted")
+    require(type(minimum_prefix_length) is int and 0 <= minimum_prefix_length <= max(PREFIX_LENGTHS.values()),
+            "sam31_adoption_selector_minimum_invalid")
     output = kwargs.pop("output_path", None)
     failures = []
     for phase in reversed(tuple(PREFIX_LENGTHS)):
+        if PREFIX_LENGTHS[phase] <= minimum_prefix_length:
+            failures.append({"through_phase": phase, "blocker": "prefix_not_longer_than_verified_selection",
+                             "minimum_prefix_length": minimum_prefix_length})
+            continue
         try:
             candidate = materialize_completed_prefix_adoption(
                 **kwargs, through_phase=phase, output_path=None)
+        except Sam31PrefixBillingPending:
+            # A completed GPU stage with pending billing is not permission to
+            # select a shorter prefix and run that stage again.
+            raise
         except (OSError, ValueError, KeyError, TypeError) as exc:
             failures.append({"through_phase": phase, "blocker": str(exc)[:700],
                              "error_type": type(exc).__name__})

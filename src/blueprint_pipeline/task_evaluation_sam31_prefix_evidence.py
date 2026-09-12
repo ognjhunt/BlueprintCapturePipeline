@@ -180,7 +180,8 @@ def validate_model_sources(old_profile, current_profile_path, old_commit):
     return old_provider
 
 
-def validate_tracking(outcome, artifacts, old_profile, current_profile_path, old_commit, billing_source_path):
+def validate_tracking(outcome, artifacts, old_profile, current_profile_path, old_commit, billing_source_path,
+                      *, billing_audit_roots=None):
     from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
     from .public_scene_calibrated_object_masks import _verified_source_tracks
     _load("task_evaluation_sam31_preparation_paid_stages").validate_retained_paid_stage(outcome, stage_id="sam31_tracking")
@@ -239,21 +240,8 @@ def validate_tracking(outcome, artifacts, old_profile, current_profile_path, old
             require(archive.read(portable_frame["path"]) == original.read_bytes()
                     and {k:v for k,v in source.items() if k != "path"} == {k:v for k,v in portable_frame.items() if k != "path"},
                     "sam31_adoption_frame_changed")
-    from .vast_official_billing_extractor import (
-        _validate_source_receipt, _load_vast_responses, extract_vast_official_instance_charge,
-    )
-    source_path, billing, _ = _validate_source_receipt(billing_source_path)
-    labels = []
-    for _, _, _, response in _load_vast_responses(source_receipt_path=source_path, source_receipt=billing):
-        labels.extend(row.get("metadata", {}).get("label") for row in response["results"]
-                      if row.get("source") == "instance-" + str(execution["instance_id"]))
-    require(len(labels) == 1 and isinstance(labels[0], str)
-            and labels[0].startswith("blueprint-sam31-source-tracks-")
-            and labels[0].endswith(execution["request_digest"].removeprefix("sha256:")[:12]),
-            "sam31_adoption_official_billing_instance_invalid")
-    charge = extract_vast_official_instance_charge(provider_billing_source_receipt_path=billing_source_path,
-        instance_id=int(execution["instance_id"]), launch_label=labels[0])
-    require(0 <= charge["official_charge_usd"] <= 1., "sam31_adoption_official_charge_invalid")
+    from .task_evaluation_sam31_prefix_billing import tracking_charge
+    charge = tracking_charge(execution, billing_source_path, approved_roots=billing_audit_roots)
     return {"raw_runtime_result": {"path": str(runtime_path), "sha256": sha(runtime_path), "size_bytes": runtime_path.stat().st_size},
             "provider_instance_id": execution["instance_id"], "checkpoint_digest": execution["checkpoint_digest"],
             "official_charge": charge}
