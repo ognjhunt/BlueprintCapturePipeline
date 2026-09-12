@@ -1331,31 +1331,15 @@ def _policy_campaign_activation_result(
             "blueprint-native-task-policy-canary-"
             + manifest["activation_digest"].removeprefix("sha256:")[:32]
         )
-        success_contract = preparation_request["policy_run_configuration"]["task_success_contract"]
-        strict_controls = success_contract["criteria"].get("controls", {}).get("mode") == "required_per_cell"
-        control_diagnostic = {
-            "mode": "required_before_policy" if strict_controls else "nonblocking_diagnostic_pending",
-            "typed_gap": "controls_pending_at_submission",
-            "policy_execution_blocked": strict_controls,
-        }
-        omission = (preparation_request.get("policy_canary_activation") or {}).get(
-            "diagnostic_control_omission_authority")
-        if omission is not None:
-            from .native_task_arena_policy_canary_session import validate_control_omission_authority
-            try:
-                omission = validate_control_omission_authority(
-                    omission, contract_digest=success_contract["contract_digest"])
-                if "controls" in success_contract["criteria"]:
-                    raise ValueError("controls_not_omitted")
-            except (ValueError, KeyError, TypeError) as exc:
-                raise TaskEvaluationLaunchActivationWorkerError(
-                    "launch_activation_policy_canary_control_omission_invalid") from exc
-            control_diagnostic = {
-                "mode": "nonblocking_omitted_by_user",
-                "typed_gap": "controls_omitted_by_user_request",
-                "policy_execution_blocked": False,
-                "omission_authority": omission,
-            }
+        from .policy_canary_control_result_delivery import build_control_diagnostic
+        try:
+            control_diagnostic = build_control_diagnostic(
+                preparation_request["policy_run_configuration"]["task_success_contract"],
+                omission=(preparation_request.get("policy_canary_activation") or {}).get(
+                    "diagnostic_control_omission_authority"))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_policy_canary_control_omission_invalid") from exc
         runtime_inputs = {
             "schema_version": "task_evaluation_policy_canary_runtime_inputs.v1",
             "run_id": preparation_request["run_id"],
