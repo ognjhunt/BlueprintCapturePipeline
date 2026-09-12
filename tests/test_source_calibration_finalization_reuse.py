@@ -168,3 +168,19 @@ def test_reuse_refuses_changed_frozen_policy_frames_or_ambiguous_history(tmp_pat
     with pytest.raises((ValueError, KeyError)):
         stage.execute_source_calibration_stage(job, allocator_runner=_no_allocation)
     assert not (Path(current["preparation_path"]).parent / "public_scene_interiorgs_edit_input_receipt.v2.json").exists()
+
+
+def test_unreadable_foreign_failed_history_is_skipped_not_fatal(tmp_path, monkeypatch):
+    """Scene 840938, 2026-09-12: a retired scene's failed calibrated-views job whose plan file was
+    no longer retained failed every fresh child of the new intent before any rental."""
+    job, old, current, old_raw, failed, result, old_output = _case(tmp_path, monkeypatch)
+    queue = Path(job["queue_root"])
+    gone = {"path": str(tmp_path / "retired-scene" / "plan.json"), "sha256": "sha256:" + "0" * 64, "size_bytes": 1}
+    (queue / "failed" / "sam31-foreign-plan-gone.json").write_text(json.dumps(
+        {"phase": "calibrated_views", "child_id": "sam31-foreign-plan-gone", "plan_ref": gone}))
+    (queue / "failed" / "sam31-foreign-not-json.json").write_text("not json")
+    (queue / "failed" / "sam31-other-phase.json").write_text(json.dumps({"phase": "sam31_tracking", "child_id": "x"}))
+    outcome = stage.execute_source_calibration_stage(job, allocator_runner=_no_allocation)
+    assert outcome["status"] == "completed" and outcome["retained_gpu_render_reused"] is True
+    assert failed.exists() and result.exists()  # this intent's own history untouched
+
