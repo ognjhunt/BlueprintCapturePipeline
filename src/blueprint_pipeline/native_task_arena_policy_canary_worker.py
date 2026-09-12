@@ -953,6 +953,16 @@ def _resolved_scene_plan(
     plan["task_spec"]["task_success_contract"] = deepcopy(
         dict(task_success_contract)
     )
+    control = cell.get("control_diagnostic") or {}
+    if control.get("mode") == "nonblocking_omitted_by_user":
+        from .native_task_arena_policy_canary_session import validate_control_omission_authority
+        from .native_task_camera_start_configuration import validate_camera_start_configuration
+        omission = validate_control_omission_authority(control.get("omission_authority") or {},
+            contract_digest=task_success_contract["contract_digest"])
+        camera_start = omission.get("policy_canary_camera_start_configuration")
+        if camera_start is not None:
+            plan["policy_canary_camera_start_configuration"] = validate_camera_start_configuration(plan, camera_start)
+    plan["task_spec"]["task_success_contract_digest"] = task_success_contract["contract_digest"]
     scenario = deepcopy(dict(cell["resolved_scenario"]))
     scenario["cell_id"] = cell["cell_id"]
     scenario["seed"] = cell["seed"]

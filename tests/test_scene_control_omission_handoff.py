@@ -1,6 +1,7 @@
 """Real construction closure and exact-owner omission feed the existing canary producers."""
 import copy
 import json
+from pathlib import Path
 
 import pytest
 
@@ -34,6 +35,21 @@ def prepared(tmp_path,monkeypatch):
     packet_root=tmp_path/'compiled-episodes'/rehearsal.PREPARATION_ID/'native-task-packet'
     plan_path=packet_root/'native_task_arena_scene_plan.v1.json'
     plan=json.loads(plan_path.read_bytes())
+    from tests.test_camera_start_construction_materializer import install_fixture_calibration
+    construction_path=tmp_path/'launch-runs'/rehearsal.CONSTRUCTION_LAUNCH_ID/'allocator/native-result.json'
+    calibrated=install_fixture_calibration(tmp_path,monkeypatch,directory,plan,construction_path)
+    rehearsal._terminal_run(tmp_path,launch_id=rehearsal.CONSTRUCTION_LAUNCH_ID,
+        result=json.loads(construction_path.read_bytes()))
+    plan['robot']=copy.deepcopy(calibrated['robot'])
+    plan['cameras']=copy.deepcopy(calibrated['cameras'])
+    for key in ('start_pose_world','target_position_world_m'):
+        plan['task_spec'][key]=copy.deepcopy(calibrated['task_spec'][key])
+    pose={'position_world_m':list(plan['task_spec']['start_pose_world'][:3]),
+          'orientation_xyzw':list(plan['task_spec']['start_pose_world'][3:])}
+    plan['objects']=[{'name':'task_object','task_subject':True,'pose_world':copy.deepcopy(pose),
+                      'reset_state':{'root_pose_world':copy.deepcopy(pose)}}]
+    plan['cadence']={'control_frequency_hz':15.,'physics_frequency_hz':120.,'control_decimation':8,
+        'maximum_action_steps':240,'settle_window_samples':24,'physics_dt_seconds':1/120}
     contract=seal_rigid_task_success_contract(task_spec=plan['task_spec'],site_id=plan['scene_id'],task_id=plan['task_id'],
         author_source='task_owner',author_id='u1',confirmation_status='confirmed',confirmed_by_team_id='org1')
     contract['criteria']['controls']={'mode':'required_per_cell','control_ids':omission.OMITTED}
@@ -69,6 +85,17 @@ def test_full_handoff_uses_real_construction_without_a_controls_receipt(tmp_path
     expected.pop('controls')
     assert parameters['task_success_contract']['criteria']==expected
     assert typed['qualified_comparison_permitted'] is False
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import _resolved_scene_plan
+    from blueprint_pipeline.native_task_camera_start_configuration import validate_camera_start_configuration
+    source_plan=json.loads(Path(parameters['scene_plan_path']).read_bytes())
+    for cell in rehearsal.handoff._quick_cells(rehearsal.REVISION_DIGEST,scene_id=rehearsal.SCENE_ID.removeprefix('interiorgs-')):
+        resolved=_resolved_scene_plan(source_plan,{**cell,'control_diagnostic':{
+            'mode':'nonblocking_omitted_by_user','typed_gap':'controls_omitted_by_user_request',
+            'policy_execution_blocked':False,'omission_authority':typed}},
+            task_success_contract=parameters['task_success_contract'])
+        camera_start=typed['policy_canary_camera_start_configuration']
+        assert validate_camera_start_configuration(resolved,camera_start)==camera_start
+        assert resolved['robot']['joint_reset_positions_rad']==camera_start['joint_reset_positions_rad']
     native=json.loads(publisher.published[parameters['activation_lineage']['construction_result']['uri']])
     assert native['schema_version']=='native_task_arena_construction_result.v1'
     assert native['construction_gate_qualified'] is True

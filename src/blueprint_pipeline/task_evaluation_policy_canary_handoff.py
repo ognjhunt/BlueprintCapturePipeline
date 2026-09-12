@@ -859,6 +859,12 @@ def advance_policy_canary_handoff(
             contract, typed_omission = derived_contract(
                 packet_request_path=Path(compiled["packet_receipt_path"]).parent / "native_task_arena_packet_request.v1.json",
                 directive=omission)
+            from .task_evaluation_scene_control_omission import bind_camera_start
+            typed_omission["policy_canary_camera_start_configuration"] = bind_camera_start(
+                directive=omission, plan=_load(Path(compiled["scene_plan_path"]), blocker="policy_canary_scene_plan_invalid"),
+                construction=_load(Path(_published_paths["construction_result"]), blocker="policy_canary_construction_result_invalid"),
+                contract=contract, cells=_quick_cells(str(base["configured_scene_revision_digest"]), scene_id=numeric_scene_id))
+            typed_omission["authority_digest"] = canonical_digest(typed_omission, digest_field="authority_digest")
             parameters.update(task_success_contract=contract, diagnostic_control_omission_authority=typed_omission)
         parameters = _write_or_reuse(inputs / "presubmission_parameters.json", parameters)
         if parameters.get("profile_id") != profile_id or parameters.get("source_commit") != expected_production_commit:
