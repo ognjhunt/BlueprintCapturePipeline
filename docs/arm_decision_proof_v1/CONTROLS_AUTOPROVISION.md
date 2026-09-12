@@ -127,3 +127,28 @@ paid step, and the execute/dry-run holds are untouched. The production chain
 preflight's owner-mode checks (`owner_scope_checks`) refuse a default scope, an
 unresolvable owner store, a missing/unreadable autoprovision config, and missing
 robot/camera/runtime assets before a dispatch selects a wrong or empty row.
+
+When the original task omitted `robot_binding_id`, the authenticated intake
+issuer can use `task_evaluation_scene_robot_assignment.assign_scene_robot` with
+`ack="assign-scene-robot"`, the exact owner/intent/issuer, `robot_catalog_path`,
+`robot_binding_id`, and a private `authorization_reference` JSON path. That file
+uses schema `task_evaluation_scene_robot_assignment_authorization.v1` and binds
+`authorized=true`, `intent_id`, `intent_digest`, `owner`, `authenticated_issuer`,
+`robot_binding_id`, and `catalog_binding_digest`. The digest comes from
+`catalog_binding_digest(binding)` and excludes only the dynamically rebound
+`expected_production_commit`; robot, camera, runtime, caps, credential identifiers
+and spend-pointer metadata remain bound. Preserve the actual human authorization
+or delegated decision in that private file; do not invent a new approval.
+
+The API checks current nonrevoked consent and actual robot/camera/runtime bytes,
+then writes immutable `<intent>/robot-assignment.json` under the intake lock.
+Authorization references are absolute nonsymlink files, mode 0600/0640, whose
+exact bytes are retained by reference. Duplicate requests retain the same record;
+conflicting choices refuse. A sole catalog entry never becomes an implicit choice,
+and an existing task choice cannot be overridden. Controls and terminal adoption
+reopen the assignment before provisioning and include `robot_assignment_digest`
+in their retained input identity and provisioning receipt. The original task,
+source freezes, completed artifacts, policies, spending bounds and holds remain
+unchanged. Removing or changing the assignment, authorization or catalog row
+refuses further provisioning. Other task/source consumers do not gain a robot
+field from this operational assignment.
