@@ -13,6 +13,23 @@ from .task_evaluation_scene_configuration_submission_inputs import checked_file,
 
 
 RECOVERABLE_FAILURE_KINDS = frozenset({"create_refused", "create_null", "create_ambiguous", "provider_null"})
+#: A provider-null failure that never created an instance (no offer, a stale ask refused
+#: at create, an offer-API HTTP error) is a marketplace miss: $0, nothing scientific, no
+#: resource. Scene 840938, 2026-09-12: two such misses inside 70 minutes consumed the
+#: intent's whole `max_retries` budget and would have parked the hands-off run on the
+#: next thin minute. Misses draw on their own bounded budget instead; a provider-null
+#: failure that did create an instance still consumes an ordinary retry.
+MAX_MARKET_MISS_RECOVERIES = 6
+
+
+def recovery_budget(failure_kind: str, producer) -> str:
+    """Which bounded budget a successor draws on: an ordinary retry or a marketplace miss."""
+    if failure_kind != "provider_null" or not isinstance(producer, dict):
+        return "retry"
+    created = (producer.get("allocation_created") is True
+               or bool(producer.get("vast_instance_ids"))
+               or bool(producer.get("instance_id")))
+    return "retry" if created else "market_miss"
 
 
 def provider_null_evidence(producer) -> bool:
@@ -108,4 +125,5 @@ def validate_recovery_evidence(evidence, *, prior_attempt, provider, now):
             "scene_recovery_ownership_reconciliation_required")
     return {"prior_attempt_id": prior_attempt["attempt_id"],
             "prior_attempt_digest": prior_attempt["attempt_digest"],
-            "failure_digest": failure["failure_digest"], "evidence": evidence}
+            "failure_digest": failure["failure_digest"], "evidence": evidence,
+            "budget": recovery_budget(failure["failure_kind"], producer)}

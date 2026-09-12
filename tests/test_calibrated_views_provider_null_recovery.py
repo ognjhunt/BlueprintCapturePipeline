@@ -218,3 +218,66 @@ def test_provider_null_label_without_the_adapter_classification_is_refused(tmp_p
     with pytest.raises(ValueError, match="provider_null_evidence_missing"):
         recover(tmp_path, intent, evidence)
     assert len(list((tmp_path / intent["intent_id"] / "attempts").glob("*.json"))) == 1
+
+
+def _evidence_for(tmp_path, prior, producer_path, *, tag, now=104):
+    """Failure + ownership records bound to ``prior`` (the guard record is shared)."""
+    from datetime import datetime, timezone
+    guard = json.loads((tmp_path / "guard.json").read_text())
+    guard["generated_at"] = datetime.fromtimestamp(now - 1, timezone.utc).isoformat()
+    guard_ref = write(tmp_path / f"guard-{tag}.json", guard)
+    failure = write(tmp_path / f"failure-{tag}.json", {
+        "schema_version": "task_evaluation_scene_attempt_failure.v1", "attempt_digest": prior["attempt_digest"],
+        "status": "failed", "failure_kind": "provider_null", "observed_at_epoch": now - 2,
+        "producer_result": record(producer_path)}, "failure_digest")
+    owner = write(tmp_path / f"owner-{tag}.json", {
+        "schema_version": "task_evaluation_scene_attempt_ownership.v1", "attempt_digest": prior["attempt_digest"],
+        "status": "closed_without_resource", "active_writer_count": 0, "unresolved_create_count": 0,
+        "provider_guard": guard_ref, "observed_at_epoch": now - 1}, "ownership_digest")
+    return {"failure": failure, "provider_guard": guard_ref, "ownership_reconciliation": owner}
+
+
+def _successor(tmp_path, intent, prior, producer_path, *, name, now):
+    from blueprint_pipeline.task_evaluation_scene_intake import reserve_scene_attempt
+    return reserve_scene_attempt(queue_root=tmp_path, intent_id=intent["intent_id"], attempt_id=name,
+        source_commit="c" * 40, runtime_digest="sha256:" + "e" * 64, input_digest="sha256:" + "f" * 64,
+        provider="vast", maximum_spend_usd=2, now=now, recovery_from_attempt_id=prior["attempt_id"],
+        recovery_evidence=_evidence_for(tmp_path, prior, producer_path, tag=name, now=now))
+
+
+def test_market_misses_draw_on_their_own_bounded_budget(tmp_path, monkeypatch):
+    """2026-09-12: two $0 no-offer misses inside 70 minutes spent the intent's whole max_retries=2."""
+    from blueprint_pipeline import task_evaluation_scene_recovery as recovery
+    intent, first, _evidence = setup(tmp_path, retries=1)
+    (tmp_path / "producer").mkdir()
+    miss = tmp_path / "producer" / "miss.json"
+    miss.write_text(json.dumps({**adapter_result(), "vast_instance_ids": [], "provider_create_attempted": False,
+                                "blockers": ["no_vast_offer_at_or_below_max_hourly_rate"]}))
+    machine = tmp_path / "producer" / "bad-machine.json"
+    machine.write_text(json.dumps(adapter_result()))  # created instance 50792900, container never started
+    monkeypatch.setattr(recovery, "MAX_MARKET_MISS_RECOVERIES", 2)
+    second = _successor(tmp_path, intent, first, miss, name="a2", now=110)
+    assert second["recovery"]["budget"] == "market_miss"
+    third = _successor(tmp_path, intent, second, miss, name="a3", now=120)
+    assert third["recovery"]["budget"] == "market_miss"
+    with pytest.raises(ValueError, match="market_miss_recovery_cap_exhausted"):
+        _successor(tmp_path, intent, third, miss, name="a4", now=130)
+    # Misses never spent the ordinary retry: the one consented retry is still available,
+    # and a provider-null failure that did create an instance consumes it.
+    fourth = _successor(tmp_path, intent, third, machine, name="a5", now=140)
+    assert fourth["recovery"]["budget"] == "retry"
+    with pytest.raises(ValueError, match="retry_cap_exhausted"):
+        _successor(tmp_path, intent, fourth, machine, name="a6", now=150)
+    from blueprint_pipeline.task_evaluation_scene_intake import _read
+    rows = [_read(p, "attempt_digest") for p in (tmp_path / intent["intent_id"] / "attempts").glob("*.json")]
+    budgets = [(r.get("recovery") or {}).get("budget", "retry") for r in rows if "recovery" in r]
+    assert sorted(budgets) == ["market_miss", "market_miss", "retry"]
+
+
+def test_zero_retry_consent_also_refuses_market_misses(tmp_path):
+    intent, first, _evidence = setup(tmp_path, retries=0)
+    (tmp_path / "producer").mkdir()
+    miss = tmp_path / "producer" / "miss.json"
+    miss.write_text(json.dumps({**adapter_result(), "vast_instance_ids": [], "provider_create_attempted": False}))
+    with pytest.raises(ValueError, match="retry_cap_exhausted"):
+        _successor(tmp_path, intent, first, miss, name="a2", now=110)
