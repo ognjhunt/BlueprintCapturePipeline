@@ -98,3 +98,37 @@ def test_operator_publication_requires_both_registration_and_plan():
         plan_digest="sha256:" + "d" * 64, operator_registration_digest="sha256:" + "e" * 64)
     assert publication["plan_digest"] == "sha256:" + "d" * 64
     assert publication["operator_registration_digest"] == "sha256:" + "e" * 64
+
+
+@pytest.mark.parametrize('fault', [None, 'mixed_cells', 'conflicting_authority', 'bad_digest'])
+def test_runtime_matrix_omission_reaches_real_delivery_and_rejects_inconsistent_cells(tmp_path, fault):
+    from blueprint_pipeline.policy_canary_control_result_delivery import control_omission_from_runtime_inputs
+    evidence = tmp_path / 'evidence'
+    evidence.mkdir()
+    result = _result(evidence)
+    authority = _authority(result['task_success_contract'])
+    runtime = {'task_success_contract':result['task_success_contract'], 'cells':[
+        {'control_diagnostic':{'mode':'nonblocking_omitted_by_user','omission_authority':deepcopy(authority)}}
+        for _ in range(10)]}
+    if fault == 'mixed_cells':
+        runtime['cells'][-1]['control_diagnostic']={'mode':'nonblocking_diagnostic_pending'}
+    elif fault == 'conflicting_authority':
+        other=runtime['cells'][-1]['control_diagnostic']['omission_authority']
+        other['authorized_by']='someone-else'
+        other['authority_digest']=canonical_digest(other,digest_field='authority_digest')
+    elif fault == 'bad_digest':
+        for cell in runtime['cells']:
+            cell['control_diagnostic']['omission_authority']['authority_digest']='sha256:'+'0'*64
+    if fault:
+        with pytest.raises(ValueError, match='control_omission'):
+            control_omission_from_runtime_inputs(runtime)
+        return
+    admitted=control_omission_from_runtime_inputs(runtime)
+    assert admitted == authority
+    delivery=materialize_policy_canary_result_delivery(run_root=tmp_path,run_id='scene-839873-canary-1',
+        result_status='blocked',session_result=result,evidence_root=evidence,control_omission_authority=admitted,
+        closure_records={name:_closure(tmp_path/f'{name}.json',flag=flag) for name,flag in (
+            ('billing','official_billing_sealed'),('teardown','teardown_completed'),('provider_zero','provider_zero_verified'))})
+    assert delivery['scene_controls_status']=='controls_omitted_by_user'
+    assert delivery['control_omission']['qualified_comparison_permitted'] is False
+    assert 'controls' not in delivery

@@ -20,6 +20,26 @@ WARNINGS = {
 }
 
 
+def control_omission_from_runtime_inputs(runtime_inputs, *, error_factory=ValueError):
+    """Join one identical, validated omission authority across the entire matrix."""
+    from .native_task_arena_policy_canary_session import validate_control_omission_authority
+
+    cells = runtime_inputs.get("cells") or []
+    omitted = [cell.get("control_diagnostic", {}).get("omission_authority") for cell in cells
+               if cell.get("control_diagnostic", {}).get("mode") == "nonblocking_omitted_by_user"]
+    if not omitted:
+        return None
+    if len(omitted) != len(cells) or any(row != omitted[0] for row in omitted):
+        raise error_factory("policy_canary_delivery_control_omission_conflict")
+    try:
+        contract = runtime_inputs["task_success_contract"]
+        if "controls" in contract["criteria"]:
+            raise ValueError("controls_not_omitted")
+        return validate_control_omission_authority(omitted[0], contract_digest=contract["contract_digest"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise error_factory("policy_canary_delivery_control_omission_invalid") from exc
+
+
 def materialize_control_omission(*, authority, contract, result, delivery_root,
                                 add_artifact, write_immutable, error_factory):
     from .native_policy_canary_control_gate import controls_required

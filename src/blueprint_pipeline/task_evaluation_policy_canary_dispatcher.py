@@ -1952,6 +1952,8 @@ def dispatch_policy_canary_activation(
         runner=progress_sync_runner,
     )
     try:
+        from .policy_canary_control_result_delivery import control_omission_from_runtime_inputs
+        omission = control_omission_from_runtime_inputs(runtime_inputs, error_factory=TaskEvaluationResultDeliveryError)
         delivery = materialize_policy_canary_result_delivery(
             run_root=root,
             run_id=activation["run_id"],
@@ -1959,6 +1961,7 @@ def dispatch_policy_canary_activation(
             session_result=joined,
             evidence_root=native_path.parent,
             closure_records=closure,
+            **({"control_omission_authority": omission} if omission is not None else {}),
         )
     except TaskEvaluationResultDeliveryError as exc:
         raise TaskEvaluationPolicyCanaryDispatchError(str(exc)) from exc
