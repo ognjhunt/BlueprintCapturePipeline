@@ -294,9 +294,20 @@ def _activation(*, intent, link, config, output, now, provisioner):
     return record(path)
 
 
+# Every state key that belongs to ONE attempt. A successor (release transition or
+# recovery) starts with none of them; lineage keys (binding_digest, source_binding,
+# source_analysis, release_predecessors, recovery_predecessors) survive.
+ATTEMPT_STATE_KEYS = ("attempt_id", "attempt_commit", "attempt", "factory", "publication", "submission",
+                      "preparation_state", "preparation_link", "preparation_result", "activation_link",
+                      "activation", "failure", "preparation_failure")
+
+
 def _clear_attempt(state):
-    for key in ("attempt_id", "attempt_commit", "attempt", "factory", "publication", "submission",
-                "preparation_state", "preparation_link", "preparation_result", "activation", "failure", "preparation_failure"):
+    # activation_link was missing here until 2026-09-12: after a release successor the
+    # new attempt activated through the previous attempt's link (bound to the old
+    # request digest and commit) and the intent registry refused it as
+    # intent_registry_same_release_conflict on every tick.
+    for key in ATTEMPT_STATE_KEYS:
         state.pop(key, None)
 
 
