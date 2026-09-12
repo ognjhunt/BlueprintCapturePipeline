@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import copy
+import os
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -113,7 +115,8 @@ def resolve_controls_robot_binding(*, directory: Path, intent: Mapping[str, Any]
 def assign_scene_robot(*, queue_root: str | Path, intent_id: str, intent_digest: str,
         owner: Mapping[str, Any], authenticated_client: str, trusted_clients: set[str],
         robot_catalog_path: str | Path, robot_binding_id: str, authorization_reference: str | Path,
-        ack: str, now: float | None = None) -> dict[str, Any]:
+        ack: str, now: float | None = None,
+        previous_external_layer_bucket: str | None = None) -> dict[str, Any]:
     from . import task_evaluation_scene_intake as intake
     from .task_evaluation_controls_autoprovision import _asset, _sealed, payload_digest
     moment = time.time() if now is None else now
@@ -145,10 +148,23 @@ def assign_scene_robot(*, queue_root: str | Path, intent_id: str, intent_digest:
         _authorization_matches(authorization, intent=intent, binding_id=robot_binding_id, binding_digest=binding_digest)
         path = directory / FILENAME
         _safe(path)
+        prior = None
         if path.exists():
-            row = read_scene_robot_assignment(directory=directory, intent=intent, catalog=catalog, now=moment)
-            _require(row['robot_binding_id'] == robot_binding_id and row['authorization_reference'] == reference, 'immutable_conflict')
-            return {'status': 'robot_assignment_already_recorded', 'record_path': str(path), **row}
+            retained = intake._read(path, 'assignment_digest')
+            if previous_external_layer_bucket is not None and retained['catalog_binding_digest'] != binding_digest:
+                # An explicitly authorized storage correction can refresh this
+                # operational binding without changing any robot/runtime field.
+                _require(isinstance(previous_external_layer_bucket, str)
+                    and bool(previous_external_layer_bucket.strip()), 'previous_bucket_invalid')
+                prior_catalog = copy.deepcopy(catalog)
+                prior_catalog['bindings'][robot_binding_id]['external_layer_bucket'] = previous_external_layer_bucket
+                prior_catalog['catalog_digest'] = canonical_digest(prior_catalog, digest_field='catalog_digest')
+                prior = read_scene_robot_assignment(directory=directory, intent=intent, catalog=prior_catalog, now=moment)
+                _require(prior['robot_binding_id'] == robot_binding_id, 'immutable_conflict')
+            else:
+                row = read_scene_robot_assignment(directory=directory, intent=intent, catalog=catalog, now=moment)
+                _require(row['robot_binding_id'] == robot_binding_id and row['authorization_reference'] == reference, 'immutable_conflict')
+                return {'status': 'robot_assignment_already_recorded', 'record_path': str(path), **row}
         _require(intent['accepted_at_epoch'] <= moment, 'issued_time_invalid')
         row = intake._seal({'schema_version': SCHEMA, 'scope': 'omitted_controls_robot_only',
             'intent_id': intent_id, 'intent_digest': intent_digest, 'owner': dict(owner),
@@ -156,6 +172,26 @@ def assign_scene_robot(*, queue_root: str | Path, intent_id: str, intent_digest:
             'catalog_binding_digest': binding_digest, 'authorization_reference': reference,
             'issued_at_epoch': moment, 'original_task_digest': intake.canonical_digest(intent['request']['task']),
             'provider_mutation_performed': False, 'original_task_modified': False}, 'assignment_digest')
-        intake.write_exclusive(path, row)
+        if prior is None:
+            intake.write_exclusive(path, row)
+        else:
+            # Publish history first, then atomically switch the current record.
+            # A crash cannot leave the controller with a missing assignment.
+            history = directory / 'robot-assignment-history'
+            _safe(history)
+            history.mkdir(mode=0o750, exist_ok=True)
+            archived = history / (prior['assignment_digest'].removeprefix('sha256:') + '.json')
+            _safe(archived)
+            raw = path.read_bytes()
+            if archived.exists():
+                _require(archived.read_bytes() == raw, 'history_conflict')
+            else:
+                fd = os.open(archived, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(raw)
+            pending = directory / ('robot-assignment-' + row['assignment_digest'].removeprefix('sha256:') + '.pending.json')
+            _safe(pending)
+            intake.write_exclusive(pending, row)
+            os.replace(pending, path)
         read_scene_robot_assignment(directory=directory, intent=intent, catalog=catalog, now=moment)
     return {'status': 'robot_assignment_recorded', 'record_path': str(path), **row}
