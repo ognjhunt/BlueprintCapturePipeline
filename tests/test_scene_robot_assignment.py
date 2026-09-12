@@ -203,3 +203,43 @@ def test_authorization_symlink_never_issues(prepared, tmp_path):
     with pytest.raises(ValueError,match='path_unsafe'):
         assignment.assign_scene_robot(**{**args,'authorization_reference':link})
     assert not (directory/assignment.FILENAME).exists()
+
+
+@pytest.mark.parametrize('case', ['valid', 'wrong_previous_bucket', 'robot_change', 'no_refresh', 'old_authority'])
+def test_explicit_bucket_refresh_preserves_history_and_rejects_other_drift(prepared, tmp_path, case):
+    kwargs, directory, intent, args = prepared
+    old_catalog = copy.deepcopy(kwargs['catalog'])
+    old_catalog['bindings']['franka-droid']['external_layer_bucket'] = 'legacy'
+    old_catalog = controls._seal(old_catalog, 'catalog_digest')
+    Path(args['robot_catalog_path']).write_text(json.dumps(old_catalog))
+    args['authorization_reference'] = authorize(tmp_path, intent, old_catalog)
+    old = assignment.assign_scene_robot(**args)
+    before = (directory / assignment.FILENAME).read_bytes()
+    original_intent = (directory / 'intent.json').read_bytes()
+    current = copy.deepcopy(old_catalog)
+    current['bindings']['franka-droid']['external_layer_bucket'] = 'artifacts'
+    if case == 'robot_change':
+        current['bindings']['franka-droid']['phase_hard_cap_usd'] = .37
+    current = controls._seal(current, 'catalog_digest')
+    Path(args['robot_catalog_path']).write_text(json.dumps(current))
+    new_auth = authorize(tmp_path, intent, current, name='new-authorization.json')
+    updated = {**args, 'authorization_reference': new_auth, 'previous_external_layer_bucket': 'legacy'}
+    if case == 'wrong_previous_bucket':
+        updated['previous_external_layer_bucket'] = 'unrelated'
+    elif case == 'no_refresh':
+        updated.pop('previous_external_layer_bucket')
+    elif case == 'old_authority':
+        updated['authorization_reference'] = args['authorization_reference']
+    if case != 'valid':
+        with pytest.raises(ValueError):
+            assignment.assign_scene_robot(**updated)
+        assert (directory / assignment.FILENAME).read_bytes() == before
+        return
+    result = assignment.assign_scene_robot(**updated)
+    assert result['assignment_digest'] != old['assignment_digest']
+    assert result['robot_binding_id'] == old['robot_binding_id']
+    assert next((directory / 'robot-assignment-history').glob('*.json')).read_bytes() == before
+    assert (directory / 'intent.json').read_bytes() == original_intent
+    assert assignment.read_scene_robot_assignment(directory=directory, intent=intent,
+        catalog=current, now=args['now'])['assignment_digest'] == result['assignment_digest']
+    assert assignment.assign_scene_robot(**updated)['assignment_digest'] == result['assignment_digest']
