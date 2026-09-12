@@ -99,7 +99,10 @@ def topology(prefix, tmp_path, monkeypatch):
                 'sam31_review': 'track_selection_review', 'calibrated_masks': 'calibrated_mask_set',
                 'removal_freezes': 'selection_inputs', 'contribution_sweep': 'synthetic_contribution',
                 'segment_cutout': 'segment_cutout_set'}
-            artifacts = {names[phase]: write(tmp_path / commit[0] / (phase + '.json'), {'synthetic_phase': phase})}
+            payload = {'synthetic_phase': phase}
+            if phase == 'sam31_inputs':
+                payload['provider_profile'] = json.loads(Path(provider['path']).read_text())
+            artifacts = {names[phase]: write(tmp_path / commit[0] / (phase + '.json'), payload)}
             if phase == 'standard_splat_conversion':
                 artifacts.update(standard_splat=standard, standard_splat_conversion_receipt=conversions[commit]['conversion'])
             if phase == 'calibrated_views':

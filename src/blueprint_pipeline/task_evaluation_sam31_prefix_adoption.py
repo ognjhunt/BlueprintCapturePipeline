@@ -197,7 +197,8 @@ def _phase_chain(value, roots):
 
 @file_digest_scope()
 def validate_completed_prefix_adoption(path, *, expected_source_commit, approved_roots,
-                                      current_plan=None, current_provider_profile_path=None):
+                                      current_plan=None, current_provider_profile_path=None,
+                                      require_current_tracking_request=False):
     roots = tuple(Path(root) for root in approved_roots)
     value = deepcopy(path) if isinstance(path, dict) else read(path, digest_field="adoption_digest")
     require(value.get("adoption_digest") == canonical_digest(value, digest_field="adoption_digest"), "sam31_adoption_digest_invalid")
@@ -239,6 +240,11 @@ def validate_completed_prefix_adoption(path, *, expected_source_commit, approved
         require(record(current_provider_profile_path) == value["current_sam31_provider_profile"], "sam31_adoption_current_model_changed")
     if PREFIX_LENGTHS[value["through_phase"]] == 4:
         evidence.validate_sam_inputs(artifacts, old_profile, provider_path, value["original_execution_commit"])
+        if require_current_tracking_request:
+            # Historical packets remain valid evidence, but a new tracking
+            # launch consumes the entire current profile, including authority.
+            require(read(artifacts["sam31_run_request"]["path"])["provider_profile"] == read(provider_path),
+                    "sam31_adoption_request_profile_requires_rebuild")
     if PREFIX_LENGTHS[value["through_phase"]] >= 5:
         tracking = validate_tracking(outcomes["sam31_tracking"], artifacts, tracking_origin["profile"], provider_path,
                                      tracking_origin["commit"], _ref(value["sam31_billing_source"], roots))
@@ -322,6 +328,12 @@ def publish_adoption_release_binding(adoption_path, *, binding_root=None):
     return record(target)
 
 
+def _require_current_request_profile(old_profile, current_profile_path, roots):
+    old_provider = _ref(old_profile["artifact_references"]["sam31_provider_profile"], roots)
+    require(read(old_provider) == read(current_profile_path),
+            "sam31_adoption_request_profile_requires_rebuild")
+
+
 @file_digest_scope()
 def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_path, parent_request_digest,
     through_phase, current_host_inputs, current_provider_profile_path, current_repo_root,
@@ -357,6 +369,9 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
                 and existing.get("source_profile") == record(source_profile_path)
                 and existing.get("sam31_billing_source") == expected_billing,
                 "sam31_adoption_output_identity_conflict")
+        if through_phase == "sam31_inputs":
+            _require_current_request_profile(read(source_profile_path, digest_field="profile_digest"),
+                                             current_provider_profile_path, roots)
         validate_completed_prefix_adoption(existing, expected_source_commit=expected_source_commit,
                                            approved_roots=roots,
                                            current_provider_profile_path=current_provider_profile_path)
@@ -365,6 +380,12 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
         return existing
     old_plan = read(source_plan_path, digest_field="plan_digest")
     old_profile = _profile(source_profile_path, old_plan["source_commit"])
+    if through_phase == "sam31_inputs":
+        # Reject this cheap CPU prefix before the expensive render validation.
+        # The selector can retain calibrated_views and regenerate only the
+        # request packet. Completed tracking and its historical profile remain
+        # reusable through their existing scientific/billing validation.
+        _require_current_request_profile(old_profile, current_provider_profile_path, roots)
     queue = Path(queue_root)
     rows = []
     old_inputs, inherited = _seed(old_plan, old_profile, roots)
