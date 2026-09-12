@@ -614,6 +614,12 @@ def run_sam31_vast_source_track_canary(
                 global_before=global_before,
             )
 
+    # Inventory transport may back off on rate limiting. It cannot grant a
+    # launch after the original independent watchdog has expired or shortened
+    # below the required interval, and it never extends that deadline.
+    if not validator(watchdog, float(clock()), hard_ttl):
+        raise Sam31VastCanaryError("sam31_independent_watchdog_not_live")
+
     recovery = prepare_sam31_output_recovery(root=root, hard_ttl_seconds=hard_ttl)
     reconciliation = build_paid_provider_lane_reconciliation(
         provider="vast",

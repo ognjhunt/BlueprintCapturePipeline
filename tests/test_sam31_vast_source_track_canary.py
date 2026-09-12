@@ -257,6 +257,65 @@ class _Provider:
         return {"status": self.terminate_status, "instance_id": instance_id}
 
 
+@pytest.mark.parametrize("other_instance_present", [False, True])
+def test_inventory_rate_limit_retries_read_before_single_or_refused_launch(tmp_path, monkeypatch, other_instance_present):
+    from types import SimpleNamespace
+    from blueprint_pipeline import safe_outbound_http, vast_inventory_read_retry
+    from blueprint_pipeline.gpu_render_providers import VastRenderProvider
+
+    actual_inventory = VastRenderProvider()
+    monkeypatch.setattr(VastRenderProvider, "_key", lambda self: "vast-fixture-secret")
+    calls, sleeps = [], []
+    monkeypatch.setattr(vast_inventory_read_retry.time, "sleep", sleeps.append)
+
+    class Provider(_Provider):
+        def billable_inventory(self, *, name_prefix):
+            return actual_inventory.billable_inventory(name_prefix=name_prefix)
+    provider = Provider()
+
+    def read(request, **kwargs):
+        calls.append(request.get_method())
+        if len(calls) == 2:  # The real failure was the initial global inventory GET.
+            raise urllib.error.HTTPError(request.full_url, 429, "fixture rate limit", {}, None)
+        rows = []
+        if other_instance_present:
+            rows.append({"id": 999, "label": "another-owner", "actual_status": "running"})
+        if provider.launched:
+            rows.append({"id": 42, "label": "blueprint-sam31-source-tracks-fixture", "actual_status": "running"})
+        return SimpleNamespace(status=200, body=json.dumps({"instances": rows}).encode())
+    monkeypatch.setattr(safe_outbound_http, "open_request", read)
+    kwargs = dict(bound_request=_bound_request(), preflight=_preflight(), job_dir=tmp_path,
+        input_bundle_get_url=INPUT_URL, output_put_url=PUT_URL, output_get_url=GET_URL,
+        hf_token=TOKEN, provider=provider, paid_resource_admission_grant=_grant(),
+        result_fetcher=lambda _: _runtime_result(), sleeper=lambda _: None,
+        clock=lambda: 1000., watchdog_validator=lambda *args: True)
+    if other_instance_present:
+        with pytest.raises(Sam31VastCanaryError, match="provider_not_zero_before_launch"):
+            run_sam31_vast_source_track_canary(**kwargs)
+        assert provider.requests == []
+    else:
+        result = run_sam31_vast_source_track_canary(**kwargs)
+        assert result["status"] == "completed" and result["provider_zero_verified"] is True
+        assert len(provider.requests) == 1 and provider.launched is False
+    assert sleeps and set(calls) == {"GET"}
+    assert _bound_request()["retry_cap"] == 0
+
+
+def test_inventory_delay_cannot_launch_after_watchdog_expires(tmp_path):
+    provider = _Provider()
+    observations = []
+    def watchdog(*args):
+        observations.append(args)
+        return len(observations) == 1
+    with pytest.raises(Sam31VastCanaryError, match="independent_watchdog_not_live"):
+        run_sam31_vast_source_track_canary(bound_request=_bound_request(), preflight=_preflight(),
+            job_dir=tmp_path, input_bundle_get_url=INPUT_URL, output_put_url=PUT_URL,
+            output_get_url=GET_URL, hf_token=TOKEN, provider=provider,
+            paid_resource_admission_grant=_grant(), clock=lambda: 1000., watchdog_validator=watchdog)
+    assert len(observations) == 2 and provider.requests == []
+    assert list((tmp_path / "pending_teardowns").glob("*.json")) == []
+
+
 def test_bootstrap_fetches_exact_checkpoint_then_unsets_token() -> None:
     script = _bootstrap_script()
     assert 'repo_id="facebook/sam3.1"' in script
