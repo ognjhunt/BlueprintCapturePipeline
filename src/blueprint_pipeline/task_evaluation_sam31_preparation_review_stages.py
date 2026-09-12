@@ -26,7 +26,7 @@ from .public_scene_sam31_track_selection_review import (
 from .public_scene_calibrated_object_masks import materialize_calibrated_object_mask_set
 from .public_scene_segment_contribution_cutout import materialize_segment_contribution_cutout_set
 from .task_evaluation_sam31_preparation_cpu_stages import _input, _resident, _record
-from .task_evaluation_scene_configuration_submission_inputs import beneath, checked_file, read
+from .task_evaluation_scene_configuration_submission_inputs import beneath, checked_file, read, SceneConfigurationSubmissionError
 from .task_evaluation_sam31_preparation_review_authority import resolve_sam31_review_rights
 
 STAGES = {"sam31_review", "calibrated_masks", "removal_freezes", "segment_cutout"}
@@ -89,7 +89,7 @@ def _failure_blocker(exc: Exception) -> str:
                   "sam31_review_source_image_invalid", "sam31_review_prepared_inputs_invalid"}
     lane_typed = isinstance(exc, (Sam31TrackSelectionReviewError, Sam31ReviewAuthorityError, PublicSceneInpaintingInputError,
                                   Sam31AIVisualReviewError, OpenAIOfficialCostGateError, Sam31PreparationReviewStageError,
-                                  OpenAICredentialPreflightError))
+                                  OpenAICredentialPreflightError, SceneConfigurationSubmissionError))
     detail = message if message in safe_codes or (lane_typed and _LANE_CODE.fullmatch(message)) else type(exc).__name__
     return annotate_blocker("sam31_preparation_review_stage_failed:" + detail, exc)
 

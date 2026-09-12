@@ -179,10 +179,9 @@ def validate_scene_review_binding(binding, *, candidate_path, accepted_by, accep
         adopted = validate_completed_prefix_adoption(adoption_path,
             expected_source_commit=authority["source_commit"],
             approved_roots=(Path("/var/lib/blueprint"), Path("/opt/blueprint"), Path("/etc/blueprint")))
-        _, old_plan = _reopen(adopted["record"]["source_plan"])
         _require(adopted["record"]["current_host_inputs"]["task_request"] == authority["task_request"]
                  and adopted["artifacts"]["task_selection"] == _record(freeze_path)
-                 and old_plan["host_inputs"]["task_request"] == source_task, "candidate_task_mismatch")
+                 and adopted["selection_origin"]["task_request"] == source_task, "candidate_task_mismatch")
     return authority
 
 
@@ -215,10 +214,9 @@ def resolve_sam31_review_rights(*, authority_path: str | Path, task_request_path
             _path(completed_prefix_adoption_path), expected_source_commit=authority["source_commit"],
             approved_roots=(Path("/var/lib/blueprint"), Path("/opt/blueprint"), Path("/etc/blueprint")),
         )
-        _, original_plan = _reopen(adopted["record"]["source_plan"])
         _require(adopted["record"]["current_host_inputs"]["task_request"] == authority["task_request"]
                  and adopted["artifacts"]["task_selection"] == _record(freeze_path)
-                 and original_plan["host_inputs"]["task_request"] == source_task,
+                 and adopted["selection_origin"]["task_request"] == source_task,
                  "candidate_task_mismatch")
         adoption_record = _record(_path(completed_prefix_adoption_path))
     _path(output_path, output=True)
