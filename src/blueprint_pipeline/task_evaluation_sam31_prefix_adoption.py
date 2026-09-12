@@ -234,9 +234,23 @@ def _current_sources(value, old_plan, artifacts, roots):
 def validate_completed_prefix_adoption(path, *, expected_source_commit, approved_roots,
                                       current_plan=None, current_provider_profile_path=None,
                                       require_current_tracking_request=False):
+    """Validate once per synchronous operation; reuses reopen every referenced file first."""
     roots = tuple(Path(root) for root in approved_roots)
     value = deepcopy(path) if isinstance(path, dict) else read(path, digest_field="adoption_digest")
     require(value.get("adoption_digest") == canonical_digest(value, digest_field="adoption_digest"), "sam31_adoption_digest_invalid")
+    key = (value["adoption_digest"], expected_source_commit, tuple(str(root) for root in roots),
+           None if current_plan is None else canonical_digest(current_plan),
+           None if current_provider_profile_path is None else evidence.path_key(current_provider_profile_path),
+           bool(require_current_tracking_request))
+    return evidence.reuse_verdict("sam31_completed_prefix_adoption", key, value,
+        lambda: _validate_completed_prefix_adoption_document(value, roots=roots,
+            expected_source_commit=expected_source_commit, current_plan=current_plan,
+            current_provider_profile_path=current_provider_profile_path,
+            require_current_tracking_request=require_current_tracking_request))
+
+
+def _validate_completed_prefix_adoption_document(value, *, roots, expected_source_commit, current_plan,
+                                                current_provider_profile_path, require_current_tracking_request):
     require(value.get("schema_version") == SCHEMA and value.get("status") == "verified_completed_prefix"
             and value.get("source_commit") == expected_source_commit and value.get("through_phase") in PREFIX_LENGTHS
             and value.get("historical_receipts_modified") is False and value.get("paid_execution_performed") is False

@@ -1,11 +1,18 @@
 """Read-only review, mask, freeze and contribution joins for partial SAM reuse."""
 from pathlib import Path
 
+from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_sam31_prefix_evidence import reuse_verdict
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read, require
 
 
 def validate_late_prefix(artifacts, *, phase_count):
     """Use the downstream consumer's validators; never reconstruct a paid stage."""
+    return reuse_verdict("sam31_prefix_late", (canonical_digest(artifacts), phase_count), artifacts,
+                         lambda: _validate_late_prefix(artifacts, phase_count=phase_count))
+
+
+def _validate_late_prefix(artifacts, *, phase_count):
     if phase_count < 6:
         return
     required = {'selection_inputs', 'task_selection', 'track_selection_review', 'review_execution'}

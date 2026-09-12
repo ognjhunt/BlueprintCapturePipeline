@@ -262,7 +262,19 @@ def _resume_context(root: Path, prior: dict | None) -> dict | None:
 def advance_sam31_for_preparation(
     *, queue_root: Path, envelope_context: dict, approved_roots: Sequence[Path], advancer=None,
 ) -> dict:
-    """Validate the production driver's evidence; never execute paid work here."""
+    """Validate the production driver's evidence; never execute paid work here.
+
+    One synchronous operation: every digest and validator verdict computed while
+    advancing this preparation is shared across the nested validators (and never
+    survives the call), the same way the factory and stage executor already run.
+    """
+    from .validation_file_digests import file_digest_scope
+    with file_digest_scope():
+        return _advance_sam31_for_preparation(queue_root=queue_root, envelope_context=envelope_context,
+                                              approved_roots=approved_roots, advancer=advancer)
+
+
+def _advance_sam31_for_preparation(*, queue_root, envelope_context, approved_roots, advancer):
     ensure_progress_roots(queue_root)
     request = envelope_context["request"]
     filename = _filename(request["preparation_id"], envelope_context["request_digest"])
