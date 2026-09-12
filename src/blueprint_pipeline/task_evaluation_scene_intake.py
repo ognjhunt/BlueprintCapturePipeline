@@ -21,6 +21,9 @@ from typing import Any
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest as canonical_digest
 from .task_evaluation_scene_execution_window import effective_execution_expiry
+from .task_evaluation_scene_execution_budget import (
+    ATTEMPT_GRANT_FIELD, effective_execution_budget, validate_attempt_execution_budget,
+)
 from .task_evaluation_launch_preparation_queue import (
     _write_launch_preparation_record_exclusive_locked as write_exclusive,
 )
@@ -221,9 +224,11 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         _require(not directory.is_symlink(), "record_unsafe")
         intent = _read(directory / "intent.json", "intent_digest")
         execution = intent["request"]["execution"]
+        budget = effective_execution_budget(directory, intent)
         _require(not (directory / "revoked.json").exists(), "authority_revoked")
         _require(moment < effective_execution_expiry(directory, intent), "authority_expired")
         _require(provider in execution["allowed_providers"], "provider_not_authorized")
+        _require(maximum_spend_usd <= execution["max_total_spend_usd"], "attempt_spend_exceeds_original_limit")
         attempts = directory / "attempts"
         _require(not attempts.is_symlink(), "record_unsafe")
         attempts.mkdir(mode=0o750, exist_ok=True)
@@ -260,6 +265,7 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             # reservation has already been durably debited.
             if path.exists():
                 existing = _read(path, "attempt_digest")
+                validate_attempt_execution_budget(directory, intent, existing)
                 _require(all(existing.get(k) == v for k, v in body.items())
                          and existing.get("recovery", {}).get("prior_attempt_id") == recovery_from_attempt_id
                          and existing["recovery"].get("evidence") == recovery_evidence,
@@ -275,6 +281,7 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
                 prior_attempt=prior, provider=provider, now=moment)
         if path.exists():
             existing = _read(path, "attempt_digest")
+            validate_attempt_execution_budget(directory, intent, existing)
             _require(all(existing.get(k) == v for k, v in body.items())
                      and ("recovery" in existing) == ("recovery" in body), "attempt_immutable_conflict")
             return existing
@@ -299,11 +306,16 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
                 and row['provider'] == 'openai' and row['maximum_spend_usd'] <= grant['maximum_cost_usd'],
                 'stored_visual_review_correction_invalid')
         if visual_review_authority is None:
-            _require(len(ordinary) < execution["max_paid_attempts"], "attempt_cap_exhausted")
+            _require(len(ordinary) < budget["max_paid_attempts"], "attempt_cap_exhausted")
         exposure = sum((Decimal(str(row["maximum_spend_usd"])) for row in rows), Decimal(0))
         _require(exposure + Decimal(str(maximum_spend_usd))
-                 <= Decimal(str(execution["max_total_spend_usd"])), "spend_cap_exhausted")
+                 <= Decimal(str(budget["max_total_spend_usd"])), "spend_cap_exhausted")
+        for row in rows:
+            validate_attempt_execution_budget(directory, intent, row)
+        if budget["extension_digest"] is not None:
+            body[ATTEMPT_GRANT_FIELD] = budget["extension_digest"]
         result = _seal({**body, "reserved_at_epoch": moment}, "attempt_digest")
+        validate_attempt_execution_budget(directory, intent, result)
         write_exclusive(path, result)
         return result
 
@@ -351,6 +363,7 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
     for path in sorted(attempts_path.glob("*.json")):
         row = _read(path, "attempt_digest")
         _require(row.get("intent_digest") == intent["intent_digest"], "attempt_binding_invalid")
+        validate_attempt_execution_budget(directory, intent, row)
         attempts.append({key: row[key] for key in (
             "attempt_id", "source_commit", "runtime_digest", "input_digest", "provider",
             "maximum_spend_usd", "status")})
@@ -380,6 +393,7 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
         "intent_digest": intent["intent_digest"], "request_digest": canonical_digest(intent["request"]),
         "owner": intent["request"]["owner"], "status": status, "phase": phase, "blockers": blockers,
         "attempts": attempts, "result_reference": result_reference,
+        "effective_execution_budget": effective_execution_budget(directory, intent),
         "provider_mutation_performed_by_status_read": False}, "status_digest")
 
 

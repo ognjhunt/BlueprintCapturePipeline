@@ -117,6 +117,8 @@ def reopen_scene_intent(reference, *, now=None):
     moment = time.time() if now is None else now
     require(not (path.parent / "revoked.json").exists(), "scene_owner_authority_revoked")
     require(moment < effective_execution_expiry(path.parent, intent), "scene_owner_authority_expired")
+    from .task_evaluation_scene_execution_budget import effective_execution_budget
+    effective_execution_budget(path.parent, intent)
     require(request["consent"]["accepted_by"] == request["owner"]["user_id"],
             "scene_owner_actor_mismatch")
     return intent
@@ -130,11 +132,8 @@ def validate_task_scene_owner(task, *, provider_terms_path=None, now=None):
     require(binding["intent_digest"] == intent["intent_digest"], "scene_owner_binding_changed")
     request, owner = intent["request"], task.get("human_authority", {})
     consent = request["consent"]
-    if task.get("owner_description_seed_binding") is not None:
-        from .task_evaluation_scene_configuration_submission_inputs import read
+    if "attempt" in binding:
         from .task_evaluation_scene_intake import _read
-        description = task["owner_description_seed_binding"]
-        require("attempt" in binding, "scene_owner_description_attempt_missing")
         attempt_ref = binding["attempt"]
         attempt_path = checked_file(attempt_ref["path"], attempt_ref)
         attempt = _read(attempt_path, "attempt_digest")
@@ -145,6 +144,13 @@ def validate_task_scene_owner(task, *, provider_terms_path=None, now=None):
                             and attempt.get("paid_authority_granted") is False)
         require(attempt_path.parent == parent / ("preparation-attempts" if preparation_only else "attempts"),
                 "scene_owner_attempt_path_invalid")
+        if not preparation_only:
+            from .task_evaluation_scene_execution_budget import validate_attempt_execution_budget
+            validate_attempt_execution_budget(parent, intent, attempt)
+    if task.get("owner_description_seed_binding") is not None:
+        from .task_evaluation_scene_configuration_submission_inputs import read
+        description = task["owner_description_seed_binding"]
+        require("attempt" in binding, "scene_owner_description_attempt_missing")
         source_ref = description["source_binding"]
         source_binding = read(checked_file(source_ref["path"], source_ref), digest_field="binding_digest")
         seed_ref = source_binding["accepted_task_seed"]

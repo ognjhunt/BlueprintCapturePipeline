@@ -103,6 +103,8 @@ def owner_for_profile(profile: Mapping[str, Any], *, now: float | None = None) -
         _require(not (path.parent / "revoked.json").exists(), "owner_revoked")
         moment = time.time() if now is None else now
         _require(moment < intake.effective_execution_expiry(path.parent, intent), "owner_expired")
+        from .task_evaluation_scene_execution_budget import effective_execution_budget
+        effective_execution_budget(path.parent, intent)
         if "scene_policy_candidates" in profile:
             _require(candidate_map(profile["scene_policy_candidates"]) ==
                      candidate_map(owner["execution"]["policy_candidates"]), "owner_pair_mismatch")
@@ -149,6 +151,8 @@ def validate_owner_binding(profile: Mapping[str, Any], binding: Mapping[str, Any
              attempt.get("runtime_digest") == bound["runtime_digest"] and
              attempt.get("input_digest") == bound["input_digest"] and
              attempt.get("provider") == "vast", "reserved_attempt_mismatch")
+    from .task_evaluation_scene_execution_budget import validate_attempt_execution_budget
+    validate_attempt_execution_budget(root / owner["intent_id"], owner, attempt)
     return bound
 
 
