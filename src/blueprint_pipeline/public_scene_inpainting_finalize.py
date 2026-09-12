@@ -7,9 +7,27 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+
+
+def _dilate_support_mask(pixels: np.ndarray, radius: int) -> np.ndarray:
+    """Square maximum, identical to Pillow's edge-extended odd MaxFilter.
+
+    A square maximum is separable. Clipping each axis's neighborhood has the
+    same maximum as repeating its edge pixels, without padding or sorting a
+    square window for every pixel. Inputs are the validated uint8 support mask.
+    """
+    horizontal = pixels.copy()
+    for offset in range(1, min(radius, pixels.shape[1] - 1) + 1):
+        np.maximum(horizontal[:, offset:], pixels[:, :-offset], out=horizontal[:, offset:])
+        np.maximum(horizontal[:, :-offset], pixels[:, offset:], out=horizontal[:, :-offset])
+    result = horizontal.copy()
+    for offset in range(1, min(radius, pixels.shape[0] - 1) + 1):
+        np.maximum(result[offset:], horizontal[:-offset], out=result[offset:])
+        np.maximum(result[:-offset], horizontal[offset:], out=result[:-offset])
+    return result
 
 
 def finish_prepared_inputs(context: Mapping[str, Any], *, sealed_render_manifests,
@@ -62,7 +80,9 @@ def finish_prepared_inputs(context: Mapping[str, Any], *, sealed_render_manifest
             .astype(np.uint8) * 255, mode="L",
         )
         if dilation:
-            support_mask = support_mask.filter(ImageFilter.MaxFilter(2 * dilation + 1))
+            support_mask = Image.fromarray(
+                _dilate_support_mask(np.asarray(support_mask), dilation), mode="L"
+            )
         obb_mask = Image.new("L", (width, height), 0)
         ImageDraw.Draw(obb_mask).polygon(_project_obb(corners, camera), fill=255)
         final = Image.fromarray(
