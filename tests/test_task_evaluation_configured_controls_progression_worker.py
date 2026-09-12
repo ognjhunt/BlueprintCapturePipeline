@@ -809,9 +809,11 @@ def test_process_plans_passes_no_running_commit_when_the_checkout_is_not_detache
     assert observed["running_commit"] is None
 
 
+@pytest.mark.parametrize("controls_status", ["controls_pair_launch_queued", "controls_omitted_for_diagnostic_policy"])
 def test_process_plans_hands_off_the_policy_canary_after_the_controls_pair_launch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    controls_status: str,
 ) -> None:
     """Once the controls pair is launched, the same timer chains into the Quick-10 canary."""
 
@@ -825,7 +827,7 @@ def test_process_plans_hands_off_the_policy_canary_after_the_controls_pair_launc
 
     def advance(**kwargs: object) -> dict[str, object]:
         forwarded.update(kwargs)
-        return {"status": "controls_pair_launch_queued", "source_launch_id": plan["source_launch_id"]}
+        return {"status": controls_status, "source_launch_id": plan["source_launch_id"]}
 
     handed: dict[str, object] = {}
 
