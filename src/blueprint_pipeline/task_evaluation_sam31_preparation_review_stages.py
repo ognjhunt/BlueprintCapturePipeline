@@ -21,7 +21,7 @@ from .public_scene_sam31_track_selection_review import (
     Sam31TrackSelectionReviewError, load_validated_sam31_track_selection_inputs,
     materialize_sam31_track_selection_inputs, materialize_sam31_track_selection_review_candidate,
     seal_sam31_track_selection_ai_review,
-    validate_sam31_ai_visual_review_rights, validate_sam31_track_selection_review,
+    validate_sam31_track_selection_review,
 )
 from .public_scene_calibrated_object_masks import materialize_calibrated_object_mask_set
 from .public_scene_segment_contribution_cutout import materialize_segment_contribution_cutout_set
@@ -194,7 +194,6 @@ def execute_review_stage(job: Mapping[str, Any]) -> dict[str, Any]:
             derivation = rights.with_suffix(".derivation.json")
             if derivation.is_file():
                 artifacts["review_rights_derivation"] = _record(derivation)
-            validate_sam31_ai_visual_review_rights(candidate_path=candidate, rights_attestation_path=rights)
             scope = _profile_file(review_profile, "openai_cost_scope_attestation")
             admin = _secret_path(review_profile.get("openai_admin_api_key_file"))
             result = run_sam31_ai_visual_review(

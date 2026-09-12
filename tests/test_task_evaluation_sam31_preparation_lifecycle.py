@@ -224,12 +224,24 @@ def test_real_cpu_sam_review_mask_freeze_cutout_lifecycle(
     job["server_profile"] = profile
 
     def sdk_boundary(**kwargs):
+        # The wrapper forwards the producer's exact rights and candidate paths;
+        # the public SDK entry point owns the final pre-disclosure validation.
+        assert kwargs["candidate_path"] == tmp_path / "stage-5/candidate/public_scene_sam31_track_selection_review_candidate.v1.json"
+        assert kwargs["rights_attestation_path"] == tmp_path / "stage-5/review-rights.json"
+        assert kwargs["output_root"] == tmp_path / "stage-5/sdk-review"
+        assert kwargs["openai_cost_scope_attestation_path"] == scope
+        assert kwargs["openai_admin_api_key_file"] == admin
+        assert kwargs["openai_project_id"] == kwargs["openai_api_key_id"] == "fixture"
         # Reuse real SDK execution/receipt/official-cost contracts, with only
         # SDK transport and cost-API transport replaced by deterministic data.
         result, _ = _run_production_ai_review(monkeypatch=monkeypatch,
             candidate_path=kwargs["candidate_path"], output_root=kwargs["output_root"], decision="accepted")
         return result
 
+    def redundant_wrapper_validation(**kwargs):
+        pytest.fail("wrapper repeated the SDK entry-point rights validation")
+    monkeypatch.setattr(reviews, "validate_sam31_ai_visual_review_rights",
+                        redundant_wrapper_validation, raising=False)
     monkeypatch.setattr(reviews, "run_sam31_ai_visual_review", sdk_boundary)
     for index, stage in enumerate(("sam31_review", "calibrated_masks"), start=5):
         outcome = reviews.execute_review_stage({**job, "stage_id": stage,
