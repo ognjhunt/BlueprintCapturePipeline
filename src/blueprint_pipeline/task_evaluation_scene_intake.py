@@ -95,6 +95,7 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
     task = value.get("task")
     _require(isinstance(task, Mapping) and task.get("strategy") == "pick_and_place"
              and _identifier(task.get("task_id")), "task_invalid")
+    _require(type(task.get("reuse_completed_stages", True)) is bool, "task_reuse_mode_invalid")
     for key in ("subject", "support", "destination", "success"):
         _require(isinstance(task.get(key), Mapping) and bool(task[key]), "task_" + key + "_missing")
     execution = value.get("execution")

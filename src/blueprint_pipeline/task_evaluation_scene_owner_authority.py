@@ -19,7 +19,7 @@ def task_contract_projection(task):
 
 def owner_numeric_task(request_task):
     require(set(request_task).issubset({"task_id", "strategy", "subject", "support", "destination", "success",
-                                      "robot_binding_id", "episode_interpretation"}),
+                                      "robot_binding_id", "episode_interpretation", "reuse_completed_stages"}),
             "scene_owner_unknown_task_field")
     return {key: request_task[key] for key in ("task_id", "strategy", "subject", "support", "destination", "success")}
 

@@ -114,8 +114,11 @@ def public_source_content_digest(installation):
                              "assets": sorted(rows, key=lambda r: r["role"])})
 
 
-def _prefix_candidates(binding, machinery, release, task):
+def _prefix_candidates(binding, machinery, release, task, *, allow_reuse=True):
     """Discover prior exact task jobs; a retained hint is optional, never opt-in."""
+    require(type(allow_reuse) is bool, "public_factory_reuse_mode_invalid")
+    if not allow_reuse:
+        return []
     from .task_evaluation_sam31_phase_queue import PHASES
     from .task_evaluation_sam31_profile_registry import DEFAULT_PROFILE_REGISTRY_ROOT
     candidates = []
@@ -483,7 +486,8 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
         selection["selection_digest"] = canonical_digest(
             selection, digest_field="selection_digest"
         )
-        candidates = _prefix_candidates(binding, machinery, release, task)
+        candidates = _prefix_candidates(binding, machinery, release, task,
+            allow_reuse=request["task"].get("reuse_completed_stages", True))
         best, best_kwargs = None, None
         selection_reports = []
         if candidates:
