@@ -95,15 +95,21 @@ def test_factory_skips_prefixes_that_cannot_improve_verified_winner(context, tmp
     monkeypatch.setattr('blueprint_pipeline.task_evaluation_prefix_observation.selection_observation', lambda root: (zero, 1001.))
     floors = []
     def select(**kwargs):
-        if kwargs.get('output_path') is not None:
-            assert 'minimum_prefix_length' not in kwargs  # Final publication still validates the winner.
-            raise RetainedReaderReached
+        assert kwargs.get('output_path') is None
         floors.append(kwargs['minimum_prefix_length'])
         if len(floors) == 3:
             return {'status': 'no_reusable_prefix'}
         return {'status': 'reusable_prefix_selected',
                 'through_phase': 'calibrated_views' if len(floors) == 1 else 'sam31_tracking'}
     monkeypatch.setattr(adoption, 'select_completed_prefix_adoption', select)
+    signature = inspect.signature(adoption.materialize_completed_prefix_adoption)
+    def publish(**kwargs):
+        signature.bind(**kwargs)
+        assert kwargs['through_phase'] == 'sam31_tracking'
+        assert kwargs['output_path'].name == 'completed_prefix_adoption.json'
+        assert 'minimum_prefix_length' not in kwargs
+        raise RetainedReaderReached
+    monkeypatch.setattr(adoption, 'materialize_completed_prefix_adoption', publish)
     with pytest.raises(RetainedReaderReached):
         factory.materialize_public_scene_attempt(**{**args, 'machinery_path': path, 'output_root': tmp_path / 'selection-factory'})
     assert floors == [0, 3, 5]

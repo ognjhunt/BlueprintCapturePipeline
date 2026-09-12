@@ -510,13 +510,17 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
                 if best["through_phase"] == "segment_cutout":
                     break
         if best is not None:
+            from .task_evaluation_sam31_prefix_adoption import materialize_completed_prefix_adoption
             adopted_path = output / "completed_prefix_adoption.json"
             if not adopted_path.exists():
-                best = select_completed_prefix_adoption(**best_kwargs, output_path=adopted_path)
+                # The winner is already selected. Revalidate that exact prefix
+                # before publication; another complete search cannot improve it.
+                persisted = materialize_completed_prefix_adoption(
+                    **best_kwargs, through_phase=best["through_phase"], output_path=adopted_path)
+                best = {**best, "adoption": persisted}
             else:
                 # Revalidate the existing adoption against the fresh current
                 # zero while preserving its original witness and digest.
-                from .task_evaluation_sam31_prefix_adoption import materialize_completed_prefix_adoption
                 retained = read(adopted_path, digest_field="adoption_digest")
                 historical = {"source_plan_path": _reference(retained["source_plan"]),
                     "source_profile_path": _reference(retained["source_profile"]),
