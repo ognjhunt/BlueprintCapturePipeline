@@ -183,6 +183,20 @@ def _terminal_evidence_matches_handle(
     )
     allowed_ids = {str(value) for value in handle.allowed_active_instance_ids}
     allowed_names = set(handle.allowed_active_resource_names)
+    # The watchdog scopes its absence claim to the recorded instance plus the lane
+    # prefix and marks the account-wide inventory informational when no exact name
+    # or sibling is bound (groot_oscar_runpod_watchdog). Scene 840938, 2026-09-12
+    # 22:27: its final global read hit an HTTPError, it still sealed provider_terminal
+    # after two direct absence inspections, and this closer refused the evidence as
+    # "not exactly bound", stranding a completed $0.012 render. An honest failed read
+    # is admitted only under that informational scope; a claimed observation that
+    # lists a foreign instance is still refused.
+    global_read_informational = bool(
+        evidence.get("global_inventory_informational_only") is True
+        and handle.resource_name_exact is None
+        and not allowed_names
+        and not allowed_ids
+    )
     try:
         observed_deadline = float(evidence.get("deadline_epoch") or 0)
     except (TypeError, ValueError):
@@ -212,8 +226,11 @@ def _terminal_evidence_matches_handle(
         )
         and all(
             isinstance(row, Mapping)
-            and _global_inventory_contains_only_allowed(
-                row, allowed_ids=allowed_ids, allowed_names=allowed_names
+            and (
+                _global_inventory_contains_only_allowed(
+                    row, allowed_ids=allowed_ids, allowed_names=allowed_names
+                )
+                or (global_read_informational and _global_inventory_read_blocked(row))
             )
             for row in global_inventories
         )
@@ -231,6 +248,21 @@ def _terminal_evidence_matches_handle(
             and row.get("provider_absence_confirmed") is True
             for row in inspect_attempts
         )
+    )
+
+
+def _global_inventory_read_blocked(value: Mapping[str, Any]) -> bool:
+    """An honestly failed account-wide read: no observation claimed, nothing listed."""
+
+    return bool(
+        value.get("status") == "blocked"
+        and value.get("provider") == "vast"
+        and value.get("name_prefix") == ""
+        and value.get("api_confirmed") is False
+        and value.get("live_resource_count") is None
+        and value.get("resources") == []
+        and isinstance(value.get("blockers"), list)
+        and bool(value.get("blockers"))
     )
 
 
@@ -809,6 +841,10 @@ def close_independent_vast_watchdog(
         "watchdog_armed_before_allocation": True,
         "instance_ids": instance_ids,
         "provider_absence_confirmed": terminal.get("provider_absence_confirmed") is True,
+        "global_inventory_read_blocked": any(
+            isinstance(row, Mapping) and _global_inventory_read_blocked(row)
+            for row in (terminal.get("initial_global_inventory"), terminal.get("final_global_inventory"))
+        ),
         "watchdog_process_exit_code": process_exit_code,
         "watchdog_retention_liveness_confirmed": False,
         "provider_mutations_performed": terminal.get("provider_mutations_performed", 0),
