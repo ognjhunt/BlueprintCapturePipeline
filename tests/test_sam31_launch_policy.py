@@ -120,3 +120,38 @@ def test_admission_cost_uses_frozen_rate_ceiling_instead_of_cheaper_offer():
     admission, bound = _build(preflight=snapshot, execute=True, qualified=True)
     assert "sam31_gpu_budget_below_worst_case_cost" in admission["blockers"]
     assert bound["provider_mutation_authorized"] is False
+
+
+def test_capacity_policy_admits_only_ampere_or_newer_offers():
+    """2026-09-12 scene 840938: a Tesla V100 (sm_70, no bf16) took the SAM 3.1 tracking job for
+    25 minutes ($0.21) and died in prompt execution with OutOfMemoryError; the same worker image had
+    passed on an sm_80 CMP 170HX. The shared capacity policy now carries an architecture floor that
+    the provider search payload, local offer selection and the frozen launch policy all enforce."""
+    from blueprint_pipeline import vast_compute_capability as vcc
+    from blueprint_pipeline.sam31_gpu_admission import MIN_COMPUTE_CAP, sam31_capacity_request
+    from blueprint_pipeline.vast_provider_adapter import _search_payload
+    policy = sam31_capacity_request(container_disk_bytes=80 * 1024**3, max_hourly_rate_usd=.5)
+    assert policy["min_compute_cap"] == MIN_COMPUTE_CAP == 800
+    assert vcc.capacity_selection_overrides(policy)["min_compute_cap"] == 800
+    payload = _search_payload(limit=100, max_hourly_rate=.5, min_gpu_ram_mb=policy["min_gpu_ram_mb"],
+                              min_compute_cap=policy["min_compute_cap"])
+    assert payload["compute_cap"] == {"gte": 800}
+    common = dict(gpu_ram=32768, storage_total_cost=.002, storage_cost=.2, disk_space=135,
+                  num_gpus=1, reliability=.99, direct_port_count=40, has_avx=True,
+                  geolocation="Oregon, US", driver_version="580.95.05")
+    volta = {"id": 1, "machine_id": 11, "gpu_name": "Tesla V100-SXM2-32GB", "compute_cap": 700,
+             "dph_base": .35, "dph_total": .352, **common}
+    ampere = {"id": 2, "machine_id": 12, "gpu_name": "CMP 170HX", "compute_cap": 800,
+              "dph_base": .40, "dph_total": .402, **common}
+    unreported = {"id": 3, "machine_id": 13, "gpu_name": "RTX A6000", "dph_base": .38, "dph_total": .382, **common}
+    kwargs = dict(max_hourly_rate=policy["max_hourly_rate_usd"], min_gpu_ram_mb=policy["min_gpu_ram_mb"],
+                  min_compute_cap=policy["min_compute_cap"], require_avx=policy["require_avx"],
+                  min_reliability=policy["min_reliability"], require_direct_port=policy["require_direct_port"],
+                  allowed_geolocation_country_codes=policy["allowed_geolocation_country_codes"])
+    # Cheaper Volta and an offer that cannot prove its architecture are both refused.
+    assert _select_offer([volta, unreported], **kwargs) is None
+    assert _select_offer([volta, ampere, unreported], **kwargs)["hourly_rate_usd"] == pytest.approx(.402)
+    # Without the floor the Volta offer would have won on price, which is exactly what rented it.
+    assert _select_offer([volta, ampere], **{**kwargs, "min_compute_cap": 0})["hourly_rate_usd"] == pytest.approx(.352)
+    request = {**_bound_request(), "bound_preflight_digest": canonical_digest(_preflight())}
+    assert canary.frozen_sam31_launch_policy(request, _preflight())["min_compute_cap"] == 800
