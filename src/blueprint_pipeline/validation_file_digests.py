@@ -20,8 +20,10 @@ import hashlib
 import os
 from pathlib import Path
 import stat
+import time
 
 _CACHE: ContextVar[dict | None] = ContextVar("validation_file_digests", default=None)
+_STATS: ContextVar[dict | None] = ContextVar("validation_file_digest_stats", default=None)
 MINIMUM_BYTES = 1024 * 1024
 
 
@@ -48,10 +50,23 @@ def file_digest_scope():
         yield
         return
     token = _CACHE.set({})
+    stats_token = _STATS.set({"files_hashed": 0, "bytes_hashed": 0, "hash_seconds": 0.0,
+                              "cache_hits": 0, "bytes_reused": 0, "last_path": None})
     try:
         yield
     finally:
+        _STATS.reset(stats_token)
         _CACHE.reset(token)
+
+
+def digest_scope_stats() -> dict | None:
+    """Operational counters for the active scope: bytes hashed versus reused.
+
+    Telemetry for progress heartbeats only; never a validation verdict and
+    never persisted as evidence. ``None`` outside any scope.
+    """
+    stats = _STATS.get()
+    return None if stats is None else dict(stats)
 
 
 def _identity(value):
@@ -74,11 +89,22 @@ def sha256_file(path: Path) -> str:
         cache = _CACHE.get()
         eligible = cache is not None and before.st_size >= MINIMUM_BYTES
         digest = cache.get(identity) if eligible else None
+        stats = _STATS.get()
         if digest is None:
+            started = time.monotonic()
             value = hashlib.sha256()
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 value.update(chunk)
             digest = "sha256:" + value.hexdigest()
+            if stats is not None:
+                stats["files_hashed"] += 1
+                stats["bytes_hashed"] += before.st_size
+                stats["hash_seconds"] += time.monotonic() - started
+        elif stats is not None:
+            stats["cache_hits"] += 1
+            stats["bytes_reused"] += before.st_size
+        if stats is not None:
+            stats["last_path"] = str(path)
         if (identity != _identity(os.fstat(stream.fileno()))
                 or identity != _identity(path.lstat())
                 or any(item.is_symlink() for item in path.parents)):

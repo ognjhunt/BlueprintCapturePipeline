@@ -196,3 +196,21 @@ def test_configured_owner_scope_does_not_touch_other_intents_or_shared_cursor(co
     assert list(other.iterdir()) == [marker]
     assert marker.read_text() == 'unrelated owner state'
     assert not (Path(value['intent_root']) / 'progression-cursor.json').exists()
+
+
+def test_validation_progress_heartbeat_lands_in_scene_directory(context, monkeypatch):
+    """A restart that sits in ``preparing/factory`` now says which step, for how long, and how many bytes."""
+    from blueprint_pipeline import validation_progress as progress
+    config = configuration(context, monkeypatch)
+    engine.process_scene_intents(config_path=config)
+    directory = context[0]["intent_path"].parent
+    record = json.loads((directory / progress.FILENAME).read_text())
+    assert record["schema_version"] == progress.SCHEMA
+    assert record["intent_id"] == directory.name
+    assert record["step"] in {"factory_start", "prefix_candidate", "prefix_phase", "adoption_publish",
+                              "adoption_revalidate", "submission_inputs"}
+    assert record["elapsed_seconds"] >= 0 and record["heartbeat_sequence"] >= 1
+    assert set(record["digests"]) == {"files_hashed", "bytes_hashed", "hash_seconds", "cache_hits",
+                                      "bytes_reused", "last_path"}
+    assert not (directory / (progress.FILENAME + ".tmp")).exists()
+    assert progress.heartbeat("outside") is None

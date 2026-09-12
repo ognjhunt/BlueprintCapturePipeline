@@ -14,6 +14,7 @@ from . import task_evaluation_scene_intake as intake
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .task_evaluation_public_scene_attempt_factory import materialize_public_scene_attempt, record
 from .task_evaluation_scene_configuration_submission_inputs import read, checked_file
+from .validation_progress import FILENAME as PROGRESS_FILENAME, progress_sink
 from .task_evaluation_scene_progression_state import (
     advance, atomic_json, intent_lock, load_progression, require, safe_path,
 )
@@ -667,9 +668,13 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
                 best_effort_register_run_supervision(intent=intent, directory=directory,
                     source_commit=release["source_commit"])
                 try:
-                    progress = _advance_intent(directory, intent, config, release, resolver=source_resolver,
-                        publisher=publisher, submitter=submitter, status_reader=status_reader,
-                        activation_provisioner=activation_provisioner, now=moment)
+                    # Operational heartbeat only: the factory and prefix selector report
+                    # step, elapsed time and bytes hashed here; no gate reads this file.
+                    with progress_sink(directory / PROGRESS_FILENAME, intent_id=directory.name,
+                                       source_commit=release["source_commit"]):
+                        progress = _advance_intent(directory, intent, config, release, resolver=source_resolver,
+                            publisher=publisher, submitter=submitter, status_reader=status_reader,
+                            activation_provisioner=activation_provisioner, now=moment)
                 except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
                     progress = load_progression(directory, intent)
                     failure_state = dict(progress.get("state", {}) if progress else {})

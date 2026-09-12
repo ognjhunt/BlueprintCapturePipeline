@@ -14,6 +14,7 @@ import time
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .validation_file_digests import file_digest_scope
+from .validation_progress import heartbeat
 from .task_evaluation_launch_preparation_queue import write_launch_preparation_record_exclusive
 from .task_evaluation_scene_configuration_submission_inputs import (
     checked_file, read, require, sha, source_inputs, release_inputs,
@@ -283,6 +284,7 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
     from .task_evaluation_sam31_preparation_review_authority import materialize_sam31_review_authority
     from .task_evaluation_sam31_profile_registry import DEFAULT_PROFILE_REGISTRY_ROOT, register_sam31_profile
     from .task_evaluation_sam31_prefix_adoption import select_completed_prefix_adoption
+    heartbeat("factory_start")
 
     moment = time.time() if now is None else now
     intent_ref = record(intent_path)
@@ -488,7 +490,9 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
             from .task_evaluation_prefix_observation import selection_observation
             from .task_evaluation_sam31_prefix_adoption import PREFIX_LENGTHS
             zero_path, adoption_moment = selection_observation(output)
-        for candidate in candidates:
+        for index, candidate in enumerate(candidates, start=1):
+            heartbeat("prefix_candidate", candidate_index=index, candidate_total=len(candidates),
+                      parent_request_digest=candidate["parent_request_digest"])
             kwargs = dict(source_plan_path=_reference(candidate["source_plan"]),
                 source_profile_path=_reference(candidate["source_profile"]),
                 parent_request_digest=candidate["parent_request_digest"],
@@ -515,6 +519,7 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
             if not adopted_path.exists():
                 # The winner is already selected. Revalidate that exact prefix
                 # before publication; another complete search cannot improve it.
+                heartbeat("adoption_publish", through_phase=best["through_phase"])
                 persisted = materialize_completed_prefix_adoption(
                     **best_kwargs, through_phase=best["through_phase"], output_path=adopted_path)
                 best = {**best, "adoption": persisted}
@@ -527,6 +532,7 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
                     "parent_request_digest": retained["original_parent_request_digest"],
                     "sam31_billing_source_path": (_reference(retained["sam31_billing_source"])
                         if retained.get("sam31_billing_source") else None)}
+                heartbeat("adoption_revalidate", through_phase=retained["through_phase"])
                 persisted = materialize_completed_prefix_adoption(
                     **{**best_kwargs, **historical}, through_phase=retained["through_phase"],
                     output_path=adopted_path)
@@ -600,6 +606,7 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
                 sam31_completed_prefix_adoption_path=adopted_path, release_admission_mode=release["release_admission_mode"],
                 scene_intent_digest=intent["intent_digest"])
         manifest = read(manifest_path, digest_field="manifest_digest")
+        heartbeat("submission_inputs", file_count=len(manifest["files"]))
         for row in manifest["files"]:
             checked_file(submission_root / row["relative_path"], {"sha256": row["digest"], "size_bytes": row["size_bytes"]})
         receipt = {"schema_version": FACTORY_SCHEMA, "status": "publication_ready", "identity": identity,

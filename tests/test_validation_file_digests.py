@@ -185,3 +185,21 @@ def test_measurement_cache_binds_pixels_parameters_and_copies_results(tmp_path, 
         assert len(calls) == 3
     camera.measure_candidate(groups, "source", gate)
     assert len(calls) == 4
+
+
+def test_scope_stats_count_misses_hits_and_bytes_and_vanish_outside(tmp_path):
+    path = sealed(tmp_path)
+    assert subject.digest_scope_stats() is None
+    with subject.file_digest_scope():
+        assert subject.digest_scope_stats() == {"files_hashed": 0, "bytes_hashed": 0, "hash_seconds": 0.0,
+                                                "cache_hits": 0, "bytes_reused": 0, "last_path": None}
+        subject.sha256_file(path)
+        subject.sha256_file(path)
+        stats = subject.digest_scope_stats()
+        assert stats["files_hashed"] == 1 and stats["bytes_hashed"] == subject.MINIMUM_BYTES
+        assert stats["cache_hits"] == 1 and stats["bytes_reused"] == subject.MINIMUM_BYTES
+        assert stats["hash_seconds"] >= 0 and stats["last_path"] == str(path)
+        with subject.file_digest_scope():
+            subject.sha256_file(path)
+        assert subject.digest_scope_stats()["cache_hits"] == 2
+    assert subject.digest_scope_stats() is None
