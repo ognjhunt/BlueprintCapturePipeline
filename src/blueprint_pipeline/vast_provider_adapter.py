@@ -1033,10 +1033,7 @@ def _api_json(
     return provider_json_request(
         url=url,
         method=method,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         body_json=payload,
         timeout_seconds=timeout_seconds,
         **read_options,
