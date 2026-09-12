@@ -152,6 +152,8 @@ def _write_prelaunch_inventory_block_receipt(
         "request_digest": request.get("request_digest"),
         "bound_request_digest": request.get("bound_request_digest"),
         "provider_mutations_performed": 0,
+        "provider_launch_invoked": False,
+        "failure_phase": "prelaunch_inventory_read",
         "initial_provider_zero_status": _provider_zero_status_from_snapshots(initial_snapshots),
         "provider_zero_status": _provider_zero_status_from_snapshots(postfailure_snapshots),
         "inventory_snapshots": initial_snapshots,
