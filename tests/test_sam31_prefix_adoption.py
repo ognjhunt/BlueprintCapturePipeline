@@ -174,6 +174,50 @@ def test_real_phase_chain_accepts_only_complete_three_or_five_prefixes(prefix, t
     assert before == {path: Path(path).read_bytes() for path in before}
 
 
+@pytest.mark.parametrize("field", ["source_commit_sha", "execution_authorization_digest", "authorization_sources"])
+def test_changed_launch_profile_rebuilds_cpu_request_before_render_validation(prefix, tmp_path, monkeypatch, field):
+    value, _plan, profile, _artifacts = prefix
+    original = Path(profile["artifact_references"]["sam31_provider_profile"]["path"])
+    current = json.loads(original.read_text())
+    current[field] = {"execution": "new-authority"} if field == "authorization_sources" else NEW
+    current_ref = write(tmp_path / "current-provider.json", current)
+    zero = write(tmp_path / "zero.json", {"provider": "vast", "status": "observed", "api_confirmed": True,
+        "name_prefix": "", "live_resource_count": 0, "resources": [], "http": 200, "observed_at_epoch": 1000.})
+    def forbidden(*args, **kwargs):
+        pytest.fail("incompatible CPU packet must be rejected before retained GPU validation")
+    monkeypatch.setattr(adoption, "_seed", forbidden)
+    before = original.read_bytes()
+    with pytest.raises(ValueError, match="sam31_adoption_request_profile_requires_rebuild"):
+        adoption.materialize_completed_prefix_adoption(
+            source_plan_path=value["source_plan"]["path"], source_profile_path=value["source_profile"]["path"],
+            parent_request_digest=value["original_parent_request_digest"], through_phase="sam31_inputs",
+            current_host_inputs={}, current_provider_profile_path=current_ref["path"],
+            current_repo_root=tmp_path, expected_source_commit=NEW,
+            provider_zero_path=zero["path"], output_path=None, approved_roots=(tmp_path,), now_epoch=1001.)
+    assert original.read_bytes() == before
+
+
+def test_selector_retains_render_when_cpu_request_needs_current_profile(prefix, tmp_path, monkeypatch):
+    _value, _plan, profile, _artifacts = prefix
+    old = Path(profile["artifact_references"]["sam31_provider_profile"]["path"])
+    current = write(tmp_path / "current-provider.json", {**json.loads(old.read_text()), "source_commit_sha": NEW})
+    selected = []
+    def materialize(**kwargs):
+        phase = kwargs["through_phase"]
+        if adoption.PREFIX_LENGTHS[phase] >= 5:
+            raise ValueError("sam31_adoption_prefix_not_terminal")
+        if phase == "sam31_inputs":
+            adoption._require_current_request_profile(profile, Path(current["path"]), (tmp_path,))
+        selected.append(phase)
+        return {"through_phase": phase}
+    monkeypatch.setattr(adoption, "materialize_completed_prefix_adoption", materialize)
+    result = adoption.select_completed_prefix_adoption(output_path=None)
+    assert result["through_phase"] == "calibrated_views"
+    assert selected == ["calibrated_views"]
+    assert result["rejected_candidates"][-1]["blocker"].endswith("sam31_adoption_request_profile_requires_rebuild")
+    adoption._require_current_request_profile(profile, old, (tmp_path,))
+
+
 @pytest.mark.parametrize("fault", ["failed", "partial", "bytes", "job", "camera", "plan_digest"])
 def test_real_prefix_chain_rejects_changed_evidence(prefix, tmp_path, fault):
     value, plan, _, _ = prefix
