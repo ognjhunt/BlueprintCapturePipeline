@@ -334,6 +334,35 @@ def _require_current_request_profile(old_profile, current_profile_path, roots):
             "sam31_adoption_request_profile_requires_rebuild")
 
 
+def _require_possible_extension(profile, *, queue, parent_digest, plan_digest, through_phase, roots):
+    """Reject impossible tails cheaply; these rows never authorize adoption.
+
+    Exact input-derived child identity and all inherited science/closure checks
+    still run below. Unrelated unreadable queue entries cannot poison a prefix.
+    """
+    if profile.get("completed_prefix_adoption") is not None:
+        inherited = read(_ref(profile["completed_prefix_adoption"], roots), digest_field="adoption_digest")
+        require(inherited.get("through_phase") in PREFIX_LENGTHS, "sam31_adoption_prefix_invalid")
+        require(PREFIX_LENGTHS[inherited["through_phase"]] < PREFIX_LENGTHS[through_phase],
+                "sam31_adoption_prefix_not_extended")
+    matches = []
+    for path in (queue / "results").glob("*.json"):
+        try:
+            result = read(path)
+        except (OSError, ValueError):
+            continue
+        if (result.get("parent_request_digest") == parent_digest
+                and result.get("plan_digest") == plan_digest and result.get("phase") == through_phase):
+            matches.append((path, result))
+    require(len(matches) <= 1, "sam31_adoption_tail_identity_ambiguous")
+    require(len(matches) == 1 and matches[0][1].get("status") == "completed",
+            "sam31_adoption_prefix_not_terminal")
+    path, result = matches[0]
+    require(result.get("result_digest") == canonical_digest(result, digest_field="result_digest")
+            and path.name == str(result.get("child_id")) + ".json",
+            "sam31_adoption_terminal_result_invalid")
+
+
 @file_digest_scope()
 def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_path, parent_request_digest,
     through_phase, current_host_inputs, current_provider_profile_path, current_repo_root,
@@ -387,6 +416,8 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
         # reusable through their existing scientific/billing validation.
         _require_current_request_profile(old_profile, current_provider_profile_path, roots)
     queue = Path(queue_root)
+    _require_possible_extension(old_profile, queue=queue, parent_digest=parent_request_digest,
+        plan_digest=sha(source_plan_path), through_phase=through_phase, roots=roots)
     rows = []
     old_inputs, inherited = _seed(old_plan, old_profile, roots)
     start = inherited["phase_count"] if inherited else 0
