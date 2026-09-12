@@ -180,8 +180,10 @@ def test_cli_public_scene_enabled_flag_builds_a_public_scene_bootstrap(tmp_path,
     sim = tmp_path / "sim.json"
     sim.write_text("{}")
     installation.main(["--bootstrap", str(tmp_path / "bootstrap.json"),
-                       "--destination-simready", str(sim), "--public-scene-enabled"])
+                       "--destination-simready", str(sim), "--public-scene-enabled",
+                       "--public-scene-machinery-path", str(tmp_path / "dated-machinery.json")])
     assert captured.get("public_scene_enabled") is True
+    assert captured["public_scene_machinery_path"] == str(tmp_path / "dated-machinery.json")
 
 
 def _install_bootstrap(tmp_path, machinery, capture_store_root, authorized, root):

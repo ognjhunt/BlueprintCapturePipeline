@@ -74,6 +74,14 @@ PUBLIC_SCENE_SOURCE_KINDS = ["mesh", "gaussian_splat", "public_scene"]
 PROJECT_SPEND_MONITOR_SCHEMA = "task_evaluation_scene_project_spend_monitor.v1"
 
 
+def _public_machinery_path(path, *, enabled):
+    require(enabled, "public_scene_machinery_requires_public_scene")
+    require(isinstance(path, (str, Path)) and bool(str(path)), "public_scene_machinery_path_invalid")
+    path = safe_path(path)
+    require(path.is_file(), "public_scene_machinery_missing")
+    return str(path)
+
+
 def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
                     state_root="/var/lib/blueprint/pipeline-control-plane",
                     inputs_root="/var/lib/blueprint/task-evaluation-inputs",
@@ -81,7 +89,9 @@ def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
                     running_repo_root="/opt/blueprint/task-evaluation-control-plane", service_account="blueprint",
                     public_scene_enabled=False, activation_authorized=False,
                     project_spend_reconciliation_path=None, public_source_bootstrap_enabled=False,
-                    public_source_catalog_path=None, only_intent_id=None):
+                    public_source_catalog_path=None, only_intent_id=None, public_scene_machinery_path=None):
+    public_machinery = (_public_machinery_path(public_scene_machinery_path, enabled=public_scene_enabled)
+                        if public_scene_machinery_path is not None else None)
     rows = validate_destination_catalog(destination_catalog)
     roots = {key: str(safe_path(value)) for key, value in {
         "config_root": config_root, "state_root": state_root, "inputs_root": inputs_root,
@@ -118,6 +128,8 @@ def build_bootstrap(*, destination_catalog, config_root="/etc/blueprint",
         value["public_source_bootstrap_enabled"] = True
     if public_source_catalog_path is not None:
         value["public_source_catalog_path"] = str(safe_path(public_source_catalog_path))
+    if public_machinery is not None:
+        value["public_scene_machinery_path"] = public_machinery
     if only_intent_id is not None:
         from .task_evaluation_scene_intake import _identifier
         require(isinstance(only_intent_id, str) and only_intent_id.startswith("scene-") and _identifier(only_intent_id),
@@ -162,6 +174,8 @@ def install_scene_preparation(*, bootstrap_path):
         require(isinstance(owner, str) and owner.startswith("scene-") and _identifier(owner), "scoped_intent_invalid")
         owner_queue = owner_queue / owner
     public_scene_enabled = "public_scene" in bootstrap["supported_source_kinds"]
+    public_machinery = (_public_machinery_path(bootstrap["public_scene_machinery_path"], enabled=public_scene_enabled)
+                        if "public_scene_machinery_path" in bootstrap else None)
     public_binding_root = inputs / "public-source-bindings"
     project_spend_seed = bootstrap.get("project_spend_seed")
     seed_path = None
@@ -247,7 +261,7 @@ def install_scene_preparation(*, bootstrap_path):
         # is materialized per scene by the public-scene provisioner, not here — the
         # worker only reads machinery_path once a public_scene intent exists.
         config["public_source_binding_root"] = str(public_binding_root)
-        config["machinery_path"] = str(config_root / "task-evaluation-public-scene-machinery.json")
+        config["machinery_path"] = public_machinery or str(config_root / "task-evaluation-public-scene-machinery.json")
         for key in ("public_source_bootstrap_enabled", "public_source_catalog_path"):
             if key in bootstrap:
                 config[key] = bootstrap[key]
@@ -339,6 +353,8 @@ def main(argv=None):
     parser.add_argument("--public-scene-enabled", action="store_true",
                         help="Admit rights-admitted public-scene persistent intents (Spec A: the "
                              "legacy public-scene path, e.g. 841757) in addition to owner uploads.")
+    parser.add_argument("--public-scene-machinery-path",
+                        help="Existing absolute public-scene machinery file; preserves prior machinery during rotation.")
     parser.add_argument("--activation-authorized", action="store_true",
                         help="Separately admit the scene-configuration activation on-ramp (A3): the "
                              "service runs a second no-spend pass that provisions activation intents. "
@@ -358,9 +374,11 @@ def main(argv=None):
             public_scene_enabled=args.public_scene_enabled, activation_authorized=args.activation_authorized,
             project_spend_reconciliation_path=args.project_spend_reconciliation,
             public_source_bootstrap_enabled=args.public_source_bootstrap_enabled,
-            public_source_catalog_path=args.public_source_catalog, only_intent_id=args.only_intent_id)
+            public_source_catalog_path=args.public_source_catalog, only_intent_id=args.only_intent_id,
+            public_scene_machinery_path=args.public_scene_machinery_path)
         _managed_json(safe_path(args.bootstrap), bootstrap, pwd.getpwnam(bootstrap["service_account"]))
-    elif args.public_source_bootstrap_enabled or args.public_source_catalog or args.only_intent_id:
+    elif (args.public_source_bootstrap_enabled or args.public_source_catalog or args.only_intent_id
+          or args.public_scene_machinery_path is not None):
         bootstrap = read(safe_path(args.bootstrap), digest_field="bootstrap_digest")
         require(bootstrap.get("managed_by") == MANAGED_BY and bootstrap.get("schema_version") == BOOTSTRAP_SCHEMA,
                 "scene_preparation_unmanaged_file")
@@ -373,6 +391,11 @@ def main(argv=None):
             from .task_evaluation_public_scene_catalog import load_catalog
             load_catalog(safe_path(args.public_source_catalog))
             bootstrap["public_source_catalog_path"] = str(safe_path(args.public_source_catalog))
+        if args.public_scene_machinery_path is not None:
+            bootstrap["public_scene_machinery_path"] = _public_machinery_path(args.public_scene_machinery_path,
+                enabled=args.public_scene_enabled or "public_scene" in bootstrap["supported_source_kinds"])
+            if args.public_scene_enabled:
+                bootstrap["supported_source_kinds"] = PUBLIC_SCENE_SOURCE_KINDS
         if args.only_intent_id:
             from .task_evaluation_scene_intake import _identifier
             require(args.only_intent_id.startswith("scene-") and _identifier(args.only_intent_id), "scoped_intent_invalid")
