@@ -83,6 +83,11 @@ CHAIN_UNITS: tuple[str, ...] = (
     "blueprint-gpu-spend-guard.service",
     "blueprint-provider-billing-reconciler.service",
     "blueprint-control-plane-storage-gc.service",
+    # 2026-09-12: neither unit was probed. project_spend_checks keyed on the scene
+    # progression unit and silently returned nothing; the spend-refresh sandbox
+    # lacked the intake lock path and every refresh failed until a replay noticed.
+    "blueprint-task-evaluation-scene-progression.service",
+    "blueprint-scene-project-spend-refresh.service",
 )
 
 # The persistent-owner authority consumers: both dispatchers and controls
@@ -98,6 +103,10 @@ CONTROLS_PROGRESSION_UNIT = "blueprint-task-evaluation-configured-controls-progr
 SCENE_PROGRESSION_UNIT = "blueprint-task-evaluation-scene-progression.service"
 SCENE_PROGRESSION_CONFIG_PATH = Path("/etc/blueprint/task-evaluation-scene-progression.json")
 PROJECT_SPEND_CONFIG_ENV = "BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG"
+SPEND_REFRESH_UNIT = "blueprint-scene-project-spend-refresh.service"
+CAMERA_CALIBRATION_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_POLICY_CAMERA_CALIBRATION_ROOT"
+CAMERA_CALIBRATION_DEFAULT_ROOT = Path("/etc/blueprint/task-evaluation-policy-camera-calibrations")
+CAMERA_CALIBRATION_SCHEMA = "policy_canary_robot_camera_kinematic_calibration.v1"
 # R8: the launch reconciler tick files owner terminal receipts (launch bridge +
 # canary terminal set) for the scene-progression reconciler. Without these roots
 # the duty is explicitly ``not_configured`` and a completed owner run never
@@ -1099,6 +1108,32 @@ def project_spend_checks(units: Mapping[str, dict[str, Any]], ids: tuple[int, in
     return []
 
 
+def spend_refresh_sandbox_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """The spend refresh publishes under the intake reservation lock; its sandbox must allow that.
+
+    2026-09-12: ReadWritePaths named the spend root but not the intents-root lock
+    file, so every refresh failed and a replay found a stale spend snapshot at the
+    last gate before launch. The lock path is derived at runtime, so the literal
+    root probe cannot see it; name it here.
+    """
+    unit = units.get(SPEND_REFRESH_UNIT)
+    if unit is None:
+        return []
+    read_write = [str(entry) for entry in (unit.get("read_write_paths") or [])]
+    if not read_write:
+        return []
+    progression = _read_json(SCENE_PROGRESSION_CONFIG_PATH)
+    if not isinstance(progression, Mapping) or not progression.get("intent_root"):
+        return []
+    lock = Path(str(progression["intent_root"])) / ".lock"
+    if _in_read_write_paths(str(lock), read_write):
+        return []
+    return [_finding("blocker", "scene_project_spend_refresh_lock_not_writable", unit=SPEND_REFRESH_UNIT,
+                     path=str(lock), read_write_paths=read_write,
+                     consequence="publish_current_scene_project_spend takes the intake reservation lock; "
+                                 "the refresh unit fails and the activation spend pointer goes stale")]
+
+
 def environment_hold_sources(unit: Mapping[str, Any], name: str) -> list[str]:
     """The EnvironmentFile paths that set ``name`` to a non-truthy value for this unit."""
 
@@ -1186,7 +1221,8 @@ def _owner_store_findings(unit_name: str, unit: Mapping[str, Any], ids: tuple[in
     return findings
 
 
-def _controls_autoprovision_findings(units: Mapping[str, dict[str, Any]], ids: tuple[int, int]) -> list[dict[str, Any]]:
+def _controls_autoprovision_findings(units: Mapping[str, dict[str, Any]], ids: tuple[int, int],
+                                     *, now: float | None = None) -> list[dict[str, Any]]:
     """Report a missing or broken controls-autoprovision config or its assets.
 
     A config env that names an unreadable/invalid file fails
@@ -1277,6 +1313,128 @@ def _controls_autoprovision_findings(units: Mapping[str, dict[str, Any]], ids: t
         findings.append(_finding("blocker", "controls_autoprovision_robot_catalog_unbindable",
             unit=CONTROLS_PROGRESSION_UNIT, path=str(catalog_path), reason=str(exc),
             consequence="resolve_robot_catalog refuses this catalog; construction->controls never advances"))
+    findings.extend(_controls_queue_agreement_findings(cfg))
+    findings.extend(_controls_scene_readiness_findings(cfg, catalog, env, ids, now=now))
+    return findings
+
+
+def _controls_queue_agreement_findings(cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The scene progression enqueues preparations where controls progression must read them.
+
+    2026-09-12: the controls config named a queue the scene progression never
+    wrote to, so a completed preparation stayed invisible to construction->controls
+    until an operator installed a scoped config by hand.
+    """
+    progression = _read_json(SCENE_PROGRESSION_CONFIG_PATH)
+    if not isinstance(progression, Mapping) or not progression.get("preparation_queue_root"):
+        return []
+    producer = Path(str(progression["preparation_queue_root"]))
+    consumer = Path(str(cfg["preparation_queue_root"]))
+    if producer.resolve() == consumer.resolve():
+        return []
+    return [_finding("blocker", "controls_autoprovision_queue_root_disagrees_with_scene_progression",
+                     unit=CONTROLS_PROGRESSION_UNIT, controls_queue_root=str(consumer),
+                     scene_progression_queue_root=str(producer),
+                     consequence="completed preparations land in a queue controls progression never reads; "
+                                 "construction->controls never advances")]
+
+
+def _camera_calibration_findings(intent_id: str, robot: Mapping[str, Any], root: Path,
+                                 uid: int, gid: int) -> list[dict[str, Any]]:
+    """Mirror bind_camera_start's file checks for one omitted-controls scene."""
+    from .decision_evidence_contracts import canonical_digest
+    try:
+        robot_sha = str(robot["robot_asset_usd"]["digest"])
+    except (KeyError, TypeError):
+        return [_finding("blocker", "omitted_controls_robot_asset_digest_missing",
+                         unit=CONTROLS_PROGRESSION_UNIT, intent_id=intent_id)]
+    path = root / (robot_sha.removeprefix("sha256:") + ".json")
+    base = dict(unit=CONTROLS_PROGRESSION_UNIT, intent_id=intent_id, path=str(path), robot_asset_sha256=robot_sha)
+    if path.is_symlink() or not path.is_file():
+        return [_finding("blocker", "omitted_controls_camera_calibration_missing", **base,
+                         consequence="bind_camera_start refuses at policy start; install the robot's "
+                                     "kinematic calibration before the omitted-controls run")]
+    if stat.S_IMODE(path.stat().st_mode) & 0o027 or not readable_by(path, uid, gid):
+        return [_finding("blocker", "omitted_controls_camera_calibration_unreadable_or_unsafe",
+                         **{**base, **_owner(path.stat())})]
+    calibration = _read_json(path)
+    if (not isinstance(calibration, Mapping) or calibration.get("schema_version") != CAMERA_CALIBRATION_SCHEMA
+            or calibration.get("calibration_digest") != canonical_digest(calibration, digest_field="calibration_digest")
+            or calibration.get("source_robot_asset_sha256") != robot_sha):
+        return [_finding("blocker", "omitted_controls_camera_calibration_invalid", **base)]
+    findings: list[dict[str, Any]] = []
+    for key in ("camera_start_binding", "native_reference_gate"):
+        reference = calibration.get(key)
+        reference_path = Path(str(reference.get("path") or "")) if isinstance(reference, Mapping) else None
+        if (reference_path is None or not str(reference_path).startswith("/") or reference_path.is_symlink()
+                or not reference_path.is_file() or stat.S_IMODE(reference_path.stat().st_mode) & 0o027
+                or not readable_by(reference_path, uid, gid)):
+            findings.append(_finding("blocker", "omitted_controls_camera_calibration_reference_unreadable",
+                                     **base, reference=key))
+            continue
+        raw = reference_path.read_bytes()
+        if reference != {"path": str(reference_path), "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                         "size_bytes": len(raw)}:
+            findings.append(_finding("blocker", "omitted_controls_camera_calibration_reference_changed",
+                                     **base, reference=key))
+    return findings
+
+
+def _controls_scene_readiness_findings(cfg: Mapping[str, Any], catalog: Mapping[str, Any],
+                                       env: Mapping[str, Any], ids: tuple[int, int],
+                                       *, now: float | None = None) -> list[dict[str, Any]]:
+    """Per owner scene: the robot binding resolves, and an omitted-controls scene has its calibration.
+
+    Both cost one deploy each on 2026-09-12: an intent without a robot choice and
+    no recorded assignment stops at construction->controls; a control-omission
+    directive without the robot's kinematic calibration stops at policy start.
+    The same resolver the consumers use is called read-only, per scene, now.
+    """
+    from . import task_evaluation_scene_control_omission as omission
+    from . import task_evaluation_scene_intake as intake
+    from .task_evaluation_scene_robot_assignment import resolve_controls_robot_binding
+    uid, gid = ids
+    moment = time.time() if now is None else now
+    scene_root = Path(str(cfg["scene_root"]))
+    if scene_root.is_symlink() or not scene_root.is_dir():
+        return []
+    omission_root = Path(str(env.get(omission.ROOT_ENV) or omission.DEFAULT_ROOT))
+    calibration_root = Path(str(env.get(CAMERA_CALIBRATION_ROOT_ENV) or CAMERA_CALIBRATION_DEFAULT_ROOT))
+    findings: list[dict[str, Any]] = []
+    resolved = skipped = 0
+    for directory in sorted(p for p in scene_root.glob("scene-*") if p.is_dir() and not p.is_symlink()):
+        intent_path = directory / "intent.json"
+        if not intent_path.is_file():
+            continue
+        try:
+            intent = intake._read(intent_path, "intent_digest")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            findings.append(_finding("blocker", "controls_scene_intent_unreadable", unit=CONTROLS_PROGRESSION_UNIT,
+                                     intent_id=directory.name, reason=str(exc)[:200]))
+            continue
+        try:
+            robot, _ = resolve_controls_robot_binding(directory=directory, intent=intent, catalog=catalog, now=moment)
+        except ValueError as exc:
+            reason = str(exc).split(":", 1)[0]
+            if reason.endswith(("owner_expired", "owner_revoked")):
+                skipped += 1
+                continue
+            findings.append(_finding("blocker", "controls_robot_binding_unresolvable", unit=CONTROLS_PROGRESSION_UNIT,
+                                     intent_id=directory.name, reason=reason,
+                                     consequence="construction->controls stops at scene_robot_assignment; "
+                                                 "record the owner's robot choice before dispatch"))
+            continue
+        except (OSError, KeyError, TypeError) as exc:
+            findings.append(_finding("blocker", "controls_robot_binding_unresolvable", unit=CONTROLS_PROGRESSION_UNIT,
+                                     intent_id=directory.name, reason=type(exc).__name__))
+            continue
+        resolved += 1
+        directive = omission_root / (directory.name + ".json")
+        if directive.is_symlink() or not directive.is_file():
+            continue
+        findings.extend(_camera_calibration_findings(directory.name, robot, calibration_root, uid, gid))
+    findings.append(_finding("info", "controls_scene_robot_bindings_resolved", resolved=resolved,
+                             inactive_owners_skipped=skipped))
     return findings
 
 
@@ -1555,6 +1713,7 @@ def run_chain(args: argparse.Namespace) -> int:
     report["host_findings"].extend(binding_checks(units, active_sha, ids))
     report["host_findings"].extend(handoff_checks(units, ids))
     report["host_findings"].extend(project_spend_checks(units, ids))
+    report["host_findings"].extend(spend_refresh_sandbox_checks(units))
     report["host_findings"].extend(owner_scope_checks(units, ids))
     report["host_findings"].extend(credential_file_checks(units))
     report["host_findings"].extend(provider_credit_check(units))

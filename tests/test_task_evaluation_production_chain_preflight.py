@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shlex
 import stat
@@ -629,3 +630,155 @@ def test_probe_reclassifies_safe_directory_release_waiver_but_keeps_real_binding
     assert not any(
         f["code"] == "path_bound_to_other_release" and f["bound_sha"] == waiver_sha for f in findings
     )
+
+
+# --- 2026-09-12 seams: queue routing, robot binding, spend-refresh lock, camera calibration ---
+
+def _controls_fixture(tmp_path, monkeypatch, *, robot_binding_id=None):
+    import json
+    from blueprint_pipeline import task_evaluation_scene_intake as intake
+    from tests.test_task_evaluation_controls_autoprovision import setup as controls_setup
+    monkeypatch.setenv(intake.CLIENTS_ENV, "webapp")
+    kwargs = controls_setup(tmp_path, robot_binding_id=robot_binding_id)
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps(kwargs["catalog"]), encoding="utf-8")
+    for key in ("controls_root", "intent_root", "profile_dir"):
+        Path(kwargs[key]).mkdir(parents=True, exist_ok=True)
+    cfg = {"scene_root": str(kwargs["scene_root"]), "preparation_queue_root": str(kwargs["preparation_queue_root"]),
+           "controls_root": str(kwargs["controls_root"]), "intent_root": str(kwargs["intent_root"]),
+           "profile_dir": str(kwargs["profile_dir"]), "robot_catalog_path": str(catalog_path),
+           "trusted_clients": ["webapp"]}
+    cfg_path = tmp_path / "controls-autoprovision.json"
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+    progression_path = tmp_path / "scene-progression.json"
+    progression_path.write_text(json.dumps({"preparation_queue_root": str(kwargs["preparation_queue_root"]),
+                                            "intent_root": str(kwargs["scene_root"])}), encoding="utf-8")
+    monkeypatch.setattr(preflight, "SCENE_PROGRESSION_CONFIG_PATH", progression_path)
+    directory = kwargs["link_path"].parent
+    intent = intake._read(directory / "intent.json", "intent_digest")
+    return kwargs, cfg, cfg_path, progression_path, directory, intent
+
+
+def test_scene_readiness_names_the_unassigned_robot_until_the_owner_choice_is_recorded(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_robot_assignment as assignment
+    from tests.test_scene_robot_assignment import authorize
+    kwargs, cfg, _, _, directory, intent = _controls_fixture(tmp_path, monkeypatch)
+    ids = (os.getuid(), os.getgid())
+    findings = preflight._controls_scene_readiness_findings(cfg, kwargs["catalog"], {}, ids, now=kwargs["now"])
+    blockers = [f for f in findings if f["severity"] == "blocker"]
+    assert [(f["code"], f["intent_id"], f["reason"]) for f in blockers] == [
+        ("controls_robot_binding_unresolvable", directory.name, "scene_robot_assignment_missing")]
+    assert [f for f in findings if f["severity"] == "info"][0]["resolved"] == 0
+    assignment.assign_scene_robot(queue_root=kwargs["scene_root"], intent_id=intent["intent_id"],
+        intent_digest=intent["intent_digest"], owner=intent["request"]["owner"], authenticated_client="webapp",
+        trusted_clients={"webapp"}, robot_catalog_path=Path(cfg["robot_catalog_path"]), robot_binding_id="franka-droid",
+        authorization_reference=authorize(tmp_path, intent, kwargs["catalog"]), ack=assignment.ACK, now=kwargs["now"])
+    findings = preflight._controls_scene_readiness_findings(cfg, kwargs["catalog"], {}, ids, now=kwargs["now"])
+    assert [(f["code"], f["resolved"]) for f in findings] == [("controls_scene_robot_bindings_resolved", 1)]
+    # An owner whose window has closed is not a blocker: that scene never advances anyway.
+    findings = preflight._controls_scene_readiness_findings(cfg, kwargs["catalog"], {}, ids, now=kwargs["now"] + 10_000)
+    assert [(f["code"], f["inactive_owners_skipped"]) for f in findings] == [("controls_scene_robot_bindings_resolved", 1)]
+
+
+def test_queue_agreement_names_a_controls_queue_the_scene_progression_never_writes(tmp_path, monkeypatch):
+    kwargs, cfg, _, progression_path, _, _ = _controls_fixture(tmp_path, monkeypatch, robot_binding_id="franka-droid")
+    assert preflight._controls_queue_agreement_findings(cfg) == []
+    other = dict(cfg, preparation_queue_root=str(tmp_path / "some-other-queue"))
+    [finding] = preflight._controls_queue_agreement_findings(other)
+    assert finding["severity"] == "blocker"
+    assert finding["code"] == "controls_autoprovision_queue_root_disagrees_with_scene_progression"
+    assert finding["scene_progression_queue_root"] == str(kwargs["preparation_queue_root"])
+    assert finding["controls_queue_root"] == str(tmp_path / "some-other-queue")
+    progression_path.unlink()
+    assert preflight._controls_queue_agreement_findings(other) == []
+
+
+def _calibration(root: Path, robot_sha: str, tmp_path: Path, *, tamper: bool = False) -> Path:
+    import json
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    def reference(name, payload):
+        path = tmp_path / name
+        path.write_bytes(payload)
+        path.chmod(0o640)
+        return {"path": str(path), "sha256": "sha256:" + hashlib.sha256(payload).hexdigest(), "size_bytes": len(payload)}
+
+    document = {"schema_version": preflight.CAMERA_CALIBRATION_SCHEMA, "source_robot_asset_sha256": robot_sha,
+                "camera_start_binding": reference("camera-start-binding.json", b'{"binding": 1}\n'),
+                "native_reference_gate": reference("native-reference-gate.json", b'{"gate": 1}\n')}
+    document["calibration_digest"] = canonical_digest(document, digest_field="calibration_digest")
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / (robot_sha.removeprefix("sha256:") + ".json")
+    path.write_text(json.dumps(document), encoding="utf-8")
+    path.chmod(0o640)
+    if tamper:
+        Path(document["native_reference_gate"]["path"]).write_bytes(b'{"gate": 2}\n')
+    return path
+
+
+def test_omitted_controls_scene_needs_the_robot_camera_calibration_before_policy_start(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_control_omission as omission
+    kwargs, cfg, _, _, directory, _ = _controls_fixture(tmp_path, monkeypatch, robot_binding_id="franka-droid")
+    ids = (os.getuid(), os.getgid())
+    omissions, calibrations = tmp_path / "omissions", tmp_path / "calibrations"
+    omissions.mkdir()
+    env = {omission.ROOT_ENV: str(omissions), preflight.CAMERA_CALIBRATION_ROOT_ENV: str(calibrations)}
+
+    def codes():
+        return [f["code"] for f in preflight._controls_scene_readiness_findings(
+            cfg, kwargs["catalog"], env, ids, now=kwargs["now"]) if f["severity"] == "blocker"]
+
+    assert codes() == []  # no directive: strict controls run, nothing extra to check
+    directive = omissions / (directory.name + ".json")
+    directive.write_text("{}", encoding="utf-8")
+    directive.chmod(0o640)
+    robot_sha = kwargs["catalog"]["bindings"]["franka-droid"]["robot_asset_usd"]["digest"]
+    [missing] = [f for f in preflight._controls_scene_readiness_findings(cfg, kwargs["catalog"], env, ids, now=kwargs["now"])
+                 if f["severity"] == "blocker"]
+    assert missing["code"] == "omitted_controls_camera_calibration_missing"
+    assert missing["robot_asset_sha256"] == robot_sha and missing["intent_id"] == directory.name
+    _calibration(calibrations, robot_sha, tmp_path)
+    assert codes() == []
+    _calibration(calibrations, robot_sha, tmp_path, tamper=True)
+    [changed] = [f for f in preflight._controls_scene_readiness_findings(cfg, kwargs["catalog"], env, ids, now=kwargs["now"])
+                 if f["severity"] == "blocker"]
+    assert changed["code"] == "omitted_controls_camera_calibration_reference_changed"
+    assert changed["reference"] == "native_reference_gate"
+
+
+def test_controls_autoprovision_findings_carry_the_scene_and_queue_predicates(tmp_path, monkeypatch):
+    kwargs, cfg, cfg_path, progression_path, directory, _ = _controls_fixture(tmp_path, monkeypatch)
+    import json
+    progression_path.write_text(json.dumps({"preparation_queue_root": str(tmp_path / "elsewhere"),
+                                            "intent_root": str(kwargs["scene_root"])}), encoding="utf-8")
+    monkeypatch.setattr(preflight, "active_release", lambda: (None, kwargs["expected_production_commit"], []))
+    units = {preflight.CONTROLS_PROGRESSION_UNIT: {"effective_environment": {
+        "BLUEPRINT_TASK_EVALUATION_DISPATCH_OWNER_SCOPE": "persistent_owner_only",
+        "BLUEPRINT_TASK_EVALUATION_CONTROLS_AUTOPROVISION_CONFIG": str(cfg_path)}}}
+    findings = preflight._controls_autoprovision_findings(units, (os.getuid(), os.getgid()), now=kwargs["now"])
+    blockers = sorted(f["code"] for f in findings if f["severity"] == "blocker")
+    assert blockers == ["controls_autoprovision_queue_root_disagrees_with_scene_progression",
+                        "controls_robot_binding_unresolvable"]
+    assert [f["intent_id"] for f in findings if f["code"] == "controls_robot_binding_unresolvable"] == [directory.name]
+
+
+def test_spend_refresh_sandbox_must_allow_the_intake_reservation_lock(tmp_path, monkeypatch):
+    import json
+    intents = "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents"
+    progression_path = tmp_path / "scene-progression.json"
+    progression_path.write_text(json.dumps({"intent_root": intents}), encoding="utf-8")
+    monkeypatch.setattr(preflight, "SCENE_PROGRESSION_CONFIG_PATH", progression_path)
+    unit = preflight.SPEND_REFRESH_UNIT
+    assert unit in preflight.CHAIN_UNITS and preflight.SCENE_PROGRESSION_UNIT in preflight.CHAIN_UNITS
+    units = {unit: {"read_write_paths": ["/var/lib/blueprint/pipeline-control-plane/scene-project-spend"]}}
+    [finding] = preflight.spend_refresh_sandbox_checks(units)
+    assert finding["severity"] == "blocker" and finding["code"] == "scene_project_spend_refresh_lock_not_writable"
+    assert finding["path"] == intents + "/.lock"
+    units[unit]["read_write_paths"].append(intents + "/.lock")
+    assert preflight.spend_refresh_sandbox_checks(units) == []
+    assert preflight.spend_refresh_sandbox_checks({unit: {"read_write_paths": []}}) == []
+    assert preflight.spend_refresh_sandbox_checks({}) == []
+    # The deployed unit file must satisfy the predicate the preflight now enforces.
+    unit_file = Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-scene-project-spend-refresh.service"
+    declared = next(line for line in unit_file.read_text().splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
+    assert preflight.spend_refresh_sandbox_checks({unit: {"read_write_paths": declared}}) == []

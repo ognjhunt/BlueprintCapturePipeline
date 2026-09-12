@@ -13,6 +13,7 @@ import time
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .validation_file_digests import file_digest_scope
+from .validation_progress import heartbeat
 from .task_evaluation_sam31_prefix_billing import Sam31PrefixBillingPending
 from .task_evaluation_scene_configuration_submission_inputs import read, require, sha
 from .task_evaluation_scene_configuration_sam31_plan import PHASES, PROFILE_SCHEMA, validate_sam31_preparation_plan
@@ -521,6 +522,7 @@ def select_completed_prefix_adoption(*, minimum_prefix_length=0, **kwargs):
     output = kwargs.pop("output_path", None)
     failures = []
     for phase in reversed(tuple(PREFIX_LENGTHS)):
+        heartbeat("prefix_phase", through_phase=phase, minimum_prefix_length=minimum_prefix_length)
         if PREFIX_LENGTHS[phase] <= minimum_prefix_length:
             failures.append({"through_phase": phase, "blocker": "prefix_not_longer_than_verified_selection",
                              "minimum_prefix_length": minimum_prefix_length})
