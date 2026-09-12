@@ -82,12 +82,14 @@ def _failure_blocker(exc: Exception) -> str:
     from .public_scene_inpainting_inputs import PublicSceneInpaintingInputError
     from .public_scene_sam31_ai_visual_reviewer import Sam31AIVisualReviewError
     from .task_evaluation_sam31_preparation_review_authority import Sam31ReviewAuthorityError
+    from .openai_credential_preflight import OpenAICredentialPreflightError
 
     message = str(exc)
     safe_codes = {FRAME_REGISTRY_ERROR, FRAME_BINDING_ERROR, "sam31_review_camera_frame_set_invalid",
                   "sam31_review_source_image_invalid", "sam31_review_prepared_inputs_invalid"}
     lane_typed = isinstance(exc, (Sam31TrackSelectionReviewError, Sam31ReviewAuthorityError, PublicSceneInpaintingInputError,
-                                  Sam31AIVisualReviewError, OpenAIOfficialCostGateError, Sam31PreparationReviewStageError))
+                                  Sam31AIVisualReviewError, OpenAIOfficialCostGateError, Sam31PreparationReviewStageError,
+                                  OpenAICredentialPreflightError))
     detail = message if message in safe_codes or (lane_typed and _LANE_CODE.fullmatch(message)) else type(exc).__name__
     return annotate_blocker("sam31_preparation_review_stage_failed:" + detail, exc)
 
@@ -116,6 +118,18 @@ def execute_review_stage(job: Mapping[str, Any]) -> dict[str, Any]:
     output.mkdir(parents=True)
     try:
         if stage_id == "sam31_review":
+            review_profile = profile.get("sam31_visual_review")
+            _require(isinstance(review_profile, Mapping), "visual_review_profile_missing")
+            if (review_profile.get("openai_api_key_file") is not None
+                    and review_profile.get("completed_execution") is None
+                    and job.get("diagnostic_replay_code_root") is None):
+                from .openai_credential_preflight import check_openai_credential
+                from .common import write_json
+                auth = check_openai_credential(api_key_file=review_profile["openai_api_key_file"],
+                    project_id=review_profile.get("openai_project_id"))
+                auth_path = output / "credential-preflight.json"
+                write_json(auth_path, auth)
+                artifacts["review_credential_preflight"] = _record(auth_path)
             packet_path = _input(inputs, "sam31_task_input_packet", root)
             packet = read(packet_path, digest_field="receipt_digest")
             tracks_path = _input(inputs, "sam31_source_tracks", root)
@@ -137,8 +151,6 @@ def execute_review_stage(job: Mapping[str, Any]) -> dict[str, Any]:
             prepared = prepared_root / "public_scene_sam31_track_selection_inputs.v1.json"
             freezes, task_inputs, selected_ids = load_validated_sam31_track_selection_inputs(prepared)
             _require(freezes == [str(selection_path)], "prepared_selection_mismatch")
-            review_profile = profile.get("sam31_visual_review")
-            _require(isinstance(review_profile, Mapping), "visual_review_profile_missing")
             if review_profile.get("completed_execution") is not None:
                 execution_path = _profile_file(review_profile, "completed_execution")
                 execution = read(execution_path, digest_field="execution_receipt_digest")
