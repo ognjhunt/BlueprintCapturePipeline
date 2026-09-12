@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -39,12 +40,15 @@ def read(path: str | Path, *, digest_field: str | None = None) -> dict[str, Any]
     _no_symlinks(path)
     require(path.is_file() and not path.is_symlink(), "input_file_invalid")
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        value = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError) as exc:
         raise SceneConfigurationSubmissionError(
             "scene_configuration_submission_input_json_invalid"
         ) from exc
     require(isinstance(value, dict), "input_json_invalid")
+    from .validation_file_digests import _identity, record_touched
+    record_touched(path, _identity(path.lstat()), "sha256:" + hashlib.sha256(raw).hexdigest())
     if digest_field:
         require(value.get(digest_field) == canonical_digest(
             value, digest_field=digest_field
@@ -86,6 +90,23 @@ def slug(value: str) -> str:
 def source_inputs(*, installation_path: Path, publisher_path: Path,
                   preparation_path: Path, task: dict[str, Any],
                   commit: str) -> dict[str, Any]:
+    """Reopen the installed publisher source, its geometric preparation and the collision partition.
+
+    Derived once per synchronous operation: the review, removal-selection and render
+    validators all re-enter here, and the collision partition re-parse alone is tens of
+    seconds. The key is the bytes of the three receipts plus the exact task and commit;
+    outside a digest scope this is a plain call.
+    """
+    from .validation_file_digests import scoped_measurement
+    key = ("scene_configuration_source_inputs", sha(Path(installation_path)), sha(Path(publisher_path)),
+           sha(Path(preparation_path)), canonical_digest(task), commit)
+    return scoped_measurement(key, lambda: _source_inputs(installation_path=Path(installation_path),
+        publisher_path=Path(publisher_path), preparation_path=Path(preparation_path), task=task, commit=commit))
+
+
+def _source_inputs(*, installation_path: Path, publisher_path: Path,
+                   preparation_path: Path, task: dict[str, Any],
+                   commit: str) -> dict[str, Any]:
     installation = read(installation_path, digest_field="receipt_digest")
     preparation = read(preparation_path, digest_field="receipt_digest")
     publisher = read(publisher_path)

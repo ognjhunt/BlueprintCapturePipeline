@@ -24,7 +24,37 @@ import time
 
 _CACHE: ContextVar[dict | None] = ContextVar("validation_file_digests", default=None)
 _STATS: ContextVar[dict | None] = ContextVar("validation_file_digest_stats", default=None)
+_TOUCHED: ContextVar[tuple] = ContextVar("validation_files_touched", default=())
 MINIMUM_BYTES = 1024 * 1024
+
+
+@contextmanager
+def touched_files():
+    """Collect every file the evidence readers consult inside the block.
+
+    Yields a list of ``{"path", "identity", "sha256"}`` rows. Blocks nest: a row is
+    appended to every open collector, so an outer verdict depends on everything its
+    nested validators read. Used by the persisted-verdict store to know exactly which
+    bytes a stored verdict must re-prove before it may be reused.
+    """
+    rows: list = []
+    token = _TOUCHED.set(_TOUCHED.get() + (rows,))
+    try:
+        yield rows
+    finally:
+        _TOUCHED.reset(token)
+
+
+def record_touched(path, identity, digest) -> None:
+    for rows in _TOUCHED.get():
+        rows.append({"path": str(path), "identity": list(identity), "sha256": digest})
+
+
+def note_verdict(*, reused: bool) -> None:
+    stats = _STATS.get()
+    if stats is not None:
+        stats["verdicts_reused" if reused else "verdicts_computed"] = (
+            stats.get("verdicts_reused" if reused else "verdicts_computed", 0) + 1)
 
 
 def scoped_measurement(key, compute):
@@ -51,7 +81,8 @@ def file_digest_scope():
         return
     token = _CACHE.set({})
     stats_token = _STATS.set({"files_hashed": 0, "bytes_hashed": 0, "hash_seconds": 0.0,
-                              "cache_hits": 0, "bytes_reused": 0, "last_path": None})
+                              "cache_hits": 0, "bytes_reused": 0, "last_path": None,
+                              "verdicts_computed": 0, "verdicts_reused": 0})
     try:
         yield
     finally:
@@ -111,4 +142,5 @@ def sha256_file(path: Path) -> str:
             raise ValueError("validation_file_digest_changed_during_read")
         if eligible:
             cache[identity] = digest
+        record_touched(path, identity, digest)
         return digest

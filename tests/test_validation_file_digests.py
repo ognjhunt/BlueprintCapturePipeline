@@ -192,7 +192,8 @@ def test_scope_stats_count_misses_hits_and_bytes_and_vanish_outside(tmp_path):
     assert subject.digest_scope_stats() is None
     with subject.file_digest_scope():
         assert subject.digest_scope_stats() == {"files_hashed": 0, "bytes_hashed": 0, "hash_seconds": 0.0,
-                                                "cache_hits": 0, "bytes_reused": 0, "last_path": None}
+                                                "cache_hits": 0, "bytes_reused": 0, "last_path": None,
+                                                "verdicts_computed": 0, "verdicts_reused": 0}
         subject.sha256_file(path)
         subject.sha256_file(path)
         stats = subject.digest_scope_stats()

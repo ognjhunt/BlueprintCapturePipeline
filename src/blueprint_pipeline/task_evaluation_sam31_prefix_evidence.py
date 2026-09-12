@@ -6,7 +6,11 @@ import importlib
 from pathlib import Path
 import zipfile
 
+import json
+
+from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read, require, sha
+from .validation_file_digests import scoped_measurement
 
 SOURCE_CODE = (
     "src/blueprint_pipeline/public_scene_inpainting_inputs.py",
@@ -24,6 +28,66 @@ SAM_CODE = (
     "src/blueprint_pipeline/sam31_source_track_provider_stage.py",
     "src/blueprint_pipeline/scene_placement/sam31_source_track_provider.py",
 )
+
+
+def file_records(value, found=None):
+    """Every ``{path, sha256, size_bytes}`` record reachable in a document, in document order."""
+    found = [] if found is None else found
+    if isinstance(value, dict):
+        if {"path", "sha256", "size_bytes"} <= set(value) and isinstance(value["path"], str):
+            found.append(value)
+        for child in value.values():
+            file_records(child, found)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            file_records(child, found)
+    return found
+
+
+def path_key(path):
+    """Key part for a path input: its bytes when it is a regular file, else just the name."""
+    candidate = Path(path)
+    return (str(candidate), sha(candidate) if candidate.is_file() else None)
+
+
+def reuse_verdict(name, key, documents, compute):
+    """One validator verdict per synchronous operation; every referenced byte is reopened on reuse.
+
+    Outside a ``file_digest_scope`` this is a plain call. Inside one, the verdict for
+    ``(name, *key)`` is computed once; every later call first reopens each file record
+    referenced by ``documents`` through the identity-checked digest path (device, inode,
+    size, nanosecond mtime/ctime, ownership, mode), so a byte that changed mid-operation
+    still fails closed, then returns a copy of the stored verdict. The 2026-09-12 factory
+    pass validated the same 4.6 GB prefix about twenty times (selection, publication,
+    the review-rights binding nested inside each, then the worker again): 110 GB of
+    content re-derivation for one verdict. Nothing here survives the operation.
+    """
+    records = file_records(documents)
+    for record in records:
+        checked_file(record["path"], record)
+    key = tuple(key)
+
+    def persisted():
+        from .task_evaluation_release_identity import running_release_commit
+        from .validation_file_digests import note_verdict, touched_files
+        from .validation_verdict_store import lookup, store
+        found = lookup(name=name, key=key)
+        if found is not None:
+            note_verdict(reused=True)
+            return found
+        with touched_files() as touched:
+            for record in records:  # cache hits here: recorded as consulted bytes of this verdict
+                checked_file(record["path"], record)
+            verdict = compute()
+        note_verdict(reused=False)
+        try:
+            normalized = json.loads(canonical_json({"verdict": verdict}))["verdict"]
+        except (TypeError, ValueError):
+            return verdict  # not persistable; still valid for this operation
+        store(name=name, key=key, files=touched, verdict=normalized, source_commit=running_release_commit())
+        return normalized
+
+    return scoped_measurement((name, *key), persisted)
 
 
 def _load(name):
@@ -135,6 +199,12 @@ def require_producer_files_present(code, old_root, current_root):
 
 
 def validate_render(outcome, artifacts, old_plan, current_repo, through_phase):
+    return reuse_verdict("sam31_prefix_render",
+        (canonical_digest(outcome), canonical_digest(artifacts), canonical_digest(old_plan), str(current_repo), through_phase),
+        artifacts, lambda: _validate_render(outcome, artifacts, old_plan, current_repo, through_phase))
+
+
+def _validate_render(outcome, artifacts, old_plan, current_repo, through_phase):
     from .public_scene_inpainting_preparation import validate_prepared_inputs, adopt_finalized_public_scene_inpainting_inputs
     from .public_scene_removal_selection import validate_removal_scene_selection, validate_removal_task_selection
     prepared_ref = artifacts["source_calibration_prepared_inputs"]
@@ -182,6 +252,17 @@ def validate_model_sources(old_profile, current_profile_path, old_commit):
 
 def validate_tracking(outcome, artifacts, old_profile, current_profile_path, old_commit, billing_source_path,
                       *, billing_audit_roots=None):
+    billing = None if billing_source_path is None else path_key(billing_source_path)
+    return reuse_verdict("sam31_prefix_tracking",
+        (canonical_digest(outcome), canonical_digest(artifacts), canonical_digest(old_profile),
+         path_key(current_profile_path), old_commit, billing,
+         tuple(str(root) for root in (billing_audit_roots or ()))),
+        artifacts, lambda: _validate_tracking(outcome, artifacts, old_profile, current_profile_path, old_commit,
+                                              billing_source_path, billing_audit_roots=billing_audit_roots))
+
+
+def _validate_tracking(outcome, artifacts, old_profile, current_profile_path, old_commit, billing_source_path,
+                       *, billing_audit_roots=None):
     from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
     from .public_scene_calibrated_object_masks import _verified_source_tracks
     _load("task_evaluation_sam31_preparation_paid_stages").validate_retained_paid_stage(outcome, stage_id="sam31_tracking")
@@ -249,6 +330,12 @@ def validate_tracking(outcome, artifacts, old_profile, current_profile_path, old
 
 def validate_sam_inputs(artifacts, old_profile, current_profile_path, old_commit):
     """Reopen a completed request packet without encoding frames or running SAM."""
+    return reuse_verdict("sam31_prefix_sam_inputs",
+        (canonical_digest(artifacts), canonical_digest(old_profile), path_key(current_profile_path), old_commit),
+        artifacts, lambda: _validate_sam_inputs(artifacts, old_profile, current_profile_path, old_commit))
+
+
+def _validate_sam_inputs(artifacts, old_profile, current_profile_path, old_commit):
     import json
     from .scene_placement.sam31_source_track_provider import _validate_request
     from .public_scene_calibrated_object_masks import _camera_rows
