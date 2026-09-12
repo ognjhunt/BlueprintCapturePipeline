@@ -20,7 +20,12 @@ class _InventoryRateLimited(Exception):
 
 
 def inventory_read_retry(*, sleep=None, evidence_hook=None):
-    """At most three GETs and 30 seconds; honor bounded Retry-After values."""
+    """At most three GETs with existing request timeouts and bounded waits.
+
+    The shared 30-second retry stop is evaluated after a failed request; it
+    is not an end-to-end deadline. Each server-directed wait is at most 10s.
+    Launchers must recheck their watchdog after inventory reads.
+    """
     sleeper = sleep or time.sleep
     retry_after = [0.0]
 
