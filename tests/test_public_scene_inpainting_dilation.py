@@ -12,6 +12,8 @@ from tests.test_public_scene_inpainting_inputs import _fake_sealed_render, _writ
 
 
 def _pillow(pixels, radius):
+    if radius == 0:
+        return pixels.copy()  # The original finalizer skips filtering at zero.
     return np.asarray(Image.fromarray(pixels).filter(ImageFilter.MaxFilter(2 * radius + 1)))
 
 
