@@ -210,7 +210,7 @@ def test_validation_progress_heartbeat_lands_in_scene_directory(context, monkeyp
     assert record["step"] in {"factory_start", "prefix_candidate", "prefix_phase", "adoption_publish",
                               "adoption_revalidate", "submission_inputs"}
     assert record["elapsed_seconds"] >= 0 and record["heartbeat_sequence"] >= 1
-    assert set(record["digests"]) == {"files_hashed", "bytes_hashed", "hash_seconds", "cache_hits",
+    assert set(record["digests"]) == {"files_hashed", "bytes_hashed", "hash_seconds", "cache_hits", "verdicts_computed", "verdicts_reused",
                                       "bytes_reused", "last_path"}
     assert not (directory / (progress.FILENAME + ".tmp")).exists()
     assert progress.heartbeat("outside") is None
