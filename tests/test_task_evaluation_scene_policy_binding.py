@@ -26,8 +26,8 @@ def _seal(value, field):
 
 
 def _owner_scene(tmp_path, monkeypatch, *, wrong_pair=False, cap=20,
-                 interpretation=False, allow_openai=True):
-    state = rehearsal._prepared(tmp_path)
+                 interpretation=False, allow_openai=True, controls_terminal=True):
+    state = rehearsal._prepared(tmp_path, controls_terminal=controls_terminal)
     now = time.time()
     owner = request()
     owner["task"]["task_id"] = rehearsal.TASK_ID

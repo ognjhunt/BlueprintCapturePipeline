@@ -318,9 +318,11 @@ def test_policy_activation_seals_paired_campaign_queue_without_preparer(
 
 
 @pytest.mark.parametrize("construction_lineage", ["qualified", "compiled_scene"])
+@pytest.mark.parametrize("omit_controls", [False, True])
 def test_policy_canary_activation_materializes_single_session_runtime_inputs(
     tmp_path: Path,
     construction_lineage: str,
+    omit_controls: bool,
 ) -> None:
     setup_value = policy_setup()
     setup_value["embodiment_id"] = "droid_franka_panda_robotiq_2f85_v1"
@@ -407,6 +409,16 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
     )
     runtime_receipt = tmp_path / "runtime-source.json"
     runtime_receipt.write_text("{}\n", encoding="utf-8")
+    omission = {
+        "schema_version": "task_evaluation_diagnostic_control_omission_authority.v1",
+        "run_kind": "internal_policy_canary", "claim_ceiling": "diagnostic_policy_execution",
+        "authorized_by": "fixture-owner", "authorization_reference": "fixture-explicit-control-omission",
+        "omitted_controls": ["zero_action_negative", "deterministic_scripted_positive"],
+        "source_task_success_contract_digest": "sha256:" + "a" * 64,
+        "result_task_success_contract_digest": configuration["task_success_contract_digest"],
+        "task_scoring_criteria_changed": False, "qualified_comparison_permitted": False,
+    }
+    omission["authority_digest"] = canonical_digest(omission, digest_field="authority_digest")
 
     result = worker._policy_campaign_activation_result(
         request=request,
@@ -414,6 +426,8 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
             "run_id": "policy-run-1",
             "policy_run_configuration": configuration,
             "policy_run_setup": setup_value,
+            **({"policy_canary_activation": {"diagnostic_control_omission_authority": omission}}
+               if omit_controls else {}),
             "spend": {
                 "maximum_hourly_rate_usd": 0.80,
                 "hard_cap_usd": 4.0,
@@ -468,10 +482,13 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
         runtime_inputs["cells"][0]["resolved_scenario"]
     )
     assert runtime_inputs["cells"][0]["control_diagnostic"] == {
-        "mode": "nonblocking_diagnostic_pending",
-        "typed_gap": "controls_pending_at_submission",
+        "mode": "nonblocking_omitted_by_user" if omit_controls else "nonblocking_diagnostic_pending",
+        "typed_gap": "controls_omitted_by_user_request" if omit_controls else "controls_pending_at_submission",
         "policy_execution_blocked": False,
+        **({"omission_authority": omission} if omit_controls else {}),
     }
+    assert all(cell["control_diagnostic"] == runtime_inputs["cells"][0]["control_diagnostic"]
+               for cell in runtime_inputs["cells"])
 
 
 def test_configured_revision_rights_substitution_blocks_before_activation(

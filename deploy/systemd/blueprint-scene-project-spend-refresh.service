@@ -26,7 +26,9 @@ CPUQuota=100%
 TimeoutStartSec=180
 CapabilityBoundingSet=
 AmbientCapabilities=
-ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/scene-project-spend
+# Publishing an exposure snapshot takes the existing intake reservation lock.
+# Only that lock file is writable; intent and reservation records stay read-only.
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/scene-project-spend /var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents/.lock
 Environment=PYTHONPATH=/opt/blueprint/task-evaluation-control-plane/src
 EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
 ExecStart=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python -c "from blueprint_pipeline.task_evaluation_scene_spend import refresh_configured_scene_project_spend; refresh_configured_scene_project_spend()"

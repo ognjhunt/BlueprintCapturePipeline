@@ -20,6 +20,41 @@ WARNINGS = {
 }
 
 
+def control_omission_from_runtime_inputs(runtime_inputs, *, error_factory=ValueError):
+    """Join one identical, validated omission authority across the entire matrix."""
+    from .native_task_arena_policy_canary_session import validate_control_omission_authority
+
+    cells = runtime_inputs.get("cells") or []
+    omitted = [cell.get("control_diagnostic", {}).get("omission_authority") for cell in cells
+               if cell.get("control_diagnostic", {}).get("mode") == "nonblocking_omitted_by_user"]
+    if not omitted:
+        return None
+    if len(omitted) != len(cells) or any(row != omitted[0] for row in omitted):
+        raise error_factory("policy_canary_delivery_control_omission_conflict")
+    try:
+        contract = runtime_inputs["task_success_contract"]
+        if "controls" in contract["criteria"]:
+            raise ValueError("controls_not_omitted")
+        return validate_control_omission_authority(omitted[0], contract_digest=contract["contract_digest"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise error_factory("policy_canary_delivery_control_omission_invalid") from exc
+
+
+def build_control_diagnostic(contract, *, omission=None):
+    """Produce the same typed per-cell control fact later retained in delivery."""
+    from .native_task_arena_policy_canary_session import validate_control_omission_authority
+
+    strict = contract["criteria"].get("controls", {}).get("mode") == "required_per_cell"
+    if omission is None:
+        return {"mode": "required_before_policy" if strict else "nonblocking_diagnostic_pending",
+                "typed_gap": "controls_pending_at_submission", "policy_execution_blocked": strict}
+    admitted = validate_control_omission_authority(omission, contract_digest=contract["contract_digest"])
+    if "controls" in contract["criteria"]:
+        raise ValueError("policy_canary_control_omission_conflict")
+    return {"mode": "nonblocking_omitted_by_user", "typed_gap": "controls_omitted_by_user_request",
+            "policy_execution_blocked": False, "omission_authority": admitted}
+
+
 def materialize_control_omission(*, authority, contract, result, delivery_root,
                                 add_artifact, write_immutable, error_factory):
     from .native_policy_canary_control_gate import controls_required

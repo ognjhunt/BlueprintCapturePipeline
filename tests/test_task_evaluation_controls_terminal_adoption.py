@@ -37,15 +37,24 @@ def test_delivered_scene_is_automatically_reprovisioned_without_reconstruction(r
         return {'path':str(p),'digest':'sha256:'+hashlib.sha256(p.read_bytes()).hexdigest(),'size_bytes':p.stat().st_size}
     request_path=root/owner['intent_id']/'intent.json'
     owner_doc=intake._read(request_path,'intent_digest')
-    # Preserve the actual intent. Resolve its absent fixture binding-id key to
-    # the one catalog row without changing owner evidence.
+    # Preserve the actual intent; grant its omitted operational robot explicitly.
     pointer=tmp_path/'project-current.json'
     put(pointer,{'path':str(seed(tmp_path))})
     binding={'expected_production_commit':'c'*40,'runtime_source_payload_dir':str(payload),
         'runtime_digest':worker.payload_digest(payload),'robot_asset_usd':asset('robot.usd'),
         'embodiment_camera_template':asset('camera.json'),'phase_hard_cap_usd':.45,
         'project_spend_current_path':str(pointer),'openai_project_id':'project','openai_api_key_id':'key'}
-    catalog={'bindings':{owner_doc['request']['task'].get('robot_binding_id'):binding}}
+    catalog=worker._seal({'schema_version':worker.CATALOG_SCHEMA,
+        'bindings':{'fixture-franka':binding}}, 'catalog_digest')
+    from blueprint_pipeline import task_evaluation_scene_robot_assignment as assignment
+    from tests.test_scene_robot_assignment import authorize
+    catalog_path=tmp_path/'assignment-catalog.json'
+    put(catalog_path,catalog)
+    auth=authorize(tmp_path,owner_doc,catalog,binding_id='fixture-franka')
+    assigned=assignment.assign_scene_robot(queue_root=root,intent_id=owner['intent_id'],
+        intent_digest=owner['intent_digest'],owner=owner_doc['request']['owner'],authenticated_client='webapp',
+        trusted_clients={'webapp'},robot_catalog_path=catalog_path,robot_binding_id='fixture-franka',
+        authorization_reference=auth,ack=assignment.ACK,now=102)
     monkeypatch.setattr(worker, '_configured_scene_preparation_link', lambda **kw: {'result_filename':'retained-preparation.json'})
     monkeypatch.setattr(producer, '_preparation_context', lambda **kw: {})
     observed=[]
@@ -58,6 +67,7 @@ def test_delivered_scene_is_automatically_reprovisioned_without_reconstruction(r
     monkeypatch.setattr(producer, 'install_intent_into_registry', lambda **kw: {'status':'installed'})
     result=adoption.provision_terminal_controls_adoption(config=config,catalog=catalog,intent_id=owner['intent_id'],expected_production_commit='c'*40,now=102)
     assert result['status']=='installed_terminal_adoption'
+    assert result['robot_assignment_digest']==assigned['assignment_digest']
     args=observed[0]
     assert args['configuration_source_commit']=='d'*40 and args['expected_production_commit']=='c'*40
     assert args['configuration_adoption']['terminal_result_digest']==terminal['result_digest']

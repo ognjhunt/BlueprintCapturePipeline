@@ -1555,6 +1555,17 @@ def advance_configured_controls_plan(
         _write_immutable(construction_launch_path, result)
         return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}
 
+    from .task_evaluation_scene_control_omission import load_for_run
+    omission = load_for_run(launch_state_root=launch_state_root, source_launch_id=plan["source_launch_id"])
+    if omission is not None:
+        if (state / "controls_activation_progression.json").exists() or (state / "controls_launch_progression.json").exists():
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError("configured_controls_omission_after_controls_admission")
+        # The handoff independently waits for real qualified construction and
+        # its billing/teardown closure; this is not a controls-result receipt.
+        return {"status": "controls_omitted_for_diagnostic_policy", "source_launch_id": plan["source_launch_id"],
+                "control_omission_directive_digest": omission["directive_digest"],
+                "controls_qualified": False, "qualified_comparison_permitted": False}
+
     controls_phase = _phase(plan, "controls")
     controls_activation_path = state / "controls_activation_progression.json"
     controls_activation = _sealed_progression(
@@ -1861,7 +1872,7 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
             rows.append({"status": "blocked", "plan": path.name, "blockers": [str(exc)]})
             continue
         rows.append(row)
-        if row.get("status") != "controls_pair_launch_queued":
+        if row.get("status") not in {"controls_pair_launch_queued", "controls_omitted_for_diagnostic_policy"}:
             continue
         # The launched controls pair is the last configured-controls phase; the same
         # tick chains the completed pair into the Quick-10 policy canary.

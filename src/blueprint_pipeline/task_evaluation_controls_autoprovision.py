@@ -165,8 +165,9 @@ def _provision_validated_link(*, link: Mapping[str, Any], scene_root: Path,
     _require(link["task_id"] == request["task"]["task_id"], "task_mismatch")
     _require(catalog.get("schema_version") == CATALOG_SCHEMA and catalog.get("catalog_digest") ==
              canonical_digest(catalog, digest_field="catalog_digest"), "catalog_invalid")
-    binding = catalog["bindings"].get(request["task"].get("robot_binding_id"))
-    _require(isinstance(binding, dict), "robot_binding_missing")
+    from .task_evaluation_scene_robot_assignment import resolve_controls_robot_binding
+    binding, robot_assignment = resolve_controls_robot_binding(
+        directory=directory, intent=intent, catalog=catalog, now=moment)
     _require(binding.get("expected_production_commit") == expected_production_commit, "runtime_release_mismatch")
     result_path = preparation_queue_root / "results" / link["result_filename"]
     if not result_path.exists():
@@ -205,6 +206,8 @@ def _provision_validated_link(*, link: Mapping[str, Any], scene_root: Path,
         identity = {"link_digest": link["link_digest"], "catalog_binding_digest": canonical_digest({
             k: v for k, v in binding.items() if k not in {
                 "project_spend_reconciliation", "project_spend_observed_at_epoch"}})}
+        if robot_assignment is not None:
+            identity["robot_assignment_digest"] = robot_assignment["assignment_digest"]
         retained_path = root / "autoprovision-inputs.json"
         if retained_path.exists():
             retained = _sealed(retained_path, "receipt_digest")

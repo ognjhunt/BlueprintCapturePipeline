@@ -127,3 +127,64 @@ paid step, and the execute/dry-run holds are untouched. The production chain
 preflight's owner-mode checks (`owner_scope_checks`) refuse a default scope, an
 unresolvable owner store, a missing/unreadable autoprovision config, and missing
 robot/camera/runtime assets before a dispatch selects a wrong or empty row.
+
+When the original task omitted `robot_binding_id`, the authenticated intake
+issuer can use `task_evaluation_scene_robot_assignment.assign_scene_robot` with
+`ack="assign-scene-robot"`, the exact owner/intent/issuer, `robot_catalog_path`,
+`robot_binding_id`, and a private `authorization_reference` JSON path. That file
+uses schema `task_evaluation_scene_robot_assignment_authorization.v1` and binds
+`authorized=true`, `intent_id`, `intent_digest`, `owner`, `authenticated_issuer`,
+`robot_binding_id`, and `catalog_binding_digest`. The digest comes from
+`catalog_binding_digest(binding)` and excludes only the dynamically rebound
+`expected_production_commit`; robot, camera, runtime, caps, credential identifiers
+and spend-pointer metadata remain bound. Preserve the actual human authorization
+or delegated decision in that private file; do not invent a new approval.
+
+The API checks current nonrevoked consent and actual robot/camera/runtime bytes,
+then writes immutable `<intent>/robot-assignment.json` under the intake lock.
+Authorization references are absolute nonsymlink files, mode 0600/0640, whose
+exact bytes are retained by reference. Duplicate requests retain the same record;
+conflicting choices refuse. A sole catalog entry never becomes an implicit choice,
+and an existing task choice cannot be overridden. Controls and terminal adoption
+reopen the assignment before provisioning and include `robot_assignment_digest`
+in their retained input identity and provisioning receipt. The original task,
+source freezes, completed artifacts, policies, spending bounds and holds remain
+unchanged. Removing or changing the assignment, authorization or catalog row
+refuses further provisioning. Other task/source consumers do not gain a robot
+field from this operational assignment.
+
+An explicit request to omit control trials uses the existing diagnostic policy
+lane. A private owner directive lives at
+`/etc/blueprint/task-evaluation-diagnostic-control-omissions/<intent_id>.json`
+(`BLUEPRINT_TASK_EVALUATION_DIAGNOSTIC_CONTROL_OMISSION_ROOT` for another server
+registry). Schema `task_evaluation_scene_control_omission_directive.v1` binds the
+exact owner/intent/issuer, original task digest, frozen policy pair, current consent
+expiry, actual user request and authorization reference. It permits exactly 20
+policy episodes, names the omitted zero-action and scripted-positive controls,
+and fixes `run_kind=internal_policy_canary`,
+`claim_ceiling=diagnostic_policy_execution`, unchanged task-scoring criteria and
+`qualified_comparison_permitted=false`. The standard `directive_digest` covers
+the record; its file must be nonsymlink and private (0600/0640).
+
+The normal worker preserves robot placement and native construction. Once its
+construction launch exists, the directive prevents standalone controls admission;
+the diagnostic handoff independently requires the real qualified construction
+receipt, retained billing lineage, Website acknowledgement and teardown/provider
+zero. It never synthesizes a controls result. The existing `direct_policy_request`
+producer derives the control-omission authority and contract. Both policies keep
+the same cells, seeds, scoring criteria and lossless-media requirements. The normal
+result-delivery path explicitly labels `controls_omitted_by_user`. Missing opt-in
+preserves the strict default; tampered, expired or conflicting opt-in refuses.
+
+Omitted-control execution still requires final robot-reset and camera binding.
+The handoff reads an immutable kinematic calibration keyed by exact assigned robot
+USD SHA under `/etc/blueprint/task-evaluation-policy-camera-calibrations`.
+Schema `policy_canary_robot_camera_kinematic_calibration.v1` binds
+`source_robot_asset_sha256`, exact `camera_start_binding` and
+`native_reference_gate` path/SHA/size references, and `calibration_digest`.
+Only the retained joint-frame calibration and measured wrist pose are reused;
+an old blocked visibility gate does not become passed evidence. The new binding
+uses the current construction's native initial root/joint readback, current task
+and cameras, and checks framing for all ten cells. Current native visibility,
+collision, composition, billing and teardown gates remain mandatory. Neither
+original task/source records nor already admitted controls are rewritten.

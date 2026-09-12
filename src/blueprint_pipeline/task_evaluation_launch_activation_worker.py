@@ -1331,6 +1331,15 @@ def _policy_campaign_activation_result(
             "blueprint-native-task-policy-canary-"
             + manifest["activation_digest"].removeprefix("sha256:")[:32]
         )
+        from .policy_canary_control_result_delivery import build_control_diagnostic
+        try:
+            control_diagnostic = build_control_diagnostic(
+                preparation_request["policy_run_configuration"]["task_success_contract"],
+                omission=(preparation_request.get("policy_canary_activation") or {}).get(
+                    "diagnostic_control_omission_authority"))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise TaskEvaluationLaunchActivationWorkerError(
+                "launch_activation_policy_canary_control_omission_invalid") from exc
         runtime_inputs = {
             "schema_version": "task_evaluation_policy_canary_runtime_inputs.v1",
             "run_id": preparation_request["run_id"],
@@ -1384,16 +1393,7 @@ def _policy_campaign_activation_result(
                     "resolved_scenario_digest": canonical_digest(
                         cell["resolved_scenario"]
                     ),
-                    "control_diagnostic": {
-                        "mode": (
-                            "required_before_policy" if preparation_request["policy_run_configuration"]
-                            ["task_success_contract"]["criteria"].get("controls", {}).get("mode") == "required_per_cell"
-                            else "nonblocking_diagnostic_pending"
-                        ),
-                        "typed_gap": "controls_pending_at_submission",
-                        "policy_execution_blocked": preparation_request["policy_run_configuration"]
-                        ["task_success_contract"]["criteria"].get("controls", {}).get("mode") == "required_per_cell",
-                    },
+                    "control_diagnostic": dict(control_diagnostic),
                 }
                 for cell in cells
             ],

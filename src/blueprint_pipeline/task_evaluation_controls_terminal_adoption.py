@@ -95,6 +95,10 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
     worker._require(not (directory/'revoked.json').exists(), 'authority_revoked')
     expiry = intake.effective_execution_expiry(directory, intent)
     worker._require(moment < expiry, 'authority_expired')
+    request = intake.validate_request(intent['request'], now=intent['accepted_at_epoch'])
+    from .task_evaluation_scene_robot_assignment import resolve_controls_robot_binding
+    binding, robot_assignment = resolve_controls_robot_binding(
+        directory=directory, intent=intent, catalog=catalog, now=moment)
     from . import task_evaluation_completed_placement_adoption as completed
     completed_placement = completed.discover(config=config,intent_id=intent_id,source=source,
         expected_commit=expected_production_commit)
@@ -108,8 +112,6 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
         retire_unmaterialized_adoptions(config=config, intent_id=intent_id,
             source=source, expected_production_commit=expected_production_commit,
             visual_review_continuation=review_continuation)
-    request = intake.validate_request(intent['request'], now=intent['accepted_at_epoch'])
-    binding = catalog['bindings'].get(request['task'].get('robot_binding_id'))
     worker._require(isinstance(binding, dict) and binding.get('expected_production_commit') == expected_production_commit, 'runtime_release_mismatch')
     robot = worker._asset(binding['robot_asset_usd'])
     cameras = worker._asset(binding['embodiment_camera_template'])
@@ -137,6 +139,8 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
         inference_cap = 0.0
     identity = {'owner_intent_digest': intent['intent_digest'], 'adoption': source['adoption'],
                 'execution_source_commit': expected_production_commit, 'catalog_binding_digest': canonical_digest({k:v for k,v in binding.items() if k not in {'project_spend_reconciliation', 'project_spend_observed_at_epoch'}})}
+    if robot_assignment is not None:
+        identity['robot_assignment_digest'] = robot_assignment['assignment_digest']
     if review_continuation is not None:
         identity['visual_review_continuation'] = review_continuation
     if completed_placement is not None:
