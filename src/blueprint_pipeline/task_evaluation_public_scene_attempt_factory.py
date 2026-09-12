@@ -501,7 +501,8 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
                 sam31_billing_source_path=(_reference(candidate["sam31_billing_source"])
                     if candidate.get("sam31_billing_source") else None),
                 release_binding_root=machinery["release_retention_binding_root"])
-            result = select_completed_prefix_adoption(**kwargs, output_path=None)
+            result = select_completed_prefix_adoption(**kwargs, output_path=None,
+                minimum_prefix_length=PREFIX_LENGTHS[best["through_phase"]] if best is not None else 0)
             selection_reports.append(result)
             if result["status"] == "reusable_prefix_selected" and (best is None or
                     PREFIX_LENGTHS[result["through_phase"]] > PREFIX_LENGTHS[best["through_phase"]]):

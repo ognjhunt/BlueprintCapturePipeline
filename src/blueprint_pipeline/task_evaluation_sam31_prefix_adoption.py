@@ -497,7 +497,7 @@ def materialize_completed_prefix_adoption(*, source_plan_path, source_profile_pa
 
 
 @file_digest_scope()
-def select_completed_prefix_adoption(**kwargs):
+def select_completed_prefix_adoption(*, minimum_prefix_length=0, **kwargs):
     """Select the longest scientifically compatible retained prefix by default.
 
     Rejected candidates remain explicit evidence. Validation is exactly the
@@ -505,9 +505,15 @@ def select_completed_prefix_adoption(**kwargs):
     Nothing is published until a candidate has passed every existing gate.
     """
     require("through_phase" not in kwargs, "sam31_adoption_selector_phase_not_accepted")
+    require(type(minimum_prefix_length) is int and 0 <= minimum_prefix_length <= max(PREFIX_LENGTHS.values()),
+            "sam31_adoption_selector_minimum_invalid")
     output = kwargs.pop("output_path", None)
     failures = []
     for phase in reversed(tuple(PREFIX_LENGTHS)):
+        if PREFIX_LENGTHS[phase] <= minimum_prefix_length:
+            failures.append({"through_phase": phase, "blocker": "prefix_not_longer_than_verified_selection",
+                             "minimum_prefix_length": minimum_prefix_length})
+            continue
         try:
             candidate = materialize_completed_prefix_adoption(
                 **kwargs, through_phase=phase, output_path=None)
