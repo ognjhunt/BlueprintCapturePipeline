@@ -9,6 +9,7 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from .gaussian_splat_decode import _parse_ply_header
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read, sha
+from .task_evaluation_scene_provider_terms import DEFAULT_TERMS_PATH
 
 AUTHORITY_SCHEMA = "public_scene_full_source_provider_disclosure_authority.v1"
 PROOF_SCHEMA = "sam31_full_source_provider_disclosure_readback.v1"
@@ -115,8 +116,17 @@ def validate_full_source_disclosure(
         ref = basis.get(name)
         _require(isinstance(ref, Mapping), "publisher_rights_basis_missing")
         evidence = Path(str(ref.get("path") or ""))
-        _require(evidence.is_absolute() and any(evidence.resolve().is_relative_to(root.resolve())
-                 for root in approved_roots), "publisher_rights_basis_path_invalid")
+        # The controller binds the owner's accepted operator terms outside the
+        # artifact roots. Admit only that exact permission-evidence file here;
+        # this does not add /etc to source, authority, or upload roots.
+        operator_permission = (
+            name == "private_processing_permission_evidence"
+            and evidence == Path(DEFAULT_TERMS_PATH)
+            and not evidence.is_symlink()
+        )
+        _require(evidence.is_absolute() and (operator_permission or any(
+            evidence.resolve().is_relative_to(root.resolve()) for root in approved_roots
+        )), "publisher_rights_basis_path_invalid")
         checked_file(evidence, dict(ref))
         if name == "publisher_terms_evidence":
             _require(sha(evidence) == rights["terms_digest"], "publisher_terms_mismatch")

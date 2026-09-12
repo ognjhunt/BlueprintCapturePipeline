@@ -177,6 +177,49 @@ def test_separate_exact_full_source_authority_preserves_local_conversion_rights(
     assert proof['frame_permission_used_as_full_source_authority'] is False
 
 
+@pytest.mark.parametrize('fault', [None, 'neighbor', 'symlink', 'tamper', 'publisher_terms'])
+def test_operator_permission_outside_artifact_roots_is_exact_only(tmp_path, monkeypatch, fault):
+    data = tmp_path / 'artifacts'
+    data.mkdir()
+    job, _output, source, original, receipt = converted_job(data, monkeypatch)
+    authorize_full_source(job, source=source, original=original, receipt=receipt)
+    operator = tmp_path / 'operator'
+    operator.mkdir()
+    terms = operator / 'task-evaluation-private-scene-provider-terms.json'
+    terms.write_text('Previously accepted private provider terms')
+    monkeypatch.setattr(guard, 'DEFAULT_TERMS_PATH', str(terms))
+    task = json.loads(Path(job['plan']['host_inputs']['task_request']['path']).read_text())
+    owner = task['human_authority']
+    authority_path = Path(owner['full_source_provider_disclosure_authority']['path'])
+    authority = json.loads(authority_path.read_text())
+    reference = terms
+    if fault == 'neighbor':
+        reference = operator / 'unrelated.json'
+        reference.write_bytes(terms.read_bytes())
+    role = 'publisher_terms_evidence' if fault == 'publisher_terms' else 'private_processing_permission_evidence'
+    authority['publisher_rights_basis'][role] = _record(reference)
+    if fault == 'symlink':
+        target = operator / 'target.json'
+        terms.rename(target)
+        terms.symlink_to(target)
+    _write(authority_path, authority, digest_field='authorization_digest')
+    owner['full_source_provider_disclosure_authority'] = _record(authority_path)
+    if fault == 'tamper':
+        terms.write_text('Changed after acceptance')
+    kwargs = dict(task_authority=owner, conversion_path=receipt,
+                  standard_splat_path=source, original_source_path=original,
+                  expected_source_commit=job['expected_source_commit'],
+                  publisher_scene_id='841757', approved_roots=(data,))
+    if fault:
+        blocker = 'input_bytes_mismatch' if fault == 'tamper' else 'publisher_rights_basis_path_invalid'
+        with pytest.raises(ValueError, match=blocker):
+            guard.validate_full_source_disclosure(**kwargs)
+    else:
+        proof = guard.validate_full_source_disclosure(**kwargs)
+        assert proof['publisher_rights_basis']['private_processing_permission_evidence'] == _record(terms)
+        assert proof['conversion_rights']['raw_private_upload_authorized'] is False
+
+
 @pytest.mark.parametrize('purpose', ['exact_source_calibration_gpu_render',
                                     'configured_scene_partitioned_source_processing'])
 def test_full_source_scopes_require_their_own_exact_authority(tmp_path, monkeypatch, purpose):
