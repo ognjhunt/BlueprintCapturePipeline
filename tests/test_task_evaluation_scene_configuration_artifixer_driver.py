@@ -1211,3 +1211,4 @@ def test_semantic_max_cost_per_request_reads_packet_pricing(tmp_path: Path) -> N
         json.dumps(packet), encoding="utf-8"
     )
     assert driver._semantic_max_cost_per_request(tmp_path) is None
+    assert driver._semantic_max_cost_per_request(tmp_path / "absent") is None

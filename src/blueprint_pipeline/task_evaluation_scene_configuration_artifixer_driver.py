@@ -609,10 +609,17 @@ def _default_semantic_frame_cost(
 
 
 def _semantic_max_cost_per_request(packet_root: Path) -> float | None:
-    """The packet backend's registry-bound maximum cost of one edit request."""
+    """The packet backend's registry-bound maximum cost of one edit request.
+
+    Diagnostic hydration replays a sealed checkpoint and never materializes the
+    packet; ``_semantic_runtime_request`` still fails closed on a missing packet
+    wherever a request is actually built.
+    """
+    packet_path = packet_root / "fresh_scene_semantic_teacher_image_edit_packet.v1.json"
+    if not packet_path.is_file():
+        return None
     packet = _read(
-        packet_root / "fresh_scene_semantic_teacher_image_edit_packet.v1.json",
-        code="scene_configuration_artifixer_semantic_packet_invalid",
+        packet_path, code="scene_configuration_artifixer_semantic_packet_invalid"
     )
     pricing = ((packet.get("backend") or {}).get("execution") or {}).get(
         "pricing_binding"
