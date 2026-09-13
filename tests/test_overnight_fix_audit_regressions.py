@@ -1,7 +1,15 @@
-"""Offline audit probes: expected safety behavior, covering the audited recovery and accounting contracts."""
+"""Contracts from the 2026-09-13 overnight-fixes audit (hermetic, no paid calls).
+
+* settling a retired source attempt never disables its own authorized recovery;
+* a terminal launch's settlement keeps its unproven spend held instead of refunding it;
+* workspace-bundle cleanup honours live storage pins regardless of file age.
+"""
 import json
 import pytest
 
+from blueprint_pipeline import control_plane_storage_gc as gc
+from blueprint_pipeline.control_plane_storage_pins import write_storage_pin, live_pinned_paths
+from tests.test_control_plane_storage_gc import _workspace, _noclass
 from tests.test_task_evaluation_scene_recovery import setup
 from tests.test_terminal_scene_attempt_settlement import _fixture, _settle, _reserve
 from blueprint_pipeline import task_evaluation_scene_progression as progression
@@ -38,12 +46,15 @@ def test_paid_terminal_launch_must_not_be_refunded_without_cost_reconciliation(t
         _reserve(fixture['root'], fixture['intent'], 'new-full-budget-attempt', 26.0, now=300)
 
 
-
-
-
-
-def test_completed_settlement_keeps_paid_attempt_slot(tmp_path):
-    fixture = _fixture(tmp_path, launch_status='completed', spend=100, attempts=5)
-    _settle(fixture)
-    with pytest.raises(SceneIntakeError, match='attempt_cap_exhausted'):
-        _reserve(fixture['root'], fixture['intent'], 'new-attempt', 1, now=300)
+def test_workspace_gc_must_honor_a_live_pin_even_when_files_are_old(tmp_path):
+    root, pins = tmp_path / 'semantic-pretraining', tmp_path / 'pins'
+    now = 5_000_000.0
+    workspace = _workspace(root, 'still-needed', age=7 * 3600, now=now)
+    write_storage_pin(pins_root=pins, kind='activation', owner_id='active-launch',
+                      paths=[workspace], now=lambda: now)
+    assert str(workspace) in live_pinned_paths(pins, now=lambda: now)
+    report = gc.run_storage_gc(content_store_roots=[], derived_roots=[], queue_roots=[],
+        pins_root=pins, workspace_bundle_roots=[root], apply=True, ack=gc.RUN_ACK,
+        now=lambda: now, classifier=_noclass)
+    assert report['workspace_bundles']['removed_count'] == 0
+    assert (workspace / 'bundle/provider_runtime/runtime.bin').exists()

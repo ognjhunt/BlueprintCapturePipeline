@@ -181,3 +181,38 @@ def test_dedup_kernel_response_records_shared_extents_without_claiming_freed_byt
     result = dedup.deduplicate_pair(left, right, apply=True)
     assert result['status'] == 'deduplicated' and result['bytes_deduplicated'] == 4
     assert left.stat().st_ino != right.stat().st_ino
+
+
+def test_reexported_threshold_dependency_invalidates_verdict(probe_modules):
+    _, path = probe_modules('audit_limits', 'LIMIT = 10\n')
+    probe_modules('audit_reexport', 'from blueprint_pipeline.audit_limits import LIMIT\n')
+    check, _ = probe_modules('audit_reexport_check',
+        'from blueprint_pipeline.audit_reexport import LIMIT\n'
+        'def validate():\n    return {"accepted": 5 < LIMIT}\n')
+    with file_digest_scope():
+        assert reuse_verdict('reexport', ('same',), {}, check.validate)['accepted']
+    path.write_text('LIMIT = 1\n')
+    check.LIMIT = 1
+    with file_digest_scope():
+        assert reuse_verdict('reexport', ('same',), {}, check.validate) == {'accepted': False}
+
+
+def test_nested_in_memory_hit_preserves_large_consulted_file(tmp_path, probe_modules):
+    from blueprint_pipeline.validation_file_digests import MINIMUM_BYTES
+    path = tmp_path / 'consulted.bin'
+    path.write_bytes(b'a' * (MINIMUM_BYTES + 1))
+    probe_modules('audit_file_leaf',
+        'from blueprint_pipeline.task_evaluation_scene_configuration_submission_inputs import sha\n'
+        'from pathlib import Path\n'
+        f'PATH = Path({str(path)!r})\n'
+        'def validate():\n    return {"digest": sha(PATH)}\n')
+    outer, _ = probe_modules('audit_file_outer',
+        'from blueprint_pipeline.task_evaluation_sam31_prefix_evidence import reuse_verdict\n'
+        'from blueprint_pipeline.audit_file_leaf import validate as leaf\n'
+        'def validate():\n    return reuse_verdict("file-inner", ("same",), {}, leaf)\n')
+    with file_digest_scope():
+        original = outer.validate()
+        assert reuse_verdict('file-outer', ('same',), {}, outer.validate) == original
+    path.write_bytes(b'b' * (MINIMUM_BYTES + 1))
+    with file_digest_scope():
+        assert reuse_verdict('file-outer', ('same',), {}, outer.validate) != original

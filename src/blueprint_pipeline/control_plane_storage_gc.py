@@ -777,33 +777,51 @@ def workspace_process_active(workspace):
     try:
         return active_reference(workspace, ignored_process_ids=(os.getpid(),))
     except (OSError, ValueError):
-        return True  # An unavailable process inventory is not proof of idleness.
+        return True
 
 
-def _workspace_protected(workspace, pins_root, queue_roots, now):
+def _workspace_busy(workspace, queue_roots):
     if not (workspace.parent / ".workspace-locks" / (workspace.name + ".lock")).is_file():
-        return True
-    pinned = live_pinned_paths(pins_root, now=now)
-    resolved = workspace.resolve()
-    if any(Path(p).resolve() == resolved or resolved in Path(p).resolve().parents
-           or Path(p).resolve() in resolved.parents for p in pinned):
-        return True
+        return True  # No evidence that this legacy workspace uses the lock protocol.
     return workspace.name in _queue_reference_text(queue_roots) or workspace_process_active(workspace)
+
+
+def _pinned_workspace(workspace: Path, pinned: set[str]) -> bool:
+    """True when a live storage pin names the workspace, anything inside it, or an ancestor."""
+    if not pinned:
+        return False
+    candidates = {workspace}
+    try:
+        candidates.add(workspace.resolve())
+    except OSError:
+        pass
+    for candidate in candidates:
+        for raw in pinned:
+            pin = Path(raw)
+            if pin == candidate or candidate in pin.parents or pin in candidate.parents:
+                return True
+    return False
 
 
 def build_workspace_bundle_manifest(
     *,
     workspace_roots: Sequence[str | Path],
-    pins_root: str | Path = "/var/lib/blueprint/pipeline-control-plane/storage-pins",
-    queue_roots: Sequence[str | Path] = (),
     minimum_age_seconds: int = DEFAULT_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS,
     now: Callable[[], float] = time.time,
     classifier: Callable[..., Any] = require_storage_class,
+    pins_root: str | Path | None = None,
+    queue_roots: Sequence[str | Path] = (),
 ) -> dict[str, Any]:
     """List ``bundle`` copies inside idle workspaces, without mutating anything.
 
-    Age is only a candidate filter. Pins, queue references, active processes and
-    the producer workspace lock protect bundles still in use.
+    A workspace is idle when nothing anywhere in its tree (outputs, receipts,
+    or the bundle) changed within the window: the synchronous allocator run
+    that uses the bundle finishes within hours, and a later run creates a new
+    digest-named workspace rather than reusing this one. Reading a bundle does
+    not move its modification time, so age alone cannot prove the absence of a
+    live consumer: a workspace named by a live storage pin (2026-09-13 audit) is
+    retained regardless of age, like every other reclaim class, and the pin is
+    re-checked immediately before removal.
     """
 
     if (
@@ -812,9 +830,12 @@ def build_workspace_bundle_manifest(
         or minimum_age_seconds < 0
     ):
         raise ControlPlaneStorageGCError("control_plane_storage_gc_workspace_bundle_window_invalid")
+    from .control_plane_storage_pins import pins_root_from_environment
+    pins_root = pins_root or pins_root_from_environment()
     observed_at = float(now())
     candidates: list[dict[str, Any]] = []
-    retained = {"recent": 0, "unsafe": 0, "no_bundle": 0, "protected": 0}
+    retained = {"recent": 0, "unsafe": 0, "no_bundle": 0, "pinned": 0, "in_use": 0}
+    pinned = live_pinned_paths(pins_root, now=lambda: observed_at) if pins_root is not None else set()
     roots: list[str] = []
     for raw_root in workspace_roots:
         root = Path(raw_root).expanduser()
@@ -825,15 +846,18 @@ def build_workspace_bundle_manifest(
         for workspace in sorted(root.iterdir()):
             if workspace.name.startswith(".") or workspace.is_symlink() or not workspace.is_dir():
                 continue
+            if _pinned_workspace(workspace, pinned):
+                retained["pinned"] += 1
+                continue
+            if _workspace_busy(workspace, queue_roots):
+                retained["in_use"] += 1
+                continue
             bundle = workspace / WORKSPACE_BUNDLE_CHILD
             if bundle.is_symlink():
                 retained["unsafe"] += 1
                 continue
             if not bundle.is_dir():
                 retained["no_bundle"] += 1
-                continue
-            if _workspace_protected(workspace, pins_root, queue_roots, now):
-                retained["protected"] += 1
                 continue
             try:
                 latest, _ = _tree_snapshot(workspace)
@@ -858,12 +882,13 @@ def build_workspace_bundle_manifest(
         "status": "dry_run",
         "minimum_age_seconds": minimum_age_seconds,
         "observed_at_epoch": observed_at,
-        "pins_root": str(pins_root), "queue_roots": [str(p) for p in queue_roots],
         "roots": roots,
         "candidate_count": len(candidates),
         "candidate_bytes": sum(row["size_bytes"] for row in candidates),
         "candidates": candidates,
         "retained_counts": retained,
+        "pins_root": str(pins_root),
+        "queue_roots": [str(p) for p in queue_roots],
         "manifest_digest": "",
     }
     manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
@@ -873,7 +898,7 @@ def build_workspace_bundle_manifest(
 def apply_workspace_bundle_manifest(
     manifest: Mapping[str, Any], *, ack: str, now: Callable[[], float] = time.time
 ) -> dict[str, Any]:
-    """Remove each candidate bundle whose workspace is still idle; leave a sealed marker."""
+    """Remove each candidate bundle whose workspace is still idle and unpinned; leave a sealed marker."""
 
     if (
         ack != WORKSPACE_BUNDLE_ACK
@@ -885,8 +910,6 @@ def apply_workspace_bundle_manifest(
     from .control_plane_workspace_lock import workspace_lock
     minimum_age = int(manifest.get("minimum_age_seconds") or 0)
     pins_root = manifest.get("pins_root")
-    if not pins_root:
-        raise ControlPlaneStorageGCError("workspace_bundle_protection_context_missing")
     removed: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for row in manifest.get("candidates") or []:
@@ -897,9 +920,13 @@ def apply_workspace_bundle_manifest(
         if not name or "/" in name or name.startswith(".") or workspace.is_symlink() or bundle.is_symlink() or not bundle.is_dir():
             skipped.append({"workspace": name, "reason": "candidate_changed"})
             continue
+        if pins_root and _pinned_workspace(workspace, live_pinned_paths(pins_root, now=now)):
+            skipped.append({"workspace": name, "reason": "pinned"})
+            continue
         try:
             with workspace_lock(workspace, reclaim=True) as acquired:
-                if not acquired or _workspace_protected(workspace, pins_root, manifest.get("queue_roots", ()), now):
+                if (not acquired or _workspace_busy(workspace, manifest.get("queue_roots", ()))
+                        or (pins_root and _pinned_workspace(workspace, live_pinned_paths(pins_root, now=now)))):
                     skipped.append({"workspace": name, "reason": "workspace_in_use"})
                     continue
                 if float(now()) - _tree_snapshot(workspace)[0] < minimum_age:
@@ -1098,10 +1125,11 @@ def run_storage_gc(
     report["skipped_roots"].extend(absent)
     if bundle_present:
         bundles = build_workspace_bundle_manifest(
-            workspace_roots=bundle_present, pins_root=pins_root, queue_roots=queue_roots,
+            workspace_roots=bundle_present, queue_roots=queue_roots,
             minimum_age_seconds=workspace_bundle_minimum_age_seconds,
             now=clock,
             classifier=classifier,
+            pins_root=pins_root,
         )
         report["workspace_bundles"] = (
             apply_workspace_bundle_manifest(bundles, ack=WORKSPACE_BUNDLE_ACK, now=clock) if apply else bundles

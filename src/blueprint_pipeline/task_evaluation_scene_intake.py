@@ -31,6 +31,13 @@ from .task_evaluation_launch_preparation_queue import (
 REQUEST_SCHEMA = "task_evaluation_scene_intake_request.v1"
 INTENT_SCHEMA = "task_evaluation_scene_intent.v1"
 ATTEMPT_SCHEMA = "task_evaluation_scene_attempt.v1"
+TERMINAL_SETTLEMENT_SCHEMA = "task_evaluation_terminal_scene_attempt_settlement.v1"
+_DEPENDENT_ROW_PREFIXES = ("scene-configuration-", "controls-")
+
+
+def _dependent_row_id(attempt_id: str) -> bool:
+    """Rows a scene attempt reserves for its own scene-configuration and controls phases."""
+    return attempt_id.startswith(_DEPENDENT_ROW_PREFIXES)
 ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT"
 CLIENTS_ENV = "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -259,9 +266,13 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             _require(_identifier(recovery_from_attempt_id) and recovery_from_attempt_id != attempt_id,
                      "recovery_new_attempt_required")
             prior = _read(attempts / (recovery_from_attempt_id + ".json"), "attempt_digest")
-            prior_retirement = validated_cancellation(directory, prior)
-            _require(prior_retirement is None or prior_retirement.get("schema_version")
-                     == "task_evaluation_terminal_scene_attempt_settlement.v1",
+            # A never-started cancellation has nothing to recover from. A terminal
+            # settlement is the opposite case: the predecessor ran to a terminal state
+            # and only its unspent hold was released, so its authorized recovery stays
+            # admissible (2026-09-13 audit: settling first stranded every retry).
+            prior_cancellation = validated_cancellation(directory, prior)
+            _require(prior_cancellation is None
+                     or prior_cancellation.get("schema_version") == TERMINAL_SETTLEMENT_SCHEMA,
                      "recovery_prior_attempt_cancelled")
             _require(prior["intent_digest"] == intent["intent_digest"] and prior["provider"] == provider,
                      "recovery_prior_attempt_mismatch")
@@ -303,20 +314,34 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         if visual_review_authority is not None:
             _require(not any((row.get('visual_review_correction') or {}).get('authority_digest')
                 == visual_review_authority['authority_digest'] for row in rows), 'visual_review_correction_already_reserved')
-        from .task_evaluation_terminal_scene_attempt_settlement import SCHEMA as settlement_schema, settlement_releases_budget
-        def budgeted(row):
-            retirement = validated_cancellation(directory, row)
-            return (retirement is None or (retirement.get("schema_version") == settlement_schema
-                    and not settlement_releases_budget(retirement)))
-        rows = [row for row in rows if budgeted(row)]
+        # A settled row is not a refund: it keeps the hold its evidence cannot
+        # prove unspent and, for the retired source attempt, its place in the
+        # paid-attempt count (2026-09-13 audit). Never-started cancellations
+        # release everything.
+        from .task_evaluation_terminal_scene_attempt_settlement import retained_hold
+        settled_exposure = Decimal(0)
+        settled_attempts = 0
+        live_rows = []
+        for row in rows:
+            cancellation = validated_cancellation(directory, row)
+            if cancellation is None:
+                live_rows.append(row)
+            elif cancellation.get("schema_version") == TERMINAL_SETTLEMENT_SCHEMA:
+                hold = retained_hold(cancellation)
+                settled_exposure += Decimal(str(hold["retained_spend_usd"]))
+                settled_attempts += 1 if hold["counts_as_attempt"] else 0
+        rows = live_rows
         # The owner-approved single visual correction is an explicit additional
         # review, never an extra GPU attempt. All ordinary attempts keep their
         # original count limit; every hold still counts toward the spend cap.
+        # A paid attempt is its source row: the scene-configuration and controls
+        # rows are holds of that same attempt, never attempts of their own.
         ordinary = []
         for row in rows:
             correction = row.get('visual_review_correction')
             if correction is None:
-                ordinary.append(row)
+                if not _dependent_row_id(str(row.get("attempt_id") or "")):
+                    ordinary.append(row)
                 continue
             from .task_evaluation_visual_review_authority import read_authority
             grant = read_authority(directory=directory,source_attempt_id=correction['source_attempt_id'])
@@ -325,8 +350,8 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
                 and row['provider'] == 'openai' and row['maximum_spend_usd'] <= grant['maximum_cost_usd'],
                 'stored_visual_review_correction_invalid')
         if visual_review_authority is None:
-            _require(len(ordinary) < budget["max_paid_attempts"], "attempt_cap_exhausted")
-        exposure = sum((Decimal(str(row["maximum_spend_usd"])) for row in rows), Decimal(0))
+            _require(len(ordinary) + settled_attempts < budget["max_paid_attempts"], "attempt_cap_exhausted")
+        exposure = sum((Decimal(str(row["maximum_spend_usd"])) for row in rows), settled_exposure)
         _require(exposure + Decimal(str(maximum_spend_usd))
                  <= Decimal(str(budget["max_total_spend_usd"])), "spend_cap_exhausted")
         for row in rows:
@@ -387,10 +412,8 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
             "attempt_id", "source_commit", "runtime_digest", "input_digest", "provider",
             "maximum_spend_usd", "status")})
         from .task_evaluation_retained_controls_evidence import validated_cancellation
-        retirement = validated_cancellation(directory, row)
-        if retirement is not None:
-            attempts[-1]["status"] = ("settled_after_terminal_attempt" if retirement.get("schema_version")
-                == "task_evaluation_terminal_scene_attempt_settlement.v1" else "cancelled_before_execution")
+        if validated_cancellation(directory, row) is not None:
+            attempts[-1]["status"] = "cancelled_before_execution"
     # Expiry and revocation close the authority to admit *new* execution. They
     # do not erase the status of an attempt that was already reserved while the
     # authority was valid. Keep that attempt's running or terminal failure

@@ -420,3 +420,76 @@ def test_process_config_scopes_a_refused_scene_by_its_identity(tmp_path, monkeyp
     assert [row["status"] for row in rows] == ["controls_autoprovision_refused"]
     assert rows[0]["blocked_scene_key"] == [TEAM, SCENE_ID, TASK_ID]
     assert "scope_unresolved" not in rows[0]
+
+
+# --- persisted byte digests + retained installed receipt (2026-09-13 controls tick cost) ---
+
+
+def test_payload_digest_reuses_its_persisted_verdict_until_bytes_move(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_VALIDATION_VERDICT_ROOT", str(tmp_path / "verdicts"))
+    payload = tmp_path / "payload"
+    (payload / "nested").mkdir(parents=True)
+    big = payload / "nested" / "model.bin"
+    big.write_bytes(b"x" * (1024 * 1024 + 7))  # at or above MINIMUM_BYTES: re-proven by stat identity
+    (payload / "manifest.json").write_text("{}")
+    first = worker.payload_digest(payload)
+    real = worker._consulted_sha256
+
+    def refuse(path):
+        raise AssertionError(f"re-hashed {path} although nothing moved")
+
+    monkeypatch.setattr(worker, "_consulted_sha256", refuse)
+    assert worker.payload_digest(payload) == first
+    monkeypatch.setattr(worker, "_consulted_sha256", real)
+    big.write_bytes(b"y" * (1024 * 1024 + 7))
+    changed = worker.payload_digest(payload)
+    assert changed != first
+    (payload / "extra.txt").write_text("added")
+    assert worker.payload_digest(payload) not in {first, changed}
+
+
+def test_asset_digest_verdict_fails_closed_when_bytes_change(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_VALIDATION_VERDICT_ROOT", str(tmp_path / "verdicts"))
+    asset = tmp_path / "robot.usd"
+    asset.write_bytes(b"#usda 1.0\n" + b"0" * (1024 * 1024))
+    row = {"path": str(asset), "digest": worker.producer._sha256(asset)}
+    assert worker._asset(row) == asset
+    assert worker._asset(row) == asset
+    asset.write_bytes(b"#usda 1.0\nchanged\n" + b"0" * (1024 * 1024))
+    with pytest.raises(ValueError, match="asset_invalid"):
+        worker._asset(row)
+
+
+def test_installed_receipt_is_retained_without_reopening_runtime_bytes(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_VALIDATION_VERDICT_ROOT", str(tmp_path / "verdicts"))
+    kwargs = setup(tmp_path)
+    receipt = worker.provision_link(**kwargs)
+    assert receipt["status"] == "installed"
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("runtime bytes reopened on a retained tick")
+
+    monkeypatch.setattr(worker, "payload_digest", refuse)
+    monkeypatch.setattr(worker, "_asset", refuse)
+    monkeypatch.setattr(worker.producer, "_preparation_context", refuse)
+    kwargs["now"] += 60
+    assert worker.provision_link(**kwargs) == receipt
+    # Live owner authority still gates the retained receipt on every tick.
+    (kwargs["link_path"].parent / "revoked.json").write_text("{}")
+    with pytest.raises(ValueError, match="authority_revoked"):
+        worker.provision_link(**kwargs)
+
+
+def test_retained_receipt_requires_the_installed_registry_intent(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_VALIDATION_VERDICT_ROOT", str(tmp_path / "verdicts"))
+    kwargs = setup(tmp_path)
+    receipt = worker.provision_link(**kwargs)
+    registry = Path(receipt["installation"]["registry_path"])
+    registry.unlink()
+    kwargs["now"] += 60
+    assert worker.provision_link(**kwargs) == receipt  # full path ran again and reinstalled
+    assert registry.is_file()
+    registry.chmod(0o600)  # the install is read-only; tamper with it the way a corrupted disk would
+    registry.write_text(registry.read_text().replace("intent_digest", "intent_digest_"))
+    with pytest.raises(ValueError):
+        worker.provision_link(**kwargs)

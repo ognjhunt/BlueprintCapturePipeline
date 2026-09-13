@@ -10,6 +10,7 @@ import sys
 
 _IMPORTS = {}
 _TREES = {}
+_CLOSURES = {}
 _DATA_CACHE = ContextVar("validation_data_closure_cache", default=None)
 
 
@@ -62,6 +63,24 @@ def data_closure(names):
     cache = _DATA_CACHE.get()
     if cache is not None and key in cache:
         return cache[key]
+    prior = _CLOSURES.get(key)
+    if prior is not None:
+        modules, witnesses = prior
+        valid = True
+        for name, expected in witnesses.items():
+            spec = importlib.util.find_spec(name)
+            path = Path(spec.origin) if spec and spec.origin else None
+            try:
+                state = path.stat() if path else None
+            except OSError:
+                state = None
+            if state is None or (str(path), state.st_mtime_ns, state.st_ctime_ns, state.st_size) != expected:
+                valid = False
+                break
+        if valid:
+            if cache is not None:
+                cache[key] = modules
+            return modules
     seen, pending = {}, [(name, frozenset()) for name in names]
     modules = set()
     while pending:
@@ -81,14 +100,36 @@ def data_closure(names):
         seen[name] = requested
         used = set(requested)
         functions = {}
-        for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        class Initialization(ast.NodeVisitor):
+            def visit_FunctionDef(self, node):
                 functions[node.name] = node
                 used.update(_loaded_names(node.args))
                 for decorator in node.decorator_list:
                     used.update(_loaded_names(decorator))
-            elif not isinstance(node, (ast.Import, ast.ImportFrom)):
-                used.update(_loaded_names(node))
+
+            visit_AsyncFunctionDef = visit_FunctionDef
+
+            def visit_Import(self, node):
+                pass
+
+            visit_ImportFrom = visit_Import
+
+            def visit_Name(self, node):
+                if isinstance(node.ctx, ast.Load):
+                    used.add(node.id)
+
+            def visit_Attribute(self, node):
+                used.add(node.attr)
+                self.generic_visit(node)
+
+        Initialization().visit(tree)
+        # A re-exported constant is initialized by its import statement even
+        # when this module never reads it itself (rules.LIMIT <- limits.LIMIT).
+        for alias, target, member, local in imports(spec.origin, name):
+            if not local and target and target.startswith('blueprint_pipeline'):
+                value = vars(sys.modules[target]).get(member) if member and target in sys.modules else None
+                if not inspect.isfunction(value):
+                    used.add(alias)
         expanded = set()
         while (used & functions.keys()) - expanded:
             for helper in (used & functions.keys()) - expanded:
@@ -100,6 +141,13 @@ def data_closure(names):
                 child = getattr(sys.modules.get(target), member, None) if member else None
                 if inspect.ismodule(child):
                     pending.append((child.__name__, frozenset(used)))
+    witnesses = {}
+    for name in modules:
+        spec = importlib.util.find_spec(name)
+        path = Path(spec.origin)
+        state = path.stat()
+        witnesses[name] = (str(path), state.st_mtime_ns, state.st_ctime_ns, state.st_size)
+    _CLOSURES[key] = (frozenset(modules), witnesses)
     if cache is not None:
         cache[key] = modules
     return modules

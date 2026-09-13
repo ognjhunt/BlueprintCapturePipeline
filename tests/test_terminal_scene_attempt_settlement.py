@@ -1,4 +1,4 @@
-"""Terminal attempts release their holds; live or tampered evidence fails closed."""
+"""Terminal attempts settle their rows conservatively; live or tampered evidence fails closed."""
 
 import copy
 import json
@@ -90,7 +90,7 @@ def _settle(fx, **kwargs):
 
 def test_settlement_releases_holds_and_attempt_slots(tmp_path: Path) -> None:
     """2026-09-13: 31 rows held $148.38 of a $150 cap while ~$4 was spent."""
-    fx = _fixture(tmp_path, launch_status=None)
+    fx = _fixture(tmp_path)
     with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
         _reserve(fx["root"], fx["intent"], "source-a2", 4.5, now=300)
     outcome = _settle(fx)
@@ -108,12 +108,72 @@ def test_settlement_releases_holds_and_attempt_slots(tmp_path: Path) -> None:
     assert all(row["status"] == "already_released" for row in again["rows"])
 
 
-def test_attempt_count_ignores_settled_rows(tmp_path: Path) -> None:
-    fx = _fixture(tmp_path, spend=100.0, attempts=5, launch_status=None)
-    with pytest.raises(SceneIntakeError, match="attempt_cap_exhausted"):
-        _reserve(fx["root"], fx["intent"], "source-a2", 4.5, now=300)
-    _settle(fx)
+def test_paid_attempts_are_source_rows_and_executed_ones_keep_counting(tmp_path: Path) -> None:
+    """Dependent rows are holds of one attempt, never attempts; a settled executed attempt still counts."""
+    fx = _fixture(tmp_path, spend=100.0, attempts=2)
     assert _reserve(fx["root"], fx["intent"], "source-a2", 4.5, now=300)["status"] == "reserved"
+    with pytest.raises(SceneIntakeError, match="attempt_cap_exhausted"):
+        _reserve(fx["root"], fx["intent"], "source-a3", 4.5, now=301)
+    _settle(fx)  # source-a1 executed its preparation: settling it releases no attempt slot
+    with pytest.raises(SceneIntakeError, match="attempt_cap_exhausted"):
+        _reserve(fx["root"], fx["intent"], "source-a3", 4.5, now=302)
+
+
+def test_settlement_keeps_unproven_spend_and_releases_only_never_started_rows(tmp_path: Path) -> None:
+    """A stopped resource proves nothing more can be spent, not that nothing was (2026-09-13 audit)."""
+    fx = _fixture(tmp_path)  # launch blocked: edits may have been paid, controls never became eligible
+    _settle(fx)
+    holds = {}
+    for row_id in ("source-a1", *fx["rows"]):
+        attempt = json.loads((fx["directory"] / "attempts" / (row_id + ".json")).read_text())
+        receipt = validated_cancellation(fx["directory"], attempt)
+        holds[fx["rows"].get(row_id, "source")] = (receipt["settled_spend"], settlement.retained_hold(receipt))
+    for phase, (sealed, derived) in holds.items():
+        assert sealed == derived, phase
+    assert holds["source"][0] == {"basis": "retired_source_unreconciled", "retained_spend_usd": 4.5, "counts_as_attempt": True}
+    assert holds["scene_configuration"][0] == {"basis": "terminal_launch_unreconciled", "retained_spend_usd": 16.76, "counts_as_attempt": False}
+    for phase in ("construction", "controls", "placement"):
+        assert holds[phase][0] == {"basis": "downstream_of_blocked_launch", "retained_spend_usd": 0.0, "counts_as_attempt": False}
+    # 4.5 + 16.76 stay held: 4.5 more fits under the $26 cap, 5.0 more does not.
+    assert _reserve(fx["root"], fx["intent"], "source-a2", 4.5, now=300)["status"] == "reserved"
+    with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
+        _reserve(fx["root"], fx["intent"], "source-a3", 0.75, now=301)
+
+
+def test_completed_launch_keeps_every_dependent_hold_until_reconciled(tmp_path: Path) -> None:
+    fx = _fixture(tmp_path, launch_status="completed")
+    _settle(fx)
+    with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
+        _reserve(fx["root"], fx["intent"], "source-a2", 1.3, now=300)  # 24.72 held + 1.3 > 26
+    assert _reserve(fx["root"], fx["intent"], "source-a2", 1.28, now=300)["status"] == "reserved"
+
+
+def test_legacy_settlement_receipts_without_settled_spend_are_accounted_the_same_way(tmp_path: Path) -> None:
+    fx = _fixture(tmp_path)
+    _settle(fx)
+    for row_id in ("source-a1", *fx["rows"]):
+        path = fx["directory"] / "cancelled-unstarted-controls" / (row_id + ".json")
+        receipt = json.loads(path.read_text())
+        del receipt["settled_spend"]
+        del receipt["receipt_digest"]
+        path.chmod(0o600)
+        path.write_text(json.dumps(_seal(receipt, "receipt_digest"), sort_keys=True) + "\n")
+    assert _reserve(fx["root"], fx["intent"], "source-a2", 4.5, now=300)["status"] == "reserved"
+    with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
+        _reserve(fx["root"], fx["intent"], "source-a3", 0.75, now=301)
+
+
+def test_tampered_settled_spend_fails_closed(tmp_path: Path) -> None:
+    fx = _fixture(tmp_path)
+    _settle(fx)
+    path = fx["directory"] / "cancelled-unstarted-controls" / "source-a1.json"
+    receipt = json.loads(path.read_text())
+    receipt["settled_spend"] = {"basis": "launch_never_queued", "retained_spend_usd": 0.0, "counts_as_attempt": False}
+    del receipt["receipt_digest"]
+    path.chmod(0o600)
+    path.write_text(json.dumps(_seal(receipt, "receipt_digest"), sort_keys=True) + "\n")
+    with pytest.raises(ValueError, match="terminal_settlement_settled_spend_invalid"):
+        _reserve(fx["root"], fx["intent"], "source-a2", 4.5, now=300)
 
 
 def test_dependent_rows_wait_for_a_terminal_launch(tmp_path: Path) -> None:

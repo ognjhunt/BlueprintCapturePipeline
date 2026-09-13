@@ -36,3 +36,27 @@ def test_gc_rechecks_pin_created_after_manifest_and_holds_producer_lock(tmp_path
     assert outcome['removed_count'] == 0
     assert (workspace / 'bundle').exists()
 
+
+
+def test_legacy_workspace_without_producer_lock_is_retained(tmp_path, monkeypatch):
+    monkeypatch.setattr(gc, 'workspace_process_active', lambda root: False)
+    root, pins = tmp_path / 'workspaces', tmp_path / 'pins'
+    now = 5_000_000.0
+    workspace = _workspace(root, 'legacy', age=7 * 3600, now=now)
+    (root / '.workspace-locks/legacy.lock').unlink()
+    report = gc.build_workspace_bundle_manifest(workspace_roots=[root], pins_root=pins,
+        now=lambda: now, classifier=_noclass)
+    assert report['candidate_count'] == 0
+    assert (workspace / 'bundle').exists()
+
+
+def test_queued_workspace_is_retained_without_a_pin(tmp_path, monkeypatch):
+    monkeypatch.setattr(gc, 'workspace_process_active', lambda root: False)
+    root, pins, queue = tmp_path / 'workspaces', tmp_path / 'pins', tmp_path / 'queue'
+    now = 5_000_000.0
+    workspace = _workspace(root, 'queued-workspace', age=7 * 3600, now=now)
+    (queue / 'pending').mkdir(parents=True)
+    (queue / 'pending/job.json').write_text('{"workspace": "queued-workspace"}')
+    report = gc.build_workspace_bundle_manifest(workspace_roots=[root], pins_root=pins,
+        queue_roots=[queue], now=lambda: now, classifier=_noclass)
+    assert report['candidate_count'] == 0 and (workspace / 'bundle').exists()

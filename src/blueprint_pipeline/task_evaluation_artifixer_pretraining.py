@@ -180,6 +180,53 @@ def _launch_intent_digest(launch_root: Path) -> str | None:
     return digest if isinstance(digest, str) and digest else None
 
 
+def _launch_scene_scope(launch_root: Path) -> tuple[str, str] | None:
+    """``(team_namespace, scene_id)`` a launch profile names; None when the profile is unreadable."""
+    try:
+        profile = _json(launch_root / "launch_profile.json")
+    except (OSError, ValueError, TypeError):
+        return None
+    run = profile.get("task_evaluation_run")
+    if not isinstance(run, Mapping):
+        return None
+    team, scene = str(run.get("team_namespace") or ""), str(run.get("scene_id") or "")
+    return (team, scene) if team and scene else None
+
+
+SOURCE_IGNORED_SCHEMA = "task_evaluation_artifixer_completed_training_source_ignored.v1"
+
+
+def scoped_completed_training_environment(environment: Mapping[str, str], job_dir) -> tuple[dict, dict | None]:
+    """Honour an explicit completed-training source only for a launch of this run's scene.
+
+    2026-09-13: a dispatcher drop-in left over from scene 841757's r24 run pinned
+    ``BLUEPRINT_ARTIFIXER_COMPLETED_TRAINING_SOURCE_LAUNCH_ROOT`` for every launch,
+    so scene 840938's attempt #19 refused with ``training_inputs_changed`` before any
+    GPU allocation instead of training. A source that names another scene (or none)
+    while this launch names its own is recorded as ignored, together with the
+    completed-review root that only makes sense next to it, and the run discovers
+    its own intent's candidates instead. Exactness is still proven by the reuse
+    validator; this only stops a foreign pin from blocking a run it never described.
+    """
+    from .artifixer_completed_training_reuse import REVIEW_ENV, SOURCE_ENV
+    values = dict(environment)
+    source = values.get(SOURCE_ENV)
+    if not source:
+        return values, None
+    job = Path(job_dir).resolve()
+    own = _launch_scene_scope(job.parent.parent)
+    theirs = _launch_scene_scope(Path(str(source)))
+    if own is None or theirs == own:
+        return values, None
+    ignored = {"schema_version": SOURCE_IGNORED_SCHEMA, "reason": "completed_training_source_out_of_scope",
+               "source_launch_root": str(source), "source_scene": list(theirs) if theirs else None,
+               "current_scene": list(own),
+               "ignored_environment": [key for key in (SOURCE_ENV, REVIEW_ENV) if values.get(key)]}
+    for key in (SOURCE_ENV, REVIEW_ENV):
+        values.pop(key, None)
+    return values, ignored
+
+
 def discover_completed_training_candidates(job_dir, *, limit: int = CANDIDATE_LIMIT) -> list[Path]:
     """This intent's closed scene-configuration launches whose training bytes could be reused.
 
@@ -293,6 +340,9 @@ def prepare_semantics_before_gpu(*, bundle_receipt, authority, job_dir, environm
         state_path = work / "pretraining_state.json"
         component = toolchain / manifest["stages"][stage["adapter"]["id"]]["component_entrypoint"]
         from .artifixer_completed_training_reuse import CANDIDATES_ENV, SOURCE_ENV
+        environment, ignored_source = scoped_completed_training_environment(environment, job)
+        if ignored_source is not None:
+            (work / "completed_training_source_ignored.json").write_text(canonical_json(ignored_source) + "\n")
         discovered = ([] if environment.get(SOURCE_ENV) or environment.get(CANDIDATES_ENV)
                       else discover_completed_training_candidates(job))
         values = {
