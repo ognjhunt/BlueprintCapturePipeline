@@ -237,14 +237,17 @@ def test_diagnostic_driver_hydrates_render_and_semantic_without_paid_calls(
     )
     locality_receipt = tmp_path / "locality-receipt.json"
     locality_receipt.write_text("{}\n", encoding="utf-8")
-    monkeypatch.setattr(
-        driver,
-        "materialize_semantic_locality_seal",
-        lambda **kwargs: {
+    def preserve_output(**kwargs):
+        assert kwargs["preserve_editor_output"] is True
+        return {
             "receipt": {"receipt_digest": "sha256:" + "1" * 64},
             "receipt_path": str(locality_receipt),
             "semantic_teacher_frames_root": str(kwargs["semantic_output_root"] / "tasks" / "remove-source-object-104"),
-        },
+        }
+    monkeypatch.setattr(
+        driver,
+        "materialize_semantic_locality_seal",
+        preserve_output,
     )
 
     monkeypatch.setattr(
