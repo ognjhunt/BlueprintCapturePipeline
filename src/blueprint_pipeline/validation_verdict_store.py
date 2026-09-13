@@ -44,6 +44,7 @@ _MODULE_DIGESTS: dict[tuple, str] = {}
 _DEPENDENCIES = ContextVar("validator_code_dependencies", default=())
 MISS = object()
 DEPENDENCY_VERSION = 2
+_DEFAULT_CODE = object()
 
 
 def verdict_root() -> Path:
@@ -94,7 +95,8 @@ def executed_code_identity(run, *, always=()):
     while it was computed; ``always`` names modules whose data the validator
     reads without calling into them.
     """
-    root = _package_root()
+    import blueprint_pipeline
+    roots = [_package_root(), *(Path(p).resolve() for p in blueprint_pipeline.__path__)]
     from .validation_code_dependencies import _DATA_CACHE, frame_dependencies
     data_token = _DATA_CACHE.set({})
     names = set()
@@ -113,7 +115,8 @@ def executed_code_identity(run, *, always=()):
                 collector.add("")
         if event == "call" and frame.f_code not in seen:
             seen.add(frame.f_code)
-            module = _module_name(Path(frame.f_code.co_filename), root)
+            module = next((name for root in roots
+                           if (name := _module_name(Path(frame.f_code.co_filename), root))), None)
             if module:
                 try:
                     dependencies = {module} | frame_dependencies(frame, module)
@@ -238,9 +241,9 @@ def lookup(*, name: str, key, root: Path | None = None, missing=None):
 
 
 def store(*, name: str, key, files, verdict, source_commit: str = "", root: Path | None = None,
-          code=None) -> Path | None:
+          code=_DEFAULT_CODE) -> Path | None:
     """Persist one verdict with the exact files and code it consulted; ``None`` when unavailable."""
-    code = code if code else code_identity()
+    code = code_identity() if code is _DEFAULT_CODE else code
     if not code:
         return None
     consulted: dict[str, dict] = {}
@@ -271,3 +274,9 @@ def inherit_cached_dependencies(name, key):
     if _DEPENDENCIES.get() and lookup(name=name, key=key, missing=MISS) is MISS:
         for collector in _DEPENDENCIES.get():
             collector.add("")
+
+
+def lookup_entry(*, name, key, root=None):
+    """Compatibility API for controls byte verdicts: null is a successful value."""
+    value = lookup(name=name, key=key, root=root, missing=MISS)
+    return (False, None) if value is MISS else (True, value)
