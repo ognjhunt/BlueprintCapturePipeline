@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import zipfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,19 @@ from .semantic_teacher_candidate_reuse import (
 SCHEMA = "semantic_teacher_retained_candidate_discovery.v1"
 DISCOVERY_ENV = "BLUEPRINT_SCENE_CONFIGURATION_RETAINED_CANDIDATE_DISCOVERY"
 DISCOVERY_ROOT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_RETAINED_CANDIDATE_DISCOVERY_ROOT"
+#: A successful edit stage archives its workspace into the launch's
+#: ``api_pretraining_capsule.zip`` and removes the expanded copy, so a retry
+#: after a later (GPU-stage) failure finds its accepted edits only there.
+CAPSULE_ROOT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_RETAINED_CANDIDATE_CAPSULE_ROOT"
+DEFAULT_CAPSULE_ROOT = "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs"
+CAPSULE_RELATIVE = "allocator/scene-configuration-job/api_pretraining_capsule.zip"
+CAPSULE_RECEIPT_RELATIVE = "allocator/scene-configuration-job/api_pretraining_receipt.json"
+CAPSULE_MEMBER_PREFIX = "output/released_artifixer_runtime/"
+CAPSULE_MEMBER_DIRS = (
+    "semantic_teacher_packet/", "semantic_teacher_output/", "semantic_teacher_exact_support_locality_seal/",
+    "semantic_target_review/", "semantic_target_recovery/",
+)
+MAX_CAPSULES = 16
 RUNTIME = "output/released_artifixer_runtime"
 REQUEST = "semantic_teacher_packet/semantic_teacher_image_edit_runtime_request.v1.json"
 RESULT = "semantic_teacher_output/semantic_teacher_image_edit_runtime_result.v1.json"
@@ -158,32 +172,98 @@ def _workspace_plan(runtime: Path, current: Mapping[str, Mapping[str, Any]], bac
             "chain": "repair_merge" if merged is not None else "locality_seal"}
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _capsule_runtime(launch_root: Path, extract_root: Path) -> Path | None:
+    """Extract the reviewed edit-stage files of a sealed capsule; None when the capsule is not trustworthy."""
+    receipt_path = launch_root / CAPSULE_RECEIPT_RELATIVE
+    capsule_path = launch_root / CAPSULE_RELATIVE
+    receipt = _sealed(receipt_path, "receipt_digest")
+    if receipt is None or capsule_path.is_symlink() or not capsule_path.is_file():
+        return None
+    if receipt.get("capsule_sha256") != _sha256_file(capsule_path) or receipt.get("capsule_bytes") != capsule_path.stat().st_size:
+        return None
+    target = extract_root / launch_root.name[:24]
+    with zipfile.ZipFile(capsule_path) as zipped:
+        for member in zipped.infolist():
+            name = member.filename
+            if member.is_dir() or not name.startswith(CAPSULE_MEMBER_PREFIX):
+                continue
+            relative = name[len(CAPSULE_MEMBER_PREFIX):]
+            if not relative.startswith(CAPSULE_MEMBER_DIRS) or ".." in relative.split("/") or relative.startswith("/"):
+                continue
+            destination = target / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with zipped.open(member) as source, destination.open("wb") as sink:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    sink.write(chunk)
+    return target
+
+
+def _capsule_launches(capsule_root: Path) -> list[Path]:
+    root = Path(capsule_root)
+    if root.is_symlink() or not root.is_dir():
+        return []
+    launches = [p for p in root.iterdir()
+                if p.is_dir() and not p.is_symlink() and (p / CAPSULE_RELATIVE).is_file()]
+    launches.sort(key=lambda p: (p / CAPSULE_RELATIVE).stat().st_mtime, reverse=True)
+    return launches[:MAX_CAPSULES]
+
+
 def discover_retained_candidates(*, runtime_request_path: Path, render: Mapping[str, Any],
-                                 workspace_root: Path, output_root: Path) -> dict[str, Any]:
-    """Build and validate a retained selection from the newest matching workspace."""
+                                 workspace_root: Path, output_root: Path,
+                                 capsule_root: Path | None = None) -> dict[str, Any]:
+    """Build and validate a retained selection from the newest matching workspace or capsule."""
     request = json.loads(Path(runtime_request_path).read_text(encoding="utf-8"))
     current = _request_frames(request)
     backend = _backend(request)
     receipt: dict[str, Any] = {"schema_version": SCHEMA, "status": "no_matching_workspace",
-                               "workspace_root": str(workspace_root), "examined": [], "candidates_retained": 0}
+                               "workspace_root": str(workspace_root),
+                               "capsule_root": str(capsule_root) if capsule_root else None,
+                               "examined": [], "candidates_retained": 0}
     root = Path(workspace_root)
-    if root.is_symlink() or not root.is_dir() or not current:
-        receipt["status"] = "discovery_root_unavailable" if current else "no_current_frames"
+    if not current:
+        receipt["status"] = "no_current_frames"
         return {**receipt, "candidates": []}
-    workspaces = [p for p in root.iterdir() if p.is_dir() and not p.is_symlink() and not p.name.startswith(".")]
-    workspaces.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    for workspace in workspaces[:MAX_WORKSPACES]:
-        runtime = workspace / RUNTIME
+    entries: list[tuple[float, str, Path]] = []
+    if not root.is_symlink() and root.is_dir():
+        for path in root.iterdir():
+            if path.is_dir() and not path.is_symlink() and not path.name.startswith("."):
+                entries.append((path.stat().st_mtime, "workspace", path))
+    else:
+        receipt["examined"].append({"workspace_root": str(root), "status": "discovery_root_unavailable"})
+    if capsule_root is not None:
+        for launch in _capsule_launches(Path(capsule_root)):
+            entries.append(((launch / CAPSULE_RELATIVE).stat().st_mtime, "capsule", launch))
+    if not entries:
+        receipt["status"] = "discovery_root_unavailable"
+        return {**receipt, "candidates": []}
+    entries.sort(key=lambda row: row[0], reverse=True)
+    candidates: list = []
+    for _mtime, kind, workspace in entries[:MAX_WORKSPACES]:
         try:
+            if kind == "capsule":
+                runtime = _capsule_runtime(workspace, Path(output_root) / "capsules")
+                if runtime is None:
+                    receipt["examined"].append({"capsule": workspace.name, "status": "capsule_not_trustworthy"})
+                    continue
+            else:
+                runtime = workspace / RUNTIME
             plan = _workspace_plan(runtime, current, backend)
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            receipt["examined"].append({"workspace": workspace.name, "status": f"unreadable:{type(exc).__name__}"})
+        except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
+            receipt["examined"].append({kind: workspace.name, "status": f"unreadable:{type(exc).__name__}"})
             continue
         if plan is None:
-            receipt["examined"].append({"workspace": workspace.name, "status": "not_applicable"})
+            receipt["examined"].append({kind: workspace.name, "status": "not_applicable"})
             continue
         if not plan["retained"]:
-            receipt["examined"].append({"workspace": workspace.name, "status": "no_accepted_frames", "skipped": plan["skipped"]})
+            receipt["examined"].append({kind: workspace.name, "status": "no_accepted_frames", "skipped": plan["skipped"]})
             continue
         selection_root = Path(output_root) / workspace.name[:16]
         selection_path = materialize_retained_selection_from_sources(sources=plan["sources"], output_root=selection_root)
@@ -191,6 +271,7 @@ def discover_retained_candidates(*, runtime_request_path: Path, render: Mapping[
         receipt.update({
             "status": "retained_from_previous_attempt",
             "source_workspace": str(workspace),
+            "source_kind": kind,
             "source_review_execution_digest": plan["review_execution_digest"],
             "digest_chain": plan["chain"],
             "retained_camera_ids": plan["retained"],
@@ -200,7 +281,7 @@ def discover_retained_candidates(*, runtime_request_path: Path, render: Mapping[
             "candidates_retained": len(candidates),
             "provider_call_performed": False,
         })
-        receipt["examined"].append({"workspace": workspace.name, "status": "selected"})
+        receipt["examined"].append({kind: workspace.name, "status": "selected"})
         break
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     Path(output_root).mkdir(parents=True, exist_ok=True)

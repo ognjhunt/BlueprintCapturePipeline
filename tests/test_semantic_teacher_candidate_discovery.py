@@ -164,3 +164,46 @@ def test_nothing_is_retained_without_a_matching_backend_review_or_digest(tmp_pat
     missing = discovery.discover_retained_candidates(
         runtime_request_path=current_request, render=_render(inputs), workspace_root=tmp_path / "absent", output_root=tmp_path / "disc2")
     assert missing["status"] == "discovery_root_unavailable" and missing["candidates"] == []
+
+
+def _capsule_launch(launch_root: Path, workspace_root: Path, *, tamper: bool = False) -> Path:
+    """Archive a workspace the way prepare_semantics_before_gpu does and seal its receipt."""
+    import zipfile
+    job = launch_root / "allocator/scene-configuration-job"
+    job.mkdir(parents=True)
+    capsule = job / "api_pretraining_capsule.zip"
+    with zipfile.ZipFile(capsule, "x", compression=zipfile.ZIP_DEFLATED) as zipped:
+        for path in sorted(workspace_root.rglob("*")):
+            if path.is_file():
+                zipped.write(path, str(path.relative_to(workspace_root)))
+    data = capsule.read_bytes()
+    receipt = _seal({"schema_version": "artifixer_semantic_pretraining_capsule.v1", "status": "admitted_before_gpu_allocation",
+                     "capsule_path": str(capsule), "capsule_sha256": _digest(data), "capsule_bytes": len(data)}, "receipt_digest")
+    if tamper:
+        capsule.write_bytes(data + b"x")
+    _write(job / "api_pretraining_receipt.json", receipt)
+    return capsule
+
+
+def test_capsules_of_successful_edit_stages_are_discovered_after_the_workspace_is_gone(tmp_path):
+    """A successful edit stage archives its workspace and deletes the expanded copy, so a retry after a
+    GPU-stage failure must find the accepted edits inside the launch's sealed capsule."""
+    inputs = {c: _digest(f"rgb:{c}".encode()) for c in CAMERAS}
+    masks = {c: _digest(f"mask:{c}".encode()) for c in CAMERAS}
+    staging = tmp_path / "staging"
+    _workspace(staging, "w" * 64, CAMERAS, inputs, masks, review1={c: True for c in CAMERAS})
+    launches = tmp_path / "launch-runs"
+    _capsule_launch(launches / "scene-x-launch-good", staging / ("w" * 64))
+    _capsule_launch(launches / "scene-x-launch-tampered", staging / ("w" * 64), tamper=True)
+    import time
+    newest = time.time() + 1000  # examined first, refused, then the good capsule is selected
+    os.utime(launches / "scene-x-launch-tampered/allocator/scene-configuration-job/api_pretraining_capsule.zip", (newest, newest))
+    current_request = _write(tmp_path / "current" / "request.json", _request(CAMERAS, inputs, masks))
+    outcome = discovery.discover_retained_candidates(
+        runtime_request_path=current_request, render=_render(inputs), workspace_root=tmp_path / "empty-workspaces",
+        capsule_root=launches, output_root=tmp_path / "disc")
+    assert outcome["status"] == "retained_from_previous_attempt"
+    assert outcome["source_kind"] == "capsule" and outcome["source_workspace"].endswith("scene-x-launch-good")
+    assert outcome["retained_camera_ids"] == sorted(CAMERAS)
+    assert {e.get("status") for e in outcome["examined"]} >= {"capsule_not_trustworthy", "selected"}
+    assert len(outcome["candidates"]) == 4
