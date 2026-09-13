@@ -356,3 +356,21 @@ def test_scientific_and_permission_configuration_changes_still_refuse(tmp_path, 
         config["human_authority"]["full_source_provider_disclosure_authorities"].pop("render")
     with pytest.raises(ValueError, match="training_inputs_changed"):
         reuse.stage_completed_training(**args)
+
+
+def test_candidate_loop_reuses_the_first_exact_match_and_records_every_rejection(tmp_path):
+    """2026-09-13 owner ask: never re-train or re-buy image edits when this intent already finished them."""
+    args = setup_source(tmp_path)
+    missing = tmp_path / "not-a-launch"
+    reference, rejections = reuse.reuse_from_candidates(
+        candidates=[str(missing), args["source_launch_root"]], prepared=args["prepared"],
+        stage_input=args["stage_input"], tuning=args["tuning"], output_root=args["output_root"])
+    assert reference is not None and reference["receipt_digest"]
+    assert [row["source_launch_root"] for row in rejections] == [str(missing)]
+    assert rejections[0]["blocker"].startswith("artifixer_completed_training_reuse_")
+    assert Path(reference["checkpoint_root"]).is_relative_to(args["output_root"] / "candidate-1")
+    assert Path(reference["receipt_path"]).is_relative_to(args["output_root"] / "candidate-1")
+    nothing, rejected = reuse.reuse_from_candidates(
+        candidates=[str(missing), str(tmp_path / "also-missing")], prepared=args["prepared"],
+        stage_input=args["stage_input"], tuning=args["tuning"], output_root=tmp_path / "second")
+    assert nothing is None and len(rejected) == 2
