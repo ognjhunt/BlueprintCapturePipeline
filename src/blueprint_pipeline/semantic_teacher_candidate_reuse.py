@@ -17,16 +17,18 @@ RETAINED_FILE_FIELDS = ("source_runtime_request", "source_runtime_result", "cand
 def materialize_retained_selection(*, source_request_path: Path, source_result_path: Path,
                                   source_output_root: Path, camera_ids: list[str], output_root: Path) -> Path:
     """Retain selected raw candidates and original receipts without making calls."""
-    request = json.loads(source_request_path.read_text())
-    result = json.loads(source_result_path.read_text())
-    if output_root.exists() or not camera_ids or len(set(camera_ids)) != len(camera_ids):
+    return materialize_retained_selection_from_sources(
+        sources=[{"request_path": source_request_path, "result_path": source_result_path,
+                  "output_root": source_output_root, "camera_ids": list(camera_ids)}],
+        output_root=output_root)
+
+
+def materialize_retained_selection_from_sources(*, sources: list, output_root: Path) -> Path:
+    """Retain raw candidates from one or more sealed runs (first pass and its bounded repair)."""
+    output_root = Path(output_root)
+    all_cameras = [c for source in sources for c in source["camera_ids"]]
+    if output_root.exists() or not sources or not all_cameras or len(set(all_cameras)) != len(all_cameras):
         raise ValueError("semantic_teacher_retained_selection_output_invalid")
-    request_frames = {f["camera_id"]: f for t in request["tasks"] for f in t["frames"]}
-    results = {f["camera_id"]: (t["task_id"], f) for t in result["tasks"] for f in t["frames"]}
-    sources = []
-    for camera_id in camera_ids:
-        task_id, frame = results[camera_id]
-        sources.append((task_id, camera_id, _bound(source_output_root, frame["semantic_teacher_frame"])))
     output_root.mkdir(parents=True)
     def copy(source, relative):
         target = output_root / relative
@@ -34,18 +36,30 @@ def materialize_retained_selection(*, source_request_path: Path, source_result_p
         shutil.copyfile(source, target)
         return {"relative_path": relative, "size_bytes": target.stat().st_size,
                 "sha256": "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()}
-    old_request = copy(source_request_path, "original-request.json")
-    old_result = copy(source_result_path, "original-result.json")
-    rows = [{"task_id": task, "camera_id": camera, "source_runtime_request": old_request,
-             "source_runtime_result": old_result, "candidate": copy(path, f"candidates/{index:04d}.png")}
-            for index, (task, camera, path) in enumerate(sources)]
+    rows = []
+    derived = []
+    for source_index, source in enumerate(sources):
+        request_path, result_path = Path(source["request_path"]), Path(source["result_path"])
+        request = json.loads(request_path.read_text())
+        result = json.loads(result_path.read_text())
+        request_frames = {f["camera_id"]: f for t in request["tasks"] for f in t["frames"]}
+        results = {f["camera_id"]: (t["task_id"], f) for t in result["tasks"] for f in t["frames"]}
+        suffix = "" if source_index == 0 else f"-{source_index}"
+        old_request = copy(request_path, f"original-request{suffix}.json")
+        old_result = copy(result_path, f"original-result{suffix}.json")
+        for camera_id in source["camera_ids"]:
+            task_id, frame = results[camera_id]
+            candidate = _bound(Path(source["output_root"]), frame["semantic_teacher_frame"])
+            rows.append({"task_id": task_id, "camera_id": camera_id, "source_runtime_request": old_request,
+                         "source_runtime_result": old_result,
+                         "candidate": copy(candidate, f"candidates/{len(rows):04d}.png")})
+            derived.append({"camera_id": camera_id, "digest": request_frames[camera_id]["input_rgb"]["sha256"]})
     selection = {"schema_version": "semantic_teacher_retained_candidate_selection.v1",
                  "status": "selected_unreviewed_candidates", "candidates": rows}
     selection["selection_digest"] = canonical_digest(selection, digest_field="selection_digest")
     path = output_root / "selection.json"
     path.write_text(json.dumps(selection, sort_keys=True) + "\n")
-    load_retained_selection(selection_path=path, render={"derived_frames": [
-        {"camera_id": camera, "digest": request_frames[camera]["input_rgb"]["sha256"]} for camera in camera_ids]})
+    load_retained_selection(selection_path=path, render={"derived_frames": derived})
     return path
 
 
