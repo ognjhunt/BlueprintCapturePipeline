@@ -78,3 +78,58 @@ def test_delivered_scene_is_automatically_reprovisioned_without_reconstruction(r
     assert len(observed)==1
     with pytest.raises(ValueError,match='authority_expired'):
         adoption.provision_terminal_controls_adoption(config=config,catalog=catalog,intent_id=owner['intent_id'],expected_production_commit='c'*40,now=1001)
+
+
+def _second_launch_cancellations(root, owner, reserve, *, launch_id, commit='c'):
+    """Three valid unstarted-controls cancellations bound to another blocked launch."""
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+    directory = root / owner['intent_id']
+    launch = {'schema_version': 'task_evaluation_launch_receipt.v1', 'launch_id': launch_id, 'status': 'blocked',
+              'source_commit': commit * 40, 'launch_profile_digest': 'sha256:' + '9' * 64,
+              'terminal_evidence': {'status': 'blocked'}}
+    launch['receipt_digest'] = cross_runtime_canonical_digest(launch, digest_field='receipt_digest')
+    for name, cost, provider in [('construction', .45, 'vast'), ('controls', .45, 'vast'), ('placement', 2.56, 'openai')]:
+        attempt = reserve(f'controls-{launch_id}-{name}', cost, provider, commit=commit)
+        receipt = {'schema_version': cancellation.SCHEMA, 'status': 'cancelled_before_controls_eligibility',
+                   'attempt_id': attempt['attempt_id'], 'attempt_digest': attempt['attempt_digest'],
+                   'intent_digest': attempt['intent_digest'], 'maximum_spend_usd': attempt['maximum_spend_usd'],
+                   'provider': attempt['provider'], 'original_blocked_launch_receipt': launch,
+                   'source_profile': {'path': 'x', 'digest': 'sha256:' + '8' * 64},
+                   'source_autostart_intent': {'path': 'y', 'digest': 'sha256:' + '7' * 64},
+                   'downstream_execution_eligible': False, 'provider_mutation_performed': False}
+        receipt['receipt_digest'] = canonical_digest(receipt, digest_field='receipt_digest')
+        put(directory / cancellation.DIRECTORY / (attempt['attempt_id'] + '.json'), receipt)
+    return launch
+
+
+def test_multiple_blocked_launches_are_judged_per_launch(reserved, tmp_path, monkeypatch):
+    """2026-09-13: two blocked launches retired six controls rows and the whole intent was
+    refused with terminal_adoption_retired_scope_invalid, so no continuation registry entry
+    was ever provisioned for the next attempt and its activation waited forever."""
+    root, run, owner, reserve, _originals = reserved
+    config = {'scene_root': str(root), 'launch_state_root': str(tmp_path)}
+    cancellation.cancel_unstarted_controls_reservations(launch_root=run, scene_root=root)
+    _second_launch_cancellations(root, owner, reserve, launch_id='launch-two')
+    assert adoption.terminal_adoption_source(config=config, intent_id=owner['intent_id'],
+                                             expected_production_commit='c' * 40) is None
+    receipt = json.loads((run / 'launch_receipt.json').read_text())
+    receipt['status'] = 'completed'
+    put(run / 'launch_receipt.json', receipt)
+    put(run / 'webapp_sync_succeeded.json', {'sync_result_digest': 'sha256:' + '5' * 64})
+    terminal = {'result_digest': 'sha256:' + '1' * 64, 'configured_scene_revision_digest': 'sha256:' + '2' * 64,
+                'publication_result_digest': 'sha256:' + '3' * 64}
+    monkeypatch.setattr(progression, '_validate_source',
+                        lambda p: (terminal, receipt, {'provider_zero_receipt_digest': 'sha256:' + '4' * 64}))
+    source = adoption.terminal_adoption_source(config=config, intent_id=owner['intent_id'],
+                                               expected_production_commit='c' * 40)
+    assert source is not None and source['launch_id'] == 'launch'
+    assert sorted(a['attempt_id'] for a in source['retired_attempts']) == [
+        'controls-first-construction', 'controls-first-controls', 'controls-first-placement']
+    # A launch whose trio is incomplete is still a scope error.
+    extra = _second_launch_cancellations(root, owner, reserve, launch_id='launch-three')
+    directory = root / owner['intent_id']
+    (directory / cancellation.DIRECTORY / 'controls-launch-three-placement.json').unlink()
+    with pytest.raises(ValueError, match='terminal_adoption_retired_scope_invalid'):
+        adoption.terminal_adoption_source(config=config, intent_id=owner['intent_id'],
+                                          expected_production_commit='c' * 40)
+    assert extra['launch_id'] == 'launch-three'

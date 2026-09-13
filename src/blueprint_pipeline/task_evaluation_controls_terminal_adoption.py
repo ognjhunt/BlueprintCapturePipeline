@@ -31,14 +31,28 @@ def terminal_adoption_source(*, config: Mapping[str, Any], intent_id: str,
             retired.append((attempt, cancellation))
     if not retired:
         return None
-    source_ids = {c['original_blocked_launch_receipt'].get('launch_id') for _, c in retired}
-    _require(len(retired) == 3 and len(source_ids) == 1 and None not in source_ids, 'terminal_adoption_retired_scope_invalid')
-    launch_id = next(iter(source_ids))
-    _require(isinstance(launch_id, str) and Path(launch_id).name == launch_id, 'terminal_adoption_launch_id_invalid')
+    # Every blocked launch that retired its unstarted controls leaves three
+    # cancelled rows; an intent that was blocked and retried more than once
+    # (InteriorGS 840938, 2026-09-13: two blocked launches, six rows) is a
+    # normal state, not a scope error. Judge each launch's trio on its own and
+    # adopt only from the launch that actually delivered the scene.
+    groups: dict[Any, list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
+    for attempt, cancellation in retired:
+        groups.setdefault(cancellation['original_blocked_launch_receipt'].get('launch_id'), []).append((attempt, cancellation))
+    _require(None not in groups and all(len(rows) == 3 for rows in groups.values()), 'terminal_adoption_retired_scope_invalid')
     launch_root = Path(config.get('launch_state_root') or os.getenv('BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT') or str(directory.parent.parent/'task-evaluation-launch-runs'))
-    run_root = launch_root/launch_id
-    if not (run_root/'launch_receipt.json').is_file() or _json(run_root/'launch_receipt.json').get('status') != 'completed':
+    delivered = []
+    for launch_id in sorted(groups):
+        _require(isinstance(launch_id, str) and Path(launch_id).name == launch_id, 'terminal_adoption_launch_id_invalid')
+        receipt_path = launch_root/launch_id/'launch_receipt.json'
+        if receipt_path.is_file() and _json(receipt_path).get('status') == 'completed':
+            delivered.append(launch_id)
+    if not delivered:
         return None
+    _require(len(delivered) == 1, 'terminal_adoption_source_ambiguous')
+    launch_id = delivered[0]
+    retired = groups[launch_id]
+    run_root = launch_root/launch_id
     terminal, receipt, zero = _validate_source(run_root)
     if receipt['source_commit'] == expected_production_commit:
         return None
