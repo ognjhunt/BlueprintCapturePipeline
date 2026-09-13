@@ -580,15 +580,47 @@ def _emit_artifixer_runtime_diagnostics(
         )
 
 
-def _default_semantic_frame_cost(candidate: Mapping[str, Any]) -> float:
-    """Scale the conservative Sunburst planning estimate for larger source views."""
+def _default_semantic_frame_cost(
+    candidate: Mapping[str, Any],
+    *,
+    maximum_cost_per_request_usd: float | None = None,
+) -> float:
+    """Plan one semantic-teacher request without projecting above its own ceiling.
+
+    The registry's ``max_cost_per_request_usd`` is the fail-closed bound every
+    request is admitted against, and the stage cap is sized as sixteen of them
+    (``MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD``). A planning estimate above
+    that bound can never be spent, so scaling it by source size only refuses
+    passes the cap was built to cover: the 2026-09-13 InteriorGS 840938 run
+    projected $0.46875 x 16 = $7.50 against a $4.80 cap for 1280x1280 views
+    and refused before any paid request, while Sunburst bills a 1280x1280
+    high-quality edit well under the $0.30 registry maximum.
+    """
     largest_pixels = max(
         (int(frame["image_pixel_count"])
          for task in candidate.get("tasks") or []
          for frame in task.get("frames") or []),
         default=1024 * 1024,
     )
-    return round(0.3 * max(1.0, largest_pixels / (1024 * 1024)), 6)
+    scaled = round(0.3 * max(1.0, largest_pixels / (1024 * 1024)), 6)
+    if maximum_cost_per_request_usd is None:
+        return scaled
+    return round(min(float(maximum_cost_per_request_usd), scaled), 6)
+
+
+def _semantic_max_cost_per_request(packet_root: Path) -> float | None:
+    """The packet backend's registry-bound maximum cost of one edit request."""
+    packet = _read(
+        packet_root / "fresh_scene_semantic_teacher_image_edit_packet.v1.json",
+        code="scene_configuration_artifixer_semantic_packet_invalid",
+    )
+    pricing = ((packet.get("backend") or {}).get("execution") or {}).get(
+        "pricing_binding"
+    )
+    value = (pricing or {}).get("max_cost_per_request_usd")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _semantic_runtime_request(
@@ -1361,9 +1393,12 @@ def _prepare_semantic_prefix(*, values, stage_input_path, stage_input, envelope,
     expected_frame_cost = (
         float(expected_frame_cost_raw)
         if expected_frame_cost_raw
-# Sunburst usage is not measured here yet. Scale the conservative
-        # planning estimate for source size; actual usage remains cost evidence.
-        else _default_semantic_frame_cost(candidate)
+        # Sunburst usage is not measured here yet. Plan against the registry's
+        # per-request maximum; actual usage remains cost evidence.
+        else _default_semantic_frame_cost(
+            candidate,
+            maximum_cost_per_request_usd=_semantic_max_cost_per_request(packet_root),
+        )
     )
     semantic_request = _semantic_runtime_request(
         packet_root=packet_root,

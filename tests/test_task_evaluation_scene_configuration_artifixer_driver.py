@@ -897,7 +897,10 @@ def test_generic_candidate_feeds_existing_semantic_teacher_packet(tmp_path: Path
         packet_root=packet_root,
         source_commit="a" * 40,
         maximum_cost_usd=2.4,
-        expected_request_cost_usd=driver._default_semantic_frame_cost(candidate),
+        expected_request_cost_usd=driver._default_semantic_frame_cost(
+            candidate,
+            maximum_cost_per_request_usd=driver._semantic_max_cost_per_request(packet_root),
+        ),
     )
     runtime_request = json.loads(runtime_request_path.read_text(encoding="utf-8"))
 
@@ -907,7 +910,11 @@ def test_generic_candidate_feeds_existing_semantic_teacher_packet(tmp_path: Path
     assert packet["raw_nonredistributable_source_bytes_included"] is False
     assert runtime_request["max_parallel_requests"] == 4
     assert runtime_request["maximum_cost_usd"] == 2.4
-    assert runtime_request["expected_request_cost_usd"] == pytest.approx(0.3 * (image_size / 1024) ** 2)
+    request_maximum = packet["backend"]["execution"]["pricing_binding"]["max_cost_per_request_usd"]
+    assert runtime_request["expected_request_cost_usd"] == pytest.approx(
+        min(request_maximum, 0.3 * (image_size / 1024) ** 2)
+    )
+    assert runtime_request["expected_request_cost_usd"] <= request_maximum
 
     from blueprint_pipeline.semantic_teacher_image_edit_worker import execute_semantic_teacher_image_edits
     from tests.test_semantic_teacher_image_edit_worker import _Response, _inline_response
@@ -1150,3 +1157,57 @@ def test_training_refuses_a_legacy_appearance_candidate_before_any_runtime(tmp_p
             semantic_token="", source_semantic_checkpoint={},
             post_training_checkpoint_root=None, post_training_checkpoint_output=None)
     assert not (tmp_path / "run").exists()
+
+
+def test_default_semantic_frame_cost_never_projects_above_registry_request_maximum() -> None:
+    """A 1280x1280 pass must fit the cap sized for sixteen registry-maximum requests.
+
+    The 2026-09-13 InteriorGS 840938 launch projected 0.3 * 1.5625 = $0.46875
+    per frame, so sixteen frames needed $7.50 against the $4.80 stage cap and
+    the worker refused before any paid request. The registry maximum is the
+    bound each request is admitted against, so the plan can never exceed it.
+    """
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+        MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
+    )
+
+    candidate = {
+        "tasks": [
+            {"frames": [{"image_pixel_count": 1280 * 1280} for _ in range(16)]}
+        ]
+    }
+    unbounded = driver._default_semantic_frame_cost(candidate)
+    assert unbounded == pytest.approx(0.46875)
+    assert MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD < unbounded * 16
+
+    planned = driver._default_semantic_frame_cost(
+        candidate, maximum_cost_per_request_usd=0.3
+    )
+    assert planned == pytest.approx(0.3)
+    # The worker refuses when ``cap < expected * frames``; sixteen frames at the
+    # registry maximum are exactly what the stage cap reserves.
+    assert not MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD < planned * 16
+
+    smaller = driver._default_semantic_frame_cost(
+        {"tasks": [{"frames": [{"image_pixel_count": 1024 * 1024}]}]},
+        maximum_cost_per_request_usd=0.3,
+    )
+    assert smaller == pytest.approx(0.3)
+
+
+def test_semantic_max_cost_per_request_reads_packet_pricing(tmp_path: Path) -> None:
+    packet = {
+        "backend": {
+            "execution": {"pricing_binding": {"max_cost_per_request_usd": 0.3}}
+        }
+    }
+    (tmp_path / "fresh_scene_semantic_teacher_image_edit_packet.v1.json").write_text(
+        json.dumps(packet), encoding="utf-8"
+    )
+    assert driver._semantic_max_cost_per_request(tmp_path) == pytest.approx(0.3)
+
+    packet["backend"]["execution"]["pricing_binding"] = {}
+    (tmp_path / "fresh_scene_semantic_teacher_image_edit_packet.v1.json").write_text(
+        json.dumps(packet), encoding="utf-8"
+    )
+    assert driver._semantic_max_cost_per_request(tmp_path) is None

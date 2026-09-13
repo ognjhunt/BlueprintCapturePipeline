@@ -1073,3 +1073,43 @@ def test_activation_accepts_the_envelope_the_preparation_queue_actually_writes(t
 
     assert envelope["schema_version"] == ENVELOPE_SCHEMA_VERSION
     assert accepted_request["preparation_id"] == request["preparation_id"]
+
+
+def test_webapp_submission_failure_surfaces_script_blocker(tmp_path: Path, monkeypatch) -> None:
+    """The submit script's blocker must reach the row and the disk, not just "failed".
+
+    2026-09-13 04:31Z: a Render restart timed out the signed POST; the tick
+    exited with the bare blocker and the cause was only recoverable from the
+    WebApp's own logs.
+    """
+    from types import SimpleNamespace
+
+    request = {"launch_id": "launch-123", "run_id": "run-123"}
+
+    def run(argv, **kwargs):
+        return SimpleNamespace(
+            returncode=2,
+            stdout="progress line\n" + json.dumps({
+                "schema_version": "task_evaluation_launch_web_submission.v1",
+                "status": "blocked", "blockers": ["webapp_transport_error"],
+                "provider_mutation_performed_by_this_tool": False,
+            }) + "\n",
+            stderr="Traceback (most recent call last):\nTimeoutError: timed out\n",
+        )
+
+    monkeypatch.setattr(automation.subprocess, "run", run)
+    submit = automation.webapp_submitter(repo_root=tmp_path, secret_file=tmp_path / "secret",
+                                        endpoint=automation.DEFAULT_WEBAPP_ENDPOINT,
+                                        state_root=tmp_path / "submissions")
+    with pytest.raises(automation.SceneConfigurationActivationAutomationError,
+                       match="webapp_submission_failed:webapp_transport_error"):
+        submit(request)
+    failure_path = next((tmp_path / "submissions").glob("launch-123.webapp-submission-failure-*.json"))
+    failure = json.loads(failure_path.read_text())
+    assert failure["schema_version"] == automation.SUBMISSION_FAILURE_SCHEMA_VERSION
+    assert failure["blockers"] == ["webapp_transport_error"]
+    assert failure["returncode"] == 2
+    assert "timed out" in failure["stderr_tail"]
+    assert not list((tmp_path / "submissions").glob("*.webapp-submission.json"))
+    assert automation._submission_script_blockers("not json\n") == []
+    assert automation._submission_script_blockers(None) == []
