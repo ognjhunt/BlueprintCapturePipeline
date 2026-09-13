@@ -160,3 +160,52 @@ def test_bulk_face_comparison_preserves_polygon_boundaries_and_order():
             "face_world": np.arange(30).reshape(10, 3)}
     assert np.array_equal(_selected_face_world(mesh, [0, 2]), mesh["face_world"][[0, 1, 2, 7, 8, 9]])
     assert np.array_equal(_selected_face_world(mesh, [1]), mesh["face_world"][3:7])
+
+
+def test_partition_validation_is_a_persisted_verdict_until_bytes_move(tmp_path, monkeypatch):
+    """2026-09-13: every attempt re-parsed the collision USD and re-ran the weld/union-find (~10 min)."""
+    from blueprint_pipeline import sage_collision_partition as partition
+    from blueprint_pipeline import task_evaluation_release_identity as identity
+    monkeypatch.setenv("BLUEPRINT_VALIDATION_VERDICT_ROOT", str(tmp_path / "verdicts"))
+    monkeypatch.setattr(identity, "running_release_commit", lambda: "c" * 40)
+    source, labels = combined_scene(tmp_path)
+    receipt = materialize_sage_collision_partition(source_path=source, labels_path=labels,
+        instance_ids=["subject", "support"], output_root=tmp_path / "partition")
+    output = tmp_path / "partition/partitioned_collision.usd"
+    calls = {"meshes": 0}
+    original = partition._meshes
+
+    def counted(*args, **kwargs):
+        calls["meshes"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(partition, "_meshes", counted)
+    kwargs = dict(source_path=source, labels_path=labels, output_path=output)
+    import shutil
+    shutil.rmtree(tmp_path / "verdicts")  # the producer's own validation already persisted one; start cold
+    with file_digest_scope():
+        assert validate_partition(receipt, **kwargs)["receipt_digest"] == receipt["receipt_digest"]
+    assert calls == {"meshes": 2}
+    with file_digest_scope():  # a later operation: the persisted verdict re-proves the bytes, never re-parses
+        assert validate_partition(receipt, **kwargs)["receipt_digest"] == receipt["receipt_digest"]
+    validate_partition(receipt, **kwargs)  # and outside any scope
+    assert calls == {"meshes": 2}
+    # A changed receipt is a different verdict: a tampered selection is re-examined from bytes.
+    changed = json.loads(json.dumps(receipt))
+    changed["component_selection"]["subject"]["component_count"] += 1
+    changed["receipt_digest"] = canonical_digest(changed, digest_field="receipt_digest")
+    with pytest.raises(ValueError, match="selection_changed"):
+        validate_partition(changed, **kwargs)
+    assert calls["meshes"] == 4
+    # Moved output geometry, resealed into the receipt, is re-examined and refused.
+    stage = Usd.Stage.Open(str(output))
+    mesh = UsdGeom.Mesh(stage.GetPrimAtPath(receipt["face_partitions"][0]["output_prim"]))
+    points = mesh.GetPointsAttr().Get()
+    points[0] = points[0] + (0.01, 0., 0.)
+    mesh.GetPointsAttr().Set(points)
+    stage.GetRootLayer().Save()
+    receipt["output"] = _record(output)
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    with pytest.raises(ValueError, match="source_face_geometry_changed"):
+        validate_partition(receipt, **kwargs)
+    assert calls["meshes"] == 6
