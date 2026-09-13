@@ -26,7 +26,7 @@ SCHEMA = "artifixer_registered_background_initialization.v1"
 GEOMETRY_MODE = "freeze_declared_appearance_initialization"
 POLICY = {
     "selection": "registered_local_subset_of_immutable_segment_contribution_candidate",
-    "foreground_margin_m": 0.05,
+    "foreground_margin_m": 0.0,
     "maximum_foreground_gaussian_scale_m": 0.08,
     "support_margin_m": 0.10,
     "surface_spacing_m": 0.001,
@@ -71,8 +71,11 @@ def local_foreground_mask(candidate, *, lower, upper):
     scales = np.exp(np.asarray(candidate.scales, np.float64))
     if not np.isfinite(positions).all() or not np.isfinite(scales).all():
         raise ValueError("artifixer_background_candidate_nonfinite")
-    margin = POLICY["foreground_margin_m"]
-    selected = ((positions >= lower - margin) & (positions <= upper + margin)).all(axis=1)
+    # These bounds identify the selected object. Expanding an 8 cm target by
+    # 5 cm on each side deleted the neighboring bottle in the production run.
+    # Coupled source splats outside the target bounds must be restored, not
+    # silently authorized for deletion by an appearance-repair guard band.
+    selected = ((positions >= lower) & (positions <= upper)).all(axis=1)
     selected &= scales.max(axis=1) <= POLICY["maximum_foreground_gaussian_scale_m"]
     if not selected.any():
         raise ValueError("artifixer_background_local_foreground_empty")
