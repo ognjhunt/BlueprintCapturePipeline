@@ -80,11 +80,12 @@ def _request_frames(request: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     return {str(f["camera_id"]): f for t in request.get("tasks") or [] for f in t.get("frames") or []}
 
 
-def _backend(request: Mapping[str, Any]) -> tuple[str, str]:
+def _backend(request: Mapping[str, Any]) -> tuple[str, str, str]:
     backend = request.get("backend") or {}
     return (
         str((backend.get("execution") or {}).get("model_snapshot") or ""),
         str((backend.get("registry_entry") or {}).get("backend_id") or ""),
+        str((backend.get("execution") or {}).get("mask_encoding") or ""),
     )
 
 
@@ -103,11 +104,11 @@ def _accepted_cameras(review: Mapping[str, Any]) -> dict[str, str]:
     return accepted
 
 
-def _workspace_plan(runtime: Path, current: Mapping[str, Mapping[str, Any]], backend: tuple[str, str]) -> dict[str, Any] | None:
+def _workspace_plan(runtime: Path, current: Mapping[str, Mapping[str, Any]], backend: tuple[str, str, str], prompt: str | None = None) -> dict[str, Any] | None:
     """Which cameras this workspace can supply, with the digest chain that justifies each."""
     request = _sealed(runtime / REQUEST, "request_digest")
     result = _sealed(runtime / RESULT, "result_digest")
-    if request is None or result is None or _backend(request) != backend:
+    if request is None or result is None or _backend(request) != backend or request.get("prompt") != prompt:
         return None
     if result.get("status") != "completed_unreviewed_semantic_teacher_candidates":
         return None
@@ -125,7 +126,7 @@ def _workspace_plan(runtime: Path, current: Mapping[str, Mapping[str, Any]], bac
             return None
     if review.get("status") != "completed":
         return None
-    sealed_by_camera: dict[str, tuple[str, str]] = {}
+    sealed_by_camera: dict[str, tuple[str, str, str]] = {}
     if merged is not None:
         for row in merged.get("frame_inventory") or []:
             source = "repair" if row.get("role") == "selectively_repaired_semantic_frame" else "base"
@@ -141,6 +142,8 @@ def _workspace_plan(runtime: Path, current: Mapping[str, Mapping[str, Any]], bac
     result_cameras = _request_frames(result)
     repair_result = _sealed(runtime / REPAIR_RESULT, "result_digest") if merged is not None else None
     repair_cameras_available = _request_frames(repair_result) if repair_result else {}
+    repair_request = _sealed(runtime / REPAIR_REQUEST, "request_digest") if merged is not None else None
+    repair_requested = _request_frames(repair_request) if repair_request else {}
     for camera in current:
         if camera not in accepted:
             skipped.append({"camera_id": camera, "reason": "not_accepted_by_last_review"})
@@ -148,6 +151,11 @@ def _workspace_plan(runtime: Path, current: Mapping[str, Mapping[str, Any]], bac
         sealed = sealed_by_camera.get(camera)
         if sealed is None or sealed[0] != accepted[camera]:
             skipped.append({"camera_id": camera, "reason": "reviewed_frame_digest_unbound"})
+            continue
+        source_request = repair_requested if sealed[1] == "repair" else previous
+        if (source_request.get(camera, {}).get("edit_mask", {}).get("sha256")
+                != current[camera].get("edit_mask", {}).get("sha256")):
+            skipped.append({"camera_id": camera, "reason": "edit_mask_changed"})
             continue
         if sealed[1] == "repair":
             if camera not in repair_cameras_available:
@@ -258,7 +266,7 @@ def discover_retained_candidates(*, runtime_request_path: Path, render: Mapping[
                     continue
             else:
                 runtime = workspace / RUNTIME
-            plan = _workspace_plan(runtime, current, backend)
+            plan = _workspace_plan(runtime, current, backend, request.get("prompt"))
         except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
             receipt["examined"].append({kind: workspace.name, "status": f"unreadable:{type(exc).__name__}"})
             continue

@@ -4,23 +4,14 @@ from PIL import Image
 from blueprint_pipeline.task_evaluation_scene_configuration_repair_support import materialize_repair_support
 
 
-def test_calibrated_full_object_repairs_a_missed_sam_view_without_altering_sam(tmp_path):
-    frame, calibrated, sam = [tmp_path / name for name in ("frame.png", "calibrated.png", "sam.png")]
-    Image.new("RGB", (120, 120), "white").save(frame)
-    core = Image.new("L", (120, 120), 0)
-    core.paste(255, (40, 45, 70, 65))
-    core.save(calibrated)
-    Image.new("L", (120, 120), 0).save(sam)
-    original = sam.read_bytes()
-    result = materialize_repair_support(calibrated_mask_path=calibrated, sam_mask_path=sam,
-        source_frame_path=frame, calibration_digest="sha256:" + "a" * 64,
-        output_root=tmp_path / "repair")
-    with Image.open(result["repair_support_mask"]["path"]) as support:
-        assert support.getbbox() == (8, 13, 102, 97)
-    with Image.open(result["repair_object_core"]["path"]) as actual_core:
-        assert actual_core.tobytes() == core.tobytes()
-    assert sam.read_bytes() == original
-    assert result["repair_support_mask"]["provenance"]["whole_object_coverage_visually_qualified"] is False
+def test_missing_sam_never_falls_back_to_the_projected_box(tmp_path):
+    frame, calibrated, sam, _ = _scene(tmp_path)
+    Image.new("L", (160, 140), 0).save(sam)
+    before = {p: p.read_bytes() for p in (frame, calibrated, sam)}
+    with pytest.raises(ValueError, match="sam_core_missing"):
+        _run(tmp_path, frame, calibrated, sam)
+    assert not (tmp_path / "repair").exists()
+    assert all(p.read_bytes() == value for p, value in before.items())
 
 
 def test_empty_calibrated_and_sam_support_fails_before_output(tmp_path):
@@ -100,34 +91,29 @@ def _run(tmp_path, frame, calibrated, sam):
     return result, core, support
 
 
-def test_calibrated_coverage_far_from_the_silhouette_is_dropped_and_the_band_keeps_the_neighbour_out(tmp_path):
-    """2026-09-13 source-08: the calibrated projection annexed the bottle beside the vase."""
+def test_support_is_exactly_the_sam_silhouette(tmp_path):
+    """Owner decision 2026-09-13: the editor understands the object from its outline; keep only that."""
+    import numpy as np
     frame, calibrated, sam, canvas = _scene(tmp_path)
-    # A pale neighbour inside the calibrated projection, well beyond reach of the silhouette,
-    # a contact shadow touching the object, and a detached shadow-toned patch.
-    canvas[40:100, 115:135] = 205
-    canvas[100:112, 50:80] = 125
-    canvas[10:18, 60:70] = 30  # a dark neighbour standing within the guard band above the object
+    canvas[40:100, 115:135] = 205  # a pale neighbour inside the calibrated projection
+    canvas[100:112, 50:80] = 125   # the contact shadow
     Image.fromarray(canvas, mode="L").convert("RGB").save(frame)
     result, core, support = _run(tmp_path, frame, calibrated, sam)
-    assert core[40:100, 50:80].all()                      # the silhouette
-    assert core[40:100, 80:104].all()                      # calibrated coverage within reach stays
-    assert not core[40:100, 115:135].any()                 # the neighbour is no longer object core
-    assert not support[40:100, 115:135].any()              # nor guard band
-    assert support[100:112, 50:80].all()                   # the contact shadow is admitted
-    assert not support[10:18, 60:70].any()                 # a dark neighbour in the band is not
+    silhouette = np.zeros_like(core)
+    silhouette[40:100, 50:80] = True
+    assert np.array_equal(core, silhouette)
+    assert np.array_equal(support, silhouette)
     prov = result["repair_support_mask"]["provenance"]
-    assert prov["policy"] == "calibrated_object_near_sam_core_surface_band_guard_v2"
-    assert prov["calibrated_pixels_beyond_reach_dropped"] > 0
-    assert prov["guard_band_pixels_admitted"] < prov["guard_band_pixels_offered"]
-    assert prov["luminance_ceiling"] < 1.1 * prov["surface_reference_luminance"]
-    assert result["repair_support_mask"]["digest"] != result["repair_object_core"]["digest"]
+    assert prov["policy"] == "sam_silhouette_exact_no_fallback_v4"
+    assert prov["guard_band_pixels"] == 0 and prov["calibrated_reach_pixels"] == 0
+    assert prov["calibrated_pixels_beyond_reach_dropped"] == int((np.asarray(Image.open(calibrated)) > 0).sum()) - int(silhouette.sum())
+    assert prov["guard_band_pixels_offered"] == 0 and prov["guard_band_pixels_admitted"] == 0
+    assert result["repair_support_mask"]["digest"] == result["repair_object_core"]["digest"]
 
 
-def test_view_sam_missed_entirely_keeps_the_whole_calibrated_projection(tmp_path):
-    frame, calibrated, sam, canvas = _scene(tmp_path)
-    Image.new("L", (160, 140), 0).save(sam)
-    result, core, support = _run(tmp_path, frame, calibrated, sam)
-    assert core[20:120, 20:140].all() and not core[0:20, :].any()
-    assert result["repair_support_mask"]["provenance"]["calibrated_pixels_beyond_reach_dropped"] == 0
-    assert support.sum() > core.sum()
+def test_full_frame_sam_is_refused_before_an_edit_request(tmp_path):
+    frame, calibrated, sam, _ = _scene(tmp_path)
+    Image.new("L", (160, 140), 255).save(sam)
+    with pytest.raises(ValueError, match="sam_core_full_frame"):
+        _run(tmp_path, frame, calibrated, sam)
+    assert not (tmp_path / "repair").exists()

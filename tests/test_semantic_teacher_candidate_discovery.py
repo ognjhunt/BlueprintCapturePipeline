@@ -207,3 +207,29 @@ def test_capsules_of_successful_edit_stages_are_discovered_after_the_workspace_i
     assert outcome["retained_camera_ids"] == sorted(CAMERAS)
     assert {e.get("status") for e in outcome["examined"]} >= {"capsule_not_trustworthy", "selected"}
     assert len(outcome["candidates"]) == 4
+
+
+def test_changed_edit_mask_is_not_reused_but_unchanged_views_still_are(tmp_path):
+    inputs = {c: _digest(f'rgb:{c}'.encode()) for c in CAMERAS}
+    masks = {c: _digest(f'mask:{c}'.encode()) for c in CAMERAS}
+    root = tmp_path / 'workspaces'
+    _workspace(root, 'old', CAMERAS, inputs, masks, review1=dict.fromkeys(CAMERAS, True))
+    corrected = {**masks, CAMERAS[0]: _digest(b'new-sam-only-mask')}
+    current = _write(tmp_path / 'current.json', _request(CAMERAS, inputs, corrected))
+    result = discovery.discover_retained_candidates(runtime_request_path=current, render=_render(inputs),
+        workspace_root=root, output_root=tmp_path / 'selection')
+    assert result['retained_camera_ids'] == list(CAMERAS[1:])
+    assert {'camera_id': CAMERAS[0], 'reason': 'edit_mask_changed'} in result['skipped']
+
+
+def test_changed_object_prompt_is_not_reused_from_an_old_generic_edit(tmp_path):
+    inputs = {c: _digest(f'rgb:{c}'.encode()) for c in CAMERAS}
+    masks = {c: _digest(f'mask:{c}'.encode()) for c in CAMERAS}
+    root = tmp_path / 'workspaces'
+    _workspace(root, 'old', CAMERAS, inputs, masks, review1=dict.fromkeys(CAMERAS, True))
+    request = _request(CAMERAS, inputs, masks)
+    request['prompt'] = 'Remove the dark vase while preserving the white bottle.'
+    current = _write(tmp_path / 'current.json', _seal(request, 'request_digest'))
+    result = discovery.discover_retained_candidates(runtime_request_path=current, render=_render(inputs),
+        workspace_root=root, output_root=tmp_path / 'selection')
+    assert result['candidates_retained'] == 0 and result['candidates'] == []

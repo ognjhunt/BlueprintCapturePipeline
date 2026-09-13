@@ -1488,9 +1488,9 @@ def _prepare_semantic_prefix(*, values, stage_input_path, stage_input, envelope,
         semantic_output_root=semantic_output,
         output_root=work / "semantic_teacher_exact_support_locality_seal",
         object_core_records_by_camera={
-            row["camera_id"]: row["repair_object_core"]
+            row["camera_id"]: row.get("repair_object_core") or row["source_object_mask"]
             for row in envelope["render_inputs_result"]["derived_frames"]
-            if "repair_object_core" in row
+            if row.get("repair_object_core") or row.get("source_object_mask")
         },
     )
     teacher_receipt_path = work / "whole_frame_semantic_teacher.v1.json"
