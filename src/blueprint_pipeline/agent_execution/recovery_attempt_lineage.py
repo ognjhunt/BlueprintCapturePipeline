@@ -55,7 +55,12 @@ def recovery_edge(previous_ref, current_ref, previous_link_ref, state, directory
     # into authority to allocate now.
     validated = validate_recovery_evidence(refs, prior_attempt=before, provider=after["provider"],
                                            now=after["reserved_at_epoch"])
-    _require(validated == recovery, "recovery_grant_changed")
+    # Every field the grant recorded must still validate to the same value. A grant
+    # sealed before recovery budgets existed (#1890) records no ``budget``; the
+    # validator's derived budget is not a change to that grant. A grant that does
+    # record one must match exactly.
+    _require(set(recovery) >= {"prior_attempt_id", "prior_attempt_digest", "failure_digest", "evidence"}
+             and all(validated.get(key) == value for key, value in recovery.items()), "recovery_grant_changed")
     return {"kind": "same_release_recovery", "previous_attempt": previous_ref,
             "successor_attempt": current_ref, "reconciliation": refs}
 

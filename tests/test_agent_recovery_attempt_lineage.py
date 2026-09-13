@@ -92,6 +92,8 @@ def same_release_case(tmp_path, *, defect=None):
             "failure_digest": json.loads(Path(failure_ref["path"]).read_text())["failure_digest"], "evidence": evidence}}
     if defect == "runtime":
         new["runtime_digest"] = "sha256:" + "f" * 64
+    if defect == "budget":
+        new["recovery"]["budget"] = "market_miss"  # this fixture's failure is create_refused: a retry budget
     new_ref = sealed(directory / "attempts/source-new.json", new, "attempt_digest", cross=True)
     new = json.loads(Path(new_ref["path"]).read_text())
     new_link, new_request = parent("new-parent", new)
@@ -126,3 +128,16 @@ def test_same_release_recovery_refuses_unadmitted_or_unrelated_evidence(tmp_path
     with pytest.raises((AgentExecutionError, ValueError)):
         resolve_recovery_binding(service, intent_id=anchor.intent_id, parent_request_digest=request, parent_queue_root=str(queue))
     assert not list((service.journal.root / "controller-recovery-bindings").glob("*.json"))
+
+
+def test_recorded_budget_in_the_grant_must_still_match(tmp_path):
+    """A grant that recorded a recovery budget changes when the validator derives another one.
+
+    Grants sealed before #1890 record no budget and still reopen (the previous test);
+    a recorded budget is part of the grant and must match exactly.
+    """
+    from blueprint_pipeline.agent_execution.recovery_lineage import resolve_recovery_binding
+    from blueprint_pipeline.agent_execution.contracts import AgentExecutionError
+    service, anchor, directory, queue, request = same_release_case(tmp_path, defect="budget")
+    with pytest.raises(AgentExecutionError, match="recovery_grant_changed"):
+        resolve_recovery_binding(service, intent_id=anchor.intent_id, parent_request_digest=request, parent_queue_root=str(queue))
