@@ -123,6 +123,13 @@ def data_closure(names):
                 self.generic_visit(node)
 
         Initialization().visit(tree)
+        # A re-exported constant is initialized by its import statement even
+        # when this module never reads it itself (rules.LIMIT <- limits.LIMIT).
+        for alias, target, member, local in imports(spec.origin, name):
+            if not local and target and target.startswith('blueprint_pipeline'):
+                value = vars(sys.modules[target]).get(member) if member and target in sys.modules else None
+                if not inspect.isfunction(value):
+                    used.add(alias)
         expanded = set()
         while (used & functions.keys()) - expanded:
             for helper in (used & functions.keys()) - expanded:
