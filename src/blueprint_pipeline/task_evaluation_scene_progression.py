@@ -311,6 +311,26 @@ def _clear_attempt(state):
         state.pop(key, None)
 
 
+def _settle_retired_rows(*, directory, state, config, retired=None, evidence=None):
+    """Release the holds of retired attempts; accounting only, never a progression gate."""
+    from .task_evaluation_terminal_scene_attempt_settlement import settle_retired_attempt_rows, sweep_retired_attempts
+    summary = state.get("terminal_settlements") or {}
+    try:
+        if retired is not None and evidence is not None:
+            outcome = settle_retired_attempt_rows(directory=directory, retired_attempt=retired,
+                retirement_record=evidence["failure"], ownership_record=evidence["ownership_reconciliation"],
+                launch_execution_root=Path(config["launch_execution_root"]),
+                launch_queue_root=Path(config["launch_queue_root"]))
+            settled = sum(1 for row in outcome["rows"] if row["status"] == "settled")
+            summary = {**summary, "settled_rows": int(summary.get("settled_rows") or 0) + settled}
+        else:
+            swept = sweep_retired_attempts(directory=directory, state=state, config=config)
+            summary = {**summary, "sweep": {k: swept[k] for k in ("settled_rows", "already_released_rows", "skipped")}}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        summary = {**summary, "last_error": str(exc)[:160]}
+    state["terminal_settlements"] = summary
+
+
 def _release_successor(*, directory, intent, state, config, release, now):
     from .task_evaluation_scene_progression_recovery import reconcile_ownership
     previous_id = state["attempt_id"]
@@ -350,6 +370,8 @@ def _release_successor(*, directory, intent, state, config, release, now):
         lineage["reconciliation"] = reconcile_ownership(attempt=previous, failure_path=transition_path,
             config=config, output_root=old_output / "release-reconciliation", now=now)
         lineage["basis"] = "terminal_preparation_and_reconciled_global_ownership"
+        _settle_retired_rows(directory=directory, state=state, config=config,
+                             retired=previous, evidence=lineage["reconciliation"])
     state.setdefault("release_predecessors", []).append(lineage)
     _clear_attempt(state)
     return True
@@ -368,6 +390,7 @@ def _recover(*, directory, intent, state, attempt, link, config, release, machin
         return False
     evidence = reconcile_ownership(attempt=attempt, failure_path=failure, config=config,
         output_root=output / "recovery/reconciliations", now=now)
+    _settle_retired_rows(directory=directory, state=state, config=config, retired=attempt, evidence=evidence)
     successor_id = "source-" + canonical_digest({"prior_attempt_digest": attempt["attempt_digest"],
         "source_commit": release["source_commit"], "intent_digest": intent["intent_digest"]})[7:31]
     successor = intake.reserve_scene_attempt(queue_root=config["intent_root"], intent_id=intent["intent_id"],
@@ -393,6 +416,8 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
         return progress
     if progress and progress["status"] == "completed":
         return progress
+    if state.get("release_predecessors") or state.get("recovery_predecessors"):
+        _settle_retired_rows(directory=directory, state=state, config=config)
     # Spec E: once activation has been issued, join any retained downstream
     # terminal receipts (policy result, authenticated Website readback,
     # provider-zero closure) back into the persistent owner status. This is a

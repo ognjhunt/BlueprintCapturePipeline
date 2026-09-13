@@ -280,6 +280,10 @@ def validated_cancellation(directory: Path, attempt: Mapping[str, Any]) -> dict[
     if receipt.get('schema_version') == 'task_evaluation_unmaterialized_adoption_cancellation.v1':
         validate_terminal_retirement(receipt=receipt, attempt=attempt)
         return receipt
+    if receipt.get('schema_version') == 'task_evaluation_terminal_scene_attempt_settlement.v1':
+        from .task_evaluation_terminal_scene_attempt_settlement import validate_terminal_settlement
+        validate_terminal_settlement(receipt=receipt, attempt=attempt)
+        return receipt
     original = receipt.get("original_blocked_launch_receipt") or {}
     if (
         receipt.get("schema_version") != UNSTARTED_SCHEMA
