@@ -275,6 +275,41 @@ def write_initialization(
     }
 
 
+def excluded_teacher_cameras(teachers: Mapping[str, Any], frames: Mapping[str, Any]) -> set[str]:
+    """Camera ids whose teacher frames were excluded from training by a sealed selection.
+
+    A partial teacher set is admitted by ``semantic_target_training_selection``
+    only when every excluded view keeps approved neighbours; here it means the
+    rejected frames never feed the seed colours, so a hallucinated edit cannot
+    tint the object-absent surface. InteriorGS 840938 (2026-09-13) had two
+    views the reviewer rejected on every pass while fourteen were accepted.
+    """
+    selection = (teachers.get("editor_identity") or {}).get("training_view_selection")
+    if not selection:
+        return set()
+    if (
+        not isinstance(selection, Mapping)
+        or selection.get("schema_version") != "semantic_target_training_selection.v1"
+        or selection.get("status") != "admitted_for_training_only"
+        or selection.get("selection_digest")
+        != canonical_digest(dict(selection), digest_field="selection_digest")
+    ):
+        raise ValueError("artifixer_background_training_selection_invalid")
+    approved = {str(c) for c in selection.get("approved_camera_ids") or []}
+    excluded = {str(c) for c in selection.get("excluded_camera_ids") or []}
+    minimum = selection.get("minimum_approved_views")
+    if (
+        not excluded
+        or approved & excluded
+        or approved | excluded != set(frames)
+        or isinstance(minimum, bool)
+        or not isinstance(minimum, int)
+        or len(approved) < max(int(minimum), POLICY["minimum_color_views"])
+    ):
+        raise ValueError("artifixer_background_training_selection_invalid")
+    return excluded
+
+
 def materialize_background_initialization(
     *, envelope, configuration, candidate, teacher_receipt_path: Path, output_root: Path
 ):
@@ -299,17 +334,19 @@ def materialize_background_initialization(
         != candidate.get("receipt_digest")
     ):
         raise ValueError("artifixer_background_teacher_receipt_invalid")
-    if teachers.get("editor_identity", {}).get("training_view_selection"):
-        raise ValueError("artifixer_background_partial_teacher_set_not_supported")
     cameras = json.loads(bound_file(render["camera_calibration"]).read_text())
     frames = {r["camera_id"]: r for r in teachers["frames"]}
     if len(frames) < 8 or set(frames) != {c["id"] for c in cameras}:
+        raise ValueError("artifixer_background_teacher_camera_set_mismatch")
+    excluded = excluded_teacher_cameras(teachers, frames)
+    color_cameras = [camera for camera in cameras if camera["id"] not in excluded]
+    if len(color_cameras) < 8:
         raise ValueError("artifixer_background_teacher_camera_set_mismatch")
     foreground = local_foreground_mask(read_standard_3dgs_ply(deleted), lower=lower, upper=upper)
     points, faces, barycentrics, registration = sample_registered_top_surface(
         mesh_path=collision, support=support, lower=lower, upper=upper
     )
-    colors, counts = sample_teacher_colors(points, cameras, frames)
+    colors, counts = sample_teacher_colors(points, color_cameras, frames)
     output_root.mkdir(parents=True, exist_ok=False)
     sample_path = output_root / "registered_surface_samples.npz"
     np.savez_compressed(
@@ -356,6 +393,16 @@ def materialize_background_initialization(
         "local_foreground_deleted_count": int(foreground.sum()),
         "background_candidate_preserved_count": int((~foreground).sum()),
         "minimum_color_view_count": int(counts.min()),
+        "color_view_camera_ids": [camera["id"] for camera in color_cameras],
+        "teacher_view_selection": (
+            {
+                "selection_digest": teachers["editor_identity"]["training_view_selection"]["selection_digest"],
+                "approved_camera_ids": sorted(set(frames) - excluded),
+                "excluded_camera_ids": sorted(excluded),
+            }
+            if excluded
+            else None
+        ),
         "original_segmentation_and_contribution_bytes_unchanged": True,
         "source_object_ownership_qualified": False,
         "source_object_absence_qualified": False,
