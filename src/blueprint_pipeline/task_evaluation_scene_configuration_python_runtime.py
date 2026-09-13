@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import os
 import platform
@@ -100,33 +101,60 @@ def validate_runtime_profile_inventory(manifest: Mapping[str, Any], profile: str
         raise TaskEvaluationSceneConfigurationPythonRuntimeError("scene_configuration_python_profile_inventory_incomplete")
 
 
+def module_origin_admitted(origin: str, *, sealed_roots: Sequence[Path], interpreter_roots: Sequence[Path]) -> bool:
+    """A loaded module is admitted when the import system found it under a sealed root or an interpreter root.
+
+    The decision is made on the import path (``__file__`` as the finder recorded it), never on the physical
+    file behind a symlink: the Isaac Sim image deduplicates identical files, so stdlib members such as
+    ``importlib/metadata/_text.py`` are symlinks into ``/isaac-sim/extscache``. What governs hermeticity is
+    which search root satisfied the import. ``interpreter_roots`` are the entries the isolated interpreter
+    (``-I -S``) searches by itself: its stdlib directory, stdlib zip, and extension directory, wherever that
+    build keeps them. Anything under ``site-packages``/``dist-packages`` is never admitted, and neither is a
+    module satisfied from a path a stage module appended at import time.
+    """
+    import os
+    path = Path(os.path.abspath(origin))
+    roots = [Path(os.path.abspath(str(sealed))) for sealed in sealed_roots]
+    if any(path.is_relative_to(sealed) for sealed in roots):
+        return True
+    if {"site-packages", "dist-packages"} & set(path.parts):
+        return False
+    return any(path.is_relative_to(Path(os.path.abspath(str(interpreter)))) for interpreter in interpreter_roots)
+
+
+ADMISSION_SOURCE = inspect.getsource(module_origin_admitted)
+
+
 def _validate_astra_imports(root: Path) -> None:
     # -I/-S prevents accidental satisfaction by the host's installed site packages.
     code = """import importlib, json, pathlib, sys, sysconfig
+from pathlib import Path
+from collections.abc import Sequence
 root = pathlib.Path(sys.argv[1]).resolve()
 source = pathlib.Path(sys.argv[3]).resolve()
+interpreter_roots = [pathlib.Path(entry) for entry in sys.path if entry]
+interpreter_roots += [pathlib.Path(sysconfig.get_path(key)) for key in ('stdlib', 'platstdlib')]
+stdlib_dir = getattr(sys, '_stdlib_dir', None)
+if stdlib_dir:
+    interpreter_roots.append(pathlib.Path(stdlib_dir))
 sys.path[:0] = [str(root), str(source)]
+""" + ADMISSION_SOURCE + """
 for name in json.loads(sys.argv[2]):
     module = importlib.import_module(name)
     origin = getattr(module, '__file__', None)
-    if not origin or not pathlib.Path(origin).resolve().is_relative_to(root):
+    if not origin or not module_origin_admitted(origin, sealed_roots=(root,), interpreter_roots=()):
         raise ImportError('sealed_import_origin_mismatch:' + name)
 for name in json.loads(sys.argv[4]):
     module = importlib.import_module(name)
     origin = getattr(module, '__file__', None)
-    if not origin or not pathlib.Path(origin).resolve().is_relative_to(source):
+    if not origin or not module_origin_admitted(origin, sealed_roots=(source,), interpreter_roots=()):
         raise ImportError('shipped_stage_import_origin_mismatch:' + name)
-stdlib = pathlib.Path(sysconfig.get_path('stdlib')).resolve()
 for name, module in list(sys.modules.items()):
     origin = getattr(module, '__file__', None)
     if not origin:
         continue
-    path = pathlib.Path(origin).resolve()
-    if path.is_relative_to(root) or path.is_relative_to(source):
-        continue
-    if path.is_relative_to(stdlib) and not {'site-packages', 'dist-packages'} & set(path.parts):
-        continue
-    raise ImportError('global_python_module_not_admitted:' + name)
+    if not module_origin_admitted(origin, sealed_roots=(root, source), interpreter_roots=interpreter_roots):
+        raise ImportError('global_python_module_not_admitted:' + name + ':' + str(origin))
 """
     try:
         result = subprocess.run(
@@ -384,6 +412,7 @@ __all__ = [
     "RUNTIME_PROFILE_IMPORTS",
     "RUNTIME_PROFILE_PLATFORM_TAGS",
     "runtime_profile_roots",
+    "module_origin_admitted",
     "validate_runtime_profile_inventory",
     "SCHEMA_VERSION",
     "TaskEvaluationSceneConfigurationPythonRuntimeError",

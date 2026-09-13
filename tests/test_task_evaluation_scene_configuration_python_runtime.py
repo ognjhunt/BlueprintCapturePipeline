@@ -329,3 +329,43 @@ def test_stage_cannot_satisfy_dependencies_from_an_unsealed_global_root(tmp_path
     with pytest.raises(ValueError, match="global_python_module_not_admitted"):
         materialize_scene_configuration_python_runtime(wheelhouse_root=root, output_root=tmp_path / "installed",
             runtime_python=(3, 12), runtime_platform="linux", runtime_machine="x86_64", profile="astra_asset_authoring")
+
+
+def test_dedup_symlinked_stdlib_module_is_admitted_by_its_import_path(tmp_path):
+    # Isaac Sim 6.0.1 deduplicates identical files: the kit stdlib's importlib/metadata/_text.py is a
+    # symlink into /isaac-sim/extscache/.../setuptools/_vendor/importlib_metadata/_text.py. The import
+    # system still found it under the stdlib root, so it is the interpreter's own module, not a leak.
+    stdlib = tmp_path / "kit/python/lib/python3.12"
+    metadata = stdlib / "importlib/metadata"
+    metadata.mkdir(parents=True)
+    vendored = tmp_path / "extscache/omni.services.pip_archive/pip_prebundle/setuptools/_vendor/importlib_metadata"
+    vendored.mkdir(parents=True)
+    (vendored / "_text.py").write_text("class FoldedCase(str): pass\n")
+    (metadata / "_text.py").symlink_to(vendored / "_text.py")
+    (metadata / "_adapters.py").write_text("")
+    interpreter_roots = (tmp_path / "kit/python/lib/python312.zip", stdlib, stdlib / "lib-dynload")
+    sealed = (tmp_path / "staging", tmp_path / "shipped_source")
+    admitted = lambda origin: runtime_module.module_origin_admitted(  # noqa: E731
+        str(origin), sealed_roots=sealed, interpreter_roots=interpreter_roots)
+    assert admitted(metadata / "_text.py")
+    assert admitted(metadata / "_adapters.py")
+    assert admitted(tmp_path / "kit/python/lib/python312.zip/os.py")
+    assert admitted(stdlib / "lib-dynload/_json.cpython-312-x86_64-linux-gnu.so")
+    assert admitted(tmp_path / "staging/langgraph/__init__.py")
+    assert not admitted(stdlib / "site-packages/numpy/__init__.py")
+    assert not admitted("/usr/lib/python3/dist-packages/yaml/__init__.py")
+    assert not admitted(vendored / "_text.py")  # Reached directly, the vendored copy is a global leak.
+    assert not admitted(tmp_path / "elsewhere/global_dependency.py")
+
+
+def test_symlinked_shipped_stage_module_is_admitted_by_its_import_path(tmp_path, fixture_shipped_astra_source):
+    dedup_store = tmp_path / "dedup_store"
+    dedup_store.mkdir()
+    stage = fixture_shipped_astra_source / "blueprint_pipeline/fixture_stage.py"
+    (dedup_store / "fixture_stage.py").write_text(stage.read_text())
+    stage.unlink()
+    stage.symlink_to(dedup_store / "fixture_stage.py")
+    root, _ = _build_astra(tmp_path)
+    installed = materialize_scene_configuration_python_runtime(wheelhouse_root=root, output_root=tmp_path / "installed",
+        runtime_python=(3, 12), runtime_platform="linux", runtime_machine="x86_64", profile="astra_asset_authoring")
+    assert (installed / "build123d/__init__.py").is_file()
