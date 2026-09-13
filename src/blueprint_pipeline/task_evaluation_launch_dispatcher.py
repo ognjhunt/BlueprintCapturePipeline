@@ -62,6 +62,7 @@ from .task_evaluation_policy_run_contract import (
     TaskEvaluationPolicyRunContractError,
     validate_policy_run_setup,
 )
+from .launch_profile_immutable_inputs import immutable_input_digest
 from . import task_evaluation_policy_canary_setup as policy_canary_setup
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
@@ -1063,7 +1064,7 @@ def verify_profile_immutable_inputs(profile: Mapping[str, Any]) -> list[str]:
         if raw_path.is_symlink() or not raw_path.is_file():
             blockers.append(f"launch_profile_immutable_input_missing:{name}")
             continue
-        if _file_digest(raw_path.resolve()) != immutable_input.get("digest"):
+        if immutable_input_digest(raw_path.resolve()) != immutable_input.get("digest"):
             blockers.append(f"launch_profile_immutable_input_digest_mismatch:{name}")
     return sorted(set(blockers))
 
