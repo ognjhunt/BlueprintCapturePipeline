@@ -13,6 +13,17 @@ reconciliation (provider zero, no leases, no pending teardowns). This module
 turns that proof into a settlement receipt per row, honoured by
 ``validated_cancellation`` exactly like an unstarted-controls cancellation.
 Dependent rows settle only when their launch is terminal or was never queued.
+
+A settlement is not a refund (2026-09-13 audit). A stopped resource proves that
+nothing can spend any more, not that nothing was spent: the retired source row
+ran its preparation and a terminal scene-configuration launch may have paid for
+image edits or a GPU. Each receipt therefore carries ``settled_spend``: the hold
+the row keeps against the owner's cap (its full reservation while no billing
+reconciliation is bound), and whether it still counts as an executed attempt.
+Only rows proven never started -- a launch that was never queued, or a controls
+row downstream of a launch that blocked before controls eligibility -- release
+in full. ``retained_hold`` derives the same block for receipts sealed before the
+field existed.
 """
 
 from __future__ import annotations
@@ -39,6 +50,12 @@ CONTROLS_PHASES = ("construction", "controls", "placement")
 _ATTEMPT_FIELDS = ("attempt_id", "attempt_digest", "intent_digest", "provider", "maximum_spend_usd", "source_commit")
 _PREPARATION_SUFFIX = "-scene-configuration-preparation"
 _ACTIVATION_SUFFIX = "-scene-configuration-activation-auto"
+SETTLED_SPEND_BASES = {
+    "retired_source_unreconciled",      # the source row executed its preparation: full hold, counts as an attempt
+    "terminal_launch_unreconciled",     # a terminal launch may have paid: full hold until a reconciliation is bound
+    "downstream_of_blocked_launch",     # controls rows behind a launch that blocked before controls eligibility
+    "launch_never_queued",              # nothing ever started for this row
+}
 
 
 def _require(condition: Any, code: str) -> None:
@@ -93,6 +110,8 @@ def validate_terminal_settlement(*, receipt: Mapping[str, Any], attempt: Mapping
         and ownership.get("unresolved_create_count") == 0,
         "terminal_evidence_invalid",
     )
+    if receipt.get("settled_spend") is not None:
+        _require(receipt["settled_spend"] == retained_hold(receipt), "settled_spend_invalid")
     if attempt["attempt_id"] == retired.get("attempt_id"):
         _require(receipt.get("dependency") is None and receipt.get("execution_terminal") is None, "source_row_shape_invalid")
         return
@@ -118,8 +137,44 @@ def validate_terminal_settlement(*, receipt: Mapping[str, Any], attempt: Mapping
             launch.get("launch_id") == launch_id and launch.get("status") in TERMINAL_LAUNCH_STATUSES,
             "launch_not_terminal",
         )
+        _require(execution.get("launch_status") in (None, launch.get("status")), "launch_status_changed")
     else:
         _require(execution.get("launch_never_queued") is True, "execution_evidence_missing")
+
+
+def _derive_settled_spend(*, maximum_spend_usd: Any, dependency: Mapping[str, Any] | None,
+                          execution: Mapping[str, Any] | None, phase: str | None,
+                          launch_status: str | None) -> dict[str, Any]:
+    cap = float(maximum_spend_usd)
+    if dependency is None:
+        return {"basis": "retired_source_unreconciled", "retained_spend_usd": cap, "counts_as_attempt": True}
+    if (execution or {}).get("launch_never_queued") is True:
+        return {"basis": "launch_never_queued", "retained_spend_usd": 0.0, "counts_as_attempt": False}
+    if phase != "scene_configuration" and launch_status == "blocked":
+        return {"basis": "downstream_of_blocked_launch", "retained_spend_usd": 0.0, "counts_as_attempt": False}
+    return {"basis": "terminal_launch_unreconciled", "retained_spend_usd": cap, "counts_as_attempt": False}
+
+
+def retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """The hold a settled row keeps against the cap and whether it still counts as an attempt.
+
+    Derived from the receipt's own evidence, so receipts sealed before
+    ``settled_spend`` existed are accounted the same conservative way.
+    """
+    dependency = receipt.get("dependency")
+    execution = receipt.get("execution_terminal") or {}
+    phase = None
+    launch_status = None
+    if dependency is not None:
+        phase = dependent_row_ids(str(dependency.get("request_digest"))).get(str(receipt.get("attempt_id")))
+        launch_ref = execution.get("launch_receipt")
+        if launch_ref is not None:
+            launch_status = str(_read(Path(str(launch_ref["path"]))).get("status") or "")
+    hold = _derive_settled_spend(maximum_spend_usd=receipt.get("maximum_spend_usd"), dependency=dependency,
+                                 execution=execution, phase=phase, launch_status=launch_status)
+    _require(hold["basis"] in SETTLED_SPEND_BASES and 0 <= hold["retained_spend_usd"] <= float(receipt.get("maximum_spend_usd")),
+             "settled_spend_invalid")
+    return hold
 
 
 def _launch_state(*, launch_id: str, launch_execution_root: Path, launch_queue_root: Path) -> dict[str, Any] | None:
@@ -129,7 +184,8 @@ def _launch_state(*, launch_id: str, launch_execution_root: Path, launch_queue_r
         launch = _read(receipt_path)
         if launch.get("launch_id") != launch_id or launch.get("status") not in TERMINAL_LAUNCH_STATUSES:
             return None
-        return {"launch_id": launch_id, "launch_receipt": _file(receipt_path), "launch_never_queued": False}
+        return {"launch_id": launch_id, "launch_receipt": _file(receipt_path), "launch_never_queued": False,
+                "launch_status": str(launch.get("status"))}
     if (launch_execution_root / launch_id).exists():
         return None  # A launch directory without a terminal receipt is still running or unreconciled.
     for state in ("pending", "processing"):
@@ -150,7 +206,8 @@ def settle_retired_attempt_rows(*, directory: Path, retired_attempt: Mapping[str
     retired = {"attempt_id": retired_attempt["attempt_id"], "attempt_digest": retired_attempt["attempt_digest"]}
     settled, skipped = [], []
 
-    def settle(attempt: Mapping[str, Any], *, dependency: dict[str, Any] | None, execution: dict[str, Any] | None) -> None:
+    def settle(attempt: Mapping[str, Any], *, dependency: dict[str, Any] | None, execution: dict[str, Any] | None,
+               phase: str | None = None) -> None:
         existing = validated_cancellation(directory, attempt)
         if existing is not None:
             settled.append({"attempt_id": attempt["attempt_id"], "status": "already_released", "schema_version": existing.get("schema_version")})
@@ -162,6 +219,9 @@ def settle_retired_attempt_rows(*, directory: Path, retired_attempt: Mapping[str
             "ownership_reconciliation": ownership_ref, "dependency": dependency,
             "execution_terminal": execution, "downstream_execution_eligible": False,
             "provider_mutation_performed": False,
+            "settled_spend": _derive_settled_spend(
+                maximum_spend_usd=attempt["maximum_spend_usd"], dependency=dependency, execution=execution,
+                phase=phase, launch_status=(execution or {}).get("launch_status")),
         }
         receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
         validate_terminal_settlement(receipt=receipt, attempt=attempt)
@@ -174,7 +234,7 @@ def settle_retired_attempt_rows(*, directory: Path, retired_attempt: Mapping[str
     source_path = directory / "attempts" / (retired["attempt_id"] + ".json")
     source_row = intake._read(source_path, "attempt_digest")
     _require(source_row["attempt_digest"] == retired["attempt_digest"], "retired_attempt_digest_mismatch")
-    settle(source_row, dependency=None, execution=None)
+    settle(source_row, dependency=None, execution=None, phase=None)
     marker = "-" + retired["attempt_id"] + "-"
     for link_path in sorted((directory / "preparations").glob("*.json")):
         if link_path.name.endswith(".activation.json"):
@@ -192,11 +252,11 @@ def settle_retired_attempt_rows(*, directory: Path, retired_attempt: Mapping[str
             skipped.append({"preparation_link": link_path.name, "reason": "launch_not_terminal", "launch_id": launch_id})
             continue
         dependency = {"preparation_link": _file(link_path), "request_digest": link["request_digest"]}
-        for row_id in dependent_row_ids(str(link["request_digest"])):
+        for row_id, phase in dependent_row_ids(str(link["request_digest"])).items():
             row_path = directory / "attempts" / (row_id + ".json")
             if not row_path.is_file():
                 continue
-            settle(intake._read(row_path, "attempt_digest"), dependency=dependency, execution=execution)
+            settle(intake._read(row_path, "attempt_digest"), dependency=dependency, execution=execution, phase=phase)
     return {"status": "would_settle" if dry_run else "settled", "retired_attempt_id": retired["attempt_id"],
             "rows": settled, "skipped": skipped, "provider_mutation_performed": False}
 

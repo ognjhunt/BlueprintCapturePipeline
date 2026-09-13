@@ -557,7 +557,7 @@ def test_workspace_bundles_are_reaped_only_from_idle_workspaces_and_keep_outputs
         workspace_roots=[root], minimum_age_seconds=6 * 3600, now=lambda: now, classifier=_noclass
     )
     assert sorted(row["workspace"] for row in manifest["candidates"]) == ["a" * 64, "b" * 64]
-    assert manifest["retained_counts"] == {"recent": 1, "unsafe": 0, "no_bundle": 1}
+    assert manifest["retained_counts"] == {"recent": 1, "unsafe": 0, "no_bundle": 1, "pinned": 0}
     assert manifest["candidate_bytes"] == 2 * 4096
 
     (touched / "output" / "receipt.json").write_text('{"status": "reviewing"}\n', encoding="utf-8")
@@ -579,7 +579,7 @@ def test_workspace_bundles_are_reaped_only_from_idle_workspaces_and_keep_outputs
     )
     # The touched workspace is recent again; the reaped one has no bundle left.
     assert [row["workspace"] for row in again["candidates"]] == ["c" * 64]
-    assert again["retained_counts"] == {"recent": 1, "unsafe": 0, "no_bundle": 2}
+    assert again["retained_counts"] == {"recent": 1, "unsafe": 0, "no_bundle": 2, "pinned": 0}
     with pytest.raises(ControlPlaneStorageGCError, match="workspace_bundle_window_invalid"):
         gc_module.build_workspace_bundle_manifest(workspace_roots=[root], minimum_age_seconds=-1, classifier=_noclass)
 
