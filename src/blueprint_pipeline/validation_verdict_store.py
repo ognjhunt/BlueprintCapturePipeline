@@ -8,15 +8,11 @@ the fast part.
 
 A stored verdict is a cache, never evidence. It is reused only when:
 
-* every ``blueprint_pipeline`` module in the verdict's dependency closure still has
-  byte-identical source and the caller's key -- the content digests of its inputs --
-  matches. The closure is the code that ran while the verdict was computed, the
-  modules that code imports by statement (they supply its thresholds, schemas and
-  constants without ever executing a function), the ``always`` modules the caller
-  names, and the closure of every verdict reused or computed inside it. A deploy
-  that leaves the closure untouched keeps the verdict, a deploy that changes any
-  member recomputes, and a verdict whose closure cannot be established is never
-  persisted;
+* every ``blueprint_pipeline`` module that was loaded when the verdict was computed
+  still has byte-identical source (validator code is part of the verdict, resolved
+  through the import system without importing anything), and the caller's key -- the
+  content digests of its inputs -- matches; a deploy that leaves the validators
+  untouched keeps the verdicts, a deploy that changes one recomputes;
 * every file the validator consulted through the evidence readers (``sha256_file`` and
   ``read``) is re-proven: files at or above ``MINIMUM_BYTES`` by full stat identity
   (device, inode, size, nanosecond mtime and kernel-owned ctime, ownership, mode, link
@@ -27,7 +23,7 @@ effort: a read-only or missing root disables persistence and changes nothing els
 """
 from __future__ import annotations
 
-import ast
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -45,11 +41,10 @@ ROOT_ENV = "BLUEPRINT_VALIDATION_VERDICT_ROOT"
 DEFAULT_ROOT = "/var/lib/blueprint/pipeline-control-plane/validation-verdicts"
 PACKAGE = "blueprint_pipeline"
 _MODULE_DIGESTS: dict[tuple, str] = {}
-_MODULE_IMPORTS: dict[tuple, tuple] = {}
-#: Open ``executed_code_identity`` collectors, innermost last. Every module that runs
-#: and every verdict reused while a collector is open is a dependency of ALL open
-#: collectors: an outer verdict depends on everything its nested validators depend on.
-_COLLECTORS: list[dict] = []
+_DEPENDENCIES = ContextVar("validator_code_dependencies", default=())
+MISS = object()
+DEPENDENCY_VERSION = 2
+_DEFAULT_CODE = object()
 
 
 def verdict_root() -> Path:
@@ -64,7 +59,7 @@ def _entry_path(root: Path, name: str, key) -> Path:
 def _module_digest(path: Path) -> str | None:
     try:
         observed = path.stat()
-        cache_key = (str(path), observed.st_mtime_ns, observed.st_size)
+        cache_key = (str(path), observed.st_mtime_ns, observed.st_ctime_ns, observed.st_size)
         if cache_key not in _MODULE_DIGESTS:
             _MODULE_DIGESTS[cache_key] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
         return _MODULE_DIGESTS[cache_key]
@@ -75,21 +70,6 @@ def _module_digest(path: Path) -> str | None:
 def _package_root() -> Path:
     import blueprint_pipeline
     return Path(blueprint_pipeline.__file__).resolve().parent
-
-
-def _package_paths() -> list[Path]:
-    """Every directory the package resolves modules from, the real package tree first."""
-    import blueprint_pipeline
-    root = _package_root()
-    roots = [root]
-    for entry in list(getattr(blueprint_pipeline, "__path__", None) or []):
-        try:
-            resolved = Path(entry).resolve()
-        except OSError:
-            continue
-        if resolved not in roots:
-            roots.append(resolved)
-    return roots
 
 
 def _module_name(path: Path, root: Path) -> str | None:
@@ -105,130 +85,47 @@ def _module_name(path: Path, root: Path) -> str | None:
     return ".".join([PACKAGE, *parts]) if parts else PACKAGE
 
 
-def _name_for_file(filename: str) -> str | None:
-    path = Path(filename)
-    for root in _package_paths():
-        name = _module_name(path, root)
-        if name:
-            return name
-    return None
-
-
-def _origin(name: str) -> Path | None:
-    """The source file of package module ``name`` without importing anything; ``None`` when it is not a module."""
-    module = sys.modules.get(name)
-    origin = getattr(module, "__file__", None) if module is not None else None
-    if origin and str(origin).endswith(".py"):
-        return Path(origin)
-    if name != PACKAGE and not name.startswith(PACKAGE + "."):
-        return None
-    relative = name[len(PACKAGE):].lstrip(".")
-    for root in _package_paths():
-        if not relative:
-            candidates = [root / "__init__.py"]
-        else:
-            candidates = [root / (relative.replace(".", "/") + ".py"), root / relative.replace(".", "/") / "__init__.py"]
-        for candidate in candidates:
-            try:
-                if candidate.is_file():
-                    return candidate
-            except OSError:
-                continue
-    return None
-
-
-def _module_imports(path: Path, name: str) -> tuple[str, ...]:
-    """Package modules ``name`` imports by statement: the modules that supply its constants and schemas.
-
-    Statement imports are the only way executed code reaches a threshold, a schema
-    version or a table it never calls into; tracing calls cannot see those reads.
-    Names that resolve to no module file (imported functions and classes) are dropped
-    by ``_origin`` later. Nothing is imported here.
-    """
-    try:
-        observed = path.stat()
-        cache_key = (str(path), observed.st_mtime_ns, observed.st_size)
-        if cache_key in _MODULE_IMPORTS:
-            return _MODULE_IMPORTS[cache_key]
-        tree = ast.parse(path.read_bytes(), filename=str(path))
-    except (OSError, SyntaxError, ValueError):
-        return ()
-    package_parts = name.split(".") if path.name == "__init__.py" else name.split(".")[:-1]
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == PACKAGE or alias.name.startswith(PACKAGE + "."):
-                    found.add(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                base = package_parts[: max(len(package_parts) - (node.level - 1), 0)]
-                if not base:
-                    continue
-                module = ".".join([*base, node.module] if node.module else base)
-            else:
-                module = node.module or ""
-            if module != PACKAGE and not module.startswith(PACKAGE + "."):
-                continue
-            found.add(module)
-            for alias in node.names:  # ``from . import x`` names submodules
-                found.add(module + "." + alias.name)
-    _MODULE_IMPORTS[cache_key] = tuple(sorted(found))
-    return _MODULE_IMPORTS[cache_key]
-
-
-def _dependency_rows(collector: dict) -> list[dict] | None:
-    names = {name for name in (_name_for_file(f) for f in collector["files"]) if name}
-    names.update(collector["names"])
-    names.update({__name__, "blueprint_pipeline.validation_file_digests"})
-    closure = set(names)
-    for name in sorted(names):
-        origin = _origin(name)
-        if origin is not None:
-            closure.update(_module_imports(origin, name))
-    rows: dict[str, str] = {}
-    for name in sorted(closure):
-        origin = _origin(name)
-        if origin is None:
-            if name in names:
-                return None  # executed or named code that cannot be located: no closure, no reuse
-            continue  # an imported function or class, not a module
-        digest = _module_digest(origin)
-        if digest is None:
-            return None
-        rows[name] = digest
-    for row in collector["reused"]:
-        if not isinstance(row, dict) or not isinstance(row.get("module"), str) or not isinstance(row.get("sha256"), str):
-            return None
-        if rows.get(row["module"], row["sha256"]) != row["sha256"]:
-            return None  # two closures disagree about one module: nothing reusable can be established
-        rows[row["module"]] = row["sha256"]
-    return [{"module": name, "sha256": digest} for name, digest in sorted(rows.items())] or None
-
-
 def executed_code_identity(run, *, always=()):
-    """Run ``run`` under a call tracer; return ``(result, rows)`` for the verdict's dependency closure.
+    """Run ``run`` under a call tracer; return ``(result, rows)`` for every package module whose code executed.
 
     Keying a verdict on every loaded module made every deploy discard every
     verdict: the 2026-09-13 scene-840938 run re-derived its adopted ten-stage
     chain for about eighteen minutes after each of eight deploys that never
     touched a validator. The code a verdict depends on is the code that ran
-    while it was computed plus the modules that code imports by statement (the
-    2026-09-13 audit showed a threshold read from an already-imported module
-    never produces a call event); ``always`` names modules whose data the
-    validator reads without importing them. Nested verdicts, computed or reused,
-    add their closure to every enclosing collector, so an outer verdict can never
-    outlive a change in a validator it delegated to.
+    while it was computed; ``always`` names modules whose data the validator
+    reads without calling into them.
     """
-    collector = {"files": set(), "names": {str(name) for name in always if str(name).startswith(PACKAGE)},
-                 "reused": []}
-    _COLLECTORS.append(collector)
+    import blueprint_pipeline
+    roots = [_package_root(), *(Path(p).resolve() for p in blueprint_pipeline.__path__)]
+    from .validation_code_dependencies import _DATA_CACHE, frame_dependencies
+    data_token = _DATA_CACHE.set({})
+    names = set()
+    seen = set()
+    failures = []
+    token = _DEPENDENCIES.set(_DEPENDENCIES.get() + (names,))
+    collectors = _DEPENDENCIES.get()
+    owner_thread = threading.get_ident()
+    if threading.active_count() != 1:
+        for collector in collectors:
+            collector.add("")
 
     def tracer(frame, event, arg):
-        if event == "call":
-            filename = frame.f_code.co_filename
-            for open_collector in _COLLECTORS:
-                open_collector["files"].add(filename)
+        if threading.get_ident() != owner_thread:
+            for collector in collectors:
+                collector.add("")
+        if event == "call" and frame.f_code not in seen:
+            seen.add(frame.f_code)
+            module = next((name for root in roots
+                           if (name := _module_name(Path(frame.f_code.co_filename), root))), None)
+            if module:
+                try:
+                    dependencies = {module} | frame_dependencies(frame, module)
+                    for collector in _DEPENDENCIES.get():
+                        collector.update(dependencies)
+                except (OSError, ValueError, ImportError, SyntaxError):
+                    failures.append(True)
+                    for collector in collectors:
+                        collector.add("")
         return None
 
     previous, previous_threads = sys.gettrace(), threading.gettrace()
@@ -239,15 +136,32 @@ def executed_code_identity(run, *, always=()):
     finally:
         sys.settrace(previous)
         threading.settrace(previous_threads)
-        if _COLLECTORS and _COLLECTORS[-1] is collector:
-            _COLLECTORS.pop()
-        else:  # never leave a foreign collector open
-            _COLLECTORS[:] = [c for c in _COLLECTORS if c is not collector]
-        for outer in _COLLECTORS:
-            outer["files"].update(collector["files"])
-            outer["names"].update(collector["names"])
-            outer["reused"].extend(collector["reused"])
-    return result, _dependency_rows(collector)
+        _DEPENDENCIES.reset(token)
+        _DATA_CACHE.reset(data_token)
+    if failures or "" in names:
+        return result, None
+    names.update(str(name) for name in always if str(name).startswith(PACKAGE))
+    names.update({__name__, "blueprint_pipeline.validation_file_digests",
+                  "blueprint_pipeline.validation_code_dependencies"})
+    for collector in _DEPENDENCIES.get():
+        collector.update(names)
+    rows = []
+    for name in sorted(names):
+        origin = sys.modules[name].__file__ if name in sys.modules else None
+        if not origin:
+            try:
+                import importlib.util
+                spec = importlib.util.find_spec(name)
+                origin = getattr(spec, "origin", None) if spec else None
+            except (ImportError, ValueError):
+                origin = None
+        if not origin or not str(origin).endswith(".py"):
+            continue
+        digest = _module_digest(Path(origin))
+        if digest is None:
+            return result, None
+        rows.append({"module": name, "sha256": digest})
+    return result, (rows or None)
 
 
 def code_identity() -> list[dict] | None:
@@ -295,53 +209,47 @@ def _unchanged(row) -> bool:
         return False
 
 
-def lookup_entry(*, name: str, key, root: Path | None = None) -> tuple[bool, object]:
-    """``(True, verdict)`` when the closure and every consulted byte are unchanged, else ``(False, None)``.
-
-    A successful validator may legitimately return ``None``; the found flag keeps
-    that verdict reusable instead of recomputing it at every operation.
-    """
+def lookup(*, name: str, key, root: Path | None = None, missing=None):
+    """Return the stored verdict when the code and every consulted byte are unchanged, else ``None``."""
     path = _entry_path(root or verdict_root(), name, key)
     try:
         if path.is_symlink() or not path.is_file():
-            return False, None
+            return missing
         value = json.loads(path.read_bytes().decode("utf-8"))
     except (OSError, ValueError):
-        return False, None
+        return missing
     if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION
+            or value.get("dependency_version") != DEPENDENCY_VERSION
             or value.get("name") != name
             or value.get("key") != json.loads(canonical_json({"key": key}))["key"]
             or value.get("entry_digest") != canonical_digest(value, digest_field="entry_digest")
             or not isinstance(value.get("files"), list) or not isinstance(value.get("code"), list)
             or not value["code"]):
-        return False, None
+        return missing
     if not all(isinstance(row, dict) and isinstance(row.get("module"), str) for row in value["code"]):
-        return False, None
+        return missing
     if not _code_unchanged(value["code"]):
-        return False, None
+        return missing
     if not all(isinstance(row, dict) and _unchanged(row) for row in value["files"]):
-        return False, None
-    for collector in _COLLECTORS:  # a reused verdict is a dependency of every verdict being computed around it
-        collector["reused"].extend(value["code"])
-    return True, value["verdict"]
-
-
-def lookup(*, name: str, key, root: Path | None = None):
-    """Return the stored verdict when reusable, else ``None``; use ``lookup_entry`` to tell a ``None`` verdict from a miss."""
-    found, verdict = lookup_entry(name=name, key=key, root=root)
-    return verdict if found else None
+        return missing
+    from .validation_file_digests import record_touched
+    for collector in _DEPENDENCIES.get():
+        collector.update(row["module"] for row in value["code"])
+    for row in value["files"]:
+        record_touched(row["path"], row["identity"], row["sha256"])
+    return value["verdict"]
 
 
 def store(*, name: str, key, files, verdict, source_commit: str = "", root: Path | None = None,
-          code=None) -> Path | None:
+          code=_DEFAULT_CODE) -> Path | None:
     """Persist one verdict with the exact files and code it consulted; ``None`` when unavailable."""
-    code = code if code else code_identity()
+    code = code_identity() if code is _DEFAULT_CODE else code
     if not code:
         return None
     consulted: dict[str, dict] = {}
     for row in files:
         consulted[row["path"]] = {"path": row["path"], "identity": list(row["identity"]), "sha256": row["sha256"]}
-    value = {"schema_version": SCHEMA_VERSION, "name": name, "key": key, "source_commit": source_commit,
+    value = {"schema_version": SCHEMA_VERSION, "dependency_version": DEPENDENCY_VERSION, "name": name, "key": key, "source_commit": source_commit,
              "code": code, "files": list(consulted.values()), "verdict": verdict,
              "created_at_epoch": time.time()}
     try:
@@ -359,3 +267,16 @@ def store(*, name: str, key, files, verdict, source_commit: str = "", root: Path
     except (OSError, TypeError, ValueError):
         return None
     return path
+
+
+def inherit_cached_dependencies(name, key):
+    """An in-operation cache hit must still bind every enclosing verdict."""
+    if _DEPENDENCIES.get() and lookup(name=name, key=key, missing=MISS) is MISS:
+        for collector in _DEPENDENCIES.get():
+            collector.add("")
+
+
+def lookup_entry(*, name, key, root=None):
+    """Compatibility API for controls byte verdicts: null is a successful value."""
+    value = lookup(name=name, key=key, root=root, missing=MISS)
+    return (False, None) if value is MISS else (True, value)

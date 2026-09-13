@@ -772,6 +772,20 @@ def apply_scratch_manifest(
     return result
 
 
+def workspace_process_active(workspace):
+    from .completed_replay_cache_retention import active_reference
+    try:
+        return active_reference(workspace, ignored_process_ids=(os.getpid(),))
+    except (OSError, ValueError):
+        return True
+
+
+def _workspace_busy(workspace, queue_roots):
+    if not (workspace.parent / ".workspace-locks" / (workspace.name + ".lock")).is_file():
+        return True  # No evidence that this legacy workspace uses the lock protocol.
+    return workspace.name in _queue_reference_text(queue_roots) or workspace_process_active(workspace)
+
+
 def _pinned_workspace(workspace: Path, pinned: set[str]) -> bool:
     """True when a live storage pin names the workspace, anything inside it, or an ancestor."""
     if not pinned:
@@ -796,6 +810,7 @@ def build_workspace_bundle_manifest(
     now: Callable[[], float] = time.time,
     classifier: Callable[..., Any] = require_storage_class,
     pins_root: str | Path | None = None,
+    queue_roots: Sequence[str | Path] = (),
 ) -> dict[str, Any]:
     """List ``bundle`` copies inside idle workspaces, without mutating anything.
 
@@ -815,9 +830,11 @@ def build_workspace_bundle_manifest(
         or minimum_age_seconds < 0
     ):
         raise ControlPlaneStorageGCError("control_plane_storage_gc_workspace_bundle_window_invalid")
+    from .control_plane_storage_pins import pins_root_from_environment
+    pins_root = pins_root or pins_root_from_environment()
     observed_at = float(now())
     candidates: list[dict[str, Any]] = []
-    retained = {"recent": 0, "unsafe": 0, "no_bundle": 0, "pinned": 0}
+    retained = {"recent": 0, "unsafe": 0, "no_bundle": 0, "pinned": 0, "in_use": 0}
     pinned = live_pinned_paths(pins_root, now=lambda: observed_at) if pins_root is not None else set()
     roots: list[str] = []
     for raw_root in workspace_roots:
@@ -831,6 +848,9 @@ def build_workspace_bundle_manifest(
                 continue
             if _pinned_workspace(workspace, pinned):
                 retained["pinned"] += 1
+                continue
+            if _workspace_busy(workspace, queue_roots):
+                retained["in_use"] += 1
                 continue
             bundle = workspace / WORKSPACE_BUNDLE_CHILD
             if bundle.is_symlink():
@@ -867,7 +887,8 @@ def build_workspace_bundle_manifest(
         "candidate_bytes": sum(row["size_bytes"] for row in candidates),
         "candidates": candidates,
         "retained_counts": retained,
-        "pins_root": str(pins_root) if pins_root is not None else None,
+        "pins_root": str(pins_root),
+        "queue_roots": [str(p) for p in queue_roots],
         "manifest_digest": "",
     }
     manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
@@ -886,6 +907,7 @@ def apply_workspace_bundle_manifest(
         != canonical_digest(dict(manifest), digest_field="manifest_digest")
     ):
         raise ControlPlaneStorageGCError("control_plane_storage_gc_workspace_bundle_apply_not_authorized")
+    from .control_plane_workspace_lock import workspace_lock
     minimum_age = int(manifest.get("minimum_age_seconds") or 0)
     pins_root = manifest.get("pins_root")
     removed: list[dict[str, Any]] = []
@@ -902,24 +924,29 @@ def apply_workspace_bundle_manifest(
             skipped.append({"workspace": name, "reason": "pinned"})
             continue
         try:
-            if float(now()) - _tree_snapshot(workspace)[0] < minimum_age:
-                skipped.append({"workspace": name, "reason": "candidate_changed"})
-                continue
-            shutil.rmtree(bundle, onerror=_make_writable_and_retry)
-            if os.path.lexists(bundle):
-                raise OSError("workspace_bundle_remove_incomplete")
-            marker = {
-                "schema_version": WORKSPACE_BUNDLE_MARKER_SCHEMA_VERSION,
-                "workspace": name,
-                "reaped_at_epoch": float(now()),
-                "reaped_bytes": int(row.get("size_bytes") or 0),
-                "source_manifest_digest": manifest["manifest_digest"],
-                "outputs_and_receipts_retained": True,
-            }
-            marker["marker_digest"] = canonical_digest(marker, digest_field="marker_digest")
-            (workspace / WORKSPACE_BUNDLE_MARKER).write_text(
-                json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8"
-            )
+            with workspace_lock(workspace, reclaim=True) as acquired:
+                if (not acquired or _workspace_busy(workspace, manifest.get("queue_roots", ()))
+                        or (pins_root and _pinned_workspace(workspace, live_pinned_paths(pins_root, now=now)))):
+                    skipped.append({"workspace": name, "reason": "workspace_in_use"})
+                    continue
+                if float(now()) - _tree_snapshot(workspace)[0] < minimum_age:
+                    skipped.append({"workspace": name, "reason": "candidate_changed"})
+                    continue
+                shutil.rmtree(bundle, onerror=_make_writable_and_retry)
+                if os.path.lexists(bundle):
+                    raise OSError("workspace_bundle_remove_incomplete")
+                marker = {
+                    "schema_version": WORKSPACE_BUNDLE_MARKER_SCHEMA_VERSION,
+                    "workspace": name,
+                    "reaped_at_epoch": float(now()),
+                    "reaped_bytes": int(row.get("size_bytes") or 0),
+                    "source_manifest_digest": manifest["manifest_digest"],
+                    "outputs_and_receipts_retained": True,
+                }
+                marker["marker_digest"] = canonical_digest(marker, digest_field="marker_digest")
+                (workspace / WORKSPACE_BUNDLE_MARKER).write_text(
+                    json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8"
+                )
         except OSError as exc:
             skipped.append({"workspace": name, "reason": f"remove_failed:{type(exc).__name__}"})
             continue
@@ -1098,7 +1125,7 @@ def run_storage_gc(
     report["skipped_roots"].extend(absent)
     if bundle_present:
         bundles = build_workspace_bundle_manifest(
-            workspace_roots=bundle_present,
+            workspace_roots=bundle_present, queue_roots=queue_roots,
             minimum_age_seconds=workspace_bundle_minimum_age_seconds,
             now=clock,
             classifier=classifier,
