@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -189,7 +190,14 @@ def _capsule_runtime(launch_root: Path, extract_root: Path) -> Path | None:
         return None
     if receipt.get("capsule_sha256") != _sha256_file(capsule_path) or receipt.get("capsule_bytes") != capsule_path.stat().st_size:
         return None
-    target = extract_root / launch_root.name[:24]
+    # One fresh tree per capsule digest: launch names share their scene prefix across
+    # attempts, and a tree reused across capsules kept a previous capsule's repair review
+    # and merge next to a base-only capsule (2026-09-13 audit).
+    target = extract_root / str(receipt["capsule_sha256"]).removeprefix("sha256:")[:40]
+    if target.is_symlink():
+        target.unlink()
+    elif target.exists():
+        shutil.rmtree(target)
     with zipfile.ZipFile(capsule_path) as zipped:
         for member in zipped.infolist():
             name = member.filename
@@ -265,9 +273,16 @@ def discover_retained_candidates(*, runtime_request_path: Path, render: Mapping[
         if not plan["retained"]:
             receipt["examined"].append({kind: workspace.name, "status": "no_accepted_frames", "skipped": plan["skipped"]})
             continue
-        selection_root = Path(output_root) / workspace.name[:16]
-        selection_path = materialize_retained_selection_from_sources(sources=plan["sources"], output_root=selection_root)
-        candidates = load_retained_selection(selection_path=selection_path, render=render)
+        selection_root = Path(output_root) / f"{kind}-{hashlib.sha256(str(workspace).encode('utf-8')).hexdigest()[:24]}"
+        try:
+            selection_path = materialize_retained_selection_from_sources(sources=plan["sources"], output_root=selection_root)
+            candidates = load_retained_selection(selection_path=selection_path, render=render)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            # A damaged retained candidate is an ineligible cache entry, never a blocker:
+            # record it and fall back to the next intact history (2026-09-13 audit).
+            receipt["examined"].append({kind: workspace.name, "status": "candidate_unavailable:" + str(exc)[:160]})
+            candidates = []
+            continue
         receipt.update({
             "status": "retained_from_previous_attempt",
             "source_workspace": str(workspace),

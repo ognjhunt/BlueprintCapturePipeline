@@ -8,11 +8,15 @@ the fast part.
 
 A stored verdict is a cache, never evidence. It is reused only when:
 
-* every ``blueprint_pipeline`` module that was loaded when the verdict was computed
-  still has byte-identical source (validator code is part of the verdict, resolved
-  through the import system without importing anything), and the caller's key -- the
-  content digests of its inputs -- matches; a deploy that leaves the validators
-  untouched keeps the verdicts, a deploy that changes one recomputes;
+* every ``blueprint_pipeline`` module in the verdict's dependency closure still has
+  byte-identical source and the caller's key -- the content digests of its inputs --
+  matches. The closure is the code that ran while the verdict was computed, the
+  modules that code imports by statement (they supply its thresholds, schemas and
+  constants without ever executing a function), the ``always`` modules the caller
+  names, and the closure of every verdict reused or computed inside it. A deploy
+  that leaves the closure untouched keeps the verdict, a deploy that changes any
+  member recomputes, and a verdict whose closure cannot be established is never
+  persisted;
 * every file the validator consulted through the evidence readers (``sha256_file`` and
   ``read``) is re-proven: files at or above ``MINIMUM_BYTES`` by full stat identity
   (device, inode, size, nanosecond mtime and kernel-owned ctime, ownership, mode, link
@@ -23,6 +27,7 @@ effort: a read-only or missing root disables persistence and changes nothing els
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -40,6 +45,11 @@ ROOT_ENV = "BLUEPRINT_VALIDATION_VERDICT_ROOT"
 DEFAULT_ROOT = "/var/lib/blueprint/pipeline-control-plane/validation-verdicts"
 PACKAGE = "blueprint_pipeline"
 _MODULE_DIGESTS: dict[tuple, str] = {}
+_MODULE_IMPORTS: dict[tuple, tuple] = {}
+#: Open ``executed_code_identity`` collectors, innermost last. Every module that runs
+#: and every verdict reused while a collector is open is a dependency of ALL open
+#: collectors: an outer verdict depends on everything its nested validators depend on.
+_COLLECTORS: list[dict] = []
 
 
 def verdict_root() -> Path:
@@ -67,6 +77,21 @@ def _package_root() -> Path:
     return Path(blueprint_pipeline.__file__).resolve().parent
 
 
+def _package_paths() -> list[Path]:
+    """Every directory the package resolves modules from, the real package tree first."""
+    import blueprint_pipeline
+    root = _package_root()
+    roots = [root]
+    for entry in list(getattr(blueprint_pipeline, "__path__", None) or []):
+        try:
+            resolved = Path(entry).resolve()
+        except OSError:
+            continue
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
 def _module_name(path: Path, root: Path) -> str | None:
     try:
         relative = path.resolve().relative_to(root)
@@ -80,22 +105,130 @@ def _module_name(path: Path, root: Path) -> str | None:
     return ".".join([PACKAGE, *parts]) if parts else PACKAGE
 
 
+def _name_for_file(filename: str) -> str | None:
+    path = Path(filename)
+    for root in _package_paths():
+        name = _module_name(path, root)
+        if name:
+            return name
+    return None
+
+
+def _origin(name: str) -> Path | None:
+    """The source file of package module ``name`` without importing anything; ``None`` when it is not a module."""
+    module = sys.modules.get(name)
+    origin = getattr(module, "__file__", None) if module is not None else None
+    if origin and str(origin).endswith(".py"):
+        return Path(origin)
+    if name != PACKAGE and not name.startswith(PACKAGE + "."):
+        return None
+    relative = name[len(PACKAGE):].lstrip(".")
+    for root in _package_paths():
+        if not relative:
+            candidates = [root / "__init__.py"]
+        else:
+            candidates = [root / (relative.replace(".", "/") + ".py"), root / relative.replace(".", "/") / "__init__.py"]
+        for candidate in candidates:
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
+    return None
+
+
+def _module_imports(path: Path, name: str) -> tuple[str, ...]:
+    """Package modules ``name`` imports by statement: the modules that supply its constants and schemas.
+
+    Statement imports are the only way executed code reaches a threshold, a schema
+    version or a table it never calls into; tracing calls cannot see those reads.
+    Names that resolve to no module file (imported functions and classes) are dropped
+    by ``_origin`` later. Nothing is imported here.
+    """
+    try:
+        observed = path.stat()
+        cache_key = (str(path), observed.st_mtime_ns, observed.st_size)
+        if cache_key in _MODULE_IMPORTS:
+            return _MODULE_IMPORTS[cache_key]
+        tree = ast.parse(path.read_bytes(), filename=str(path))
+    except (OSError, SyntaxError, ValueError):
+        return ()
+    package_parts = name.split(".") if path.name == "__init__.py" else name.split(".")[:-1]
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == PACKAGE or alias.name.startswith(PACKAGE + "."):
+                    found.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = package_parts[: max(len(package_parts) - (node.level - 1), 0)]
+                if not base:
+                    continue
+                module = ".".join([*base, node.module] if node.module else base)
+            else:
+                module = node.module or ""
+            if module != PACKAGE and not module.startswith(PACKAGE + "."):
+                continue
+            found.add(module)
+            for alias in node.names:  # ``from . import x`` names submodules
+                found.add(module + "." + alias.name)
+    _MODULE_IMPORTS[cache_key] = tuple(sorted(found))
+    return _MODULE_IMPORTS[cache_key]
+
+
+def _dependency_rows(collector: dict) -> list[dict] | None:
+    names = {name for name in (_name_for_file(f) for f in collector["files"]) if name}
+    names.update(collector["names"])
+    names.update({__name__, "blueprint_pipeline.validation_file_digests"})
+    closure = set(names)
+    for name in sorted(names):
+        origin = _origin(name)
+        if origin is not None:
+            closure.update(_module_imports(origin, name))
+    rows: dict[str, str] = {}
+    for name in sorted(closure):
+        origin = _origin(name)
+        if origin is None:
+            if name in names:
+                return None  # executed or named code that cannot be located: no closure, no reuse
+            continue  # an imported function or class, not a module
+        digest = _module_digest(origin)
+        if digest is None:
+            return None
+        rows[name] = digest
+    for row in collector["reused"]:
+        if not isinstance(row, dict) or not isinstance(row.get("module"), str) or not isinstance(row.get("sha256"), str):
+            return None
+        if rows.get(row["module"], row["sha256"]) != row["sha256"]:
+            return None  # two closures disagree about one module: nothing reusable can be established
+        rows[row["module"]] = row["sha256"]
+    return [{"module": name, "sha256": digest} for name, digest in sorted(rows.items())] or None
+
+
 def executed_code_identity(run, *, always=()):
-    """Run ``run`` under a call tracer; return ``(result, rows)`` for every package module whose code executed.
+    """Run ``run`` under a call tracer; return ``(result, rows)`` for the verdict's dependency closure.
 
     Keying a verdict on every loaded module made every deploy discard every
     verdict: the 2026-09-13 scene-840938 run re-derived its adopted ten-stage
     chain for about eighteen minutes after each of eight deploys that never
     touched a validator. The code a verdict depends on is the code that ran
-    while it was computed; ``always`` names modules whose data the validator
-    reads without calling into them.
+    while it was computed plus the modules that code imports by statement (the
+    2026-09-13 audit showed a threshold read from an already-imported module
+    never produces a call event); ``always`` names modules whose data the
+    validator reads without importing them. Nested verdicts, computed or reused,
+    add their closure to every enclosing collector, so an outer verdict can never
+    outlive a change in a validator it delegated to.
     """
-    root = _package_root()
-    files: set[str] = set()
+    collector = {"files": set(), "names": {str(name) for name in always if str(name).startswith(PACKAGE)},
+                 "reused": []}
+    _COLLECTORS.append(collector)
 
     def tracer(frame, event, arg):
         if event == "call":
-            files.add(frame.f_code.co_filename)
+            filename = frame.f_code.co_filename
+            for open_collector in _COLLECTORS:
+                open_collector["files"].add(filename)
         return None
 
     previous, previous_threads = sys.gettrace(), threading.gettrace()
@@ -106,26 +239,15 @@ def executed_code_identity(run, *, always=()):
     finally:
         sys.settrace(previous)
         threading.settrace(previous_threads)
-    names = {name for name in (_module_name(Path(f), root) for f in files) if name}
-    names.update(str(name) for name in always if str(name).startswith(PACKAGE))
-    names.update({__name__, "blueprint_pipeline.validation_file_digests"})
-    rows = []
-    for name in sorted(names):
-        origin = sys.modules[name].__file__ if name in sys.modules else None
-        if not origin:
-            try:
-                import importlib.util
-                spec = importlib.util.find_spec(name)
-                origin = getattr(spec, "origin", None) if spec else None
-            except (ImportError, ValueError):
-                origin = None
-        if not origin or not str(origin).endswith(".py"):
-            continue
-        digest = _module_digest(Path(origin))
-        if digest is None:
-            return result, None
-        rows.append({"module": name, "sha256": digest})
-    return result, (rows or None)
+        if _COLLECTORS and _COLLECTORS[-1] is collector:
+            _COLLECTORS.pop()
+        else:  # never leave a foreign collector open
+            _COLLECTORS[:] = [c for c in _COLLECTORS if c is not collector]
+        for outer in _COLLECTORS:
+            outer["files"].update(collector["files"])
+            outer["names"].update(collector["names"])
+            outer["reused"].extend(collector["reused"])
+    return result, _dependency_rows(collector)
 
 
 def code_identity() -> list[dict] | None:
@@ -173,29 +295,41 @@ def _unchanged(row) -> bool:
         return False
 
 
-def lookup(*, name: str, key, root: Path | None = None):
-    """Return the stored verdict when the code and every consulted byte are unchanged, else ``None``."""
+def lookup_entry(*, name: str, key, root: Path | None = None) -> tuple[bool, object]:
+    """``(True, verdict)`` when the closure and every consulted byte are unchanged, else ``(False, None)``.
+
+    A successful validator may legitimately return ``None``; the found flag keeps
+    that verdict reusable instead of recomputing it at every operation.
+    """
     path = _entry_path(root or verdict_root(), name, key)
     try:
         if path.is_symlink() or not path.is_file():
-            return None
+            return False, None
         value = json.loads(path.read_bytes().decode("utf-8"))
     except (OSError, ValueError):
-        return None
+        return False, None
     if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION
             or value.get("name") != name
             or value.get("key") != json.loads(canonical_json({"key": key}))["key"]
             or value.get("entry_digest") != canonical_digest(value, digest_field="entry_digest")
             or not isinstance(value.get("files"), list) or not isinstance(value.get("code"), list)
             or not value["code"]):
-        return None
+        return False, None
     if not all(isinstance(row, dict) and isinstance(row.get("module"), str) for row in value["code"]):
-        return None
+        return False, None
     if not _code_unchanged(value["code"]):
-        return None
+        return False, None
     if not all(isinstance(row, dict) and _unchanged(row) for row in value["files"]):
-        return None
-    return value["verdict"]
+        return False, None
+    for collector in _COLLECTORS:  # a reused verdict is a dependency of every verdict being computed around it
+        collector["reused"].extend(value["code"])
+    return True, value["verdict"]
+
+
+def lookup(*, name: str, key, root: Path | None = None):
+    """Return the stored verdict when reusable, else ``None``; use ``lookup_entry`` to tell a ``None`` verdict from a miss."""
+    found, verdict = lookup_entry(name=name, key=key, root=root)
+    return verdict if found else None
 
 
 def store(*, name: str, key, files, verdict, source_commit: str = "", root: Path | None = None,

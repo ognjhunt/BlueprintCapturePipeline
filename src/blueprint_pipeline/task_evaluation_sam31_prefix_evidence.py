@@ -70,11 +70,11 @@ def reuse_verdict(name, key, documents, compute):
     def persisted():
         from .task_evaluation_release_identity import running_release_commit
         from .validation_file_digests import note_verdict, touched_files
-        from .validation_verdict_store import executed_code_identity, lookup, store
-        found = lookup(name=name, key=key)
-        if found is not None:
+        from .validation_verdict_store import executed_code_identity, lookup_entry, store
+        found, stored = lookup_entry(name=name, key=key)
+        if found:  # a successful validator may return None; the flag keeps that verdict reusable
             note_verdict(reused=True)
-            return found
+            return stored
 
         def run():
             for record in records:  # cache hits here: recorded as consulted bytes of this verdict
