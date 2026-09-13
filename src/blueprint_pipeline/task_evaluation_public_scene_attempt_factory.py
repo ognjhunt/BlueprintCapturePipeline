@@ -114,15 +114,29 @@ def public_source_content_digest(installation):
                              "assets": sorted(rows, key=lambda r: r["role"])})
 
 
+def _same_intent(plan, intent_digest):
+    """Whether a retained plan was produced for this exact owner intent (its task request names it)."""
+    prior = read(_reference(plan["host_inputs"]["task_request"]))
+    return (prior.get("scene_intent_authority") or {}).get("intent_digest") == intent_digest
+
+
 def _prefix_candidates(binding, machinery, release, task, *, allow_reuse=True):
-    """Discover prior exact task jobs; a retained hint is optional, never opt-in."""
+    """Discover prior exact task jobs; a retained hint is optional, never opt-in.
+
+    With reuse disabled (a from-scratch owner request) the retained hint and every
+    other run's history are ignored, but this intent's own earlier attempts stay
+    adoptable: their completed stages were produced for this exact request under the
+    same gates, and a successor should continue from the first stage that did not
+    finish instead of paying the whole chain again (scene 840938, 2026-09-13).
+    """
     require(type(allow_reuse) is bool, "public_factory_reuse_mode_invalid")
-    if not allow_reuse:
+    own_intent = (task.get("scene_intent_authority") or {}).get("intent_digest") if isinstance(task, dict) else None
+    if not allow_reuse and not own_intent:
         return []
     from .task_evaluation_sam31_phase_queue import PHASES
     from .task_evaluation_sam31_profile_registry import DEFAULT_PROFILE_REGISTRY_ROOT
     candidates = []
-    if binding.get("prefix_candidate"):
+    if allow_reuse and binding.get("prefix_candidate"):
         candidates.append(binding["prefix_candidate"])
     queue = Path(machinery.get("child_queue_root", "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions"))
     registry = Path(machinery.get("profile_registry_root") or DEFAULT_PROFILE_REGISTRY_ROOT)
@@ -163,6 +177,8 @@ def _prefix_candidates(binding, machinery, release, task, *, allow_reuse=True):
             key = (job["parent_request_digest"], job["plan_ref"]["sha256"])
             if (key in seen or plan.get("task_identity") != task["task_identity"]
                     or str(plan.get("publisher_scene_id")) != str(binding["publisher_scene_id"])):
+                continue
+            if not allow_reuse and not _same_intent(plan, own_intent):
                 continue
             profile = registry / (plan["server_profile_sha256"].removeprefix("sha256:") + ".json")
             if not profile.is_file() or sha(profile) != plan["server_profile_sha256"]:
