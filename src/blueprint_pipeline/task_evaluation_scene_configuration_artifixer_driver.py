@@ -1419,6 +1419,21 @@ def _prepare_semantic_prefix(*, values, stage_input_path, stage_input, envelope,
         raise TaskEvaluationSceneConfigurationArtifixerError(
             "scene_configuration_artifixer_retained_candidates_invalid"
         )
+    if not retained_candidates and checkpoint_root is None:
+        # A retry re-paid every edit and review although the frames, masks and
+        # backend were unchanged (InteriorGS 840938, 2026-09-13). Reuse the
+        # last attempt's reviewer-accepted raw edits; rejected views are edited
+        # afresh and the whole set is still reviewed.
+        from .semantic_teacher_candidate_discovery import (
+            DISCOVERY_ROOT_ENV, discover_retained_candidates, discovery_enabled,
+        )
+        from .task_evaluation_artifixer_pretraining import LOGICAL_ROOT
+        if discovery_enabled(values):
+            discovery = discover_retained_candidates(
+                runtime_request_path=semantic_request, render=envelope["render_inputs_result"],
+                workspace_root=Path(str(values.get(DISCOVERY_ROOT_ENV) or LOGICAL_ROOT)),
+                output_root=work / "retained_candidate_discovery")
+            retained_candidates = discovery["candidates"]
     attach_retained_candidates(runtime_request_path=semantic_request, candidates=retained_candidates)
     token = ""
     if checkpoint_root is not None:
