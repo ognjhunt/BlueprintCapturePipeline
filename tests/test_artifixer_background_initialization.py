@@ -382,3 +382,100 @@ def test_rebinding_keeps_accepted_teacher_bytes_and_original_receipts(tmp_path, 
     assert teacher["source_candidate_inputs_receipt"]["receipt_digest"] == updated["receipt_digest"]
     assert teacher["source_candidate_inputs_receipt"]["path"] == str(updated_path)
     assert teacher["editor_identity"]["unchanged_admitted_teacher_receipt_digest"] == old_teacher["receipt_digest"]
+
+
+def _looking_down_camera(camera_id: str, *, x: float = 0.0, y: float = 0.0, size: int = 64):
+    return {
+        "id": camera_id,
+        "spec": {
+            "intrinsics": {"fx": 64.0, "fy": 64.0, "cx": size / 2, "cy": size / 2, "width": size, "height": size},
+            "pose": {
+                "T_world_camera_opencv": [
+                    [1, 0, 0, x],
+                    [0, -1, 0, y],
+                    [0, 0, -1, 2.0],
+                    [0, 0, 0, 1],
+                ]
+            },
+        },
+    }
+
+
+def _teacher_frame(tmp_path, camera_id: str, rgb, *, size: int = 64):
+    from PIL import Image
+    from blueprint_pipeline.artifixer_source_geometry_admission import _record
+
+    path = tmp_path / f"{camera_id}.png"
+    Image.new("RGB", (size, size), color=rgb).save(path)
+    return {"camera_id": camera_id, "whole_frame_semantic_teacher": _record(path)}
+
+
+def _sealed_selection(approved, excluded, *, minimum=2):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    selection = {
+        "schema_version": "semantic_target_training_selection.v1",
+        "status": "admitted_for_training_only",
+        "approved_camera_ids": sorted(approved),
+        "excluded_camera_ids": sorted(excluded),
+        "minimum_approved_views": minimum,
+    }
+    selection["selection_digest"] = canonical_digest(selection, digest_field="selection_digest")
+    return selection
+
+
+def test_excluded_teacher_views_never_feed_seed_colors(tmp_path):
+    """InteriorGS 840938, 2026-09-13: two reviewer-rejected views out of sixteen were admitted
+    as exclusions, then the background initialization refused the whole partial set."""
+    from blueprint_pipeline.artifixer_background_initialization import (
+        excluded_teacher_cameras,
+        sample_teacher_colors,
+    )
+
+    cameras = [
+        _looking_down_camera("cam-a"),
+        _looking_down_camera("cam-b", x=0.05),
+        _looking_down_camera("cam-c", y=0.05),
+        _looking_down_camera("cam-d", x=-0.05),
+    ]
+    frames = {
+        "cam-a": _teacher_frame(tmp_path, "cam-a", (128, 128, 128)),
+        "cam-b": _teacher_frame(tmp_path, "cam-b", (128, 128, 128)),
+        "cam-c": _teacher_frame(tmp_path, "cam-c", (255, 0, 0)),
+        "cam-d": _teacher_frame(tmp_path, "cam-d", (255, 0, 0)),
+    }
+    points = np.array([[0.0, 0.0, 0.0], [0.1, -0.1, 0.0], [-0.1, 0.1, 0.0]])
+    teachers = {"editor_identity": {"training_view_selection": _sealed_selection(["cam-a", "cam-b"], ["cam-c", "cam-d"])}}
+
+    excluded = excluded_teacher_cameras(teachers, frames)
+    assert excluded == {"cam-c", "cam-d"}
+    colors, counts = sample_teacher_colors(points, [c for c in cameras if c["id"] not in excluded], frames)
+    assert counts.tolist() == [2, 2, 2]
+    assert np.allclose(colors, 128 / 255, atol=1e-6)
+    tainted, _ = sample_teacher_colors(points, cameras, frames)
+    assert not np.allclose(tainted, 128 / 255, atol=1e-6)
+    assert excluded_teacher_cameras({"editor_identity": {}}, frames) == set()
+
+
+@pytest.mark.parametrize("corruption", ["unsealed", "overlap", "foreign_camera", "too_few_approved", "status"])
+def test_invalid_training_selection_fails_closed(tmp_path, corruption):
+    from blueprint_pipeline.artifixer_background_initialization import excluded_teacher_cameras
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    frames = {name: _teacher_frame(tmp_path, name, (10, 10, 10)) for name in ("cam-a", "cam-b", "cam-c")}
+    selection = _sealed_selection(["cam-a", "cam-b"], ["cam-c"])
+    if corruption == "unsealed":
+        selection["excluded_camera_ids"] = ["cam-b"]
+    elif corruption == "overlap":
+        selection["approved_camera_ids"] = ["cam-a", "cam-b", "cam-c"]
+        selection["selection_digest"] = canonical_digest(selection, digest_field="selection_digest")
+    elif corruption == "foreign_camera":
+        selection["excluded_camera_ids"] = ["cam-z"]
+        selection["selection_digest"] = canonical_digest(selection, digest_field="selection_digest")
+    elif corruption == "too_few_approved":
+        selection = _sealed_selection(["cam-a"], ["cam-b", "cam-c"], minimum=1)
+    elif corruption == "status":
+        selection["status"] = "rejected"
+        selection["selection_digest"] = canonical_digest(selection, digest_field="selection_digest")
+    with pytest.raises(ValueError, match="training_selection_invalid"):
+        excluded_teacher_cameras({"editor_identity": {"training_view_selection": selection}}, frames)
