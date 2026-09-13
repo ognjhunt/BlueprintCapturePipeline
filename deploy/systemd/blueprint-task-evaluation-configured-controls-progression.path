@@ -1,12 +1,21 @@
 [Unit]
-Description=Advance configured-controls progression when an episode compilation result lands
+Description=Advance configured-controls progression when a sealed worker result lands
 
 [Path]
 # The policy canary's activation needs only the compilation worker's sealed
-# result.  Waking the progression service on that write removes the two-minute
-# timer wait from every no-spend canary; the timer stays armed as the fallback
-# for results that land while a tick is already running.
+# result.  Waking the progression service on that write removes the timer wait
+# from every no-spend canary; the timer stays armed as the fallback for results
+# that land while a tick is already running.
 PathChanged=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/results
+# A scene configuration crosses this service twice more: the preparation
+# worker's sealed result admits the activation, and the launch-activation
+# worker's sealed result admits the WebApp submission.  Attempt #19
+# (2026-09-13) waited a full tick period at each hop (about seven minutes of
+# its fifty-eight-minute path to the paid boundary) for a result that had
+# already landed.  Both are sealed results directories the workers own, not
+# queues they do not own.
+PathChanged=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/results
+PathChanged=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations/results
 Unit=blueprint-task-evaluation-configured-controls-progression.service
 
 [Install]
