@@ -1,8 +1,15 @@
 """Admit a bounded training subset while retaining every final-review camera.
 
 Development-only coverage policy: retain at least eight and 75% of the original
-views; each excluded view needs two approved optical axes within 30 degrees.
+views; each excluded view needs two approved optical axes within 45 degrees.
 This is a training admission heuristic, never a geometry or appearance proof.
+
+Sixteen calibrated views of a room-scale pick object are sampled 25-130 degrees
+apart (InteriorGS 840938, measured 2026-09-13), so a 30-degree radius admitted
+only the single nearest approved neighbour for some views and refused a set
+with twelve approved cameras after the one funded repair round. Forty-five
+degrees still demands two nearby approved viewpoints while tolerating one
+rejected neighbour.
 """
 
 from __future__ import annotations
@@ -15,7 +22,7 @@ from .decision_evidence_contracts import canonical_digest
 SCHEMA = "semantic_target_training_selection.v1"
 MINIMUM_VIEWS = 8
 MINIMUM_FRACTION = 0.75
-MAX_NEIGHBOR_ANGLE_DEGREES = 30.0
+MAX_NEIGHBOR_ANGLE_DEGREES = 45.0
 
 
 def _require(ok, code):

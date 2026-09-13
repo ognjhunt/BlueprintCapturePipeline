@@ -221,3 +221,47 @@ def test_pretraining_recovery_is_bounded_and_remaining_bad_view_can_be_excluded(
             assert chosen["excluded_camera_ids"] == ["camera-07"]
     assert len(calls) == 2 and len(repairs) == 1
     assert all(c["max_cost_usd"] == pytest.approx(0.32) for c in calls)
+
+
+def _yaw_pose(camera_id, degrees, index):
+    angle = math.radians(degrees)
+    return {
+        "camera_id": camera_id,
+        "transform_matrix": [
+            [math.cos(angle), 0, math.sin(angle), index * 0.1],
+            [0, 1, 0, 0],
+            [-math.sin(angle), 0, math.cos(angle), 2],
+            [0, 0, 0, 1],
+        ],
+    }
+
+
+def _scattered_inputs(rejected_neighbor_degrees):
+    """Sixteen scattered views; camera-14 rejected with approved axes at the given yaws."""
+    kwargs = inputs(rejected=(14,))
+    poses = kwargs["transforms"]["frames"]
+    # Spread every approved camera far from camera-14 except the named neighbours.
+    for index, pose in enumerate(poses):
+        cam = pose["camera_id"]
+        poses[index] = _yaw_pose(cam, 0.0 if cam == "camera-14" else 90.0 + index * 5, index)
+    for offset, degrees in enumerate(rejected_neighbor_degrees):
+        target = f"camera-{offset:02d}"
+        poses[offset] = _yaw_pose(target, degrees, offset)
+    return kwargs
+
+
+def test_two_approved_axes_within_forty_five_degrees_cover_an_excluded_view():
+    """InteriorGS 840938, 2026-09-13: camera-14's approved neighbours sat at 20, 36 and
+    38 degrees, so the former 30-degree radius counted one and refused twelve approved
+    views after the single funded repair round."""
+    value = selection.build_selection(**_scattered_inputs((20.2, 36.3, 38.2)))
+    assert value["excluded_camera_ids"] == ["camera-14"]
+    neighbours = value["coverage_neighbors"]["camera-14"]
+    assert sorted(round(row["angle_degrees"], 1) for row in neighbours) == [20.2, 36.3, 38.2]
+    assert all(row["angle_degrees"] <= selection.MAX_NEIGHBOR_ANGLE_DEGREES for row in neighbours)
+
+
+def test_one_near_neighbour_beyond_forty_five_degrees_is_still_uncovered():
+    with pytest.raises(ValueError, match="excluded_view_uncovered"):
+        selection.build_selection(**_scattered_inputs((20.2, 50.0, 60.0)))
+    assert selection.MAX_NEIGHBOR_ANGLE_DEGREES == 45.0
