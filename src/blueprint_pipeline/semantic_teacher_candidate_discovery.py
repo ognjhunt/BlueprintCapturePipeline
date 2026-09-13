@@ -31,6 +31,7 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .semantic_teacher_candidate_reuse import (
+    generation_mask_binding,
     load_retained_selection,
     materialize_retained_selection_from_sources,
 )
@@ -156,6 +157,12 @@ def _workspace_plan(runtime: Path, current: Mapping[str, Mapping[str, Any]], bac
         if (source_request.get(camera, {}).get("edit_mask", {}).get("sha256")
                 != current[camera].get("edit_mask", {}).get("sha256")):
             skipped.append({"camera_id": camera, "reason": "edit_mask_changed"})
+            continue
+        source_document = repair_request if sealed[1] == "repair" else request
+        source_result = repair_cameras_available if sealed[1] == "repair" else result_cameras
+        if camera in source_result and generation_mask_binding(
+                source_document, source_request[camera], source_result[camera]) is None:
+            skipped.append({"camera_id": camera, "reason": "generation_mask_unverified"})
             continue
         if sealed[1] == "repair":
             if camera not in repair_cameras_available:

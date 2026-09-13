@@ -14,6 +14,30 @@ from .decision_evidence_contracts import canonical_digest
 RETAINED_FILE_FIELDS = ("source_runtime_request", "source_runtime_result", "candidate")
 
 
+def generation_mask_binding(request: Mapping, frame: Mapping, result: Mapping) -> dict | None:
+    """Keep the generation mask across reuse; old re-composites cannot prove it.
+
+    Legacy reuse receipts rewrote the original mask on every hop. Even a
+    matching immediate parent is therefore insufficient for those receipts.
+    """
+    if "retained_candidate_lineage" in result or result.get("provider_call_performed") is False:
+        lineage = result.get("retained_candidate_lineage")
+        binding = lineage.get("generation_mask_binding") if isinstance(lineage, Mapping) else None
+        if not isinstance(binding, Mapping) or binding.get("schema_version") != "semantic_teacher_generation_mask_binding.v1":
+            return None
+        if binding.get("edit_mask_sha256") != frame.get("edit_mask", {}).get("sha256"):
+            return None
+        if binding.get("mask_encoding") != request["backend"]["execution"].get("mask_encoding"):
+            return None
+        return dict(binding)
+    return {
+        "schema_version": "semantic_teacher_generation_mask_binding.v1",
+        "edit_mask_sha256": frame["edit_mask"]["sha256"],
+        "mask_encoding": request["backend"]["execution"].get("mask_encoding"),
+        "generation_request_digest": request["request_digest"],
+    }
+
+
 def materialize_retained_selection(*, source_request_path: Path, source_result_path: Path,
                                   source_output_root: Path, camera_ids: list[str], output_root: Path) -> Path:
     """Retain selected raw candidates and original receipts without making calls."""
@@ -207,10 +231,14 @@ def load_retained_candidates(*, request: Mapping, request_root: Path) -> dict:
                 or original_request["backend"]["execution"].get("mask_encoding")
                 != request["backend"]["execution"].get("mask_encoding")):
             continue  # A new mask is a new edit request, not a free re-composite of an old edit.
+        generation = generation_mask_binding(original_request, before, result)
+        if generation is None:
+            continue
         admitted[key] = {"path": candidate, "lineage": {
             "source_runtime_request_digest": original_request["request_digest"],
             "source_runtime_result_digest": original_result["result_digest"],
-            "original_edit_mask_sha256": before["edit_mask"]["sha256"],
+            "original_edit_mask_sha256": generation["edit_mask_sha256"],
+            "generation_mask_binding": generation,
             "current_repair_support_sha256": frame["edit_mask"]["sha256"],
             "original_provider_usage": result.get("provider_usage"),
             "original_computed_editor_cost_usd": result.get("computed_editor_cost_usd"),

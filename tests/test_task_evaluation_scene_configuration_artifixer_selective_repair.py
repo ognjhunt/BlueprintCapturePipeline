@@ -52,6 +52,7 @@ def _fixture(
     rejected_count: int = 1,
     frame_count: int = 4,
     implausible_repair: bool = False,
+    preserve_editor_output: bool = False,
 ) -> dict[str, object]:
     request_root = tmp_path / "request"
     source_root = tmp_path / "source-output"
@@ -242,6 +243,7 @@ def _fixture(
         semantic_runtime_result=source_result,
         semantic_output_root=source_root,
         output_root=tmp_path / "locality-sealed",
+        preserve_editor_output=preserve_editor_output,
     )
     return {
         "task_id": task_id,
@@ -343,10 +345,12 @@ def test_semantic_locality_feathers_inside_mask_without_changing_outside(
     assert sealed.getpixel((32, 32)) == (200, 200, 200)
 
 
+@pytest.mark.parametrize("preserve_editor_output", [False, True])
 def test_locality_only_rejection_repairs_one_camera_and_reuses_the_rest(
-    tmp_path: Path,
+    tmp_path: Path, preserve_editor_output: bool,
 ) -> None:
-    fixture = _fixture(tmp_path)
+    from blueprint_pipeline.task_evaluation_scene_configuration_semantic_locality import EDITOR_OUTPUT_POLICY
+    fixture = _fixture(tmp_path, preserve_editor_output=preserve_editor_output)
     staged = materialize_selective_repair_request(
         review_input_path=fixture["review_path"],
         review_execution_path=fixture["execution_path"],
@@ -366,7 +370,10 @@ def test_locality_only_rejection_repairs_one_camera_and_reuses_the_rest(
     ]
     assert staged["plan"]["additional_provider_request_cap"] == 2
     assert staged["plan"]["second_repair_round_permitted"] is False
-    assert staged["repair_request"]["prompt_policy"] == STRICT_LOCALITY_PROMPT_POLICY
+    assert staged["repair_request"]["prompt_policy"] == (
+        EDITOR_OUTPUT_POLICY if preserve_editor_output else STRICT_LOCALITY_PROMPT_POLICY)
+    if preserve_editor_output:
+        assert "not a hard editing boundary" in staged["repair_request"]["prompt"]
     assert len(staged["repair_request"]["tasks"][0]["frames"]) == 2
     assert staged["repair_request"]["tasks"][0]["frames"][0]["frame_index"] == 0
 
@@ -432,7 +439,8 @@ def test_locality_only_rejection_repairs_one_camera_and_reuses_the_rest(
     assert receipt["repair_round"] == 1
     assert receipt["repaired_frame_count"] == 2
     assert receipt["reused_frame_count"] == 2
-    assert receipt["all_non_target_source_pixels_preserved_exactly"] is True
+    assert receipt["all_non_target_source_pixels_preserved_exactly"] is (not preserve_editor_output)
+    assert receipt["all_editor_output_bytes_preserved_exactly"] is preserve_editor_output
     merged_root = Path(merged["semantic_teacher_frames_root"])
     request_root = Path(fixture["request_path"]).parent
     with Image.open(repaired_frame) as image:
@@ -443,7 +451,10 @@ def test_locality_only_rejection_repairs_one_camera_and_reuses_the_rest(
         with Image.open(merged_root / f"{index:05d}.png") as image:
             merged_pixels = image.convert("RGB")
         assert merged_pixels.getpixel((3, 3)) == repaired_pixels.getpixel((3, 3))
-        assert merged_pixels.getpixel((0, 0)) == source_pixels.getpixel((0, 0))
+        expected = repaired_pixels if preserve_editor_output else source_pixels
+        assert merged_pixels.getpixel((0, 0)) == expected.getpixel((0, 0))
+        if preserve_editor_output:
+            assert (merged_root / f"{index:05d}.png").read_bytes() == repaired_frame.read_bytes()
     for index in range(2, 4):
         assert _sha256(merged_root / f"{index:05d}.png") == _sha256(
             Path(fixture["source_root"])
