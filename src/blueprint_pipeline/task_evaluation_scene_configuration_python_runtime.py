@@ -104,8 +104,8 @@ def validate_runtime_profile_inventory(manifest: Mapping[str, Any], profile: str
 def module_origin_admitted(origin: str, *, sealed_roots: Sequence[Path], interpreter_roots: Sequence[Path]) -> bool:
     """A loaded module is admitted when the import system found it under a sealed root or an interpreter root.
 
-    The decision is made on the import path (``__file__`` as the finder recorded it), never on the physical
-    file behind a symlink: the Isaac Sim image deduplicates identical files, so stdlib members such as
+    Interpreter admission uses the import path (``__file__`` as the finder recorded it), while sealed
+    package roots retain physical containment: the Isaac Sim image deduplicates identical files, so stdlib members such as
     ``importlib/metadata/_text.py`` are symlinks into ``/isaac-sim/extscache``. What governs hermeticity is
     which search root satisfied the import. ``interpreter_roots`` are the entries the isolated interpreter
     (``-I -S``) searches by itself: its stdlib directory, stdlib zip, and extension directory, wherever that
@@ -115,7 +115,14 @@ def module_origin_admitted(origin: str, *, sealed_roots: Sequence[Path], interpr
     import os
     path = Path(os.path.abspath(origin))
     roots = [Path(os.path.abspath(str(sealed))) for sealed in sealed_roots]
+    # Only the interpreter owns the stdlib symlink exception. Shipped Python
+    # must still resolve into its sealed tree; otherwise a staged symlink could
+    # satisfy imports with bytes absent from the admitted wheelhouse.
+    real_path = path.resolve()
+    contained = any(real_path.is_relative_to(sealed.resolve()) for sealed in roots)
     if any(path.is_relative_to(sealed) for sealed in roots):
+        return contained
+    if contained:
         return True
     if {"site-packages", "dist-packages"} & set(path.parts):
         return False

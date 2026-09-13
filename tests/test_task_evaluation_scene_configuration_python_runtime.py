@@ -358,7 +358,7 @@ def test_dedup_symlinked_stdlib_module_is_admitted_by_its_import_path(tmp_path):
     assert not admitted(tmp_path / "elsewhere/global_dependency.py")
 
 
-def test_symlinked_shipped_stage_module_is_admitted_by_its_import_path(tmp_path, fixture_shipped_astra_source):
+def test_symlinked_shipped_stage_module_cannot_escape_the_sealed_source(tmp_path, fixture_shipped_astra_source):
     dedup_store = tmp_path / "dedup_store"
     dedup_store.mkdir()
     stage = fixture_shipped_astra_source / "blueprint_pipeline/fixture_stage.py"
@@ -366,6 +366,18 @@ def test_symlinked_shipped_stage_module_is_admitted_by_its_import_path(tmp_path,
     stage.unlink()
     stage.symlink_to(dedup_store / "fixture_stage.py")
     root, _ = _build_astra(tmp_path)
-    installed = materialize_scene_configuration_python_runtime(wheelhouse_root=root, output_root=tmp_path / "installed",
-        runtime_python=(3, 12), runtime_platform="linux", runtime_machine="x86_64", profile="astra_asset_authoring")
-    assert (installed / "build123d/__init__.py").is_file()
+    with pytest.raises(ValueError, match="shipped_stage_import_origin_mismatch"):
+        materialize_scene_configuration_python_runtime(wheelhouse_root=root, output_root=tmp_path / "installed",
+            runtime_python=(3, 12), runtime_platform="linux", runtime_machine="x86_64", profile="astra_asset_authoring")
+    assert not (tmp_path / "installed").exists()
+
+
+def test_sealed_escape_is_not_readmitted_through_an_enclosing_interpreter_root(tmp_path):
+    stdlib = tmp_path / "stdlib"
+    sealed = stdlib / "sealed"
+    sealed.mkdir(parents=True)
+    outside = tmp_path / "unsealed.py"
+    outside.write_text("VALUE = True\n")
+    (sealed / "escape.py").symlink_to(outside)
+    assert not runtime_module.module_origin_admitted(str(sealed / "escape.py"),
+        sealed_roots=(sealed,), interpreter_roots=(stdlib,))
