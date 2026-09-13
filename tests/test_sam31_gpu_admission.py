@@ -348,3 +348,55 @@ def test_prepare_writes_fail_closed_artifacts(tmp_path: Path) -> None:
     assert json.loads(admission_path.read_text())["status"] == "dry_run_ready"
     assert json.loads(bound_path.read_text())["provider_mutation_authorized"] is False
     assert json.loads(adapter_path.read_text())["paid_execution_started"] is False
+
+
+def _probe_sequence(outcomes):
+    calls = []
+
+    def probe(request):
+        calls.append(dict(request))
+        outcome = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
+        if outcome == "available":
+            return {"status": "available", "offer_count": 3, "selected_offer": {
+                "gpu_name": "RTX 3090", "gpu_ram_mb": 25770, "hourly_rate_usd": 0.2, "geolocation": "Illinois, US"}}
+        return {"status": "blocked", "offer_count": 1, "selected_offer": None,
+                "blockers": ["vast_offer_capacity_unavailable"]}
+    return probe, calls
+
+
+def _collect(probe, sleeper, **kwargs):
+    return collect_sam31_vast_preflight(name_prefix="fixture", container_disk_bytes=80 * 1024**3,
+        watchdog={"status": "armed", "independent_process": True}, conflicting_owner_present=False,
+        capacity_probe=probe, inventory_probe=lambda _: {"api_confirmed": True, "live_resource_count": 0},
+        max_hourly_rate_usd=.5, clock=lambda: 1000, sleeper=sleeper, **kwargs)
+
+
+def test_preflight_reprobes_a_thin_marketplace_before_sealing_capacity_unavailable(monkeypatch):
+    """2026-09-13 00:14: one probe saw a single non-viable offer and the intent parked for $0."""
+    monkeypatch.delenv("BLUEPRINT_SAM31_CAPACITY_PROBE_RETRY_ATTEMPTS", raising=False)
+    monkeypatch.delenv("BLUEPRINT_SAM31_CAPACITY_PROBE_RETRY_INTERVAL_SECONDS", raising=False)
+    sleeps = []
+    probe, calls = _probe_sequence(["blocked", "blocked", "available"])
+    result = _collect(probe, sleeps.append)
+    assert result["status"] == "verified" and len(calls) == 3
+    assert sleeps == [60.0, 60.0]
+    assert [row["attempt"] for row in result["capacity_probe_attempts"]] == [0, 1]
+    assert all(row["wait_seconds"] == 60.0 and row["provider_mutation_performed"] is False
+               and row["blockers"] == ["vast_offer_capacity_unavailable"] for row in result["capacity_probe_attempts"])
+    # Exhausted: the default six re-probes, then the blocked preflight is sealed with its evidence.
+    sleeps.clear()
+    probe, calls = _probe_sequence(["blocked"])
+    result = _collect(probe, sleeps.append)
+    assert result["status"] == "blocked" and "sam31_gpu_single_gpu_unavailable" in result["blockers"]
+    assert len(calls) == 7 and sleeps == [60.0] * 6 and len(result["capacity_probe_attempts"]) == 6
+    # Explicit bounds and the environment override.
+    sleeps.clear()
+    probe, calls = _probe_sequence(["blocked"])
+    result = _collect(probe, sleeps.append, capacity_retry_attempts=0)
+    assert len(calls) == 1 and sleeps == [] and result["capacity_probe_attempts"] == []
+    monkeypatch.setenv("BLUEPRINT_SAM31_CAPACITY_PROBE_RETRY_ATTEMPTS", "2")
+    monkeypatch.setenv("BLUEPRINT_SAM31_CAPACITY_PROBE_RETRY_INTERVAL_SECONDS", "7.5")
+    sleeps.clear()
+    probe, calls = _probe_sequence(["blocked"])
+    result = _collect(probe, sleeps.append)
+    assert len(calls) == 3 and sleeps == [7.5, 7.5]
