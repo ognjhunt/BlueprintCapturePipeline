@@ -1037,6 +1037,26 @@ def _materialized_activation(
     return matches[0]
 
 
+SUBMISSION_FAILURE_SCHEMA_VERSION = "task_evaluation_launch_webapp_submission_failure.v1"
+
+
+def _submission_script_blockers(stdout: object) -> list[str]:
+    """The submit script prints one JSON line carrying its blockers on refusal."""
+
+    for line in reversed(str(stdout or "").splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        blockers = value.get("blockers") if isinstance(value, Mapping) else None
+        if isinstance(blockers, list):
+            return [item for item in blockers if isinstance(item, str)][:8]
+    return []
+
+
 def webapp_submitter(
     *, repo_root: str | Path, secret_file: str | Path, endpoint: str, state_root: str | Path
 ) -> Submitter:
@@ -1072,8 +1092,25 @@ def webapp_submitter(
                 timeout=120,
             )
             if completed.returncode != 0:
+                # 2026-09-13: a Render restart timed out the signed POST and the
+                # tick could only say "submission failed"; the script's own
+                # blocker line is the diagnosis, so keep it on the row and on disk.
+                blockers = _submission_script_blockers(completed.stdout)
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                _write_immutable(
+                    state / f"{launch_id}.webapp-submission-failure-{stamp}.json",
+                    {
+                        "schema_version": SUBMISSION_FAILURE_SCHEMA_VERSION,
+                        "launch_id": launch_id,
+                        "returncode": int(completed.returncode),
+                        "blockers": blockers,
+                        "stderr_tail": str(completed.stderr or "")[-2000:],
+                        "observed_at_iso": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
                 raise SceneConfigurationActivationAutomationError(
-                    "scene_configuration_launch_webapp_submission_failed"
+                    "scene_configuration_launch_webapp_submission_failed:"
+                    + (",".join(blockers) if blockers else f"exit_{completed.returncode}")
                 )
         evidence = _load(
             receipt_path, blocker="scene_configuration_launch_webapp_receipt_invalid"
