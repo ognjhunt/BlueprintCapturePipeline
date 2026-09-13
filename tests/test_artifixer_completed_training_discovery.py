@@ -14,14 +14,15 @@ FOREIGN = "sha256:" + "2" * 64
 
 
 def _launch(root: Path, name: str, *, intent: str = INTENT, closed: bool = True, terminal: bool = True,
-            archive: bool = True, profile: bool = True, age: int = 0) -> Path:
+            archive: bool = True, profile: bool = True, age: int = 0, scene: str | None = None) -> Path:
     launch = root / name
     job = launch / "allocator" / "scene-configuration-job"
     (job / "vast_provider_run").mkdir(parents=True)
     if profile:
         (launch / "launch_profile.json").write_text(json.dumps({
             "schema_version": "task_evaluation_launch_profile.v1",
-            "scene_attempt_binding": {"intent_digest": intent, "intent_id": "scene-x"}}))
+            "scene_attempt_binding": {"intent_digest": intent, "intent_id": "scene-x"},
+            **({"task_evaluation_run": {"team_namespace": "team", "scene_id": scene, "task_id": "t"}} if scene else {})}))
     if terminal:
         (launch / "launch_receipt.json").write_text(json.dumps({"status": "completed"}))
     if closed:
@@ -71,3 +72,37 @@ def test_explicit_source_or_candidate_environment_suppresses_discovery(tmp_path,
     assert injected({SOURCE_ENV: "/explicit"}) == {}
     assert injected({CANDIDATES_ENV: "/explicit-a"}) == {}
     assert len(calls) == 1
+
+
+def test_explicit_source_naming_another_scene_is_ignored_and_recorded(tmp_path):
+    """A global pin from another scene's run (2026-09-13: 841757's r24 drop-in) must never block this scene."""
+    root = tmp_path / "launch-runs"
+    own = _launch(root, "own", scene="840938")
+    foreign = _launch(root, "foreign", intent=FOREIGN, scene="841757")
+    job = own / "allocator" / "scene-configuration-job"
+    environment = {SOURCE_ENV: str(foreign), "BLUEPRINT_ARTIFIXER_COMPLETED_TRAINING_REVIEW_ROOT": "/r24/review",
+                   "OTHER": "kept"}
+    values, ignored = pretraining.scoped_completed_training_environment(environment, job)
+    assert values == {"OTHER": "kept"}
+    assert ignored == {"schema_version": pretraining.SOURCE_IGNORED_SCHEMA,
+                       "reason": "completed_training_source_out_of_scope",
+                       "source_launch_root": str(foreign), "source_scene": ["team", "841757"],
+                       "current_scene": ["team", "840938"],
+                       "ignored_environment": [SOURCE_ENV, "BLUEPRINT_ARTIFIXER_COMPLETED_TRAINING_REVIEW_ROOT"]}
+    # Discovery then runs for this intent as if nothing had been pinned.
+    sibling = _launch(root, "sibling", scene="840938")
+    assert pretraining.discover_completed_training_candidates(job) == [sibling]
+
+
+def test_explicit_source_of_this_scene_is_honoured(tmp_path):
+    root = tmp_path / "launch-runs"
+    own = _launch(root, "own", scene="840938")
+    same_scene = _launch(root, "earlier-intent", intent=FOREIGN, scene="840938")
+    job = own / "allocator" / "scene-configuration-job"
+    environment = {SOURCE_ENV: str(same_scene)}
+    assert pretraining.scoped_completed_training_environment(environment, job) == (environment, None)
+    # Without a scene on this launch there is nothing to scope against: the explicit source stays authoritative.
+    unscoped = _launch(root, "unscoped")
+    assert pretraining.scoped_completed_training_environment(
+        {SOURCE_ENV: str(tmp_path / "missing")}, unscoped / "allocator" / "scene-configuration-job",
+    ) == ({SOURCE_ENV: str(tmp_path / "missing")}, None)
