@@ -62,6 +62,11 @@ from .task_evaluation_splat_render_runtime import (
     validate_splat_render_runtime,
 )
 
+#: A host-wide default for the operator-selected retained candidate inventory. It is a
+#: reuse hint: when its frames are not this scene's, the bundle records the rejection and
+#: selects fresh candidates instead of refusing the launch.
+RETAINED_CANDIDATE_SELECTION_ENV = "BLUEPRINT_SCENE_CONFIGURATION_RETAINED_CANDIDATE_SELECTION"
+
 
 PROBE_KIND = "task-evaluation-scene-configuration"
 PROVIDER_BUNDLE_KIND = "task_evaluation_scene_configuration"
@@ -552,6 +557,7 @@ def build_scene_configuration_provider_bundle(
     production_semantic_reuse_queue_root: str | Path | None = None,
     production_semantic_reuse_revision_id: str | None = None,
     retained_candidate_selection_path: str | Path | None = None,
+    retained_candidate_selection_optional: bool = False,
 ) -> dict[str, Any]:
     """Package provider-authorized derived inputs; raw InteriorGS stays local."""
 
@@ -687,12 +693,26 @@ def build_scene_configuration_provider_bundle(
             raise TaskEvaluationSceneConfigurationBundleError("scene_configuration_retained_candidate_source_ambiguous")
         from .semantic_teacher_candidate_reuse import load_retained_selection
         selection_path = Path(retained_candidate_selection_path).resolve()
+        rejected = None
         try:
             retained_candidates = load_retained_selection(selection_path=selection_path, render=render_inputs)
         except (ValueError, OSError, KeyError, TypeError) as exc:
-            raise TaskEvaluationSceneConfigurationBundleError("scene_configuration_retained_candidate_selection_invalid") from exc
-        render_inputs = {**render_inputs, "retained_semantic_candidates": retained_candidates,
-            "retained_candidate_selection_digest": _sha256(selection_path)}
+            # An ambient selection (a host-wide environment default, 2026-09-13: the
+            # scene-841757 inventory applied to scene 840938) is a reuse hint, not an
+            # order. When its frames are simply not this scene's, record that and select
+            # fresh candidates; a corrupt or tampered selection still fails closed, and
+            # an explicit per-launch selection keeps its strict semantics.
+            other_frames = str(exc) in {"semantic_teacher_retained_selection_source_changed",
+                                        "semantic_teacher_retained_selection_camera_invalid"}
+            if not (retained_candidate_selection_optional and other_frames):
+                raise TaskEvaluationSceneConfigurationBundleError("scene_configuration_retained_candidate_selection_invalid") from exc
+            rejected = {"path": str(selection_path), "sha256": _sha256(selection_path), "blocker": str(exc),
+                        "source": "environment_default"}
+        if rejected is None:
+            render_inputs = {**render_inputs, "retained_semantic_candidates": retained_candidates,
+                "retained_candidate_selection_digest": _sha256(selection_path)}
+        else:
+            render_inputs = {**render_inputs, "retained_candidate_selection_rejected": rejected}
         render_inputs["result_digest"] = canonical_digest(render_inputs, digest_field="result_digest")
     output = Path(output_root).resolve()
     if output.exists() and any(output.iterdir()):
@@ -1774,9 +1794,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--production-semantic-reuse-checkpoint-root")
     parser.add_argument("--production-semantic-reuse-queue-root")
     parser.add_argument("--production-semantic-reuse-revision-id")
-    parser.add_argument("--retained-candidate-selection", default=os.getenv(
-        "BLUEPRINT_SCENE_CONFIGURATION_RETAINED_CANDIDATE_SELECTION", ""))
+    parser.add_argument("--retained-candidate-selection", default="")
     args = parser.parse_args(argv)
+    ambient_selection = os.getenv(RETAINED_CANDIDATE_SELECTION_ENV, "")
+    if not args.retained_candidate_selection and ambient_selection:
+        args.retained_candidate_selection = ambient_selection
+    retained_selection_optional = bool(ambient_selection) and args.retained_candidate_selection == ambient_selection
     receipt = build_scene_configuration_provider_bundle(
         construction_envelope_path=args.construction_envelope,
         toolchain_root=args.toolchain_root,
@@ -1797,6 +1820,7 @@ def main(argv: list[str] | None = None) -> int:
             args.production_semantic_reuse_revision_id
         ),
         retained_candidate_selection_path=args.retained_candidate_selection or None,
+        retained_candidate_selection_optional=retained_selection_optional,
     )
     print(canonical_json(receipt))
     return 0

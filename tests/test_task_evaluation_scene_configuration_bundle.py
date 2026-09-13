@@ -5243,3 +5243,64 @@ def test_publication_metadata_restore_rejects_wrong_bundle_members(tmp_path,bad)
     with pytest.raises(TaskEvaluationSceneConfigurationVastError,match='publication_input_'):
         _publication_envelope({'bundle_path':str(path),'portable_construction_envelope_digest':envelope['envelope_digest'],
                               'source_commit':'a'*40,'run_id':'run'},output_root=tmp_path/'publication')
+
+
+def _foreign_selection(tmp_path: Path) -> Path:
+    """A sealed retained-candidate inventory whose frames belong to another scene."""
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root = tmp_path / "foreign-selection"
+    root.mkdir()
+    for name in ("original-request.json", "original-result.json"):
+        (root / name).write_text("{}")
+    (root / "candidates").mkdir()
+    (root / "candidates" / "0000.png").write_bytes(b"png")
+    def ref(relative):
+        data = (root / relative).read_bytes()
+        return {"relative_path": relative, "size_bytes": len(data),
+                "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
+    selection = {"schema_version": "semantic_teacher_retained_candidate_selection.v1",
+                 "status": "selected_unreviewed_candidates",
+                 "candidates": [{"task_id": "task-other-scene", "camera_id": "camera-from-another-scene",
+                                 "source_runtime_request": ref("original-request.json"),
+                                 "source_runtime_result": ref("original-result.json"),
+                                 "candidate": ref("candidates/0000.png")}]}
+    selection["selection_digest"] = canonical_digest(selection, digest_field="selection_digest")
+    path = root / "selection.json"
+    path.write_text(json.dumps(selection, sort_keys=True) + "\n")
+    return path
+
+
+def test_ambient_retained_selection_for_other_frames_is_recorded_not_fatal(tmp_path: Path) -> None:
+    """2026-09-13 scene 840938: a host-wide default pointed every scene at the 841757 inventory."""
+    selection = _foreign_selection(tmp_path)
+    commit = "a" * 40
+    source = tmp_path / "source"
+    source.mkdir()
+    envelope = _envelope(source, commit)
+    _toolchain(tmp_path / "toolchain", commit)
+    _repo(tmp_path / "repo")
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError,
+                       match="scene_configuration_retained_candidate_selection_invalid"):
+        build_scene_configuration_provider_bundle(
+            construction_envelope_path=envelope, toolchain_root=tmp_path / "toolchain",
+            repository_root=tmp_path / "repo", output_root=tmp_path / "strict", expected_source_commit=commit,
+            retained_candidate_selection_path=selection)
+    receipt = build_scene_configuration_provider_bundle(
+        construction_envelope_path=envelope, toolchain_root=tmp_path / "toolchain",
+        repository_root=tmp_path / "repo", output_root=tmp_path / "ambient", expected_source_commit=commit,
+        retained_candidate_selection_path=selection, retained_candidate_selection_optional=True)
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        member = next(n for n in archive.namelist() if n.endswith("portable_construction_envelope.v1.json"))
+        render = json.loads(archive.read(member))["render_inputs_result"]
+    assert "retained_semantic_candidates" not in render
+    rejected = render["retained_candidate_selection_rejected"]
+    assert rejected["blocker"] == "semantic_teacher_retained_selection_camera_invalid"
+    assert rejected["source"] == "environment_default" and rejected["path"] == str(selection.resolve())
+    # A corrupt selection is still refused even as an ambient hint.
+    selection.write_text("{}")
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError,
+                       match="scene_configuration_retained_candidate_selection_invalid"):
+        build_scene_configuration_provider_bundle(
+            construction_envelope_path=envelope, toolchain_root=tmp_path / "toolchain",
+            repository_root=tmp_path / "repo", output_root=tmp_path / "corrupt", expected_source_commit=commit,
+            retained_candidate_selection_path=selection, retained_candidate_selection_optional=True)
