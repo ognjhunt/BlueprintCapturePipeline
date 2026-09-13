@@ -55,6 +55,11 @@ def recovery_edge(previous_ref, current_ref, previous_link_ref, state, directory
     # into authority to allocate now.
     validated = validate_recovery_evidence(refs, prior_attempt=before, provider=after["provider"],
                                            now=after["reserved_at_epoch"])
+    # Before marketplace-miss budgets were introduced, a sealed grant had no
+    # budget field. Those grants still consume an ordinary retry in intake;
+    # do not retroactively rewrite them or grant marketplace-miss capacity.
+    if "budget" not in recovery:
+        validated = {key: value for key, value in validated.items() if key != "budget"}
     _require(validated == recovery, "recovery_grant_changed")
     return {"kind": "same_release_recovery", "previous_attempt": previous_ref,
             "successor_attempt": current_ref, "reconciliation": refs}

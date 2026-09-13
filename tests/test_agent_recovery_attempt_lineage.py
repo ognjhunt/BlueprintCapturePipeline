@@ -1,3 +1,5 @@
+# Exercises src/blueprint_pipeline/agent_execution/recovery_attempt_lineage.py
+# through the public recovery binding resolver, including historical grants.
 """Controller-native retries retain exact failed-child and owner-budget proof."""
 from datetime import datetime, timezone
 import json
@@ -90,6 +92,8 @@ def same_release_case(tmp_path, *, defect=None):
     new = {**old, "attempt_id": "source-new", "reserved_at_epoch": now + 10,
         "recovery": {"prior_attempt_id": old["attempt_id"], "prior_attempt_digest": old["attempt_digest"],
             "failure_digest": json.loads(Path(failure_ref["path"]).read_text())["failure_digest"], "evidence": evidence}}
+    if defect == "budget":
+        new["recovery"]["budget"] = "unlimited"
     if defect == "runtime":
         new["runtime_digest"] = "sha256:" + "f" * 64
     new_ref = sealed(directory / "attempts/source-new.json", new, "attempt_digest", cross=True)
@@ -126,3 +130,12 @@ def test_same_release_recovery_refuses_unadmitted_or_unrelated_evidence(tmp_path
     with pytest.raises((AgentExecutionError, ValueError)):
         resolve_recovery_binding(service, intent_id=anchor.intent_id, parent_request_digest=request, parent_queue_root=str(queue))
     assert not list((service.journal.root / "controller-recovery-bindings").glob("*.json"))
+
+
+def test_present_recovery_budget_cannot_be_forged(tmp_path):
+    import pytest
+    from blueprint_pipeline.agent_execution.contracts import AgentExecutionError
+    service, anchor, directory, queue, request = same_release_case(tmp_path, defect="budget")
+    with pytest.raises(AgentExecutionError, match="recovery_grant_changed"):
+        resolve_recovery_binding(service, intent_id=anchor.intent_id,
+                                 parent_request_digest=request, parent_queue_root=str(queue))
