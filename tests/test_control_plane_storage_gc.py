@@ -596,3 +596,21 @@ def test_run_reaps_workspace_bundles_after_the_other_classes(tmp_path) -> None:
     applied = run_storage_gc(**common, apply=True, ack=RUN_ACK)
     assert applied["workspace_bundles"]["removed_count"] == 1
     assert not (idle / "bundle").exists() and (idle / "output" / "receipt.json").exists()
+
+
+def test_gc_unit_can_write_every_workspace_bundle_root_it_names() -> None:
+    """2026-09-13: the first reap failed with PermissionError because the unit runs under
+    ProtectSystem=strict and its ReadWritePaths did not include the workspace root."""
+    unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-control-plane-storage-gc.service").read_text(
+        encoding="utf-8"
+    )
+    roots: list[str] = []
+    writable: set[str] = set()
+    for line in unit.splitlines():
+        if line.startswith("Environment=" + gc_module.WORKSPACE_BUNDLE_ROOTS_ENV + "="):
+            roots.extend(part for part in line.split("=", 2)[2].split(":") if part)
+        if line.startswith("ReadWritePaths="):
+            writable.update(part.lstrip("-") for part in line.split("=", 1)[1].split())
+    assert roots, "the unit must name at least one workspace bundle root"
+    missing = [root for root in roots if not any(root == path or root.startswith(path + "/") for path in writable)]
+    assert missing == [], missing
