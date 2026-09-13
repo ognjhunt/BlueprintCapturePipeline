@@ -64,6 +64,8 @@ Environment=BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS=172800
 Environment=BLUEPRINT_CONTROL_PLANE_EVIDENCE_ABANDONED_AFTER_SECONDS=259200
 Environment=BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_ROOTS=/var/lib/blueprint/pipeline-control-plane/engineering:/var/lib/blueprint/pipeline-control-plane/render-probes:/var/lib/blueprint/pipeline-control-plane/diagnostic-checkouts:/var/lib/blueprint/pipeline-control-plane/release-builds:/var/lib/blueprint/task-evaluation-inputs/render-probes
 Environment=BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS=259200
+Environment=BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_ROOTS=/var/lib/blueprint/task-evaluation-inputs/semantic-pretraining
+Environment=BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS=21600
 Environment=BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-pins
 Environment=BLUEPRINT_CONTROL_PLANE_GC_REPORT_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-gc
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id

@@ -528,3 +528,71 @@ def test_run_cli_wires_windows_scratch_and_running_commit_from_the_unit_environm
         "status": "skipped",
         "reason": "running_commit_unknown",
     }
+
+
+def _workspace(root: Path, name: str, *, age: float, now: float, with_bundle: bool = True) -> Path:
+    workspace = root / name
+    (workspace / "output").mkdir(parents=True)
+    (workspace / "output" / "receipt.json").write_text('{"status": "completed"}\n', encoding="utf-8")
+    if with_bundle:
+        (workspace / "bundle" / "provider_runtime").mkdir(parents=True)
+        (workspace / "bundle" / "provider_runtime" / "runtime.bin").write_bytes(b"r" * 4096)
+    stamp = now - age
+    for item in [workspace, *workspace.rglob("*")]:
+        os.utime(item, (stamp, stamp))
+    return workspace
+
+
+def test_workspace_bundles_are_reaped_only_from_idle_workspaces_and_keep_outputs(tmp_path) -> None:
+    """2026-09-13: each retry left a 1.4 GB provider-runtime copy under
+    semantic-pretraining/<digest>/bundle until the disk budget refused the next attempt."""
+    root = tmp_path / "semantic-pretraining"
+    now = 5_000_000.0
+    idle = _workspace(root, "a" * 64, age=7 * 3600, now=now)
+    touched = _workspace(root, "b" * 64, age=7 * 3600, now=now)
+    recent = _workspace(root, "c" * 64, age=3600, now=now)
+    bare = _workspace(root, "d" * 64, age=7 * 3600, now=now, with_bundle=False)
+
+    manifest = gc_module.build_workspace_bundle_manifest(
+        workspace_roots=[root], minimum_age_seconds=6 * 3600, now=lambda: now, classifier=_noclass
+    )
+    assert sorted(row["workspace"] for row in manifest["candidates"]) == ["a" * 64, "b" * 64]
+    assert manifest["retained_counts"] == {"recent": 1, "unsafe": 0, "no_bundle": 1}
+    assert manifest["candidate_bytes"] == 2 * 4096
+
+    (touched / "output" / "receipt.json").write_text('{"status": "reviewing"}\n', encoding="utf-8")
+    with pytest.raises(ControlPlaneStorageGCError, match="workspace_bundle_apply_not_authorized"):
+        gc_module.apply_workspace_bundle_manifest(manifest, ack="wrong")
+    receipt = gc_module.apply_workspace_bundle_manifest(
+        manifest, ack=gc_module.WORKSPACE_BUNDLE_ACK, now=lambda: now
+    )
+    assert [row["workspace"] for row in receipt["removed"]] == ["a" * 64]
+    assert receipt["skipped"] == [{"workspace": "b" * 64, "reason": "candidate_changed"}]
+    assert receipt["evidence_removed"] is False
+    assert not (idle / "bundle").exists() and (idle / "output" / "receipt.json").exists()
+    marker = json.loads((idle / gc_module.WORKSPACE_BUNDLE_MARKER).read_text())
+    assert marker["schema_version"] == gc_module.WORKSPACE_BUNDLE_MARKER_SCHEMA_VERSION
+    assert marker["reaped_bytes"] == 4096 and marker["outputs_and_receipts_retained"] is True
+    assert (touched / "bundle").exists() and (recent / "bundle").exists() and bare.exists()
+    again = gc_module.build_workspace_bundle_manifest(
+        workspace_roots=[root], minimum_age_seconds=6 * 3600, now=lambda: now + 8 * 3600, classifier=_noclass
+    )
+    # The touched workspace is recent again; the reaped one has no bundle left.
+    assert [row["workspace"] for row in again["candidates"]] == ["c" * 64]
+    assert again["retained_counts"] == {"recent": 1, "unsafe": 0, "no_bundle": 2}
+    with pytest.raises(ControlPlaneStorageGCError, match="workspace_bundle_window_invalid"):
+        gc_module.build_workspace_bundle_manifest(workspace_roots=[root], minimum_age_seconds=-1, classifier=_noclass)
+
+
+def test_run_reaps_workspace_bundles_after_the_other_classes(tmp_path) -> None:
+    root = tmp_path / "semantic-pretraining"
+    now = 5_000_000.0
+    idle = _workspace(root, "e" * 64, age=7 * 3600, now=now)
+    common = dict(content_store_roots=[], derived_roots=[], queue_roots=[], pins_root=tmp_path / "pins",
+                  workspace_bundle_roots=[root], workspace_bundle_minimum_age_seconds=6 * 3600,
+                  now=lambda: now, classifier=_noclass)
+    dry = run_storage_gc(**common)
+    assert dry["workspace_bundles"]["candidate_count"] == 1 and (idle / "bundle").exists()
+    applied = run_storage_gc(**common, apply=True, ack=RUN_ACK)
+    assert applied["workspace_bundles"]["removed_count"] == 1
+    assert not (idle / "bundle").exists() and (idle / "output" / "receipt.json").exists()
