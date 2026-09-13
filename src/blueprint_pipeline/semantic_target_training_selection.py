@@ -42,6 +42,27 @@ def _require(ok, code):
         raise ValueError("semantic_target_selection_" + code)
 
 
+def repair_cameras_for_coverage(*, review_execution, transforms, minimum_views):
+    """Plan repairs from real decisions; never manufacture accepted review rows."""
+    approved = {r["camera_id"] for r in review_execution["frames"]
+                if r.get("decision") == "accepted" and all(r.get(k) is True for k in
+                    ("orientation_is_upright", "source_object_absent", "repair_is_locally_plausible", "preserves_non_target_content"))}
+    axes = {r["camera_id"]: [float(r["transform_matrix"][i][2]) for i in range(3)]
+            for r in transforms["frames"]}
+    _require(all(math.isfinite(sum(x*x for x in a)) and abs(sum(x*x for x in a)-1)<0.02
+                 for a in axes.values()), "camera_rotation_invalid")
+    excluded = set(axes) - approved
+    cosine = math.cos(math.radians(MAX_NEIGHBOR_ANGLE_DEGREES))
+    repairs = {c for c in excluded if sum(sum(x*y for x,y in zip(axes[c], axes[k])) >= cosine
+                                         for k in approved) < 2}
+    required = max(MINIMUM_VIEWS, int(minimum_views), math.ceil(len(axes)*MINIMUM_FRACTION))
+    for camera in sorted(excluded-repairs):
+        if len(approved)+len(repairs) >= required:
+            break
+        repairs.add(camera)
+    return sorted(repairs)
+
+
 def build_selection(*, review_input, review_execution, transforms, minimum_views):
     _require(
         review_input.get("review_phase") == "pre_training_semantic_targets"

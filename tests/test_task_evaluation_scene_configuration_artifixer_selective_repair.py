@@ -283,6 +283,19 @@ def test_repair_mask_binding_preserves_support_for_pre_and_post_training(
         _validate_exact_mask_binding(**kwargs)
 
 
+def test_repair_request_can_target_only_the_coverage_required_camera(tmp_path):
+    fixture = _fixture(tmp_path, rejected_count=4)
+    staged = materialize_selective_repair_request(
+        review_input_path=fixture["review_path"], review_execution_path=fixture["execution_path"],
+        semantic_runtime_request_path=fixture["request_path"], semantic_runtime_result=fixture["source_result"],
+        semantic_locality_receipt_path=fixture["locality"]["receipt_path"],
+        expected_request_cost_usd=0.22, maximum_stage_cost_usd=2.4,
+        output_root=tmp_path / "one-repair", repair_camera_ids=["camera-2"])
+    assert staged["plan"]["selected_frame_count"] == 1
+    assert staged["plan"]["selected_frames"][0]["camera_id"] == "camera-2"
+    assert set(staged["plan"]["deferred_rejected_camera_ids"]) == {"camera-0", "camera-1", "camera-3"}
+
+
 def test_semantic_locality_seal_restores_false_accepted_non_target_pixels(
     tmp_path: Path,
 ) -> None:

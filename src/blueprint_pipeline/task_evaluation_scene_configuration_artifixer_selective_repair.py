@@ -262,6 +262,7 @@ def materialize_selective_repair_request(
     expected_request_cost_usd: float,
     maximum_stage_cost_usd: float,
     output_root: str | Path,
+    repair_camera_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Stage one exact-mask repair request for bounded appearance rejections."""
 
@@ -525,6 +526,12 @@ def materialize_selective_repair_request(
         -int(item["review_row"].get("preserves_non_target_content") is False),
         str(item["review_row"]["camera_id"])))
     all_rejected_camera_ids = [str(item["review_row"]["camera_id"]) for item in rejected]
+    if repair_camera_ids is not None:
+        if (not repair_camera_ids or len(set(repair_camera_ids)) != len(repair_camera_ids)
+                or not set(repair_camera_ids).issubset(all_rejected_camera_ids)):
+            raise TaskEvaluationArtifixerSelectiveRepairError(
+                "scene_configuration_artifixer_selective_repair_camera_selection_invalid")
+        rejected = [item for item in rejected if item["review_row"]["camera_id"] in repair_camera_ids]
     rejected = rejected[:min(MAX_SELECTIVE_REPAIR_FRAMES, affordable_count)]
     projected_repair_cost = float(expected_request_cost_usd) * len(rejected)
     if not rejected:
@@ -581,7 +588,8 @@ def materialize_selective_repair_request(
         **request,
         "prompt_policy": (EDITOR_OUTPUT_POLICY if locality.get("policy") == EDITOR_OUTPUT_POLICY
                           else STRICT_LOCALITY_PROMPT_POLICY),
-        "prompt": (EDITOR_REPAIR_PROMPT if locality.get("policy") == EDITOR_OUTPUT_POLICY
+        "prompt": (EDITOR_REPAIR_PROMPT + " Original target instruction: " + str(request["prompt"])
+                   if locality.get("policy") == EDITOR_OUTPUT_POLICY
                    else STRICT_LOCALITY_PROMPT) + " Failed-candidate feedback: " + " ".join(feedback_lines),
         "tasks": [
             {
@@ -626,7 +634,8 @@ def materialize_selective_repair_request(
         "selected_frame_count": len(selected_rows),
         "selection_policy": "highest_priority_failures_within_remaining_stage_budget",
         "all_rejected_camera_ids": all_rejected_camera_ids,
-        "deferred_rejected_camera_ids": all_rejected_camera_ids[len(selected_rows):],
+        "deferred_rejected_camera_ids": [camera for camera in all_rejected_camera_ids
+                                         if camera not in {row["camera_id"] for row in selected_rows}],
         "full_set_review_required_after_retraining": True,
         "review_input_digest": review["receipt_digest"],
         "review_execution_digest": execution["execution_digest"],

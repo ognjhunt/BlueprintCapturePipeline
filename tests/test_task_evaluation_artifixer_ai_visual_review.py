@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+import io
 import inspect
 import json
 from pathlib import Path
@@ -326,14 +328,25 @@ def test_visual_review_rejects_invalid_or_above_policy_cost_cap(
         )
 
 
+@pytest.mark.parametrize("mask_encoding", [
+    "rgba_alpha_zero_edit_region_png", "binary_white_edit_region_png", "binary_black_edit_region_png",
+])
 def test_paired_target_review_binds_source_mask_and_generated_frame(
-    tmp_path: Path,
+    tmp_path: Path, mask_encoding: str,
 ) -> None:
     source = tmp_path / "source.png"
     mask = tmp_path / "mask.png"
     generated = tmp_path / "generated.png"
     Image.new("RGB", (8, 8), color=(90, 80, 70)).save(source)
-    Image.new("L", (8, 8), color=255).save(mask)
+    if mask_encoding == "rgba_alpha_zero_edit_region_png":
+        mask_image = Image.new("RGBA", (8, 8), color=(255, 255, 255, 255))
+        mask_image.putpixel((3, 3), (255, 255, 255, 0))
+    else:
+        background = 255 if mask_encoding == "binary_black_edit_region_png" else 0
+        mask_image = Image.new("L", (8, 8), color=background)
+        mask_image.putpixel((3, 3), 255 - background)
+    mask_image.save(mask)
+    original_mask = mask.read_bytes()
     Image.new("RGB", (8, 8), color=(91, 81, 71)).save(generated)
 
     def record(path: Path) -> dict[str, object]:
@@ -347,6 +360,7 @@ def test_paired_target_review_binds_source_mask_and_generated_frame(
         "schema_version": DUAL_TARGET_REVIEW_SCHEMA_VERSION,
         "status": "paired_target_frames_pending_independent_visual_review",
         "publisher_scene_id": "839873",
+        "target_object_description": "small dark vase",
         "review_scope": ("source_anchor_exact_mask_and_generated_full_frame_comparison"),
         "tasks": [
             {
@@ -357,7 +371,8 @@ def test_paired_target_review_binds_source_mask_and_generated_frame(
                         "frame_index": 0,
                         "camera_id": "camera-0",
                         "source_frame": record(source),
-                        "exact_repair_mask": record(mask),
+                    "exact_repair_mask": record(mask),
+                    "exact_repair_mask_encoding": mask_encoding,
                         "final_frame": record(generated),
                     }
                 ],
@@ -387,6 +402,17 @@ def test_paired_target_review_binds_source_mask_and_generated_frame(
     assert "exact_repair_mask" in labels
     assert "generated_candidate" in labels
     assert reopened["outside_support_invariance_claimed"] is False
+    content = request[0]["content"]
+    metadata = json.loads(content[1]["text"])
+    assert metadata["target_object_description"] == "small dark vase"
+    images = [base64.b64decode(row["image_url"].split(",", 1)[1])
+              for row in content if row.get("type") == "input_image"]
+    assert images[0] == source.read_bytes() and images[2] == generated.read_bytes()
+    with Image.open(io.BytesIO(images[1])) as visible:
+        assert visible.mode == "L"
+        assert visible.getpixel((3, 3)) == 255
+        assert visible.getpixel((0, 0)) == 0
+    assert mask.read_bytes() == original_mask
 
 
 def test_training_target_acceptance_cannot_seal_final_appearance(tmp_path):

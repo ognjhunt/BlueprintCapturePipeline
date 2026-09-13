@@ -34,21 +34,19 @@ RIGHTS_SCHEMA_VERSION = "fresh_scene_semantic_teacher_image_edit_rights.v1"
 REQUEST_SCHEMA_VERSION = "fresh_scene_semantic_teacher_image_edit_request.v1"
 PACKET_SCHEMA_VERSION = "fresh_scene_semantic_teacher_image_edit_packet.v1"
 CANDIDATE_SCHEMA_VERSION = "public_scene_artifixer3d_candidate_inputs.v3"
-PROMPT_POLICY = "generic_masked_object_absent_background_completion_v2"
-NAMED_PROMPT_POLICY = "named_masked_object_absent_background_completion_v3"
+PROMPT_POLICY = "generic_masked_object_absent_background_completion_v3"
+NAMED_PROMPT_POLICY = "named_masked_object_absent_background_completion_v4"
 OBJECT_DESCRIPTION_PLACEHOLDER = "{object_description}"
 OBJECT_DESCRIPTION_PATTERN = re.compile(r"[a-z0-9][a-z0-9 ,'-]{1,94}")
 PROMPT_POLICIES = {
-    PROMPT_POLICY: (
+    "generic_masked_object_absent_background_completion_v2": (
         "Remove the masked task object completely. Reconstruct the realistic empty "
         "background surfaces that continue behind it, matching the existing room, "
         "materials, lighting, perspective, and camera viewpoint. Do not add a "
         "replacement object, silhouette, blank panel, text, watermark, robot, or "
         "new foreground item. Preserve the rest of the image as closely as possible."
     ),
-    # The owner's own edits (2026-09-13) named the object and asked for a
-    # consistent, realistic fill; the editor is told what the masked thing is.
-    NAMED_PROMPT_POLICY: (
+    "named_masked_object_absent_background_completion_v3": (
         "Remove the masked {object_description} completely. Reconstruct the realistic "
         "empty background surfaces that continue behind it, matching the existing "
         "room, materials, lighting, perspective, and camera viewpoint, so the area "
@@ -56,6 +54,30 @@ PROMPT_POLICIES = {
         "and realistic. Do not add a replacement object, silhouette, blank panel, "
         "text, watermark, robot, or new foreground item. Preserve the rest of the "
         "image as closely as possible."
+    ),
+    PROMPT_POLICY: (
+        "Remove the masked task object completely. It is the only object to remove. "
+        "Reconstruct the surfaces and parts of other objects revealed behind it, matching the existing room, "
+        "materials, lighting, perspective, and camera viewpoint. Do not add a "
+        "replacement object, silhouette, blank panel, text, watermark, robot, or "
+        "new foreground item. Remove only ONE object. Keep every other object, including "
+        "objects overlapping or partly hidden behind the target. Inpaint the newly "
+        "revealed parts of those objects instead of erasing them. Preserve their full "
+        "shape, height, opacity and placement, and preserve the rest of the scene."
+    ),
+    # The owner's own edits (2026-09-13) named the object and asked for a
+    # consistent, realistic fill; the editor is told what the masked thing is.
+    NAMED_PROMPT_POLICY: (
+        "Remove the masked {object_description} completely. It is the only object to remove. "
+        "Reconstruct the surfaces and parts of other objects revealed behind it, matching the existing "
+        "room, materials, lighting, perspective, and camera viewpoint, so the area "
+        "looks as if nothing had ever stood there. Make the inpainting consistent "
+        "and realistic. Do not add a replacement object, silhouette, blank panel, "
+        "text, watermark, robot, or new foreground item. Remove only this ONE object. "
+        "Keep every other object, even where it overlaps or is "
+        "partly hidden behind the target. Inpaint the newly revealed parts of those "
+        "objects instead of erasing them. Preserve their full shape, height, opacity "
+        "and placement, and preserve the rest of the scene."
     ),
 }
 

@@ -464,6 +464,7 @@ def materialize_semantic_locality_seal(
                     "object_core_generated_pixels_preserved_exactly": frame_seal.get(
                         "object_core_generated_pixels_preserved_exactly", False),
                     "exact_edit_mask": _record(mask_path),
+                    "edit_mask_encoding": encoding,
                     "raw_semantic_teacher": _record(raw_teacher_path),
                     "raw_teacher_changed_outside_exact_support": (
                         raw_changed_outside
