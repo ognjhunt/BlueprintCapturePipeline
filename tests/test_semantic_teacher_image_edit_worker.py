@@ -1272,10 +1272,6 @@ def _request_with_retained_candidate(tmp_path):
     candidate = root / "retained-candidate.png"
     candidate.write_bytes(generated)
     request = json.loads(request_path.read_text())
-    # A wider or corrected mask must not be claimed as the original API mask.
-    mask = root / request["tasks"][0]["frames"][0]["edit_mask"]["relative_path"]
-    mask.write_bytes(_png_bytes(size=(6, 4), color=(0, 0, 0, 0), mode="RGBA"))
-    request["tasks"][0]["frames"][0]["edit_mask"] = _record(mask, root=root)
     request["retained_candidates"] = [{
         "task_id": request["tasks"][0]["task_id"], "camera_id": "camera_0",
         "source_runtime_request": _record(old_request, root=root),
@@ -1303,7 +1299,7 @@ def test_reuse_retains_original_mask_lineage_and_bills_only_new_calls(tmp_path):
     assert reused["provider_usage"] is None
     assert reused["computed_editor_cost_usd"] == 0
     assert reused["retained_candidate_lineage"]["source_runtime_result_digest"] == original["result_digest"]
-    assert reused["retained_candidate_lineage"]["original_edit_mask_sha256"] != reused["edit_mask_sha256"]
+    assert reused["retained_candidate_lineage"]["original_edit_mask_sha256"] == reused["edit_mask_sha256"]
     assert reused["retained_candidate_lineage"]["current_repair_support_sha256"] == reused["edit_mask_sha256"]
     assert result["computed_editor_cost_usd"] == pytest.approx(original["computed_editor_cost_usd"] / 2)
 
@@ -1398,3 +1394,21 @@ def test_retained_selection_reproduces_rgb_staging_after_source_verification(tmp
     else:
         with pytest.raises(ValueError, match="source_changed"):
             load_retained_selection(selection_path=selection_path, render={"derived_frames": [record]})
+
+
+def test_changed_mask_requires_a_new_edit_instead_of_reusing_old_polygon_output(tmp_path):
+    request_path, _, generated, _ = _request_with_retained_candidate(tmp_path)
+    request = json.loads(request_path.read_text())
+    mask = request_path.parent / request["tasks"][0]["frames"][0]["edit_mask"]["relative_path"]
+    mask.write_bytes(_png_bytes(size=(6, 4), color=(0, 0, 0, 0), mode="RGBA"))
+    request["tasks"][0]["frames"][0]["edit_mask"] = _record(mask, root=request_path.parent)
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    request_path.write_text(json.dumps(request))
+    calls = []
+    def opener(*args, **kwargs):
+        calls.append(1)
+        return _Response(_inline_response(generated))
+    result = execute_semantic_teacher_image_edits(runtime_request_path=request_path,
+        output_root=tmp_path / "new-output", token="fixture-token", opener=opener)
+    assert result["retained_candidate_frame_count"] == 0
+    assert result["request_count"] == len(calls) == result["source_frame_count"]

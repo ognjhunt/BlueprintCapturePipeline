@@ -214,8 +214,8 @@ def seal_semantic_teacher_frame(
         candidate=raw_teacher,
         support=support,
     )
-    inner_feather, feather_radius = _inner_feather_alpha(support)
     core_record = None
+    core = None
     if object_core_mask_path is not None:
         core_path = Path(object_core_mask_path).expanduser().resolve()
         core = _edit_support(mask_path=core_path, encoding="binary_white_edit_region_png")
@@ -225,8 +225,13 @@ def seal_semantic_teacher_frame(
             )
         # The whole object must use generated pixels at full opacity. Feather
         # only the surrounding repair band; never restore source object pixels.
-        inner_feather = ImageChops.lighter(inner_feather, core)
         core_record = _record(core_path)
+    if core is not None and ImageChops.difference(core, support).getbbox() is None:
+        inner_feather, feather_radius = support, 0
+    else:
+        inner_feather, feather_radius = _inner_feather_alpha(support)
+        if core is not None:
+            inner_feather = ImageChops.lighter(inner_feather, core)
     sealed = Image.composite(raw_teacher, source, inner_feather)
     if _outside_difference_present(
         source=source,

@@ -139,7 +139,8 @@ def attach_retained_candidates(*, runtime_request_path: Path, candidates: list) 
                 "sha256": "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()}
         staged.append(copied)
     request["retained_candidates"] = staged
-    load_retained_candidates(request=request, request_root=root)
+    admitted = load_retained_candidates(request=request, request_root=root)
+    request["retained_candidates"] = [row for row in staged if (row["task_id"], row["camera_id"]) in admitted]
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     runtime_request_path.write_text(json.dumps(request, sort_keys=True) + "\n")
 
@@ -202,6 +203,10 @@ def load_retained_candidates(*, request: Mapping, request_root: Path) -> dict:
         if any(row["candidate"][field] != result["semantic_teacher_frame"][field]
                for field in ("size_bytes", "sha256")):
             raise ValueError("semantic_teacher_retained_candidate_output_mismatch")
+        if (before["edit_mask"]["sha256"] != frame["edit_mask"]["sha256"]
+                or original_request["backend"]["execution"].get("mask_encoding")
+                != request["backend"]["execution"].get("mask_encoding")):
+            continue  # A new mask is a new edit request, not a free re-composite of an old edit.
         admitted[key] = {"path": candidate, "lineage": {
             "source_runtime_request_digest": original_request["request_digest"],
             "source_runtime_result_digest": original_result["result_digest"],

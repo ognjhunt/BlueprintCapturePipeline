@@ -1,59 +1,21 @@
-"""Derive candidate 2D repair support without changing SAM ownership evidence.
+"""Use exactly the observed SAM silhouette as the editable region.
 
-The support is what the image editor may repaint and what the locality seal
-keeps from its output. On InteriorGS 840938 (2026-09-13) the raw gpt-image
-output was clean in every rejected view; the block-shaped seams the reviewer
-rejected came from the support itself. v1 handed the editor the calibrated
-object mask (the padded 3D-cutout projection, three times the SAM silhouette
-for the vase in source-08) plus a flat 32-pixel band, which annexed the bottle
-beside it. v2 bounded that to a surface band near the silhouette and halved the
-region. The owner then chose the silhouette itself (2026-09-13 15:20 UTC): the
-editor regenerates the whole frame and is trusted to understand the object
-from its outline; what we keep is exactly the observed silhouette, so the seal
-can never cut through a neighbour. A view SAM missed entirely keeps the
-calibrated projection as its only object evidence.
+Calibrated projections remain provenance, not a substitute object silhouette.
+No guard band, shadow extension, or projected-box fallback is added. Missing
+or full-frame SAM masks need correction before any image-edit request.
 """
 from __future__ import annotations
 
 import hashlib
 from pathlib import Path
 
-import numpy as np
 from PIL import Image, ImageChops
-from scipy.ndimage import label, maximum_filter
 
 from .decision_evidence_contracts import canonical_digest
 
-REPAIR_SUPPORT_POLICY = "sam_silhouette_exact_v3"
+REPAIR_SUPPORT_POLICY = "sam_silhouette_exact_no_fallback_v4"
 GUARD_BAND_PIXELS = 0
 CALIBRATED_REACH_PIXELS = 0
-SHADOW_LUMINANCE_FLOOR_FRACTION = 0.62
-HIGHLIGHT_LUMINANCE_CEILING_FRACTION = 1.06
-
-
-def _dilate(mask: np.ndarray, radius: int) -> np.ndarray:
-    return maximum_filter(mask, size=2 * radius + 1, mode="constant", cval=0)
-
-
-def _constrain_guard_band(*, core: np.ndarray, guard: np.ndarray, luminance: np.ndarray) -> tuple[np.ndarray, dict]:
-    """Admit guard-band pixels that look like the object's supporting surface and touch the core."""
-    ring = guard & ~core
-    if not ring.any():
-        return core.copy(), {"guard_band_rule": "supporting_surface_luminance_band_connected_to_core",
-                             "surface_reference_luminance": None, "guard_band_pixels_offered": 0,
-                             "guard_band_pixels_admitted": 0}
-    reference = float(np.median(luminance[ring]))
-    floor = reference * SHADOW_LUMINANCE_FLOOR_FRACTION
-    ceiling = reference * HIGHLIGHT_LUMINANCE_CEILING_FRACTION
-    admitted = ring & (luminance >= floor) & (luminance <= ceiling)
-    labelled, _ = label(admitted | core)
-    touching = np.unique(labelled[core])
-    reachable = np.isin(labelled, touching[touching > 0]) & admitted
-    support = core | reachable
-    return support, {"guard_band_rule": "supporting_surface_luminance_band_connected_to_core",
-                     "surface_reference_luminance": round(reference, 3), "luminance_floor": round(floor, 3),
-                     "luminance_ceiling": round(ceiling, 3), "guard_band_pixels_offered": int(ring.sum()),
-                     "guard_band_pixels_admitted": int(reachable.sum())}
 
 
 def _record(path: Path) -> dict:
@@ -72,49 +34,33 @@ def _binary(path: Path) -> Image.Image:
 def materialize_repair_support(*, calibrated_mask_path: Path, sam_mask_path: Path,
                                source_frame_path: Path, calibration_digest: str,
                                output_root: Path) -> dict:
-    """Bind a candidate object core and margin to existing calibrated inputs.
-
-    The margin is a repair allowance, not segmentation truth. Independent
-    visual review must still establish complete removal and no collateral edit.
-    """
-    calibrated = _binary(calibrated_mask_path)
-    sam = _binary(sam_mask_path)
+    calibrated, sam = _binary(calibrated_mask_path), _binary(sam_mask_path)
     with Image.open(source_frame_path) as image:
         size = image.size
-        luminance = np.asarray(image.convert("L"), dtype=np.float64)
     if calibrated.size != size or sam.size != size:
         raise ValueError("scene_configuration_repair_support_shape_invalid")
-    if ImageChops.lighter(calibrated, sam).getbbox() is None:
-        raise ValueError("scene_configuration_repair_support_core_missing")
+    count = sam.histogram()[255]
+    if not count:
+        raise ValueError("scene_configuration_repair_support_sam_core_missing")
+    if count == size[0] * size[1]:
+        raise ValueError("scene_configuration_repair_support_sam_core_full_frame")
     if output_root.exists():
         raise ValueError("scene_configuration_repair_support_output_exists")
-    sam_array = np.asarray(sam) > 0
-    calibrated_array = np.asarray(calibrated) > 0
-    if sam_array.any():
-        near = _dilate(sam_array.astype(np.uint8), CALIBRATED_REACH_PIXELS) > 0
-        core_array = sam_array | (calibrated_array & near)
-    else:  # SAM missed this view entirely: the calibrated projection is the only object evidence
-        core_array = calibrated_array
-    calibrated_dropped = int((calibrated_array & ~core_array).sum())
-    core = Image.fromarray(np.where(core_array, 255, 0).astype(np.uint8), mode="L")
-    guard = _dilate(core_array.astype(np.uint8), GUARD_BAND_PIXELS) > 0
-    support_array, guard_record = _constrain_guard_band(core=core_array, guard=guard, luminance=luminance)
-    support = Image.fromarray(np.where(support_array, 255, 0).astype(np.uint8), mode="L")
     output_root.mkdir(parents=True)
-    core_path = output_root / "object-core.png"
-    support_path = output_root / "repair-support.png"
-    core.save(core_path)
-    support.save(support_path)
+    core_path, support_path = output_root / "object-core.png", output_root / "repair-support.png"
+    sam.save(core_path)
+    sam.save(support_path)
     provenance = {
         "policy": REPAIR_SUPPORT_POLICY,
         "source_frame": _record(source_frame_path),
         "calibrated_object_mask": _record(calibrated_mask_path),
         "raw_sam_mask": _record(sam_mask_path),
         "calibration_digest": calibration_digest,
-        "guard_band_pixels": GUARD_BAND_PIXELS,
-        "calibrated_reach_pixels": CALIBRATED_REACH_PIXELS,
-        "calibrated_pixels_beyond_reach_dropped": calibrated_dropped,
-        **guard_record,
+        "guard_band_pixels": 0, "calibrated_reach_pixels": 0,
+        "sam_silhouette_pixel_count": count,
+        "calibrated_pixels_beyond_reach_dropped": ImageChops.subtract(calibrated, sam).histogram()[255],
+        "guard_band_pixels_offered": 0, "guard_band_pixels_admitted": 0,
+        "calibrated_projection_fallback_used": False,
         "observed_segmentation_truth": False,
         "sam_ownership_evidence_modified": False,
         "whole_object_coverage_visually_qualified": False,
