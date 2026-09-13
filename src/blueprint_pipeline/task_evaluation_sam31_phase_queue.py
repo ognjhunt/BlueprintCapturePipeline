@@ -63,6 +63,19 @@ def _ref(value: Mapping[str, Any]) -> dict:
             "size_bytes": value["size_bytes"]}
 
 
+def _job_identity(job: Mapping[str, Any]) -> dict:
+    """Everything that names a phase job except where its bytes happen to live."""
+    plan = job.get("plan_ref") if isinstance(job.get("plan_ref"), Mapping) else {}
+    inputs = job.get("inputs") if isinstance(job.get("inputs"), Mapping) else {}
+    return {
+        **{key: value for key, value in job.items() if key not in ("plan_ref", "inputs", "job_digest")},
+        "plan_identity": {key: plan.get(key) for key in ("sha256", "size_bytes")},
+        "input_identities": {name: {key: (ref.get(key) if isinstance(ref, Mapping) else None)
+                                    for key in ("sha256", "size_bytes")}
+                             for name, ref in inputs.items()},
+    }
+
+
 def enqueue_sam31_phase(
     *, queue_root: str | Path, parent_preparation_id: str, parent_request_digest: str,
     expected_source_commit: str, plan_ref: Mapping[str, Any], phase: str,
@@ -91,7 +104,11 @@ def enqueue_sam31_phase(
     _require(len(existing) <= 1, "job_identity_ambiguous")
     path = existing[0] if existing else root / "pending" / f"{child_id}.json"
     if existing:
-        _require(_read(path) == job, "job_identity_conflict")
+        # The child id is derived from the digests alone; the recorded paths are
+        # provenance. A look-ahead replay (2026-09-13, scene 840938) re-drives an
+        # adopted prefix from re-rooted references and must recognise the copied
+        # production job as the same phase, not a conflicting one.
+        _require(_job_identity(_read(path)) == _job_identity(job), "job_identity_conflict")
     else:
         _write(path, job)
     return {"schema_version": "task_evaluation_sam31_preparation_execution_intake.v1",
