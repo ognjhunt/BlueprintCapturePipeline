@@ -772,19 +772,38 @@ def apply_scratch_manifest(
     return result
 
 
+def workspace_process_active(workspace):
+    from .completed_replay_cache_retention import active_reference
+    try:
+        return active_reference(workspace, ignored_process_ids=(os.getpid(),))
+    except (OSError, ValueError):
+        return True  # An unavailable process inventory is not proof of idleness.
+
+
+def _workspace_protected(workspace, pins_root, queue_roots, now):
+    if not (workspace.parent / ".workspace-locks" / (workspace.name + ".lock")).is_file():
+        return True
+    pinned = live_pinned_paths(pins_root, now=now)
+    resolved = workspace.resolve()
+    if any(Path(p).resolve() == resolved or resolved in Path(p).resolve().parents
+           or Path(p).resolve() in resolved.parents for p in pinned):
+        return True
+    return workspace.name in _queue_reference_text(queue_roots) or workspace_process_active(workspace)
+
+
 def build_workspace_bundle_manifest(
     *,
     workspace_roots: Sequence[str | Path],
+    pins_root: str | Path = "/var/lib/blueprint/pipeline-control-plane/storage-pins",
+    queue_roots: Sequence[str | Path] = (),
     minimum_age_seconds: int = DEFAULT_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS,
     now: Callable[[], float] = time.time,
     classifier: Callable[..., Any] = require_storage_class,
 ) -> dict[str, Any]:
     """List ``bundle`` copies inside idle workspaces, without mutating anything.
 
-    A workspace is idle when nothing anywhere in its tree (outputs, receipts,
-    or the bundle) changed within the window: the synchronous allocator run
-    that uses the bundle finishes within hours, and a later run creates a new
-    digest-named workspace rather than reusing this one.
+    Age is only a candidate filter. Pins, queue references, active processes and
+    the producer workspace lock protect bundles still in use.
     """
 
     if (
@@ -795,7 +814,7 @@ def build_workspace_bundle_manifest(
         raise ControlPlaneStorageGCError("control_plane_storage_gc_workspace_bundle_window_invalid")
     observed_at = float(now())
     candidates: list[dict[str, Any]] = []
-    retained = {"recent": 0, "unsafe": 0, "no_bundle": 0}
+    retained = {"recent": 0, "unsafe": 0, "no_bundle": 0, "protected": 0}
     roots: list[str] = []
     for raw_root in workspace_roots:
         root = Path(raw_root).expanduser()
@@ -812,6 +831,9 @@ def build_workspace_bundle_manifest(
                 continue
             if not bundle.is_dir():
                 retained["no_bundle"] += 1
+                continue
+            if _workspace_protected(workspace, pins_root, queue_roots, now):
+                retained["protected"] += 1
                 continue
             try:
                 latest, _ = _tree_snapshot(workspace)
@@ -836,6 +858,7 @@ def build_workspace_bundle_manifest(
         "status": "dry_run",
         "minimum_age_seconds": minimum_age_seconds,
         "observed_at_epoch": observed_at,
+        "pins_root": str(pins_root), "queue_roots": [str(p) for p in queue_roots],
         "roots": roots,
         "candidate_count": len(candidates),
         "candidate_bytes": sum(row["size_bytes"] for row in candidates),
@@ -859,7 +882,11 @@ def apply_workspace_bundle_manifest(
         != canonical_digest(dict(manifest), digest_field="manifest_digest")
     ):
         raise ControlPlaneStorageGCError("control_plane_storage_gc_workspace_bundle_apply_not_authorized")
+    from .control_plane_workspace_lock import workspace_lock
     minimum_age = int(manifest.get("minimum_age_seconds") or 0)
+    pins_root = manifest.get("pins_root")
+    if not pins_root:
+        raise ControlPlaneStorageGCError("workspace_bundle_protection_context_missing")
     removed: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for row in manifest.get("candidates") or []:
@@ -871,24 +898,28 @@ def apply_workspace_bundle_manifest(
             skipped.append({"workspace": name, "reason": "candidate_changed"})
             continue
         try:
-            if float(now()) - _tree_snapshot(workspace)[0] < minimum_age:
-                skipped.append({"workspace": name, "reason": "candidate_changed"})
-                continue
-            shutil.rmtree(bundle, onerror=_make_writable_and_retry)
-            if os.path.lexists(bundle):
-                raise OSError("workspace_bundle_remove_incomplete")
-            marker = {
-                "schema_version": WORKSPACE_BUNDLE_MARKER_SCHEMA_VERSION,
-                "workspace": name,
-                "reaped_at_epoch": float(now()),
-                "reaped_bytes": int(row.get("size_bytes") or 0),
-                "source_manifest_digest": manifest["manifest_digest"],
-                "outputs_and_receipts_retained": True,
-            }
-            marker["marker_digest"] = canonical_digest(marker, digest_field="marker_digest")
-            (workspace / WORKSPACE_BUNDLE_MARKER).write_text(
-                json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8"
-            )
+            with workspace_lock(workspace, reclaim=True) as acquired:
+                if not acquired or _workspace_protected(workspace, pins_root, manifest.get("queue_roots", ()), now):
+                    skipped.append({"workspace": name, "reason": "workspace_in_use"})
+                    continue
+                if float(now()) - _tree_snapshot(workspace)[0] < minimum_age:
+                    skipped.append({"workspace": name, "reason": "candidate_changed"})
+                    continue
+                shutil.rmtree(bundle, onerror=_make_writable_and_retry)
+                if os.path.lexists(bundle):
+                    raise OSError("workspace_bundle_remove_incomplete")
+                marker = {
+                    "schema_version": WORKSPACE_BUNDLE_MARKER_SCHEMA_VERSION,
+                    "workspace": name,
+                    "reaped_at_epoch": float(now()),
+                    "reaped_bytes": int(row.get("size_bytes") or 0),
+                    "source_manifest_digest": manifest["manifest_digest"],
+                    "outputs_and_receipts_retained": True,
+                }
+                marker["marker_digest"] = canonical_digest(marker, digest_field="marker_digest")
+                (workspace / WORKSPACE_BUNDLE_MARKER).write_text(
+                    json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8"
+                )
         except OSError as exc:
             skipped.append({"workspace": name, "reason": f"remove_failed:{type(exc).__name__}"})
             continue
@@ -1067,7 +1098,7 @@ def run_storage_gc(
     report["skipped_roots"].extend(absent)
     if bundle_present:
         bundles = build_workspace_bundle_manifest(
-            workspace_roots=bundle_present,
+            workspace_roots=bundle_present, pins_root=pins_root, queue_roots=queue_roots,
             minimum_age_seconds=workspace_bundle_minimum_age_seconds,
             now=clock,
             classifier=classifier,

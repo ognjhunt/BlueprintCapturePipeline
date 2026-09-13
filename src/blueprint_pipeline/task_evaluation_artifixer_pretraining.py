@@ -225,6 +225,7 @@ def discover_completed_training_candidates(job_dir, *, limit: int = CANDIDATE_LI
 def prepare_semantics_before_gpu(*, bundle_receipt, authority, job_dir, environment) -> dict:
     """Run the real CPU/API prefix, archive admission, and make no GPU call."""
     from .control_plane_disk_budget import reserve_control_plane_disk
+    from .control_plane_workspace_lock import workspace_lock
     from .task_evaluation_scene_configuration_artifixer_driver import execute_artifixer_component
     from .task_evaluation_scene_configuration_builtin_producers import _validate_toolchain
 
@@ -249,7 +250,7 @@ def prepare_semantics_before_gpu(*, bundle_receipt, authority, job_dir, environm
     # Base extraction, prepared/checkpoint copies, and the outgoing archive,
     # plus bounded frame/receipt overhead. Keep the shared disk floor intact.
     peak_bytes = 3 * source_unpacked_bytes + 512 * 1024**2
-    with reserve_control_plane_disk("semantic_pretraining", target_root=LOGICAL_ROOT,
+    with workspace_lock(root), reserve_control_plane_disk("semantic_pretraining", target_root=LOGICAL_ROOT,
                                    expected_bytes=peak_bytes):
         root.mkdir(parents=True, mode=0o700)
         extracted = root / "bundle"
