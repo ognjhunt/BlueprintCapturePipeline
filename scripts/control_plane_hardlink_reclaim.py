@@ -77,6 +77,17 @@ def _unchanged(path, st):
         return False
 
 
+def _after_own_link(path, before, expected_links, expected_digest):
+    """Accept our link-count/ctime change only after re-proving unchanged bytes."""
+    current = os.lstat(path)
+    if (_identity(current)[:-1] != _identity(before)[:-1]
+            or current.st_nlink != expected_links
+            or digest(path) != expected_digest
+            or not _unchanged(path, current)):
+        raise OSError("changed after own link")
+    return current
+
+
 def dedup_partition(live, apply_, skipped, *, minimum_age_seconds=MINIMUM_AGE_SECONDS, now=None):
     """live: [(path, stat)] all sharing size/mode/uid/gid. Returns (bytes, links)."""
     now = time.time() if now is None else now
@@ -130,7 +141,7 @@ def dedup_partition(live, apply_, skipped, *, minimum_age_seconds=MINIMUM_AGE_SE
         frees_blocks = len(entries) >= vst.st_nlink
 
         ok = 0
-        for victim, _ in entries:
+        for index, (victim, _) in enumerate(entries):
             if not apply_:
                 ok += 1
                 continue
@@ -143,6 +154,12 @@ def dedup_partition(live, apply_, skipped, *, minimum_age_seconds=MINIMUM_AGE_SE
                 os.link(keeper, tmp)
                 os.rename(tmp, victim)  # atomic
                 ok += 1
+                # link() advances the keeper's ctime; rename() decrements the
+                # victim inode's links and advances its remaining aliases' ctime.
+                # Reusing the pre-link stats falsely refuses the rest of a group.
+                kst = _after_own_link(keeper, kst, kst.st_nlink + 1, kdig)
+                if index + 1 < len(entries):
+                    vst = _after_own_link(entries[index + 1][0], vst, vst.st_nlink - 1, kdig)
             except OSError as e:
                 skipped.append("%s: link failed (%s)" % (victim, e))
                 try:

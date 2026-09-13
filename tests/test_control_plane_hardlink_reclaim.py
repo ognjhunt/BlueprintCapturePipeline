@@ -46,3 +46,40 @@ def test_hardlink_reclaim_skips_files_inside_the_quiescence_window_and_links_qui
     freed, links = dedup.dedup_partition(list(live), True, [], minimum_age_seconds=0)
     assert links == 1 and freed == len(b"same bytes") and os.path.samefile(keeper, victim)
     assert victim.read_bytes() == b"same bytes"
+
+
+def test_reclaim_completes_multiple_inodes_and_all_victim_aliases(tmp_path):
+    dedup = _load("reclaim_own_ctime")
+    paths = [tmp_path / n for n in ("a", "a2", "a3", "b", "b2", "c")]
+    for i in (0, 3, 5):
+        paths[i].write_bytes(b"same immutable bytes")
+    os.link(paths[0], paths[1])
+    os.link(paths[0], paths[2])
+    os.link(paths[3], paths[4])
+    skipped = []
+    freed, links = dedup.dedup_partition([(str(p), p.stat()) for p in paths], True,
+                                       skipped, minimum_age_seconds=0)
+    assert not skipped
+    assert freed == 2 * len(b"same immutable bytes")
+    assert links == 3
+    assert all(os.path.samefile(paths[0], p) and p.read_bytes() == b"same immutable bytes" for p in paths)
+
+
+def test_own_link_refresh_does_not_bless_a_concurrent_content_rewrite(tmp_path, monkeypatch):
+    dedup = _load("reclaim_own_ctime_race")
+    paths = [tmp_path / n for n in ("a", "b", "c")]
+    for p in paths:
+        p.write_bytes(b"original")
+    old_time = paths[0].stat().st_mtime_ns
+    rename = dedup.os.rename
+    def mutate_after_first_link(source, target):
+        rename(source, target)
+        paths[0].write_bytes(b"modified")
+        os.utime(paths[0], ns=(old_time, old_time))
+    monkeypatch.setattr(dedup.os, "rename", mutate_after_first_link)
+    skipped = []
+    dedup.dedup_partition([(str(p), p.stat()) for p in paths], True,
+                         skipped, minimum_age_seconds=0)
+    assert paths[2].read_bytes() == b"original"
+    assert not os.path.samefile(paths[0], paths[2])
+    assert skipped
