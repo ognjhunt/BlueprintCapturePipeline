@@ -97,7 +97,7 @@ def test_one_bad_view_admitted_as_exclusion_with_all_final_views_retained():
 @pytest.mark.parametrize(
     "kwargs,reason",
     [
-        (inputs(rejected=tuple(range(5))), "insufficient_approved_views"),
+        (inputs(rejected=tuple(range(7))), "insufficient_approved_views"),
         (inputs(isolated=True), "excluded_view_uncovered"),
     ],
 )
@@ -122,7 +122,7 @@ def test_rejected_orientation_is_not_repaired_by_pixel_exclusion():
         selection.build_selection(**kwargs)
 
 
-@pytest.mark.parametrize("second_rejected", [(), (7,), (0, 1, 2, 3, 4)])
+@pytest.mark.parametrize("second_rejected", [(), (7,), (0, 1, 2, 3, 4, 5, 6)])
 def test_pretraining_recovery_is_bounded_and_remaining_bad_view_can_be_excluded(
     tmp_path, monkeypatch, second_rejected
 ):
@@ -207,7 +207,7 @@ def test_pretraining_recovery_is_bounded_and_remaining_bad_view_can_be_excluded(
         candidate_path=tmp_path / "candidate",
         teacher_receipt_path=tmp_path / "teacher",
     )
-    if len(second_rejected) > 4:
+    if len(second_rejected) > 6:  # fewer than ten of sixteen approved
         with pytest.raises(ValueError, match="insufficient_approved_views"):
             driver._admit_semantic_training_targets(**kwargs)
         assert not teachers
@@ -265,3 +265,19 @@ def test_one_near_neighbour_beyond_forty_five_degrees_is_still_uncovered():
     with pytest.raises(ValueError, match="excluded_view_uncovered"):
         selection.build_selection(**_scattered_inputs((20.2, 50.0, 60.0)))
     assert selection.MAX_NEIGHBOR_ANGLE_DEGREES == 45.0
+
+
+def test_ten_of_sixteen_approved_views_admit_when_every_excluded_view_is_covered():
+    """Attempt #20 (2026-09-13): 10/16 approved, all excluded views covered, refused only by the 75% rule."""
+    kwargs = inputs(rejected=(0, 3, 6, 10, 11, 13))
+    v = selection.build_selection(**kwargs)
+    assert len(v["approved_camera_ids"]) == 10
+    assert v["minimum_approved_views"] == 10  # ceil(16 * 0.6)
+    assert sorted(v["excluded_camera_ids"]) == ["camera-00", "camera-03", "camera-06", "camera-10", "camera-11", "camera-13"]
+    teachers = [
+        {"camera_id": r["camera_id"], "whole_frame_semantic_teacher": r["final_frame"]}
+        for r in kwargs["review_input"]["tasks"][0]["frames"]
+    ]
+    assert selection.validate_selection(v, transforms=kwargs["transforms"], teacher_frames=teachers) == set(v["excluded_camera_ids"])
+    with pytest.raises(ValueError, match="insufficient_approved_views"):
+        selection.build_selection(**inputs(rejected=(0, 3, 6, 10, 11, 13, 14)))  # nine of sixteen
