@@ -1212,3 +1212,44 @@ def test_semantic_max_cost_per_request_reads_packet_pricing(tmp_path: Path) -> N
     )
     assert driver._semantic_max_cost_per_request(tmp_path) is None
     assert driver._semantic_max_cost_per_request(tmp_path / "absent") is None
+
+
+def test_prompt_object_description_comes_from_the_sealed_configuration() -> None:
+    assert driver.prompt_object_description({"source_object": {
+        "review_label": "small_dark_bottle_shaped_object", "semantic_label": "bottle"}}) == "small dark bottle shaped object"
+    assert driver.prompt_object_description({"source_object": {"semantic_label": "Vase"}}) == "vase"
+    assert driver.prompt_object_description({"source_object": {"publisher_instance_id": "104"}}) is None
+    assert driver.prompt_object_description({"source_object": {"review_label": "!!!"}}) is None
+    assert driver.prompt_object_description({}) is None
+
+
+def test_semantic_request_names_the_object_when_the_configuration_describes_it(tmp_path: Path) -> None:
+    envelope, configuration = _inputs(tmp_path)
+    render = envelope["render_inputs_result"]
+    Image.new("RGB", (64, 64), color=(90, 80, 70)).save(render["derived_frames"][0]["path"])
+    Image.new("L", (64, 64), color=255).save(render["derived_frames"][0]["source_object_mask"]["path"])
+    calibration_path = Path(render["camera_calibration"]["path"])
+    calibrations = json.loads(calibration_path.read_text())
+    intrinsics = calibrations[0]["spec"]["intrinsics"]
+    for field in ("fx", "fy", "cx", "cy"):
+        intrinsics[field] *= 64 / 1024
+    intrinsics.update(width=64, height=64)
+    calibration_path.write_text(json.dumps(calibrations))
+    configuration = json.loads(json.dumps(configuration))
+    configuration["source_object"]["review_label"] = "small_dark_bottle_shaped_object"
+    authority_path = tmp_path / "authority.json"
+    authority, _rights_path, scene_id = _write_execution_authority(
+        envelope=envelope, configuration=configuration, destination=authority_path)
+    preflight_path = tmp_path / "preflight.json"
+    _materialize_preflight(envelope=envelope, configuration=configuration, authority=authority,
+                           authority_path=authority_path, output_path=preflight_path)
+    candidate_root = tmp_path / "candidate"
+    candidate = materialize_artifixer3d_candidate_inputs(
+        calibrated_residual_preflight_path=preflight_path, output_root=candidate_root)
+    packet_root = _semantic_rights_and_request(
+        candidate=candidate, candidate_path=candidate_root / "public_scene_artifixer3d_candidate_inputs.v3.json",
+        registry_path=Path(__file__).resolve().parents[1] / "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json",
+        configuration=configuration, publisher_scene_id=scene_id, output_root=tmp_path)
+    packet = json.loads((packet_root / "fresh_scene_semantic_teacher_image_edit_packet.v1.json").read_text(encoding="utf-8"))
+    assert packet["backend"]["prompt_policy"] == driver.NAMED_PROMPT_POLICY
+    assert packet["backend"]["prompt"].startswith("Remove the masked small dark bottle shaped object completely.")

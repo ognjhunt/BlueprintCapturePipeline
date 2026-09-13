@@ -8,6 +8,8 @@ runs those released implementations inside the already allocated parent GPU.
 
 from __future__ import annotations
 
+import re
+
 import json
 import os
 import shutil
@@ -38,7 +40,9 @@ from .task_evaluation_scene_configuration_artifixer_artifacts import (
 )
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .fresh_scene_semantic_teacher_image_edit import (
+    NAMED_PROMPT_POLICY,
     PROMPT_POLICY,
+    valid_object_description,
     REQUEST_SCHEMA_VERSION,
     RIGHTS_SCHEMA_VERSION as SEMANTIC_RIGHTS_SCHEMA_VERSION,
     materialize_semantic_teacher_image_edit_packet,
@@ -429,6 +433,28 @@ def _materialize_preflight(
     return preflight, task_id
 
 
+def prompt_object_description(configuration: Mapping[str, Any]) -> str | None:
+    """A short, plain description of the removed object for the edit prompt, or None.
+
+    Derived from the sealed scene configuration only: the reviewer's label
+    (``small_dark_bottle_shaped_object``) becomes ``small dark bottle shaped
+    object``; the semantic label is the fallback. Anything outside the prompt's
+    plain-text alphabet is dropped rather than guessed.
+    """
+    source_object = configuration.get("source_object") if isinstance(configuration, Mapping) else None
+    if not isinstance(source_object, Mapping):
+        return None
+    for key in ("review_label", "semantic_label"):
+        raw = source_object.get(key)
+        if not isinstance(raw, str):
+            continue
+        words = re.sub(r"[^a-z0-9 ,'-]", " ", raw.strip().lower().replace("_", " "))
+        text = " ".join(words.split())[:96].strip(" ,-'")
+        if valid_object_description(text):
+            return text
+    return None
+
+
 def _semantic_rights_and_request(
     *,
     candidate: Mapping[str, Any],
@@ -489,6 +515,10 @@ def _semantic_rights_and_request(
         "retry_count": 0,
         "request_digest": "",
     }
+    description = prompt_object_description(configuration)
+    if description is not None:
+        request["prompt_policy"] = NAMED_PROMPT_POLICY
+        request["prompt_object_description"] = description
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     packet_root = output_root / "semantic_teacher_packet"
     materialize_semantic_teacher_image_edit_packet(request=request, output_root=packet_root)
