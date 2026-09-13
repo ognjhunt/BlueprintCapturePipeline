@@ -5304,3 +5304,34 @@ def test_ambient_retained_selection_for_other_frames_is_recorded_not_fatal(tmp_p
             construction_envelope_path=envelope, toolchain_root=tmp_path / "toolchain",
             repository_root=tmp_path / "repo", output_root=tmp_path / "corrupt", expected_source_commit=commit,
             retained_candidate_selection_path=selection, retained_candidate_selection_optional=True)
+
+
+
+def test_zip_tree_stores_already_compressed_members_and_deflates_the_rest(tmp_path):
+    """Deflating a wheelhouse again cost the 2026-09-13 activation worker four minutes for nothing."""
+    import zipfile as _zipfile
+    from blueprint_pipeline import task_evaluation_scene_configuration_bundle as bundle_module
+
+    stage = tmp_path / "stage"
+    (stage / "wheelhouse").mkdir(parents=True)
+    (stage / "wheelhouse" / "torch-2.0-py3-none-any.whl").write_bytes(b"\x00\x01" * 4096)
+    (stage / "manifest.json").write_text("{\"a\": 1}\n" * 64)
+    (stage / "render.png").write_bytes(b"\x89PNG" + b"\x00" * 512)
+    (stage / "runtime.sh").write_text("#!/bin/sh\necho hi\n")
+    (stage / "runtime.sh").chmod(0o755)
+    destination = tmp_path / "bundle.zip"
+    bundle_module._zip_tree(stage, destination)
+    with _zipfile.ZipFile(destination) as archive:
+        kinds = {info.filename: info.compress_type for info in archive.infolist() if not info.is_dir()}
+        assert kinds == {
+            "manifest.json": _zipfile.ZIP_DEFLATED,
+            "render.png": _zipfile.ZIP_STORED,
+            "runtime.sh": _zipfile.ZIP_DEFLATED,
+            "wheelhouse/torch-2.0-py3-none-any.whl": _zipfile.ZIP_STORED,
+        }
+        assert archive.read("wheelhouse/torch-2.0-py3-none-any.whl") == b"\x00\x01" * 4096
+        assert archive.getinfo("runtime.sh").external_attr >> 16 & 0o777 == 0o755
+        assert archive.testzip() is None
+    again = tmp_path / "again.zip"
+    bundle_module._zip_tree(stage, again)
+    assert again.read_bytes() == destination.read_bytes()  # still deterministic

@@ -394,6 +394,19 @@ def _portable_render_inputs(
     return portable
 
 
+#: Members whose bytes are already compressed. Deflating them again costs CPU and
+#: saves nothing: the 2026-09-13 activation worker spent four minutes deflating a
+#: 1.2 GB bundle that is mostly a Python wheelhouse. Such members are stored.
+_STORED_MEMBER_SUFFIXES = frozenset({
+    ".whl", ".zip", ".gz", ".tgz", ".xz", ".bz2", ".zst", ".7z",
+    ".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".npz",
+})
+
+
+def _member_compress_type(path: Path) -> int:
+    return zipfile.ZIP_STORED if path.suffix.lower() in _STORED_MEMBER_SUFFIXES else zipfile.ZIP_DEFLATED
+
+
 def _zip_tree(source: Path, destination: Path) -> None:
     total = 0
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -415,7 +428,7 @@ def _zip_tree(source: Path, destination: Path) -> None:
             info = zipfile.ZipInfo(
                 path.relative_to(source).as_posix(), date_time=(1980, 1, 1, 0, 0, 0)
             )
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = _member_compress_type(path)
             info.create_system = 3
             info.external_attr = (stat.S_IFREG | (0o755 if path.stat().st_mode & 0o111 else 0o444)) << 16
             with path.open("rb") as input_stream, archive.open(info, "w") as output_stream:

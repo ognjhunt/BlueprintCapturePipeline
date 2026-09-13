@@ -1044,6 +1044,41 @@ def _file_digest(path: Path) -> str:
     return _DIGEST_PREFIX + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+IMMUTABLE_INPUT_DIGEST_VERDICT = "launch_profile_immutable_input_sha256"
+
+
+def immutable_input_digest(path: Path) -> str:
+    """Digest of one profile-bound immutable input, reused while its exact stat identity holds.
+
+    A scene-configuration profile binds a 1.2 GB provider bundle. Publication and
+    dispatch re-read it in full at every step (2026-09-13: about four minutes of
+    the eleven-minute activation worker), although the bytes never move once the
+    bundle step sealed them. The stored digest is returned only while the file
+    keeps its device, inode, size, nanosecond mtime and kernel-owned ctime,
+    ownership, mode and link count, and the hashing code is unchanged; a small
+    file is always re-hashed.
+    """
+    from .task_evaluation_release_identity import running_release_commit
+    from .validation_file_digests import sha256_file, touched_files
+    from .validation_verdict_store import executed_code_identity, lookup_entry, store
+
+    key = {"path": str(path)}
+    found, stored = lookup_entry(name=IMMUTABLE_INPUT_DIGEST_VERDICT, key=key)
+    if found and isinstance(stored, str):
+        return stored
+    try:
+        with touched_files() as touched:
+            digest, code = executed_code_identity(lambda: sha256_file(path), always=[__name__])
+    except ValueError:  # a symlinked parent: hash the bytes the historical way, without persistence
+        return _file_digest(path)
+    try:
+        release = running_release_commit()
+    except (OSError, ValueError):
+        release = ""
+    store(name=IMMUTABLE_INPUT_DIGEST_VERDICT, key=key, files=touched, verdict=digest, source_commit=release, code=code)
+    return digest
+
+
 def _artifact(path: Path) -> dict[str, Any]:
     return {
         "path": str(path),
@@ -1063,7 +1098,7 @@ def verify_profile_immutable_inputs(profile: Mapping[str, Any]) -> list[str]:
         if raw_path.is_symlink() or not raw_path.is_file():
             blockers.append(f"launch_profile_immutable_input_missing:{name}")
             continue
-        if _file_digest(raw_path.resolve()) != immutable_input.get("digest"):
+        if immutable_input_digest(raw_path.resolve()) != immutable_input.get("digest"):
             blockers.append(f"launch_profile_immutable_input_digest_mismatch:{name}")
     return sorted(set(blockers))
 
