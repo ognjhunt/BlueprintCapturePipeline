@@ -90,6 +90,21 @@ SCRATCH_SCHEMA_VERSION = "control_plane_scratch_manifest.v1"
 SCRATCH_RECEIPT_SCHEMA_VERSION = "control_plane_scratch_receipt.v1"
 SCRATCH_ACK = "reap-idle-scratch"
 DEFAULT_SCRATCH_MINIMUM_AGE_SECONDS = 72 * 60 * 60
+#: Workspace bundles: a semantic-pretraining workspace copies the whole
+#: provider runtime into ``<workspace>/bundle`` (1.4 GB on 2026-09-13) and the
+#: sealed run receipts already carry the bundle digest and its remote index.
+#: The copy is reproducible from the release, so an idle workspace keeps its
+#: outputs and receipts while the bundle is reaped; nothing else in the
+#: workspace is touched.
+WORKSPACE_BUNDLE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_ROOTS"
+WORKSPACE_BUNDLE_MINIMUM_AGE_ENV = "BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS"
+WORKSPACE_BUNDLE_SCHEMA_VERSION = "control_plane_workspace_bundle_manifest.v1"
+WORKSPACE_BUNDLE_RECEIPT_SCHEMA_VERSION = "control_plane_workspace_bundle_receipt.v1"
+WORKSPACE_BUNDLE_MARKER_SCHEMA_VERSION = "control_plane_workspace_bundle_reaped.v1"
+WORKSPACE_BUNDLE_ACK = "reap-idle-workspace-bundles"
+WORKSPACE_BUNDLE_CHILD = "bundle"
+WORKSPACE_BUNDLE_MARKER = "bundle_reaped.json"
+DEFAULT_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS = 6 * 60 * 60
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _ROW_COMMIT_KEYS = ("expected_production_commit", "source_commit")
 _DIGEST_NAME = re.compile(r"[0-9a-f]{64}\Z")
@@ -757,6 +772,142 @@ def apply_scratch_manifest(
     return result
 
 
+def build_workspace_bundle_manifest(
+    *,
+    workspace_roots: Sequence[str | Path],
+    minimum_age_seconds: int = DEFAULT_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS,
+    now: Callable[[], float] = time.time,
+    classifier: Callable[..., Any] = require_storage_class,
+) -> dict[str, Any]:
+    """List ``bundle`` copies inside idle workspaces, without mutating anything.
+
+    A workspace is idle when nothing anywhere in its tree (outputs, receipts,
+    or the bundle) changed within the window: the synchronous allocator run
+    that uses the bundle finishes within hours, and a later run creates a new
+    digest-named workspace rather than reusing this one.
+    """
+
+    if (
+        not isinstance(minimum_age_seconds, int)
+        or isinstance(minimum_age_seconds, bool)
+        or minimum_age_seconds < 0
+    ):
+        raise ControlPlaneStorageGCError("control_plane_storage_gc_workspace_bundle_window_invalid")
+    observed_at = float(now())
+    candidates: list[dict[str, Any]] = []
+    retained = {"recent": 0, "unsafe": 0, "no_bundle": 0}
+    roots: list[str] = []
+    for raw_root in workspace_roots:
+        root = Path(raw_root).expanduser()
+        classifier(str(root), expected="work", code="control_plane_storage_gc_workspace_bundle_root_class")
+        if root.is_symlink() or not root.is_dir():
+            continue
+        roots.append(str(root))
+        for workspace in sorted(root.iterdir()):
+            if workspace.name.startswith(".") or workspace.is_symlink() or not workspace.is_dir():
+                continue
+            bundle = workspace / WORKSPACE_BUNDLE_CHILD
+            if bundle.is_symlink():
+                retained["unsafe"] += 1
+                continue
+            if not bundle.is_dir():
+                retained["no_bundle"] += 1
+                continue
+            try:
+                latest, _ = _tree_snapshot(workspace)
+                _, size = _tree_snapshot(bundle)
+            except OSError:
+                retained["unsafe"] += 1
+                continue
+            idle_seconds = observed_at - latest
+            if idle_seconds < minimum_age_seconds:
+                retained["recent"] += 1
+                continue
+            candidates.append(
+                {
+                    "root": str(root),
+                    "workspace": workspace.name,
+                    "size_bytes": size,
+                    "idle_seconds": int(idle_seconds),
+                }
+            )
+    manifest: dict[str, Any] = {
+        "schema_version": WORKSPACE_BUNDLE_SCHEMA_VERSION,
+        "status": "dry_run",
+        "minimum_age_seconds": minimum_age_seconds,
+        "observed_at_epoch": observed_at,
+        "roots": roots,
+        "candidate_count": len(candidates),
+        "candidate_bytes": sum(row["size_bytes"] for row in candidates),
+        "candidates": candidates,
+        "retained_counts": retained,
+        "manifest_digest": "",
+    }
+    manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
+    return manifest
+
+
+def apply_workspace_bundle_manifest(
+    manifest: Mapping[str, Any], *, ack: str, now: Callable[[], float] = time.time
+) -> dict[str, Any]:
+    """Remove each candidate bundle whose workspace is still idle; leave a sealed marker."""
+
+    if (
+        ack != WORKSPACE_BUNDLE_ACK
+        or manifest.get("schema_version") != WORKSPACE_BUNDLE_SCHEMA_VERSION
+        or manifest.get("manifest_digest")
+        != canonical_digest(dict(manifest), digest_field="manifest_digest")
+    ):
+        raise ControlPlaneStorageGCError("control_plane_storage_gc_workspace_bundle_apply_not_authorized")
+    minimum_age = int(manifest.get("minimum_age_seconds") or 0)
+    removed: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for row in manifest.get("candidates") or []:
+        root = Path(str(row.get("root") or ""))
+        name = str(row.get("workspace") or "")
+        workspace = root / name
+        bundle = workspace / WORKSPACE_BUNDLE_CHILD
+        if not name or "/" in name or name.startswith(".") or workspace.is_symlink() or bundle.is_symlink() or not bundle.is_dir():
+            skipped.append({"workspace": name, "reason": "candidate_changed"})
+            continue
+        try:
+            if float(now()) - _tree_snapshot(workspace)[0] < minimum_age:
+                skipped.append({"workspace": name, "reason": "candidate_changed"})
+                continue
+            shutil.rmtree(bundle, onerror=_make_writable_and_retry)
+            if os.path.lexists(bundle):
+                raise OSError("workspace_bundle_remove_incomplete")
+            marker = {
+                "schema_version": WORKSPACE_BUNDLE_MARKER_SCHEMA_VERSION,
+                "workspace": name,
+                "reaped_at_epoch": float(now()),
+                "reaped_bytes": int(row.get("size_bytes") or 0),
+                "source_manifest_digest": manifest["manifest_digest"],
+                "outputs_and_receipts_retained": True,
+            }
+            marker["marker_digest"] = canonical_digest(marker, digest_field="marker_digest")
+            (workspace / WORKSPACE_BUNDLE_MARKER).write_text(
+                json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8"
+            )
+        except OSError as exc:
+            skipped.append({"workspace": name, "reason": f"remove_failed:{type(exc).__name__}"})
+            continue
+        removed.append({"workspace": name, "root": str(root), "size_bytes": row.get("size_bytes")})
+    result: dict[str, Any] = {
+        "schema_version": WORKSPACE_BUNDLE_RECEIPT_SCHEMA_VERSION,
+        "status": "applied",
+        "source_manifest_digest": manifest["manifest_digest"],
+        "removed_count": len(removed),
+        "removed_bytes": sum(int(row.get("size_bytes") or 0) for row in removed),
+        "removed": removed,
+        "skipped": skipped,
+        "evidence_removed": False,
+        "result_digest": "",
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    return result
+
+
 def run_storage_gc(
     *,
     content_store_roots: Sequence[str | Path],
@@ -774,6 +925,8 @@ def run_storage_gc(
     running_commit: str = "",
     scratch_roots: Sequence[str | Path] = (),
     scratch_minimum_age_seconds: int = DEFAULT_SCRATCH_MINIMUM_AGE_SECONDS,
+    workspace_bundle_roots: Sequence[str | Path] = (),
+    workspace_bundle_minimum_age_seconds: int = DEFAULT_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS,
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
     classifier: Callable[..., Any] = require_storage_class,
@@ -910,6 +1063,18 @@ def run_storage_gc(
         report["scratch_directories"] = (
             apply_scratch_manifest(scratch, ack=SCRATCH_ACK, now=clock) if apply else scratch
         )
+    bundle_present, absent = _existing(workspace_bundle_roots)
+    report["skipped_roots"].extend(absent)
+    if bundle_present:
+        bundles = build_workspace_bundle_manifest(
+            workspace_roots=bundle_present,
+            minimum_age_seconds=workspace_bundle_minimum_age_seconds,
+            now=clock,
+            classifier=classifier,
+        )
+        report["workspace_bundles"] = (
+            apply_workspace_bundle_manifest(bundles, ack=WORKSPACE_BUNDLE_ACK, now=clock) if apply else bundles
+        )
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     return report
 
@@ -947,6 +1112,12 @@ def _run_main(argv: list[str]) -> int:
     parser.add_argument("--evidence-root", action="append", default=None)
     parser.add_argument("--pins-root", default=os.getenv(PINS_ROOT_ENV) or None)
     parser.add_argument("--scratch-root", action="append", default=None)
+    parser.add_argument("--workspace-bundle-root", action="append", default=None)
+    parser.add_argument(
+        "--workspace-bundle-minimum-age-seconds",
+        type=int,
+        default=_env_int(WORKSPACE_BUNDLE_MINIMUM_AGE_ENV, DEFAULT_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS),
+    )
     parser.add_argument(
         "--scratch-minimum-age-seconds",
         type=int,
@@ -987,6 +1158,8 @@ def _run_main(argv: list[str]) -> int:
         abandoned_after_seconds=args.abandoned_after_seconds,
         running_commit=args.running_commit or "",
         scratch_roots=args.scratch_root or _split_env(SCRATCH_ROOTS_ENV),
+        workspace_bundle_roots=args.workspace_bundle_root or _split_env(WORKSPACE_BUNDLE_ROOTS_ENV),
+        workspace_bundle_minimum_age_seconds=args.workspace_bundle_minimum_age_seconds,
         scratch_minimum_age_seconds=args.scratch_minimum_age_seconds,
         classifier=require_storage_class,
     )

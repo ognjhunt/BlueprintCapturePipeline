@@ -88,6 +88,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     # every resolver unit (including the look-ahead admission replay). Profiles
     # are evidence, not reproducible cache: never evicted or offloaded.
     StorageRoot(f"{_INPUTS}/sam31-profile-registry", "evidence_hot", "blueprint", "content-addressed SAM server profile registry"),
+    StorageRoot(f"{_INPUTS}/semantic-pretraining", "work", "blueprint", "ArtiFixer semantic-pretraining workspaces; bundle/ is a reproducible runtime copy reaped once the workspace is idle"),
     StorageRoot("/var/lib/blueprint/production-gpu-campaigns.sqlite", "evidence_hot", "blueprint", "gpu campaign ledger"),
     StorageRoot("/var/lib/blueprint/production-gpu-worker-pool.sqlite", "evidence_hot", "blueprint", "gpu worker pool ledger"),
     StorageRoot(f"{_INPUTS}/task-evaluation-terminal-results", "evidence_hot", "blueprint", "sealed terminal result indexes and lineage"),
