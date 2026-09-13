@@ -1,10 +1,8 @@
-"""Seal semantic-teacher candidates to the exact repair support.
+"""Bind semantic-editor outputs while keeping their source and mask provenance.
 
-Image editors are permitted to synthesize the pixels inside an admitted edit
-mask.  They are not authoritative for the rest of the rendered observation.
-This module composites every unreviewed teacher candidate onto its exact source
-frame before ArtiFixer training, then records and reads back the invariant that
-every pixel outside the mask is unchanged.
+Production preserves the complete returned image for independent review. SAM
+identifies the object for the editor; it does not define a compositing boundary.
+The historical exact-support mode remains available for retained replay.
 """
 
 from __future__ import annotations
@@ -31,6 +29,15 @@ SEMANTIC_LOCALITY_SCHEMA_VERSION = (
 SEMANTIC_LOCALITY_POLICY = (
     "exact_edit_support_source_preservation_inner_feather_v2"
 )
+EDITOR_OUTPUT_POLICY = "sam_object_guidance_unmodified_editor_output_v1"
+
+
+def valid_teacher_output_policy(receipt: Mapping) -> bool:
+    if receipt.get("policy") == EDITOR_OUTPUT_POLICY:
+        return (receipt.get("status") == "semantic_teacher_editor_output_bound"
+                and receipt.get("all_editor_output_bytes_preserved_exactly") is True)
+    return (receipt.get("status") == "semantic_teacher_exact_support_locality_sealed"
+            and receipt.get("all_non_target_source_pixels_preserved_exactly") is True)
 MAX_LOCALITY_SEAL_FRAMES = 16
 MAX_INNER_FEATHER_RADIUS_PIXELS = 16
 GROSS_OUTSIDE_CHANGE_CHANNEL_DELTA = 32
@@ -179,8 +186,9 @@ def seal_semantic_teacher_frame(
     mask_encoding: str,
     output_path: str | Path,
     object_core_mask_path: str | Path | None = None,
+    preserve_editor_output: bool = False,
 ) -> dict[str, Any]:
-    """Write one teacher frame with exact source pixels outside the mask."""
+    """Preserve the editor's bytes, or replay the historical compositing mode."""
 
     source_file = Path(source_path).expanduser().resolve()
     mask_file = Path(mask_path).expanduser().resolve()
@@ -226,6 +234,30 @@ def seal_semantic_teacher_frame(
         # The whole object must use generated pixels at full opacity. Feather
         # only the surrounding repair band; never restore source object pixels.
         core_record = _record(core_path)
+    if preserve_editor_output:
+        # SAM identifies the object for the editor. It is not a cut-and-paste
+        # boundary: restoring source pixels here restores the old edge/shadow.
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(raw_teacher_file, destination)
+        if _sha256(destination) != _sha256(raw_teacher_file):
+            raise TaskEvaluationSceneConfigurationSemanticLocalityError(
+                "scene_configuration_artifixer_editor_output_readback_failed")
+        difference = ImageChops.difference(source, raw_teacher)
+        channels = difference.split()
+        changed = ImageChops.lighter(ImageChops.lighter(channels[0], channels[1]), channels[2])
+        outside = Image.composite(Image.new("L", source.size, 0), changed, support)
+        return {
+            "object_core_mask": core_record,
+            "object_core_generated_pixels_preserved_exactly": True,
+            "raw_teacher_changed_outside_exact_support": raw_changed_outside,
+            "outside_exact_support_high_delta_pixel_fraction": high_delta_fraction,
+            "deterministic_selective_repair_required": high_delta_fraction > GROSS_OUTSIDE_CHANGE_FRACTION,
+            "inner_feather_radius_pixels": 0,
+            "outside_exact_support_preserved_after_inner_feather": not raw_changed_outside,
+            "outside_exact_support_changed_pixels_after_seal": sum(outside.histogram()[1:]),
+            "non_target_source_pixels_preserved_exactly": not raw_changed_outside,
+            "editor_output_bytes_preserved_exactly": True,
+        }
     if core is not None and ImageChops.difference(core, support).getbbox() is None:
         inner_feather, feather_radius = support, 0
     else:
@@ -263,13 +295,9 @@ def materialize_semantic_locality_seal(
     semantic_output_root: str | Path,
     output_root: str | Path,
     object_core_records_by_camera: Mapping[str, Mapping[str, Any]] | None = None,
+    preserve_editor_output: bool = False,
 ) -> dict[str, Any]:
-    """Preserve every source pixel outside every exact edit mask.
-
-    The source, encoded mask, and raw teacher bytes are all digest-bound by the
-    runtime request/result.  The returned frames contain teacher pixels only on
-    the exact edit support and rendered source pixels everywhere else.
-    """
+    """Bind source, mask and teacher bytes, recording the chosen output policy."""
 
     request_path = Path(semantic_runtime_request_path).expanduser().resolve()
     request = _read(
@@ -415,6 +443,7 @@ def materialize_semantic_locality_seal(
                     source_path=source_path, mask_path=mask_path,
                     raw_teacher_path=raw_teacher_path, mask_encoding=encoding,
                     output_path=destination, object_core_mask_path=core_path,
+                    preserve_editor_output=preserve_editor_output,
                 )
             raw_changed_outside = frame_seal[
                 "raw_teacher_changed_outside_exact_support"
@@ -467,8 +496,12 @@ def materialize_semantic_locality_seal(
                             "outside_exact_support_preserved_after_inner_feather"
                         ]
                     ),
-                    "outside_exact_support_changed_pixels_after_seal": 0,
-                    "non_target_source_pixels_preserved_exactly": True,
+                    "outside_exact_support_changed_pixels_after_seal": frame_seal.get(
+                        "outside_exact_support_changed_pixels_after_seal", 0),
+                    "non_target_source_pixels_preserved_exactly": frame_seal.get(
+                        "non_target_source_pixels_preserved_exactly", True),
+                    "editor_output_bytes_preserved_exactly": frame_seal.get(
+                        "editor_output_bytes_preserved_exactly", frame_role == "source_preservation"),
                 }
             )
     except Exception:
@@ -481,8 +514,9 @@ def materialize_semantic_locality_seal(
         )
     receipt: dict[str, Any] = {
         "schema_version": SEMANTIC_LOCALITY_SCHEMA_VERSION,
-        "status": "semantic_teacher_exact_support_locality_sealed",
-        "policy": SEMANTIC_LOCALITY_POLICY,
+        "status": ("semantic_teacher_editor_output_bound" if preserve_editor_output
+                   else "semantic_teacher_exact_support_locality_sealed"),
+        "policy": EDITOR_OUTPUT_POLICY if preserve_editor_output else SEMANTIC_LOCALITY_POLICY,
         "task_id": task_id,
         "source_runtime_request_digest": request["request_digest"],
         "source_runtime_result_digest": result["result_digest"],
@@ -499,7 +533,10 @@ def materialize_semantic_locality_seal(
         "gross_outside_change_fraction_threshold": GROSS_OUTSIDE_CHANGE_FRACTION,
         "maximum_locality_seal_frames": MAX_LOCALITY_SEAL_FRAMES,
         "frames": rows,
-        "all_non_target_source_pixels_preserved_exactly": True,
+        "all_non_target_source_pixels_preserved_exactly": all(
+            row["non_target_source_pixels_preserved_exactly"] for row in rows),
+        "all_editor_output_bytes_preserved_exactly": all(
+            row["editor_output_bytes_preserved_exactly"] for row in rows),
         "semantic_object_absence_review_passed": False,
         "generated_output_is_capture_or_physical_evidence": False,
         "receipt_digest": "",

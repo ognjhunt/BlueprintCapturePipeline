@@ -110,7 +110,7 @@ from .task_evaluation_scene_configuration_appearance_review import (
     appearance_review_mode,
 )
 from .task_evaluation_scene_configuration_semantic_locality import (
-    SEMANTIC_LOCALITY_POLICY,
+    EDITOR_OUTPUT_POLICY,
     materialize_semantic_locality_seal,
 )
 from .task_evaluation_scene_configuration_render_inputs import (
@@ -1316,7 +1316,7 @@ def _admit_semantic_training_targets(*, locality_seal, work, output_root,
     materialize_whole_frame_semantic_teacher_receipt(
         source_candidate_inputs_receipt_path=candidate_path, task_id=task_id,
         semantic_teacher_frames_root=teacher_root, editor_identity=teacher_identity,
-        prompt_policy=STRICT_LOCALITY_PROMPT_POLICY, output_path=admitted_teacher,
+        prompt_policy=locality_seal["receipt"].get("policy", STRICT_LOCALITY_PROMPT_POLICY), output_path=admitted_teacher,
         training_view_selection=selection)
     return {"teacher_receipt_path": admitted_teacher, "remaining_visual_review_cap": remaining,
             # An exclusion must not be undone by a later merge against the old set.
@@ -1517,6 +1517,7 @@ def _prepare_semantic_prefix(*, values, stage_input_path, stage_input, envelope,
         semantic_runtime_result=semantic_result,
         semantic_output_root=semantic_output,
         output_root=work / "semantic_teacher_exact_support_locality_seal",
+        preserve_editor_output=True,
         object_core_records_by_camera={
             row["camera_id"]: row.get("repair_object_core") or row["source_object_mask"]
             for row in envelope["render_inputs_result"]["derived_frames"]
@@ -1536,7 +1537,7 @@ def _prepare_semantic_prefix(*, values, stage_input_path, stage_input, envelope,
                 "receipt_digest"
             ],
         },
-        prompt_policy=f"{PROMPT_POLICY}+{SEMANTIC_LOCALITY_POLICY}",
+        prompt_policy=f"{PROMPT_POLICY}+{EDITOR_OUTPUT_POLICY}",
         output_path=teacher_receipt_path,
     )
     if checkpoint_root is None:
@@ -1888,7 +1889,7 @@ def execute_artifixer_component(
                         "plan_digest"
                     ],
                 },
-                prompt_policy=STRICT_LOCALITY_PROMPT_POLICY,
+                prompt_policy=locality_seal["receipt"].get("policy", STRICT_LOCALITY_PROMPT_POLICY),
                 output_path=repaired_teacher_receipt_path,
             )
             repair_round_root = work / "artifixer_candidate_round_1"

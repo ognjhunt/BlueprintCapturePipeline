@@ -30,8 +30,10 @@ from .task_evaluation_artifixer_ai_visual_review import (
     EXECUTION_SCHEMA_VERSION as REVIEW_EXECUTION_SCHEMA_VERSION,
 )
 from .task_evaluation_scene_configuration_semantic_locality import (
+    EDITOR_OUTPUT_POLICY,
     SEMANTIC_LOCALITY_SCHEMA_VERSION,
     seal_semantic_teacher_frame,
+    valid_teacher_output_policy,
 )
 
 
@@ -48,6 +50,14 @@ STRICT_LOCALITY_PROMPT = (
     "the supplied mask: do not redraw, restyle, regrain, revein, recolor, "
     "relight, smooth, or otherwise change the surrounding tabletop or scene. "
     "Do not add an object, silhouette, patch, panel, text, watermark, or robot."
+)
+EDITOR_REPAIR_PROMPT = (
+    "The supplied SAM mask identifies the specific object to remove. Remove that object "
+    "completely and inpaint the scene so it looks as though the object was never there, "
+    "including its edge, halo, reflection and contact shadow where appropriate. "
+    "The mask is object guidance, not a hard editing boundary. Preserve the other objects "
+    "and their shape, material, lighting and placement. Return the complete edited image "
+    "with continuous, natural background and no object-shaped patch or outline."
 )
 MAX_REPAIR_ROUNDS = 1
 MAX_SELECTIVE_REPAIR_FRAMES = 16
@@ -313,15 +323,13 @@ def materialize_selective_repair_request(
         or semantic_result.get("result_digest")
         != canonical_digest(semantic_result, digest_field="result_digest")
         or locality.get("schema_version") != SEMANTIC_LOCALITY_SCHEMA_VERSION
-        or locality.get("status")
-        != "semantic_teacher_exact_support_locality_sealed"
+        or not valid_teacher_output_policy(locality)
         or locality.get("receipt_digest")
         != canonical_digest(locality, digest_field="receipt_digest")
         or locality.get("source_runtime_request_digest")
         != request.get("request_digest")
         or locality.get("source_runtime_result_digest")
         != semantic_result.get("result_digest")
-        or locality.get("all_non_target_source_pixels_preserved_exactly") is not True
         or not isinstance(locality_rows, list)
     ):
         raise TaskEvaluationArtifixerSelectiveRepairError(
@@ -571,8 +579,10 @@ def materialize_selective_repair_request(
         )
     repair_request: dict[str, Any] = {
         **request,
-        "prompt_policy": STRICT_LOCALITY_PROMPT_POLICY,
-        "prompt": STRICT_LOCALITY_PROMPT + " Failed-candidate feedback: " + " ".join(feedback_lines),
+        "prompt_policy": (EDITOR_OUTPUT_POLICY if locality.get("policy") == EDITOR_OUTPUT_POLICY
+                          else STRICT_LOCALITY_PROMPT_POLICY),
+        "prompt": (EDITOR_REPAIR_PROMPT if locality.get("policy") == EDITOR_OUTPUT_POLICY
+                   else STRICT_LOCALITY_PROMPT) + " Failed-candidate feedback: " + " ".join(feedback_lines),
         "tasks": [
             {
                 **dict(request_task),
@@ -624,7 +634,8 @@ def materialize_selective_repair_request(
         "source_semantic_request_digest": request["request_digest"],
         "source_semantic_result_digest": semantic_result["result_digest"],
         "repair_request_digest": repair_request["request_digest"],
-        "strict_locality_prompt_policy": STRICT_LOCALITY_PROMPT_POLICY,
+        "strict_locality_prompt_policy": (EDITOR_OUTPUT_POLICY if locality.get("policy") == EDITOR_OUTPUT_POLICY
+                                         else STRICT_LOCALITY_PROMPT_POLICY),
         "exact_source_edit_masks_reused_without_dilation": True,
         "base_computed_editor_cost_usd": float(base_cost),
         "projected_repair_cost_usd": projected_repair_cost,
@@ -729,7 +740,7 @@ def merge_selective_repair_outputs(
         != plan.get("semantic_locality_receipt_digest")
         or locality.get("receipt_digest")
         != canonical_digest(locality, digest_field="receipt_digest")
-        or locality.get("all_non_target_source_pixels_preserved_exactly") is not True
+        or not valid_teacher_output_policy(locality)
         or not isinstance(locality_rows, list)
     ):
         raise TaskEvaluationArtifixerSelectiveRepairError(
@@ -873,6 +884,7 @@ def merge_selective_repair_outputs(
                     mask_encoding=mask_encoding,
                     output_path=destination,
                     object_core_mask_path=core_path,
+                    preserve_editor_output=locality.get("policy") == EDITOR_OUTPUT_POLICY,
                 )
             inventory.append(
                 {
@@ -894,14 +906,16 @@ def merge_selective_repair_outputs(
         "source_semantic_result_digest": source_result["result_digest"],
         "repair_result_digest": repair_result["result_digest"],
         "repair_plan_digest": plan["plan_digest"],
-        "strict_locality_prompt_policy": STRICT_LOCALITY_PROMPT_POLICY,
+        "strict_locality_prompt_policy": (EDITOR_OUTPUT_POLICY if locality.get("policy") == EDITOR_OUTPUT_POLICY
+                                         else STRICT_LOCALITY_PROMPT_POLICY),
         "exact_source_edit_masks_reused_without_dilation": True,
         "frame_count": len(inventory),
         "repaired_frame_count": len(selected),
         "reused_frame_count": len(inventory) - len(selected),
         "frame_inventory": inventory,
         "second_repair_round_permitted": False,
-        "all_non_target_source_pixels_preserved_exactly": True,
+        "all_non_target_source_pixels_preserved_exactly": locality.get("policy") != EDITOR_OUTPUT_POLICY,
+        "all_editor_output_bytes_preserved_exactly": locality.get("policy") == EDITOR_OUTPUT_POLICY,
         "generated_output_is_capture_or_physical_evidence": False,
         "merge_digest": "",
     }
