@@ -1593,12 +1593,23 @@ def execute_artifixer_component(
     else:
         token = _stage_openai_token(values, stage="artifixer_semantic_teacher")
     if values.get(CPU_PREPARATION_ENV) == "1":
-        from .artifixer_completed_training_reuse import SOURCE_ENV, stage_completed_training
+        from .artifixer_completed_training_reuse import (
+            CANDIDATES_ENV, SOURCE_ENV, reuse_from_candidates, stage_completed_training)
         if values.get(SOURCE_ENV):
             prepared["completed_training_reuse"] = stage_completed_training(
                 source_launch_root=Path(values[SOURCE_ENV]), prepared=prepared,
                 stage_input=stage_input, tuning=tuning,
                 output_root=output_root / "completed_training_reuse")
+        elif values.get(CANDIDATES_ENV):
+            # Discovered same-intent closed launches: reuse the first exact match, train
+            # fresh when none fits, and keep every rejection as evidence either way.
+            reference, rejections = reuse_from_candidates(
+                candidates=[c for c in values[CANDIDATES_ENV].split(os.pathsep) if c],
+                prepared=prepared, stage_input=stage_input, tuning=tuning,
+                output_root=output_root / "completed_training_reuse")
+            prepared["completed_training_reuse_candidates"] = rejections
+            if reference is not None:
+                prepared["completed_training_reuse"] = reference
         from .artifixer_completed_training_reuse import REVIEW_ENV, stage_completed_review
         if values.get(REVIEW_ENV):
             if not prepared.get("completed_training_reuse"):

@@ -21,6 +21,8 @@ from typing import Any, Mapping
 from .decision_evidence_contracts import canonical_digest, canonical_json
 
 CPU_PREPARATION_ENV = "BLUEPRINT_ARTIFIXER_CPU_PRETRAINING_ONLY"
+CANDIDATE_SCAN_LIMIT = 4096
+CANDIDATE_LIMIT = 16
 GPU_PREPARATION_REQUIRED_ENV = "BLUEPRINT_ARTIFIXER_PRETRAINING_REQUIRED"
 CAPSULE_URL_ENV = "BLUEPRINT_ARTIFIXER_PRETRAINING_CAPSULE_URL"
 CAPSULE_SHA_ENV = "BLUEPRINT_ARTIFIXER_PRETRAINING_CAPSULE_SHA256"
@@ -168,6 +170,58 @@ def _environment(values):
         os.environ.update(previous)
 
 
+def _launch_intent_digest(launch_root: Path) -> str | None:
+    try:
+        profile = _json(launch_root / "launch_profile.json")
+    except (OSError, ValueError, TypeError):
+        return None
+    binding = profile.get("scene_attempt_binding")
+    digest = binding.get("intent_digest") if isinstance(binding, Mapping) else None
+    return digest if isinstance(digest, str) and digest else None
+
+
+def discover_completed_training_candidates(job_dir, *, limit: int = CANDIDATE_LIMIT) -> list[Path]:
+    """This intent's closed scene-configuration launches whose training bytes could be reused.
+
+    A launch qualifies only when its profile names the same intent, its launch receipt is
+    terminal, its post-teardown provider-zero receipt is confirmed, and the job retained the
+    pretraining capsule, its receipt and the provider runtime archive. Newest first, bounded.
+    The exact scientific identity is proven later by the reuse validator, never here.
+    """
+    job = Path(job_dir).resolve()
+    launch_root = job.parent.parent
+    own = _launch_intent_digest(launch_root)
+    if own is None or job.name != "scene-configuration-job" or job.parent.name != "allocator":
+        return []
+    rows: list[tuple[float, Path]] = []
+    try:
+        siblings = [p for p in launch_root.parent.iterdir() if p.is_dir() and not p.is_symlink()]
+    except OSError:
+        return []
+    for sibling in siblings[:CANDIDATE_SCAN_LIMIT]:
+        if sibling == launch_root:
+            continue
+        try:
+            if _launch_intent_digest(sibling) != own:
+                continue
+            receipt = _json(sibling / "launch_receipt.json")
+            zero = _json(sibling / "post_teardown_provider_zero_receipt.json")
+            candidate_job = sibling / "allocator" / "scene-configuration-job"
+            if (receipt.get("status") not in {"blocked", "completed"}
+                    or zero.get("status") != "provider_zero_confirmed"
+                    or zero.get("provider_zero_verified") is not True
+                    or zero.get("continuing_spend_from_this_run") is not False
+                    or not all((candidate_job / name).is_file() for name in (
+                        "api_pretraining_receipt.json", "api_pretraining_capsule.zip",
+                        "vast_provider_run/vast_provider_runtime_output.zip"))):
+                continue
+            rows.append(((sibling / "post_teardown_provider_zero_receipt.json").stat().st_mtime, sibling))
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    rows.sort(key=lambda row: row[0], reverse=True)
+    return [path for _, path in rows[:limit]]
+
+
 def prepare_semantics_before_gpu(*, bundle_receipt, authority, job_dir, environment) -> dict:
     """Run the real CPU/API prefix, archive admission, and make no GPU call."""
     from .control_plane_disk_budget import reserve_control_plane_disk
@@ -237,8 +291,12 @@ def prepare_semantics_before_gpu(*, bundle_receipt, authority, job_dir, environm
         dependencies.write_text("[]\n")
         state_path = work / "pretraining_state.json"
         component = toolchain / manifest["stages"][stage["adapter"]["id"]]["component_entrypoint"]
+        from .artifixer_completed_training_reuse import CANDIDATES_ENV, SOURCE_ENV
+        discovered = ([] if environment.get(SOURCE_ENV) or environment.get(CANDIDATES_ENV)
+                      else discover_completed_training_candidates(job))
         values = {
             **dict(environment), CPU_PREPARATION_ENV: "1",
+            **({CANDIDATES_ENV: os.pathsep.join(str(p) for p in discovered)} if discovered else {}),
             "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS": "1",
             "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT": str(runtime),
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT": str(input_path),

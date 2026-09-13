@@ -22,6 +22,11 @@ from .task_evaluation_scene_configuration_artifixer_warm_checkpoint import (
 )
 
 SOURCE_ENV = "BLUEPRINT_ARTIFIXER_COMPLETED_TRAINING_SOURCE_LAUNCH_ROOT"
+#: Discovered same-intent closed launches, newest first, os.pathsep-separated. Each is
+#: tried with the exact-identity validator below; the first that fits is reused and the
+#: rest are recorded, so a failure after a finished appearance render never re-trains
+#: or re-buys image edits (owner ask, scene 840938, 2026-09-13).
+CANDIDATES_ENV = "BLUEPRINT_ARTIFIXER_COMPLETED_TRAINING_CANDIDATE_LAUNCH_ROOTS"
 SCHEMA = "task_evaluation_artifixer_completed_training_reuse.v1"
 PREFIX = "stages/stage-1/producer/artifixer_post_training_checkpoint/"
 
@@ -273,6 +278,25 @@ def stage_completed_training(
         "receipt_path": str(receipt_path),
         "receipt_digest": receipt["receipt_digest"],
     }
+
+
+def reuse_from_candidates(
+    *, candidates, prepared: dict, stage_input: dict, tuning: dict, output_root: Path
+) -> tuple[dict | None, list[dict]]:
+    """Stage the first candidate launch that passes every reuse gate; record why others did not."""
+    rejections: list[dict] = []
+    for index, candidate in enumerate(candidates):
+        root = Path(candidate)
+        try:
+            reference = stage_completed_training(
+                source_launch_root=root, prepared=prepared, stage_input=stage_input, tuning=tuning,
+                output_root=Path(output_root) / f"candidate-{index}")
+        except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
+            rejections.append({"source_launch_root": str(root), "blocker": str(exc)[:300],
+                               "error_type": type(exc).__name__})
+            continue
+        return reference, rejections
+    return None, rejections
 
 
 def hydrate_completed_training(
