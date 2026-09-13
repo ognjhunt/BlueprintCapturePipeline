@@ -140,6 +140,7 @@ def test_other_key_or_changed_validator_code_never_reuses(tmp_path, persisted_ro
         reuse_verdict("t", ("k",), documents, _validator(aside, calls))
     assert calls == [1, 1, 1]
     monkeypatch.setattr(store, "code_identity", lambda: None)
+    monkeypatch.setattr(store, "executed_code_identity", lambda run, always=(): (run(), None))
     before = sorted(persisted_root.glob("t-*.json"))
     with file_digest_scope():
         reuse_verdict("t", ("fresh",), documents, _validator(aside, calls))
@@ -216,3 +217,50 @@ def test_worker_advancement_runs_as_one_digest_scoped_operation(tmp_path):
                               "request_digest": "sha256:" + "a" * 64})
     assert seen == [(True, "a" * 40)]
     assert digest_scope_stats() is None
+
+
+def test_verdict_code_is_the_code_that_ran(tmp_path, persisted_root):
+    big, small, aside, documents = _inputs(tmp_path)
+    calls = []
+    with file_digest_scope():
+        reuse_verdict("t", ("k",), documents, _validator(aside, calls))
+    entry = json.loads(next(persisted_root.rglob("*.json")).read_text())
+    modules = {row["module"] for row in entry["code"]}
+    assert "blueprint_pipeline.task_evaluation_sam31_prefix_evidence" in modules
+    assert "blueprint_pipeline.validation_file_digests" in modules
+    assert "blueprint_pipeline.validation_verdict_store" in modules
+    assert "blueprint_pipeline.control_plane_storage_gc" not in modules
+    assert "blueprint_pipeline.task_evaluation_scene_configuration_artifixer_driver" not in modules
+    assert len(modules) < 40
+
+
+def test_deploy_outside_the_executed_code_keeps_verdicts(tmp_path, persisted_root, monkeypatch):
+    """2026-09-13: eight deploys that never touched a validator each cost an eighteen-minute
+    re-validation because every loaded module was part of the verdict key."""
+    big, small, aside, documents = _inputs(tmp_path)
+    calls = []
+    with file_digest_scope():
+        reuse_verdict("t", ("k",), documents, _validator(aside, calls))
+    original = store._module_digest
+
+    def changed_outside(path):
+        if path.name == "control_plane_storage_gc.py":
+            return "sha256:" + "0" * 64
+        return original(path)
+
+    monkeypatch.setattr(store, "_module_digest", changed_outside)
+    calls.clear()
+    with file_digest_scope():
+        assert reuse_verdict("t", ("k",), documents, _validator(aside, calls))["pin"] == "x"
+    assert calls == []  # a deploy outside the executed code keeps the verdict
+
+    def changed_inside(path):
+        if path.name == "validation_file_digests.py":
+            return "sha256:" + "1" * 64
+        return original(path)
+
+    monkeypatch.setattr(store, "_module_digest", changed_inside)
+    calls.clear()
+    with file_digest_scope():
+        reuse_verdict("t", ("k",), documents, _validator(aside, calls))
+    assert calls == [1]  # a change inside the executed code recomputes

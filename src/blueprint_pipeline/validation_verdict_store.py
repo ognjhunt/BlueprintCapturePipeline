@@ -28,6 +28,8 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
+import threading
 import time
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
@@ -60,9 +62,74 @@ def _module_digest(path: Path) -> str | None:
         return None
 
 
+def _package_root() -> Path:
+    import blueprint_pipeline
+    return Path(blueprint_pipeline.__file__).resolve().parent
+
+
+def _module_name(path: Path, root: Path) -> str | None:
+    try:
+        relative = path.resolve().relative_to(root)
+    except (OSError, ValueError):
+        return None
+    if relative.suffix != ".py":
+        return None
+    parts = list(relative.with_suffix("").parts)
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join([PACKAGE, *parts]) if parts else PACKAGE
+
+
+def executed_code_identity(run, *, always=()):
+    """Run ``run`` under a call tracer; return ``(result, rows)`` for every package module whose code executed.
+
+    Keying a verdict on every loaded module made every deploy discard every
+    verdict: the 2026-09-13 scene-840938 run re-derived its adopted ten-stage
+    chain for about eighteen minutes after each of eight deploys that never
+    touched a validator. The code a verdict depends on is the code that ran
+    while it was computed; ``always`` names modules whose data the validator
+    reads without calling into them.
+    """
+    root = _package_root()
+    files: set[str] = set()
+
+    def tracer(frame, event, arg):
+        if event == "call":
+            files.add(frame.f_code.co_filename)
+        return None
+
+    previous, previous_threads = sys.gettrace(), threading.gettrace()
+    threading.settrace(tracer)
+    sys.settrace(tracer)
+    try:
+        result = run()
+    finally:
+        sys.settrace(previous)
+        threading.settrace(previous_threads)
+    names = {name for name in (_module_name(Path(f), root) for f in files) if name}
+    names.update(str(name) for name in always if str(name).startswith(PACKAGE))
+    names.update({__name__, "blueprint_pipeline.validation_file_digests"})
+    rows = []
+    for name in sorted(names):
+        origin = sys.modules[name].__file__ if name in sys.modules else None
+        if not origin:
+            try:
+                import importlib.util
+                spec = importlib.util.find_spec(name)
+                origin = getattr(spec, "origin", None) if spec else None
+            except (ImportError, ValueError):
+                origin = None
+        if not origin or not str(origin).endswith(".py"):
+            continue
+        digest = _module_digest(Path(origin))
+        if digest is None:
+            return result, None
+        rows.append({"module": name, "sha256": digest})
+    return result, (rows or None)
+
+
 def code_identity() -> list[dict] | None:
     """Digest of every loaded ``blueprint_pipeline`` module's source, in module order."""
-    import sys
     rows = []
     for name in sorted(sys.modules):
         if name != PACKAGE and not name.startswith(PACKAGE + "."):
@@ -131,9 +198,10 @@ def lookup(*, name: str, key, root: Path | None = None):
     return value["verdict"]
 
 
-def store(*, name: str, key, files, verdict, source_commit: str = "", root: Path | None = None) -> Path | None:
+def store(*, name: str, key, files, verdict, source_commit: str = "", root: Path | None = None,
+          code=None) -> Path | None:
     """Persist one verdict with the exact files and code it consulted; ``None`` when unavailable."""
-    code = code_identity()
+    code = code if code else code_identity()
     if not code:
         return None
     consulted: dict[str, dict] = {}

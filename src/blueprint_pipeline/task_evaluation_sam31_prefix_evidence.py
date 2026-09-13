@@ -70,21 +70,27 @@ def reuse_verdict(name, key, documents, compute):
     def persisted():
         from .task_evaluation_release_identity import running_release_commit
         from .validation_file_digests import note_verdict, touched_files
-        from .validation_verdict_store import lookup, store
+        from .validation_verdict_store import executed_code_identity, lookup, store
         found = lookup(name=name, key=key)
         if found is not None:
             note_verdict(reused=True)
             return found
-        with touched_files() as touched:
+
+        def run():
             for record in records:  # cache hits here: recorded as consulted bytes of this verdict
                 checked_file(record["path"], record)
-            verdict = compute()
+            return compute()
+
+        with touched_files() as touched:
+            verdict, code = executed_code_identity(
+                run, always=[__name__, str(getattr(compute, "__module__", "") or "")])
         note_verdict(reused=False)
         try:
             normalized = json.loads(canonical_json({"verdict": verdict}))["verdict"]
         except (TypeError, ValueError):
             return verdict  # not persistable; still valid for this operation
-        store(name=name, key=key, files=touched, verdict=normalized, source_commit=running_release_commit())
+        store(name=name, key=key, files=touched, verdict=normalized, source_commit=running_release_commit(),
+              code=code)
         return normalized
 
     return scoped_measurement((name, *key), persisted)
