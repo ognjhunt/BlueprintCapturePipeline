@@ -11,6 +11,7 @@ only input a later paid allocator lane may send to the selected editor.
 from __future__ import annotations
 
 import argparse
+import re
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
@@ -34,6 +35,9 @@ REQUEST_SCHEMA_VERSION = "fresh_scene_semantic_teacher_image_edit_request.v1"
 PACKET_SCHEMA_VERSION = "fresh_scene_semantic_teacher_image_edit_packet.v1"
 CANDIDATE_SCHEMA_VERSION = "public_scene_artifixer3d_candidate_inputs.v3"
 PROMPT_POLICY = "generic_masked_object_absent_background_completion_v2"
+NAMED_PROMPT_POLICY = "named_masked_object_absent_background_completion_v3"
+OBJECT_DESCRIPTION_PLACEHOLDER = "{object_description}"
+OBJECT_DESCRIPTION_PATTERN = re.compile(r"[a-z0-9][a-z0-9 ,'-]{1,94}")
 PROMPT_POLICIES = {
     PROMPT_POLICY: (
         "Remove the masked task object completely. Reconstruct the realistic empty "
@@ -41,8 +45,37 @@ PROMPT_POLICIES = {
         "materials, lighting, perspective, and camera viewpoint. Do not add a "
         "replacement object, silhouette, blank panel, text, watermark, robot, or "
         "new foreground item. Preserve the rest of the image as closely as possible."
-    )
+    ),
+    # The owner's own edits (2026-09-13) named the object and asked for a
+    # consistent, realistic fill; the editor is told what the masked thing is.
+    NAMED_PROMPT_POLICY: (
+        "Remove the masked {object_description} completely. Reconstruct the realistic "
+        "empty background surfaces that continue behind it, matching the existing "
+        "room, materials, lighting, perspective, and camera viewpoint, so the area "
+        "looks as if nothing had ever stood there. Make the inpainting consistent "
+        "and realistic. Do not add a replacement object, silhouette, blank panel, "
+        "text, watermark, robot, or new foreground item. Preserve the rest of the "
+        "image as closely as possible."
+    ),
 }
+
+
+def policy_names_the_object(prompt_policy: str) -> bool:
+    return OBJECT_DESCRIPTION_PLACEHOLDER in PROMPT_POLICIES.get(str(prompt_policy), "")
+
+
+def valid_object_description(value: object) -> bool:
+    return isinstance(value, str) and OBJECT_DESCRIPTION_PATTERN.fullmatch(value) is not None
+
+
+def render_prompt(prompt_policy: str, object_description: str | None) -> str:
+    """The exact prompt sent for a policy; a named policy requires a validated description."""
+    template = PROMPT_POLICIES[str(prompt_policy)]
+    if not policy_names_the_object(prompt_policy):
+        return template
+    if not valid_object_description(object_description):
+        raise SemanticTeacherImageEditError(["semantic_teacher_edit_request_invalid"])
+    return template.replace(OBJECT_DESCRIPTION_PLACEHOLDER, str(object_description))
 SUPPORTED_TRANSPORT_KINDS = {"hosted_image_edit", "local_gpu_image_edit"}
 SUPPORTED_MASK_ENCODINGS = {
     "rgba_alpha_zero_edit_region_png",
@@ -295,6 +328,8 @@ def materialize_semantic_teacher_image_edit_packet(
         or value.get("output_format") != "png"
         or value.get("retry_count") != 0
         or (selected is not None and not isinstance(selected, list))
+        or (policy_names_the_object(str(value.get("prompt_policy")))
+            != valid_object_description(value.get("prompt_object_description")))
     ):
         raise SemanticTeacherImageEditError(["semantic_teacher_edit_request_invalid"])
     output = Path(output_root).expanduser().resolve()
@@ -440,7 +475,8 @@ def materialize_semantic_teacher_image_edit_packet(
             "backend_entry_digest": backend_entry_digest,
             "execution": execution,
             "prompt_policy": value["prompt_policy"],
-            "prompt": PROMPT_POLICIES[str(value["prompt_policy"])],
+            "prompt_object_description": value.get("prompt_object_description"),
+            "prompt": render_prompt(str(value["prompt_policy"]), value.get("prompt_object_description")),
             "output_format": "png",
         },
         "task_count": len(task_rows),
