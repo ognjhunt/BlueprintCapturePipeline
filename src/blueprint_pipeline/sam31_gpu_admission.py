@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time
 from pathlib import Path
@@ -34,6 +35,14 @@ MIN_GPU_MEMORY_BYTES = 24 * 1024**3
 #: instance 50799864, $0.21) has no bf16 path and died with OutOfMemoryError in the
 #: fp32 fallback, while the same worker image passed on an sm_80 CMP 170HX.
 MIN_COMPUTE_CAP = 800
+#: A thin marketplace refills over minutes. Scene 840938, 2026-09-13 00:14 UTC: one
+#: capacity probe saw a single non-viable offer, the preflight sealed
+#: sam31_gpu_single_gpu_unavailable, and the intent parked. The probe is read-only and
+#: free, so it is repeated a bounded number of times with a wait before giving up.
+CAPACITY_PROBE_RETRY_ATTEMPTS_ENV = "BLUEPRINT_SAM31_CAPACITY_PROBE_RETRY_ATTEMPTS"
+CAPACITY_PROBE_RETRY_INTERVAL_SECONDS_ENV = "BLUEPRINT_SAM31_CAPACITY_PROBE_RETRY_INTERVAL_SECONDS"
+DEFAULT_CAPACITY_PROBE_RETRY_ATTEMPTS = 6
+DEFAULT_CAPACITY_PROBE_RETRY_INTERVAL_SECONDS = 60.0
 MIN_CONTAINER_DISK_BYTES = 40 * 1024**3
 MAX_PREFLIGHT_AGE_SECONDS = 300
 MAX_TTL_SECONDS = 3_600
@@ -106,6 +115,30 @@ def sam31_capacity_request(*, container_disk_bytes: int, max_hourly_rate_usd: fl
     }
 
 
+_sleep = time.sleep  # module attribute so hermetic tests can neutralize the wait
+
+
+def _env_int(name: str, default: int) -> int:
+    text = str(os.getenv(name) or "").strip()
+    if not text:
+        return default
+    try:
+        return max(0, int(text))
+    except ValueError:
+        return default
+
+
+def _env_seconds(name: str, default: float) -> float:
+    text = str(os.getenv(name) or "").strip()
+    if not text:
+        return default
+    try:
+        value = float(text)
+    except ValueError:
+        return default
+    return value if math.isfinite(value) and value >= 0 else default
+
+
 def collect_sam31_vast_preflight(
     *,
     name_prefix: str,
@@ -116,12 +149,33 @@ def collect_sam31_vast_preflight(
     inventory_probe: Callable[[str], Mapping[str, Any]],
     max_hourly_rate_usd: float,
     clock: Callable[[], float] = time.time,
+    sleeper: Callable[[float], None] | None = None,
+    capacity_retry_attempts: int | None = None,
+    capacity_retry_interval_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Collect mutation-free capacity, watchdog, and provider-zero evidence."""
 
     capacity_request = sam31_capacity_request(container_disk_bytes=container_disk_bytes,
                                              max_hourly_rate_usd=max_hourly_rate_usd)
-    capacity = dict(capacity_probe(capacity_request))
+    attempts = (_env_int(CAPACITY_PROBE_RETRY_ATTEMPTS_ENV, DEFAULT_CAPACITY_PROBE_RETRY_ATTEMPTS)
+                if capacity_retry_attempts is None else max(0, int(capacity_retry_attempts)))
+    interval = (_env_seconds(CAPACITY_PROBE_RETRY_INTERVAL_SECONDS_ENV, DEFAULT_CAPACITY_PROBE_RETRY_INTERVAL_SECONDS)
+                if capacity_retry_interval_seconds is None else max(0.0, float(capacity_retry_interval_seconds)))
+    wait = sleeper if sleeper is not None else _sleep
+    probe_attempts: list[dict[str, Any]] = []
+    while True:
+        capacity = dict(capacity_probe(capacity_request))
+        if capacity.get("status") == "available" or len(probe_attempts) >= attempts:
+            break
+        probe_attempts.append({
+            "attempt": len(probe_attempts),
+            "status": str(capacity.get("status") or ""),
+            "offer_count": capacity.get("offer_count"),
+            "blockers": [str(b) for b in (capacity.get("blockers") or [])],
+            "wait_seconds": interval,
+            "provider_mutation_performed": False,
+        })
+        wait(interval)
     scoped_inventory = dict(inventory_probe(name_prefix))
     global_inventory = dict(inventory_probe(""))
     raw_offer = capacity.get("selected_offer")
@@ -179,6 +233,7 @@ def collect_sam31_vast_preflight(
         "selected_offer": offer or None,
         "capacity_request": capacity_request,
         "capacity_snapshot": capacity,
+        "capacity_probe_attempts": probe_attempts,
         "scoped_billable_inventory": scoped_inventory,
         "global_billable_inventory": global_inventory,
         "blockers": sorted(set(blockers)),

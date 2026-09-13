@@ -281,3 +281,38 @@ def test_zero_retry_consent_also_refuses_market_misses(tmp_path):
     miss.write_text(json.dumps({**adapter_result(), "vast_instance_ids": [], "provider_create_attempted": False}))
     with pytest.raises(ValueError, match="retry_cap_exhausted"):
         _successor(tmp_path, intent, first, miss, name="a2", now=110)
+
+
+def _sam31_admission(**overrides):
+    value = {"schema_version": "semantic_sam31_gpu_canary_admission.v1", "status": "blocked",
+             "blockers": ["sam31_gpu_hourly_price_invalid", "sam31_gpu_memory_below_floor",
+                          "sam31_gpu_preflight_not_verified", "sam31_gpu_preflight_selected_offer_outside_us",
+                          "sam31_gpu_provider_api_not_verified", "sam31_gpu_single_gpu_unavailable"],
+             "paid_execution_started": False, "provider_mutations_performed": 0, "provider_zero_verified": True,
+             "continuing_spend_from_this_run": False, "probe_kind": "semantic-sam31-source-tracks",
+             "watchdog_armed": True, "retry_cap": 0, "max_spend_usd": 1.0, "provider": "vast"}
+    value.update(overrides)
+    return value
+
+
+def test_sam31_capacity_miss_is_a_market_miss_and_nothing_else_is(tmp_path):
+    """2026-09-13 00:14: the SAM tracking admission blocked on a thin marketplace with no classification."""
+    from blueprint_pipeline.task_evaluation_scene_recovery import recovery_budget
+    assert failure_kind(_sam31_admission()) == "provider_null"
+    assert recovery_budget("provider_null", _sam31_admission()) == "market_miss"
+    for variant in (
+        {"blockers": ["sam31_gpu_provider_inventory_not_zero", "sam31_gpu_single_gpu_unavailable"]},
+        {"blockers": ["sam31_gpu_conflicting_owner_present"]},
+        {"blockers": ["sam31_gpu_provider_api_not_verified"]},  # no capacity verdict at all
+        {"paid_execution_started": True}, {"provider_mutations_performed": 1},
+        {"provider_zero_verified": False}, {"continuing_spend_from_this_run": True},
+        {"status": "failed"}, {"schema_version": "semantic_sam31_vast_source_track_execution.v1"},
+    ):
+        assert failure_kind(_sam31_admission(**variant)) is None, variant
+    # The full recovery path reserves a successor on the market-miss budget with max_retries already spent.
+    intent, first, _evidence = setup(tmp_path, retries=1)
+    (tmp_path / "producer").mkdir()
+    admission = tmp_path / "producer" / "admission.json"
+    admission.write_text(json.dumps(_sam31_admission()))
+    successor = _successor(tmp_path, intent, first, admission, name="a2", now=110)
+    assert successor["recovery"]["budget"] == "market_miss"

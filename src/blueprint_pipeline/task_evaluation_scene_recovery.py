@@ -32,6 +32,38 @@ def recovery_budget(failure_kind: str, producer) -> str:
     return "retry" if created else "market_miss"
 
 
+#: Every blocker a SAM 3.1 admission can carry when the only thing wrong is that no viable
+#: single GPU was on offer. Any other blocker (inventory not zero, conflicting owner,
+#: watchdog not armed, disk floor) is not a marketplace miss and is never retried here.
+SAM31_CAPACITY_MISS_BLOCKERS = frozenset({
+    "sam31_gpu_single_gpu_unavailable", "sam31_gpu_preflight_not_verified",
+    "sam31_gpu_provider_api_not_verified", "sam31_gpu_hourly_price_invalid",
+    "sam31_gpu_memory_below_floor", "sam31_gpu_selected_offer_outside_us",
+    "sam31_gpu_preflight_selected_offer_outside_us",
+})
+
+
+def sam31_capacity_miss_evidence(producer) -> bool:
+    """A SAM 3.1 admission blocked before any provider mutation because no viable GPU was on offer.
+
+    2026-09-13 00:14, scene 840938: one capacity probe saw a single non-viable offer; the sealed
+    admission (semantic_sam31_gpu_canary_admission.v1) carried no adapter classification, so scene
+    recovery saw nothing it recognised and the intent parked with $0 spent.
+    """
+    if not isinstance(producer, dict) or producer.get("schema_version") != "semantic_sam31_gpu_canary_admission.v1":
+        return False
+    blockers = [str(b) for b in (producer.get("blockers") or [])]
+    return (producer.get("status") == "blocked"
+            and bool(blockers) and all(b in SAM31_CAPACITY_MISS_BLOCKERS for b in blockers)
+            and "sam31_gpu_single_gpu_unavailable" in blockers
+            and producer.get("paid_execution_started") is False
+            and producer.get("provider_mutations_performed") == 0
+            and producer.get("provider_zero_verified") is True
+            and producer.get("continuing_spend_from_this_run") is False
+            and not producer.get("instance_id") and not producer.get("vast_instance_ids")
+            and producer.get("allocation_created") is not True)
+
+
 def provider_null_evidence(producer) -> bool:
     """A provider run whose machine never started our container: nothing scientific was consumed.
 
@@ -39,6 +71,8 @@ def provider_null_evidence(producer) -> bool:
     reached the on-start heartbeat; the adapter classified the attempt pre_execution_provider_null,
     tore the instance down, and the render sealed a bare blocker that no recovery path recognized.
     """
+    if sam31_capacity_miss_evidence(producer):
+        return True
     classification = producer.get("provider_attempt_classification") if isinstance(producer, dict) else None
     return (isinstance(classification, dict)
             and classification.get("schema_version") == "provider_attempt_classification.v1"

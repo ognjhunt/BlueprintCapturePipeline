@@ -549,6 +549,8 @@ def test_sam31_allocator_lane_refuses_nonprivate_token_before_provider(
 def test_sam31_allocator_closes_watchdog_when_live_capacity_is_unavailable(
     tmp_path: Path, monkeypatch
 ) -> None:
+    from blueprint_pipeline import sam31_gpu_admission as admission
+    monkeypatch.setattr(admission, "_sleep", lambda _seconds: None)  # thin-market re-probes are real waits in production
     args = _args(tmp_path, execute=True)
     write_json(Path(args.provider_launch_request), {"request": True})
     write_json(Path(args.sam31_attempt_authority), {"request_authority_id": "fixture-authority"})
