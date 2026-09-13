@@ -47,6 +47,23 @@ def test_local_foreground_keeps_broad_and_distant_background_candidates():
     assert mask.tolist() == [True, False, False]
 
 
+def test_small_target_does_not_annex_neighboring_source_splats():
+    # A narrow vase and nearby object/surface points all fell inside the old
+    # 5 cm guard band. Only centers in the admitted target bounds may be cut.
+    lower = np.array([0.0, 0.0, 0.0])
+    upper = np.array([0.08, 0.06, 0.14])
+    center = (lower + upper) / 2
+    points = [center.copy()]
+    for axis in range(3):
+        for boundary, direction in ((lower, -1), (upper, 1)):
+            neighbor = center.copy()
+            neighbor[axis] = boundary[axis] + direction * 0.03
+            points.append(neighbor)
+    candidate = splat(points, [[0.01] * 3] * len(points))
+    mask = local_foreground_mask(candidate, lower=lower, upper=upper)
+    assert mask.tolist() == [True, False, False, False, False, False, False]
+
+
 def test_initialization_preserves_reused_source_rows_exactly(tmp_path):
     retained, deleted, output = [
         tmp_path / name for name in ("retained.ply", "deleted.ply", "seed.ply")
