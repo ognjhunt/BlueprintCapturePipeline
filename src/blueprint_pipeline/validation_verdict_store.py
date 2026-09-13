@@ -23,6 +23,7 @@ effort: a read-only or missing root disables persistence and changes nothing els
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -40,6 +41,9 @@ ROOT_ENV = "BLUEPRINT_VALIDATION_VERDICT_ROOT"
 DEFAULT_ROOT = "/var/lib/blueprint/pipeline-control-plane/validation-verdicts"
 PACKAGE = "blueprint_pipeline"
 _MODULE_DIGESTS: dict[tuple, str] = {}
+_DEPENDENCIES = ContextVar("validator_code_dependencies", default=())
+MISS = object()
+DEPENDENCY_VERSION = 2
 
 
 def verdict_root() -> Path:
@@ -54,7 +58,7 @@ def _entry_path(root: Path, name: str, key) -> Path:
 def _module_digest(path: Path) -> str | None:
     try:
         observed = path.stat()
-        cache_key = (str(path), observed.st_mtime_ns, observed.st_size)
+        cache_key = (str(path), observed.st_mtime_ns, observed.st_ctime_ns, observed.st_size)
         if cache_key not in _MODULE_DIGESTS:
             _MODULE_DIGESTS[cache_key] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
         return _MODULE_DIGESTS[cache_key]
@@ -91,11 +95,34 @@ def executed_code_identity(run, *, always=()):
     reads without calling into them.
     """
     root = _package_root()
-    files: set[str] = set()
+    from .validation_code_dependencies import _DATA_CACHE, frame_dependencies
+    data_token = _DATA_CACHE.set({})
+    names = set()
+    seen = set()
+    failures = []
+    token = _DEPENDENCIES.set(_DEPENDENCIES.get() + (names,))
+    collectors = _DEPENDENCIES.get()
+    owner_thread = threading.get_ident()
+    if threading.active_count() != 1:
+        for collector in collectors:
+            collector.add("")
 
     def tracer(frame, event, arg):
-        if event == "call":
-            files.add(frame.f_code.co_filename)
+        if threading.get_ident() != owner_thread:
+            for collector in collectors:
+                collector.add("")
+        if event == "call" and frame.f_code not in seen:
+            seen.add(frame.f_code)
+            module = _module_name(Path(frame.f_code.co_filename), root)
+            if module:
+                try:
+                    dependencies = {module} | frame_dependencies(frame, module)
+                    for collector in _DEPENDENCIES.get():
+                        collector.update(dependencies)
+                except (OSError, ValueError, ImportError, SyntaxError):
+                    failures.append(True)
+                    for collector in collectors:
+                        collector.add("")
         return None
 
     previous, previous_threads = sys.gettrace(), threading.gettrace()
@@ -106,9 +133,15 @@ def executed_code_identity(run, *, always=()):
     finally:
         sys.settrace(previous)
         threading.settrace(previous_threads)
-    names = {name for name in (_module_name(Path(f), root) for f in files) if name}
+        _DEPENDENCIES.reset(token)
+        _DATA_CACHE.reset(data_token)
+    if failures or "" in names:
+        return result, None
     names.update(str(name) for name in always if str(name).startswith(PACKAGE))
-    names.update({__name__, "blueprint_pipeline.validation_file_digests"})
+    names.update({__name__, "blueprint_pipeline.validation_file_digests",
+                  "blueprint_pipeline.validation_code_dependencies"})
+    for collector in _DEPENDENCIES.get():
+        collector.update(names)
     rows = []
     for name in sorted(names):
         origin = sys.modules[name].__file__ if name in sys.modules else None
@@ -173,28 +206,34 @@ def _unchanged(row) -> bool:
         return False
 
 
-def lookup(*, name: str, key, root: Path | None = None):
+def lookup(*, name: str, key, root: Path | None = None, missing=None):
     """Return the stored verdict when the code and every consulted byte are unchanged, else ``None``."""
     path = _entry_path(root or verdict_root(), name, key)
     try:
         if path.is_symlink() or not path.is_file():
-            return None
+            return missing
         value = json.loads(path.read_bytes().decode("utf-8"))
     except (OSError, ValueError):
-        return None
+        return missing
     if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION
+            or value.get("dependency_version") != DEPENDENCY_VERSION
             or value.get("name") != name
             or value.get("key") != json.loads(canonical_json({"key": key}))["key"]
             or value.get("entry_digest") != canonical_digest(value, digest_field="entry_digest")
             or not isinstance(value.get("files"), list) or not isinstance(value.get("code"), list)
             or not value["code"]):
-        return None
+        return missing
     if not all(isinstance(row, dict) and isinstance(row.get("module"), str) for row in value["code"]):
-        return None
+        return missing
     if not _code_unchanged(value["code"]):
-        return None
+        return missing
     if not all(isinstance(row, dict) and _unchanged(row) for row in value["files"]):
-        return None
+        return missing
+    from .validation_file_digests import record_touched
+    for collector in _DEPENDENCIES.get():
+        collector.update(row["module"] for row in value["code"])
+    for row in value["files"]:
+        record_touched(row["path"], row["identity"], row["sha256"])
     return value["verdict"]
 
 
@@ -207,7 +246,7 @@ def store(*, name: str, key, files, verdict, source_commit: str = "", root: Path
     consulted: dict[str, dict] = {}
     for row in files:
         consulted[row["path"]] = {"path": row["path"], "identity": list(row["identity"]), "sha256": row["sha256"]}
-    value = {"schema_version": SCHEMA_VERSION, "name": name, "key": key, "source_commit": source_commit,
+    value = {"schema_version": SCHEMA_VERSION, "dependency_version": DEPENDENCY_VERSION, "name": name, "key": key, "source_commit": source_commit,
              "code": code, "files": list(consulted.values()), "verdict": verdict,
              "created_at_epoch": time.time()}
     try:
@@ -225,3 +264,10 @@ def store(*, name: str, key, files, verdict, source_commit: str = "", root: Path
     except (OSError, TypeError, ValueError):
         return None
     return path
+
+
+def inherit_cached_dependencies(name, key):
+    """An in-operation cache hit must still bind every enclosing verdict."""
+    if _DEPENDENCIES.get() and lookup(name=name, key=key, missing=MISS) is MISS:
+        for collector in _DEPENDENCIES.get():
+            collector.add("")
