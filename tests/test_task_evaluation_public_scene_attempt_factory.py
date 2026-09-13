@@ -494,3 +494,46 @@ def test_retained_only_policy_does_not_change_other_source_bindings(context):
     write(args['machinery_path'],machinery,'machinery_digest')
     result=factory.materialize_public_scene_attempt(**args)
     assert result['status']=='publication_ready'
+
+
+@pytest.mark.parametrize("context", [{"reuse_completed_stages": False}], indirect=True)
+def test_fresh_mode_adopts_only_this_intents_own_completed_stages(context, tmp_path):
+    """2026-09-13: every successor of a from-scratch intent re-paid the whole chain before its first
+    new stage; the intent's own completed stages are adoptable, foreign history and hints are not."""
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_evaluation_sam31_phase_queue import enqueue_sam31_phase
+    args, _ = context
+    receipt = factory.materialize_public_scene_attempt(**args)
+    plan_path = args["output_root"] / "submission/configuration/sam31_preparation_plan.v1.json"
+    plan = json.loads(plan_path.read_text())
+    task = json.loads(Path(receipt["task_request"]["path"]).read_text())
+    queue = tmp_path / "child-queue"
+
+    def completed(plan_file, parent_digest):
+        queued = enqueue_sam31_phase(queue_root=queue, parent_preparation_id="prior-" + parent_digest[-6:],
+            parent_request_digest=parent_digest, expected_source_commit=receipt["source_commit"],
+            plan_ref=ref(plan_file), phase="calibrated_views", inputs=json.loads(plan_file.read_text())["host_inputs"])
+        job_path = Path(queued["job_path"])
+        job_path.rename(queue / "completed" / job_path.name)
+
+    completed(plan_path, "sha256:" + "a" * 64)  # this intent's own earlier attempt
+    foreign_task = dict(task)
+    foreign_task["scene_intent_authority"] = {**task["scene_intent_authority"], "intent_digest": "sha256:" + "f" * 64}
+    if "request_digest" in foreign_task:
+        foreign_task["request_digest"] = canonical_digest(foreign_task, digest_field="request_digest")
+    foreign_task_path = write(tmp_path / "foreign-task.json", foreign_task)
+    foreign_plan = dict(plan)
+    foreign_plan["host_inputs"] = {**plan["host_inputs"], "task_request": ref(foreign_task_path)}
+    foreign_plan["plan_digest"] = canonical_digest(foreign_plan, digest_field="plan_digest")
+    foreign_plan_path = write(tmp_path / "foreign-plan.json", foreign_plan)
+    completed(foreign_plan_path, "sha256:" + "b" * 64)  # another intent's history for the same scene
+    binding = json.loads(args["source_binding_path"].read_text())
+    binding["prefix_candidate"] = {"parent_request_digest": "sha256:" + "c" * 64, "source_plan": ref(plan_path)}
+    machinery = json.loads(args["machinery_path"].read_text())
+    machinery["child_queue_root"] = str(queue)
+    fresh = factory._prefix_candidates(binding, machinery, {}, task, allow_reuse=False)
+    assert [row["parent_request_digest"] for row in fresh] == ["sha256:" + "a" * 64]
+    assert fresh[0]["source_plan"] == ref(plan_path)
+    reuse = factory._prefix_candidates(binding, machinery, {}, task, allow_reuse=True)
+    assert {row["parent_request_digest"] for row in reuse} == {"sha256:" + x * 64 for x in "abc"}
+    assert factory._prefix_candidates(binding, machinery, {}, {**task, "scene_intent_authority": None}, allow_reuse=False) == []
