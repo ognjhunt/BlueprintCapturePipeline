@@ -232,3 +232,17 @@ def sweep_retired_attempts(*, directory: Path, state: Mapping[str, Any], config:
     summary["skipped"] = [json.loads(row) for row in summary["skipped"]]
     summary["summary_digest"] = "sha256:" + hashlib.sha256(json.dumps(summary, sort_keys=True).encode()).hexdigest()
     return summary
+
+
+def settlement_releases_budget(receipt: Mapping[str, Any]) -> bool:
+    """Only dependent work proven never queued has a zero-cost settlement.
+
+    Completed/failed/blocked executions retain their conservative reservation
+    until a separate billing reconciliation can establish incurred spend. Legacy
+    v1 receipts are interpreted the same way; no historical file is rewritten.
+    A source parent being idle is not proof that its paid children cost zero.
+    """
+    execution = receipt.get("execution_terminal") or {}
+    return (receipt.get("schema_version") == SCHEMA
+            and execution.get("launch_never_queued") is True
+            and execution.get("launch_receipt") is None)

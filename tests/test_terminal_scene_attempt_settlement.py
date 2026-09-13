@@ -90,7 +90,7 @@ def _settle(fx, **kwargs):
 
 def test_settlement_releases_holds_and_attempt_slots(tmp_path: Path) -> None:
     """2026-09-13: 31 rows held $148.38 of a $150 cap while ~$4 was spent."""
-    fx = _fixture(tmp_path)
+    fx = _fixture(tmp_path, launch_status=None)
     with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
         _reserve(fx["root"], fx["intent"], "source-a2", 4.5, now=300)
     outcome = _settle(fx)
@@ -109,7 +109,7 @@ def test_settlement_releases_holds_and_attempt_slots(tmp_path: Path) -> None:
 
 
 def test_attempt_count_ignores_settled_rows(tmp_path: Path) -> None:
-    fx = _fixture(tmp_path, spend=100.0, attempts=5)
+    fx = _fixture(tmp_path, spend=100.0, attempts=5, launch_status=None)
     with pytest.raises(SceneIntakeError, match="attempt_cap_exhausted"):
         _reserve(fx["root"], fx["intent"], "source-a2", 4.5, now=300)
     _settle(fx)

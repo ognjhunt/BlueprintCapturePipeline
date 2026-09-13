@@ -259,7 +259,10 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             _require(_identifier(recovery_from_attempt_id) and recovery_from_attempt_id != attempt_id,
                      "recovery_new_attempt_required")
             prior = _read(attempts / (recovery_from_attempt_id + ".json"), "attempt_digest")
-            _require(validated_cancellation(directory, prior) is None, "recovery_prior_attempt_cancelled")
+            prior_retirement = validated_cancellation(directory, prior)
+            _require(prior_retirement is None or prior_retirement.get("schema_version")
+                     == "task_evaluation_terminal_scene_attempt_settlement.v1",
+                     "recovery_prior_attempt_cancelled")
             _require(prior["intent_digest"] == intent["intent_digest"] and prior["provider"] == provider,
                      "recovery_prior_attempt_mismatch")
             # An idempotent read must not require fresh inventory after the
@@ -300,7 +303,12 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         if visual_review_authority is not None:
             _require(not any((row.get('visual_review_correction') or {}).get('authority_digest')
                 == visual_review_authority['authority_digest'] for row in rows), 'visual_review_correction_already_reserved')
-        rows = [row for row in rows if validated_cancellation(directory, row) is None]
+        from .task_evaluation_terminal_scene_attempt_settlement import SCHEMA as settlement_schema, settlement_releases_budget
+        def budgeted(row):
+            retirement = validated_cancellation(directory, row)
+            return (retirement is None or (retirement.get("schema_version") == settlement_schema
+                    and not settlement_releases_budget(retirement)))
+        rows = [row for row in rows if budgeted(row)]
         # The owner-approved single visual correction is an explicit additional
         # review, never an extra GPU attempt. All ordinary attempts keep their
         # original count limit; every hold still counts toward the spend cap.
@@ -379,8 +387,10 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
             "attempt_id", "source_commit", "runtime_digest", "input_digest", "provider",
             "maximum_spend_usd", "status")})
         from .task_evaluation_retained_controls_evidence import validated_cancellation
-        if validated_cancellation(directory, row) is not None:
-            attempts[-1]["status"] = "cancelled_before_execution"
+        retirement = validated_cancellation(directory, row)
+        if retirement is not None:
+            attempts[-1]["status"] = ("settled_after_terminal_attempt" if retirement.get("schema_version")
+                == "task_evaluation_terminal_scene_attempt_settlement.v1" else "cancelled_before_execution")
     # Expiry and revocation close the authority to admit *new* execution. They
     # do not erase the status of an attempt that was already reserved while the
     # authority was valid. Keep that attempt's running or terminal failure
