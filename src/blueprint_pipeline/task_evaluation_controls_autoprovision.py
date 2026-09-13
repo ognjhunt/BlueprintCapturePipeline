@@ -27,6 +27,13 @@ LINK_SCHEMA = "task_evaluation_scene_preparation_link.v1"
 CATALOG_SCHEMA = "task_evaluation_controls_robot_catalog.v1"
 CONFIG_ENV = "BLUEPRINT_TASK_EVALUATION_CONTROLS_AUTOPROVISION_CONFIG"
 CONTENT_CATALOG_SCHEMA = "task_evaluation_controls_robot_content_catalog.v1"
+#: Persisted byte-digest verdicts: the controls tick re-hashed the multi-GB robot
+#: runtime payload and every catalog asset on every tick (2026-09-13: about two of
+#: every six minutes per tick), although nothing had moved. A stored digest is reused
+#: only while every consulted file keeps its exact stat identity (large files) or
+#: re-hashes equal (small files); see validation_verdict_store.
+PAYLOAD_DIGEST_VERDICT = "controls_runtime_payload_digest"
+ASSET_DIGEST_VERDICT = "controls_asset_sha256"
 
 
 def _require(condition: bool, code: str) -> None:
@@ -112,21 +119,59 @@ def validate_preparation_link(value: Mapping[str, Any]) -> dict[str, Any]:
     return dict(value)
 
 
+def _persisted_digest(name: str, key: Mapping[str, Any], compute: Callable[[], Any]) -> Any:
+    """Reuse a byte-derived verdict while its code closure and every consulted byte are unchanged."""
+    from .task_evaluation_release_identity import running_release_commit
+    from .validation_file_digests import touched_files
+    from .validation_verdict_store import executed_code_identity, lookup_entry, store
+    found, stored = lookup_entry(name=name, key=key)
+    if found:
+        return stored
+    with touched_files() as touched:
+        verdict, code = executed_code_identity(compute, always=[__name__])
+    try:
+        release = running_release_commit()
+    except (OSError, ValueError):
+        release = ""
+    store(name=name, key=key, files=touched, verdict=verdict, source_commit=release, code=code)
+    return verdict
+
+
+def _consulted_sha256(path: Path) -> str:
+    """Hash through the evidence reader so the byte is recorded as consulted by the verdict."""
+    from .validation_file_digests import _identity, record_touched, sha256_file
+    try:
+        return sha256_file(path)
+    except ValueError:
+        # The reader refuses symlinked parents; keep the historical hash and still
+        # record the identity so the verdict re-proves this byte before reuse.
+        digest = producer._sha256(path)
+        record_touched(path, _identity(path.lstat()), digest)
+        return digest
+
+
 def payload_digest(root: Path) -> str:
     _require(root.is_dir() and not root.is_symlink(), "runtime_missing")
-    rows = {}
+    listing = []
     for path in sorted(root.rglob("*")):
         _require(not path.is_symlink(), "runtime_symlink")
         if path.is_file():
-            rows[path.relative_to(root).as_posix()] = producer._sha256(path)
-    _require(bool(rows), "runtime_empty")
-    return canonical_digest(rows)
+            listing.append(path.relative_to(root).as_posix())
+    _require(bool(listing), "runtime_empty")
+
+    def compute() -> str:
+        return canonical_digest({relative: _consulted_sha256(root / relative) for relative in listing})
+
+    # The listing is part of the key: an added or removed file is a different payload.
+    return str(_persisted_digest(PAYLOAD_DIGEST_VERDICT, {"root": str(root), "files": listing}, compute))
 
 
 def _asset(row: Mapping[str, Any]) -> Path:
     path = Path(row["path"])
     _require(path.is_absolute() and not any(p.is_symlink() for p in (path, *path.parents))
-             and path.is_file() and producer._sha256(path) == row["digest"], "asset_invalid")
+             and path.is_file(), "asset_invalid")
+    digest = _persisted_digest(ASSET_DIGEST_VERDICT, {"path": str(path)}, lambda: _consulted_sha256(path))
+    _require(digest == row["digest"], "asset_invalid")
     return path
 
 
@@ -189,6 +234,21 @@ def _provision_validated_link(*, link: Mapping[str, Any], scene_root: Path,
              result.get("source_commit") == expected_production_commit and
              result.get("team_namespace") == link["team_namespace"] and
              result.get("status") == "queued_for_production_scene_configuration", "preparation_result_invalid")
+    key = link["request_digest"].removeprefix("sha256:")
+    root = controls_root / link["intent_id"] / key
+    _require(root.is_absolute() and not any(p.is_symlink() for p in (root, *root.parents)), "controls_root_unsafe")
+    identity = {"link_digest": link["link_digest"], "catalog_binding_digest": canonical_digest({
+        k: v for k, v in binding.items() if k not in {
+            "project_spend_reconciliation", "project_spend_observed_at_epoch"}})}
+    if robot_assignment is not None:
+        identity["robot_assignment_digest"] = robot_assignment["assignment_digest"]
+    retained_receipt = _retained_installed_receipt(root, identity)
+    if retained_receipt is not None:
+        # Live authority was re-checked above (revocation, expiry, release, catalog,
+        # binding); the sealed receipt already proved the bytes, publications and the
+        # registry install for exactly this identity. Re-deriving it every tick cost
+        # the controls tick about five of its six minutes (2026-09-13).
+        return retained_receipt
     # Reopen actual task/rights/camera references before reserving any exposure.
     preparation_context = producer._preparation_context(preparation_result_path=result_path,
         preparation_queue_root=preparation_queue_root, expected_production_commit=expected_production_commit)
@@ -200,17 +260,9 @@ def _provision_validated_link(*, link: Mapping[str, Any], scene_root: Path,
     cap = binding.get("phase_hard_cap_usd", producer.DEFAULT_PHASE_HARD_CAP_USD)
     _require(intake._number(cap) and 0 < cap <= 50, "phase_cap_invalid")
     inference_cap = producer.DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD
-    key = link["request_digest"].removeprefix("sha256:")
-    root = controls_root / link["intent_id"] / key
-    _require(root.is_absolute() and not any(p.is_symlink() for p in (root, *root.parents)), "controls_root_unsafe")
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
     # Serialize all retries, including recovery between publication and install.
     with intake._lock(root):
-        identity = {"link_digest": link["link_digest"], "catalog_binding_digest": canonical_digest({
-            k: v for k, v in binding.items() if k not in {
-                "project_spend_reconciliation", "project_spend_observed_at_epoch"}})}
-        if robot_assignment is not None:
-            identity["robot_assignment_digest"] = robot_assignment["assignment_digest"]
         retained_path = root / "autoprovision-inputs.json"
         if retained_path.exists():
             retained = _sealed(retained_path, "receipt_digest")
@@ -286,6 +338,29 @@ def _provision_validated_link(*, link: Mapping[str, Any], scene_root: Path,
         else:
             intake.write_exclusive(path, receipt)
         return receipt
+
+
+def _retained_installed_receipt(root: Path, identity: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The sealed installed receipt for exactly this identity, or None when provisioning must run.
+
+    The registry intent it installed is reopened by digest; a receipt whose install
+    was removed or altered is not retained evidence and the full path runs again.
+    """
+    path = root / "autoprovision-receipt.json"
+    if path.is_symlink() or not path.is_file():
+        return None
+    receipt = _sealed(path, "receipt_digest")
+    _require(receipt.get("status") == "installed" and
+             all(receipt.get(k) == v for k, v in identity.items()), "retained_identity_conflict")
+    installation = receipt.get("installation")
+    _require(isinstance(installation, Mapping) and installation.get("status") == "installed", "retained_identity_conflict")
+    registry_path = Path(str(installation.get("registry_path") or ""))
+    if not registry_path.is_absolute() or registry_path.is_symlink() or not registry_path.is_file():
+        return None
+    installed = _sealed(registry_path, "intent_digest")
+    _require(installed.get("intent_digest") == installation.get("intent_digest") ==
+             (receipt.get("provisioning") or {}).get("intent_digest"), "registry_readback_invalid")
+    return receipt
 
 
 def _nested_identity_id(value: Any) -> Any:
