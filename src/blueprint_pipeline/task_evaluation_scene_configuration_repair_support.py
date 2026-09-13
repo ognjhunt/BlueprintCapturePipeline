@@ -1,24 +1,17 @@
 """Derive candidate 2D repair support without changing SAM ownership evidence.
 
 The support is what the image editor may repaint and what the locality seal
-keeps from its output. Attempt #20 of InteriorGS 840938 (2026-09-13) showed
-the previous rule handing the editor the neighbour: the calibrated object mask
-is the projection of the padded 3D cutout, three times the observed SAM
-silhouette for the vase in view source-08, and it reached across the bottle
-standing beside it; a flat 32-pixel guard band then grew that region further
-with no regard for what the pixels were. The seal pasted generated pixels over
-part of the bottle and the reviewer rejected the frame for exactly that.
-
-Two rules now bound the support:
-
-* calibrated coverage counts only within ``CALIBRATED_REACH_PIXELS`` of the
-  observed silhouette (it exists to catch the parts SAM missed at the object's
-  own boundary, never to annex what stands nearby); a view SAM missed entirely
-  keeps the whole calibrated mask, as before;
-* the guard band admits a pixel only when it looks like the supporting surface
-  under the object's contact shadow (luminance inside a band around the
-  surface reference measured on the band itself, darker allowed, brighter
-  barely) and it connects to the object core. A pale neighbour is neither.
+keeps from its output. On InteriorGS 840938 (2026-09-13) the raw gpt-image
+output was clean in every rejected view; the block-shaped seams the reviewer
+rejected came from the support itself. v1 handed the editor the calibrated
+object mask (the padded 3D-cutout projection, three times the SAM silhouette
+for the vase in source-08) plus a flat 32-pixel band, which annexed the bottle
+beside it. v2 bounded that to a surface band near the silhouette and halved the
+region. The owner then chose the silhouette itself (2026-09-13 15:20 UTC): the
+editor regenerates the whole frame and is trusted to understand the object
+from its outline; what we keep is exactly the observed silhouette, so the seal
+can never cut through a neighbour. A view SAM missed entirely keeps the
+calibrated projection as its only object evidence.
 """
 from __future__ import annotations
 
@@ -31,9 +24,9 @@ from scipy.ndimage import label, maximum_filter
 
 from .decision_evidence_contracts import canonical_digest
 
-REPAIR_SUPPORT_POLICY = "calibrated_object_near_sam_core_surface_band_guard_v2"
-GUARD_BAND_PIXELS = 32
-CALIBRATED_REACH_PIXELS = 24
+REPAIR_SUPPORT_POLICY = "sam_silhouette_exact_v3"
+GUARD_BAND_PIXELS = 0
+CALIBRATED_REACH_PIXELS = 0
 SHADOW_LUMINANCE_FLOOR_FRACTION = 0.62
 HIGHLIGHT_LUMINANCE_CEILING_FRACTION = 1.06
 
