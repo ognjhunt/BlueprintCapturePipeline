@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from PIL import Image
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, canonical_json
@@ -86,6 +88,10 @@ _PRE_TRAINING_PROMPT = (
     "Reject surviving target-object parts or shadows, wrong background material or "
     "surface geometry, large hallucinated structures, damaged unrelated objects, "
     "incorrect orientation, and major cross-view material or geometric inconsistency. "
+    "The visible review mask marks the ONE target in white against black. Every other "
+    "object must remain, including objects behind or partly occluded by the target. "
+    "Compare their full silhouette, height and opacity with the source anchor; a missing "
+    "neighbor is a rejection and preserves_non_target_content must be false. "
     "Minor seams, modest brightness or grain differences and small blending artifacts "
     "are warnings, not reasons to reject an otherwise plausible object-free training "
     "target. Record those warnings explicitly in rationale; do not claim they are fixed. "
@@ -97,6 +103,23 @@ _PRE_TRAINING_PROMPT = (
     "No training-target decision qualifies final 3D appearance or physical truth."
 )
 SEMANTIC_TARGET_REVIEW_SCHEMA_VERSION = "task_evaluation_artifixer_semantic_target_review.v1"
+
+
+def _visible_review_mask(path: Path, encoding: str | None = None) -> bytes:
+    """Show the alpha-only API edit mask visibly without changing editor inputs."""
+    with Image.open(path) as image:
+        if encoding == "rgba_alpha_zero_edit_region_png" or (
+                encoding is None and ("A" in image.getbands() or "transparency" in image.info)):
+            mask = image.convert("RGBA").getchannel("A").point(lambda a: 255 if a == 0 else 0)
+        elif encoding == "binary_black_edit_region_png":
+            mask = image.convert("L").point(lambda v: 255 if v == 0 else 0)
+        elif encoding in (None, "binary_white_edit_region_png"):
+            mask = image.convert("L").point(lambda v: 255 if v > 0 else 0)
+        else:
+            raise TaskEvaluationArtifixerAIVisualReviewError("artifixer_review_mask_encoding_invalid")
+        encoded = io.BytesIO()
+        mask.save(encoded, format="PNG")
+    return encoded.getvalue()
 
 
 class ArtifixerFrameReviewDecision(BaseModel):
@@ -301,6 +324,8 @@ def build_artifixer_ai_visual_review_input(
                         "camera_id": sealed["camera_id"],
                         "frame_sha256": sealed["sha256"],
                         "publisher_scene_id": final.get("publisher_scene_id"),
+                        "target_object_description": final.get("target_object_description"),
+                        "review_mask_semantics": "white_marks_only_target_black_marks_everything_else",
                         "comparison_kind": (
                             "source_anchor_exact_mask_then_generated_candidate"
                             if final.get("schema_version") == DUAL_TARGET_REVIEW_SCHEMA_VERSION
@@ -324,6 +349,8 @@ def build_artifixer_ai_visual_review_input(
                     raise TaskEvaluationArtifixerAIVisualReviewError(
                         "artifixer_ai_review_frame_changed_before_transport"
                     )
+                image_bytes = (_visible_review_mask(comparison_path, row.get("exact_repair_mask_encoding"))
+                               if field == "exact_repair_mask" else comparison_path.read_bytes())
                 content.extend(
                     [
                         {"type": "input_text", "text": label},
@@ -331,7 +358,7 @@ def build_artifixer_ai_visual_review_input(
                             "type": "input_image",
                             "image_url": (
                                 "data:image/png;base64,"
-                                + base64.b64encode(comparison_path.read_bytes()).decode("ascii")
+                                + base64.b64encode(image_bytes).decode("ascii")
                             ),
                             "detail": "high",
                         },

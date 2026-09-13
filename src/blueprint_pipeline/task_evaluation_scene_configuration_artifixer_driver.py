@@ -1019,6 +1019,7 @@ def _run_artifixer_visual_review_round(
         "status": "paired_target_frames_pending_independent_visual_review",
         "publisher_scene_id": publisher_scene_id,
         "review_phase": review_phase,
+        "target_object_description": prompt_object_description(configuration),
         "review_scope": "source_anchor_exact_mask_and_generated_full_frame_comparison",
         "tasks": [
             {
@@ -1135,7 +1136,8 @@ def _run_artifixer_visual_review_round(
 
 
 def _execute_bounded_semantic_target_repair(*, reviewed, semantic_request, semantic_result,
-        locality_seal, expected_frame_cost, semantic_cap, work, values, stage_input, token):
+        locality_seal, expected_frame_cost, semantic_cap, work, values, stage_input, token,
+        repair_camera_ids=None):
     """Use the existing exact-mask, cost-bound repair mechanism at either phase."""
     review = reviewed["review"]
     staged_repair = materialize_selective_repair_request(
@@ -1147,6 +1149,7 @@ def _execute_bounded_semantic_target_repair(*, reviewed, semantic_request, seman
         expected_request_cost_usd=expected_frame_cost,
         maximum_stage_cost_usd=float(semantic_cap or 0),
         output_root=work / "selective_semantic_repair_request",
+        **({"repair_camera_ids": repair_camera_ids} if repair_camera_ids is not None else {}),
     )
     selected_frame_count = int(
         staged_repair["plan"]["selected_frame_count"]
@@ -1233,6 +1236,7 @@ def _review_semantic_targets_before_training(
         "frame_index": index, "camera_id": row["camera_id"],
         "source_frame": row["source_frame"],
         "exact_repair_mask": row["exact_edit_mask"],
+        "exact_repair_mask_encoding": row.get("edit_mask_encoding"),
         "final_frame": {**row["sealed_semantic_teacher"],
             "path": str(root / row["sealed_semantic_teacher"]["relative_path"])},
     } for index, row in enumerate(rows)]
@@ -1259,7 +1263,7 @@ def _admit_semantic_training_targets(*, locality_seal, work, output_root,
         semantic_cap, token, candidate, candidate_path, teacher_receipt_path):
     """Review, correct once, or admit a coverage-checked subset for training."""
     from .public_scene_artifixer3d_dual_target_inputs import _source_task_frames, _validated_transforms
-    from .semantic_target_training_selection import MINIMUM_VIEWS, build_selection
+    from .semantic_target_training_selection import MINIMUM_VIEWS, build_selection, repair_cameras_for_coverage
 
     per_review_cap = visual_review_cap / 3
     common = dict(output_root=output_root, publisher_scene_id=publisher_scene_id,
@@ -1277,11 +1281,35 @@ def _admit_semantic_training_targets(*, locality_seal, work, output_root,
     repaired = False
     teacher_root = locality_seal["semantic_teacher_frames_root"]
     teacher_identity = {"source_semantic_result_digest": semantic_result["result_digest"]}
+    source_frames = _source_task_frames(candidate["tasks"][0])
+    transforms, _ = _validated_transforms(candidate["tasks"][0], source_frames)
+    execution = _read(Path(reviewed["review"]["execution_receipt"]["path"]),
+                      code="scene_configuration_artifixer_target_review_invalid")
+    try:
+        selection = build_selection(review_input=reviewed["review_input"], review_execution=execution,
+                                    transforms=transforms, minimum_views=MINIMUM_VIEWS)
+    except ValueError as exc:
+        if str(exc) not in {"semantic_target_selection_insufficient_approved_views",
+                            "semantic_target_selection_excluded_view_uncovered"}:
+            raise
+    else:
+        (recovery / "training_view_selection.json").write_text(canonical_json(selection) + "\n")
+        admitted_teacher = recovery / "admitted_whole_frame_semantic_teacher.v1.json"
+        materialize_whole_frame_semantic_teacher_receipt(
+            source_candidate_inputs_receipt_path=candidate_path, task_id=task_id,
+            semantic_teacher_frames_root=teacher_root, editor_identity=teacher_identity,
+            prompt_policy=locality_seal["receipt"].get("policy", STRICT_LOCALITY_PROMPT_POLICY),
+            output_path=admitted_teacher, training_view_selection=selection)
+        return {"teacher_receipt_path": admitted_teacher,
+                "remaining_visual_review_cap": remaining, "semantic_repair_used": True}
+    repair_camera_ids = repair_cameras_for_coverage(
+        review_execution=execution, transforms=transforms, minimum_views=MINIMUM_VIEWS)
     try:
         staged, repair_result, merged = _execute_bounded_semantic_target_repair(
             reviewed=reviewed, semantic_request=semantic_request, semantic_result=semantic_result,
             locality_seal=locality_seal, expected_frame_cost=expected_frame_cost,
-            semantic_cap=semantic_cap, work=recovery, values=values, stage_input=stage_input, token=token)
+            semantic_cap=semantic_cap, work=recovery, values=values, stage_input=stage_input, token=token,
+            repair_camera_ids=repair_camera_ids)
     except TaskEvaluationArtifixerSelectiveRepairError as exc:
         # Insufficient *additional edit* authority may still leave enough approved
         # views. Invalid bindings, orientations, and failed provider calls do not.

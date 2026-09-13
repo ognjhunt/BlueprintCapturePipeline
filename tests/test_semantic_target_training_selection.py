@@ -123,14 +123,15 @@ def test_rejected_orientation_is_not_repaired_by_pixel_exclusion():
 
 
 @pytest.mark.parametrize("second_rejected", [(), (7,), (0, 1, 2, 3, 4, 5, 6)])
+@pytest.mark.parametrize("already_enough", [False, True])
 def test_pretraining_recovery_is_bounded_and_remaining_bad_view_can_be_excluded(
-    tmp_path, monkeypatch, second_rejected
+    tmp_path, monkeypatch, second_rejected, already_enough
 ):
     import json
     from blueprint_pipeline import task_evaluation_scene_configuration_artifixer_driver as driver
     from blueprint_pipeline import public_scene_artifixer3d_dual_target_inputs as dual
 
-    first = inputs(rejected=(7,))
+    first = inputs(rejected=(7,) if already_enough else (0, 1, 2, 3, 4, 5, 6))
     second = inputs(rejected=second_rejected)
     calls, repairs, teachers = [], [], []
 
@@ -207,6 +208,12 @@ def test_pretraining_recovery_is_bounded_and_remaining_bad_view_can_be_excluded(
         candidate_path=tmp_path / "candidate",
         teacher_receipt_path=tmp_path / "teacher",
     )
+    if already_enough:
+        result = driver._admit_semantic_training_targets(**kwargs)
+        assert result["remaining_visual_review_cap"] == pytest.approx(0.64)
+        assert teachers[0]["training_view_selection"]["excluded_camera_ids"] == ["camera-07"]
+        assert len(calls) == 1 and repairs == []
+        return
     if len(second_rejected) > 6:  # fewer than ten of sixteen approved
         with pytest.raises(ValueError, match="insufficient_approved_views"):
             driver._admit_semantic_training_targets(**kwargs)
@@ -221,6 +228,23 @@ def test_pretraining_recovery_is_bounded_and_remaining_bad_view_can_be_excluded(
             assert chosen["excluded_camera_ids"] == ["camera-07"]
     assert len(calls) == 2 and len(repairs) == 1
     assert all(c["max_cost_usd"] == pytest.approx(0.32) for c in calls)
+
+
+def test_repairs_only_the_view_needed_for_the_remaining_coverage_gap():
+    data = inputs(rejected=(4, 7, 11, 12))
+    for row in data["transforms"]["frames"]:
+        angle = math.pi if row["camera_id"] == "camera-07" else (
+            math.pi - 0.3 if row["camera_id"] == "camera-03" else 0)
+        matrix = row["transform_matrix"]
+        matrix[0][:3] = [math.cos(angle), 0, math.sin(angle)]
+        matrix[2][:3] = [-math.sin(angle), 0, math.cos(angle)]
+    original = copy.deepcopy(data["review_execution"])
+    with pytest.raises(ValueError, match="excluded_view_uncovered"):
+        selection.build_selection(**data)
+    assert selection.repair_cameras_for_coverage(
+        review_execution=data["review_execution"], transforms=data["transforms"], minimum_views=8
+    ) == ["camera-07"]
+    assert data["review_execution"] == original
 
 
 def _yaw_pose(camera_id, degrees, index):
