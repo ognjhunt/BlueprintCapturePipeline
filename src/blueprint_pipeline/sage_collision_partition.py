@@ -216,17 +216,38 @@ def _set_faces(prim, source, face_ids):
         prim.GetStage().RemovePrim(child.GetPath())
 
 
+VALIDATION_VERDICT = "sage_partition_validation"
+
+
 def validate_partition(receipt, *, source_path, labels_path, output_path):
-    """Reopen geometry and verify the face partition, not just its self-report."""
-    from pxr import UsdGeom
+    """Reopen geometry and verify the face partition, not just its self-report.
+
+    The verification is a pure function of the sealed receipt and the three files it
+    names, so once proven it is a persisted verdict: reopening the collision USD and
+    re-running the weld/union-find took the 2026-09-13 source-preparation tick about
+    ten minutes per attempt for bytes sealed days earlier, and every consumer of the
+    source inputs re-entered it. Reuse re-proves the receipt digest and every file
+    (stat identity for large files, a re-hash for small ones) and the code closure;
+    anything that moved recomputes from bytes.
+    """
+    from .task_evaluation_sam31_prefix_evidence import reuse_verdict
     _require(receipt.get("schema_version") == SCHEMA and receipt.get("status") == "geometry_partitioned_pending_native_validation"
              and receipt.get("receipt_digest") == canonical_digest(receipt, digest_field="receipt_digest"),
              "receipt_invalid")
-    reopened = {}
+    documents = {}
     for name, path in (("source", source_path), ("labels", labels_path), ("output", output_path)):
         actual = _record(path)
         _require(all(receipt.get(name, {}).get(k) == actual[k] for k in ("sha256", "size_bytes")), "bytes_changed")
-        reopened[name] = actual["sha256"]
+        documents[name] = actual
+    key = (receipt["receipt_digest"], documents["source"]["sha256"], documents["labels"]["sha256"],
+           documents["output"]["sha256"], WELD_DECIMALS, CONTAINMENT_TOLERANCE_M)
+    return reuse_verdict(VALIDATION_VERDICT, key, documents, lambda: _validate_partition_geometry(
+        receipt, source_path=source_path, labels_path=labels_path, output_path=output_path,
+        reopened={name: row["sha256"] for name, row in documents.items()}))
+
+
+def _validate_partition_geometry(receipt, *, source_path, labels_path, output_path, reopened):
+    from pxr import UsdGeom
     source_stage, output_stage = _stage(source_path), _stage(output_path)
     original = _measured_meshes(source_stage, reopened["source"])
     derived = _measured_meshes(output_stage, reopened["output"])
