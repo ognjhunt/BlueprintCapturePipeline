@@ -173,7 +173,7 @@ they must not imply that a human typed those exact numeric limits.
 The API appends a digest-keyed record in `execution-budget-extensions` under the
 existing intake lock. Each record binds its predecessor, original and prior
 ceilings, exact owner/issuer/intent, and every unchanged execution field. Ceilings
-can only increase, within the existing $1,000/32 limits. Revoked or expired
+can only increase, within the $1,000/64 extension limits; fresh intake remains capped at 32 attempts. Revoked or expired
 consent cannot issue a budget amendment. The original consent and attempt files
 remain byte-identical. This grants future capacity; it does not settle charges,
 refund reservations, change any per-action ceiling, add retries, extend time, or

@@ -200,3 +200,43 @@ def test_uncaptured_output_is_forwarded_without_inheriting_parent_file_fds(isola
     )
     assert result.returncode == 0 and result.stdout is None
     assert "forwarded" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason='reproduces provider container root')
+def test_foreign_owned_python_tree_is_readable_without_restoring_capabilities(tmp_path):
+    from blueprint_pipeline.asset_runtime_permissions import prepare_runtime_code_access
+    vendor = tmp_path / 'vendor'
+    runtime = vendor / 'kit' / 'python'
+    runtime.mkdir(parents=True)
+    code = runtime / 'stdlib.py'
+    code.write_text('trusted public code')
+    executable = runtime / 'python-helper'
+    executable.write_text('#!/usr/bin/python3\nprint("private-executable-ready")\n')
+    secret = vendor / 'private'
+    secret.write_text('not admitted')
+    (runtime / 'outside-link').symlink_to(secret)
+    for p in [vendor, vendor / 'kit', runtime, code, executable]:
+        os.chown(p, 1234, 1234)
+        p.chmod(0o700 if p.is_dir() else 0o600)
+    executable.chmod(0o700)
+    secret_mode = secret.stat().st_mode
+    writable = tmp_path / 'output'
+    writable.mkdir()
+    runner = SandboxedAssetRunner(read_roots=[runtime, Path('/usr')], write_root=writable)
+    runner.backend = 'landlock_seccomp'
+    failed = runner(['/usr/bin/true'])
+    assert failed.returncode == 126 and 'Permission denied' in failed.stderr
+    report = prepare_runtime_code_access([runtime])
+    assert report['changed_count'] == 5
+    assert secret.stat().st_mode == secret_mode
+    assert code.stat().st_uid == 1234 and code.read_text() == 'trusted public code'
+    execute(runner, f'''import pathlib
+assert pathlib.Path({str(code)!r}).read_text() == 'trusted public code'
+s=dict(line.split(':',1) for line in pathlib.Path('/proc/self/status').read_text().splitlines() if ':' in line)
+assert all(int(s[k].strip(),16)==0 for k in ['CapEff','CapPrm','CapInh','CapAmb'])
+try: pathlib.Path({str(runtime / 'outside-link')!r}).read_text()
+except PermissionError: pass
+else: raise AssertionError('external symlink admitted')
+''')
+    result = runner([str(executable)])
+    assert result.returncode == 0 and 'private-executable-ready' in result.stdout
