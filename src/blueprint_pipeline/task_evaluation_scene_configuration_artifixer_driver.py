@@ -986,6 +986,15 @@ def _run_artifixer_training_round(
                 "final_frame": generated["final_frame"],
             }
         )
+    if expected == "corrected_only_local_appearance":
+        from .artifixer_appearance_freeze import CORRECTED_ONLY_LOSS_OVERRIDES
+        trained = runtime_result["tasks"][0]
+        if (trained.get("training_supervision") != "corrected_only"
+                or trained.get("loss_overrides") != CORRECTED_ONLY_LOSS_OVERRIDES
+                or trained.get("selected_anchor_indices") != []):
+            raise TaskEvaluationSceneConfigurationArtifixerError(
+                "scene_configuration_artifixer_corrected_training_loss_mismatch")
+
     if post_training_checkpoint_output is not None:
         if runtime_result_path is None:
             raise TaskEvaluationSceneConfigurationArtifixerError(

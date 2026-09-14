@@ -14,6 +14,9 @@ outputs as training targets, with the recorded negative operator exclusions
 preserved. It emits a separate training transform set with no original anchors
 and no rejected cameras, verifies the released materializer's image hashes and
 empty anchor list, and retains all original camera poses for final review.
+Corrected targets have direct RGB L1 loss (weight 1.0) and perceptual loss
+(weight 0.1). The historical zero reconstruction weight for teacher overrides
+is forbidden in this mode; it relied on the original-image anchors.
 Original images and SAM masks remain immutable provenance and review evidence.
 There is no pixel clipping, compositing, or mask-based restoration of originals.
 

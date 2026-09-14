@@ -228,6 +228,18 @@ def _bound(root: Path, record: Any, code: str) -> Path:
     return path
 
 
+def _dual_target_loss_is_bound(artifixer3d):
+    from blueprint_pipeline.artifixer_appearance_freeze import CORRECTED_ONLY_LOSS_OVERRIDES
+    if not isinstance(artifixer3d, Mapping):
+        return False
+    supervision = artifixer3d.get("training_supervision")
+    if supervision not in (None, "masked_original_anchors", "corrected_only"):
+        return False
+    expected = (CORRECTED_ONLY_LOSS_OVERRIDES if supervision == "corrected_only"
+                else DUAL_TARGET_LOSS_OVERRIDES)
+    return artifixer3d.get("loss_overrides") == expected
+
+
 def _dual_target_request_is_bound(request: Mapping[str, Any]) -> bool:
     artifixer3d = request.get("artifixer3d")
     return (
@@ -244,7 +256,7 @@ def _dual_target_request_is_bound(request: Mapping[str, Any]) -> bool:
         == "unconstrained_for_raw_representation_review"
         and request.get("outside_support_invariance_gate") == "deferred_until_final_soft_composite"
         and isinstance(artifixer3d, Mapping)
-        and artifixer3d.get("loss_overrides") == DUAL_TARGET_LOSS_OVERRIDES
+        and _dual_target_loss_is_bound(artifixer3d)
         and _geometry_policy_valid(artifixer3d.get("geometry_policy"))
         and artifixer3d.get("anchor_mask_reduction") == "full_frame_mean"
         and isinstance(artifixer3d.get("steps"), int)
@@ -285,7 +297,7 @@ def _render_only_request_is_bound(
         != "unconstrained_for_raw_representation_review"
         or request.get("outside_support_invariance_gate") != "deferred_until_final_soft_composite"
         or not isinstance(artifixer3d, Mapping)
-        or artifixer3d.get("loss_overrides") != DUAL_TARGET_LOSS_OVERRIDES
+        or not _dual_target_loss_is_bound(artifixer3d)
         or not _geometry_policy_valid(artifixer3d.get("geometry_policy"))
         or artifixer3d.get("anchor_mask_reduction") != "full_frame_mean"
         or artifixer3d.get("training_permitted") is not False
