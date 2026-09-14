@@ -110,7 +110,28 @@ def release_terminal_scene_activation_pin(*, run_root, receipt, pins_root=None, 
         provider = run_root / 'allocator/scene-configuration-job/vast_provider_run'
         if absent and provider.exists() and any(provider.iterdir()):
             return {**retained, 'reason': 'provider_evidence_conflicts_with_absence'}
-        if not absent:
+        never_allocated_closed = False
+        teardown_path = provider / 'vast_teardown_manifest.json'
+        if not absent and teardown_path.exists():
+            teardown = _read(teardown_path)
+            if teardown.get('status') == 'not_required_provider_adapter_never_invoked':
+                from .task_evaluation_launch_reconciler import (
+                    _terminal_teardown_evidence, _validated_post_teardown_provider_zero_receipt,
+                )
+                zero_path = run_root / 'post_teardown_provider_zero_receipt.json'
+                _read(zero_path)  # Reject symlinks throughout the retained path.
+                zero = _validated_post_teardown_provider_zero_receipt(path=zero_path, receipt=receipt)
+                proof, blockers = _terminal_teardown_evidence(receipt=receipt)
+                if (teardown.get('schema_version') != 'vast_teardown_manifest.v1'
+                        or blockers or not proof or proof.get('provider_resource_allocated') is not False
+                        or proof.get('path') != str(teardown_path)
+                        or zero.get('teardown_manifest') != proof
+                        or zero.get('required_providers') != ['vast']
+                        or (provider / 'vast_budget_ledger.json').exists()
+                        or (provider / 'vast_budget_ledger.json').is_symlink()):
+                    return {**retained, 'reason': 'never_allocated_closure_unconfirmed'}
+                never_allocated_closed = True
+        if not absent and not never_allocated_closed:
             teardown = _read(provider / 'vast_teardown_manifest.json')
             budget = _read(provider / 'vast_budget_ledger.json')
             ids = set(budget.get('vast_instance_ids') or [])
