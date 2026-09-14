@@ -264,3 +264,13 @@ def validate_training_partition(task):
         "partition_indices_invalid",
     )
     return anchors, teachers
+
+
+def effective_training_record_count(task, supervision=None):
+    """Original pairs can be retained as evidence without being training records."""
+    if supervision == "corrected_only":
+        _, teachers = validate_training_partition(task)
+        return len(teachers)
+    if supervision not in (None, "masked_original_anchors"):
+        raise ValueError("artifixer_training_supervision_invalid")
+    return int(task.get("training_record_count") or task.get("camera_count"))
