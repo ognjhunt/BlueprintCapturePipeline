@@ -1147,11 +1147,19 @@ def _validated_appearance_initialization(input_root: Path, request):
             or receipt.get("parameter_partition") != binding.get("parameter_partition")
             or receipt.get("initialization", {}).get("sha256") != expected_sha
             or binding.get("initialization_sha256") != expected_sha
-            or receipt.get("policy", {}).get("original_appearance_frozen") is not True
+            or receipt.get("policy", {}).get("original_appearance_frozen") is not
+                (binding.get("parameter_partition", {}).get("local_appearance_policy") is None)
             or receipt.get("policy", {}).get("generated_geometry_and_opacity_frozen") is not True):
         raise ValueError("artifixer3d_appearance_initialization_receipt_invalid")
     from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply
-    validate_partition(binding["parameter_partition"], read_standard_3dgs_ply(reference).count)
+    reference_data = read_standard_3dgs_ply(reference)
+    validate_partition(binding["parameter_partition"], reference_data.count)
+    from blueprint_pipeline.artifixer_appearance_freeze import local_appearance_mask
+    editable = local_appearance_mask(reference_data, binding["parameter_partition"])
+    local = binding["parameter_partition"].get("local_appearance_policy") is not None
+    if local and (request["artifixer3d"].get("training_supervision") != "corrected_only"
+                  or int(editable.sum()) != binding["parameter_partition"].get("editable_source_count")):
+        raise ValueError("artifixer3d_local_appearance_supervision_mismatch")
     return binding
 
 
@@ -1499,6 +1507,44 @@ def _normalize_dual_target_review_frames(
     return rows
 
 
+def _prepare_corrected_only_training(*, task, transforms_path, teacher_root, staged_task):
+    """Make the released trainer's actual camera set contain accepted edits only.
+
+    Original paired images remain provenance/review artifacts. They are absent
+    from these transforms, COLMAP training images, and selected-anchor list.
+    """
+    transforms = json.loads(transforms_path.read_text())
+    source_rows = transforms["frames"]
+    output = staged_task / "corrected_only_training"
+    output.mkdir()
+    corrected = output / "teachers"
+    corrected.mkdir()
+    rows, frames = [], []
+    for frame in task["frames"]:
+        if frame.get("semantic_teacher_excluded_from_training"):
+            continue
+        old_index = frame["semantic_teacher_training_index"]
+        index = len(frames)
+        source = teacher_root / f"{old_index:05d}.png"
+        expected = frame["semantic_teacher_override_rgb"]["sha256"]
+        if _sha256(source) != expected:
+            raise ValueError("artifixer_corrected_training_image_changed")
+        destination = corrected / f"{index:05d}.png"
+        shutil.copyfile(source, destination)
+        frames.append({**source_rows[old_index], "file_path": str(destination),
+                       "training_role": "whole_frame_semantic_teacher"})
+        rows.append({"training_index": index, "camera_id": frame["camera_id"],
+                     "source_teacher_index": old_index, "sha256": expected})
+    if not frames or [r["source_teacher_index"] for r in rows] != task["semantic_teacher_indices"]:
+        raise ValueError("artifixer_corrected_training_partition_invalid")
+    path = output / "transforms.json"
+    selected = output / "selected_indices.json"
+    _write(path, {**transforms, "frames": frames})
+    _write(selected, [])
+    _write(output / "training_frames.json", rows)
+    return path, selected, corrected, rows
+
+
 def _prepare_dual_target_distillation_replay(
     *,
     task: Mapping[str, Any],
@@ -1555,6 +1601,16 @@ def _prepare_dual_target_distillation_replay(
         task["review_trajectory"],
         "artifixer3d_dual_target_review_trajectory_unbound",
     )
+    corrected_rows = None
+    if request["artifixer3d"].get("training_supervision") == "corrected_only":
+        transforms_path, selected_path, teacher_root, corrected_rows = _prepare_corrected_only_training(
+            task=task, transforms_path=transforms_path, teacher_root=teacher_root,
+            staged_task=staged_task)
+        teacher_rows = [
+            {**row, "source_semantic_teacher_training_index": row["semantic_teacher_training_index"],
+             "semantic_teacher_training_index": index}
+            for index, row in enumerate(teacher_rows)
+        ]
     split_path = staged_task / "split.dual_target_distill.json"
     _write(
         split_path,
@@ -1578,11 +1634,17 @@ def _prepare_dual_target_distillation_replay(
     with log.open("w", encoding="utf-8") as stream:
         with redirect_stdout(stream), redirect_stderr(stream):
             artifixer3d.materialize_distillation_input(scene, paths, teacher_root)
+    if corrected_rows is not None:
+        image_dir = paths.distillation_input_dir / "images"
+        expected_images = {f"frame_{r['training_index']:05d}.png": r["sha256"] for r in corrected_rows}
+        actual_images = {p.name: _sha256(p) for p in image_dir.iterdir() if p.is_file()}
+        if actual_images != expected_images or json.loads(paths.distillation_selected_indices_path.read_text()) != []:
+            raise ValueError("artifixer_corrected_training_materialization_mismatch")
     retained_initialization = _stage_retained_geometry_initialization(
         input_root=input_root,
         distillation_input_dir=paths.distillation_input_dir,
     )
-    anchor_mask_rows = _stage_dual_target_anchor_masks(
+    anchor_mask_rows = [] if corrected_rows is not None else _stage_dual_target_anchor_masks(
         task=task,
         staged_task=staged_task,
         distillation_input_dir=paths.distillation_input_dir,
@@ -1597,6 +1659,7 @@ def _prepare_dual_target_distillation_replay(
         "paths": paths,
         "retained_initialization": retained_initialization,
         "anchor_mask_rows": anchor_mask_rows,
+        "corrected_training_frames": corrected_rows,
     }
 
 
@@ -1724,9 +1787,16 @@ def _dual_target_task_runtime(
     return {
         "task_id": task_id,
         "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
-        "training_record_count": task["training_record_count"],
-        "selected_anchor_indices": task["selected_anchor_indices"],
-        "semantic_teacher_indices": task["semantic_teacher_indices"],
+        "training_record_count": (len(prepared["corrected_training_frames"])
+                                  if prepared.get("corrected_training_frames") is not None
+                                  else task["training_record_count"]),
+        "training_supervision": request["artifixer3d"].get("training_supervision", "masked_original_anchors"),
+        "corrected_training_frames": prepared.get("corrected_training_frames"),
+        "selected_anchor_indices": ([] if prepared.get("corrected_training_frames") is not None else task["selected_anchor_indices"]),
+        "semantic_teacher_indices": (list(range(len(prepared["corrected_training_frames"])))
+                                     if prepared.get("corrected_training_frames") is not None
+                                     else task["semantic_teacher_indices"]),
+        "source_semantic_teacher_indices": task["semantic_teacher_indices"],
         "semantic_teacher_frames": prepared["teacher_rows"],
         "anchor_loss_masks": prepared["anchor_mask_rows"],
         "anchor_mask_reduction": request["artifixer3d"]["anchor_mask_reduction"],
@@ -1819,9 +1889,16 @@ def _dual_target_render_only_task_runtime(
         "training_executed": False,
         "direct_artifixer_executed": False,
         "artifixer3d_plus_executed": False,
-        "training_record_count": task["training_record_count"],
-        "selected_anchor_indices": task["selected_anchor_indices"],
-        "semantic_teacher_indices": task["semantic_teacher_indices"],
+        "training_record_count": (len(prepared["corrected_training_frames"])
+                                  if prepared.get("corrected_training_frames") is not None
+                                  else task["training_record_count"]),
+        "training_supervision": request["artifixer3d"].get("training_supervision", "masked_original_anchors"),
+        "corrected_training_frames": prepared.get("corrected_training_frames"),
+        "selected_anchor_indices": ([] if prepared.get("corrected_training_frames") is not None else task["selected_anchor_indices"]),
+        "semantic_teacher_indices": (list(range(len(prepared["corrected_training_frames"])))
+                                     if prepared.get("corrected_training_frames") is not None
+                                     else task["semantic_teacher_indices"]),
+        "source_semantic_teacher_indices": task["semantic_teacher_indices"],
         "semantic_teacher_frames": prepared["teacher_rows"],
         "anchor_loss_masks": prepared["anchor_mask_rows"],
         "anchor_mask_reduction": request["artifixer3d"]["anchor_mask_reduction"],

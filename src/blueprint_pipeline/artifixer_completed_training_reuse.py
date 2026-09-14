@@ -140,6 +140,17 @@ def training_identity(
     }
 
 
+def admitted_teacher_training_images(teacher):
+    """Bind reuse to the admitted subset, while retaining excluded-view evidence."""
+    from .artifixer_background_initialization import excluded_teacher_cameras
+    frames = teacher["frames"]
+    by_camera = {row["camera_id"]: row for row in frames}
+    _require(len(by_camera) == len(frames), "teacher_duplicate_camera")
+    excluded = excluded_teacher_cameras(teacher, by_camera)
+    return {row["camera_id"]: row["whole_frame_semantic_teacher"]["sha256"]
+            for row in frames if row["camera_id"] not in excluded}
+
+
 def stage_completed_training(
     *, source_launch_root: Path, prepared: dict, stage_input: dict, tuning: dict, output_root: Path
 ) -> dict:
@@ -241,10 +252,7 @@ def stage_completed_training(
         and _file_identity(runtime_task["retained_geometry_initialization"]["source"])
         == expected["shared_initialization"]
         and {r["camera_id"]: r["source"]["sha256"] for r in runtime_task["semantic_teacher_frames"]}
-        == {
-            r["camera_id"]: r["whole_frame_semantic_teacher"]["sha256"]
-            for r in old_teacher["frames"]
-        },
+        == admitted_teacher_training_images(old_teacher),
         "runtime_training_lineage_changed",
     )
     _require(

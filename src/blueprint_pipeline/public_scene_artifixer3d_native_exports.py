@@ -64,7 +64,17 @@ def geometry_protection_is_qualified(value: Any) -> bool:
         isinstance(value, Mapping)
         and (value.get("mode") == RETAINED_GEOMETRY_MODE or (
             value.get("mode") == "freeze_declared_appearance_initialization"
-            and value.get("exact_source_appearance_prefix_match") is True
+            and (value.get("exact_source_appearance_prefix_match") is True or (
+                isinstance(value.get("local_appearance_policy"), Mapping)
+                and value["local_appearance_policy"].get("mode") == "corrected_only_local_appearance"
+                and value["local_appearance_policy"].get("region_rule") == "target_or_registered_tabletop_3sigma_v1"
+                and value.get("exact_protected_source_appearance_match") is True
+                and type(value.get("frozen_source_count")) is int
+                and type(value.get("protected_source_count")) is int
+                and type(value.get("editable_source_count")) is int
+                and 0 <= value["editable_source_count"] < value.get("frozen_source_count", 0)
+                and value.get("protected_source_count") == value["frozen_source_count"] - value["editable_source_count"]
+            ))
             and value.get("exact_full_density_tensor_match") is True
             and _digest(value.get("initialization_receipt_digest"))))
         and value.get("status") == "qualified"

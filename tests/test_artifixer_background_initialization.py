@@ -227,7 +227,8 @@ def test_declared_mode_requires_bound_initialization_receipt(tmp_path):
     assert "model.progressive_training.init_n_features=3" in overrides
 
 
-def test_dual_packet_carries_and_rechecks_initialization_identity(tmp_path):
+@pytest.mark.parametrize("local", [False, True])
+def test_dual_packet_carries_and_rechecks_initialization_identity(tmp_path, local):
     from blueprint_pipeline.artifixer_source_geometry_admission import _record
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
     from blueprint_pipeline.public_scene_artifixer3d_candidate_inputs import (
@@ -251,13 +252,20 @@ def test_dual_packet_carries_and_rechecks_initialization_identity(tmp_path):
         "total_count": n,
         "reused_source_vertex_rows_byte_exact": True,
     }
+    if local:
+        from blueprint_pipeline.artifixer_appearance_freeze import local_appearance_mask
+        partition["local_appearance_policy"] = {
+            "mode": "corrected_only_local_appearance", "region_rule": "target_or_registered_tabletop_3sigma_v1", "target_lower_m": [0,0,0],
+            "target_upper_m": [.1,.1,.2], "support_top_z_m": 0.0}
+        data = read_standard_3dgs_ply(Path(candidate["shared_retained_scene"]["path"]))
+        partition["editable_source_count"] = int(local_appearance_mask(data, partition).sum())
     initialization = {
         "schema_version": "artifixer_registered_background_initialization.v1",
         "geometry_mode": "freeze_declared_appearance_initialization",
         "parameter_partition": partition,
         "initialization": candidate["shared_retained_scene"],
         "policy": {
-            "original_appearance_frozen": True,
+            "original_appearance_frozen": not local,
             "generated_geometry_and_opacity_frozen": True,
         },
     }
@@ -295,6 +303,10 @@ def test_dual_packet_carries_and_rechecks_initialization_identity(tmp_path):
             "appearance_initialization": binding,
         }
     }
+    if local:
+        with pytest.raises(ValueError, match="local_appearance_supervision_mismatch"):
+            runner._validated_appearance_initialization(dual_root, request)
+        request["artifixer3d"]["training_supervision"] = "corrected_only"
     assert runner._validated_appearance_initialization(dual_root, request) == binding
     altered = json.loads(json.dumps(request))
     altered["artifixer3d"]["appearance_initialization"]["parameter_partition"][

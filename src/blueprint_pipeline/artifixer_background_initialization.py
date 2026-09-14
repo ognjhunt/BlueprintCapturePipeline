@@ -370,10 +370,26 @@ def materialize_background_initialization(
         colors=colors,
         output_path=initialization,
     )
+    from .artifixer_appearance_freeze import (
+        TRAINING_POLICY, LEGACY_TRAINING_POLICY, local_appearance_mask,
+    )
+    training_policy = configuration.get("artifixer_training_policy") or TRAINING_POLICY
+    if training_policy not in (TRAINING_POLICY, LEGACY_TRAINING_POLICY):
+        raise ValueError("artifixer_training_policy_invalid")
+    if training_policy == TRAINING_POLICY:
+        partition["local_appearance_policy"] = {
+            "mode": TRAINING_POLICY, "region_rule": "target_or_registered_tabletop_3sigma_v1",
+            "target_lower_m": lower.tolist(),
+            "target_upper_m": upper.tolist(),
+            "support_top_z_m": float(registration["source_mesh_bounds_max_m"][2]),
+        }
+        editable = local_appearance_mask(read_standard_3dgs_ply(initialization), partition)
+        partition["editable_source_count"] = int(editable.sum())
     receipt = {
         "schema_version": SCHEMA,
         "status": "candidate_initialized_requires_training_and_review",
-        "policy": POLICY,
+        "policy": {**POLICY, "training_policy": training_policy,
+                   "original_appearance_frozen": training_policy == LEGACY_TRAINING_POLICY},
         "geometry_mode": GEOMETRY_MODE,
         "source_retained": _record(retained),
         "segment_deletion_candidate": _record(deleted),

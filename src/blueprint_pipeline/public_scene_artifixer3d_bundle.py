@@ -1266,6 +1266,11 @@ def build_artifixer3d_bundle(
             runtime_request["artifixer3d"]["geometry_policy"] = {
                 **RETAINED_GEOMETRY_POLICY, "mode": GEOMETRY_MODE}
             runtime_request["artifixer3d"]["appearance_initialization"] = candidate["appearance_initialization"]
+            partition = candidate["appearance_initialization"]["parameter_partition"]
+            if partition.get("local_appearance_policy") is not None:
+                runtime_request["artifixer3d"]["training_supervision"] = "corrected_only"
+                runtime_request["repair_target"] = "approved_corrected_images_with_local_3d_appearance_repair"
+
         if render_only:
             runtime_request.update(
                 {
