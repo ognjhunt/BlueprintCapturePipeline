@@ -2,12 +2,12 @@ import hashlib
 import json
 import sys
 import zipfile
-from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from tests.test_public_scene_artifixer3d_dual_target_runner import _runner_module, _request
+from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import write_output_archive
 
 
 def test_completed_training_export_refusal_survives_provider_archive(tmp_path, monkeypatch):
@@ -63,29 +63,9 @@ def test_completed_training_export_refusal_survives_provider_archive(tmp_path, m
             output_root=output,
             request=_request(runner),
         )
-    # Use the actual provider output filter, extracted from its generated program.
-    import ast
-
-    adapter = Path(runner.__file__).parents[1] / "src/blueprint_pipeline/vast_provider_adapter.py"
-    constants = [
-        n.value
-        for n in ast.walk(ast.parse(adapter.read_text()))
-        if isinstance(n, ast.Constant)
-        and isinstance(n.value, str)
-        and "excluded_parts = {" in n.value
-    ]
-    line = next(
-        line
-        for text in constants
-        for line in text.splitlines()
-        if line.startswith("excluded_parts = {")
-    )
-    excluded = ast.literal_eval(line.partition(" = ")[2])
+    # Drive the same archive writer as the generated provider entrypoint.
     archive = tmp_path / "output.zip"
-    with zipfile.ZipFile(archive, "w") as bundle:
-        for path in output.parent.rglob("*"):
-            if path.is_file() and excluded.isdisjoint(path.relative_to(output.parent).parts):
-                bundle.write(path, path.relative_to(output.parent))
+    write_output_archive(output.parent, archive)
     with zipfile.ZipFile(archive) as bundle:
         prefix = "retained_training_evidence/task_a/"
         assert bundle.read(prefix + "checkpoint.pt") == checkpoint.read_bytes()
@@ -110,7 +90,6 @@ def test_completed_training_export_refusal_survives_provider_archive(tmp_path, m
 
 
 def test_review_rejection_archive_keeps_exact_exports_and_review_pngs(tmp_path):
-    import ast
     from blueprint_pipeline.artifixer_training_recovery import (
         retain_native_exports,
         retain_review_frames,
@@ -134,23 +113,7 @@ def test_review_rejection_archive_keeps_exact_exports_and_review_pngs(tmp_path):
     retain_native_exports(recovery, native)
     retain_review_frames(recovery, rows)
     (original.parent / "review_rejection.json").write_text('{"decision":"rejected"}')
-    adapter = Path(__file__).parents[1] / "src/blueprint_pipeline/vast_provider_adapter.py"
-    strings = [
-        n.value
-        for n in ast.walk(ast.parse(adapter.read_text()))
-        if isinstance(n, ast.Constant) and isinstance(n.value, str)
-    ]
-    line = next(
-        line
-        for text in strings
-        for line in text.splitlines()
-        if line.startswith("excluded_parts = {")
-    )
-    excluded = ast.literal_eval(line.partition(" = ")[2])
-    with zipfile.ZipFile(tmp_path / "returned.zip", "w") as bundle:
-        for path in original.parent.rglob("*"):
-            if path.is_file() and excluded.isdisjoint(path.relative_to(original.parent).parts):
-                bundle.write(path, path.relative_to(original.parent))
+    write_output_archive(original.parent, tmp_path / "returned.zip")
     with zipfile.ZipFile(tmp_path / "returned.zip") as bundle:
         prefix = "retained_training_evidence/task/"
         for name in ("repaired_scene.ply", "repaired_scene.usdz"):
