@@ -22,6 +22,7 @@ import struct
 import zipfile
 from typing import Any
 
+from .semantic_target_training_selection import effective_training_record_count
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .gaussian_field_quality import gaussian_drift_is_qualified
@@ -716,7 +717,8 @@ def validate_artifixer3d_bundle(receipt_path: str | Path) -> dict[str, Any]:
             raise ValueError("artifixer3d_bundle_task_invalid")
         task_ids.append(task_id)
         task_camera_counts[task_id] = camera_count
-        task_training_record_counts[task_id] = training_record_count
+        task_training_record_counts[task_id] = effective_training_record_count(
+            task, request["artifixer3d"].get("training_supervision"))
     if task_ids != receipt.get("task_ids"):
         raise ValueError("artifixer3d_bundle_task_order_invalid")
     reused_checkpoints: dict[str, dict[str, Any]] = {}

@@ -164,8 +164,9 @@ def _reuse_source(
     return provider_zip, zero_path, checkpoint_bytes
 
 
+@pytest.mark.parametrize("training_count", [16, 6])
 def test_raw_result_binds_only_physical_dual_target_review_frames(
-    tmp_path: Path,
+    tmp_path: Path, training_count,
 ) -> None:
     execution_root = tmp_path / "immutable_execution"
     frame_rows: list[dict[str, object]] = []
@@ -190,7 +191,7 @@ def test_raw_result_binds_only_physical_dual_target_review_frames(
             {
                 "task_id": "task_a",
                 "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
-                "training_record_count": 16,
+                "training_record_count": training_count,
                 "artifixer3d_review_frames": frame_rows,
                 "artifixer3d_checkpoint": _record(
                     checkpoint,
@@ -208,7 +209,7 @@ def test_raw_result_binds_only_physical_dual_target_review_frames(
             "pipeline_mode": DUAL_TARGET_PIPELINE_MODE,
             "task_ids": ["task_a"],
             "task_camera_counts": {"task_a": 8},
-            "task_training_record_counts": {"task_a": 16},
+            "task_training_record_counts": {"task_a": training_count},
             "bundle_sha256": "sha256:bundle",
             "manifest_digest": "sha256:manifest",
             "runtime_request_digest": "sha256:request",
@@ -221,7 +222,7 @@ def test_raw_result_binds_only_physical_dual_target_review_frames(
     assert "final_candidate_frames" not in task
     assert len(task["artifixer3d_review_frames"]) == 8
     assert task["physical_camera_count"] == 8
-    assert task["training_record_count"] == 16
+    assert task["training_record_count"] == training_count
     assert task["outside_support_invariance_status"] == ("deferred_until_final_soft_composite")
     assert task["outside_support_invariance_proven"] is False
     assert raw["outside_exact_support_changed_pixels_total"] is None
@@ -927,3 +928,14 @@ def test_provider_output_allowlist_retains_raw_artifixer3d_review_frames() -> No
     assert "'/native_appearance/' in '/' + relative" in shell
     assert "parts[0] == 'tasks'" in shell
     assert "provider_runtime/input/checkpoint_reuse" not in shell
+
+
+def test_bundle_count_uses_approved_targets_without_counting_original_anchors(tmp_path):
+    from blueprint_pipeline.semantic_target_training_selection import effective_training_record_count
+    _, _, _, candidate = _dual_candidate(tmp_path, cameras_per_task=2)
+    task = candidate["tasks"][0]
+    assert effective_training_record_count(task) == 4
+    assert effective_training_record_count(task, "corrected_only") == 2
+    task["semantic_teacher_indices"] = [99]
+    with pytest.raises(ValueError, match="partition_indices_invalid"):
+        effective_training_record_count(task, "corrected_only")

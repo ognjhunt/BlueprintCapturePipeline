@@ -21,6 +21,7 @@ from typing import Any, Mapping, Sequence
 import zipfile
 import re
 
+from .semantic_target_training_selection import effective_training_record_count
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .image_editor_backend_registry import (
     ARTIFIXER_DIRECT_CAPABILITY,
@@ -1407,7 +1408,8 @@ def build_artifixer3d_bundle(
             for task in candidate["tasks"]
         },
         "task_training_record_counts": {
-            str(task["task_id"]): int(task.get("training_record_count") or task.get("camera_count"))
+            str(task["task_id"]): effective_training_record_count(
+                task, runtime_request["artifixer3d"].get("training_supervision"))
             for task in candidate["tasks"]
         },
         "direct_editor_backend": direct_editor_backend,
