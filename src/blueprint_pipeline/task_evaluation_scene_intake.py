@@ -350,7 +350,12 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
                 and row['provider'] == 'openai' and row['maximum_spend_usd'] <= grant['maximum_cost_usd'],
                 'stored_visual_review_correction_invalid')
         if visual_review_authority is None:
-            _require(len(ordinary) + settled_attempts < budget["max_paid_attempts"], "attempt_cap_exhausted")
+            dependent = _dependent_row_id(attempt_id)
+            if dependent and len(ordinary) + settled_attempts >= budget["max_paid_attempts"]:
+                _require(any(row['source_commit'] == source_commit for row in ordinary),
+                         'dependent_source_attempt_required')
+            _require(len(ordinary) + settled_attempts + (0 if dependent else 1)
+                     <= budget["max_paid_attempts"], "attempt_cap_exhausted")
         exposure = sum((Decimal(str(row["maximum_spend_usd"])) for row in rows), settled_exposure)
         _require(exposure + Decimal(str(maximum_spend_usd))
                  <= Decimal(str(budget["max_total_spend_usd"])), "spend_cap_exhausted")

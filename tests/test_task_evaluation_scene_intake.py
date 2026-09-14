@@ -124,6 +124,29 @@ def test_concurrent_reservations_cannot_overspend(tmp_path):
         assert sorted(pool.map(reserve, [1, 2])) == [False, True]
 
 
+@pytest.mark.parametrize('prefix', ['scene-configuration-', 'controls-'])
+def test_final_source_attempt_can_reserve_its_stages_without_another_slot(tmp_path, prefix):
+    value = request()
+    value['execution']['max_paid_attempts'] = 1
+    intent = stage(tmp_path, value)
+    attempt(tmp_path, intent, 'source-last', cost=1)
+    first = attempt(tmp_path, intent, prefix+'stage', cost=1)
+    assert attempt(tmp_path, intent, prefix+'stage', cost=1) == first
+    with pytest.raises(SceneIntakeError, match='attempt_cap_exhausted'):
+        attempt(tmp_path, intent, 'source-extra', cost=1)
+    with pytest.raises(SceneIntakeError, match='spend_cap_exhausted'):
+        attempt(tmp_path, intent, prefix+'overspend', cost=3)
+
+
+def test_dependent_stage_at_cap_requires_a_live_source_on_its_release(tmp_path):
+    value = request()
+    value['execution']['max_paid_attempts'] = 1
+    intent = stage(tmp_path, value)
+    attempt(tmp_path, intent, 'source-first', cost=1)
+    with pytest.raises(SceneIntakeError, match='dependent_source_attempt_required'):
+        attempt(tmp_path, intent, 'controls-other-release', commit='c', cost=1)
+
+
 def test_exact_decimal_cap_and_javascript_numeric_identity(tmp_path):
     payload = request()
     payload["execution"].update(max_total_spend_usd=6.56, max_paid_attempts=3)
