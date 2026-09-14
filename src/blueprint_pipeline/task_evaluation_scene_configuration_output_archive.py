@@ -47,7 +47,12 @@ def write_output_archive(output_dir: Path, output_zip: Path, *, completed_stages
             stage_id = receipt_path.relative_to(output_dir).parts[1]
             if completed_stages is not None and stage_id not in completed_stages:
                 continue
+            # Preserve the child's own result even when its enclosing component
+            # times out before constructing the post-training reuse checkpoint.
+            if receipt_path.resolve(strict=True) != receipt_path:
+                raise RuntimeError('scene_configuration_training_result_symlink_forbidden')
             result = json.loads(receipt_path.read_text())
+            archive.write(receipt_path, receipt_path.relative_to(output_dir).as_posix())
             for task in result.get('tasks', []):
                 record = task.get('artifixer3d_checkpoint')
                 if not record:

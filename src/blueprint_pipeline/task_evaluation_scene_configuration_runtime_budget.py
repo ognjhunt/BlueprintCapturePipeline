@@ -118,6 +118,35 @@ def scene_configuration_budget_profile_contract() -> dict[str, Any]:
             "visual_review_minimum": MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD, "profiles": profiles}
 
 PARENT_DEADLINE_EPOCH_ENV = "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH"
+STAGE_DEADLINE_EPOCH_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEADLINE_EPOCH"
+# Leave time inside the existing stage allowance for export, evidence and review.
+ARTIFIXER_TRAINING_CLOSEOUT_RESERVE_SECONDS = 600
+
+
+def artifixer_training_timeout_seconds(environment: Mapping[str, str], *, now_epoch: float) -> float:
+    """Spend only the remainder of the producer's original stage allowance.
+
+    Older direct callers without a producer deadline retain their 7,000s limit.
+    Production producers always supply the absolute deadline, shared by every
+    training round; a repair cannot reset the stage clock.
+    """
+    raw = environment.get(STAGE_DEADLINE_EPOCH_ENV)
+    if raw is None:
+        return 7_000
+    try:
+        deadline = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("scene_configuration_artifixer_stage_deadline_invalid") from exc
+    if not math.isfinite(deadline) or not math.isfinite(now_epoch):
+        raise ValueError("scene_configuration_artifixer_stage_deadline_invalid")
+    remaining = min(deadline - now_epoch,
+                    GPU_STAGE_TIMEOUT_SECONDS["artifixer3d_observed_object_removal"])
+    allowance = remaining - ARTIFIXER_TRAINING_CLOSEOUT_RESERVE_SECONDS
+    if allowance <= 0:
+        raise ValueError("scene_configuration_artifixer_training_time_exhausted")
+    return allowance
+
+
 OUTPUT_CLOSURE_RESERVE_SECONDS_ENV = (
     "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_CLOSURE_RESERVE_SECONDS"
 )
@@ -255,6 +284,7 @@ def parent_runtime_budget_blockers(
 
 
 __all__ = [
+    "ARTIFIXER_TRAINING_CLOSEOUT_RESERVE_SECONDS",
     "BOOTSTRAP_TRANSFER_AND_NO_SPEND_RESERVE_SECONDS",
     "GPU_STAGE_TIMEOUT_SECONDS",
     "MAX_ATTEMPT_SPEND_USD",
@@ -268,6 +298,8 @@ __all__ = [
     "OUTPUT_AND_CLOSURE_RESERVE_SECONDS",
     "OUTPUT_CLOSURE_RESERVE_SECONDS_ENV",
     "PARENT_DEADLINE_EPOCH_ENV",
+    "STAGE_DEADLINE_EPOCH_ENV",
+    "artifixer_training_timeout_seconds",
     "REQUIRED_PARENT_TTL_SECONDS",
     "SERIAL_GPU_STAGE_TIMEOUT_SECONDS",
     "ceil_live_minutes",

@@ -9,6 +9,8 @@ import pytest
 
 from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
     GPU_STAGE_TIMEOUT_SECONDS,
+    STAGE_DEADLINE_EPOCH_ENV,
+    artifixer_training_timeout_seconds,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
@@ -44,7 +46,9 @@ def _toolchain(tmp_path: Path, commit: str) -> Path:
 
 def test_builtin_producer_executes_only_sealed_entrypoint_and_redacts_secret(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers.time.time", lambda: 1000.0)
     commit = "a" * 40
     toolchain = _toolchain(tmp_path, commit)
     secret = tmp_path / "openai-key"
@@ -54,6 +58,11 @@ def test_builtin_producer_executes_only_sealed_entrypoint_and_redacts_secret(
 
     def run(command, *, env, **_kwargs):
         calls.append(command)
+        assert float(env[STAGE_DEADLINE_EPOCH_ENV]) == 13_000
+        # A slower 9,000s first training pass fits the existing 12,000s stage.
+        assert artifixer_training_timeout_seconds(env, now_epoch=1_500) >= 9_000
+        # A repair shares that same deadline instead of getting a fresh window.
+        assert artifixer_training_timeout_seconds(env, now_epoch=11_000) == 1_400
         output = Path(env["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"])
         stage_input = json.loads(
             Path(env["BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"]).read_text(
@@ -104,7 +113,7 @@ def test_builtin_producer_executes_only_sealed_entrypoint_and_redacts_secret(
         expected_source_commit=commit,
         toolchain_root=toolchain,
         runner=run,
-        environment={"OPENAI_API_KEY_FILE": str(secret)},
+        environment={"OPENAI_API_KEY_FILE": str(secret), STAGE_DEADLINE_EPOCH_ENV: "999999999999"},
     )
     output = tmp_path / "output"
     output.mkdir()
