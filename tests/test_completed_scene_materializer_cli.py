@@ -84,19 +84,25 @@ def test_semantic_teacher_cli_supplies_optional_selection_json(tmp_path):
     assert supplied["training_view_selection"] == {"selection_digest": "retained"}
 
 
-def test_repair_support_cli_calls_real_producer_and_preserves_source_masks(tmp_path, capsys):
+@pytest.mark.parametrize("sam_found", [True, False])
+def test_repair_support_cli_calls_real_producer_and_preserves_source_masks(tmp_path, capsys, sam_found):
     cli = _script()
     frame, calibrated, sam = [tmp_path / name for name in ("frame.png", "calibrated.png", "sam.png")]
     Image.new("RGB", (80, 80), "white").save(frame)
     mask = Image.new("L", (80, 80), 0)
     mask.paste(255, (35, 35, 45, 45))
     mask.save(calibrated)
-    Image.new("L", (80, 80), 0).save(sam)
+    (mask if sam_found else Image.new("L", (80, 80), 0)).save(sam)
     original = [path.read_bytes() for path in (frame, calibrated, sam)]
     output = tmp_path / "support"
     args = ["repair-support", "--calibrated-mask", str(calibrated), "--sam-mask", str(sam),
             "--source-frame", str(frame), "--calibration-digest", "sha256:" + "a" * 64,
             "--output-root", str(output)]
+    if not sam_found:
+        assert cli.main(args) == 2
+        assert "sam_core_missing" in capsys.readouterr().out
+        assert [path.read_bytes() for path in (frame, calibrated, sam)] == original
+        return
     assert cli.main(args) == 0
     with Image.open(output / "object-core.png") as core:
         assert core.tobytes() == mask.tobytes()
