@@ -189,6 +189,11 @@ def _required_path(environment: Mapping[str, str], name: str) -> Path:
 def _artifixer_tuning(configuration: Mapping[str, Any]) -> dict[str, int]:
     """Resolve nullable website tuning before any paid semantic edit."""
 
+    if configuration.get("artifixer_training_policy") not in (
+        None, "corrected_only_local_appearance", "masked_original_anchors"
+    ):
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_training_policy_invalid")
     supplied = {
         "transition_radius_pixels": configuration.get("transition_radius_pixels"),
         "artifixer3d_steps": configuration.get("artifixer3d_steps"),
@@ -806,6 +811,13 @@ def _run_artifixer_training_round(
     if not isinstance(candidate.get("appearance_initialization"), Mapping):
         raise TaskEvaluationSceneConfigurationArtifixerError(
             "scene_configuration_artifixer_preserved_source_appearance_required")
+
+    local = candidate["appearance_initialization"]["parameter_partition"].get("local_appearance_policy")
+    expected = configuration.get("artifixer_training_policy") or "corrected_only_local_appearance"
+    actual = local.get("mode") if isinstance(local, Mapping) else "masked_original_anchors"
+    if actual != expected:
+        raise TaskEvaluationSceneConfigurationArtifixerError(
+            "scene_configuration_artifixer_training_policy_binding_mismatch")
 
     if completed_training_reuse is not None:
         from .artifixer_completed_training_reuse import hydrate_completed_training

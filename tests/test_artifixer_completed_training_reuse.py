@@ -113,6 +113,7 @@ def setup_source(tmp_path):
         "configuration_sha256": f["bindings"]["configuration_sha256"],
         "configuration": {
             "source_object": {"id": "book"},
+            "artifixer_training_policy": "masked_original_anchors",
             "human_authority": {
                 "accepted_by": "owner",
                 "accepted_on": "old-date",

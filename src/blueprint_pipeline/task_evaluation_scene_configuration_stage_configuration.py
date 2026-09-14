@@ -222,6 +222,10 @@ def _stage_one_refusal(
     if configuration.get("schema_version") == "task_evaluation_provided_mesh_appearance_excision.v1":
         from .task_evaluation_completed_scene_validation import mesh_appearance_configuration_refusal
         return mesh_appearance_configuration_refusal(configuration, envelope)
+    if configuration.get("artifixer_training_policy") not in (
+        None, "corrected_only_local_appearance", "masked_original_anchors"
+    ):
+        return "artifixer_training_policy"
     source_object = configuration.get("source_object")
     required_views = configuration.get("required_views")
     disclosure = configuration.get("provider_disclosure")

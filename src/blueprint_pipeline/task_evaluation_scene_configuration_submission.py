@@ -384,6 +384,7 @@ def materialize_scene_configuration_submission(
         records.stage_six_configuration(scene_identity=task["scene_identity"], support_plane=support,
                                        start_center=start, bottom_z=lower[2]),
     ]
+    configs[0]["artifixer_training_policy"] = "corrected_only_local_appearance"
     configs[0]["background_support_initialization"] = {
             "policy": "registered_local_subset_of_immutable_segment_contribution_candidate",
             "preserve_source_appearance": True,

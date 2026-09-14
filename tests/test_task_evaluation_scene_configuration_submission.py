@@ -417,6 +417,7 @@ def test_scene_and_task_objects_become_one_validated_production_submission(tmp_p
         path = staging / stage["configuration"]["uri"].split(f"{namespace}/", 1)[1]
         configurations[stage["stage_id"]] = json.loads(path.read_text())
     stage_one = configurations[recipe["stage_sequence"][0]["stage_id"]]
+    assert stage_one["artifixer_training_policy"] == "corrected_only_local_appearance"
     rights_admission = json.loads((staging / "rights/rights_admission.v1.json").read_text())
     decision = resolve_scene_configuration_disclosure(stage_one_configuration=stage_one, rights_admission=rights_admission)
     assert decision["render_execution_site"] == "control_plane", decision
