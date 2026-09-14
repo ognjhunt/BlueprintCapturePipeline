@@ -22,10 +22,15 @@ class AssetSandboxError(RuntimeError):
 
 class SandboxedAssetRunner:
     def __init__(self, *, read_roots: Sequence[Path], write_root: Path,
-                 executable_roots: Sequence[Path] = ()) -> None:
+                 executable_roots: Sequence[Path] = (), library_environment=None,
+                 library_executables: Sequence[Path] = ()) -> None:
         self.write_root = Path(write_root).resolve(strict=True)
         self.read_roots = tuple(Path(p).resolve(strict=True) for p in read_roots)
         self.executable_roots = tuple(Path(p).resolve(strict=True) for p in executable_roots)
+        self.library_environment = dict(library_environment or {})
+        if set(self.library_environment) - {'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH'}:
+            raise AssetSandboxError('asset_sandbox_library_environment_invalid')
+        self.library_executables = tuple(Path(p).resolve(strict=True) for p in library_executables)
         forbidden = (Path.home(), Path('/'), Path('/etc'), Path('/Users'), Path('/var'))
         if self.write_root in forbidden or any(p in forbidden for p in self.read_roots):
             raise AssetSandboxError('asset_sandbox_root_too_broad')
@@ -100,13 +105,15 @@ class SandboxedAssetRunner:
                 raise AssetSandboxError('asset_sandbox_home_outside_attempt')
             environment['HOME'] = str(home)
         # Only loader settings needed for the explicitly mounted CAD closure.
+        loader_values = {**(self.library_environment if executable in self.library_executables else {}),
+                         **(env or {})}
         for name in ('PYTHONPATH', 'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH'):
-            if env and name in env:
-                paths = str(env[name]).split(os.pathsep)
+            if name in loader_values:
+                paths = str(loader_values[name]).split(os.pathsep)
                 if any(not any(Path(p).resolve().is_relative_to(r) for r in roots)
                        for p in paths if p):
                     raise AssetSandboxError('asset_sandbox_loader_path_not_admitted')
-                environment[name] = str(env[name])
+                environment[name] = str(loader_values[name])
         (self.write_root / 'tmp').mkdir(exist_ok=True)
         (self.write_root / 'xdg').mkdir(exist_ok=True, mode=0o700)
         (self.write_root / 'cache').mkdir(exist_ok=True)
@@ -117,6 +124,14 @@ class SandboxedAssetRunner:
             return run_with_landlock(argv, roots=roots, write_root=self.write_root,
                 cwd=directory, env=environment, timeout=min(float(timeout), 900),
                 check=check, capture_output=capture_output, text=text)
+        loader_keys = {'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH', 'PYTHONPATH'}
+        launcher_environment = {k: v for k, v in environment.items() if k not in loader_keys}
+        target = [str(executable), *map(str, argv[1:])]
+        loader_assignments = [f'{k}={v}' for k, v in environment.items() if k in loader_keys]
+        if loader_assignments:
+            # env itself starts clean, after sandbox setup and any UID drop.
+            # bwrap, setpriv and sandbox-exec never load target vendor libraries.
+            target = ['/usr/bin/env', '--', *loader_assignments, *target]
         if self.system == 'Darwin':
             readable = ['/System', '/usr', '/bin', '/sbin', '/Library/Fonts',
                         '/Library/Apple', '/private/etc/fonts', '/private/etc/localtime',
@@ -140,7 +155,7 @@ class SandboxedAssetRunner:
                 '(allow file-write* (subpath ' + json.dumps(str(self.write_root)) +
                 ') (literal "/dev/null"))',
             ])
-            command = [self.launcher, '-p', profile, *map(str, argv)]
+            command = [self.launcher, '-p', profile, *target]
         else:
             privileged = os.geteuid() == 0
             namespaces = (['--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-net']
@@ -178,11 +193,11 @@ class SandboxedAssetRunner:
                 command += ['/usr/bin/setpriv', f'--reuid={account.pw_uid}',
                             f'--regid={account.pw_gid}', '--clear-groups',
                             '--no-new-privs', '--']
-            command += list(map(str, argv))
+            command += target
         # Never inherit a caller's stdin handles or credentials. Bound outputs
         # on readback; subprocess wall time remains enforced by the parent.
         if kwargs:
             raise AssetSandboxError('asset_sandbox_subprocess_option_not_admitted')
-        return subprocess.run(command, cwd=directory, env=environment,
+        return subprocess.run(command, cwd=directory, env=launcher_environment,
                               timeout=min(float(timeout), 900), check=check,
                               capture_output=capture_output, text=text)

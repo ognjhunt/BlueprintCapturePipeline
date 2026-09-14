@@ -70,3 +70,18 @@ explicit grant up to 64 attempts; initial intake still permits at most 32.
 Historical attempts and exposure are never refunded, per-action limits are
 unchanged, and the cumulative dollar ceiling remains $1,000. No extra attempts
 are granted merely by deploying the code.
+
+Instance 51043990 passed the kernel sandbox but failed to start Kit's Python:
+`libpython3.12.so.1.0` was missing from its stripped library search path. The
+previous offline replay used system Python, which did not exercise this vendor
+ELF-loader requirement. This was a preflight-coverage defect.
+
+Astra now admits the existing absolute runtime library directories and binds
+their loader environment specifically to the resolved Python executable. A
+libpython directory beside the Kit prefix is also recognized when the caller
+has scrubbed its environment after startup. Blender retains its independent
+loader environment. All trusted launchers start without LD/DYLD/PYTHONPATH;
+validated variables are applied only to the target after sandbox setup and any
+UID drop. The regression links a real executable to a private shared library
+without RUNPATH: it first fails, then runs with the admitted path. A fake
+libseccomp in that path must never affect the trusted Landlock launcher.

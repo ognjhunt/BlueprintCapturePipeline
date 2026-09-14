@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import pytest
 
 from blueprint_pipeline import asset_authoring_sandbox as sandbox
 
@@ -73,3 +74,30 @@ def test_home_override_cannot_escape_attempt(tmp_path, monkeypatch):
     runner = sandbox.SandboxedAssetRunner(read_roots=[], write_root=output)
     with pytest.raises(sandbox.AssetSandboxError, match='home_outside_attempt'):
         runner(['/usr/bin/true'], env={'HOME': str(tmp_path)})
+
+
+@pytest.mark.parametrize('system', ['Darwin', 'Linux'])
+def test_only_admitted_library_paths_are_inherited_by_target(tmp_path, monkeypatch, system):
+    library = tmp_path / 'lib'
+    library.mkdir()
+    output = tmp_path / 'output'
+    output.mkdir()
+    monkeypatch.setattr(sandbox.platform, 'system', lambda: system)
+    monkeypatch.setattr(sandbox.os, 'geteuid', lambda: 1000)
+    monkeypatch.setattr(sandbox.shutil, 'which', lambda name: '/usr/bin/sandbox-exec')
+    seen = []
+    monkeypatch.setattr(sandbox.subprocess, 'run', lambda *a, **kw:
+        seen.append((a[0], kw['env'])) or SimpleNamespace(returncode=0))
+    runner = sandbox.SandboxedAssetRunner(read_roots=[library], write_root=output,
+        library_environment={'LD_LIBRARY_PATH': str(library)}, library_executables=['/usr/bin/true'])
+    runner(['/usr/bin/true'])
+    runner(['/usr/bin/true'], env={'OPENAI_API_KEY': 'must-not-inherit'})
+    for command, environment in seen:
+        assert 'LD_LIBRARY_PATH' not in environment and 'OPENAI_API_KEY' not in environment
+        inner = command.index('/usr/bin/env')
+        assert command[inner:] == ['/usr/bin/env', '--', 'LD_LIBRARY_PATH='+str(library), '/usr/bin/true']
+    with pytest.raises(sandbox.AssetSandboxError, match='loader_path_not_admitted'):
+        runner(['/usr/bin/true'], env={'LD_LIBRARY_PATH': str(tmp_path)})
+    with pytest.raises(sandbox.AssetSandboxError, match='library_environment_invalid'):
+        sandbox.SandboxedAssetRunner(read_roots=[library], write_root=output,
+            library_environment={'OPENAI_API_KEY': 'must-not-inherit'})
