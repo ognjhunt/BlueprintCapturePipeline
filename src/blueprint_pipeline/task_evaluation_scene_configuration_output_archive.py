@@ -1,6 +1,7 @@
 """Archive scene evidence, excluding reproducible tool installations."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -37,6 +38,36 @@ def write_output_archive(output_dir: Path, output_zip: Path, *, completed_stages
                 raise RuntimeError('scene_configuration_provider_output_symlink_forbidden:' + relative.as_posix())
             if path.is_file():
                 archive.write(path, relative.as_posix())
+
+        # Runtime scratch is omitted, but the exact completed optimizer/model
+        # checkpoint is irreplaceable work. Keep only receipt-bound weights.
+        weights = []
+        pattern = 'stages/stage-*/producer/released_artifixer_runtime/artifixer_candidate_round_*/artifixer_output/public_scene_artifixer3d_runtime_result.json'
+        for receipt_path in sorted(output_dir.glob(pattern)):
+            stage_id = receipt_path.relative_to(output_dir).parts[1]
+            if completed_stages is not None and stage_id not in completed_stages:
+                continue
+            result = json.loads(receipt_path.read_text())
+            for task in result.get('tasks', []):
+                record = task.get('artifixer3d_checkpoint')
+                if not record:
+                    continue
+                source = Path(record['path'])
+                resolved = source.resolve(strict=True)
+                if (source != resolved or not resolved.is_relative_to(output_dir.resolve())
+                        or source.suffix != '.pt' or not source.name.startswith('ckpt_')
+                        or source.stat().st_size != record.get('size_bytes')):
+                    raise RuntimeError('scene_configuration_training_checkpoint_path_invalid')
+                with source.open('rb') as stream:
+                    digest = 'sha256:' + hashlib.file_digest(stream, 'sha256').hexdigest()
+                if digest != record.get('sha256'):
+                    raise RuntimeError('scene_configuration_training_checkpoint_digest_invalid')
+                relative = source.relative_to(output_dir).as_posix()
+                archive.write(source, relative)
+                weights.append({'path': relative, 'sha256': digest, 'size_bytes': source.stat().st_size})
+        archive.writestr('retained_training_checkpoints.json', json.dumps({
+            'schema_version': 'scene_configuration_retained_training_checkpoints.v1',
+            'checkpoints': weights}, sort_keys=True))
 
 
 def preserve_stage_prefix(*, output_root: Path, completed_results, checkpoint_path: Path):
