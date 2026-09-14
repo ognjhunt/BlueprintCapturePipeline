@@ -1733,6 +1733,8 @@ SCENE_CONFIGURATION_HOST_COMPILER_MAJOR = "11"
 #: command demanded before bundle execution is installed by the same caller.
 SCENE_CONFIGURATION_PROVISIONED_COMMANDS: dict[str, tuple[str, ...]] = {
     "coreutils": ("timeout",),
+    "bubblewrap": ("bwrap",),
+    "util-linux": ("setpriv",),
     "curl": ("curl",),
     "wget": ("wget",),
     "unzip": ("unzip",),

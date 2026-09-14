@@ -2131,6 +2131,9 @@ def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
     )
     assert "task_evaluation_scene_configuration_output_archive import write_output_archive" in script
     assert "BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH" in script
+    assert "bubblewrap" in vpa.SCENE_CONFIGURATION_APT_PACKAGES
+    assert "bwrap" in vpa.SCENE_CONFIGURATION_REQUIRED_COMMANDS
+    assert "setpriv" in vpa.SCENE_CONFIGURATION_REQUIRED_COMMANDS
     subprocess.run(["bash", "-n", "-c", script], check=True)
 
     runtime_output = tmp_path / "runtime-output"
@@ -4641,7 +4644,8 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
 
     assert captured["expected_provider_download_bytes"] == expected_download
     assert captured["expected_provider_upload_bytes"] == expected_upload
-    assert captured["provider_output_minimum_free_bytes"] == required_free
+    assert captured["provider_output_minimum_free_bytes"] == (expected_upload
+        + scene_vast._provider_output_disk_requirements(expected_upload)["operational_reserve_bytes"])
     assert captured["provider_runtime_environment"][
         "BLUEPRINT_VAST_EXPECTED_PROVIDER_UPLOAD_BYTES"
     ] == str(expected_upload)
