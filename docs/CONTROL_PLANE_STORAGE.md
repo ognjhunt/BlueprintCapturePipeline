@@ -124,6 +124,18 @@ the activation pin when it writes the terminal `dispatch_receipt.json`, and the
 release cascades to dependencies no other live pin still needs. Pins expire
 after 30 days so a release that never arrives cannot protect bytes forever.
 
+Automatic scene-configuration launches also release their activation pin after
+writing a sealed terminal `launch_receipt.json`. Release requires matching
+staging and launch identities, byte-verified retained copies under the run's
+`immutable_inputs`, no other pending or processing launch using the activation,
+and completed teardown of every recorded provider instance. A launch refused
+before paid admission may release only when its receipt explicitly records no
+provider mutation and no provider evidence contradicts it. Missing or uncertain
+evidence retains the pin. Reading an existing terminal receipt retries this
+metadata-only release; an already released pin requires no repeated hashing.
+The dispatcher never deletes files or changes the launch outcome during release.
+The normal reclaim timer still enforces queue references and its idle window.
+
 ## Reclaim timer
 
 `blueprint-control-plane-storage-gc.timer` runs

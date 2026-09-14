@@ -893,6 +893,12 @@ def test_public_catalog_normalizes_typed_canary_allocation_control(
 def test_dispatch_calls_only_canonical_allocator_and_live_closeout_is_required(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from blueprint_pipeline import task_evaluation_scene_storage_release as storage_release
+    released_receipts = []
+    def observe_release(*, run_root, receipt):
+        assert (run_root / 'launch_receipt.json').is_file()
+        released_receipts.append(receipt['status'])
+    monkeypatch.setattr(storage_release, 'release_terminal_scene_activation_pin', observe_release)
     profile = _profile(tmp_path)
     request = _request(profile)
     profile_dir = tmp_path / "profiles"
@@ -946,6 +952,11 @@ def test_dispatch_calls_only_canonical_allocator_and_live_closeout_is_required(
     assert live["terminal_evidence"]["status"] == "passed"
     assert live["provider_mutation_attempted"] is True
     assert live["agent_operator_used"] is False
+    assert released_receipts == ['dry_run_completed', 'completed']
+    assert dispatch_launch_request(request_path=request_path, profile_dir=profile_dir,
+        state_root=tmp_path / 'live-state', execute=True, execute_launch_id=request['launch_id'],
+        allocator_runner=lambda _: pytest.fail('must not allocate again')) == live
+    assert released_receipts[-1] == 'completed'
 
 
 @pytest.mark.parametrize(

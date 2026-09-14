@@ -1597,6 +1597,8 @@ def dispatch_launch_request(
         prior_receipt = _read_json(prior_receipt_path)
         if prior_receipt.get("request_digest") != request.get("request_digest"):
             raise TaskEvaluationLaunchError("launch_receipt_request_binding_mismatch")
+        from .task_evaluation_scene_storage_release import release_terminal_scene_activation_pin
+        release_terminal_scene_activation_pin(run_root=run_root, receipt=prior_receipt)
         return prior_receipt
     _write_immutable(run_root / "launch_request.json", request)
     if profile:
@@ -1877,6 +1879,8 @@ def dispatch_launch_request(
         receipt, digest_field="receipt_digest"
     )
     _write_immutable(run_root / "launch_receipt.json", receipt)
+    from .task_evaluation_scene_storage_release import release_terminal_scene_activation_pin
+    release_terminal_scene_activation_pin(run_root=run_root, receipt=receipt)
     from .task_evaluation_launch_webapp_sync import sync_launch_receipt_to_webapp
 
     sync_result = sync_launch_receipt_to_webapp(receipt=receipt)
