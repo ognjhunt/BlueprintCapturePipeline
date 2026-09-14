@@ -1519,11 +1519,10 @@ def run_scene_configuration_vast(
                 expected_provider_download_bytes=expected_download_bytes,
                 expected_provider_upload_bytes=expected_upload_bytes,
                 expected_provider_bundle_sha256=str(receipt["bundle_sha256"]),
-                provider_output_minimum_free_bytes=(
-                    output_disk_requirements[
-                        "required_free_bytes_before_download"
-                    ]
-                ),
+                # Download preserves the bounded archive plus operating reserve.
+                # Expanded capacity is checked separately before extraction.
+                provider_output_minimum_free_bytes=(expected_upload_bytes
+                    + output_disk_requirements["operational_reserve_bytes"]),
                 enable_isaac_smoke=True,
                 enable_blueprint_bundle=True,
                 provider_bundle_kind=PROVIDER_BUNDLE_KIND,
