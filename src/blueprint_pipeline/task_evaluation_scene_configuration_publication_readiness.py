@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -126,27 +127,32 @@ def verify_scene_configuration_publication_readiness(
         ),
     }
     body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    outbound = urllib_request.Request(
-        url,
-        data=body,
-        headers=_pipeline_sync_headers(token, body),
-        method="POST",
-    )
-    try:
-        with opener(outbound, timeout=max(0.1, timeout_seconds)) as response:
-            raw = response.read(64 * 1024 + 1)
-    except urllib_error.HTTPError as exc:
-        raise SceneConfigurationPublicationReadinessError(
-            f"scene_configuration_publication_readiness_http_error:{exc.code}"
-        ) from exc
-    except urllib_error.URLError as exc:
-        raise SceneConfigurationPublicationReadinessError(
-            "scene_configuration_publication_readiness_unreachable"
-        ) from exc
-    except (OSError, TimeoutError, ValueError) as exc:
-        raise SceneConfigurationPublicationReadinessError(
-            "scene_configuration_publication_readiness_unreachable"
-        ) from exc
+    # This endpoint only reads an exact launch binding. A transient transport
+    # failure must not turn a prepared run into another full deployment cycle.
+    # Re-sign each bounded read attempt; never retry a refused binding or auth.
+    for attempt in range(3):
+        outbound = urllib_request.Request(
+            url, data=body, headers=_pipeline_sync_headers(token, body), method="POST"
+        )
+        try:
+            with opener(outbound, timeout=max(0.1, timeout_seconds)) as response:
+                raw = response.read(64 * 1024 + 1)
+            break
+        except urllib_error.HTTPError as exc:
+            if exc.code not in {429, 500, 502, 503, 504} or attempt == 2:
+                raise SceneConfigurationPublicationReadinessError(
+                    f"scene_configuration_publication_readiness_http_error:{exc.code}"
+                ) from exc
+        except (urllib_error.URLError, OSError, TimeoutError) as exc:
+            if attempt == 2:
+                raise SceneConfigurationPublicationReadinessError(
+                    "scene_configuration_publication_readiness_unreachable"
+                ) from exc
+        except ValueError as exc:
+            raise SceneConfigurationPublicationReadinessError(
+                "scene_configuration_publication_readiness_unreachable"
+            ) from exc
+        time.sleep(0.5 * (attempt + 1))
     if len(raw) > 64 * 1024:
         raise SceneConfigurationPublicationReadinessError(
             "scene_configuration_publication_readiness_response_invalid"

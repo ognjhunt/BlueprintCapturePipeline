@@ -152,3 +152,64 @@ def test_publication_readiness_refuses_nonlocal_object_store_claim(
             object_store_validator=lambda: invalid,
             opener=lambda *_args, **_kwargs: pytest.fail("WebApp called"),
         )
+
+
+@pytest.mark.parametrize("kind", ["timeout", "unreachable", "http503"])
+def test_transient_read_retries_identical_binding(tmp_path, monkeypatch, kind):
+    calls = []
+    monkeypatch.setattr(readiness.time, "sleep", lambda _: None)
+
+    def opener(request, **kwargs):
+        calls.append(request.data)
+        if len(calls) == 1:
+            if kind == "http503":
+                raise readiness.urllib_error.HTTPError(request.full_url, 503, "unavailable", {}, None)
+            if kind == "unreachable":
+                raise readiness.urllib_error.URLError("temporary DNS failure")
+            raise TimeoutError()
+        return _Response(_webapp_receipt())
+
+    result = readiness.verify_scene_configuration_publication_readiness(
+        **_binding(), endpoint_url="https://webapp.test/readiness",
+        token_file_path=_token_file(tmp_path), object_store_validator=_object_store,
+        opener=opener,
+    )
+    assert result["status"] == "ready"
+    assert len(calls) == 2 and calls[0] == calls[1]
+
+
+@pytest.mark.parametrize("code, expected_calls", [(401, 1), (403, 1), (409, 1), (503, 3)])
+def test_read_refusal_and_retry_bound(tmp_path, monkeypatch, code, expected_calls):
+    calls = []
+    monkeypatch.setattr(readiness.time, "sleep", lambda _: None)
+
+    def opener(request, **kwargs):
+        calls.append(request.data)
+        raise readiness.urllib_error.HTTPError(request.full_url, code, "refused", {}, None)
+
+    with pytest.raises(readiness.SceneConfigurationPublicationReadinessError,
+                       match=f"readiness_http_error:{code}"):
+        readiness.verify_scene_configuration_publication_readiness(
+            **_binding(), endpoint_url="https://webapp.test/readiness",
+            token_file_path=_token_file(tmp_path), object_store_validator=_object_store,
+            opener=opener,
+        )
+    assert len(calls) == expected_calls
+
+
+def test_transport_retry_exhaustion_still_refuses(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(readiness.time, "sleep", lambda _: None)
+
+    def opener(request, **kwargs):
+        calls.append(request.data)
+        raise TimeoutError()
+
+    with pytest.raises(readiness.SceneConfigurationPublicationReadinessError,
+                       match="readiness_unreachable"):
+        readiness.verify_scene_configuration_publication_readiness(
+            **_binding(), endpoint_url="https://webapp.test/readiness",
+            token_file_path=_token_file(tmp_path), object_store_validator=_object_store,
+            opener=opener,
+        )
+    assert len(calls) == 3
