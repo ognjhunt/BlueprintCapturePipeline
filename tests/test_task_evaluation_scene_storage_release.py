@@ -71,6 +71,63 @@ def pin(case):
     return json.loads(pin_path(case['pins_root'], 'activation', case['owner']).read_text())
 
 
+def never_allocated(case):
+    (case['provider']/'vast_budget_ledger.json').unlink()
+    path = case['provider']/'vast_teardown_manifest.json'
+    teardown = {'schema_version': 'vast_teardown_manifest.v1',
+        'status': 'not_required_provider_adapter_never_invoked',
+        'generated_at': '2026-09-13T21:28:01+00:00', 'vast_instance_ids': [],
+        'teardown_actions_performed': [], 'continuing_spend_from_this_run': False,
+        'zero_continuing_spend_scope': 'provider adapter never invoked'}
+    write(path, teardown)
+    digest = 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+    case['receipt']['terminal_evidence'] = {'artifacts': {'teardown_manifest_path':
+        {'exists': True, 'path': str(path), 'digest': digest}}}
+    case['receipt'] = seal(case['receipt'], cross=True)
+    zero = {k:case['receipt'].get(k) for k in ('launch_id','run_id','request_digest',
+                                             'receipt_digest','launch_profile_digest')}
+    zero.update(schema_version='task_evaluation_post_teardown_provider_zero.v1',
+        status='provider_zero_confirmed', provider_zero_verified=True,
+        continuing_spend_from_this_run=False, allocator_invoked=False,
+        provider_mutation_performed=False, automatic_retry_performed=False,
+        blockers=[], required_providers=['vast'], teardown_manifest={
+            'path': str(path), 'digest': digest, 'provider_resource_allocated': False,
+            **{k:teardown[k] for k in ('schema_version','status','generated_at',
+                                     'continuing_spend_from_this_run','zero_continuing_spend_scope')}})
+    zero['provider_zero_receipt_digest'] = canonical_digest(zero, digest_field='provider_zero_receipt_digest')
+    write(case['run_root']/'post_teardown_provider_zero_receipt.json', zero)
+    return zero
+
+
+def test_never_allocated_launch_releases_with_bound_zero_and_teardown(case):
+    never_allocated(case)
+    assert release(case)['status'] == 'released'
+    assert case['source'].read_bytes() == case['staged'].read_bytes()
+
+
+@pytest.mark.parametrize('mutation', ['missing_zero','changed_zero','wrong_launch','changed_teardown','budget_present','broken_budget_link'])
+def test_never_allocated_launch_requires_complete_noncontradictory_proof(case, mutation):
+    zero = never_allocated(case)
+    path = case['run_root']/'post_teardown_provider_zero_receipt.json'
+    if mutation == 'missing_zero':
+        path.unlink()
+    elif mutation == 'changed_zero':
+        zero['provider_zero_verified'] = False
+        write(path, zero)
+    elif mutation == 'wrong_launch':
+        zero['launch_id'] = 'other'
+        zero['provider_zero_receipt_digest'] = canonical_digest(zero, digest_field='provider_zero_receipt_digest')
+        write(path, zero)
+    elif mutation == 'changed_teardown':
+        write(case['provider']/'vast_teardown_manifest.json', case['teardown'])
+    elif mutation == 'broken_budget_link':
+        (case['provider']/'vast_budget_ledger.json').symlink_to('missing-ledger.json')
+    else:
+        write(case['provider']/'vast_budget_ledger.json', {'vast_instance_ids':[123]})
+    assert release(case)['status'] != 'released'
+    assert pin(case)['released_at_epoch'] is None
+
+
 @pytest.mark.parametrize('status', ['blocked', 'completed'])
 def test_closed_launch_releases_pin_but_never_removes_data(case, status):
     case['receipt']['status'] = status
