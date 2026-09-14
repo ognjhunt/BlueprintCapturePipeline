@@ -1734,9 +1734,14 @@ def _dual_target_task_runtime(
             reference=read_standard_3dgs_ply(_retained_reference_gaussian_ply(input_root)),
             partition=appearance_initialization["parameter_partition"])
     training_exception = None
+    from importlib.metadata import version
+    from blueprint_pipeline.artifixer_metric_state import bounded_perceptual_metric_state
+    metric_state = {}
     try:
         with log.open("a", encoding="utf-8") as stream, freeze_context:
-            with redirect_stdout(stream), redirect_stderr(stream):
+            with redirect_stdout(stream), redirect_stderr(stream), bounded_perceptual_metric_state(
+                threedgrut_training.Trainer3DGRUT, torchmetrics_version=version("torchmetrics")
+            ) as metric_state:
                 threedgrut_training.train_3dgrut(
                     request["artifixer3d"]["config_name"],
                     overrides,
@@ -1803,6 +1808,7 @@ def _dual_target_task_runtime(
                                   if prepared.get("corrected_training_frames") is not None
                                   else task["training_record_count"]),
         "training_supervision": request["artifixer3d"].get("training_supervision", "masked_original_anchors"),
+        "training_metric_state": metric_state,
         "corrected_training_frames": prepared.get("corrected_training_frames"),
         "selected_anchor_indices": ([] if prepared.get("corrected_training_frames") is not None else task["selected_anchor_indices"]),
         "semantic_teacher_indices": (list(range(len(prepared["corrected_training_frames"])))

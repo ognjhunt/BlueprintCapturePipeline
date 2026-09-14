@@ -225,7 +225,7 @@ export TORCH_HOME="${runtime_dir}/torch_home"
 "${uv_command[@]}" pip install --python "${artifixer_python}" \
   accelerate==1.13.0 diffusers==0.37.1 transformers==5.5.0 ftfy \
   'numpy<2.0' einops scipy wandb tqdm Pillow matplotlib opencv-python-headless \
-  pyyaml torchmetrics imageio-ffmpeg h5py av torch-fidelity huggingface-hub \
+  pyyaml torchmetrics==1.9.0 imageio-ffmpeg h5py av torch-fidelity huggingface-hub \
   || { write_missing_result "artifixer3d_python_dependencies_failed"; exit 2; }
 
 submodule_dir="${runtime_dir}/ArtiFixer_official/thirdparty/3DGRUT-ArtiFixer"

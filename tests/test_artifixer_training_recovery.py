@@ -43,8 +43,11 @@ def test_completed_training_export_refusal_survives_provider_archive(tmp_path, m
         print("Training Complete 30000")
 
     package.threedgrut_training = SimpleNamespace(
-        train_3dgrut=train, DEFAULT_THREEDGRUT_CONFIG_DIR=tmp_path
+        train_3dgrut=train, DEFAULT_THREEDGRUT_CONFIG_DIR=tmp_path,
+        Trainer3DGRUT=type("Trainer3DGRUT", (), {"get_losses": lambda self: None}),
     )
+    from importlib.metadata import version
+    monkeypatch.setattr("importlib.metadata.version", lambda name: "1.9.0" if name == "torchmetrics" else version(name))
     monkeypatch.setitem(sys.modules, "data_processing", package)
     error = ValueError("artifixer3d_native_export_gaussian_field_drift_invalid:outlier")
     error.geometry_quality = {"status": "blocked", "metrics": {"max_center_ratio": 827}}

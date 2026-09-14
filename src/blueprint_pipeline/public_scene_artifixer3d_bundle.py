@@ -55,6 +55,7 @@ RUNTIME_BLUEPRINT_MODULES = (
     "artifixer_source_geometry_admission.py",
     "artifixer_training_recovery.py",
     "artifixer_appearance_freeze.py",
+    "artifixer_metric_state.py",
     "gaussian_splat_decode.py",
     "nurec_usdz_layer_transform.py",
     "aura_nurec_usdz.py",
