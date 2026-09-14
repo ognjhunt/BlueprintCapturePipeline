@@ -6,6 +6,8 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
+import shutil
+import time
 
 import pytest
 
@@ -158,7 +160,17 @@ time.sleep(60)
         )
     child = int((writable / "child.pid").read_text())
     status = Path(f"/proc/{child}/status")
-    assert not status.exists() or "\nState:\tZ" in status.read_text()
+    # SIGKILL delivery and reparenting/reaping are asynchronous; verify that
+    # the child stops within a bounded scheduling interval, not the same tick.
+    def stopped():
+        try:
+            return "\nState:\tZ" in status.read_text()
+        except FileNotFoundError:
+            return True
+    deadline = time.monotonic() + 1
+    while not stopped() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert stopped()
 
 
 def test_real_preflight_selects_a_kernel_backend(tmp_path):
@@ -240,3 +252,33 @@ else: raise AssertionError('external symlink admitted')
 ''')
     result = runner([str(executable)])
     assert result.returncode == 0 and 'private-executable-ready' in result.stdout
+
+
+def test_shared_library_loader_is_preserved_only_for_sandboxed_program(tmp_path):
+    compiler = shutil.which('cc')
+    if compiler is None:
+        pytest.skip('ELF linker fixture requires a C compiler')
+    runtime = tmp_path / 'vendor'
+    library = runtime / 'lib'
+    library.mkdir(parents=True)
+    source = runtime / 'library.c'
+    source.write_text('int vendor_value(void) { return 17; }\n')
+    main = runtime / 'main.c'
+    main.write_text('extern int vendor_value(void); int main(void) { return vendor_value() == 17 ? 0 : 1; }\n')
+    executable = runtime / 'program'
+    subprocess.run([compiler, '-shared', '-fPIC', str(source), '-o', str(library/'libvendor.so')], check=True)
+    subprocess.run([compiler, str(main), '-L'+str(library), '-lvendor', '-o', str(executable)], check=True)
+    # If the library path leaks into the trusted launcher, its policy library
+    # load will fail before restrictions can be installed.
+    (library/'libseccomp.so.2').write_text('must never load in trusted launcher')
+    output = tmp_path/'output'
+    output.mkdir()
+    runner = SandboxedAssetRunner(read_roots=[runtime, Path('/usr')], write_root=output)
+    runner.backend = 'landlock_seccomp'
+    failed = runner([str(executable)])
+    assert failed.returncode == 127 and 'libvendor.so' in failed.stderr
+    runner = SandboxedAssetRunner(read_roots=[runtime, Path('/usr')], write_root=output,
+        library_environment={'LD_LIBRARY_PATH': str(library)}, library_executables=[executable])
+    runner.backend = 'landlock_seccomp'
+    assert runner([str(executable)]).returncode == 0
+    execute(runner, "import os; assert 'LD_LIBRARY_PATH' not in os.environ")

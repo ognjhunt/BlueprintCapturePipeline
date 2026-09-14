@@ -248,6 +248,29 @@ def test_stage_preserves_sealed_external_python_runtime_in_sandbox(component, tm
     assert str(installed) in component.seen["cad_probe"]["env"]["PYTHONPATH"].split(os.pathsep)
 
 
+def test_stage_admits_vendor_python_shared_library_paths(component, tmp_path, monkeypatch):
+    libs = tmp_path / 'vendor-python-lib'
+    libs.mkdir()
+    monkeypatch.setenv('LD_LIBRARY_PATH', ':'+str(libs)+':relative:'+str(libs))
+    driver.execute_astra_component(**component.kwargs)
+    assert libs in component.seen['sandbox']['read_roots']
+    paths = component.seen['sandbox']['library_environment']['LD_LIBRARY_PATH'].split(os.pathsep)
+    assert paths.count(str(libs)) == 1 and '' not in paths and 'relative' not in paths
+    assert component.seen['sandbox']['library_executables'] == [Path(driver.sys.executable)]
+
+
+def test_stage_finds_kit_libpython_when_parent_loader_environment_is_absent(component, tmp_path, monkeypatch):
+    kit = tmp_path / 'kit'
+    prefix = kit / 'python'
+    prefix.mkdir(parents=True)
+    (kit / f'libpython{driver.sys.version_info.major}.{driver.sys.version_info.minor}.so.1.0').write_bytes(b'fixture')
+    monkeypatch.setattr(driver.sys, 'base_prefix', str(prefix))
+    monkeypatch.delenv('LD_LIBRARY_PATH', raising=False)
+    driver.execute_astra_component(**component.kwargs)
+    assert component.seen['sandbox']['library_environment']['LD_LIBRARY_PATH'] == str(kit)
+    assert kit in component.seen['sandbox']['read_roots']
+
+
 def test_authoring_failure_closes_parent_cost_receipt(component):
     def failure(**kw): raise RuntimeError("fixture failure before invocation")
     component.kwargs["authoring_executor"] = failure

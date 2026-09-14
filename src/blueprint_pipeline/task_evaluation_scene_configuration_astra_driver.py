@@ -282,13 +282,30 @@ def prepare_astra_execution_runtime(*, runtime, package, authored_root, values,
             raise AstraStageError(f"astra_runtime_dependency_missing:{dependency}")
     runtime_loader = [Path(value).resolve() for value in os.environ.get("PYTHONPATH", "").split(os.pathsep)
                       if value and Path(value).is_dir()]
+    library_environment = {}
+    library_roots = []
+    for name in ('LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH'):
+        paths = [Path(value).resolve() for value in os.environ.get(name, '').split(os.pathsep)
+                 if value and Path(value).is_absolute() and Path(value).is_dir()]
+        if paths:
+            library_environment[name] = os.pathsep.join(map(str, dict.fromkeys(paths)))
+            library_roots.extend(paths)
+    # Kit's Python can rely on a launcher-provided library path rather than
+    # ELF RUNPATH. Also recognize its actual libpython directory when the
+    # caller has already scrubbed the environment after interpreter startup.
+    for parent in (Path(sys.base_prefix) / 'lib', Path(sys.base_prefix).parent):
+        if any(parent.glob(f'libpython{sys.version_info.major}.{sys.version_info.minor}.so*')):
+            paths = [*filter(None, library_environment.get('LD_LIBRARY_PATH', '').split(os.pathsep)), str(parent.resolve())]
+            library_environment['LD_LIBRARY_PATH'] = os.pathsep.join(dict.fromkeys(paths))
+            library_roots.append(parent.resolve())
     roots = [Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), cad_root,
-             blender_root, Path(__file__).resolve().parent.parent, *runtime_loader]
+             blender_root, Path(__file__).resolve().parent.parent, *runtime_loader, *library_roots]
     roots = list(dict.fromkeys(roots))
     from .asset_runtime_permissions import prepare_runtime_code_access
     _write(runtime / 'runtime_code_access.json', prepare_runtime_code_access(roots))
     sandbox = sandbox_factory(read_roots=roots, write_root=authored_root,
-        executable_roots=[Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), blender_root])
+        executable_roots=[Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), blender_root],
+        library_environment=library_environment, library_executables=[Path(sys.executable)])
     sandbox.preflight()
     probe_root = authored_root / 'tmp' / 'runtime-probe'
     probe_root.mkdir(parents=True, exist_ok=True)
