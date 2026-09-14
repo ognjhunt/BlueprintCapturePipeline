@@ -2129,23 +2129,8 @@ def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
         'export PATH="/usr/local/cuda-12.8/bin:/usr/local/cuda/bin:$PATH"'
         in script
     )
-    for excluded in (
-        ".artifixer-venv",
-        ".hf_home",
-        ".venv",
-        ".ovrtx_venv",
-        ".ovrtx_native_venv",
-        ".ovphysx_venv",
-        ".git",
-        "__pycache__",
-        "artifixer_bundle",
-        "artifixer_execution",
-        "artifixer_output",
-        "content_agents_source",
-    ):
-        assert excluded in script
-    assert "excluded_parts.isdisjoint(relative.parts)" in script
-    assert "provider_output_zip_exclusions.json" in script
+    assert "task_evaluation_scene_configuration_output_archive import write_output_archive" in script
+    assert "BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH" in script
     subprocess.run(["bash", "-n", "-c", script], check=True)
 
     runtime_output = tmp_path / "runtime-output"
@@ -2159,6 +2144,13 @@ def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
     )
     excluded.parent.mkdir(parents=True)
     excluded.write_bytes(b"reproducible-scratch")
+    blender_lib = runtime_output / "stages/stage-3/producer/astra_cad_blender_runtime/packaged_blender/blender-5.2.1-linux-x64/lib"
+    blender_lib.mkdir(parents=True)
+    (blender_lib / "libIex-3_3.so").write_bytes(b"reproducible-shared-library")
+    (blender_lib / "libIex.so").symlink_to("libIex-3_3.so")
+    checkpoint = runtime_output / "stages/stage-1/producer/artifixer_post_training_checkpoint/ckpt_30000.pt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"completed-expensive-training")
     monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT", str(runtime_output))
     monkeypatch.setenv("BLUEPRINT_VAST_WORK_DIR", str(work_dir))
     work_dir.mkdir()
@@ -2176,6 +2168,8 @@ def test_vast_preflight_and_onstart_accept_only_the_sealed_scene_bundle(
         archived = set(archive.namelist())
         assert kept.relative_to(runtime_output).as_posix() in archived
         assert excluded.relative_to(runtime_output).as_posix() not in archived
+        assert checkpoint.relative_to(runtime_output).as_posix() in archived
+        assert not any("packaged_blender" in name for name in archived)
         exclusions = json.loads(archive.read("provider_output_zip_exclusions.json"))
     assert exclusions["schema_version"] == (
         "task_evaluation_scene_configuration_provider_output_zip_exclusions.v1"

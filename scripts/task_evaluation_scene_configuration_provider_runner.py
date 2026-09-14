@@ -270,13 +270,34 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     stages_root = output / "stages"
     stages_root.mkdir(mode=0o750)
+    from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import preserve_stage_prefix
+    checkpoint_path = Path(os.environ.get(
+        "BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH",
+        str(output.parent.parent / "task_evaluation_scene_configuration_stage_checkpoint.zip")))
+
+    def preserve(results):
+        preserve_stage_prefix(output_root=output, completed_results=results,
+                              checkpoint_path=checkpoint_path)
+
     try:
+        if any(value.get("authoring_backend") == "astra_cad_blender_v1"
+               for value, _ in configurations.values()):
+            from blueprint_pipeline.task_evaluation_scene_configuration_astra_driver import preflight_astra_execution_runtime
+            from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import _validate_toolchain
+            toolchain = runtime / "toolchain"
+            manifest, _ = _validate_toolchain(root=toolchain,
+                expected_source_commit=str(envelope["expected_production_commit"]))
+            component = toolchain / manifest["stages"]["content_agents_rigid_replacement"]["component_entrypoint"]
+            preflight_astra_execution_runtime(package=component.parent,
+                output_root=output / "astra_runtime_preflight")
+            print("BLUEPRINT_SCENE_CONFIGURATION_ASTRA_RUNTIME_PREFLIGHT_PASSED", flush=True)
         chain = _portable_stage_chain(
             execute_scene_configuration_stage_chain(
                 envelope=envelope,
                 configurations=configurations,
                 output_root=stages_root,
                 parent_deadline_epoch=parent_deadline_epoch,
+                checkpoint_callback=preserve,
             ),
             output_root=output,
         )
@@ -319,6 +340,11 @@ def main() -> int:
         }
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     result_path.write_text(canonical_json(result) + "\n", encoding="utf-8")
+    if result["status"] != "completed":
+        print("BLUEPRINT_SCENE_CONFIGURATION_FAILURE:" + canonical_json({
+            "run_id": result["run_id"], "blockers": result["blockers"],
+            "result_digest": result["result_digest"],
+        }), flush=True)
     return 0 if result["status"] == "completed" else 2
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import hashlib
 from pathlib import Path
 
@@ -254,3 +256,62 @@ def test_refuses_before_stage_when_parent_cannot_cover_remaining_chain(
         )
 
     assert observed == []
+
+
+def test_completed_stage_checkpoint_survives_later_producer_failure(tmp_path, monkeypatch):
+    import zipfile
+    from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import preserve_stage_prefix
+
+    envelope, configurations = _inputs(tmp_path)
+    output = tmp_path / 'runtime-output'
+    stages = output / 'stages'
+    stages.mkdir(parents=True)
+    checkpoint = tmp_path / 'stage-checkpoint.zip'
+    producers = _producers()
+    original = producers.execute
+
+    def produce(**kwargs):
+        if kwargs['stage']['stage_id'] == 'stage-3':
+            raise RuntimeError('actual-later-stage-failure')
+        if kwargs['stage']['stage_id'] == 'stage-1':
+            (kwargs['output_root'] / 'ckpt_30000.pt').write_bytes(b'completed-training')
+        return original(**kwargs)
+
+    monkeypatch.setattr(producers, 'execute', produce)
+    with pytest.raises(RuntimeError, match='actual-later-stage-failure'):
+        execute_scene_configuration_stage_chain(
+            envelope=envelope, configurations=configurations, output_root=stages,
+            registry=_registry([]), producer_registry=producers,
+            checkpoint_callback=lambda results: preserve_stage_prefix(
+                output_root=output, completed_results=results, checkpoint_path=checkpoint),
+        )
+    with zipfile.ZipFile(checkpoint) as archive:
+        assert archive.read('stages/stage-1/producer/ckpt_30000.pt') == b'completed-training'
+        marker = json.loads(archive.read('completed_stage_checkpoint.json'))
+        assert marker['completed_stage_ids'] == ['stage-1', 'stage-2']
+        assert marker['whole_run_completed'] is False
+        assert not any(name.startswith('stages/stage-3/') for name in archive.namelist())
+
+
+
+def test_failed_new_checkpoint_preserves_previous_completed_prefix(tmp_path):
+    import zipfile
+    from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import preserve_stage_prefix
+    output = tmp_path / "output"
+    stage1 = output / "stages/stage-1"
+    stage1.mkdir(parents=True)
+    (stage1 / "checkpoint.pt").write_bytes(b"completed-stage-one")
+    checkpoint = tmp_path / "checkpoint.zip"
+    preserve_stage_prefix(output_root=output, completed_results=[{"stage_id": "stage-1"}],
+                          checkpoint_path=checkpoint)
+    original = checkpoint.read_bytes()
+    stage2 = output / "stages/stage-2"
+    stage2.mkdir()
+    (stage2 / "untrusted-link").symlink_to(tmp_path / "outside")
+    with pytest.raises(RuntimeError, match="symlink_forbidden"):
+        preserve_stage_prefix(output_root=output,
+            completed_results=[{"stage_id": "stage-1"}, {"stage_id": "stage-2"}],
+            checkpoint_path=checkpoint)
+    assert checkpoint.read_bytes() == original
+    with zipfile.ZipFile(checkpoint) as archive:
+        assert archive.read("stages/stage-1/checkpoint.pt") == b"completed-stage-one"

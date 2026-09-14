@@ -69,3 +69,35 @@ def test_provider_runner_redacts_failure_before_retaining_result(
     assert "sk-provider-secret-value" not in blocker
     assert "signed-provider-value" not in blocker
     assert blocker.count("<redacted>") == 2
+
+
+def test_astra_runtime_refusal_is_reported_before_training(tmp_path, monkeypatch, capsys):
+    from blueprint_pipeline import task_evaluation_scene_configuration_astra_driver as astra
+    from blueprint_pipeline import task_evaluation_scene_configuration_builtin_producers as producers
+    runner = _provider_runner()
+    runtime, output = tmp_path / 'runtime', tmp_path / 'output'
+    monkeypatch.setenv('BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT', str(runtime))
+    monkeypatch.setenv('BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT', str(output))
+    monkeypatch.setenv('BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH', str(time.time()+27000))
+    monkeypatch.setattr(runner, '_read', lambda p: {'authoring_backend': 'astra_cad_blender_v1'}
+        if p.name == 'configuration.json' else {'envelope_digest': 'sha256:'+'a'*64})
+    monkeypatch.setattr(runner, '_hydrate_envelope', lambda *_: {
+        'run_id': 'run', 'expected_production_commit': 'b'*40,
+        'stage_configuration_references': [{'stage_id': 'stage-3',
+            'materialized_path': str(tmp_path/'configuration.json')}]})
+    monkeypatch.setattr(producers, '_validate_toolchain', lambda **_: ({'stages': {
+        'content_agents_rigid_replacement': {'component_entrypoint': 'component/run.sh'}}}, []))
+    calls = []
+
+    def refusal(**kwargs):
+        calls.append(kwargs)
+        raise RuntimeError('astra_sandboxed_cad_runtime_preflight_failed')
+
+    monkeypatch.setattr(astra, 'preflight_astra_execution_runtime', refusal)
+    monkeypatch.setattr(runner, 'execute_scene_configuration_stage_chain',
+                        lambda **_: calls.append('training-must-not-run'))
+    assert runner.main() == 2
+    assert len(calls) == 1 and calls[0]['package'] == runtime/'toolchain/component'
+    logged = capsys.readouterr().out
+    assert 'BLUEPRINT_SCENE_CONFIGURATION_FAILURE:' in logged
+    assert 'astra_sandboxed_cad_runtime_preflight_failed' in logged
